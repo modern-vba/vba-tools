@@ -258,6 +258,30 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
     }
 
     [Fact]
+    public void MissingNestedParameterTypeMarksTheCallableMetadataIncomplete()
+    {
+        var reader = new ComTypeLibCatalogMetadataReader(
+            _ => CreateTypeLib(
+                "Library",
+                CreateTypeInfo(
+                    "IRunner",
+                    TYPEKIND.TKIND_DISPATCH,
+                    functionNames: ["Run", "value"],
+                    functionParameterVarType: VarEnum.VT_PTR)));
+
+        var metadata = reader.ReadMetadata(new VbaProjectReferenceCatalogIdentity(
+            "Library",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            1,
+            0,
+            0,
+            @"C:\TypeLibs\Library.tlb"));
+
+        var member = Assert.Single(Assert.Single(metadata.Types).Members);
+        Assert.False(member.Metadata?.IsComplete);
+    }
+
+    [Fact]
     public void ConflictingDefaultSourceCallableIdentitiesMakeTheSurfaceIndeterminate()
     {
         var parameterlessEvent = new TypeLibCatalogMember(
@@ -424,6 +448,48 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
 
         Assert.Equal(VbaTypeLibEventSurfaceState.Complete, surface.State);
         Assert.Single(surface.StructuralEvents);
+    }
+
+    [Fact]
+    public void ConflictingDefaultSourceReturnArrayEvidenceMakesTheSurfaceIndeterminate()
+    {
+        TypeLibCatalogMember CreateEvent(bool isReturnArray)
+            => new(
+                "Changed",
+                VbaSourceDefinitionKind.Procedure,
+                Documentation: null,
+                new VbaCallableSignature(
+                    "Function Changed() As Long",
+                    [],
+                    CallableKind: VbaCallableKind.Function),
+                TypeReference: new VbaTypeReference("Long"),
+                Metadata: new TypeLibCatalogCallableMetadata(
+                    MemberId: 1,
+                    FunctionFlags: 0)
+                {
+                    IsReturnArray = isReturnArray
+                });
+
+        var catalog = CreateCatalogWithTypeMetadata(
+            new TypeLibCatalogTypeMetadata(
+                TypeLibCatalogRawTypeKind.CoClass,
+                TypeFlags: 0,
+                ImplementedInterfaces:
+                [
+                    new TypeLibCatalogImplementedInterface(
+                        "PublisherEvents",
+                        TypeFlags: 0,
+                        ImplementationFlags: 0x1 | 0x2,
+                        CallableMembers: [CreateEvent(false), CreateEvent(true)],
+                        RawTypeKind: TypeLibCatalogRawTypeKind.Dispatch)
+                ]));
+
+        var surface = VbaProjectReferenceCatalogSet.Empty
+            .WithCatalog(catalog)
+            .GetTypeLibEventSurface("Library", "Publisher");
+
+        Assert.Equal(VbaTypeLibEventSurfaceState.Indeterminate, surface.State);
+        Assert.Empty(surface.StructuralEvents);
     }
 
     [Fact]
@@ -680,6 +746,83 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
     }
 
     [Fact]
+    public void ReadMetadataPreservesFunctionReturnArrayShape()
+    {
+        var reader = new ComTypeLibCatalogMetadataReader(
+            _ => CreateTypeLib(
+                "Library",
+                CreateTypeInfo(
+                    "IArray",
+                    TYPEKIND.TKIND_DISPATCH,
+                    functionNames: ["Values"],
+                    functionReturnVarType: VarEnum.VT_SAFEARRAY,
+                    functionReturnElementVarType: VarEnum.VT_BSTR)));
+
+        var metadata = reader.ReadMetadata(new VbaProjectReferenceCatalogIdentity(
+            "Library",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            1,
+            0,
+            0,
+            @"C:\TypeLibs\Library.tlb"));
+
+        var member = Assert.Single(Assert.Single(metadata.Types).Members);
+        Assert.Equal(VbaCallableKind.Function, member.Signature?.CallableKind);
+        Assert.Equal("String", member.TypeReference?.Name);
+        Assert.True(member.Metadata?.IsReturnArray);
+    }
+
+    [Fact]
+    public void ReadMetadataDoesNotInventVariantForAnUnsupportedFunctionReturnType()
+    {
+        var reader = new ComTypeLibCatalogMetadataReader(
+            _ => CreateTypeLib(
+                "Library",
+                CreateTypeInfo(
+                    "IReader",
+                    TYPEKIND.TKIND_DISPATCH,
+                    functionNames: ["Read"],
+                    functionReturnVarType: unchecked((VarEnum)0x7fff))));
+
+        var metadata = reader.ReadMetadata(new VbaProjectReferenceCatalogIdentity(
+            "Library",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            1,
+            0,
+            0,
+            @"C:\TypeLibs\Library.tlb"));
+
+        var member = Assert.Single(Assert.Single(metadata.Types).Members);
+        Assert.Equal(VbaCallableKind.Function, member.Signature?.CallableKind);
+        Assert.Null(member.TypeReference);
+    }
+
+    [Fact]
+    public void ReadMetadataPreservesAnExplicitVariantFunctionReturnType()
+    {
+        var reader = new ComTypeLibCatalogMetadataReader(
+            _ => CreateTypeLib(
+                "Library",
+                CreateTypeInfo(
+                    "IReader",
+                    TYPEKIND.TKIND_DISPATCH,
+                    functionNames: ["Read"],
+                    functionReturnVarType: VarEnum.VT_VARIANT)));
+
+        var metadata = reader.ReadMetadata(new VbaProjectReferenceCatalogIdentity(
+            "Library",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            1,
+            0,
+            0,
+            @"C:\TypeLibs\Library.tlb"));
+
+        var member = Assert.Single(Assert.Single(metadata.Types).Members);
+        Assert.Equal("Variant", member.TypeReference?.Name);
+        Assert.False(member.Metadata?.IsReturnArray);
+    }
+
+    [Fact]
     public void HiddenDefaultSourceCallablesRemainStructuralButNotAuthoringMembers()
     {
         var sourceInterface = CreateTypeInfo(
@@ -773,6 +916,118 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
                 .WithCatalog(catalog)
                 .GetTypeLibEventSurface("Library", "Publisher")
                 .State);
+    }
+
+    [Fact]
+    public void DefaultSourceFunctionWithoutResultEvidenceIsNotACompleteEventSurface()
+    {
+        var incompleteFunction = new TypeLibCatalogMember(
+            "Changed",
+            VbaSourceDefinitionKind.Procedure,
+            Documentation: null,
+            new VbaCallableSignature(
+                "Function Changed()",
+                [],
+                CallableKind: VbaCallableKind.Function),
+            TypeReference: null,
+            Metadata: new TypeLibCatalogCallableMetadata(
+                MemberId: 1,
+                FunctionFlags: 0));
+        var catalog = TypeLibReferenceCatalogBuilder.Build(
+            "Library",
+            new TypeLibCatalogMetadata(
+                "Library",
+                [
+                    new TypeLibCatalogType(
+                        "Publisher",
+                        VbaSourceDefinitionKind.Class,
+                        Documentation: null,
+                        Members: [],
+                        IsCreatable: true,
+                        Metadata: new TypeLibCatalogTypeMetadata(
+                            TypeLibCatalogRawTypeKind.CoClass,
+                            TypeFlags: 0,
+                            ImplementedInterfaces:
+                            [
+                                new TypeLibCatalogImplementedInterface(
+                                    "PublisherEvents",
+                                    TypeFlags: 0,
+                                    ImplementationFlags: 0x1 | 0x2,
+                                    CallableMembers: [incompleteFunction],
+                                    RawTypeKind:
+                                        TypeLibCatalogRawTypeKind.Dispatch)
+                            ]))
+                ]));
+
+        var surface = VbaProjectReferenceCatalogSet.Empty
+            .WithCatalog(catalog)
+            .GetTypeLibEventSurface("Library", "Publisher");
+
+        Assert.Equal(VbaTypeLibEventSurfaceState.Indeterminate, surface.State);
+        Assert.Empty(surface.AuthoringEvents);
+    }
+
+    [Fact]
+    public void DefaultSourceParameterWithoutTypeEvidenceMakesOnlyTheKnownEventRecognizable()
+    {
+        var knownEvent = new TypeLibCatalogMember(
+            "Changed",
+            VbaSourceDefinitionKind.Procedure,
+            Documentation: null,
+            new VbaCallableSignature(
+                "Sub Changed()",
+                [],
+                CallableKind: VbaCallableKind.Sub),
+            Metadata: new TypeLibCatalogCallableMetadata(
+                MemberId: 1,
+                FunctionFlags: 0));
+        var incompleteEvent = new TypeLibCatalogMember(
+            "Broken",
+            VbaSourceDefinitionKind.Procedure,
+            Documentation: null,
+            new VbaCallableSignature(
+                "Sub Broken(value)",
+                [new VbaCallableParameter("value")],
+                CallableKind: VbaCallableKind.Sub),
+            Metadata: new TypeLibCatalogCallableMetadata(
+                MemberId: 2,
+                FunctionFlags: 0));
+        var catalog = TypeLibReferenceCatalogBuilder.Build(
+            "Library",
+            new TypeLibCatalogMetadata(
+                "Library",
+                [
+                    new TypeLibCatalogType(
+                        "Publisher",
+                        VbaSourceDefinitionKind.Class,
+                        Documentation: null,
+                        Members: [],
+                        IsCreatable: true,
+                        Metadata: new TypeLibCatalogTypeMetadata(
+                            TypeLibCatalogRawTypeKind.CoClass,
+                            TypeFlags: 0,
+                            ImplementedInterfaces:
+                            [
+                                new TypeLibCatalogImplementedInterface(
+                                    "PublisherEvents",
+                                    TypeFlags: 0,
+                                    ImplementationFlags: 0x1 | 0x2,
+                                    CallableMembers: [knownEvent, incompleteEvent],
+                                    RawTypeKind:
+                                        TypeLibCatalogRawTypeKind.Dispatch)
+                            ]))
+                ]));
+
+        var surface = VbaProjectReferenceCatalogSet.Empty
+            .WithCatalog(catalog)
+            .GetTypeLibEventSurface("Library", "Publisher");
+
+        Assert.Equal(VbaTypeLibEventSurfaceState.Partial, surface.State);
+        Assert.Empty(surface.StructuralEvents);
+        Assert.Empty(surface.AuthoringEvents);
+        Assert.Equal(
+            "Changed",
+            Assert.Single(surface.ExistingHandlerRecognitionEvents).Name);
     }
 
     [Fact]
@@ -1138,7 +1393,10 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
         FUNCFLAGS functionFlags = 0,
         IReadOnlyList<ImplementedType>? implementedTypes = null,
         TYPEFLAGS typeFlags = 0,
-        bool hasMissingParameterDescriptors = false)
+        bool hasMissingParameterDescriptors = false,
+        VarEnum functionReturnVarType = VarEnum.VT_VOID,
+        VarEnum? functionReturnElementVarType = null,
+        VarEnum functionParameterVarType = VarEnum.VT_I4)
     {
         var typeInfo = DispatchProxy.Create<ITypeInfo, TypeInfoProxy>();
         var proxy = (TypeInfoProxy)(object)typeInfo;
@@ -1154,6 +1412,9 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
                 : [new ImplementedType(implementedTypeInfo, implementationFlags)]);
         proxy.FunctionFlags = functionFlags;
         proxy.HasMissingParameterDescriptors = hasMissingParameterDescriptors;
+        proxy.FunctionReturnVarType = functionReturnVarType;
+        proxy.FunctionReturnElementVarType = functionReturnElementVarType;
+        proxy.FunctionParameterVarType = functionParameterVarType;
         return typeInfo;
     }
 
@@ -1212,6 +1473,12 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
         public FUNCFLAGS FunctionFlags { get; set; }
 
         public bool HasMissingParameterDescriptors { get; set; }
+
+        public VarEnum FunctionReturnVarType { get; set; } = VarEnum.VT_VOID;
+
+        public VarEnum? FunctionReturnElementVarType { get; set; }
+
+        public VarEnum FunctionParameterVarType { get; set; } = VarEnum.VT_I4;
 
         protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
         {
@@ -1283,7 +1550,7 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
                         {
                             tdesc = new TYPEDESC
                             {
-                                vt = unchecked((short)VarEnum.VT_I4)
+                                vt = unchecked((short)FunctionParameterVarType)
                             },
                             desc = new ELEMDESC.DESCUNION
                             {
@@ -1299,6 +1566,24 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
                             fDeleteOld: false);
                     }
 
+                    var functionReturnType = new TYPEDESC
+                    {
+                        vt = unchecked((short)FunctionReturnVarType)
+                    };
+                    if (FunctionReturnElementVarType is { } elementVarType)
+                    {
+                        var elementPointer = Marshal.AllocHGlobal(
+                            Marshal.SizeOf<TYPEDESC>());
+                        Marshal.StructureToPtr(
+                            new TYPEDESC
+                            {
+                                vt = unchecked((short)elementVarType)
+                            },
+                            elementPointer,
+                            fDeleteOld: false);
+                        functionReturnType.lpValue = elementPointer;
+                    }
+
                     var function = new FUNCDESC
                     {
                         memid = FunctionMemberId,
@@ -1309,10 +1594,7 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
                         wFuncFlags = unchecked((short)FunctionFlags),
                         elemdescFunc = new ELEMDESC
                         {
-                            tdesc = new TYPEDESC
-                            {
-                                vt = unchecked((short)VarEnum.VT_VOID)
-                            }
+                            tdesc = functionReturnType
                         }
                     };
                     var functionPointer = Marshal.AllocHGlobal(Marshal.SizeOf<FUNCDESC>());
@@ -1324,6 +1606,13 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
                     if (releasedFunction.lprgelemdescParam != IntPtr.Zero)
                     {
                         Marshal.FreeHGlobal(releasedFunction.lprgelemdescParam);
+                    }
+
+                    if (releasedFunction.elemdescFunc.tdesc.lpValue
+                        != IntPtr.Zero)
+                    {
+                        Marshal.FreeHGlobal(
+                            releasedFunction.elemdescFunc.tdesc.lpValue);
                     }
 
                     Marshal.FreeHGlobal((IntPtr)args[0]!);

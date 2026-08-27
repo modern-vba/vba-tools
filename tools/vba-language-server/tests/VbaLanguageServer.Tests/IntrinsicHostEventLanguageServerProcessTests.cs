@@ -5,6 +5,89 @@ namespace VbaLanguageServer.Tests;
 
 public sealed class IntrinsicHostEventLanguageServerProcessTests
 {
+    [Fact]
+    public async Task Empty_Sub_declaration_name_offers_only_the_intrinsic_host_prefix()
+    {
+        var completion = await GetIntrinsicCompletionAsync("Private Sub ");
+        var item = Assert.Single(completion.GetProperty("result").EnumerateArray());
+        Assert.Equal("UserForm_", item.GetProperty("label").GetString());
+        Assert.Equal("Host Events", item.GetProperty("detail").GetString());
+        Assert.True(item
+            .GetProperty("data")
+            .GetProperty("retriggerCompletion")
+            .GetBoolean());
+        Assert.False(item.TryGetProperty("command", out _));
+        var textEdit = item.GetProperty("textEdit");
+        Assert.Equal("UserForm_", textEdit.GetProperty("newText").GetString());
+        Assert.Equal(
+            (4, 12, 4, 12),
+            (
+                textEdit.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32(),
+                textEdit.GetProperty("range").GetProperty("start").GetProperty("character").GetInt32(),
+                textEdit.GetProperty("range").GetProperty("end").GetProperty("line").GetInt32(),
+                textEdit.GetProperty("range").GetProperty("end").GetProperty("character").GetInt32()));
+        Assert.DoesNotContain("(", textEdit.GetProperty("newText").GetString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Exact_intrinsic_host_prefix_offers_the_Event_name_and_replaces_only_the_suffix()
+    {
+        var completion = await GetIntrinsicCompletionAsync("Private Sub UserForm_");
+        var item = Assert.Single(completion.GetProperty("result").EnumerateArray());
+        Assert.Equal("UserForm_Initialize", item.GetProperty("label").GetString());
+        Assert.Equal("Event", item.GetProperty("detail").GetString());
+        Assert.Equal("Initialize", item.GetProperty("filterText").GetString());
+        var textEdit = item.GetProperty("textEdit");
+        Assert.Equal("Initialize", textEdit.GetProperty("newText").GetString());
+        Assert.Equal(
+            (4, 21, 4, 21),
+            (
+                textEdit.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32(),
+                textEdit.GetProperty("range").GetProperty("start").GetProperty("character").GetInt32(),
+                textEdit.GetProperty("range").GetProperty("end").GetProperty("line").GetInt32(),
+                textEdit.GetProperty("range").GetProperty("end").GetProperty("character").GetInt32()));
+        Assert.DoesNotContain("(", textEdit.GetProperty("newText").GetString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Intrinsic_host_member_completion_projects_handler_signature_and_documentation()
+    {
+        var completion = await GetIntrinsicCompletionAsync(
+            "Private Sub UserForm_");
+        var item = Assert.Single(completion.GetProperty("result").EnumerateArray());
+        var documentation = item
+            .GetProperty("documentation")
+            .GetProperty("value")
+            .GetString();
+        Assert.Contains(
+            "UserForm_Initialize()",
+            documentation,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Occurs when the form is initialized.",
+            documentation,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Last_known_good_host_surface_still_supplies_advisory_completion()
+    {
+        var completion = await GetIntrinsicCompletionAsync(
+            "Private Sub ",
+            authority: "lastKnownGood");
+        var item = Assert.Single(completion.GetProperty("result").EnumerateArray());
+        Assert.Equal("UserForm_", item.GetProperty("label").GetString());
+    }
+
+    [Fact]
+    public async Task Non_authoring_host_Event_is_not_offered_for_a_new_declaration()
+    {
+        var completion = await GetIntrinsicCompletionAsync(
+            "Private Sub ",
+            authoringAvailable: false);
+        Assert.Empty(completion.GetProperty("result").EnumerateArray());
+    }
+
     [Theory]
     [InlineData("current")]
     [InlineData("lastKnownGood")]
@@ -763,6 +846,73 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
             Assert.Contains("Built-in Changed Event.", value, StringComparison.Ordinal);
 
             await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    private static async Task<JsonElement> GetIntrinsicCompletionAsync(
+        string declarationLine,
+        string authority = "current",
+        bool authoringAvailable = true)
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-intrinsic-host-completion-").FullName;
+        try
+        {
+            var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
+            Directory.CreateDirectory(sourceRoot);
+            var sourceTemplate = Path.Combine(sourceRoot, "Book1.xlsm");
+            WriteProjectManifest(projectRoot);
+
+            var sourcePath = Path.Combine(sourceRoot, "Dialog.frm");
+            var uri = new Uri(sourcePath).AbsoluteUri;
+            var text = string.Join('\n', [
+                "VERSION 5.00",
+                "Begin VB.Form Dialog",
+                "End",
+                "Attribute VB_Name = \"Dialog\"",
+                declarationLine
+            ]);
+            File.WriteAllText(sourcePath, text);
+
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+            await process.InitializeAsync();
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+            await process.WaitForDiagnosticsAsync(uri);
+            await process.SendNotificationAsync(
+                "vba/hostClassProjectionSnapshot",
+                CreateSnapshotNotification(
+                    projectRoot,
+                    sourceTemplate,
+                    authority,
+                    "Initialize",
+                    [],
+                    "Occurs when the form is initialized.",
+                    authoringAvailable));
+            await process.SendNotificationAsync(
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new { uri, version = 2 },
+                    contentChanges = new[] { new { text } }
+                });
+            await process.WaitForDiagnosticsAsync(uri);
+
+            var completion = await process.SendRequestAsync(
+                2,
+                "textDocument/completion",
+                new
+                {
+                    textDocument = new { uri },
+                    position = new { line = 4, character = declarationLine.Length }
+                });
+            await process.ShutdownAsync(3);
+            return completion.Clone();
         }
         finally
         {

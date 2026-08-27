@@ -790,32 +790,81 @@ public sealed record VbaBlockHeaderSyntax(
             accessor,
             CanonicalEndProperty);
         return true;
+    }
 
-        static bool TryGetPropertyAccessor(
-            VbaToken token,
-            out VbaPropertyAccessorKind accessor)
+    internal static bool TryGetCallableDeclarationNameShape(
+        IReadOnlyList<VbaToken> tokens,
+        VbaModuleKind moduleKind,
+        out VbaCallableDeclarationNameKind kind,
+        out int nameIndex)
+    {
+        kind = default;
+        nameIndex = -1;
+        if (tokens.Count == 0 || IsIllegalForModuleKind(moduleKind, tokens))
         {
-            if (Matches(token, "Get"))
-            {
-                accessor = VbaPropertyAccessorKind.Get;
-                return true;
-            }
-
-            if (Matches(token, "Let"))
-            {
-                accessor = VbaPropertyAccessorKind.Let;
-                return true;
-            }
-
-            if (Matches(token, "Set"))
-            {
-                accessor = VbaPropertyAccessorKind.Set;
-                return true;
-            }
-
-            accessor = default;
             return false;
         }
+
+        var keywordIndex = GetSubKeywordIndex(tokens);
+        if (keywordIndex >= 0)
+        {
+            kind = VbaCallableDeclarationNameKind.Sub;
+            nameIndex = keywordIndex + 1;
+            return tokens.Count <= nameIndex + 1;
+        }
+
+        keywordIndex = GetCallableKeywordIndex(tokens, "Function");
+        if (keywordIndex >= 0)
+        {
+            kind = VbaCallableDeclarationNameKind.Function;
+            nameIndex = keywordIndex + 1;
+            return tokens.Count <= nameIndex + 1;
+        }
+
+        keywordIndex = GetCallableKeywordIndex(tokens, "Property");
+        var accessorIndex = keywordIndex + 1;
+        if (keywordIndex < 0
+            || accessorIndex >= tokens.Count
+            || !TryGetPropertyAccessor(tokens[accessorIndex], out var accessor))
+        {
+            return false;
+        }
+
+        kind = accessor switch
+        {
+            VbaPropertyAccessorKind.Get => VbaCallableDeclarationNameKind.PropertyGet,
+            VbaPropertyAccessorKind.Let => VbaCallableDeclarationNameKind.PropertyLet,
+            VbaPropertyAccessorKind.Set => VbaCallableDeclarationNameKind.PropertySet,
+            _ => throw new InvalidOperationException("Unsupported Property accessor kind.")
+        };
+        nameIndex = accessorIndex + 1;
+        return tokens.Count <= nameIndex + 1;
+    }
+
+    private static bool TryGetPropertyAccessor(
+        VbaToken token,
+        out VbaPropertyAccessorKind accessor)
+    {
+        if (Matches(token, "Get"))
+        {
+            accessor = VbaPropertyAccessorKind.Get;
+            return true;
+        }
+
+        if (Matches(token, "Let"))
+        {
+            accessor = VbaPropertyAccessorKind.Let;
+            return true;
+        }
+
+        if (Matches(token, "Set"))
+        {
+            accessor = VbaPropertyAccessorKind.Set;
+            return true;
+        }
+
+        accessor = default;
+        return false;
     }
 
     internal static bool HasCompleteExternalCallableShape(

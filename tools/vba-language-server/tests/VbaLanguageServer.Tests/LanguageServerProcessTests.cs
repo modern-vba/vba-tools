@@ -102,7 +102,7 @@ public sealed class LanguageServerProcessTests
             .ToArray();
         Assert.Equal(
             [
-                ".", " ", "(", ",", ":", ";", "+", "-", "*", "/", "\\", "^", "&", "=", "<", ">"
+                ".", "_", " ", "(", ",", ":", ";", "+", "-", "*", "/", "\\", "^", "&", "=", "<", ">"
             ],
             completionTriggers);
         Assert.DoesNotContain("!", completionTriggers);
@@ -238,6 +238,115 @@ public sealed class LanguageServerProcessTests
                 response.GetProperty("result").GetRawText()));
 
         await server.ShutdownAsync(6);
+    }
+
+    [Fact]
+    public async Task Underscore_trigger_returns_no_ordinary_candidates_outside_a_contract_name_slot()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+
+        const string uri = "file:///C:/work/UnderscoreCompletion.bas";
+        var text = string.Join('\n',
+        [
+            "Public Sub Run()",
+            "    Dim value_ As Long",
+            "    value_",
+            "End Sub"
+        ]);
+        await server.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
+
+        var explicitCompletion = await server.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            MergePositionParameters(uri, 2, "    value_".Length, null));
+        Assert.NotEmpty(explicitCompletion.GetProperty("result").EnumerateArray());
+
+        var triggeredCompletion = await server.SendRequestAsync(
+            3,
+            "textDocument/completion",
+            MergePositionParameters(
+                uri,
+                2,
+                "    value_".Length,
+                new { context = new { triggerKind = 2, triggerCharacter = "_" } }));
+        Assert.Empty(triggeredCompletion.GetProperty("result").EnumerateArray());
+
+        await server.ShutdownAsync(4);
+    }
+
+    [Fact]
+    public async Task Space_trigger_preserves_ordinary_completion_outside_a_contract_name_slot()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+
+        const string uri = "file:///C:/work/SpaceCompletion.bas";
+        var text = string.Join('\n',
+        [
+            "Public Sub Run()",
+            "    Dim result As Long",
+            "    result = 1 + ",
+            "End Sub"
+        ]);
+        await server.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
+
+        var explicitCompletion = await server.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            MergePositionParameters(uri, 2, "    result = 1 + ".Length, null));
+        Assert.NotEmpty(explicitCompletion.GetProperty("result").EnumerateArray());
+
+        var triggeredCompletion = await server.SendRequestAsync(
+            3,
+            "textDocument/completion",
+            MergePositionParameters(
+                uri,
+                2,
+                "    result = 1 + ".Length,
+                new { context = new { triggerKind = 2, triggerCharacter = " " } }));
+        Assert.Equal(
+            explicitCompletion.GetProperty("result").GetRawText(),
+            triggeredCompletion.GetProperty("result").GetRawText());
+
+        await server.ShutdownAsync(4);
+    }
+
+    [Fact]
+    public async Task Space_trigger_preserves_Property_accessor_keyword_completion()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync();
+
+        const string uri = "file:///C:/work/PropertyAccessorCompletion.cls";
+        const string text = "Private Property ";
+        await server.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var explicitCompletion = await server.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            MergePositionParameters(uri, 0, text.Length, null));
+        var triggeredCompletion = await server.SendRequestAsync(
+            3,
+            "textDocument/completion",
+            MergePositionParameters(
+                uri,
+                0,
+                text.Length,
+                new { context = new { triggerKind = 2, triggerCharacter = " " } }));
+        Assert.Equal(
+            ["Get", "Let", "Set"],
+            triggeredCompletion
+                .GetProperty("result")
+                .EnumerateArray()
+                .Select(item => item.GetProperty("label").GetString()));
+        Assert.Equal(
+            explicitCompletion.GetProperty("result").GetRawText(),
+            triggeredCompletion.GetProperty("result").GetRawText());
+
+        await server.ShutdownAsync(4);
     }
 
     [Fact]

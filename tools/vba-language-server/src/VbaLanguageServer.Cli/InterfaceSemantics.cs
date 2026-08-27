@@ -44,9 +44,9 @@ internal sealed record VbaInterfaceContractDefault(
 
 internal sealed record VbaInterfaceContractParameter(
     string Name,
-    VbaInterfaceContractType Type,
+    VbaInterfaceContractType? Type,
     bool IsArray,
-    bool IsByRef,
+    bool? IsByRef,
     VbaInterfaceContractParameterRole Role,
     VbaInterfaceContractDefault? Default = null)
 {
@@ -55,8 +55,8 @@ internal sealed record VbaInterfaceContractParameter(
 }
 
 internal sealed record VbaInterfaceContractResult(
-    VbaInterfaceContractType Type,
-    bool IsArray = false);
+    VbaInterfaceContractType? Type,
+    bool? IsArray = false);
 
 internal sealed record VbaSourceImplementsRelationship(
     VbaSourceDocument ImplementingDocument,
@@ -139,7 +139,8 @@ internal sealed record VbaInterfaceContractVariant(
     VbaInterfaceContractResult? Result,
     string Signature,
     bool IsConditional,
-    bool IsDerivedVariableAccessor)
+    bool IsDerivedVariableAccessor,
+    bool IsSignatureComplete = true)
 {
     public string RequiredKind => Kind switch
     {
@@ -180,6 +181,145 @@ internal sealed class VbaInterfaceSemanticModel
     public VbaInterfaceSemanticModel(VbaNameResolutionService nameResolution)
     {
         this.nameResolution = nameResolution;
+    }
+
+    internal IReadOnlyList<VbaContractPrefixCompletionOrigin>
+        GetDeclarationNameCompletionOrigins(
+            VbaSourceDocument implementingDocument,
+            VbaCallableDeclarationNameKind declarationKind)
+    {
+        if (!TryMapDeclarationKind(declarationKind, out var contractKind))
+        {
+            return [];
+        }
+
+        var origins = new List<VbaContractPrefixCompletionOrigin>();
+        foreach (var contractSet in GetContractSets(implementingDocument).Where(set =>
+                     set.Kind == contractKind
+                     && !HasIndeterminateConditionalCompilationOwnership(
+                         set.Relationship)))
+        {
+            foreach (var variant in contractSet.Variants.Where(variant =>
+                         !HasIndeterminateConditionalCompilationOwnership(variant)))
+            {
+                var memberName = variant.OriginDefinition.Name;
+                if (!variant.ImplementedName.EndsWith(
+                        memberName,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var prefixLength = variant.ImplementedName.Length
+                    - memberName.Length;
+                if (prefixLength == 0
+                    || variant.ImplementedName[prefixLength - 1] != '_')
+                {
+                    continue;
+                }
+
+                var documentation =
+                    variant.OriginDefinition.Signature?.Documentation
+                    ?? variant.OriginDefinition.Documentation;
+                origins.Add(new VbaContractPrefixCompletionOrigin(
+                    variant.ImplementedName[..prefixLength],
+                    VbaContractCompletionDomain.Interface,
+                    contractSet.Relationship.ConditionalCompilationPath
+                        is { IsEmpty: false },
+                    [
+                        new VbaContractMemberCompletionOrigin(
+                            memberName,
+                            VbaContractCompletionDomain.Interface,
+                            variant.IsConditional,
+                            CreateCompletionContractSignature(
+                                variant,
+                                documentation),
+                            documentation,
+                            variant)
+                    ]));
+            }
+        }
+
+        return origins;
+    }
+
+    private static VbaCallableSignature? CreateCompletionContractSignature(
+        VbaInterfaceContractVariant contract,
+        string? documentation)
+    {
+        if (!contract.IsSignatureComplete)
+        {
+            return null;
+        }
+
+        var contractParameters = contract.PropertyValueParameter is null
+            ? contract.Parameters
+            : [.. contract.Parameters, contract.PropertyValueParameter];
+        var sourceParameters = contract.OriginDefinition.Signature?.Parameters
+            ?? [];
+        var parameters = contractParameters
+            .Select((parameter, index) => new VbaCallableParameter(
+                parameter.Name,
+                Documentation: index < sourceParameters.Count
+                    ? sourceParameters[index].Documentation
+                    : null,
+                IsOptional: parameter.Role
+                    == VbaInterfaceContractParameterRole.Optional,
+                DisplayLabel: contract.IsDerivedVariableAccessor
+                        && ReferenceEquals(
+                            parameter,
+                            contract.PropertyValueParameter)
+                    ? $"ByVal {parameter.Name} As {parameter.Type!.Name}"
+                    : CreateParameterLabel(parameter),
+                TypeReference: parameter.Type is null
+                    ? null
+                    : new VbaTypeReference(parameter.Type.Name),
+                IsByRef: parameter.IsByRef,
+                IsParamArray: parameter.Role
+                    == VbaInterfaceContractParameterRole.ParamArray,
+                IsArray: parameter.IsArray))
+            .ToArray();
+        var callableKind = contract.Kind switch
+        {
+            VbaInterfaceAccessorContractKind.Sub => VbaCallableKind.Sub,
+            VbaInterfaceAccessorContractKind.Function => VbaCallableKind.Function,
+            VbaInterfaceAccessorContractKind.Get
+                or VbaInterfaceAccessorContractKind.Let
+                or VbaInterfaceAccessorContractKind.Set => VbaCallableKind.Property,
+            _ => throw new InvalidOperationException(
+                "Unknown interface contract kind.")
+        };
+        return new VbaCallableSignature(
+            contract.Signature,
+            parameters,
+            documentation,
+            callableKind,
+            SupportsNamedArguments: true);
+    }
+
+    private static bool TryMapDeclarationKind(
+        VbaCallableDeclarationNameKind declarationKind,
+        out VbaInterfaceAccessorContractKind contractKind)
+    {
+        contractKind = declarationKind switch
+        {
+            VbaCallableDeclarationNameKind.Sub =>
+                VbaInterfaceAccessorContractKind.Sub,
+            VbaCallableDeclarationNameKind.Function =>
+                VbaInterfaceAccessorContractKind.Function,
+            VbaCallableDeclarationNameKind.PropertyGet =>
+                VbaInterfaceAccessorContractKind.Get,
+            VbaCallableDeclarationNameKind.PropertyLet =>
+                VbaInterfaceAccessorContractKind.Let,
+            VbaCallableDeclarationNameKind.PropertySet =>
+                VbaInterfaceAccessorContractKind.Set,
+            _ => default
+        };
+        return declarationKind is VbaCallableDeclarationNameKind.Sub
+            or VbaCallableDeclarationNameKind.Function
+            or VbaCallableDeclarationNameKind.PropertyGet
+            or VbaCallableDeclarationNameKind.PropertyLet
+            or VbaCallableDeclarationNameKind.PropertySet;
     }
 
     public IReadOnlyList<VbaProjectValidationDiagnostic> GetDiagnostics(
@@ -299,9 +439,7 @@ internal sealed class VbaInterfaceSemanticModel
                                 $"Required contract: {contract.Signature}"
                                 + $"{conditionalMarker}.";
                             return new VbaDiagnosticDetail(
-                                new VbaDiagnosticLocation(
-                                    contract.OriginDefinition.Uri,
-                                    contract.OriginDefinition.Range),
+                                CreateContractDiagnosticLocation(contract),
                                 message,
                                 message);
                         })
@@ -379,9 +517,8 @@ internal sealed class VbaInterfaceSemanticModel
                                 + $"{conditionalMarker}.\n"
                                 + $"Mismatches: {mismatchText}.";
                             return new VbaDiagnosticDetail(
-                                new VbaDiagnosticLocation(
-                                    comparison.Contract.OriginDefinition.Uri,
-                                    comparison.Contract.OriginDefinition.Range),
+                                CreateContractDiagnosticLocation(
+                                    comparison.Contract),
                                 message,
                                 fallbackMessage);
                         }).ToArray()));
@@ -420,9 +557,7 @@ internal sealed class VbaInterfaceSemanticModel
                                     $"Required contract: {contract.Signature}"
                                     + $"{conditionalMarker}.";
                                 return new VbaDiagnosticDetail(
-                                    new VbaDiagnosticLocation(
-                                        contract.OriginDefinition.Uri,
-                                        contract.OriginDefinition.Range),
+                                    CreateContractDiagnosticLocation(contract),
                                     message,
                                     message);
                             })
@@ -457,9 +592,7 @@ internal sealed class VbaInterfaceSemanticModel
                         var message =
                             $"Required contract: {contract.Signature}{conditionalMarker}.";
                         return new VbaDiagnosticDetail(
-                            new VbaDiagnosticLocation(
-                                contract.OriginDefinition.Uri,
-                                contract.OriginDefinition.Range),
+                            CreateContractDiagnosticLocation(contract),
                             message,
                             message);
                     })
@@ -656,6 +789,7 @@ internal sealed class VbaInterfaceSemanticModel
             position);
         var variants = contractSets
             .SelectMany(set => set.Variants)
+            .Where(contract => contract.IsSignatureComplete)
             .Select(contract =>
             {
                 var contractParameters = contract.PropertyValueParameter is null
@@ -670,9 +804,11 @@ internal sealed class VbaInterfaceSemanticModel
                                 && ReferenceEquals(
                                     parameter,
                                     contract.PropertyValueParameter)
-                            ? $"ByVal {parameter.Name} As {parameter.Type.Name}"
+                            ? $"ByVal {parameter.Name} As {parameter.Type!.Name}"
                             : CreateParameterLabel(parameter),
-                        TypeReference: new VbaTypeReference(parameter.Type.Name),
+                        TypeReference: parameter.Type is null
+                            ? null
+                            : new VbaTypeReference(parameter.Type.Name),
                         IsByRef: parameter.IsByRef,
                         IsParamArray: parameter.Role
                             == VbaInterfaceContractParameterRole.ParamArray,
@@ -717,7 +853,7 @@ internal sealed class VbaInterfaceSemanticModel
             activeSignature);
     }
 
-    private static int? GetPhysicalParameterIndex(
+    internal static int? GetPhysicalParameterIndex(
         VbaSyntaxTree syntaxTree,
         VbaCallableDeclarationSyntax callable,
         VbaSyntaxPosition position)
@@ -774,6 +910,7 @@ internal sealed class VbaInterfaceSemanticModel
                 .SelectMany(set => set.Variants)
                 .Select(contract => contract.ToContractVariant())
                 .Concat(GetSourceCallableContracts(relationship))
+                .Concat(GetProjectReferenceCallableContracts(relationship))
                 .GroupBy(
                     contract => contract.ImplementedName,
                     StringComparer.OrdinalIgnoreCase)
@@ -855,10 +992,27 @@ internal sealed class VbaInterfaceSemanticModel
                 implementingDocument,
                 typeReference);
             if (outcome.Kind != VbaNameResolutionKind.Resolved
-                || outcome.Target is null
-                || outcome.Target.PhysicalDefinitions.Any(definition =>
-                    definition.Identity.Origin != VbaDefinitionOrigin.Source
-                    || definition.Kind != VbaSourceDefinitionKind.Class))
+                || outcome.Target is null)
+            {
+                continue;
+            }
+
+
+            var interfaceDefinitions = outcome.Target.PhysicalDefinitions;
+            var isSourceInterface = interfaceDefinitions.All(definition =>
+                definition.Identity.Origin == VbaDefinitionOrigin.Source
+                && definition.Kind == VbaSourceDefinitionKind.Class);
+            var isProjectReferenceInterface = interfaceDefinitions.All(definition =>
+                definition.Identity.Origin
+                    == VbaDefinitionOrigin.ProjectReference
+                && definition.Kind == VbaSourceDefinitionKind.Class
+                && definition.IsAuthoringAvailable
+                && nameResolution.GetTypeLibEventSurface(
+                        definition.ModuleName,
+                        definition.Name).RawTypeKind is
+                    TypeLibCatalogRawTypeKind.Interface
+                        or TypeLibCatalogRawTypeKind.Dispatch);
+            if (!isSourceInterface && !isProjectReferenceInterface)
             {
                 continue;
             }
@@ -1027,6 +1181,133 @@ internal sealed class VbaInterfaceSemanticModel
         return contracts;
     }
 
+    private IReadOnlyList<VbaInterfaceContractVariant>
+        GetProjectReferenceCallableContracts(
+            VbaSourceImplementsRelationship relationship)
+    {
+        var contracts = new List<VbaInterfaceContractVariant>();
+        foreach (var interfaceDefinition in relationship.InterfaceTarget
+                     .PhysicalDefinitions
+                     .Where(definition => definition.Identity.Origin
+                             == VbaDefinitionOrigin.ProjectReference
+                         && definition.Kind == VbaSourceDefinitionKind.Class
+                         && definition.IsAuthoringAvailable)
+                     .DistinctBy(definition => definition.Identity))
+        {
+            foreach (var member in nameResolution
+                         .GetProjectReferencePhysicalMembers(
+                             interfaceDefinition.ModuleName,
+                             interfaceDefinition.Name))
+            {
+                if (!TryGetContractKind(member, out var kind))
+                {
+                    continue;
+                }
+
+                var parameters = member.Signature?.Parameters
+                    .Select(parameter => CreateProjectReferenceParameterContract(
+                        member,
+                        parameter))
+                    .ToArray()
+                    ?? [];
+                VbaInterfaceContractParameter? valueParameter = null;
+                IReadOnlyList<VbaInterfaceContractParameter> ordinaryParameters =
+                    parameters;
+                if (kind is VbaInterfaceAccessorContractKind.Let
+                        or VbaInterfaceAccessorContractKind.Set
+                    && parameters.Length > 0)
+                {
+                    ordinaryParameters = parameters[..^1];
+                    valueParameter = parameters[^1] with { IsByRef = false };
+                }
+
+                VbaInterfaceContractResult? result = null;
+                if (kind is VbaInterfaceAccessorContractKind.Function
+                    or VbaInterfaceAccessorContractKind.Get)
+                {
+                    var effectiveType = GetProjectReferenceEffectiveType(
+                        member,
+                        member.TypeReference);
+                    result = new VbaInterfaceContractResult(
+                        effectiveType is null
+                            ? null
+                            : new VbaInterfaceContractType(
+                                effectiveType.Value.Name,
+                                effectiveType.Value.Identity),
+                        member.IsReturnArray);
+                }
+
+                var implementedName =
+                    $"{interfaceDefinition.Name}_{member.Name}";
+                var isConditional = relationship.ConditionalCompilationPath
+                    is { IsEmpty: false };
+                var isSignatureComplete = member.IsCallableMetadataComplete
+                    && (kind is not (VbaInterfaceAccessorContractKind.Function
+                            or VbaInterfaceAccessorContractKind.Get)
+                        || member.IsReturnArray is not null);
+                var contractSignature = isSignatureComplete
+                    ? CreateContractSignature(
+                        kind,
+                        implementedName,
+                        ordinaryParameters,
+                        valueParameter,
+                        result)
+                    : CreateContractNamePresentation(kind, implementedName);
+                contracts.Add(new VbaInterfaceContractVariant(
+                    relationship,
+                    member,
+                    implementedName,
+                    kind,
+                    ordinaryParameters,
+                    valueParameter,
+                    result,
+                    contractSignature,
+                    isConditional,
+                    IsDerivedVariableAccessor: false,
+                    IsSignatureComplete: isSignatureComplete));
+            }
+        }
+
+        return contracts;
+    }
+
+    private VbaInterfaceContractParameter
+        CreateProjectReferenceParameterContract(
+            VbaSourceDefinition owner,
+            VbaCallableParameter parameter)
+    {
+        var effectiveType = GetProjectReferenceEffectiveType(
+            owner,
+            parameter.TypeReference);
+        var defaultEvidence = parameter.DefaultExpression is null
+            ? parameter.IsOptional
+                ? new VbaInterfaceContractDefault(
+                    VbaInterfaceContractDefaultState.Indeterminate)
+                : VbaInterfaceContractDefault.Absent
+            : VbaConstantExpressionEvaluator.Evaluate(
+                parameter.DefaultExpression) is { Succeeded: true } evaluation
+                ? new VbaInterfaceContractDefault(
+                    VbaInterfaceContractDefaultState.Evaluated,
+                    evaluation.Value)
+                : new VbaInterfaceContractDefault(
+                    VbaInterfaceContractDefaultState.Indeterminate);
+        return new VbaInterfaceContractParameter(
+            parameter.Name,
+            effectiveType is null
+                ? null
+                : new VbaInterfaceContractType(
+                    effectiveType.Value.Name,
+                    effectiveType.Value.Identity),
+            parameter.IsArray,
+            parameter.IsByRef,
+            parameter.IsParamArray
+                ? VbaInterfaceContractParameterRole.ParamArray
+                : parameter.IsOptional
+                    ? VbaInterfaceContractParameterRole.Optional
+                    : VbaInterfaceContractParameterRole.Required,
+            defaultEvidence);
+    }
+
     private VbaInterfaceContractParameter CreateParameterContract(
         VbaSourceDocument declarationDocument,
         VbaCallableParameterSyntax parameter,
@@ -1124,7 +1405,25 @@ internal sealed class VbaInterfaceSemanticModel
         var allParameters = valueParameter is null
             ? parameters
             : [.. parameters, valueParameter];
-        var kindPresentation = kind switch
+        var kindPresentation = GetContractKindPresentation(kind);
+        var signature = $"{kindPresentation} {implementedName}("
+            + string.Join(", ", allParameters.Select(CreateParameterLabel))
+            + ")";
+        return result is null
+            ? signature
+            : result.Type is null
+                ? signature
+                : $"{signature} As {result.Type.Name}{(result.IsArray == true ? "()" : "")}";
+    }
+
+    private static string CreateContractNamePresentation(
+        VbaInterfaceAccessorContractKind kind,
+        string implementedName)
+        => $"{GetContractKindPresentation(kind)} {implementedName}";
+
+    private static string GetContractKindPresentation(
+        VbaInterfaceAccessorContractKind kind)
+        => kind switch
         {
             VbaInterfaceAccessorContractKind.Sub => "Sub",
             VbaInterfaceAccessorContractKind.Function => "Function",
@@ -1133,13 +1432,6 @@ internal sealed class VbaInterfaceSemanticModel
             VbaInterfaceAccessorContractKind.Set => "Property Set",
             _ => throw new InvalidOperationException("Unknown interface contract kind.")
         };
-        var signature = $"{kindPresentation} {implementedName}("
-            + string.Join(", ", allParameters.Select(CreateParameterLabel))
-            + ")";
-        return result is null
-            ? signature
-            : $"{signature} As {result.Type.Name}{(result.IsArray ? "()" : "")}";
-    }
 
     private static string CreateParameterLabel(
         VbaInterfaceContractParameter parameter)
@@ -1149,7 +1441,7 @@ internal sealed class VbaInterfaceSemanticModel
         {
             parts.Add("ParamArray");
         }
-        else if (parameter.IsByRef)
+        else if (parameter.IsByRef == true)
         {
             parts.Add("ByRef");
         }
@@ -1157,7 +1449,10 @@ internal sealed class VbaInterfaceSemanticModel
         parts.Add(parameter.IsArray
             ? $"{parameter.Name}()"
             : parameter.Name);
-        parts.Add($"As {parameter.Type.Name}");
+        if (parameter.Type is not null)
+        {
+            parts.Add($"As {parameter.Type.Name}");
+        }
         var label = string.Join(" ", parts);
         return parameter.Role == VbaInterfaceContractParameterRole.Optional
             ? $"[{label}]"
@@ -1290,6 +1585,71 @@ internal sealed class VbaInterfaceSemanticModel
         return null;
     }
 
+    private (string Name, EffectiveTypeCategory Category, object? Identity)?
+        GetProjectReferenceEffectiveType(
+            VbaSourceDefinition owner,
+            VbaTypeReference? typeReference)
+    {
+        if (typeReference is null)
+        {
+            return null;
+        }
+
+        if (typeReference.Qualifier is null
+            && VbaLanguageVocabulary.TryGetCanonicalTypeName(
+                typeReference.Name,
+                out var canonicalName))
+        {
+            return canonicalName switch
+            {
+                "Variant" => (
+                    canonicalName,
+                    EffectiveTypeCategory.Variant,
+                    canonicalName),
+                "Object" => (
+                    canonicalName,
+                    EffectiveTypeCategory.Object,
+                    canonicalName),
+                _ => (
+                    canonicalName,
+                    EffectiveTypeCategory.Value,
+                    canonicalName)
+            };
+        }
+
+        var definition = nameResolution.ResolveProjectReferenceTypeDefinition(
+            owner.Identity.ReferenceName ?? owner.ModuleName,
+            typeReference);
+        if (definition is null)
+        {
+            return (
+                GetTypePresentation(typeReference),
+                EffectiveTypeCategory.UnresolvedNamed,
+                null);
+        }
+
+        var canonicalQualifier = typeReference.Qualifier is null
+            ? null
+            : nameResolution.GetCanonicalQualifierName(
+                definition,
+                typeReference.Qualifier) ?? typeReference.Qualifier;
+        var effectiveTypeName = canonicalQualifier is null
+            ? definition.Name
+            : $"{canonicalQualifier}.{definition.Name}";
+        return definition.Kind switch
+        {
+            VbaSourceDefinitionKind.Class or VbaSourceDefinitionKind.Form => (
+                effectiveTypeName,
+                EffectiveTypeCategory.Object,
+                definition.Identity),
+            VbaSourceDefinitionKind.Enum or VbaSourceDefinitionKind.Type => (
+                effectiveTypeName,
+                EffectiveTypeCategory.Value,
+                definition.Identity),
+            _ => null
+        };
+    }
+
     private static IReadOnlyList<VbaInterfaceAccessorContractKind>
         GetRequiredAccessorKinds(EffectiveTypeCategory category)
         => category switch
@@ -1353,7 +1713,8 @@ internal sealed class VbaInterfaceSemanticModel
         VbaInterfaceContractVariant contract,
         VbaSourceDefinition implementation)
     {
-        if (HasIndeterminateConditionalCompilationOwnership(contract)
+        if (!contract.IsSignatureComplete
+            || HasIndeterminateConditionalCompilationOwnership(contract)
             || nameResolution.HasIndeterminateConditionalCompilationOwnership(
                 implementation))
         {
@@ -1445,7 +1806,7 @@ internal sealed class VbaInterfaceSemanticModel
                 implementation.Name,
                 implementation.TypeReference,
                 implementation.ConditionalCompilationPath);
-            if (foundEffectiveType is null)
+            if (contract.Result.Type is null || foundEffectiveType is null)
             {
                 hasIndeterminateEvidence = true;
             }
@@ -1462,11 +1823,15 @@ internal sealed class VbaInterfaceSemanticModel
             }
 
             var foundIsArray = callable?.IsReturnArray ?? implementation.IsArray;
-            if (contract.Result.IsArray != foundIsArray)
+            if (contract.Result.IsArray is not { } expectedIsArray)
+            {
+                hasIndeterminateEvidence = true;
+            }
+            else if (expectedIsArray != foundIsArray)
             {
                 mismatches.Add(
                     "return array shape: expected "
-                    + $"{(contract.Result.IsArray ? "array" : "scalar")}, found "
+                    + $"{(expectedIsArray ? "array" : "scalar")}, found "
                     + $"{(foundIsArray ? "array" : "scalar")}");
             }
         }
@@ -1488,12 +1853,19 @@ internal sealed class VbaInterfaceSemanticModel
         ICollection<string> mismatches,
         ref bool hasIndeterminateEvidence)
     {
-        CompareTypeDimension(
-            expected.Type,
-            found.Type,
-            $"{subject} type",
-            mismatches,
-            ref hasIndeterminateEvidence);
+        if (expected.Type is null || found.Type is null)
+        {
+            hasIndeterminateEvidence = true;
+        }
+        else
+        {
+            CompareTypeDimension(
+                expected.Type,
+                found.Type,
+                $"{subject} type",
+                mismatches,
+                ref hasIndeterminateEvidence);
+        }
         if (expected.IsArray != found.IsArray)
         {
             mismatches.Add(
@@ -1502,12 +1874,17 @@ internal sealed class VbaInterfaceSemanticModel
                     + $"{(found.IsArray ? "array" : "scalar")}");
         }
 
-        if (!normalizePassing && expected.IsByRef != found.IsByRef)
+        if (!normalizePassing
+            && (expected.IsByRef is null || found.IsByRef is null))
+        {
+            hasIndeterminateEvidence = true;
+        }
+        else if (!normalizePassing && expected.IsByRef != found.IsByRef)
         {
             mismatches.Add(
                 $"{subject} passing: expected "
-                    + $"{(expected.IsByRef ? "ByRef" : "ByVal")}, found "
-                    + $"{(found.IsByRef ? "ByRef" : "ByVal")}");
+                    + $"{(expected.IsByRef == true ? "ByRef" : "ByVal")}, found "
+                    + $"{(found.IsByRef == true ? "ByRef" : "ByVal")}");
         }
 
         if (expected.Role != found.Role)
@@ -1675,6 +2052,15 @@ internal sealed class VbaInterfaceSemanticModel
         => new(
             new VbaPosition(range.Start.Line, range.Start.Character),
             new VbaPosition(range.End.Line, range.End.Character));
+
+    private static VbaDiagnosticLocation? CreateContractDiagnosticLocation(
+        VbaInterfaceContractVariant contract)
+        => VbaProjectReferenceCatalogSet.IsExternalDefinition(
+            contract.OriginDefinition)
+                ? null
+                : new VbaDiagnosticLocation(
+                    contract.OriginDefinition.Uri,
+                    contract.OriginDefinition.Range);
 
     private static bool Contains(
         VbaSyntaxRange range,

@@ -214,6 +214,68 @@ replacement. No completion, hover, signature-help, diagnostic, or other editor
 request invokes `vba-dev`, launches Excel, or waits for inspection or
 notification completion.
 
+### Contract declaration-name completion
+
+Contract-backed declaration names use one syntax-gated, kind-first flow across
+intrinsic Host Events, external `WithEvents` Events, and `Implements` members,
+including Property accessors derived from interface Public variables. The
+syntax layer admits only an empty or partial name slot after `Sub`, `Function`,
+or a complete `Property Get`, `Property Let`, or `Property Set` keyword
+sequence. It owns the fragment and replacement range; semantic code does not
+infer declaration shape from text.
+
+| Stage | Input | Result | Edit |
+| --- | --- | --- | --- |
+| `ContractPrefixCompletion` | Empty or partial declaration name | A viable semantic prefix ending in one ASCII `_` | Replaces only the name fragment |
+| `ContractMemberNameCompletion` | Exact viable prefix plus an optional suffix fragment | Canonical complete contract names | Replaces only the suffix and preserves written prefix spelling |
+
+The captured Semantic Inventory enumerates all applicable origins for the
+required callable or Property-accessor kind. Domain admission first applies
+Event-authoring eligibility, current or last-known-good Host Event evidence
+with `authoringAvailable`, interface callable kinds, and derived accessor
+kinds. The shared MS-VBAL declaration relationship policy then excludes the
+physical declaration being edited and applies declaration-kind, namespace,
+Property-accessor, and conditional-family collisions. A candidate with no
+colliding peer remains available. Any unconditional prospective declaration or
+peer suppresses a collision; an all-guarded prospective set remains available.
+Complementary Property Get, Let, and Set accessors do not collide. A prefix
+survives only when at least one downstream member survives both steps.
+
+Case-insensitively identical prefixes coalesce within a request. Canonical
+spelling is the whole contributor spelling selected by `OrdinalIgnoreCase` and
+then `Ordinal` order. Prefix detail is `Host Events`, `WithEvents`, `Interface`,
+or `Multiple Contracts`; its `[#If]` marker appears only when every surviving
+relationship origin is guarded. Member detail is `Event`, `Interface Member`,
+or `Multiple Contracts`; its `[#If]` marker appears when any concrete contract
+provenance is conditional. Member-stage conditionality is computed separately
+from the concrete relationship, Event or interface member, derived Public
+variable, and any host-shadow alternative.
+Member rows coalesce only within the required physical declaration kind and
+retain every contributing origin. Their distinct signature presentations use
+the same stable origin order as Signature Help; identical presentations and
+documentation coalesce, empty documentation is omitted, and distinct values
+remain numbered without exposing branch expressions.
+
+A prefix completion carries the editor-neutral
+`data.retriggerCompletion: true` intent and no command. The VS Code middleware
+maps the literal intent to `editor.action.triggerSuggest` after applying the
+edit, without overwriting a command already supplied by another participant.
+Clients without continuation support apply the same prefix and explicitly
+request completion. The server stores no prefix-selection session and always
+re-resolves the current immutable snapshot, so either client path obtains the
+same second-stage candidates.
+
+The server advertises space and `_` completion triggers. Space specializes the
+prefix result only at a valid empty declaration-name slot and otherwise
+preserves ordinary completion. Underscore-triggered results are limited to a
+proven contract prefix. Explicit and retrigger requests retain ordinary server
+behavior, and the client duplicates none of the Host Event, Event-source, or
+interface rules.
+
+Both stages are name-only. They insert no parentheses, parameters, snippets,
+procedure bodies, terminators, or multi-line stubs. Those edits belong to the
+separate future `MemberStubGeneration` boundary.
+
 ## Hot-path stages
 
 An ordinary open-document edit follows these stages:

@@ -8,10 +8,10 @@ namespace VbaLanguageServer.Tests;
 public sealed class VbaProjectReferenceCatalogPersistentStoreTests
 {
     [Fact]
-    public void TypeLibPropertyInvokeMetadataUsesANewGeneratorVersion()
+    public void TypeLibContractEvidenceUsesANewGeneratorVersion()
     {
         Assert.Equal(
-            "typelib-catalog-v10",
+            "typelib-catalog-v11",
             VbaProjectReferenceCatalogPersistentStore.CurrentGeneratorVersion);
     }
 
@@ -46,6 +46,164 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
                 definition.Name == "GeneratedMethod"
                 && definition.Signature?.CallableKind == VbaCallableKind.Function
                 && definition.Signature.SupportsNamedArguments == true);
+        }
+        finally
+        {
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void PersistentStoreRoundTripsCallableCompletenessAndReturnArrayEvidence()
+    {
+        var cacheRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-catalog-contract-evidence-").FullName;
+        try
+        {
+            const string referenceName = "Generated Library";
+            var callable = new TypeLibCatalogMember(
+                "Values",
+                VbaSourceDefinitionKind.Procedure,
+                Documentation: null,
+                new VbaCallableSignature(
+                    "Function Values() As String()",
+                    [],
+                    CallableKind: VbaCallableKind.Function),
+                TypeReference: new VbaTypeReference("String"),
+                Metadata: new TypeLibCatalogCallableMetadata(
+                    MemberId: 1,
+                    FunctionFlags: 0,
+                    IsComplete: false)
+                {
+                    IsReturnArray = true
+                });
+            var catalog = TypeLibReferenceCatalogBuilder.Build(
+                referenceName,
+                new TypeLibCatalogMetadata(
+                    "Generated",
+                    [
+                        new TypeLibCatalogType(
+                            "IArray",
+                            VbaSourceDefinitionKind.Class,
+                            Documentation: null,
+                            Members: [callable],
+                            Metadata: new TypeLibCatalogTypeMetadata(
+                                TypeLibCatalogRawTypeKind.Dispatch,
+                                TypeFlags: 0,
+                                ImplementedInterfaces: []))
+                    ]));
+            var store = new VbaProjectReferenceCatalogPersistentStore(cacheRoot);
+            store.Save(new VbaProjectReferenceCatalogPersistentEntry(
+                CreateIdentity(referenceName),
+                catalog));
+
+            var load = store.Load(referenceName);
+
+            Assert.Equal(
+                VbaProjectReferenceCatalogPersistentLoadStatus.Current,
+                load.Status);
+            var entry = Assert.IsType<VbaProjectReferenceCatalogPersistentEntry>(
+                load.Entry);
+            var definition = Assert.Single(
+                entry.Catalog.Definitions,
+                candidate => candidate.Name == "Values");
+            Assert.False(definition.IsCallableMetadataComplete);
+            Assert.True(definition.IsReturnArray);
+            var rawMember = Assert.Single(
+                Assert.Single(entry.Catalog.TypeLibTypes!).Members);
+            Assert.False(rawMember.Metadata?.IsComplete);
+            Assert.True(rawMember.Metadata?.IsReturnArray);
+        }
+        finally
+        {
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void PersistentStoreLoadsV10WithoutReturnArrayEvidenceAsStale()
+    {
+        var cacheRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-catalog-v10-contract-evidence-").FullName;
+        try
+        {
+            const string referenceName = "Generated Library";
+            var callable = new TypeLibCatalogMember(
+                "Values",
+                VbaSourceDefinitionKind.Procedure,
+                Documentation: null,
+                new VbaCallableSignature(
+                    "Function Values() As String()",
+                    [],
+                    CallableKind: VbaCallableKind.Function),
+                TypeReference: new VbaTypeReference("String"),
+                Metadata: new TypeLibCatalogCallableMetadata(
+                    MemberId: 1,
+                    FunctionFlags: 0)
+                {
+                    IsReturnArray = true
+                });
+            var catalog = TypeLibReferenceCatalogBuilder.Build(
+                referenceName,
+                new TypeLibCatalogMetadata(
+                    "Generated",
+                    [
+                        new TypeLibCatalogType(
+                            "IArray",
+                            VbaSourceDefinitionKind.Class,
+                            Documentation: null,
+                            Members: [callable],
+                            Metadata: new TypeLibCatalogTypeMetadata(
+                                TypeLibCatalogRawTypeKind.Dispatch,
+                                TypeFlags: 0,
+                                ImplementedInterfaces: []))
+                    ]));
+            var identity = CreateIdentity(referenceName);
+            var store = new VbaProjectReferenceCatalogPersistentStore(cacheRoot);
+            store.Save(new VbaProjectReferenceCatalogPersistentEntry(
+                identity,
+                catalog));
+
+            var entryPath = Path.Combine(
+                cacheRoot,
+                "catalogs",
+                VbaProjectReferenceCatalogPersistentStore
+                    .CreateCatalogEntryKey(identity));
+            File.WriteAllText(
+                entryPath,
+                Regex.Replace(
+                    File.ReadAllText(entryPath)
+                        .Replace(
+                            VbaProjectReferenceCatalogPersistentStore
+                                .CurrentGeneratorVersion,
+                            "typelib-catalog-v10",
+                            StringComparison.Ordinal),
+                    ",\\s*\"isReturnArray\"\\s*:\\s*(true|false|null)",
+                    "",
+                    RegexOptions.CultureInvariant));
+            var indexPath = store.GetReferenceIndexPath(referenceName);
+            File.WriteAllText(
+                indexPath,
+                File.ReadAllText(indexPath).Replace(
+                    VbaProjectReferenceCatalogPersistentStore
+                        .CurrentGeneratorVersion,
+                    "typelib-catalog-v10",
+                    StringComparison.Ordinal));
+
+            var load = store.Load(referenceName);
+
+            Assert.Equal(
+                VbaProjectReferenceCatalogPersistentLoadStatus.Stale,
+                load.Status);
+            var entry = Assert.IsType<VbaProjectReferenceCatalogPersistentEntry>(
+                load.Entry);
+            var definition = Assert.Single(
+                entry.Catalog.Definitions,
+                candidate => candidate.Name == "Values");
+            Assert.Null(definition.IsReturnArray);
+            var rawMember = Assert.Single(
+                Assert.Single(entry.Catalog.TypeLibTypes!).Members);
+            Assert.Null(rawMember.Metadata?.IsReturnArray);
         }
         finally
         {

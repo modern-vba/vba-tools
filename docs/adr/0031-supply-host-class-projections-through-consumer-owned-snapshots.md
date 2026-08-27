@@ -601,8 +601,9 @@ a callable declaration-name slot and semantic resolution proves the associated
 `intrinsicEventSourceName` prefix. The shared prefix-first contract also admits
 a same-class `WithEvents` variable or an interface named by `Implements`; all
 other underscore-triggered requests return no candidates. A space-triggered
-request returns the intrinsic prefix only in an empty `Sub`
-declaration-name slot when a downstream Event remains;
+request returns contract prefixes only in a valid empty callable
+declaration-name slot; an intrinsic prefix further requires an empty `Sub` slot
+and a surviving `authoringAvailable` Event.
 the same trigger independently remains available to Signature Help in call
 contexts. Explicit completion retains ordinary behavior, and the client does
 not duplicate host, Event-source, or interface semantics merely to predict the

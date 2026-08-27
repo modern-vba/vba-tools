@@ -1,7 +1,8 @@
 import * as path from 'node:path';
-import type { FileSystemWatcher } from 'vscode';
+import type { CompletionItem, FileSystemWatcher } from 'vscode';
 import type {
   ClientCapabilities,
+  CompletionMiddleware,
   FormattingMiddleware,
   LanguageClientOptions,
   ServerOptions,
@@ -55,6 +56,37 @@ const provideVbaSignatureHelp: NonNullable<
   return result;
 };
 
+type CompletionItemWithData = CompletionItem & {
+  data?: unknown;
+};
+
+const provideVbaCompletionItems: NonNullable<
+  CompletionMiddleware['provideCompletionItem']
+> = async (document, position, context, token, next) => {
+  const result = await next(document, position, context, token);
+  if (result === null || result === undefined) {
+    return result;
+  }
+
+  const items = Array.isArray(result) ? result : result.items;
+  for (const item of items) {
+    const data = (item as CompletionItemWithData).data;
+    if (typeof data !== 'object'
+        || data === null
+        || !('retriggerCompletion' in data)
+        || (data as { retriggerCompletion?: unknown }).retriggerCompletion !== true) {
+      continue;
+    }
+
+    item.command ??= {
+      title: 'Continue contract completion',
+      command: 'editor.action.triggerSuggest'
+    };
+  }
+
+  return result;
+};
+
 export function createVbaSignatureHelpClientCapabilitiesFeature(): StaticFeature {
   return {
     fillClientCapabilities(capabilities: ClientCapabilities): void {
@@ -90,6 +122,7 @@ export function createVbaLanguageClientOptions(
       fileEvents: [sourceFileWatcher, projectManifestWatcher]
     },
     middleware: {
+      provideCompletionItem: provideVbaCompletionItems,
       provideSignatureHelp: provideVbaSignatureHelp,
       ...(provideDocumentFormattingEdits === undefined
         ? {}

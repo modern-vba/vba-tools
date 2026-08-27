@@ -453,6 +453,7 @@ public readonly struct VbaDefinitionIdentity : IEquatable<VbaDefinitionIdentity>
 /// <param name="TypeReferenceRange">The complete source range of an explicit declared type reference.</param>
 /// <param name="CallableKind">The written callable declaration kind, retained independently from signature completeness.</param>
 /// <param name="IsAuthoringAvailable">Whether ordinary completion may offer this definition.</param>
+/// <param name="IsCallableMetadataComplete">Whether a foreign catalog supplied a complete callable signature.</param>
 public sealed record VbaSourceDefinition(
     VbaDefinitionIdentity Identity,
     VbaDefinitionLocation Location,
@@ -478,8 +479,14 @@ public sealed record VbaSourceDefinition(
     VbaWithEventsRecoveryReason WithEventsRecoveryReasons = VbaWithEventsRecoveryReason.None,
     VbaRange? TypeReferenceRange = null,
     VbaCallableKind? CallableKind = null,
-    bool IsAuthoringAvailable = true)
+    bool IsAuthoringAvailable = true,
+    bool IsCallableMetadataComplete = true)
 {
+    /// <summary>
+    /// Gets whether a foreign callable result is an array, or null when unavailable.
+    /// </summary>
+    public bool? IsReturnArray { get; init; }
+
     /// <summary>
     /// Gets whether the source variable writes an As String * length clause.
     /// </summary>
@@ -675,6 +682,21 @@ internal sealed record VbaHoverResult(
         ?? (ProjectedEventContract is null ? [] : [ProjectedEventContract]);
 }
 
+internal enum VbaCompletionInvocationKind
+{
+    Explicit,
+    TriggerCharacter,
+    Retrigger
+}
+
+internal sealed record VbaCompletionInvocation(
+    VbaCompletionInvocationKind Kind,
+    string? TriggerCharacter = null)
+{
+    public static VbaCompletionInvocation Explicit { get; } = new(
+        VbaCompletionInvocationKind.Explicit);
+}
+
 /// <summary>
 /// Identifies the semantic origin of a completed editor-neutral completion candidate.
 /// </summary>
@@ -713,7 +735,31 @@ public enum VbaCompletionCandidateKind
     /// <summary>
     /// A qualifier for a source module.
     /// </summary>
-    SourceQualifier
+    SourceQualifier,
+
+    /// <summary>
+    /// A semantic contract prefix for a callable declaration name.
+    /// </summary>
+    ContractPrefix,
+
+    /// <summary>
+    /// A semantic contract member for a callable declaration name.
+    /// </summary>
+    ContractMemberName
+}
+
+/// <summary>
+/// Represents one signature and its retained documentation variants in completion detail.
+/// </summary>
+public sealed record VbaCompletionSignaturePresentation(
+    string Label,
+    bool IsConditional,
+    IReadOnlyList<string> DocumentationVariants)
+{
+    /// <summary>
+    /// Gets the signature label displayed by the editor.
+    /// </summary>
+    public string DisplayLabel => IsConditional ? $"{Label} [#If]" : Label;
 }
 
 /// <summary>
@@ -735,6 +781,22 @@ public sealed record VbaCompletionCandidate(
     VbaTextEdit? TextEdit = null,
     bool IsConditionalFamily = false)
 {
+    /// <summary>
+    /// Gets the compact editor-facing detail independent of a definition.
+    /// </summary>
+    public string? Detail { get; init; }
+
+    /// <summary>
+    /// Gets whether an editor may immediately request completion again after insertion.
+    /// </summary>
+    public bool RetriggerCompletion { get; init; }
+
+    /// <summary>
+    /// Gets every distinct contract signature presentation retained by this candidate.
+    /// </summary>
+    public IReadOnlyList<VbaCompletionSignaturePresentation>
+        SignaturePresentations { get; init; } = [];
+
     /// <summary>
     /// Gets the request-relative name-resolution rank used by editor projection.
     /// </summary>

@@ -74,6 +74,37 @@ projected Event candidate. Interactive requests capture committed immutable
 state; they never invoke `vba-dev`, launch Excel, or wait for inspection or
 notification completion.
 
+### Contract declaration-name completion
+
+The server owns one kind-first, two-stage completion path for intrinsic Host
+Event handlers, external `WithEvents` handlers, and members required by
+`Implements`, including derived Public-variable Property accessors. A valid
+empty or partial `Sub`, `Function`, `Property Get`, `Property Let`, or
+`Property Set` name slot first returns a semantic prefix ending in one ASCII
+underscore. An exact viable prefix returns canonical member names and edits
+only the suffix.
+
+Every request re-resolves admitted origins from its captured immutable
+inventory. Prefixes and members coalesce case-insensitively after the shared
+MS-VBAL declaration-collision policy runs, while distinct signatures,
+documentation, and conditional provenance remain available for presentation
+and Signature Help. Completion chooses no origin, signature, parameter, or
+conditional-compilation branch.
+
+For continuation, prefix items carry `data.retriggerCompletion: true`; the
+server emits no editor command and retains no completion session. The first-party client maps
+that neutral intent to reopening suggestions. Other clients can issue an
+ordinary completion request after applying the prefix and receive the same
+member results. Explicit completion preserves ordinary completion. The
+advertised space trigger specializes contract results only in an empty proven
+name slot and preserves ordinary completion elsewhere. An `_` trigger produces
+contract results only in a proven contract declaration-name context; outside
+one it produces none.
+
+This feature returns name-only edits. Parameter lists, bodies, terminators,
+snippets, and multi-line stubs are outside its boundary and remain future
+`MemberStubGeneration` work.
+
 ## Development
 
 Build the language server:

@@ -486,6 +486,41 @@ access to the VBA project object model.
 
 ---
 
+## Complete Contract-Backed Declarations
+
+In a class, form, or document module, completion can supply names required by
+an intrinsic Host Event, a `WithEvents` variable, or an `Implements`
+relationship. It also includes the Property accessors derived from Public
+variables on an implemented interface.
+
+Start a `Sub`, `Function`, `Property Get`, `Property Let`, or `Property Set`
+declaration and request completion in the name slot. VBA Tools first offers
+only semantic prefixes such as `UserForm_`, `publisher_`, or `IFoo_`. Accepting
+one in VS Code reopens suggestions and the second stage offers matching
+contract member names. If suggestions do not reopen, press `Ctrl+Space`; the
+server keeps no selection state and resolves the same second stage from the
+current source and project snapshot.
+
+The space trigger opens the prefix stage only in a valid empty declaration-name
+slot. The `_` trigger is likewise limited to a proven contract declaration-name
+context: an exact viable prefix opens the member stage, while viable longer
+prefixes can remain when the exact prefix has no surviving member. Explicit
+completion retains the usual VBA candidates elsewhere. Case-insensitively
+identical contracts coalesce; the detail and documentation preserve every
+applicable Event or interface signature, including conditional alternatives,
+without selecting a compilation branch.
+
+Names already occupied in the same VBA scope are suppressed under the ordinary
+declaration-collision rules. All-guarded alternatives remain available, and
+complementary Property Get, Let, and Set accessors do not block one another.
+`[#If]` is a generic provenance marker; it never exposes or selects a condition.
+
+Completion inserts a name only. It does not add parentheses, parameters, a
+body, an `End` statement, or a snippet. Generating a complete member belongs to
+the separate future `MemberStubGeneration` feature.
+
+---
+
 ## Test Explorer
 
 Workbook-backed projects appear in VS Code Test Explorer when the workspace

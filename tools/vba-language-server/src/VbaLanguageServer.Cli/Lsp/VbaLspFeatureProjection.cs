@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using VbaLanguageServer.Diagnostics;
 using VbaLanguageServer.SourceModel;
 
@@ -370,10 +371,24 @@ internal static class VbaLspFeatureProjection
             item["filterText"] = candidate.FilterText;
         }
 
+        if (candidate.RetriggerCompletion)
+        {
+            item["data"] = new
+            {
+                retriggerCompletion = true
+            };
+        }
+
         var detail = CreateCompletionDetail(candidate);
         if (!string.IsNullOrWhiteSpace(detail))
         {
             item["detail"] = detail;
+        }
+
+        var documentation = CreateCompletionDocumentation(candidate);
+        if (documentation is not null)
+        {
+            item["documentation"] = documentation;
         }
 
         if (candidate.TextEdit is not null)
@@ -392,8 +407,56 @@ internal static class VbaLspFeatureProjection
         return item;
     }
 
+    private static object? CreateCompletionDocumentation(
+        VbaCompletionCandidate candidate)
+    {
+        if (candidate.SignaturePresentations.Count == 0)
+        {
+            return null;
+        }
+
+        var sections = candidate.SignaturePresentations
+            .Select(CreateCompletionSignatureSection)
+            .ToArray();
+        return ToMarkup(string.Join("\n\n---\n\n", sections));
+    }
+
+    private static string CreateCompletionSignatureSection(
+        VbaCompletionSignaturePresentation presentation)
+    {
+        var result = new StringBuilder()
+            .Append("```vba\n")
+            .Append(presentation.DisplayLabel)
+            .Append("\n```");
+        if (presentation.DocumentationVariants.Count == 1)
+        {
+            result.Append("\n\n")
+                .Append(presentation.DocumentationVariants[0]);
+        }
+        else if (presentation.DocumentationVariants.Count > 1)
+        {
+            result.Append("\n\n**Documentation variants**");
+            for (var index = 0;
+                 index < presentation.DocumentationVariants.Count;
+                 index++)
+            {
+                result.Append("\n\n")
+                    .Append(index + 1)
+                    .Append(". ")
+                    .Append(presentation.DocumentationVariants[index]);
+            }
+        }
+
+        return result.ToString();
+    }
+
     private static string? CreateCompletionDetail(VbaCompletionCandidate candidate)
     {
+        if (!string.IsNullOrWhiteSpace(candidate.Detail))
+        {
+            return candidate.Detail;
+        }
+
         if (candidate.Kind == VbaCompletionCandidateKind.SourceQualifier)
         {
             return "Module qualifier";

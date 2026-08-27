@@ -152,6 +152,17 @@ public sealed class VbaSemanticInventory
     public VbaCompletionResult GetCompletionResult(string uri, int line, int character)
         => semanticResolution.GetCompletionResult(uri, line, character);
 
+    internal VbaCompletionResult GetCompletionResult(
+        string uri,
+        int line,
+        int character,
+        VbaCompletionInvocation invocation)
+        => semanticResolution.GetCompletionResult(
+            uri,
+            line,
+            character,
+            invocation);
+
     public VbaDefinitionLocation? ResolveDefinition(string uri, int line, int character)
         => ResolveDefinitions(uri, line, character).FirstOrDefault();
 

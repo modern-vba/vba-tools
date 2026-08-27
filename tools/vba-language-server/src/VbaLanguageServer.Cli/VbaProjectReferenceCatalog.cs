@@ -39,6 +39,7 @@ public enum ReferenceDefinitionGlobalExposure
 /// <param name="IsCreatable">Whether the type can be used as the target of a New expression.</param>
 /// <param name="GlobalExposure">The definition's explicit public root exposure.</param>
 /// <param name="IsAuthoringAvailable">Whether ordinary completion may offer this definition.</param>
+/// <param name="IsCallableMetadataComplete">Whether the catalog supplied a complete callable signature.</param>
 public sealed record VbaProjectReferenceDefinition(
     string ReferenceName,
     string Name,
@@ -50,12 +51,23 @@ public sealed record VbaProjectReferenceDefinition(
     VbaPropertyAccess PropertyAccess = VbaPropertyAccess.Unknown,
     bool IsCreatable = false,
     ReferenceDefinitionGlobalExposure GlobalExposure = ReferenceDefinitionGlobalExposure.None,
-    bool IsAuthoringAvailable = true)
+    bool IsAuthoringAvailable = true,
+    bool IsCallableMetadataComplete = true)
 {
     /// <summary>
     /// Gets the physical TypeLib Property invoke kind, when known.
     /// </summary>
     public VbaPropertyAccessorKind? PropertyAccessorKind { get; init; }
+
+    /// <summary>
+    /// Gets whether a Function or Property Get result is an array, or null when unavailable.
+    /// </summary>
+    public bool? IsReturnArray { get; init; }
+
+    /// <summary>
+    /// Gets the physical callable kind retained independently from signature completeness.
+    /// </summary>
+    public VbaCallableKind? CallableKind { get; init; }
 }
 
 /// <summary>
@@ -336,7 +348,13 @@ public sealed class VbaProjectReferenceCatalogSet
                         new VbaCallableSignature(
                             "WorkbookOpen(Wb)",
                             [
-                                new VbaCallableParameter("Wb", "The opened workbook.")
+                                new VbaCallableParameter(
+                                    "Wb",
+                                    "The opened workbook.",
+                                    TypeReference: new VbaTypeReference(
+                                        "Workbook",
+                                        "Excel"),
+                                    IsByRef: false)
                             ],
                             "Occurs when a workbook is opened.",
                             CallableKind: VbaCallableKind.Event,
@@ -372,7 +390,12 @@ public sealed class VbaProjectReferenceCatalogSet
                                                 [
                                                     new VbaCallableParameter(
                                                         "Wb",
-                                                        "The opened workbook.")
+                                                        "The opened workbook.",
+                                                        TypeReference:
+                                                            new VbaTypeReference(
+                                                                "Workbook",
+                                                                "Excel"),
+                                                        IsByRef: false)
                                                 ],
                                                 "Occurs when a workbook is opened.",
                                                 CallableKind: VbaCallableKind.Event,
@@ -687,17 +710,31 @@ public sealed class VbaProjectReferenceCatalogSet
     }
 
     private static bool IsCompleteTypeLibCallable(TypeLibCatalogMember? member)
-        => member is not null
-            && !string.IsNullOrEmpty(member.Name)
-            && member.Metadata?.IsComplete == true
-            && member.Signature is { Parameters: { } parameters }
-            && HasCompleteTypeReference(member.TypeReference)
-            && parameters.All(parameter =>
-                parameter is not null
-                && HasCompleteTypeReference(parameter.TypeReference));
+    {
+        if (member is null
+            || string.IsNullOrEmpty(member.Name)
+            || member.Metadata?.IsComplete != true
+            || member.Signature is not { Parameters: { } parameters } signature
+            || parameters.Any(parameter =>
+                parameter is null
+                || !HasCompleteTypeReference(parameter.TypeReference)))
+        {
+            return false;
+        }
+
+        var hasResult = signature.CallableKind == VbaCallableKind.Function
+            || (signature.CallableKind == VbaCallableKind.Property
+                && member.Metadata.PropertyAccessorKind
+                    == VbaPropertyAccessorKind.Get);
+        return !hasResult
+            || (member.TypeReference is not null
+                && HasCompleteTypeReference(member.TypeReference)
+                && member.Metadata.IsReturnArray is not null);
+    }
 
     private static bool HasCompleteTypeReference(VbaTypeReference? typeReference)
-        => typeReference is null || !string.IsNullOrEmpty(typeReference.Name);
+        => typeReference is not null
+            && !string.IsNullOrEmpty(typeReference.Name);
 
     private static bool HaveEquivalentTypeLibCallableContracts(
         TypeLibCatalogMember left,
@@ -719,6 +756,7 @@ public sealed class VbaProjectReferenceCatalogSet
         return left.MemberId == right.MemberId
             && left.FunctionFlags == right.FunctionFlags
             && left.IsComplete == right.IsComplete
+            && left.IsReturnArray == right.IsReturnArray
             && left.PropertyAccessorKind == right.PropertyAccessorKind;
     }
 
@@ -834,8 +872,12 @@ public sealed class VbaProjectReferenceCatalogSet
             PropertyAccessorKind: definition.PropertyAccessorKind,
             IsCreatable: definition.IsCreatable,
             ReferenceGlobalExposure: definition.GlobalExposure,
-            CallableKind: signature?.CallableKind,
-            IsAuthoringAvailable: definition.IsAuthoringAvailable);
+            CallableKind: definition.CallableKind ?? signature?.CallableKind,
+            IsAuthoringAvailable: definition.IsAuthoringAvailable,
+            IsCallableMetadataComplete: definition.IsCallableMetadataComplete)
+        {
+            IsReturnArray = definition.IsReturnArray
+        };
     }
 
     private static VbaCallableSignature? CreateSourceSignature(VbaProjectReferenceDefinition definition)

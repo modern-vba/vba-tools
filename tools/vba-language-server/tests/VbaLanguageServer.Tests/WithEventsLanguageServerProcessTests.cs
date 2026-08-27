@@ -7,6 +7,1606 @@ namespace VbaLanguageServer.Tests;
 public sealed class WithEventsLanguageServerProcessTests
 {
     [Fact]
+    public async Task Empty_Sub_declaration_name_offers_only_the_WithEvents_prefix()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string publisherUri = "file:///C:/work/Publisher.cls";
+        const string publisherText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Publisher"
+            Public Event Changed()
+            """;
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(publisherUri, publisherText));
+        await process.WaitForDiagnosticsAsync(publisherUri);
+
+        const string workerUri = "file:///C:/work/Worker.cls";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Private WithEvents publisher As Publisher",
+            "Private Sub "
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+        await process.WaitForDiagnosticsAsync(workerUri);
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new { line = 3, character = "Private Sub ".Length }
+            });
+        var item = Assert.Single(completion.GetProperty("result").EnumerateArray());
+        Assert.Equal("publisher_", item.GetProperty("label").GetString());
+        Assert.Equal("WithEvents", item.GetProperty("detail").GetString());
+        Assert.Equal(
+            "publisher_",
+            item.GetProperty("textEdit").GetProperty("newText").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Partial_WithEvents_prefix_filters_case_insensitively_and_replaces_only_the_fragment()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string publisherUri = "file:///C:/work/Publisher.cls";
+        const string publisherText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Publisher"
+            Public Event Changed()
+            """;
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(publisherUri, publisherText));
+        await process.WaitForDiagnosticsAsync(publisherUri);
+
+        const string workerUri = "file:///C:/work/Worker.cls";
+        const string declaration = "Private Sub PuB";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Private WithEvents controller As Publisher",
+            "Private WithEvents publisher As Publisher",
+            declaration
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+        await process.WaitForDiagnosticsAsync(workerUri);
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new { line = 4, character = declaration.Length }
+            });
+        var item = Assert.Single(completion.GetProperty("result").EnumerateArray());
+        Assert.Equal("publisher_", item.GetProperty("label").GetString());
+        var textEdit = item.GetProperty("textEdit");
+        Assert.Equal("publisher_", textEdit.GetProperty("newText").GetString());
+        Assert.Equal(
+            ("Private Sub ".Length, declaration.Length),
+            (
+                textEdit.GetProperty("range").GetProperty("start")
+                    .GetProperty("character").GetInt32(),
+                textEdit.GetProperty("range").GetProperty("end")
+                    .GetProperty("character").GetInt32()));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Continued_Sub_declaration_replaces_only_the_partial_prefix_line()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string publisherUri = "file:///C:/work/Publisher.cls";
+        const string publisherText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Publisher"
+            Public Event Changed()
+            """;
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(publisherUri, publisherText));
+        await process.WaitForDiagnosticsAsync(publisherUri);
+
+        const string workerUri = "file:///C:/work/Worker.cls";
+        const string fragmentLine = "    PuB";
+        var workerText = string.Join("\r\n", [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Private WithEvents publisher As Publisher",
+            "Private Sub _",
+            fragmentLine
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+        await process.WaitForDiagnosticsAsync(workerUri);
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new { line = 4, character = fragmentLine.Length }
+            });
+        var item = Assert.Single(completion.GetProperty("result").EnumerateArray());
+        Assert.Equal("publisher_", item.GetProperty("label").GetString());
+        var textEdit = item.GetProperty("textEdit");
+        Assert.Equal("publisher_", textEdit.GetProperty("newText").GetString());
+        Assert.Equal(
+            (4, 4, fragmentLine.Length),
+            (
+                textEdit.GetProperty("range").GetProperty("start")
+                    .GetProperty("line").GetInt32(),
+                textEdit.GetProperty("range").GetProperty("start")
+                    .GetProperty("character").GetInt32(),
+                textEdit.GetProperty("range").GetProperty("end")
+                    .GetProperty("character").GetInt32()));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Exact_WithEvents_prefix_offers_the_event_name_with_a_suffix_only_edit()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string publisherUri = "file:///C:/work/Publisher.cls";
+        const string publisherText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Publisher"
+            Public Event Changed()
+            """;
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(publisherUri, publisherText));
+        await process.WaitForDiagnosticsAsync(publisherUri);
+
+        const string workerUri = "file:///C:/work/Worker.cls";
+        const string declaration = "Private Sub publisher_";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Private WithEvents publisher As Publisher",
+            declaration
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+        await process.WaitForDiagnosticsAsync(workerUri);
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new { line = 3, character = declaration.Length }
+            });
+        var item = Assert.Single(completion.GetProperty("result").EnumerateArray());
+        Assert.Equal("publisher_Changed", item.GetProperty("label").GetString());
+        Assert.Equal("Event", item.GetProperty("detail").GetString());
+        Assert.Equal("Changed", item.GetProperty("filterText").GetString());
+        Assert.Equal(
+            "Changed",
+            item.GetProperty("textEdit").GetProperty("newText").GetString());
+        Assert.Equal(
+            declaration.Length,
+            item.GetProperty("textEdit").GetProperty("range")
+                .GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(
+            declaration.Length,
+            item.GetProperty("textEdit").GetProperty("range")
+                .GetProperty("end").GetProperty("character").GetInt32());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Partial_member_suffix_preserves_the_written_prefix_spelling()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string publisherUri = "file:///C:/work/Publisher.cls";
+        const string publisherText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Publisher"
+            Public Event Changed()
+            """;
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(publisherUri, publisherText));
+        await process.WaitForDiagnosticsAsync(publisherUri);
+
+        const string workerUri = "file:///C:/work/Worker.cls";
+        const string writtenPrefix = "PuBLiShEr_";
+        const string declaration = "Private Sub PuBLiShEr_ch";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Private WithEvents publisher As Publisher",
+            declaration
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+        await process.WaitForDiagnosticsAsync(workerUri);
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new { line = 3, character = declaration.Length }
+            });
+        var item = Assert.Single(completion.GetProperty("result").EnumerateArray());
+        Assert.Equal(
+            writtenPrefix + "Changed",
+            item.GetProperty("label").GetString());
+        var textEdit = item.GetProperty("textEdit");
+        Assert.Equal("Changed", textEdit.GetProperty("newText").GetString());
+        Assert.Equal(
+            "Private Sub ".Length + writtenPrefix.Length,
+            textEdit.GetProperty("range").GetProperty("start")
+                .GetProperty("character").GetInt32());
+        Assert.Equal(
+            declaration.Length,
+            textEdit.GetProperty("range").GetProperty("end")
+                .GetProperty("character").GetInt32());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Conditional_prefix_casing_uses_the_ordinal_minimum_in_either_source_order()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string eventSourceUri = "file:///C:/work/EventSource.cls";
+        const string eventSourceText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "EventSource"
+            Public Event Changed()
+            """;
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(eventSourceUri, eventSourceText));
+        await process.WaitForDiagnosticsAsync(eventSourceUri);
+
+        const string workerUri = "file:///C:/work/Worker.cls";
+        static string CreateWorkerText(bool uppercaseFirst)
+        {
+            var first = uppercaseFirst ? "Publisher" : "publisher";
+            var second = uppercaseFirst ? "publisher" : "Publisher";
+            return string.Join('\n', [
+                "VERSION 1.0 CLASS",
+                "Attribute VB_Name = \"Worker\"",
+                "#If VBA7 Then",
+                $"Private WithEvents {first} As EventSource",
+                "#Else",
+                $"Private WithEvents {second} As EventSource",
+                "#End If",
+                "Private Sub "
+            ]);
+        }
+
+        var workerText = CreateWorkerText(uppercaseFirst: false);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+        await process.WaitForDiagnosticsAsync(workerUri);
+
+        async Task AssertCanonicalPrefixAsync(int id)
+        {
+            var completion = await process.SendRequestAsync(
+                id,
+                "textDocument/completion",
+                new
+                {
+                    textDocument = new { uri = workerUri },
+                    position = new { line = 7, character = "Private Sub ".Length }
+                });
+            var item = Assert.Single(
+                completion.GetProperty("result").EnumerateArray());
+            Assert.Equal("Publisher_", item.GetProperty("label").GetString());
+            Assert.Equal(
+                "WithEvents [#If]",
+                item.GetProperty("detail").GetString());
+        }
+
+        await AssertCanonicalPrefixAsync(2);
+        workerText = CreateWorkerText(uppercaseFirst: true);
+        await process.SendNotificationAsync(
+            "textDocument/didChange",
+            new
+            {
+                textDocument = new { uri = workerUri, version = 2 },
+                contentChanges = new[] { new { text = workerText } }
+            });
+        await process.WaitForDiagnosticsAsync(workerUri);
+        await AssertCanonicalPrefixAsync(3);
+
+        await process.ShutdownAsync(4);
+    }
+
+    [Fact]
+    public async Task Unconditional_surviving_origin_removes_the_prefix_conditional_marker()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string eventSourceUri = "file:///C:/work/EventSource.cls";
+        const string eventSourceText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "EventSource"
+            Public Event Changed()
+            """;
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(eventSourceUri, eventSourceText));
+        await process.WaitForDiagnosticsAsync(eventSourceUri);
+
+        const string interfaceUri = "file:///C:/work/IPublisher.cls";
+        const string interfaceText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "IPublisher"
+            Public Sub Run()
+            End Sub
+            """;
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.WaitForDiagnosticsAsync(interfaceUri);
+
+        const string workerUri = "file:///C:/work/Worker.cls";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Private WithEvents IPublisher As EventSource",
+            "#If VBA7 Then",
+            "Implements IPublisher",
+            "#End If",
+            "Private Sub "
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+        await process.WaitForDiagnosticsAsync(workerUri);
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new { line = 6, character = "Private Sub ".Length }
+            });
+        var item = Assert.Single(completion.GetProperty("result").EnumerateArray());
+        Assert.Equal("IPublisher_", item.GetProperty("label").GetString());
+        Assert.Equal("Multiple Contracts", item.GetProperty("detail").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Dead_unconditional_origin_does_not_change_surviving_prefix_provenance()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string eventSourceUri = "file:///C:/work/EventSource.cls";
+        const string eventSourceText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "EventSource"
+            Public Event Changed()
+            """;
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(eventSourceUri, eventSourceText));
+        await process.WaitForDiagnosticsAsync(eventSourceUri);
+
+        const string interfaceUri = "file:///C:/work/IPublisher.cls";
+        const string interfaceText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "IPublisher"
+            Public Sub Run()
+            End Sub
+            """;
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.WaitForDiagnosticsAsync(interfaceUri);
+
+        const string workerUri = "file:///C:/work/Worker.cls";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Private WithEvents IPublisher As EventSource",
+            "#If VBA7 Then",
+            "Implements IPublisher",
+            "#End If",
+            "Private Sub IPublisher_Changed()",
+            "End Sub",
+            "Private Sub "
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+        await process.WaitForDiagnosticsAsync(workerUri);
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new { line = 8, character = "Private Sub ".Length }
+            });
+        var item = Assert.Single(completion.GetProperty("result").EnumerateArray());
+        Assert.Equal("IPublisher_", item.GetProperty("label").GetString());
+        Assert.Equal("Interface [#If]", item.GetProperty("detail").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Conditional_Event_marks_only_the_member_stage()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string eventSourceUri = "file:///C:/work/EventSource.cls";
+        const string eventSourceText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "EventSource"
+            #If VBA7 Then
+            Public Event Changed()
+            #End If
+            """;
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(eventSourceUri, eventSourceText));
+        await process.WaitForDiagnosticsAsync(eventSourceUri);
+
+        const string workerUri = "file:///C:/work/Worker.cls";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Private WithEvents publisher As EventSource",
+            "Private Sub "
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+        await process.WaitForDiagnosticsAsync(workerUri);
+
+        var prefixCompletion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new { line = 3, character = "Private Sub ".Length }
+            });
+        var prefixItem = Assert.Single(
+            prefixCompletion.GetProperty("result").EnumerateArray());
+        Assert.Equal("WithEvents", prefixItem.GetProperty("detail").GetString());
+
+        const string declaration = "Private Sub publisher_";
+        workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Private WithEvents publisher As EventSource",
+            declaration
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didChange",
+            new
+            {
+                textDocument = new { uri = workerUri, version = 2 },
+                contentChanges = new[] { new { text = workerText } }
+            });
+        await process.WaitForDiagnosticsAsync(workerUri);
+
+        var memberCompletion = await process.SendRequestAsync(
+            3,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new { line = 3, character = declaration.Length }
+            });
+        var memberItem = Assert.Single(
+            memberCompletion.GetProperty("result").EnumerateArray());
+        Assert.Equal(
+            "Event [#If]",
+            memberItem.GetProperty("detail").GetString());
+
+        await process.ShutdownAsync(4);
+    }
+
+    [Fact]
+    public async Task Recovered_Event_signature_keeps_every_name_eligible_authoring_candidate()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string eventSourceUri = "file:///C:/work/EventSource.cls";
+        const string eventSourceText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "EventSource"
+            Public Event Changed()
+            Public Event Broken(Optional ByVal value As Long)
+            """;
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(eventSourceUri, eventSourceText));
+        await process.WaitForDiagnosticsAsync(eventSourceUri);
+
+        const string workerUri = "file:///C:/work/Worker.cls";
+        const string declaration = "Private Sub publisher_";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Private WithEvents publisher As EventSource",
+            declaration
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+        await process.WaitForDiagnosticsAsync(workerUri);
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new { line = 3, character = declaration.Length }
+            });
+        var items = completion.GetProperty("result").EnumerateArray().ToArray();
+        Assert.Equal(
+            ["publisher_Broken", "publisher_Changed"],
+            items.Select(item => item.GetProperty("label").GetString()));
+        var recovered = Assert.Single(items, item =>
+            item.GetProperty("label").GetString() == "publisher_Broken");
+        Assert.False(recovered.TryGetProperty("documentation", out _));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Completion_excludes_the_physical_handler_declaration_being_edited()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string publisherUri = "file:///C:/work/Publisher.cls";
+        const string publisherText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Publisher"
+            Public Event Changed()
+            """;
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(publisherUri, publisherText));
+        await process.WaitForDiagnosticsAsync(publisherUri);
+
+        const string workerUri = "file:///C:/work/Worker.cls";
+        const string declaration = "Private Sub publisher_Changed";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Private WithEvents publisher As Publisher",
+            declaration
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+        await process.WaitForDiagnosticsAsync(workerUri);
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new { line = 3, character = declaration.Length }
+            });
+        var item = Assert.Single(completion.GetProperty("result").EnumerateArray());
+        Assert.Equal("publisher_Changed", item.GetProperty("label").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Indeterminate_conditional_collision_keeps_advisory_member_completion()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string publisherUri = "file:///C:/work/Publisher.cls";
+        const string publisherText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Publisher"
+            Public Event Changed()
+            """;
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(publisherUri, publisherText));
+        await process.WaitForDiagnosticsAsync(publisherUri);
+
+        const string workerUri = "file:///C:/work/Worker.cls";
+        const string declaration = "Private Sub publisher_";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Private WithEvents publisher As Publisher",
+            "#If VBA7 Then",
+            "Private Sub publisher_Changed()",
+            "End Sub",
+            declaration
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+        await process.WaitForDiagnosticsAsync(workerUri);
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new { line = 6, character = declaration.Length }
+            });
+        var item = Assert.Single(completion.GetProperty("result").EnumerateArray());
+        Assert.Equal("publisher_Changed", item.GetProperty("label").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Unconditional_peer_suppresses_an_indeterminate_prospective_declaration()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string publisherUri = "file:///C:/work/Publisher.cls";
+        const string publisherText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Publisher"
+            Public Event Changed()
+            """;
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(publisherUri, publisherText));
+        await process.WaitForDiagnosticsAsync(publisherUri);
+
+        const string workerUri = "file:///C:/work/Worker.cls";
+        const string declaration = "Private Sub publisher_";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Private WithEvents publisher As Publisher",
+            "Private Sub publisher_Changed()",
+            "End Sub",
+            "#If VBA7 Then",
+            declaration
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+        await process.WaitForDiagnosticsAsync(workerUri);
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new { line = 6, character = declaration.Length }
+            });
+        Assert.Empty(completion.GetProperty("result").EnumerateArray());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Coalesced_Event_and_interface_name_retains_both_Signature_Help_origins()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string eventSourceUri = "file:///C:/work/EventSource.cls";
+        const string eventSourceText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "EventSource"
+            Public Event Changed(ByVal eventValue As String)
+            """;
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(eventSourceUri, eventSourceText));
+        await process.WaitForDiagnosticsAsync(eventSourceUri);
+
+        const string interfaceUri = "file:///C:/work/IPublisher.cls";
+        const string interfaceText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "IPublisher"
+            Public Sub Changed(ByVal interfaceValue As Long)
+            End Sub
+            """;
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.WaitForDiagnosticsAsync(interfaceUri);
+
+        const string workerUri = "file:///C:/work/Worker.cls";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Implements IPublisher",
+            "Private WithEvents IPublisher As EventSource",
+            "Private Sub IPublisher_Changed(ByVal argument As Variant)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+        await process.WaitForDiagnosticsAsync(workerUri);
+
+        var signatureHelp = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            workerUri,
+            workerText,
+            "argument");
+        Assert.Equal(
+            [
+                "Event Changed(eventValue As String)",
+                "Sub IPublisher_Changed(interfaceValue As Long)"
+            ],
+            signatureHelp
+                .GetProperty("result")
+                .GetProperty("signatures")
+                .EnumerateArray()
+                .Select(signature => signature.GetProperty("label").GetString()));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Cross_domain_completion_re_resolves_all_origins_without_prefix_session_state()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string eventSourceUri = "file:///C:/work/EventSource.cls";
+        const string eventSourceText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "EventSource"
+            Public Event Changed(ByVal eventValue As String)
+            """;
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(eventSourceUri, eventSourceText));
+        await process.WaitForDiagnosticsAsync(eventSourceUri);
+
+        const string interfaceUri = "file:///C:/work/IPublisher.cls";
+        const string interfaceText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "IPublisher"
+            Public Sub Changed(ByVal interfaceValue As Long)
+            End Sub
+            """;
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.WaitForDiagnosticsAsync(interfaceUri);
+
+        const string workerUri = "file:///C:/work/Worker.cls";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Implements IPublisher",
+            "Private WithEvents IPublisher As EventSource",
+            "Private Sub "
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+        await process.WaitForDiagnosticsAsync(workerUri);
+
+        var prefixCompletion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new { line = 4, character = "Private Sub ".Length },
+                context = new { triggerKind = 2, triggerCharacter = " " }
+            });
+        var prefixItem = Assert.Single(
+            prefixCompletion.GetProperty("result").EnumerateArray());
+        Assert.Equal("IPublisher_", prefixItem.GetProperty("label").GetString());
+        Assert.Equal(
+            "Multiple Contracts",
+            prefixItem.GetProperty("detail").GetString());
+        Assert.False(prefixItem.TryGetProperty("documentation", out _));
+
+        const string declaration = "Private Sub IPublisher_";
+        workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "' Implements relationship removed after prefix completion",
+            "Private WithEvents IPublisher As EventSource",
+            declaration
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didChange",
+            new
+            {
+                textDocument = new { uri = workerUri, version = 2 },
+                contentChanges = new[] { new { text = workerText } }
+            });
+        await process.WaitForDiagnosticsAsync(workerUri);
+
+        var explicitCompletion = await process.SendRequestAsync(
+            3,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new { line = 4, character = declaration.Length }
+            });
+        var retriggerCompletion = await process.SendRequestAsync(
+            4,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new { line = 4, character = declaration.Length },
+                context = new { triggerKind = 3 }
+            });
+        var underscoreCompletion = await process.SendRequestAsync(
+            5,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new { line = 4, character = declaration.Length },
+                context = new { triggerKind = 2, triggerCharacter = "_" }
+            });
+        Assert.Equal(
+            explicitCompletion.GetProperty("result").GetRawText(),
+            retriggerCompletion.GetProperty("result").GetRawText());
+        Assert.Equal(
+            explicitCompletion.GetProperty("result").GetRawText(),
+            underscoreCompletion.GetProperty("result").GetRawText());
+        var memberItem = Assert.Single(
+            explicitCompletion.GetProperty("result").EnumerateArray());
+        Assert.Equal(
+            "IPublisher_Changed",
+            memberItem.GetProperty("label").GetString());
+        Assert.Equal(
+            "Event",
+            memberItem.GetProperty("detail").GetString());
+        Assert.Equal(
+            "Changed",
+            memberItem.GetProperty("textEdit").GetProperty("newText").GetString());
+        var documentation = memberItem
+            .GetProperty("documentation")
+            .GetProperty("value")
+            .GetString();
+        Assert.Contains(
+            "Event Changed(eventValue As String)",
+            documentation,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "Sub IPublisher_Changed(interfaceValue As Long)",
+            documentation,
+            StringComparison.Ordinal);
+
+        await process.ShutdownAsync(6);
+    }
+
+    [Fact]
+    public async Task TypeLib_WithEvents_completion_uses_only_the_Event_authoring_surface()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-withevents-completion-typelib-").FullName;
+        var cacheRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-withevents-completion-typelib-cache-").FullName;
+        try
+        {
+            const string referenceName = "Generated Library";
+            WriteReferenceCatalogProjectManifest(projectRoot, referenceName);
+            var changedEvent = new TypeLibCatalogMember(
+                "Changed",
+                VbaSourceDefinitionKind.Procedure,
+                "Changed Event.",
+                new VbaCallableSignature(
+                    "Sub Changed(ByVal value As Long)",
+                    [
+                        new VbaCallableParameter(
+                            "value",
+                            TypeReference: new VbaTypeReference("Long"),
+                            IsByRef: false)
+                    ],
+                    CallableKind: VbaCallableKind.Sub),
+                Metadata: new TypeLibCatalogCallableMetadata(
+                    MemberId: 1,
+                    FunctionFlags: 0));
+            var hiddenEvent = new TypeLibCatalogMember(
+                "HiddenChanged",
+                VbaSourceDefinitionKind.Procedure,
+                "Hidden Event.",
+                new VbaCallableSignature(
+                    "Sub HiddenChanged()",
+                    [],
+                    CallableKind: VbaCallableKind.Sub),
+                Metadata: new TypeLibCatalogCallableMetadata(
+                    MemberId: 2,
+                    FunctionFlags: 0x40));
+            var restrictedEvent = new TypeLibCatalogMember(
+                "RestrictedChanged",
+                VbaSourceDefinitionKind.Procedure,
+                "Restricted Event.",
+                new VbaCallableSignature(
+                    "Sub RestrictedChanged()",
+                    [],
+                    CallableKind: VbaCallableKind.Sub),
+                Metadata: new TypeLibCatalogCallableMetadata(
+                    MemberId: 3,
+                    FunctionFlags: 0x1));
+            var catalog = TypeLibReferenceCatalogBuilder.Build(
+                referenceName,
+                new TypeLibCatalogMetadata(
+                    "Generated",
+                    [
+                        new TypeLibCatalogType(
+                            "Publisher",
+                            VbaSourceDefinitionKind.Class,
+                            Documentation: null,
+                            Members: [],
+                            IsCreatable: true,
+                            Metadata: new TypeLibCatalogTypeMetadata(
+                                TypeLibCatalogRawTypeKind.CoClass,
+                                TypeFlags: 0,
+                                ImplementedInterfaces:
+                                [
+                                    new TypeLibCatalogImplementedInterface(
+                                        "_PublisherEvents",
+                                        TypeFlags: 0,
+                                        ImplementationFlags: 0x1 | 0x2,
+                                        CallableMembers:
+                                            [changedEvent, hiddenEvent, restrictedEvent],
+                                        RawTypeKind:
+                                            TypeLibCatalogRawTypeKind.Dispatch)
+                                ]))
+                    ]));
+            new VbaProjectReferenceCatalogPersistentStore(cacheRoot).Save(
+                new VbaProjectReferenceCatalogPersistentEntry(
+                    CreateGeneratedReferenceCatalogIdentity(referenceName),
+                    catalog));
+
+            await using var process = await LanguageServerProcessHarness.StartAsync(
+                referenceCatalogCacheRoot: cacheRoot);
+            await process.InitializeAsync();
+
+            var sourcePath = Path.Combine(
+                projectRoot,
+                "src",
+                "Book1",
+                "Worker.cls");
+            var uri = new Uri(sourcePath).AbsoluteUri;
+            const string declaration = "Private Sub publisher_";
+            var text = string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Private WithEvents publisher As Publisher",
+                declaration
+            ]);
+            File.WriteAllText(sourcePath, text);
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+            await process.WaitForDiagnosticsAsync(uri);
+            await process.WaitForLogTextAsync(
+                "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
+            await process.SendNotificationAsync(
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new { uri, version = 2 },
+                    contentChanges = new[] { new { text } }
+                });
+            await process.WaitForDiagnosticsAsync(uri);
+
+            var completion = await process.SendRequestAsync(
+                2,
+                "textDocument/completion",
+                new
+                {
+                    textDocument = new { uri },
+                    position = new { line = 2, character = declaration.Length }
+                });
+            var item = Assert.Single(
+                completion.GetProperty("result").EnumerateArray());
+            Assert.Equal("publisher_Changed", item.GetProperty("label").GetString());
+            Assert.Equal("Event", item.GetProperty("detail").GetString());
+            Assert.Contains(
+                "Event Changed(value As Long)",
+                item.GetProperty("documentation").GetProperty("value").GetString(),
+                StringComparison.Ordinal);
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Partial_TypeLib_Event_surface_offers_no_handler_authoring_completion()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-withevents-partial-typelib-").FullName;
+        var cacheRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-withevents-partial-typelib-cache-").FullName;
+        try
+        {
+            const string referenceName = "Generated Library";
+            WriteReferenceCatalogProjectManifest(projectRoot, referenceName);
+            var knownEvent = new TypeLibCatalogMember(
+                "Changed",
+                VbaSourceDefinitionKind.Procedure,
+                Documentation: null,
+                new VbaCallableSignature(
+                    "Sub Changed()",
+                    [],
+                    CallableKind: VbaCallableKind.Sub),
+                Metadata: new TypeLibCatalogCallableMetadata(
+                    MemberId: 1,
+                    FunctionFlags: 0));
+            var incompleteEvent = new TypeLibCatalogMember(
+                "Broken",
+                VbaSourceDefinitionKind.Procedure,
+                Documentation: null,
+                new VbaCallableSignature(
+                    "Sub Broken(value)",
+                    [new VbaCallableParameter("value")],
+                    CallableKind: VbaCallableKind.Sub),
+                Metadata: new TypeLibCatalogCallableMetadata(
+                    MemberId: 2,
+                    FunctionFlags: 0));
+            var catalog = TypeLibReferenceCatalogBuilder.Build(
+                referenceName,
+                new TypeLibCatalogMetadata(
+                    "Generated",
+                    [
+                        new TypeLibCatalogType(
+                            "Publisher",
+                            VbaSourceDefinitionKind.Class,
+                            Documentation: null,
+                            Members: [],
+                            IsCreatable: true,
+                            Metadata: new TypeLibCatalogTypeMetadata(
+                                TypeLibCatalogRawTypeKind.CoClass,
+                                TypeFlags: 0,
+                                ImplementedInterfaces:
+                                [
+                                    new TypeLibCatalogImplementedInterface(
+                                        "_PublisherEvents",
+                                        TypeFlags: 0,
+                                        ImplementationFlags: 0x1 | 0x2,
+                                        CallableMembers:
+                                            [knownEvent, incompleteEvent],
+                                        RawTypeKind:
+                                            TypeLibCatalogRawTypeKind.Dispatch)
+                                ]))
+                    ]));
+            new VbaProjectReferenceCatalogPersistentStore(cacheRoot).Save(
+                new VbaProjectReferenceCatalogPersistentEntry(
+                    CreateGeneratedReferenceCatalogIdentity(referenceName),
+                    catalog));
+
+            await using var process = await LanguageServerProcessHarness.StartAsync(
+                referenceCatalogCacheRoot: cacheRoot);
+            await process.InitializeAsync();
+
+            var sourcePath = Path.Combine(
+                projectRoot,
+                "src",
+                "Book1",
+                "Worker.cls");
+            var uri = new Uri(sourcePath).AbsoluteUri;
+            const string declaration = "Private Sub publisher_";
+            var text = string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Private WithEvents publisher As Publisher",
+                declaration
+            ]);
+            File.WriteAllText(sourcePath, text);
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+            await process.WaitForDiagnosticsAsync(uri);
+            await process.WaitForLogTextAsync(
+                "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
+            await process.SendNotificationAsync(
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new { uri, version = 2 },
+                    contentChanges = new[] { new { text } }
+                });
+            await process.WaitForDiagnosticsAsync(uri);
+
+            var completion = await process.SendRequestAsync(
+                2,
+                "textDocument/completion",
+                new
+                {
+                    textDocument = new { uri },
+                    position = new { line = 2, character = declaration.Length }
+                });
+            Assert.Empty(completion.GetProperty("result").EnumerateArray());
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(0x40)]
+    [InlineData(0x1)]
+    public async Task Non_authoring_TypeLib_Event_and_interface_member_both_reach_Signature_Help(
+        int functionFlags)
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-withevents-hidden-cross-contract-").FullName;
+        var cacheRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-withevents-hidden-cross-contract-cache-").FullName;
+        try
+        {
+            const string referenceName = "Generated Library";
+            WriteReferenceCatalogProjectManifest(projectRoot, referenceName);
+            var hiddenEvent = new TypeLibCatalogMember(
+                "Changed",
+                VbaSourceDefinitionKind.Event,
+                Documentation: null,
+                new VbaCallableSignature(
+                    "Event Changed(eventValue As String)",
+                    [
+                        new VbaCallableParameter(
+                            "eventValue",
+                            TypeReference: new VbaTypeReference("String"),
+                            IsByRef: false)
+                    ],
+                    CallableKind: VbaCallableKind.Event),
+                Metadata: new TypeLibCatalogCallableMetadata(
+                    MemberId: 1,
+                    FunctionFlags: functionFlags));
+            var catalog = TypeLibReferenceCatalogBuilder.Build(
+                referenceName,
+                new TypeLibCatalogMetadata(
+                    "Generated",
+                    [
+                        new TypeLibCatalogType(
+                            "Publisher",
+                            VbaSourceDefinitionKind.Class,
+                            Documentation: null,
+                            Members: [hiddenEvent],
+                            IsCreatable: true,
+                            Metadata: new TypeLibCatalogTypeMetadata(
+                                TypeLibCatalogRawTypeKind.CoClass,
+                                TypeFlags: 0,
+                                ImplementedInterfaces:
+                                [
+                                    new TypeLibCatalogImplementedInterface(
+                                        "_PublisherEvents",
+                                        TypeFlags: 0,
+                                        ImplementationFlags: 0x1 | 0x2,
+                                        CallableMembers: [hiddenEvent],
+                                        RawTypeKind:
+                                            TypeLibCatalogRawTypeKind.Dispatch)
+                                ]))
+                    ]));
+            new VbaProjectReferenceCatalogPersistentStore(cacheRoot).Save(
+                new VbaProjectReferenceCatalogPersistentEntry(
+                    CreateGeneratedReferenceCatalogIdentity(referenceName),
+                    catalog));
+
+            var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
+            var interfacePath = Path.Combine(sourceRoot, "IPublisher.cls");
+            var interfaceUri = new Uri(interfacePath).AbsoluteUri;
+            const string interfaceText = """
+                VERSION 1.0 CLASS
+                Attribute VB_Name = "IPublisher"
+                Public Sub Changed(ByVal interfaceValue As Long)
+                End Sub
+                """;
+            File.WriteAllText(interfacePath, interfaceText);
+            var workerPath = Path.Combine(sourceRoot, "Worker.cls");
+            var workerUri = new Uri(workerPath).AbsoluteUri;
+            var workerText = string.Join('\n', [
+                "VERSION 1.0 CLASS",
+                "Attribute VB_Name = \"Worker\"",
+                "Implements IPublisher",
+                "Private WithEvents IPublisher As Publisher",
+                "Private Sub IPublisher_Changed(ByVal argument As Variant)",
+                "End Sub"
+            ]);
+            File.WriteAllText(workerPath, workerText);
+
+            await using var process = await LanguageServerProcessHarness.StartAsync(
+                referenceCatalogCacheRoot: cacheRoot);
+            await process.InitializeAsync();
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(interfaceUri, interfaceText));
+            await process.WaitForDiagnosticsAsync(interfaceUri);
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(workerUri, workerText));
+            await process.WaitForDiagnosticsAsync(workerUri);
+            await process.WaitForLogTextAsync(
+                "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
+            await process.SendNotificationAsync(
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new { uri = workerUri, version = 2 },
+                    contentChanges = new[] { new { text = workerText } }
+                });
+            await process.WaitForDiagnosticsAsync(workerUri);
+
+            var signatureHelp = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/signatureHelp",
+                workerUri,
+                workerText,
+                "argument");
+            Assert.Equal(
+                [
+                    "Event Changed(eventValue As String)",
+                    "Sub IPublisher_Changed(interfaceValue As Long)"
+                ],
+                signatureHelp
+                    .GetProperty("result")
+                    .GetProperty("signatures")
+                    .EnumerateArray()
+                    .Select(signature => signature.GetProperty("label").GetString()));
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Form_host_projection_supplies_external_WithEvents_completion()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-withevents-completion-host-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(projectRoot);
+            var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
+            var sourceTemplate = Path.Combine(sourceRoot, "Book1.xlsm");
+
+            var publisherPath = Path.Combine(sourceRoot, "Publisher.frm");
+            var publisherUri = new Uri(publisherPath).AbsoluteUri;
+            var publisherText = string.Join('\n', [
+                "VERSION 5.00",
+                "Begin VB.Form Publisher",
+                "End",
+                "Attribute VB_Name = \"Publisher\""
+            ]);
+            File.WriteAllText(publisherPath, publisherText);
+
+            var workerPath = Path.Combine(sourceRoot, "Worker.cls");
+            var workerUri = new Uri(workerPath).AbsoluteUri;
+            const string declaration = "Private Sub publisher_";
+            var workerText = string.Join('\n', [
+                "VERSION 1.0 CLASS",
+                "Attribute VB_Name = \"Worker\"",
+                "Private WithEvents publisher As Publisher",
+                declaration
+            ]);
+            File.WriteAllText(workerPath, workerText);
+
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+            await process.InitializeAsync();
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(publisherUri, publisherText));
+            await process.WaitForDiagnosticsAsync(publisherUri);
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(workerUri, workerText));
+            await process.WaitForDiagnosticsAsync(workerUri);
+            await process.SendNotificationAsync(
+                "vba/hostClassProjectionSnapshot",
+                CreateHostProjectionSnapshot(
+                    projectRoot,
+                    sourceTemplate,
+                    "Publisher",
+                    "Change"));
+            await process.SendNotificationAsync(
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new { uri = workerUri, version = 2 },
+                    contentChanges = new[] { new { text = workerText } }
+                });
+            await process.WaitForDiagnosticsAsync(workerUri);
+
+            var completion = await process.SendRequestAsync(
+                2,
+                "textDocument/completion",
+                new
+                {
+                    textDocument = new { uri = workerUri },
+                    position = new { line = 3, character = declaration.Length }
+                });
+            var item = Assert.Single(
+                completion.GetProperty("result").EnumerateArray());
+            Assert.Equal("publisher_Change", item.GetProperty("label").GetString());
+            Assert.Equal("Event", item.GetProperty("detail").GetString());
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Conditional_host_projected_WithEvents_binding_marks_completion_and_Signature_Help()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-withevents-completion-conditional-host-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(projectRoot);
+            var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
+            var sourceTemplate = Path.Combine(sourceRoot, "Book1.xlsm");
+
+            var publisherPath = Path.Combine(sourceRoot, "Publisher.frm");
+            var publisherUri = new Uri(publisherPath).AbsoluteUri;
+            var publisherText = string.Join('\n', [
+                "VERSION 5.00",
+                "Begin VB.Form Publisher",
+                "End",
+                "Attribute VB_Name = \"Publisher\""
+            ]);
+            File.WriteAllText(publisherPath, publisherText);
+
+            var workerPath = Path.Combine(sourceRoot, "Worker.cls");
+            var workerUri = new Uri(workerPath).AbsoluteUri;
+            const string declaration = "Private Sub publisher_";
+            var workerText = string.Join('\n', [
+                "VERSION 1.0 CLASS",
+                "Attribute VB_Name = \"Worker\"",
+                "#If VBA7 Then",
+                "Private WithEvents publisher As Publisher",
+                "#End If",
+                declaration
+            ]);
+            File.WriteAllText(workerPath, workerText);
+
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+            await process.InitializeAsync();
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(publisherUri, publisherText));
+            await process.WaitForDiagnosticsAsync(publisherUri);
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(workerUri, workerText));
+            await process.WaitForDiagnosticsAsync(workerUri);
+            await process.SendNotificationAsync(
+                "vba/hostClassProjectionSnapshot",
+                CreateHostProjectionSnapshot(
+                    projectRoot,
+                    sourceTemplate,
+                    "Publisher",
+                    "Change"));
+            await process.SendNotificationAsync(
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new { uri = workerUri, version = 2 },
+                    contentChanges = new[] { new { text = workerText } }
+                });
+            await process.WaitForDiagnosticsAsync(workerUri);
+
+            var completion = await process.SendRequestAsync(
+                2,
+                "textDocument/completion",
+                new
+                {
+                    textDocument = new { uri = workerUri },
+                    position = new { line = 5, character = declaration.Length }
+                });
+            var item = Assert.Single(
+                completion.GetProperty("result").EnumerateArray());
+            Assert.Equal("publisher_Change", item.GetProperty("label").GetString());
+            Assert.Equal("Event [#If]", item.GetProperty("detail").GetString());
+            Assert.Contains(
+                "Event Change() [#If]",
+                item.GetProperty("documentation").GetProperty("value").GetString(),
+                StringComparison.Ordinal);
+
+            workerText = string.Join('\n', [
+                "VERSION 1.0 CLASS",
+                "Attribute VB_Name = \"Worker\"",
+                "#If VBA7 Then",
+                "Private WithEvents publisher As Publisher",
+                "#End If",
+                "Private Sub publisher_Change()",
+                "End Sub"
+            ]);
+            await process.SendNotificationAsync(
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new { uri = workerUri, version = 3 },
+                    contentChanges = new[] { new { text = workerText } }
+                });
+            await process.WaitForDiagnosticsAsync(workerUri);
+
+            var signatureHelp = await SendPositionRequestAsync(
+                process,
+                3,
+                "textDocument/signatureHelp",
+                workerUri,
+                workerText,
+                "publisher_Change(",
+                "publisher_Change(".Length);
+            var signature = Assert.Single(
+                signatureHelp.GetProperty("result")
+                    .GetProperty("signatures").EnumerateArray());
+            Assert.Equal(
+                "Event Change() [#If]",
+                signature.GetProperty("label").GetString());
+
+            await process.ShutdownAsync(4);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Conditional_source_Event_retains_the_projected_host_shadow_alternative()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-withevents-completion-host-shadow-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(projectRoot);
+            var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
+            var sourceTemplate = Path.Combine(sourceRoot, "Book1.xlsm");
+
+            var publisherPath = Path.Combine(sourceRoot, "Publisher.frm");
+            var publisherUri = new Uri(publisherPath).AbsoluteUri;
+            var publisherText = string.Join('\n', [
+                "VERSION 5.00",
+                "Begin VB.Form Publisher",
+                "End",
+                "Attribute VB_Name = \"Publisher\"",
+                "#If VBA7 Then",
+                "Public Event Change(ByVal sourceValue As Long)",
+                "#End If"
+            ]);
+            File.WriteAllText(publisherPath, publisherText);
+
+            var workerPath = Path.Combine(sourceRoot, "Worker.cls");
+            var workerUri = new Uri(workerPath).AbsoluteUri;
+            const string declaration = "Private Sub publisher_";
+            var workerText = string.Join('\n', [
+                "VERSION 1.0 CLASS",
+                "Attribute VB_Name = \"Worker\"",
+                "Private WithEvents publisher As Publisher",
+                declaration
+            ]);
+            File.WriteAllText(workerPath, workerText);
+
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+            await process.InitializeAsync();
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(publisherUri, publisherText));
+            await process.WaitForDiagnosticsAsync(publisherUri);
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(workerUri, workerText));
+            await process.WaitForDiagnosticsAsync(workerUri);
+            await process.SendNotificationAsync(
+                "vba/hostClassProjectionSnapshot",
+                CreateHostProjectionSnapshot(
+                    projectRoot,
+                    sourceTemplate,
+                    "Publisher",
+                    "Change"));
+            await process.SendNotificationAsync(
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new { uri = workerUri, version = 2 },
+                    contentChanges = new[] { new { text = workerText } }
+                });
+            await process.WaitForDiagnosticsAsync(workerUri);
+
+            var completion = await process.SendRequestAsync(
+                2,
+                "textDocument/completion",
+                new
+                {
+                    textDocument = new { uri = workerUri },
+                    position = new { line = 3, character = declaration.Length }
+                });
+            var item = Assert.Single(
+                completion.GetProperty("result").EnumerateArray());
+            Assert.Equal("publisher_Change", item.GetProperty("label").GetString());
+            Assert.Equal("Event [#If]", item.GetProperty("detail").GetString());
+            var documentation = item.GetProperty("documentation")
+                .GetProperty("value")
+                .GetString();
+            Assert.Contains(
+                "Event Change(sourceValue As Long) [#If]",
+                documentation,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "Event Change() [#If]",
+                documentation,
+                StringComparison.Ordinal);
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Standard_module_WithEvents_declarator_reports_placement_diagnostic()
     {
         await using var process = await LanguageServerProcessHarness.StartAsync();
@@ -3616,6 +5216,45 @@ public sealed class WithEventsLanguageServerProcessTests
             0,
             0,
             @"C:\TypeLibs\Generated.tlb");
+
+    private static object CreateHostProjectionSnapshot(
+        string projectRoot,
+        string sourceTemplate,
+        string className,
+        string eventName)
+        => new
+        {
+            schemaVersion = 1,
+            revision = 1,
+            project = Path.GetFullPath(projectRoot),
+            document = "Book1",
+            sourceTemplate = Path.GetFullPath(sourceTemplate),
+            state = "present",
+            classEnumerationComplete = true,
+            classes = new object[]
+            {
+                new
+                {
+                    identity = new { name = className, kind = "form" },
+                    authority = "current",
+                    projection = new
+                    {
+                        intrinsicEventSourceName = "UserForm",
+                        events = new object[]
+                        {
+                            new
+                            {
+                                name = eventName,
+                                parameters = Array.Empty<object>(),
+                                documentation = "Projected host Event.",
+                                authoringAvailable = true,
+                                existingHandlerRecognizable = true
+                            }
+                        }
+                    }
+                }
+            }
+        };
 
     private static void MarkReferenceCatalogIndexAsStale(
         VbaProjectReferenceCatalogPersistentStore store,

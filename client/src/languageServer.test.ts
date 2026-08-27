@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as path from 'node:path';
-import type { FileSystemWatcher, SignatureHelp } from 'vscode';
+import type { CompletionItem, FileSystemWatcher, SignatureHelp } from 'vscode';
 import type { FormattingMiddleware } from 'vscode-languageclient/node';
 import type { ClientCapabilities } from 'vscode-languageclient/node';
 
@@ -62,6 +62,85 @@ test('VbaLanguageServer client preserves explicit no-active parameter through VS
   );
 
   assert.equal(result?.signatures[0]?.activeParameter, 1);
+});
+
+test('VbaLanguageServer client retriggers completion only for neutral continuation items', async () => {
+  const options = createVbaLanguageClientOptions(
+    {} as FileSystemWatcher,
+    {} as FileSystemWatcher
+  );
+  const provideCompletionItem = options.middleware?.provideCompletionItem;
+  assert.ok(provideCompletionItem);
+  const continuation = {
+    label: 'UserForm_',
+    data: { retriggerCompletion: true }
+  } as unknown as CompletionItem;
+  const ordinary = {
+    label: 'Value'
+  } as unknown as CompletionItem;
+  const preconfigured = {
+    label: 'Configured',
+    data: { retriggerCompletion: true },
+    command: {
+      title: 'Keep existing behavior',
+      command: 'extension.keepExisting'
+    }
+  } as unknown as CompletionItem;
+
+  const result = await provideCompletionItem(
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    () => [continuation, ordinary, preconfigured]
+  );
+  assert.ok(Array.isArray(result));
+  assert.deepEqual(result[0]?.command, {
+    title: 'Continue contract completion',
+    command: 'editor.action.triggerSuggest'
+  });
+  assert.equal(result[1]?.command, undefined);
+  assert.deepEqual(result[2]?.command, {
+    title: 'Keep existing behavior',
+    command: 'extension.keepExisting'
+  });
+});
+
+test('VbaLanguageServer client preserves completion-list metadata and ignores malformed continuation data', async () => {
+  const options = createVbaLanguageClientOptions(
+    {} as FileSystemWatcher,
+    {} as FileSystemWatcher
+  );
+  const provideCompletionItem = options.middleware?.provideCompletionItem;
+  assert.ok(provideCompletionItem);
+  const continuation = {
+    label: 'UserForm_',
+    data: { retriggerCompletion: true }
+  } as unknown as CompletionItem;
+  const malformed = {
+    label: 'Malformed',
+    data: { retriggerCompletion: 'true' }
+  } as unknown as CompletionItem;
+
+  const result = await provideCompletionItem(
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    () => ({
+      isIncomplete: true,
+      items: [continuation, malformed]
+    })
+  );
+  if (result === null || result === undefined || Array.isArray(result)) {
+    assert.fail('Expected a CompletionList result.');
+  }
+  assert.equal(result.isIncomplete, true);
+  assert.deepEqual(result.items[0]?.command, {
+    title: 'Continue contract completion',
+    command: 'editor.action.triggerSuggest'
+  });
+  assert.equal(result.items[1]?.command, undefined);
 });
 
 test('VbaLanguageServer client synchronizes source and project manifest file events', () => {

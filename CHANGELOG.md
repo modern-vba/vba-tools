@@ -24,6 +24,9 @@ CLI history.
 - Consumer-owned Host Event projection snapshots with extension-wide
   single-flight inspection, explicit refresh, status and Output recovery,
   last-known-good retention, and Excel-free synchronous editor requests.
+- Two-stage, name-only completion for intrinsic Host Event, `WithEvents`, and
+  `Implements` declarations, with coalesced contract names, retained signature
+  variants, and stateless semantic continuation in the VS Code client.
 - Immutable debug snapshots that include dirty editor content without saving and
   run in disposable same-filename workbooks without changing persistent outputs.
 - Bound Restart Debugging with generation-scoped snapshots, owned process-tree

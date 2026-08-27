@@ -118,6 +118,17 @@ internal sealed class VbaSemanticResolution
     /// <param name="character">The zero-based character.</param>
     /// <returns>The completion result for the position.</returns>
     public VbaCompletionResult GetCompletionResult(string uri, int line, int character)
+        => GetCompletionResult(
+            uri,
+            line,
+            character,
+            VbaCompletionInvocation.Explicit);
+
+    internal VbaCompletionResult GetCompletionResult(
+        string uri,
+        int line,
+        int character,
+        VbaCompletionInvocation invocation)
     {
         var currentDocument = definitionCandidates.FindDocument(uri);
         if (currentDocument is null)
@@ -129,6 +140,11 @@ internal sealed class VbaSemanticResolution
         var positionSyntax = syntaxTree.GetPositionSyntax(line, character);
         var expectation = positionSyntax.CompletionExpectation;
         if (expectation == VbaCompletionExpectation.None)
+        {
+            return EmptyCompletion;
+        }
+
+        if (!AllowsCompletionInvocation(invocation, positionSyntax))
         {
             return EmptyCompletion;
         }
@@ -338,12 +354,36 @@ internal sealed class VbaSemanticResolution
                         .Where(definition => definition.IsEventNameCompletionEligible)),
             VbaCompletionExpectation.LabelName =>
                 CreateLabelCandidates(syntaxTree, positionSyntax),
+            VbaCompletionExpectation.ContractDeclarationName =>
+                CreateContractDeclarationNameCandidates(
+                    currentDocument,
+                    positionSyntax),
             _ => []
         };
 
         return Complete(
             candidates.Concat(CreateVocabularyCandidates(positionSyntax.SupplementalSyntaxWords)),
             positionSyntax.CompletionReplacementRange);
+    }
+
+    private static bool AllowsCompletionInvocation(
+        VbaCompletionInvocation invocation,
+        VbaPositionSyntax positionSyntax)
+    {
+        if (invocation.Kind != VbaCompletionInvocationKind.TriggerCharacter)
+        {
+            return true;
+        }
+
+        return invocation.TriggerCharacter switch
+        {
+            "_" => positionSyntax.CompletionExpectation
+                == VbaCompletionExpectation.ContractDeclarationName,
+            " " => positionSyntax.CompletionExpectation
+                    != VbaCompletionExpectation.ContractDeclarationName
+                || positionSyntax.CallableDeclarationName?.Fragment.Length == 0,
+            _ => true
+        };
     }
 
     private bool TryGetConditionalCallResultMemberCompletionDefinitions(
@@ -827,6 +867,17 @@ internal sealed class VbaSemanticResolution
         }
 
         var syntaxTree = GetSyntaxTree(currentDocument);
+        var contractSignatureHelp = TryGetContractDeclarationSignatureHelp(
+            currentDocument,
+            syntaxTree,
+            line,
+            character,
+            retriggerIdentity);
+        if (contractSignatureHelp is not null)
+        {
+            return contractSignatureHelp;
+        }
+
         var interfaceSignatureHelp = interfaceSemantics.GetAccessorSignatureHelp(
             currentDocument,
             line,
@@ -863,6 +914,177 @@ internal sealed class VbaSemanticResolution
             retriggerIdentity);
     }
 
+    private VbaSignatureHelp? TryGetContractDeclarationSignatureHelp(
+        VbaSourceDocument currentDocument,
+        VbaSyntaxTree syntaxTree,
+        int line,
+        int character,
+        VbaSignaturePresentationIdentity? retriggerIdentity)
+    {
+        var position = new VbaSyntaxPosition(line, character, 0);
+        var callable = syntaxTree.Module.CallableDeclarations.FirstOrDefault(
+            candidate => candidate.ParameterListRange is { } parameterListRange
+                && Contains(parameterListRange, position));
+        if (callable is null)
+        {
+            return null;
+        }
+
+        var declaration = currentDocument.Definitions.FirstOrDefault(definition =>
+            definition.Kind is VbaSourceDefinitionKind.Procedure
+                or VbaSourceDefinitionKind.Property
+            && definition.Range.Start.Line == callable.Range.Start.Line
+            && definition.Name.Equals(
+                callable.Name,
+                StringComparison.OrdinalIgnoreCase)
+            && definition.PropertyAccessorKind == callable.PropertyAccessorKind);
+        if (declaration is null
+            || !TryGetCallableDeclarationNameKind(
+                declaration,
+                out var declarationKind))
+        {
+            return null;
+        }
+
+        var activeParameterIndex = VbaInterfaceSemanticModel
+            .GetPhysicalParameterIndex(syntaxTree, callable, position);
+        var variants = new List<VbaSignatureHelpVariant>();
+        if (declarationKind == VbaCallableDeclarationNameKind.Sub)
+        {
+            var intrinsicAnalysis = hostClassEvents.AnalyzeIntrinsicHandler(
+                currentDocument,
+                declaration);
+            if (intrinsicAnalysis?.EventTarget.EventContract.Signature is not null)
+            {
+                var signature = VbaHostClassEventSemanticModel
+                    .CreateHandlerSignature(
+                        intrinsicAnalysis.Surface,
+                        intrinsicAnalysis.HostEvent);
+                variants.Add(CreateContractSignatureHelpVariant(
+                    signature,
+                    activeParameterIndex,
+                    isConditional: false));
+            }
+
+            var eventSignatures = AnalyzeWithEventsHandler(
+                    currentDocument,
+                    declaration)
+                ?.BindingSet.ResolvedEventSignatures;
+            if (eventSignatures is not null)
+            {
+                variants.AddRange(eventSignatures.Contracts
+                    .Where(contract => contract.Signature is not null)
+                    .Select(contract => CreateContractSignatureHelpVariant(
+                        contract.Signature!,
+                        activeParameterIndex,
+                        contract.IsConditionalContract)));
+            }
+        }
+
+        variants.AddRange(interfaceSemantics
+            .GetDeclarationNameCompletionOrigins(
+                currentDocument,
+                declarationKind)
+            .SelectMany(origin => origin.Members.Select(member => new
+            {
+                FullName = origin.Prefix + member.Name,
+                Member = member
+            }))
+            .Where(candidate => candidate.Member.Signature is not null
+                && candidate.FullName.Equals(
+                    declaration.Name,
+                    StringComparison.OrdinalIgnoreCase))
+            .Select(candidate => CreateContractSignatureHelpVariant(
+                candidate.Member.Signature!,
+                activeParameterIndex,
+                candidate.Member.IsConditionalContract)));
+        variants = CoalesceContractSignatureHelpVariants(variants);
+        if (variants.Count == 0)
+        {
+            return null;
+        }
+
+        var activeSignature = 0;
+        if (retriggerIdentity is not null)
+        {
+            var retainedIndex = variants.FindIndex(
+                variant => variant.PresentationIdentity.Matches(
+                    retriggerIdentity));
+            if (retainedIndex >= 0)
+            {
+                activeSignature = retainedIndex;
+            }
+        }
+
+        var active = variants[activeSignature];
+        return new VbaSignatureHelp(
+            active.Signature,
+            active.ActiveParameter,
+            variants,
+            activeSignature);
+    }
+
+    private static List<VbaSignatureHelpVariant> CoalesceContractSignatureHelpVariants(
+        IEnumerable<VbaSignatureHelpVariant> variants)
+    {
+        var result = new List<VbaSignatureHelpVariant>();
+        foreach (var variant in variants)
+        {
+            var identity = variant.PresentationIdentity;
+            if (result.Any(existing =>
+                    existing.PresentationIdentity.Matches(identity)))
+            {
+                continue;
+            }
+
+            result.Add(variant);
+        }
+
+        return result;
+    }
+
+    private static VbaSignatureHelpVariant CreateContractSignatureHelpVariant(
+        VbaCallableSignature signature,
+        int? physicalParameterIndex,
+        bool isConditional)
+        => new(
+            signature,
+            physicalParameterIndex is int parameterIndex
+                    && parameterIndex < signature.Parameters.Count
+                ? parameterIndex
+                : null,
+            isConditional);
+
+    private static bool TryGetCallableDeclarationNameKind(
+        VbaSourceDefinition declaration,
+        out VbaCallableDeclarationNameKind declarationKind)
+    {
+        if (declaration.Kind == VbaSourceDefinitionKind.Property)
+        {
+            declarationKind = declaration.PropertyAccessorKind switch
+            {
+                VbaPropertyAccessorKind.Get =>
+                    VbaCallableDeclarationNameKind.PropertyGet,
+                VbaPropertyAccessorKind.Let =>
+                    VbaCallableDeclarationNameKind.PropertyLet,
+                VbaPropertyAccessorKind.Set =>
+                    VbaCallableDeclarationNameKind.PropertySet,
+                _ => default
+            };
+            return declaration.PropertyAccessorKind is not null;
+        }
+
+        declarationKind = declaration.CallableKind switch
+        {
+            VbaCallableKind.Sub => VbaCallableDeclarationNameKind.Sub,
+            VbaCallableKind.Function => VbaCallableDeclarationNameKind.Function,
+            _ => default
+        };
+        return declaration.Kind == VbaSourceDefinitionKind.Procedure
+            && declaration.CallableKind is VbaCallableKind.Sub
+                or VbaCallableKind.Function;
+    }
+
     private VbaSignatureHelp? TryGetWithEventsHandlerSignatureHelp(
         VbaSourceDocument currentDocument,
         VbaSyntaxTree syntaxTree,
@@ -896,25 +1118,15 @@ internal sealed class VbaSemanticResolution
             currentDocument,
             handler);
         if (intrinsicAnalysis?.EventTarget.EventContract.Signature
-            is { } hostEventSignature)
+            is not null)
         {
             var intrinsicParameterIndex = GetHandlerParameterIndex(
                 callable,
                 position);
-            var signature = hostEventSignature with
-            {
-                Label = intrinsicAnalysis.Surface.Projection
-                    .IntrinsicEventSourceName
-                    + "_"
-                    + intrinsicAnalysis.HostEvent.Name
-                    + "("
-                    + string.Join(
-                        ", ",
-                        hostEventSignature.Parameters.Select(parameter =>
-                            parameter.DisplayLabel ?? parameter.Label))
-                    + ")",
-                CallableKind = VbaCallableKind.Sub
-            };
+            var signature = VbaHostClassEventSemanticModel
+                .CreateHandlerSignature(
+                    intrinsicAnalysis.Surface,
+                    intrinsicAnalysis.HostEvent);
             int? activeParameter = intrinsicParameterIndex is int parameterIndex
                     && parameterIndex < signature.Parameters.Count
                 ? parameterIndex
@@ -1656,6 +1868,290 @@ internal sealed class VbaSemanticResolution
             statement,
             VbaCompletionCandidateKind.ContextualStatement));
 
+    private IEnumerable<VbaCompletionCandidate> CreateContractDeclarationNameCandidates(
+        VbaSourceDocument currentDocument,
+        VbaPositionSyntax positionSyntax)
+    {
+        var declarationName = positionSyntax.CallableDeclarationName;
+        if (declarationName is null)
+        {
+            return [];
+        }
+
+        return VbaContractDeclarationNameCompletion.CreateCandidates(
+            declarationName,
+            CreateContractDeclarationNameOrigins(
+                currentDocument,
+                declarationName.Kind),
+            CreateProspectiveDeclaration(currentDocument, declarationName),
+            currentDocument.Definitions);
+    }
+
+    private IReadOnlyList<VbaContractPrefixCompletionOrigin>
+        CreateContractDeclarationNameOrigins(
+            VbaSourceDocument currentDocument,
+            VbaCallableDeclarationNameKind declarationKind)
+    {
+        var origins = new List<VbaContractPrefixCompletionOrigin>();
+        if (declarationKind == VbaCallableDeclarationNameKind.Sub)
+        {
+            if (hostClassEvents.TryGetEffectiveSurface(
+                    currentDocument,
+                    out var surface))
+            {
+                origins.Add(new VbaContractPrefixCompletionOrigin(
+                    surface.Projection.IntrinsicEventSourceName + "_",
+                    VbaContractCompletionDomain.HostEvents,
+                    IsConditionalPrefix: false,
+                    surface.Projection.Events
+                        .Where(hostEvent => hostEvent.AuthoringAvailable)
+                        .Select(hostEvent => new VbaContractMemberCompletionOrigin(
+                            hostEvent.Name,
+                            VbaContractCompletionDomain.HostEvents,
+                            IsConditionalContract: false,
+                            VbaHostClassEventSemanticModel.CreateHandlerSignature(
+                                surface,
+                                hostEvent),
+                            hostEvent.Documentation,
+                            Identity: hostEvent))
+                        .ToArray()));
+            }
+
+            origins.AddRange(
+                CreateSourceWithEventsCompletionOrigins(currentDocument));
+        }
+
+        origins.AddRange(interfaceSemantics.GetDeclarationNameCompletionOrigins(
+            currentDocument,
+            declarationKind));
+        return origins;
+    }
+
+    private static VbaProspectiveDeclaration CreateProspectiveDeclaration(
+        VbaSourceDocument currentDocument,
+        VbaCallableDeclarationNameSyntax declarationName)
+    {
+        var (kind, accessorKind) = declarationName.Kind switch
+        {
+            VbaCallableDeclarationNameKind.Sub =>
+                (VbaSourceDefinitionKind.Procedure,
+                    (VbaPropertyAccessorKind?)null),
+            VbaCallableDeclarationNameKind.Function =>
+                (VbaSourceDefinitionKind.Procedure,
+                    (VbaPropertyAccessorKind?)null),
+            VbaCallableDeclarationNameKind.PropertyGet =>
+                (VbaSourceDefinitionKind.Property,
+                    VbaPropertyAccessorKind.Get),
+            VbaCallableDeclarationNameKind.PropertyLet =>
+                (VbaSourceDefinitionKind.Property,
+                    VbaPropertyAccessorKind.Let),
+            VbaCallableDeclarationNameKind.PropertySet =>
+                (VbaSourceDefinitionKind.Property,
+                    VbaPropertyAccessorKind.Set),
+            _ => throw new InvalidOperationException(
+                "Unsupported callable declaration name kind.")
+        };
+        var syntaxTree = currentDocument.SyntaxTree
+            ?? VbaSyntaxTree.ParseModule(
+                currentDocument.Uri,
+                currentDocument.Text);
+        var conditionalPath =
+            VbaConditionalCompilationBranchFacts.TryGetPath(
+                syntaxTree,
+                declarationName.FragmentRange,
+                requireCompleteStructure: true,
+                out var path)
+                ? path
+                : null;
+        var fragmentRange = new VbaRange(
+            new VbaPosition(
+                declarationName.FragmentRange.Start.Line,
+                declarationName.FragmentRange.Start.Character),
+            new VbaPosition(
+                declarationName.FragmentRange.End.Line,
+                declarationName.FragmentRange.End.Character));
+        var editedDefinition = declarationName.Fragment.Length == 0
+            ? null
+            : currentDocument.Definitions.FirstOrDefault(definition =>
+                definition.ParentProcedureName is null
+                && definition.Kind == kind
+                && definition.PropertyAccessorKind == accessorKind
+                && definition.Range == fragmentRange);
+        return new VbaProspectiveDeclaration(
+            currentDocument.Uri,
+            kind,
+            accessorKind,
+            conditionalPath,
+            editedDefinition?.Identity);
+    }
+
+    private IEnumerable<VbaContractPrefixCompletionOrigin>
+        CreateSourceWithEventsCompletionOrigins(
+            VbaSourceDocument currentDocument)
+    {
+        foreach (var variable in currentDocument.Definitions.Where(definition =>
+                     definition.Kind == VbaSourceDefinitionKind.Variable
+                     && definition.ParentProcedureName is null
+                     && definition.IsWithEvents
+                     && !definition.IsRecoveredWithEventsVariableDeclaration))
+        {
+            var eligibility = withEventsSemantics.ClassifyType(
+                currentDocument,
+                variable);
+            if (eligibility is null
+                || eligibility.Kind is VbaWithEventsTypeEligibilityKind.InvalidEnclosingClass
+                    or VbaWithEventsTypeEligibilityKind.InvalidNotClass
+                    or VbaWithEventsTypeEligibilityKind.InvalidInaccessibleType
+                    or VbaWithEventsTypeEligibilityKind.InvalidNoEvents
+                || nameResolution
+                    .HasIndeterminateConditionalCompilationOwnership(variable)
+                || variable.TypeReference is null
+                || !typeResolution.TryResolveTypeReference(
+                    currentDocument,
+                    variable.TypeReference,
+                    out var receiverType))
+            {
+                continue;
+            }
+
+            var variableIsConditional =
+                variable.ConditionalCompilationPath is { IsEmpty: false };
+            IReadOnlyList<VbaContractMemberCompletionOrigin> members;
+            if (eligibility.Kind == VbaWithEventsTypeEligibilityKind.Eligible
+                && eligibility.TypeLibEventSurface is { } typeLibSurface)
+            {
+                members = typeLibSurface.AuthoringEvents
+                    .Select(member => new VbaContractMemberCompletionOrigin(
+                        member.Name,
+                        VbaContractCompletionDomain.WithEvents,
+                        variableIsConditional,
+                        CreateTypeLibEventSignature(member),
+                        member.Documentation,
+                        member))
+                    .ToArray();
+            }
+            else if (receiverType.SourceDefinition?.Identity.Origin
+                == VbaDefinitionOrigin.Source)
+            {
+                var sourceEvents = nameResolution
+                    .GetPhysicalMembersOfType(receiverType)
+                    .Where(member => member.IsEventNameProjectionEligible
+                        && member.IsAuthoringAvailable
+                        && !nameResolution
+                            .HasIndeterminateConditionalCompilationOwnership(member))
+                    .ToArray();
+                var sourceMembers = sourceEvents
+                    .Select(member => new VbaContractMemberCompletionOrigin(
+                        member.Name,
+                        VbaContractCompletionDomain.WithEvents,
+                        variableIsConditional
+                            || member.ConditionalCompilationPath is
+                                { IsEmpty: false },
+                        member.Signature,
+                        member.Documentation,
+                        member.Identity))
+                    .ToList();
+                if (eligibility.HostClassEventSurface is { } hostSurface)
+                {
+                    foreach (var hostEvent in hostSurface.Projection.Events.Where(
+                                 hostEvent => hostEvent.AuthoringAvailable))
+                    {
+                        var shadowingEvents = sourceEvents
+                            .Where(sourceEvent =>
+                                !sourceEvent.IsRecoveredEventDeclaration
+                                && sourceEvent.Name.Equals(
+                                    hostEvent.Name,
+                                    StringComparison.OrdinalIgnoreCase))
+                            .ToArray();
+                        if (shadowingEvents.Any(sourceEvent =>
+                                sourceEvent.ConditionalCompilationPath
+                                    is { IsEmpty: true }))
+                        {
+                            continue;
+                        }
+
+                        sourceMembers.Add(
+                            new VbaContractMemberCompletionOrigin(
+                                hostEvent.Name,
+                                VbaContractCompletionDomain.WithEvents,
+                                variableIsConditional
+                                    || shadowingEvents.Length > 0,
+                                VbaHostClassEventSemanticModel
+                                    .CreateEventSignature(hostEvent),
+                                hostEvent.Documentation,
+                                hostEvent));
+                    }
+                }
+
+                members = sourceMembers;
+            }
+            else
+            {
+                continue;
+            }
+
+            if (members.Count == 0)
+            {
+                continue;
+            }
+
+            yield return new VbaContractPrefixCompletionOrigin(
+                variable.Name + "_",
+                VbaContractCompletionDomain.WithEvents,
+                variableIsConditional,
+                members);
+        }
+    }
+
+    private static VbaCallableSignature? CreateTypeLibEventSignature(
+        TypeLibCatalogMember member)
+    {
+        if (member.Signature is not { } signature)
+        {
+            return null;
+        }
+
+        var parameters = signature.Parameters
+            .Select(parameter => parameter with
+            {
+                DisplayLabel = CreateTypeLibEventParameterLabel(parameter)
+            })
+            .ToArray();
+        return signature with
+        {
+            Label = $"Event {member.Name}({string.Join(", ", parameters.Select(
+                parameter => parameter.Label))})",
+            Parameters = parameters,
+            Documentation = signature.Documentation ?? member.Documentation,
+            CallableKind = VbaCallableKind.Event
+        };
+    }
+
+    private static string CreateTypeLibEventParameterLabel(
+        VbaCallableParameter parameter)
+    {
+        var parts = new List<string>();
+        if (parameter.IsParamArray)
+        {
+            parts.Add("ParamArray");
+        }
+        else if (parameter.IsByRef == true)
+        {
+            parts.Add("ByRef");
+        }
+
+        parts.Add(parameter.IsArray
+            ? $"{parameter.Name}()"
+            : parameter.Name);
+        if (parameter.TypeReference is { } typeReference)
+        {
+            parts.Add($"As {typeReference.Name}");
+        }
+
+        var label = string.Join(" ", parts);
+        return parameter.IsOptional ? $"[{label}]" : label;
+    }
+
     private static IEnumerable<VbaCompletionCandidate> CreateLabelCandidates(
         VbaSyntaxTree syntaxTree,
         VbaPositionSyntax positionSyntax)
@@ -2058,6 +2554,20 @@ internal sealed class VbaSemanticResolution
                     out var resolvedHostEventTarget))
             {
                 hostEventTarget = resolvedHostEventTarget;
+            }
+
+            if (hostEventTarget is not null
+                && variableTarget.IsConditionalFamily)
+            {
+                var conditionalContract = hostEventTarget.EventContract with
+                {
+                    IsConditionalContract = true
+                };
+                hostEventTarget = new VbaHostEventNameTarget(
+                    hostEventTarget.HostEventIdentity,
+                    hostEventTarget.SelectedDefinition,
+                    conditionalContract,
+                    hostEventTarget.NavigableDefinition);
             }
 
             var hasKnownHostEvent = hostEventTarget is not null;

@@ -5,6 +5,135 @@ namespace VbaLanguageServer.Tests;
 
 public sealed class InterfaceVariableAccessorLanguageServerProcessTests
 {
+    [Theory]
+    [InlineData(
+        "Let",
+        false,
+        "Property Let ISettings_Value(ByVal AssignedValue As Variant)",
+        "Property Set ISettings_Value")]
+    [InlineData(
+        "Set",
+        true,
+        "Property Set ISettings_Value(ByVal AssignedValue As Variant)",
+        "Property Let ISettings_Value")]
+    public async Task Complementary_Property_accessors_leave_the_derived_variable_candidate_available(
+        string accessor,
+        bool includeLetPeer,
+        string expectedSignature,
+        string excludedSignature)
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string interfaceUri = "file:///C:/work/ISettings.cls";
+        const string interfaceText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "ISettings"
+            Public Value As Variant
+            """;
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.WaitForDiagnosticsAsync(interfaceUri);
+
+        const string implementationUri = "file:///C:/work/Settings.cls";
+        var lines = new List<string>
+        {
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Settings\"",
+            "Implements ISettings",
+            "Private Property Get ISettings_Value() As Variant",
+            "End Property"
+        };
+        if (includeLetPeer)
+        {
+            lines.Add(
+                "Private Property Let ISettings_Value(ByVal assignedValue As Variant)");
+            lines.Add("End Property");
+        }
+
+        var declaration = $"Private Property {accessor} ISettings_";
+        lines.Add(declaration);
+        var implementationText = string.Join('\n', lines);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+        await process.WaitForDiagnosticsAsync(implementationUri);
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = implementationUri },
+                position = new
+                {
+                    line = lines.Count - 1,
+                    character = declaration.Length
+                }
+            });
+        var item = Assert.Single(completion.GetProperty("result").EnumerateArray());
+        Assert.Equal("ISettings_Value", item.GetProperty("label").GetString());
+        Assert.Equal("Value", item.GetProperty("textEdit")
+            .GetProperty("newText").GetString());
+        Assert.DoesNotContain(
+            "(",
+            item.GetProperty("textEdit").GetProperty("newText").GetString(),
+            StringComparison.Ordinal);
+        var documentation = item.GetProperty("documentation")
+            .GetProperty("value")
+            .GetString();
+        Assert.Contains(expectedSignature, documentation, StringComparison.Ordinal);
+        Assert.DoesNotContain(excludedSignature, documentation, StringComparison.Ordinal);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Implemented_public_variable_Property_Let_is_not_offered_again()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string interfaceUri = "file:///C:/work/ISettings.cls";
+        const string interfaceText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "ISettings"
+            Public Value As Long
+            """;
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.WaitForDiagnosticsAsync(interfaceUri);
+
+        const string implementationUri = "file:///C:/work/Settings.cls";
+        const string declaration = "Private Property Let ISettings_";
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Settings\"",
+            "Implements ISettings",
+            "Private Property Let ISettings_Value(ByVal assignedValue As Long)",
+            "End Property",
+            declaration
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+        await process.WaitForDiagnosticsAsync(implementationUri);
+
+        var completion = await process.SendRequestAsync(
+            2,
+            "textDocument/completion",
+            new
+            {
+                textDocument = new { uri = implementationUri },
+                position = new { line = 5, character = declaration.Length }
+            });
+        Assert.Empty(completion.GetProperty("result").EnumerateArray());
+
+        await process.ShutdownAsync(3);
+    }
+
     [Fact]
     public async Task Long_public_variable_requires_a_missing_Property_Let()
     {
@@ -766,7 +895,7 @@ public sealed class InterfaceVariableAccessorLanguageServerProcessTests
     }
 
     [Fact]
-    public async Task Conditional_Implements_relationships_each_contribute_accessor_signature_help_provenance()
+    public async Task Identical_conditional_Implements_relationships_coalesce_accessor_signature_help()
     {
         await using var process = await LanguageServerProcessHarness.StartAsync();
         await process.InitializeAsync();
@@ -809,7 +938,6 @@ public sealed class InterfaceVariableAccessorLanguageServerProcessTests
         var result = response.GetProperty("result");
         Assert.Equal(
             [
-                "Property Let ISettings_Value(ByVal AssignedValue As Long) [#If]",
                 "Property Let ISettings_Value(ByVal AssignedValue As Long) [#If]"
             ],
             result

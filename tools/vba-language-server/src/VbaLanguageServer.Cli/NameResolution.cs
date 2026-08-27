@@ -712,6 +712,24 @@ public sealed class VbaNameResolutionService
                 .Select(candidate => candidate.Definition)
                 .Where(definition => definition.Kind == kind));
 
+    internal IReadOnlyList<VbaSourceDefinition>
+        GetProjectReferencePhysicalMembers(
+            string owningReferenceName,
+            string parentTypeName)
+        => candidates.GetReferenceCandidatesByParentType(parentTypeName)
+            .Where(candidate => VbaProjectReferenceName.AreEquivalent(
+                candidate.ModuleName,
+                owningReferenceName))
+            .Select(candidate => candidate.Definition)
+            .Where(definition => definition.Identity.Origin
+                    == VbaDefinitionOrigin.ProjectReference
+                && definition.IsAuthoringAvailable)
+            .DistinctBy(definition => definition.Identity)
+            .OrderBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(definition => definition.Name, StringComparer.Ordinal)
+            .ThenBy(definition => definition.PropertyAccessorKind)
+            .ToArray();
+
     internal IReadOnlyList<VbaSourceDefinition> GetVisibleTypeDefinitions(
         VbaSourceDocument currentDocument,
         string? qualifier = null)

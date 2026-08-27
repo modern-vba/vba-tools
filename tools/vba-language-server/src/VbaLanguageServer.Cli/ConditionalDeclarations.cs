@@ -431,6 +431,13 @@ internal sealed class VbaConditionalDeclarationFamilyIndex
     }
 }
 
+internal sealed record VbaProspectiveDeclaration(
+    string Uri,
+    VbaSourceDefinitionKind Kind,
+    VbaPropertyAccessorKind? PropertyAccessorKind,
+    VbaConditionalCompilationBranchPath? ConditionalCompilationPath,
+    VbaDefinitionIdentity? EditedDefinitionIdentity = null);
+
 internal static class VbaDeclarationRelationshipPolicy
 {
     private const char KeySeparator = '\u001f';
@@ -467,6 +474,32 @@ internal static class VbaDeclarationRelationshipPolicy
         => HaveSameName(left, right)
             && HaveSameDeclarationScopeAndNamespace(left, right, null)
             && HaveCompatiblePropertyAccessorKinds(left, right);
+
+    public static bool IsProspectiveDeclarationAvailable(
+        VbaProspectiveDeclaration prospective,
+        string candidateName,
+        IEnumerable<VbaSourceDefinition> definitions)
+    {
+        var peers = definitions
+            .Where(definition => prospective.EditedDefinitionIdentity is null
+                || definition.Identity != prospective.EditedDefinitionIdentity)
+            .Where(definition => definition.Name.Equals(
+                candidateName,
+                StringComparison.OrdinalIgnoreCase))
+            .Where(definition => definition.ConditionalCompilationPath is not null)
+            .Where(definition => AreProspectiveCollisionPeers(
+                prospective,
+                definition))
+            .ToArray();
+        if (peers.Length == 0)
+        {
+            return true;
+        }
+
+        return prospective.ConditionalCompilationPath is { IsEmpty: false }
+            && peers.All(definition =>
+                definition.ConditionalCompilationPath is { IsEmpty: false });
+    }
 
     public static string CreateFamilyScope(
         IReadOnlyList<VbaSourceDefinition> variants,
@@ -662,24 +695,63 @@ internal static class VbaDeclarationRelationshipPolicy
     private static bool HaveCompatiblePropertyAccessorKinds(
         VbaSourceDefinition left,
         VbaSourceDefinition right)
+        => HaveCompatiblePropertyAccessorKinds(
+            left.Kind,
+            left.PropertyAccessorKind,
+            right.Kind,
+            right.PropertyAccessorKind);
+
+    private static bool HaveCompatiblePropertyAccessorKinds(
+        VbaSourceDefinitionKind leftKind,
+        VbaPropertyAccessorKind? leftAccessorKind,
+        VbaSourceDefinitionKind rightKind,
+        VbaPropertyAccessorKind? rightAccessorKind)
     {
-        if (left.Kind != VbaSourceDefinitionKind.Property
-            && right.Kind != VbaSourceDefinitionKind.Property)
+        if (leftKind != VbaSourceDefinitionKind.Property
+            && rightKind != VbaSourceDefinitionKind.Property)
         {
             return true;
         }
 
-        if (left.Kind != VbaSourceDefinitionKind.Property
-            || right.Kind != VbaSourceDefinitionKind.Property)
+        if (leftKind != VbaSourceDefinitionKind.Property
+            || rightKind != VbaSourceDefinitionKind.Property)
         {
-            var property = left.Kind == VbaSourceDefinitionKind.Property
-                ? left
-                : right;
-            return property.PropertyAccessorKind is not null;
+            return leftKind == VbaSourceDefinitionKind.Property
+                ? leftAccessorKind is not null
+                : rightAccessorKind is not null;
         }
 
-        return left.PropertyAccessorKind is not null
-            && left.PropertyAccessorKind == right.PropertyAccessorKind;
+        return leftAccessorKind is not null
+            && leftAccessorKind == rightAccessorKind;
+    }
+
+    private static bool AreProspectiveCollisionPeers(
+        VbaProspectiveDeclaration prospective,
+        VbaSourceDefinition definition)
+    {
+        if (!prospective.Uri.Equals(
+                definition.Uri,
+                StringComparison.OrdinalIgnoreCase)
+            || definition.Visibility == VbaSourceDefinitionVisibility.Local
+            || definition.Kind is VbaSourceDefinitionKind.TypeMember
+                or VbaSourceDefinitionKind.Event
+                or VbaSourceDefinitionKind.Module
+                or VbaSourceDefinitionKind.Class
+                or VbaSourceDefinitionKind.Form
+                or VbaSourceDefinitionKind.Enum
+                or VbaSourceDefinitionKind.Type)
+        {
+            return false;
+        }
+
+        var isModuleValuePeer = IsModuleValueDeclaration(definition)
+            || definition.Kind == VbaSourceDefinitionKind.EnumMember;
+        return isModuleValuePeer
+            && HaveCompatiblePropertyAccessorKinds(
+                prospective.Kind,
+                prospective.PropertyAccessorKind,
+                definition.Kind,
+                definition.PropertyAccessorKind);
     }
 
     private static bool IsProjectNamespacePeer(

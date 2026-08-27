@@ -185,6 +185,38 @@ internal sealed class VbaHostClassEventSemanticModel
         return true;
     }
 
+    internal static VbaCallableSignature CreateHandlerSignature(
+        VbaHostClassEventSurface surface,
+        VbaHostEventSignature hostEvent)
+        => CreateHandlerSignature(
+            surface.Projection.IntrinsicEventSourceName,
+            hostEvent);
+
+    internal static VbaCallableSignature CreateHandlerSignature(
+        string eventSourceName,
+        VbaHostEventSignature hostEvent)
+    {
+        var eventSignature = CreateSignature(hostEvent);
+        return eventSignature with
+        {
+            Label = eventSourceName
+                + "_"
+                + hostEvent.Name
+                + "("
+                + string.Join(
+                    ", ",
+                    eventSignature.Parameters.Select(parameter =>
+                        parameter.DisplayLabel ?? parameter.Label))
+                + ")",
+            Documentation = hostEvent.Documentation,
+            CallableKind = VbaCallableKind.Sub
+        };
+    }
+
+    internal static VbaCallableSignature CreateEventSignature(
+        VbaHostEventSignature hostEvent)
+        => CreateSignature(hostEvent);
+
     private VbaSourceDefinition? ResolveNavigableDefinition(
         VbaHostClassEventSurface surface,
         string eventName)

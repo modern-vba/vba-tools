@@ -38,6 +38,11 @@ public sealed record TypeLibCatalogCallableMetadata(
     /// Gets the physical TypeLib Property invoke kind, when known.
     /// </summary>
     public VbaPropertyAccessorKind? PropertyAccessorKind { get; init; }
+
+    /// <summary>
+    /// Gets whether a Function or Property Get result is an array, or null when unavailable.
+    /// </summary>
+    public bool? IsReturnArray { get; init; }
 }
 
 /// <summary>
@@ -157,15 +162,17 @@ public static class TypeLibReferenceCatalogBuilder
 
             foreach (var member in type.Members.Where(member =>
                 !string.IsNullOrEmpty(member.Name)
-                && (TypeLibCatalogMemberFacts.IsAuthoringAvailable(member)
+                && (TypeLibCatalogMemberFacts.IsBrowsableForNameAuthoring(member)
                     || member.Kind == VbaSourceDefinitionKind.Event)))
             {
+                var isCallableMetadataComplete =
+                    member.Metadata?.IsComplete ?? true;
                 definitions.Add(new VbaProjectReferenceDefinition(
                     referenceName,
                     member.Name,
                     member.Kind,
                     member.Documentation,
-                    member.Signature is null
+                    member.Signature is null || !isCallableMetadataComplete
                         ? null
                         : member.Signature with { SupportsNamedArguments = true },
                     ParentTypeName: type.Name,
@@ -173,12 +180,19 @@ public static class TypeLibReferenceCatalogBuilder
                     PropertyAccess: member.PropertyAccess,
                     GlobalExposure: GetGlobalExposure(type),
                     IsAuthoringAvailable:
-                        TypeLibCatalogMemberFacts.IsAuthoringAvailable(member))
+                        member.Kind == VbaSourceDefinitionKind.Event
+                            ? TypeLibCatalogMemberFacts.IsAuthoringAvailable(member)
+                            : TypeLibCatalogMemberFacts
+                                .IsBrowsableForNameAuthoring(member),
+                    IsCallableMetadataComplete:
+                        isCallableMetadataComplete)
                 {
                     PropertyAccessorKind = member.Kind
                         == VbaSourceDefinitionKind.Property
                             ? member.Metadata?.PropertyAccessorKind
-                            : null
+                            : null,
+                    IsReturnArray = member.Metadata?.IsReturnArray,
+                    CallableKind = member.Signature?.CallableKind
                 });
             }
         }
@@ -277,12 +291,15 @@ public static class TypeLibReferenceCatalogBuilder
 
 internal static class TypeLibCatalogMemberFacts
 {
-    public static bool IsAuthoringAvailable(TypeLibCatalogMember member)
+    public static bool IsBrowsableForNameAuthoring(TypeLibCatalogMember member)
         => member.Metadata is null
             ? member.Kind != VbaSourceDefinitionKind.Event
-            : member.Metadata.IsComplete
-                && ComTypeLibCatalogMetadataReader.IsBrowsableFunction(
-                    (FUNCFLAGS)member.Metadata.FunctionFlags);
+            : ComTypeLibCatalogMetadataReader.IsBrowsableFunction(
+                (FUNCFLAGS)member.Metadata.FunctionFlags);
+
+    public static bool IsAuthoringAvailable(TypeLibCatalogMember member)
+        => IsBrowsableForNameAuthoring(member)
+            && (member.Metadata?.IsComplete ?? true);
 }
 
 /// <summary>
@@ -704,6 +721,7 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
                     funcDesc,
                     names.Skip(1).ToArray(),
                     out var returnType,
+                    out var isReturnArray,
                     out var hasReturnValueParameter,
                     out var areParametersComplete);
                 if (!areParametersComplete)
@@ -738,7 +756,13 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
                         IsComplete: areParametersComplete)
                     {
                         PropertyAccessorKind = GetPropertyAccessorKind(
-                            funcDesc.invkind)
+                            funcDesc.invkind),
+                        IsReturnArray = callableKind is VbaCallableKind.Function
+                                || (callableKind == VbaCallableKind.Property
+                                    && GetPropertyAccessorKind(funcDesc.invkind)
+                                        == VbaPropertyAccessorKind.Get)
+                            ? isReturnArray
+                            : null
                     }));
             }
             finally
@@ -758,10 +782,12 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         FUNCDESC funcDesc,
         IReadOnlyList<string> names,
         out VbaTypeReference? returnType,
+        out bool? isReturnArray,
         out bool hasReturnValueParameter,
         out bool isComplete)
     {
         returnType = null;
+        isReturnArray = GetArrayTypeEvidence(funcDesc.elemdescFunc.tdesc);
         hasReturnValueParameter = false;
         isComplete = funcDesc.cParams <= 0
             || funcDesc.lprgelemdescParam != IntPtr.Zero;
@@ -781,6 +807,7 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
             {
                 hasReturnValueParameter = true;
                 returnType = ToTypeReference(typeInfo, element.tdesc);
+                isReturnArray = GetArrayTypeEvidence(element.tdesc);
                 continue;
             }
 
@@ -795,13 +822,19 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
             var isOptional = (element.desc.paramdesc.wParamFlags & PARAMFLAG.PARAMFLAG_FOPT) != 0
                 || (element.desc.paramdesc.wParamFlags & PARAMFLAG.PARAMFLAG_FHASDEFAULT) != 0;
             var isParamArray = funcDesc.cParamsOpt == -1 && index == funcDesc.cParams - 1;
+            var isArray = GetArrayTypeEvidence(element.tdesc);
+            if (!isParamArray && isArray is null)
+            {
+                isComplete = false;
+            }
+
             parameters.Add(new VbaCallableParameter(
                 parameterName,
                 IsOptional: isOptional,
                 TypeReference: ToTypeReference(typeInfo, element.tdesc),
                 IsByRef: GetParameterPassing(element),
                 IsParamArray: isParamArray,
-                IsArray: isParamArray || IsArrayType(element.tdesc)));
+                IsArray: isParamArray || isArray == true));
         }
 
         return parameters;
@@ -927,7 +960,7 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         return null;
     }
 
-    private static bool IsArrayType(TYPEDESC typeDesc)
+    private static bool? GetArrayTypeEvidence(TYPEDESC typeDesc)
     {
         var varType = (VarEnum)typeDesc.vt;
         if (varType is VarEnum.VT_SAFEARRAY or VarEnum.VT_CARRAY)
@@ -935,9 +968,14 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
             return true;
         }
 
-        return varType == VarEnum.VT_PTR
-            && TryGetNestedTypeDescription(typeDesc, out var nestedType)
-            && IsArrayType(nestedType);
+        if (varType != VarEnum.VT_PTR)
+        {
+            return false;
+        }
+
+        return TryGetNestedTypeDescription(typeDesc, out var nestedType)
+            ? GetArrayTypeEvidence(nestedType)
+            : null;
     }
 
     private static VbaTypeReference? ToTypeReference(ITypeInfo typeInfo, TYPEDESC typeDesc)
@@ -971,7 +1009,7 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
             VarEnum.VT_SAFEARRAY => ToNestedTypeReference(typeInfo, typeDesc),
             VarEnum.VT_CARRAY => ToNestedTypeReference(typeInfo, typeDesc),
             VarEnum.VT_USERDEFINED => ToUserDefinedTypeReference(typeInfo, typeDesc),
-            _ => new VbaTypeReference("Variant")
+            _ => null
         };
     }
 

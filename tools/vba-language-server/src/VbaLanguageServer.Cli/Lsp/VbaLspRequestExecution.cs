@@ -25,7 +25,7 @@ internal sealed class VbaLspRequestExecution
         SignatureHelpRetriggerCharacters: ["="],
         CompletionTriggerCharacters:
         [
-            ".", " ", "(", ",", ":", ";", "+", "-", "*", "/", "\\", "^", "&", "=", "<", ">"
+            ".", "_", " ", "(", ",", ":", ";", "+", "-", "*", "/", "\\", "^", "&", "=", "<", ">"
         ],
         SemanticTokenTypes: VbaSemanticTokenLegend.Types,
         SemanticTokenModifiers: VbaSemanticTokenLegend.Modifiers,
@@ -215,18 +215,9 @@ internal sealed class VbaLspRequestExecution
                 })
                 : Direct(RequestOutcome.InvalidParams()),
             "textDocument/completion" =>
-                CapturePositionRequest(
+                CaptureCompletionRequest(
                     parameters,
                     cancellationToken,
-                    (request, inventory, token) =>
-                    {
-                        token.ThrowIfCancellationRequested();
-                        return VbaLspFeatureProjection.CreateCompletionItems(
-                            inventory.GetCompletionResult(
-                                request.Uri,
-                                request.Line,
-                                request.Character));
-                    },
                     Captured,
                     Direct),
             "textDocument/documentSymbol" =>
@@ -361,6 +352,32 @@ internal sealed class VbaLspRequestExecution
         {
             executionToken.ThrowIfCancellationRequested();
             var result = createResult(request, inventory, executionToken);
+            executionToken.ThrowIfCancellationRequested();
+            return RequestOutcome.Success(result);
+        });
+    }
+
+    private CapturedRequest CaptureCompletionRequest(
+        JsonNode? parameters,
+        CancellationToken cancellationToken,
+        Func<Func<CancellationToken, RequestOutcome>, CapturedRequest> captured,
+        Func<RequestOutcome, CapturedRequest> direct)
+    {
+        if (!TryCreateCompletionRequest(parameters, out var request))
+        {
+            return direct(RequestOutcome.InvalidParams());
+        }
+
+        var inventory = CaptureSemanticInventory(request.Uri, cancellationToken);
+        return captured(executionToken =>
+        {
+            executionToken.ThrowIfCancellationRequested();
+            var result = VbaLspFeatureProjection.CreateCompletionItems(
+                inventory.GetCompletionResult(
+                    request.Uri,
+                    request.Line,
+                    request.Character,
+                    request.Invocation));
             executionToken.ThrowIfCancellationRequested();
             return RequestOutcome.Success(result);
         });
@@ -760,6 +777,58 @@ internal sealed class VbaLspRequestExecution
         return true;
     }
 
+    private static bool TryCreateCompletionRequest(
+        JsonNode? parameters,
+        out CompletionRequest request)
+    {
+        request = default!;
+        if (!TryCreatePositionRequest(parameters, out var position))
+        {
+            return false;
+        }
+
+        var invocation = VbaCompletionInvocation.Explicit;
+        if (parameters is JsonObject parameterObject
+            && parameterObject["context"] is JsonObject context)
+        {
+            if (!TryGetInt32(context["triggerKind"], out var triggerKind))
+            {
+                return false;
+            }
+
+            if (triggerKind == 2)
+            {
+                if (!TryGetString(
+                        context["triggerCharacter"],
+                        out var triggerCharacter)
+                    || string.IsNullOrEmpty(triggerCharacter))
+                {
+                    return false;
+                }
+
+                invocation = new VbaCompletionInvocation(
+                    VbaCompletionInvocationKind.TriggerCharacter,
+                    triggerCharacter);
+            }
+            else if (triggerKind == 3)
+            {
+                invocation = new VbaCompletionInvocation(
+                    VbaCompletionInvocationKind.Retrigger);
+            }
+            else if (triggerKind != 1)
+            {
+                return false;
+            }
+        }
+
+        request = new CompletionRequest(
+            position.Uri,
+            position.Line,
+            position.Character,
+            invocation);
+        return true;
+    }
+
     private static bool TryCreateSignatureHelpRequest(
         JsonNode? parameters,
         out SignatureHelpRequest request)
@@ -988,6 +1057,12 @@ internal sealed class VbaLspRequestExecution
         string Uri,
         int Line,
         int Character) : ITextDocumentRequest;
+
+    private sealed record CompletionRequest(
+        string Uri,
+        int Line,
+        int Character,
+        VbaCompletionInvocation Invocation) : ITextDocumentRequest;
 
     private sealed record SignatureHelpRequest(
         string Uri,

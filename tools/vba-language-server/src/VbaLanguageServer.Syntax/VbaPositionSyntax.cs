@@ -96,8 +96,33 @@ public enum VbaCompletionExpectation
     /// <summary>
     /// A procedure label is expected by a branch statement.
     /// </summary>
-    LabelName
+    LabelName,
+
+    /// <summary>
+    /// A callable declaration name may be supplied by a semantic contract.
+    /// </summary>
+    ContractDeclarationName
 }
+
+/// <summary>
+/// Identifies the callable kind required by a declaration-name completion slot.
+/// </summary>
+public enum VbaCallableDeclarationNameKind
+{
+    Sub,
+    Function,
+    PropertyGet,
+    PropertyLet,
+    PropertySet
+}
+
+/// <summary>
+/// Describes an empty or partial callable declaration-name slot.
+/// </summary>
+public sealed record VbaCallableDeclarationNameSyntax(
+    VbaCallableDeclarationNameKind Kind,
+    string Fragment,
+    VbaSyntaxRange FragmentRange);
 
 /// <summary>
 /// Identifies the VBA call form surrounding an editor position.
@@ -223,6 +248,11 @@ public sealed record VbaPositionSyntax(
     VbaLabelReferenceSyntax? LabelReference,
     VbaSyntaxRange? CompletionReplacementRange)
 {
+    /// <summary>
+    /// Gets the active callable declaration-name facts, when applicable.
+    /// </summary>
+    public VbaCallableDeclarationNameSyntax? CallableDeclarationName { get; init; }
+
     /// <summary>
     /// Gets syntax-owned words through the former compatibility name.
     /// </summary>
@@ -485,6 +515,7 @@ internal sealed class VbaPositionSyntaxIndex
         var syntaxWords = GetSyntaxWords(statement, position, enclosingBlocks, callSite);
         var supplementalSyntaxWords = GetSupplementalSyntaxWords(statement, position);
         var starterWords = GetStarterWords(statement, position, enclosingBlocks);
+        var callableDeclarationName = TryGetCallableDeclarationName(statement, position);
         var completionExpectation = GetCompletionExpectation(
             statement,
             position,
@@ -495,7 +526,8 @@ internal sealed class VbaPositionSyntaxIndex
             labelReference,
             contextualStatements,
             syntaxWords,
-            starterWords);
+            starterWords,
+            callableDeclarationName);
         var assignmentPropertyAccessorKind = GetAssignmentPropertyAccessorKind(
             statement,
             completionExpectation);
@@ -504,7 +536,8 @@ internal sealed class VbaPositionSyntaxIndex
             position,
             identifier,
             labelReference,
-            completionExpectation);
+            completionExpectation,
+            callableDeclarationName);
         return new VbaPositionSyntax(
             region,
             identifier,
@@ -520,7 +553,10 @@ internal sealed class VbaPositionSyntaxIndex
             enclosingWithScopes,
             enclosingBlocks,
             labelReference,
-            completionReplacementRange);
+            completionReplacementRange)
+        {
+            CallableDeclarationName = callableDeclarationName
+        };
     }
 
     private static VbaPropertyAccessorKind? GetAssignmentPropertyAccessorKind(
@@ -932,7 +968,8 @@ internal sealed class VbaPositionSyntaxIndex
         VbaLabelReferenceSyntax? labelReference,
         IReadOnlyList<string> contextualStatements,
         IReadOnlyList<string> syntaxWords,
-        IReadOnlyList<string> starterWords)
+        IReadOnlyList<string> starterWords,
+        VbaCallableDeclarationNameSyntax? callableDeclarationName)
     {
         if (IsIncompleteStatementNamedArgumentColon(position))
         {
@@ -996,6 +1033,11 @@ internal sealed class VbaPositionSyntaxIndex
             return typeReference.IsNew
                 ? VbaCompletionExpectation.CreatableType
                 : VbaCompletionExpectation.TypeName;
+        }
+
+        if (callableDeclarationName is not null)
+        {
+            return VbaCompletionExpectation.ContractDeclarationName;
         }
 
         if (syntaxWords.Count > 0)
@@ -1311,10 +1353,95 @@ internal sealed class VbaPositionSyntaxIndex
                 !declaration.IsExternal
                 && position.Offset >= declaration.BlockRange.Start.Offset
                 && position.Offset <= declaration.BlockRange.End.Offset
-                && (position.Line > declaration.LineIndex
+                && (position.Line > declaration.Range.End.Line
                     || statement.StartOffset > declaration.Range.End.Offset))
             ? VbaCompletionExpectation.ProcedureStatement
             : VbaCompletionExpectation.ModuleDeclaration;
+
+    private VbaCallableDeclarationNameSyntax? TryGetCallableDeclarationName(
+        StatementSpan statement,
+        VbaSyntaxPosition position)
+    {
+        if (GetDefaultExpectation(statement, position)
+            != VbaCompletionExpectation.ModuleDeclaration)
+        {
+            return null;
+        }
+
+        var prefix = statement.SignificantTokens
+            .Where(token => token.Range.Start.Offset < position.Offset)
+            .ToArray();
+        if (prefix.Length == 0)
+        {
+            return null;
+        }
+
+        if (!VbaBlockHeaderSyntax.TryGetCallableDeclarationNameShape(
+                prefix,
+                moduleKind,
+                out var kind,
+                out var nameIndex))
+        {
+            return null;
+        }
+
+        var declarationEnd = prefix[nameIndex - 1];
+        if (nameIndex == prefix.Length)
+        {
+            return HasTrailingWhitespace(position, declarationEnd)
+                ? new VbaCallableDeclarationNameSyntax(
+                    kind,
+                    string.Empty,
+                    new VbaSyntaxRange(position, position))
+                : null;
+        }
+
+        if (!IsNameToken(prefix[nameIndex])
+            || prefix[nameIndex].Range.Start.Offset <= declarationEnd.Range.End.Offset
+            || position.Offset != prefix[nameIndex].Range.End.Offset)
+        {
+            return null;
+        }
+
+        if (!IsCallableDeclarationNameSeparator(
+                declarationEnd.Range.End.Offset,
+                prefix[nameIndex].Range.Start.Offset))
+        {
+            return null;
+        }
+
+        return new VbaCallableDeclarationNameSyntax(
+            kind,
+            prefix[nameIndex].Text,
+            prefix[nameIndex].Range);
+    }
+
+    private bool IsCallableDeclarationNameSeparator(int startOffset, int endOffset)
+    {
+        if (startOffset >= endOffset)
+        {
+            return false;
+        }
+
+        var cursor = startOffset;
+        foreach (var token in tokens.Where(token =>
+                     token.Range.End.Offset > startOffset
+                     && token.Range.Start.Offset < endOffset))
+        {
+            if (token.Range.Start.Offset != cursor
+                || token.Range.End.Offset > endOffset
+                || token.Kind is not (VbaTokenKind.Whitespace
+                    or VbaTokenKind.NewLine
+                    or VbaTokenKind.LineContinuation))
+            {
+                return false;
+            }
+
+            cursor = token.Range.End.Offset;
+        }
+
+        return cursor == endOffset;
+    }
 
     private IReadOnlyList<string> GetStarterWords(
         StatementSpan statement,
@@ -2548,11 +2675,17 @@ internal sealed class VbaPositionSyntaxIndex
         VbaSyntaxPosition position,
         VbaPositionIdentifierSyntax? identifier,
         VbaLabelReferenceSyntax? labelReference,
-        VbaCompletionExpectation expectation)
+        VbaCompletionExpectation expectation,
+        VbaCallableDeclarationNameSyntax? callableDeclarationName)
     {
         if (labelReference is not null)
         {
             return labelReference.ReplacementRange;
+        }
+
+        if (expectation == VbaCompletionExpectation.ContractDeclarationName)
+        {
+            return callableDeclarationName?.FragmentRange;
         }
 
         var prefix = statement.SignificantTokens

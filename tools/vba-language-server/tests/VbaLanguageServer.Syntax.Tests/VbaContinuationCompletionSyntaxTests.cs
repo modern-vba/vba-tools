@@ -404,13 +404,11 @@ public sealed class VbaContinuationCompletionSyntaxTests
         Assert.Empty(position.StarterWords);
     }
 
-    [Theory]
-    [InlineData("Public Banana ")]
-    [InlineData("Public Function ")]
-    [InlineData("Public Sub ")]
-    public void InvalidOrNameSlotsAfterDeclarationsFailClosed(string declaration)
+    [Fact]
+    public void InvalidDeclarationNameSlotFailsClosed()
     {
         const string uri = "file:///C:/work/Worker.bas";
+        const string declaration = "Public Banana ";
         var source = ModuleSource(uri, declaration);
         var tree = VbaSyntaxTree.ParseModule(uri, source);
         var position = tree.GetPositionSyntax(1, declaration.Length);
@@ -420,11 +418,87 @@ public sealed class VbaContinuationCompletionSyntaxTests
     }
 
     [Theory]
+    [InlineData("Public Sub ", VbaCallableDeclarationNameKind.Sub)]
+    [InlineData("Public Function ", VbaCallableDeclarationNameKind.Function)]
+    [InlineData("Public Property Get ", VbaCallableDeclarationNameKind.PropertyGet)]
+    [InlineData("Public Property Let ", VbaCallableDeclarationNameKind.PropertyLet)]
+    [InlineData("Public Property Set ", VbaCallableDeclarationNameKind.PropertySet)]
+    public void CompleteCallableKeywordsExposeAnEmptyContractNameSlot(
+        string declaration,
+        VbaCallableDeclarationNameKind expectedKind)
+    {
+        const string uri = "file:///C:/work/Worker.cls";
+        var source = ModuleSource(uri, declaration);
+        var position = VbaSyntaxTree
+            .ParseModule(uri, source)
+            .GetPositionSyntax(
+                source.Count(character => character == '\n'),
+                declaration.Length);
+
+        Assert.Equal(
+            VbaCompletionExpectation.ContractDeclarationName,
+            position.CompletionExpectation);
+        Assert.Equal(expectedKind, position.CallableDeclarationName?.Kind);
+        Assert.Equal(string.Empty, position.CallableDeclarationName?.Fragment);
+    }
+
+    [Theory]
+    [InlineData("Private Sub _", VbaCallableDeclarationNameKind.Sub)]
+    [InlineData("Private Property Get _", VbaCallableDeclarationNameKind.PropertyGet)]
+    public void ExplicitLineContinuationPreservesAPartialContractNameSlot(
+        string declaration,
+        VbaCallableDeclarationNameKind expectedKind)
+    {
+        const string fragmentLine = "    PuB";
+        var source = string.Join("\r\n", [
+            "Attribute VB_Name = \"Worker\"",
+            declaration,
+            fragmentLine
+        ]);
+        var position = VbaSyntaxTree
+            .ParseModule("file:///C:/work/Worker.cls", source)
+            .GetPositionSyntax(2, fragmentLine.Length);
+
+        Assert.Equal(
+            VbaCompletionExpectation.ContractDeclarationName,
+            position.CompletionExpectation);
+        Assert.Equal(expectedKind, position.CallableDeclarationName?.Kind);
+        Assert.Equal("PuB", position.CallableDeclarationName?.Fragment);
+        Assert.Equal("PuB", Slice(source, position.CallableDeclarationName!.FragmentRange));
+    }
+
+    [Theory]
+    [InlineData("Private Sub _", VbaCallableDeclarationNameKind.Sub)]
+    [InlineData("Private Property Get _", VbaCallableDeclarationNameKind.PropertyGet)]
+    public void ExplicitLineContinuationPreservesAnEmptyContractNameSlot(
+        string declaration,
+        VbaCallableDeclarationNameKind expectedKind)
+    {
+        const string emptyNameLine = "    ";
+        var source = string.Join("\r\n", [
+            "Attribute VB_Name = \"Worker\"",
+            declaration,
+            emptyNameLine
+        ]);
+        var position = VbaSyntaxTree
+            .ParseModule("file:///C:/work/Worker.cls", source)
+            .GetPositionSyntax(2, emptyNameLine.Length);
+
+        Assert.Equal(
+            VbaCompletionExpectation.ContractDeclarationName,
+            position.CompletionExpectation);
+        Assert.Equal(expectedKind, position.CallableDeclarationName?.Kind);
+        Assert.Equal(string.Empty, position.CallableDeclarationName?.Fragment);
+        Assert.Equal(
+            position.CallableDeclarationName?.FragmentRange.Start,
+            position.CallableDeclarationName?.FragmentRange.End);
+    }
+
+    [Theory]
     [InlineData("file:///C:/work/Worker.bas", "Friend ")]
     [InlineData("file:///C:/work/Worker.bas", "Property ")]
     [InlineData("file:///C:/work/Worker.cls", "Declare ")]
     [InlineData("file:///C:/work/Worker.cls", "Public Declare ")]
-    [InlineData("file:///C:/work/Worker.cls", "Public Property Get ")]
     public void ModuleSpecificInvalidDeclarationContinuationsFailClosed(
         string uri,
         string declaration)
