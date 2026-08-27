@@ -838,6 +838,67 @@ internal sealed class VbaProjectValidationDiagnosticIndex
                          definition.Kind is VbaSourceDefinitionKind.Procedure
                              or VbaSourceDefinitionKind.Property))
             {
+                var intrinsicAnalysis = semanticResolution
+                    .AnalyzeIntrinsicHostHandler(document, handler);
+                if (intrinsicAnalysis is not null)
+                {
+                    if (intrinsicAnalysis.Surface.Authority
+                        == VbaHostClassEventAuthority.Current)
+                    {
+                        var intrinsicCallable = syntaxTree.Module
+                            .CallableDeclarations.FirstOrDefault(candidate =>
+                                candidate.Range.Start.Line
+                                    == handler.Range.Start.Line
+                                && candidate.Name.Equals(
+                                    handler.Name,
+                                    StringComparison.OrdinalIgnoreCase)
+                                && candidate.PropertyAccessorKind
+                                    == handler.PropertyAccessorKind);
+                        if (intrinsicCallable?.DeclarationKeywordRange
+                                is { } intrinsicKeywordRange
+                            && intrinsicAnalysis.Recognition
+                                == VbaIntrinsicHostHandlerRecognition
+                                    .NonSubProcedureAssociation)
+                        {
+                            AddProjectDiagnostic(
+                                diagnostics,
+                                document.Uri,
+                                new VbaProjectValidationDiagnostic(
+                                    "validation.eventHandlerMustBeSub",
+                                    "Event handlers must be declared as Sub procedures.",
+                                    ToRange(intrinsicKeywordRange)));
+                        }
+
+                        else if (intrinsicCallable is not null
+                            && intrinsicAnalysis.Recognition
+                                == VbaIntrinsicHostHandlerRecognition
+                                    .ResolvedHandler)
+                        {
+                            var intrinsicCompatibility = semanticResolution
+                                .AnalyzeIntrinsicHostHandlerCompatibility(
+                                    document,
+                                    intrinsicAnalysis);
+                            if (intrinsicCompatibility.ShouldReportDiagnostic)
+                            {
+                                AddProjectDiagnostic(
+                                    diagnostics,
+                                    document.Uri,
+                                    new VbaProjectValidationDiagnostic(
+                                        "validation.incompatibleEventHandlerSignature",
+                                        "Event handler signature does not match any available Event signature.",
+                                        intrinsicCallable.ParameterListRange
+                                            is { } intrinsicParameterListRange
+                                            ? ToRange(intrinsicParameterListRange)
+                                            : handler.Range,
+                                        Details: intrinsicCompatibility
+                                            .CreateDiagnosticDetails()));
+                            }
+                        }
+                    }
+
+                    continue;
+                }
+
                 var analysis = semanticResolution.AnalyzeWithEventsHandler(
                     document,
                     handler);

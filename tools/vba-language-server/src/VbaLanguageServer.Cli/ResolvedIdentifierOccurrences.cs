@@ -152,13 +152,24 @@ internal sealed class VbaResolvedIdentifierOccurrenceIndex
                 continue;
             }
 
-            var separatorIndex = token.Text.LastIndexOf('_');
-            if (separatorIndex > 0 && separatorIndex < token.Text.Length - 1)
+            var splitOccurrence = false;
+            for (var separatorIndex = 1;
+                separatorIndex < token.Text.Length - 1;
+                separatorIndex++)
             {
+                if (token.Text[separatorIndex] != '_')
+                {
+                    continue;
+                }
+
                 var separatorTarget = resolveSourceTarget(
                     document.Uri,
                     token.Range.Start.Line,
                     token.Range.Start.Character + separatorIndex);
+                var suffixTarget = resolveSourceTarget(
+                    document.Uri,
+                    token.Range.Start.Line,
+                    token.Range.Start.Character + separatorIndex + 1);
                 if (separatorTarget is not null
                     && separatorTarget.Identity != target.Identity)
                 {
@@ -171,10 +182,6 @@ internal sealed class VbaResolvedIdentifierOccurrenceIndex
                         token.Range.Start.Character + separatorIndex,
                         target);
 
-                    var suffixTarget = resolveSourceTarget(
-                        document.Uri,
-                        token.Range.Start.Line,
-                        token.Range.Start.Character + separatorIndex + 1);
                     if (suffixTarget is not null)
                     {
                         AddTargetOccurrences(
@@ -187,8 +194,37 @@ internal sealed class VbaResolvedIdentifierOccurrenceIndex
                             suffixTarget);
                     }
 
-                    continue;
+                    splitOccurrence = true;
+                    break;
                 }
+
+                if (suffixTarget is VbaHostEventNameTarget
+                    && suffixTarget.Identity != target.Identity)
+                {
+                    AddOccurrence(
+                        occurrences,
+                        document.Uri,
+                        token.Text,
+                        token.Range.Start.Line,
+                        token.Range.Start.Character,
+                        token.Range.End.Character,
+                        target);
+                    AddTargetOccurrences(
+                        occurrences,
+                        document.Uri,
+                        token.Text[(separatorIndex + 1)..],
+                        token.Range.Start.Line,
+                        token.Range.Start.Character + separatorIndex + 1,
+                        token.Range.End.Character,
+                        suffixTarget);
+                    splitOccurrence = true;
+                    break;
+                }
+            }
+
+            if (splitOccurrence)
+            {
+                continue;
             }
 
             AddOccurrence(

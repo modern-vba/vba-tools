@@ -2456,7 +2456,9 @@ public sealed class WithEventsLanguageServerProcessTests
                             VbaSourceDefinitionKind.Class)
                     ])));
             store.Save(new VbaProjectReferenceCatalogPersistentEntry(
-                CreateGeneratedReferenceCatalogIdentity("Second Library"),
+                CreateGeneratedReferenceCatalogIdentity(
+                    "Second Library",
+                    "{44444444-4444-4444-4444-444444444444}"),
                 new VbaProjectReferenceCatalog(
                     "Second Library",
                     ["Second"],
@@ -3605,10 +3607,11 @@ public sealed class WithEventsLanguageServerProcessTests
     }
 
     private static VbaProjectReferenceCatalogIdentity CreateGeneratedReferenceCatalogIdentity(
-        string referenceName)
+        string referenceName,
+        string libraryGuid = "{33333333-3333-3333-3333-333333333333}")
         => new(
             referenceName,
-            "{33333333-3333-3333-3333-333333333333}",
+            libraryGuid,
             1,
             0,
             0,

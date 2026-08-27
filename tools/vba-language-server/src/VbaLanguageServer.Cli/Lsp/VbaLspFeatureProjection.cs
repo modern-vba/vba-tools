@@ -163,18 +163,27 @@ internal static class VbaLspFeatureProjection
 
     public static object? CreateHover(VbaHoverResult? hover)
     {
-        if (hover is null || hover.Definitions.Count == 0)
+        if (hover is null
+            || hover.Definitions.Count == 0
+                && hover.ResolvedProjectedEventContracts.Count == 0)
         {
             return null;
         }
 
-        var definition = hover.Definitions[0];
-        var value = hover.IsConditionalFamily
+        var projectedEvents = hover.ResolvedProjectedEventContracts;
+        var value = projectedEvents.Count == 1
+                && hover.Definitions.Count == 0
+                && !hover.IsConditionalFamily
+            ? CreateProjectedEventHoverValue(projectedEvents[0])
+            : hover.IsConditionalFamily
             ? $"**{hover.CanonicalName} [#If]**\n\n"
                 + string.Join(
                     "\n\n",
-                    hover.Definitions.Select(CreateConditionalHoverVariant))
-            : CreateOrdinaryHoverValue(definition);
+                    hover.Definitions
+                        .Select(CreateConditionalHoverVariant)
+                        .Concat(projectedEvents.Select(
+                            CreateProjectedEventHoverVariant)))
+            : CreateOrdinaryHoverValue(hover.Definitions[0]);
         return new
         {
             contents = new
@@ -184,6 +193,29 @@ internal static class VbaLspFeatureProjection
             },
             range = hover.Range
         };
+    }
+
+    private static string CreateProjectedEventHoverValue(
+        VbaResolvedEventContract contract)
+    {
+        var declaration = CreateHoverDeclarationBlock(
+            contract.Signature?.Label ?? contract.Name);
+        return string.IsNullOrWhiteSpace(contract.Documentation)
+            ? declaration
+            : $"{contract.Documentation}\n\n---\n\n{declaration}";
+    }
+
+    private static string CreateProjectedEventHoverVariant(
+        VbaResolvedEventContract contract)
+    {
+        var conditionalMarker = contract.IsConditionalContract
+            ? " [#If]"
+            : string.Empty;
+        var block = CreateHoverDeclarationBlock(
+            $"{contract.Signature?.Label ?? contract.Name}{conditionalMarker}");
+        return string.IsNullOrWhiteSpace(contract.Documentation)
+            ? block
+            : $"{block}\n\n{contract.Documentation}";
     }
 
     private static string CreateOrdinaryHoverValue(VbaSourceDefinition definition)

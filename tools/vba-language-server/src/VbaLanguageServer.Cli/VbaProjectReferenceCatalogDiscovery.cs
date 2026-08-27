@@ -640,6 +640,8 @@ public sealed class VbaProjectReferenceCatalogCache
             var selectedCatalogSet = catalogSet;
             var selectedSources = new Dictionary<string, VbaProjectReferenceCatalogSource>(
                 VbaProjectReferenceName.Comparer);
+            var selectedIdentities = new Dictionary<string, VbaProjectReferenceCatalogIdentity>(
+                VbaProjectReferenceName.Comparer);
             Dictionary<string, ScopedReferenceCatalogBinding>? scopeBindings = null;
             if (scopeKey is not null)
             {
@@ -665,16 +667,28 @@ public sealed class VbaProjectReferenceCatalogCache
                 {
                     selectedCatalogSet = selectedCatalogSet.WithCatalog(scopedBinding.Catalog);
                     selectedSources[referenceName] = scopedBinding.Source;
+                    if (scopedBinding.Identity is not null)
+                    {
+                        selectedIdentities[referenceName] = scopedBinding.Identity;
+                    }
                     selectedRevision = Math.Max(
                         selectedRevision,
                         scopedBinding.ChangeVersion);
+                }
+                else if (selectedSources[referenceName] is
+                        VbaProjectReferenceCatalogSource.Persisted
+                            or VbaProjectReferenceCatalogSource.Generated
+                    && identities.TryGetValue(referenceName, out var identity))
+                {
+                    selectedIdentities[referenceName] = identity;
                 }
             }
 
             return new VbaProjectReferenceCatalogSelectionState(
                 selectedCatalogSet,
                 selectedRevision,
-                selectedSources);
+                selectedSources,
+                selectedIdentities);
         }
     }
 
@@ -1206,7 +1220,8 @@ public sealed record VbaProjectReferenceCatalogCacheState(
 internal readonly record struct VbaProjectReferenceCatalogSelectionState(
     VbaProjectReferenceCatalogSet CatalogSet,
     long Revision,
-    IReadOnlyDictionary<string, VbaProjectReferenceCatalogSource> Sources);
+    IReadOnlyDictionary<string, VbaProjectReferenceCatalogSource> Sources,
+    IReadOnlyDictionary<string, VbaProjectReferenceCatalogIdentity> Identities);
 
 /// <summary>
 /// Identifies where the active catalog for a reference came from.

@@ -16,7 +16,8 @@ internal enum VbaWithEventsTypeEligibilityKind
 internal sealed record VbaWithEventsTypeEligibility(
     VbaWithEventsTypeEligibilityKind Kind,
     VbaSourceDefinition? TypeDefinition = null,
-    VbaTypeLibEventSurface? TypeLibEventSurface = null);
+    VbaTypeLibEventSurface? TypeLibEventSurface = null,
+    VbaHostClassEventSurface? HostClassEventSurface = null);
 
 internal enum VbaWithEventsEventBindingStatus
 {
@@ -73,6 +74,30 @@ internal sealed record VbaIntrinsicParameterTypeIdentity(string Name)
         => StringComparer.OrdinalIgnoreCase.GetHashCode(Name);
 }
 
+internal sealed record VbaTypeLibraryParameterTypeIdentity(
+    string Name,
+    Guid LibraryGuid,
+    int MajorVersion,
+    int MinorVersion,
+    int Lcid)
+{
+    public bool Equals(VbaTypeLibraryParameterTypeIdentity? other)
+        => other is not null
+            && Name.Equals(other.Name, StringComparison.OrdinalIgnoreCase)
+            && LibraryGuid == other.LibraryGuid
+            && MajorVersion == other.MajorVersion
+            && MinorVersion == other.MinorVersion
+            && Lcid == other.Lcid;
+
+    public override int GetHashCode()
+        => HashCode.Combine(
+            StringComparer.OrdinalIgnoreCase.GetHashCode(Name),
+            LibraryGuid,
+            MajorVersion,
+            MinorVersion,
+            Lcid);
+}
+
 internal sealed record VbaResolvedEventContract(
     VbaResolvedEventContractIdentity Identity,
     string Name,
@@ -101,8 +126,13 @@ internal sealed record VbaWithEventsEventBindingEntry(
     VbaWithEventsEventBindingStatus Status,
     VbaResolvedNameTarget? EventTarget = null,
     IReadOnlyList<VbaResolvedEventContract>? EventContracts = null,
-    bool HasRecoveredEventEvidence = false)
+    bool HasRecoveredEventEvidence = false,
+    IReadOnlyList<VbaResolvedNameTarget>? EventTargets = null)
 {
+    public IReadOnlyList<VbaResolvedNameTarget> ResolvedEventTargets
+        => EventTargets
+            ?? (EventTarget is null ? [] : [EventTarget]);
+
     public bool IsDiagnosticAuthoritative
         => !HasRecoveredEventEvidence
             && EventContracts is { Count: > 0 }
@@ -234,10 +264,22 @@ internal sealed record VbaWithEventsHandlerNameDecomposition(
 internal sealed class VbaWithEventsSemanticModel
 {
     private readonly VbaNameResolutionService nameResolution;
+    private readonly VbaHostClassEventSemanticModel hostClassEvents;
+    private readonly IReadOnlyDictionary<string, VbaProjectReferenceCatalogIdentity>
+        referenceCatalogIdentities;
 
-    public VbaWithEventsSemanticModel(VbaNameResolutionService nameResolution)
+    public VbaWithEventsSemanticModel(
+        VbaNameResolutionService nameResolution,
+        VbaHostClassEventSemanticModel? hostClassEvents = null,
+        IReadOnlyDictionary<string, VbaProjectReferenceCatalogIdentity>?
+            referenceCatalogIdentities = null)
     {
         this.nameResolution = nameResolution;
+        this.hostClassEvents = hostClassEvents
+            ?? new VbaHostClassEventSemanticModel(snapshot: null);
+        this.referenceCatalogIdentities = referenceCatalogIdentities
+            ?? new Dictionary<string, VbaProjectReferenceCatalogIdentity>(
+                VbaProjectReferenceName.Comparer);
     }
 
     public VbaWithEventsTypeEligibility? ClassifyType(
@@ -342,6 +384,13 @@ internal sealed class VbaWithEventsSemanticModel
             typeDefinition.Name,
             ReferenceName: null,
             typeDefinition);
+        var typeDocument = nameResolution.FindDocument(typeDefinition.Uri);
+        var hostSurface = typeDocument is not null
+            && hostClassEvents.TryGetEffectiveSurface(
+                typeDocument,
+                out var effectiveHostSurface)
+            ? effectiveHostSurface
+            : null;
         var sourceEvents = nameResolution
             .GetPhysicalMembersOfType(resolvedType)
             .Where(member => member.Kind == VbaSourceDefinitionKind.Event)
@@ -357,12 +406,31 @@ internal sealed class VbaWithEventsSemanticModel
         {
             return new VbaWithEventsTypeEligibility(
                 VbaWithEventsTypeEligibilityKind.Eligible,
-                typeDefinition);
+                typeDefinition,
+                HostClassEventSurface: hostSurface);
         }
 
-        if (typeDefinition.Kind == VbaSourceDefinitionKind.Form
-            || sourceEvents.Length > 0
-            || hasIncompleteEventSurface)
+        if (sourceEvents.Length > 0 || hasIncompleteEventSurface)
+        {
+            return new VbaWithEventsTypeEligibility(
+                VbaWithEventsTypeEligibilityKind.Indeterminate,
+                typeDefinition,
+                HostClassEventSurface: hostSurface);
+        }
+
+        if (hostSurface is not null)
+        {
+            return new VbaWithEventsTypeEligibility(
+                hostSurface.Authority == VbaHostClassEventAuthority.Current
+                    ? hostSurface.Projection.Events.Count == 0
+                        ? VbaWithEventsTypeEligibilityKind.InvalidNoEvents
+                        : VbaWithEventsTypeEligibilityKind.Eligible
+                    : VbaWithEventsTypeEligibilityKind.Indeterminate,
+                typeDefinition,
+                HostClassEventSurface: hostSurface);
+        }
+
+        if (typeDefinition.Kind == VbaSourceDefinitionKind.Form)
         {
             return new VbaWithEventsTypeEligibility(
                 VbaWithEventsTypeEligibilityKind.Indeterminate,
@@ -377,16 +445,34 @@ internal sealed class VbaWithEventsSemanticModel
     public VbaEventHandlerCompatibility AnalyzeHandlerCompatibility(
         VbaSourceDocument currentDocument,
         VbaWithEventsHandlerAnalysis handlerAnalysis)
+        => AnalyzeHandlerCompatibility(
+            currentDocument,
+            handlerAnalysis.Handler,
+            handlerAnalysis.BindingSet.ResolvedEventSignatures);
+
+    public VbaEventHandlerCompatibility AnalyzeHandlerCompatibility(
+        VbaSourceDocument currentDocument,
+        VbaIntrinsicHostHandlerAnalysis handlerAnalysis)
+        => AnalyzeHandlerCompatibility(
+            currentDocument,
+            handlerAnalysis.Handler,
+            new VbaResolvedEventSignatureSet(
+                [handlerAnalysis.EventTarget.EventContract],
+                HasRecoveredEventEvidence: false));
+
+    private VbaEventHandlerCompatibility AnalyzeHandlerCompatibility(
+        VbaSourceDocument currentDocument,
+        VbaSourceDefinition handler,
+        VbaResolvedEventSignatureSet? signatureSet)
     {
-        var handlerSignature = handlerAnalysis.Handler.Signature;
+        var handlerSignature = handler.Signature;
         if (handlerSignature is null
-            || handlerAnalysis.Handler.CallableKind != VbaCallableKind.Sub)
+            || handler.CallableKind != VbaCallableKind.Sub)
         {
             return new VbaEventHandlerCompatibility([], false);
         }
 
         var comparisons = new List<VbaEventHandlerSignatureCompatibility>();
-        var signatureSet = handlerAnalysis.BindingSet.ResolvedEventSignatures;
         if (signatureSet is null)
         {
             return new VbaEventHandlerCompatibility([], false);
@@ -396,7 +482,7 @@ internal sealed class VbaWithEventsSemanticModel
         {
             comparisons.Add(CompareSignatures(
                 currentDocument,
-                handlerAnalysis.Handler,
+                handler,
                 handlerSignature,
                 eventContract));
         }
@@ -449,7 +535,14 @@ internal sealed class VbaWithEventsSemanticModel
                     found,
                     out var foundType))
             {
-                if (!Equals(expectedType.Identity, foundType.Identity))
+                if (!Equals(expectedType.Identity, foundType.Identity)
+                    && HasIncompletePortableTypeComparison(
+                        expectedType.Identity,
+                        foundType.Identity))
+                {
+                    hasIndeterminateEvidence = true;
+                }
+                else if (!Equals(expectedType.Identity, foundType.Identity))
                 {
                     var diagnosticTypeNames = GetDiagnosticTypeNames(
                         expectedType,
@@ -629,6 +722,11 @@ internal sealed class VbaWithEventsSemanticModel
             qualifier = preferredReferenceQualifier;
         }
 
+        object identity = TryCreateTypeLibraryParameterTypeIdentity(
+                definition,
+                out var typeLibraryIdentity)
+            ? typeLibraryIdentity
+            : target.Identity;
         type = new VbaResolvedEventParameterTypeEvidence(
             qualifier is null
                 ? target.CanonicalName
@@ -636,9 +734,55 @@ internal sealed class VbaWithEventsSemanticModel
             !string.IsNullOrEmpty(preferredReferenceQualifier)
                 ? $"{preferredReferenceQualifier}.{target.CanonicalName}"
                 : null,
-            target.Identity);
+            identity);
         return true;
     }
+
+    private bool TryCreateTypeLibraryParameterTypeIdentity(
+        VbaSourceDefinition definition,
+        out VbaTypeLibraryParameterTypeIdentity identity)
+    {
+        identity = default!;
+        if (definition.Identity.Origin != VbaDefinitionOrigin.ProjectReference)
+        {
+            return false;
+        }
+
+        var referenceName = definition.Identity.ReferenceName
+            ?? definition.ModuleName;
+        if (!referenceCatalogIdentities.TryGetValue(
+                referenceName,
+                out var catalogIdentity)
+            || !VbaProjectReferenceName.AreEquivalent(
+                referenceName,
+                catalogIdentity.ReferenceName)
+            || !Guid.TryParse(catalogIdentity.Guid, out var libraryGuid))
+        {
+            return false;
+        }
+
+        identity = new VbaTypeLibraryParameterTypeIdentity(
+            definition.Name,
+            libraryGuid,
+            catalogIdentity.MajorVersion,
+            catalogIdentity.MinorVersion,
+            catalogIdentity.Lcid);
+        return true;
+    }
+
+    private static bool HasIncompletePortableTypeComparison(
+        object expectedIdentity,
+        object foundIdentity)
+        => expectedIdentity is VbaTypeLibraryParameterTypeIdentity
+                && IsUnmappedProjectReferenceIdentity(foundIdentity)
+            || foundIdentity is VbaTypeLibraryParameterTypeIdentity
+                && IsUnmappedProjectReferenceIdentity(expectedIdentity);
+
+    private static bool IsUnmappedProjectReferenceIdentity(object identity)
+        => identity is VbaDefinitionNameTargetIdentity
+        {
+            DefinitionIdentity.Origin: VbaDefinitionOrigin.ProjectReference
+        };
 
     private static (string Expected, string Found) GetDiagnosticTypeNames(
         VbaResolvedEventParameterTypeEvidence expected,

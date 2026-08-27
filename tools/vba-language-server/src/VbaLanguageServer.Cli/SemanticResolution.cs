@@ -16,6 +16,7 @@ internal sealed class VbaSemanticResolution
     private readonly VbaMemberChainResolution memberChainResolution;
     private readonly VbaCallSiteResolution callSiteResolution;
     private readonly VbaWithEventsSemanticModel withEventsSemantics;
+    private readonly VbaHostClassEventSemanticModel hostClassEvents;
 
     /// <summary>
     /// Creates the semantic resolution service.
@@ -23,7 +24,10 @@ internal sealed class VbaSemanticResolution
     /// <param name="definitionCandidates">The immutable source and reference candidate inventory.</param>
     public VbaSemanticResolution(
         VbaNameCandidateInventory definitionCandidates,
-        VbaResolutionPolicy? resolutionPolicy = null)
+        VbaResolutionPolicy? resolutionPolicy = null,
+        VbaHostClassProjectionSnapshot? hostClassProjectionSnapshot = null,
+        IReadOnlyDictionary<string, VbaProjectReferenceCatalogIdentity>?
+            referenceCatalogIdentities = null)
     {
         this.definitionCandidates = definitionCandidates;
         resolutionPolicy ??= new VbaResolutionPolicy(
@@ -34,7 +38,14 @@ internal sealed class VbaSemanticResolution
             resolutionPolicy);
         typeResolution = new VbaTypeResolution(nameResolution);
         memberChainResolution = new VbaMemberChainResolution(typeResolution);
-        withEventsSemantics = new VbaWithEventsSemanticModel(nameResolution);
+        hostClassEvents = new VbaHostClassEventSemanticModel(
+            hostClassProjectionSnapshot,
+            nameResolution,
+            referenceCatalogIdentities);
+        withEventsSemantics = new VbaWithEventsSemanticModel(
+            nameResolution,
+            hostClassEvents,
+            referenceCatalogIdentities);
         callSiteResolution = new VbaCallSiteResolution(
             nameResolution,
             memberChainResolution,
@@ -54,6 +65,21 @@ internal sealed class VbaSemanticResolution
     internal VbaEventHandlerCompatibility AnalyzeWithEventsHandlerCompatibility(
         VbaSourceDocument currentDocument,
         VbaWithEventsHandlerAnalysis handlerAnalysis)
+        => withEventsSemantics.AnalyzeHandlerCompatibility(
+            currentDocument,
+            handlerAnalysis);
+
+    internal VbaIntrinsicHostHandlerAnalysis? AnalyzeIntrinsicHostHandler(
+        VbaSourceDocument currentDocument,
+        VbaSourceDefinition handler)
+        => hostClassEvents.AnalyzeIntrinsicHandler(
+            currentDocument,
+            handler);
+
+    internal VbaEventHandlerCompatibility
+        AnalyzeIntrinsicHostHandlerCompatibility(
+            VbaSourceDocument currentDocument,
+            VbaIntrinsicHostHandlerAnalysis handlerAnalysis)
         => withEventsSemantics.AnalyzeHandlerCompatibility(
             currentDocument,
             handlerAnalysis);
@@ -365,7 +391,22 @@ internal sealed class VbaSemanticResolution
     /// <param name="character">The zero-based character.</param>
     /// <returns>The resolved source or reference definition, or null when unresolved or ambiguous.</returns>
     public VbaSourceDefinition? ResolveSourceDefinition(string uri, int line, int character)
-        => ResolveSourceTarget(uri, line, character)?.SelectedDefinition;
+    {
+        var target = ResolveSourceTarget(uri, line, character);
+        return target switch
+        {
+            VbaHostEventNameTarget hostEventTarget
+                => hostEventTarget.NavigableDefinition,
+            VbaWithEventsEventNameTarget withEventsTarget
+                when withEventsTarget.EventTargets.All(eventTarget =>
+                    eventTarget is VbaHostEventNameTarget)
+                => withEventsTarget.EventTargets
+                    .OfType<VbaHostEventNameTarget>()
+                    .Select(eventTarget => eventTarget.NavigableDefinition)
+                    .FirstOrDefault(definition => definition is not null),
+            _ => target?.SelectedDefinition
+        };
+    }
 
     internal VbaResolvedNameTarget? ResolveSourceTarget(
         string uri,
@@ -475,6 +516,24 @@ internal sealed class VbaSemanticResolution
                     StringComparison.OrdinalIgnoreCase));
         if (declaredDefinition?.Kind == VbaSourceDefinitionKind.Event)
         {
+            return resolutionPolicy.CreateNameTarget(declaredDefinition);
+        }
+
+        if (declaredDefinition is not null
+            && hostClassEvents.AnalyzeIntrinsicHandler(
+                currentDocument,
+                declaredDefinition) is { } intrinsicHandler)
+        {
+            var prefixLength = intrinsicHandler.Surface.Projection
+                .IntrinsicEventSourceName.Length;
+            var identifierOffset = character
+                - declaredDefinition.Range.Start.Character;
+            if (line == declaredDefinition.Range.Start.Line
+                && identifierOffset > prefixLength)
+            {
+                return intrinsicHandler.EventTarget;
+            }
+
             return resolutionPolicy.CreateNameTarget(declaredDefinition);
         }
 
@@ -805,6 +864,43 @@ internal sealed class VbaSemanticResolution
         if (handler is null)
         {
             return null;
+        }
+
+        var intrinsicAnalysis = hostClassEvents.AnalyzeIntrinsicHandler(
+            currentDocument,
+            handler);
+        if (intrinsicAnalysis?.EventTarget.EventContract.Signature
+            is { } hostEventSignature)
+        {
+            var intrinsicParameterIndex = GetHandlerParameterIndex(
+                callable,
+                position);
+            var signature = hostEventSignature with
+            {
+                Label = intrinsicAnalysis.Surface.Projection
+                    .IntrinsicEventSourceName
+                    + "_"
+                    + intrinsicAnalysis.HostEvent.Name
+                    + "("
+                    + string.Join(
+                        ", ",
+                        hostEventSignature.Parameters.Select(parameter =>
+                            parameter.DisplayLabel ?? parameter.Label))
+                    + ")",
+                CallableKind = VbaCallableKind.Sub
+            };
+            int? activeParameter = intrinsicParameterIndex is int parameterIndex
+                    && parameterIndex < signature.Parameters.Count
+                ? parameterIndex
+                : null;
+            var variant = new VbaSignatureHelpVariant(
+                signature,
+                activeParameter,
+                IsConditionalVariant: false);
+            return new VbaSignatureHelp(
+                signature,
+                activeParameter,
+                [variant]);
         }
 
         var analysis = AnalyzeWithEventsHandler(currentDocument, handler);
@@ -1927,6 +2023,18 @@ internal sealed class VbaSemanticResolution
             }
 
             const int restrictedTypeFlag = 0x200;
+            VbaHostEventNameTarget? hostEventTarget = null;
+            if (eligibility.HostClassEventSurface is { } hostSurface
+                && hostClassEvents.TryCreateExistingHandlerEventTarget(
+                    hostSurface,
+                    eventName,
+                    handler,
+                    out var resolvedHostEventTarget))
+            {
+                hostEventTarget = resolvedHostEventTarget;
+            }
+
+            var hasKnownHostEvent = hostEventTarget is not null;
             var hasKnownPartialTypeLibEvent =
                 eligibility.Kind == VbaWithEventsTypeEligibilityKind.Indeterminate
                 && eligibility.TypeLibEventSurface is
@@ -1959,7 +2067,8 @@ internal sealed class VbaSemanticResolution
                                     member.Uri)));
             if (eligibility.Kind == VbaWithEventsTypeEligibilityKind.Indeterminate
                 && !hasKnownPartialTypeLibEvent
-                && !hasKnownIndeterminateSourceEvent)
+                && !hasKnownIndeterminateSourceEvent
+                && !hasKnownHostEvent)
             {
                 entries.Add(new VbaWithEventsEventBindingEntry(
                     variable,
@@ -1993,6 +2102,43 @@ internal sealed class VbaSemanticResolution
                     var eventContracts = CreateResolvedEventContracts(
                         outcome.Target,
                         variableTarget.IsConditionalFamily);
+                    if (eventContracts.Contracts.Count == 0
+                        && eventContracts.HasRecoveredEventEvidence
+                        && hasKnownHostEvent)
+                    {
+                        entries.Add(new VbaWithEventsEventBindingEntry(
+                            variable,
+                            VbaWithEventsEventBindingStatus.Resolved,
+                            hostEventTarget!,
+                            [hostEventTarget!.EventContract],
+                            HasRecoveredEventEvidence: true));
+                        continue;
+                    }
+
+                    if (eventContracts.Contracts.Count > 0
+                        && eventContracts.Contracts.All(contract =>
+                            contract.IsConditionalContract)
+                        && hasKnownHostEvent)
+                    {
+                        var conditionalHostContract = hostEventTarget!.EventContract with
+                        {
+                            IsConditionalContract = true
+                        };
+                        var conditionalHostTarget = new VbaHostEventNameTarget(
+                            hostEventTarget.HostEventIdentity,
+                            hostEventTarget.SelectedDefinition,
+                            conditionalHostContract,
+                            hostEventTarget.NavigableDefinition);
+                        entries.Add(new VbaWithEventsEventBindingEntry(
+                            variable,
+                            VbaWithEventsEventBindingStatus.Resolved,
+                            outcome.Target,
+                            [.. eventContracts.Contracts, conditionalHostContract],
+                            eventContracts.HasRecoveredEventEvidence,
+                            [outcome.Target, conditionalHostTarget]));
+                        continue;
+                    }
+
                     entries.Add(new VbaWithEventsEventBindingEntry(
                         variable,
                         VbaWithEventsEventBindingStatus.Resolved,
@@ -2001,6 +2147,17 @@ internal sealed class VbaSemanticResolution
                         eventContracts.HasRecoveredEventEvidence));
                 }
 
+                continue;
+            }
+
+            if (outcome.Kind == VbaNameResolutionKind.Unresolved
+                && hasKnownHostEvent)
+            {
+                entries.Add(new VbaWithEventsEventBindingEntry(
+                    variable,
+                    VbaWithEventsEventBindingStatus.Resolved,
+                    hostEventTarget!,
+                    [hostEventTarget!.EventContract]));
                 continue;
             }
 
@@ -2029,9 +2186,7 @@ internal sealed class VbaSemanticResolution
             variableTarget,
             entries);
         var resolvedEventTargets = bindingSet.ResolvedEntries
-            .Select(entry => entry.EventTarget)
-            .Where(target => target is not null)
-            .Select(target => target!)
+            .SelectMany(entry => entry.ResolvedEventTargets)
             .ToArray();
         var eventTarget = resolvedEventTargets.Length == 0
             ? null

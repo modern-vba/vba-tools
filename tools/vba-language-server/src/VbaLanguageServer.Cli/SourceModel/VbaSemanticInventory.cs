@@ -20,6 +20,8 @@ public sealed class VbaSemanticInventory
     private readonly VbaProjectReferenceCatalogSet referenceCatalogs;
     private readonly IReadOnlyDictionary<string, VbaProjectReferenceCatalogSource>
         referenceCatalogSources;
+    private readonly IReadOnlyDictionary<string, VbaProjectReferenceCatalogIdentity>
+        referenceCatalogIdentities;
     private readonly object semanticTokenCacheGate = new();
     private readonly Dictionary<string, IReadOnlyList<VbaSemanticToken>> semanticTokenCache =
         new(StringComparer.OrdinalIgnoreCase);
@@ -34,7 +36,9 @@ public sealed class VbaSemanticInventory
         VbaProjectReferenceCatalogSet referenceCatalogs,
         VbaHostClassProjectionSnapshot? hostClassProjectionSnapshot,
         IReadOnlyDictionary<string, VbaProjectReferenceCatalogSource>
-            referenceCatalogSources)
+            referenceCatalogSources,
+        IReadOnlyDictionary<string, VbaProjectReferenceCatalogIdentity>
+            referenceCatalogIdentities)
     {
         this.sourceDocuments = sourceDocuments;
         this.definitionCandidates = definitionCandidates;
@@ -43,10 +47,13 @@ public sealed class VbaSemanticInventory
         this.referenceSelection = referenceSelection;
         this.referenceCatalogs = referenceCatalogs;
         this.referenceCatalogSources = referenceCatalogSources;
+        this.referenceCatalogIdentities = referenceCatalogIdentities;
         this.hostClassProjectionSnapshot = hostClassProjectionSnapshot;
         semanticResolution = new VbaSemanticResolution(
             definitionCandidates,
-            resolutionPolicy);
+            resolutionPolicy,
+            hostClassProjectionSnapshot,
+            referenceCatalogIdentities);
         resolvedOccurrences = new VbaResolvedIdentifierOccurrenceIndex(
             sourceDocuments,
             semanticResolution.ResolveSourceTarget);
@@ -67,7 +74,9 @@ public sealed class VbaSemanticInventory
         VbaProjectReferenceCatalogSet? referenceCatalogs = null,
         VbaHostClassProjectionSnapshot? hostClassProjectionSnapshot = null,
         IReadOnlyDictionary<string, VbaProjectReferenceCatalogSource>?
-            referenceCatalogSources = null)
+            referenceCatalogSources = null,
+        IReadOnlyDictionary<string, VbaProjectReferenceCatalogIdentity>?
+            referenceCatalogIdentities = null)
     {
         var documents = FreezeList(
             sourceDocuments.Values.Select(CaptureDocument));
@@ -78,6 +87,12 @@ public sealed class VbaSemanticInventory
                 VbaProjectReferenceName.Comparer)
             : new Dictionary<string, VbaProjectReferenceCatalogSource>(
                 referenceCatalogSources,
+                VbaProjectReferenceName.Comparer);
+        var capturedCatalogIdentities = referenceCatalogIdentities is null
+            ? new Dictionary<string, VbaProjectReferenceCatalogIdentity>(
+                VbaProjectReferenceName.Comparer)
+            : new Dictionary<string, VbaProjectReferenceCatalogIdentity>(
+                referenceCatalogIdentities,
                 VbaProjectReferenceName.Comparer);
         var activeReferenceDefinitions = FreezeList(
             catalogs
@@ -95,7 +110,8 @@ public sealed class VbaSemanticInventory
             capturedReferenceSelection,
             catalogs,
             hostClassProjectionSnapshot,
-            capturedCatalogSources);
+            capturedCatalogSources,
+            capturedCatalogIdentities);
     }
 
     /// <summary>
@@ -148,6 +164,26 @@ public sealed class VbaSemanticInventory
         if (target is null)
         {
             return [];
+        }
+
+        if (target is VbaHostEventNameTarget)
+        {
+            return [];
+        }
+
+        if (target is VbaWithEventsEventNameTarget withEventsTarget)
+        {
+            return withEventsTarget.EventTargets
+                .SelectMany(eventTarget => eventTarget switch
+                {
+                    VbaHostEventNameTarget => [],
+                    _ => GetLogicalNavigationDefinitions(eventTarget)
+                        .Where(definition => definition.Identity.Origin
+                            == VbaDefinitionOrigin.Source)
+                        .Select(definition => definition.Location)
+                })
+                .Distinct()
+                .ToArray();
         }
 
         var definitions = target.IsConditionalFamily
@@ -299,6 +335,36 @@ public sealed class VbaSemanticInventory
             return null;
         }
 
+        VbaHostEventNameTarget[] projectedHostEventTargets = target switch
+        {
+            VbaHostEventNameTarget hostEvent => [hostEvent],
+            VbaWithEventsEventNameTarget withEventsEvent
+                => withEventsEvent.EventTargets
+                    .OfType<VbaHostEventNameTarget>()
+                    .ToArray(),
+            _ => []
+        };
+        if (projectedHostEventTargets.Length > 0)
+        {
+            return new VbaHoverResult(
+                target.CanonicalName,
+                target is VbaWithEventsEventNameTarget
+                    ? target.PhysicalDefinitions
+                    : [],
+                target.IsConditionalFamily,
+                new VbaRange(
+                    new VbaPosition(
+                        identifier.Range.Start.Line,
+                        identifier.Range.Start.Character),
+                    new VbaPosition(
+                        identifier.Range.End.Line,
+                        identifier.Range.End.Character)),
+                ProjectedEventContract: null,
+                ProjectedEventContracts: projectedHostEventTargets
+                    .Select(hostEvent => hostEvent.EventContract)
+                    .ToArray());
+        }
+
         var callablePropertyTarget = target as VbaPropertyNameTarget;
         var isPropertyDeclarationIdentifier = callablePropertyTarget?.Property
             .PropertyDefinitions.Any(definition =>
@@ -380,6 +446,14 @@ public sealed class VbaSemanticInventory
             return new VbaPrepareRenameOutcome(Result: null, Failure: null);
         }
 
+        var resolvedTarget = ResolveSourceTarget(uri, line, character);
+        if (document is not null
+            && resolvedTarget is not null
+            && GetIntrinsicHostHandlerAuthority(document, resolvedTarget) is not null)
+        {
+            return new VbaPrepareRenameOutcome(Result: null, Failure: null);
+        }
+
         var target = ResolveSourceDefinition(uri, line, character);
         if (target is null)
         {
@@ -425,6 +499,41 @@ public sealed class VbaSemanticInventory
             Failure: null);
     }
 
+    private VbaHostClassEventAuthority? GetIntrinsicHostHandlerAuthority(
+        VbaSourceDocument document,
+        VbaResolvedNameTarget target)
+        => GetIntrinsicHostHandlerAnalyses(document, target)
+            .Select(analysis => analysis.Surface.Authority)
+            .OrderBy(authority => authority == VbaHostClassEventAuthority.Current
+                ? 0
+                : 1)
+            .Cast<VbaHostClassEventAuthority?>()
+            .FirstOrDefault();
+
+    private IReadOnlyList<VbaIntrinsicHostHandlerAnalysis>
+        GetIntrinsicHostHandlerAnalyses(
+            VbaSourceDocument document,
+            VbaResolvedNameTarget target)
+    {
+        IEnumerable<VbaSourceDefinition> candidates = target switch
+        {
+            VbaHostEventNameTarget hostEventTarget
+                => [hostEventTarget.SelectedDefinition],
+            _ => target.PhysicalDefinitions
+        };
+        return candidates
+            .Where(candidate => candidate.Uri.Equals(
+                document.Uri,
+                StringComparison.OrdinalIgnoreCase))
+            .Select(candidate => semanticResolution.AnalyzeIntrinsicHostHandler(
+                document,
+                candidate))
+            .Where(analysis => analysis is not null)
+            .Select(analysis => analysis!)
+            .DistinctBy(analysis => analysis.Handler.Identity)
+            .ToArray();
+    }
+
     public VbaRenamePlan? CreateRenamePlan(
         string uri,
         int line,
@@ -452,6 +561,41 @@ public sealed class VbaSemanticInventory
             return new VbaRenameResult(
                 Plan: null,
                 nameFailure);
+        }
+
+        var document = definitionCandidates.FindDocument(uri);
+        var resolvedTarget = ResolveSourceTarget(uri, line, character);
+        if (document is not null && resolvedTarget is not null)
+        {
+            var intrinsicAssociations = GetIntrinsicHostHandlerAnalyses(
+                document,
+                resolvedTarget);
+            if (intrinsicAssociations.Count > 0)
+            {
+                var selectedAssociation = intrinsicAssociations
+                    .FirstOrDefault(association => association.Handler.Identity
+                        == resolvedTarget.SelectedDefinition.Identity)
+                    ?? intrinsicAssociations[0];
+                if (string.Equals(
+                    selectedAssociation.Handler.Name,
+                    newName,
+                    StringComparison.Ordinal))
+                {
+                    return new VbaRenameResult(Plan: null, Failure: null);
+                }
+
+                return selectedAssociation.Surface.Authority
+                    == VbaHostClassEventAuthority.Current
+                    ? new VbaRenameResult(
+                        Plan: null,
+                        new VbaRenameFailure(
+                            "notRenameTarget",
+                            "A current intrinsic host Event handler name is a fixed host contract."))
+                    : new VbaRenameResult(
+                        Plan: null,
+                        AnalysisIncomplete(
+                            "Rename requires current host Event evidence for an intrinsic handler."));
+            }
         }
 
         var target = ResolveSourceDefinition(uri, line, character);
@@ -555,6 +699,15 @@ public sealed class VbaSemanticInventory
             .ThenBy(occurrence => occurrence.Range.Start.Line)
             .ThenBy(occurrence => occurrence.Range.Start.Character)
             .ToArray();
+        if (target.Kind == VbaSourceDefinitionKind.Event
+            && HasProjectedHostAlternative(targetOccurrences, cancellationToken))
+        {
+            return new VbaRenameResult(
+                Plan: null,
+                AnalysisIncomplete(
+                    "Rename cannot prove complete dependent-handler coverage across source and projected host Event alternatives."));
+        }
+
         var changes = targetOccurrences
             .GroupBy(occurrence => occurrence.Uri, StringComparer.OrdinalIgnoreCase)
             .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
@@ -581,6 +734,22 @@ public sealed class VbaSemanticInventory
                 ? null
                 : new VbaRenamePlan(target.Range, changes),
             Failure: null);
+    }
+
+    private bool HasProjectedHostAlternative(
+        IReadOnlyList<VbaResolvedIdentifierOccurrence> targetOccurrences,
+        CancellationToken cancellationToken)
+    {
+        var targetRanges = targetOccurrences
+            .Select(occurrence => CreateOccurrenceKey(
+                occurrence.Uri,
+                occurrence.Range))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return resolvedOccurrences.GetAll(cancellationToken).Any(occurrence =>
+            targetRanges.Contains(CreateOccurrenceKey(
+                occurrence.Uri,
+                occurrence.Range))
+            && occurrence.Target is VbaHostEventNameTarget);
     }
 
     private IReadOnlyList<VbaRenameConflict> FindSameScopeCollisions(
@@ -1079,7 +1248,8 @@ public sealed class VbaSemanticInventory
             referenceSelection,
             referenceCatalogs,
             hostClassProjectionSnapshot,
-            referenceCatalogSources);
+            referenceCatalogSources,
+            referenceCatalogIdentities);
     }
 
     private static VbaSourceDefinition? FindHypotheticalDefinition(

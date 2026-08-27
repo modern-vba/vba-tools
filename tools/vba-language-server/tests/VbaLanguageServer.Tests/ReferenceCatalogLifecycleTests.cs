@@ -1519,6 +1519,12 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
         Assert.DoesNotContain(
             book2State.CatalogSet.GetActiveDefinitions(selection),
             definition => definition.Name == "Book1ResolvedType");
+        Assert.Equal(
+            "11111111-1111-1111-1111-111111111111",
+            Assert.Single(book1State.Identities).Value.Guid);
+        Assert.Equal(
+            "22222222-2222-2222-2222-222222222222",
+            Assert.Single(book2State.Identities).Value.Guid);
         await lifecycle.StopAsync();
     }
 

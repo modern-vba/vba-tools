@@ -275,7 +275,7 @@ internal sealed class VbaLanguageServerRuntime
 
                     try
                     {
-                        scheduler.AdmitCoalescibleMutation(
+                        scheduler.AdmitCoalescibleAdvisoryMutation(
                             method,
                             update.CoalescingKey,
                             update.Revision,

@@ -141,6 +141,10 @@ internal sealed record VbaWithEventsEventNameTargetIdentity(
     VbaDefinitionIdentity HandlerIdentity)
     : VbaResolvedNameTargetIdentity;
 
+internal sealed record VbaHostEventNameTargetIdentity(
+    VbaHostEventIdentity HostEventIdentity)
+    : VbaResolvedNameTargetIdentity;
+
 internal abstract class VbaResolvedNameTarget
 {
     public abstract VbaResolvedNameTargetIdentity Identity { get; }
@@ -214,7 +218,8 @@ internal sealed class VbaWithEventsEventNameTarget : VbaResolvedNameTarget
     {
         EventTargets = eventTargets
             .DistinctBy(target => target.Identity)
-            .OrderBy(target => target.SelectedDefinition.Uri, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(target => target is VbaHostEventNameTarget ? 1 : 0)
+            .ThenBy(target => target.SelectedDefinition.Uri, StringComparer.OrdinalIgnoreCase)
             .ThenBy(target => target.SelectedDefinition.Uri, StringComparer.Ordinal)
             .ThenBy(target => target.SelectedDefinition.Range.Start.Line)
             .ThenBy(target => target.SelectedDefinition.Range.Start.Character)
@@ -254,6 +259,42 @@ internal sealed class VbaWithEventsEventNameTarget : VbaResolvedNameTarget
         => physicalDefinitions;
 
     public override bool IsConditionalFamily { get; }
+}
+
+internal sealed class VbaHostEventNameTarget : VbaResolvedNameTarget
+{
+    private readonly IReadOnlyList<VbaSourceDefinition> physicalDefinitions;
+
+    public VbaHostEventNameTarget(
+        VbaHostEventIdentity hostEventIdentity,
+        VbaSourceDefinition handler,
+        VbaResolvedEventContract eventContract,
+        VbaSourceDefinition? navigableDefinition = null)
+    {
+        HostEventIdentity = hostEventIdentity;
+        SelectedDefinition = handler;
+        EventContract = eventContract;
+        NavigableDefinition = navigableDefinition;
+        Identity = new VbaHostEventNameTargetIdentity(hostEventIdentity);
+        physicalDefinitions = [];
+    }
+
+    public VbaHostEventIdentity HostEventIdentity { get; }
+
+    public VbaResolvedEventContract EventContract { get; }
+
+    public VbaSourceDefinition? NavigableDefinition { get; }
+
+    public override VbaResolvedNameTargetIdentity Identity { get; }
+
+    public override string CanonicalName => HostEventIdentity.EventName;
+
+    public override VbaSourceDefinition SelectedDefinition { get; }
+
+    public override IReadOnlyList<VbaSourceDefinition> PhysicalDefinitions
+        => physicalDefinitions;
+
+    public override bool IsConditionalFamily => false;
 }
 
 internal sealed class VbaPropertyNameTarget : VbaResolvedNameTarget

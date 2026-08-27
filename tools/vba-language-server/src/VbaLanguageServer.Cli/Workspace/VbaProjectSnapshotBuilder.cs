@@ -56,7 +56,9 @@ internal sealed class VbaProjectSnapshotBuilder
         IReadOnlySet<string> existingOpenSourcePaths,
         VbaProjectReferenceCatalogSet referenceCatalogs,
         IReadOnlyDictionary<string, VbaProjectReferenceCatalogSource> referenceCatalogSources,
-        VbaHostClassProjectionSnapshot? hostClassProjectionSnapshot)
+        VbaHostClassProjectionSnapshot? hostClassProjectionSnapshot,
+        IReadOnlyDictionary<string, VbaProjectReferenceCatalogIdentity>?
+            referenceCatalogIdentities = null)
     {
         var scopedDocuments = scopedTrackedDocuments
             .ToDictionary(pair => pair.Key, pair => pair.Value.Text, StringComparer.OrdinalIgnoreCase);
@@ -73,7 +75,8 @@ internal sealed class VbaProjectSnapshotBuilder
             manifestContext.ReferenceSelection,
             referenceCatalogs,
             hostClassProjectionSnapshot,
-            referenceCatalogSources);
+            referenceCatalogSources,
+            referenceCatalogIdentities);
 
         return new VbaProjectSnapshot(
             resolution,

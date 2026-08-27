@@ -692,6 +692,22 @@ public sealed class VbaNameResolutionService
             .Where(definition => definition.ParentTypeName is null));
     }
 
+    internal VbaSourceDefinition? ResolveProjectReferenceMemberDefinition(
+        string owningReferenceName,
+        string parentTypeName,
+        string memberName,
+        VbaSourceDefinitionKind kind)
+        => ResolveReferenceCandidates(
+            candidates.GetReferenceCandidatesByParentType(parentTypeName)
+                .Where(candidate => VbaProjectReferenceName.AreEquivalent(
+                    candidate.ModuleName,
+                    owningReferenceName))
+                .Where(candidate => candidate.Name.Equals(
+                    memberName,
+                    StringComparison.OrdinalIgnoreCase))
+                .Select(candidate => candidate.Definition)
+                .Where(definition => definition.Kind == kind));
+
     internal IReadOnlyList<VbaSourceDefinition> GetVisibleTypeDefinitions(
         VbaSourceDocument currentDocument,
         string? qualifier = null)

@@ -107,6 +107,139 @@ public sealed class VbaInteractiveWorkSchedulerProcessTests
     }
 
     [Fact]
+    public async Task Host_projection_notification_does_not_advance_editor_read_fence()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-host-projection-read-fence-").FullName;
+        var admissionDirectory = Directory.CreateDirectory(
+            Path.Combine(projectRoot, "admissions")).FullName;
+        var sourceDirectory = Directory.CreateDirectory(
+            Path.Combine(projectRoot, "src", "Book1")).FullName;
+        var sourcePath = Path.Combine(sourceDirectory, "Dialog.frm");
+        var sourceTemplate = Path.Combine(sourceDirectory, "Book1.xlsm");
+        var uri = new Uri(sourcePath).AbsoluteUri;
+        try
+        {
+            File.WriteAllText(
+                Path.Combine(projectRoot, "vba-project.json"),
+                JsonSerializer.Serialize(new
+                {
+                    schemaVersion = 1,
+                    projectName = "HostProjectionReadFence",
+                    primaryDocument = "Book1",
+                    documents = new Dictionary<string, object>
+                    {
+                        ["Book1"] = new
+                        {
+                            kind = "excel",
+                            sourcePath = "src/Book1",
+                            templatePath = "src/Book1/Book1.xlsm",
+                            binPath = "bin/Book1/Book1.xlsm",
+                            publishPath = "publish/Book1/Book1.xlsm",
+                            commonModules = Array.Empty<object>(),
+                            references = Array.Empty<object>()
+                        }
+                    }
+                }));
+            var text = string.Join('\n', [
+                "VERSION 5.00",
+                "Begin VB.Form Dialog",
+                "End",
+                "Attribute VB_Name = \"Dialog\"",
+                "Private Sub UserForm_Initialize()",
+                "End Sub"
+            ]);
+            File.WriteAllText(sourcePath, text);
+            await using var process = await LanguageServerProcessHarness.StartAsync(
+                environment: new Dictionary<string, string>
+                {
+                    ["VBA_TOOLS_INTERACTIVE_ADMISSION_DIRECTORY"] = admissionDirectory
+                });
+
+            await process.InitializeAsync();
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+            await process.WaitForDiagnosticsAsync(uri);
+            await process.SendRequestAsync(
+                2,
+                "textDocument/hover",
+                new
+                {
+                    textDocument = new { uri },
+                    position = new { line = 4, character = "Private Sub UserForm_".Length }
+                });
+            var baselineHoverPath = await WaitForMatchingFileCreatedAsync(
+                admissionDirectory,
+                fileName => fileName.EndsWith(
+                    "-request-textDocument_hover-number-2.completed",
+                    StringComparison.Ordinal),
+                TimeSpan.FromSeconds(5));
+            var baselineReadFence = ReadTimingValue(
+                baselineHoverPath,
+                "readFence");
+
+            await process.SendNotificationAsync(
+                "vba/hostClassProjectionSnapshot",
+                new
+                {
+                    schemaVersion = 1,
+                    revision = 1,
+                    project = Path.GetFullPath(projectRoot),
+                    document = "Book1",
+                    sourceTemplate = Path.GetFullPath(sourceTemplate),
+                    state = "present",
+                    classEnumerationComplete = true,
+                    classes = new object[]
+                    {
+                        new
+                        {
+                            identity = new { name = "Dialog", kind = "form" },
+                            authority = "current",
+                            projection = new
+                            {
+                                intrinsicEventSourceName = "UserForm",
+                                events = Array.Empty<object>()
+                            }
+                        }
+                    }
+                });
+            await process.SendRequestAsync(
+                3,
+                "textDocument/hover",
+                new
+                {
+                    textDocument = new { uri },
+                    position = new { line = 4, character = "Private Sub UserForm_".Length }
+                });
+            var notificationPath = await WaitForMatchingFileCreatedAsync(
+                admissionDirectory,
+                fileName => fileName.EndsWith(
+                    "-mutation-vba_hostClassProjectionSnapshot-none.completed",
+                    StringComparison.Ordinal),
+                TimeSpan.FromSeconds(5));
+            var hoverPath = await WaitForMatchingFileCreatedAsync(
+                admissionDirectory,
+                fileName => fileName.EndsWith(
+                    "-request-textDocument_hover-number-3.completed",
+                    StringComparison.Ordinal),
+                TimeSpan.FromSeconds(5));
+
+            var notificationSequence = ReadTimingValue(
+                notificationPath,
+                "inputSequence");
+            Assert.True(notificationSequence > baselineReadFence);
+            Assert.Equal(baselineReadFence, ReadTimingValue(hoverPath, "readFence"));
+
+            await process.ShutdownAsync(4);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Server_accepts_explicit_cancellation_while_a_request_occupies_the_serial_lane()
     {
         var gateRoot = Directory.CreateTempSubdirectory("vba-ls-scheduler-gate-").FullName;

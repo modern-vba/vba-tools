@@ -549,6 +549,28 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
     }
 
     /// <summary>
+    /// Admits ranked advisory workspace evidence that may be observed atomically
+    /// before or after a synchronous read without becoming that read's fence.
+    /// </summary>
+    public VbaInteractiveWorkAdmission AdmitCoalescibleAdvisoryMutation(
+        string method,
+        string coalescingKey,
+        long rank,
+        Func<CancellationToken, Task> executeAsync)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(coalescingKey);
+        return Admit(
+            VbaInteractiveWorkKind.Mutation,
+            method,
+            captureRead: null,
+            coalescingKey,
+            requestId: null,
+            (cancellationToken, _) => executeAsync(cancellationToken),
+            advancesReadFence: false,
+            coalescingRank: rank);
+    }
+
+    /// <summary>
     /// Admits ordered non-mutating work without advancing the read fence.
     /// </summary>
     public VbaInteractiveWorkAdmission AdmitBarrier(

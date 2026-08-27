@@ -629,7 +629,14 @@ internal sealed record VbaHoverResult(
     string CanonicalName,
     IReadOnlyList<VbaSourceDefinition> Definitions,
     bool IsConditionalFamily,
-    VbaRange Range);
+    VbaRange Range,
+    VbaResolvedEventContract? ProjectedEventContract = null,
+    IReadOnlyList<VbaResolvedEventContract>? ProjectedEventContracts = null)
+{
+    public IReadOnlyList<VbaResolvedEventContract> ResolvedProjectedEventContracts { get; } =
+        ProjectedEventContracts
+        ?? (ProjectedEventContract is null ? [] : [ProjectedEventContract]);
+}
 
 /// <summary>
 /// Identifies the semantic origin of a completed editor-neutral completion candidate.
