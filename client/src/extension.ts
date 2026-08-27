@@ -74,7 +74,8 @@ import {
 import {
   createVbaLanguageClientOptions,
   createVbaLanguageServerOptions,
-  createVbaLanguageServerReferenceCatalogCacheRoot
+  createVbaLanguageServerReferenceCatalogCacheRoot,
+  createVbaSignatureHelpClientCapabilitiesFeature
 } from './languageServer';
 import {
   ProjectManifestLanguageServerSync,
@@ -550,6 +551,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
       serverOptions,
       clientOptions
     );
+    client.registerFeature(createVbaSignatureHelpClientCapabilitiesFeature());
 
     context.subscriptions.push(client);
     const languageClient = client;

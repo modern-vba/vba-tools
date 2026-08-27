@@ -54,15 +54,51 @@ internal static class VbaLspFeatureProjection
         };
     }
 
-    public static object[] CreateDiagnostics(IReadOnlyList<VbaDiagnostic> diagnostics)
+    public static object[] CreateDiagnostics(
+        IReadOnlyList<VbaDiagnostic> diagnostics,
+        bool supportsRelatedInformation = false)
         => diagnostics
-            .Select(diagnostic => new
+            .Select(diagnostic =>
             {
-                code = diagnostic.Code,
-                message = diagnostic.Message,
-                range = diagnostic.Range,
-                severity = 1,
-                source = diagnostic.Source
+                var details = diagnostic.Details ?? [];
+                var fallbackDetails = supportsRelatedInformation
+                    ? details.Where(detail => detail.Location is null)
+                    : details;
+                var fallbackText = fallbackDetails
+                    .Select(detail => detail.FallbackText)
+                    .Distinct(StringComparer.Ordinal)
+                    .ToArray();
+                var projected = new Dictionary<string, object?>
+                {
+                    ["code"] = diagnostic.Code,
+                    ["message"] = fallbackText.Length == 0
+                        ? diagnostic.Message
+                        : $"{diagnostic.Message}\n{string.Join('\n', fallbackText)}",
+                    ["range"] = diagnostic.Range,
+                    ["severity"] = 1,
+                    ["source"] = diagnostic.Source
+                };
+                if (supportsRelatedInformation)
+                {
+                    var relatedInformation = details
+                        .Where(detail => detail.Location is not null)
+                        .Select(detail => new
+                        {
+                            location = new
+                            {
+                                uri = detail.Location!.Uri,
+                                range = detail.Location.Range
+                            },
+                            message = detail.RelatedMessage
+                        })
+                        .ToArray();
+                    if (relatedInformation.Length > 0)
+                    {
+                        projected["relatedInformation"] = relatedInformation;
+                    }
+                }
+
+                return projected;
             })
             .ToArray<object>();
 
@@ -146,7 +182,7 @@ internal static class VbaLspFeatureProjection
                 kind = "markdown",
                 value
             },
-            range = definition.Range
+            range = hover.Range
         };
     }
 
@@ -164,7 +200,10 @@ internal static class VbaLspFeatureProjection
         var declaration = definition.Signature?.Label
             ?? definition.DeclarationLabel
             ?? definition.Name;
-        var block = CreateHoverDeclarationBlock($"{declaration} [#If]");
+        var conditionalMarker = definition.ConditionalCompilationPath is { IsEmpty: false }
+            ? " [#If]"
+            : string.Empty;
+        var block = CreateHoverDeclarationBlock($"{declaration}{conditionalMarker}");
         return string.IsNullOrWhiteSpace(definition.Documentation)
             ? block
             : $"{block}\n\n{definition.Documentation}";
@@ -173,27 +212,59 @@ internal static class VbaLspFeatureProjection
     private static string CreateHoverDeclarationBlock(string declaration)
         => $"```vba\n{declaration}\n```";
 
-    public static object? CreateSignatureHelp(VbaSignatureHelp? signatureHelp)
+    public static object? CreateSignatureHelp(
+        VbaSignatureHelp? signatureHelp,
+        VbaSignatureHelpClientCapabilities? clientCapabilities = null)
     {
         if (signatureHelp is null)
         {
             return null;
         }
 
-        var signature = new Dictionary<string, object?>
-        {
-            ["label"] = signatureHelp.Signature.Label,
-            ["parameters"] = signatureHelp.Signature.Parameters.Select(CreateSignatureParameter).ToArray()
-        };
-        return new
-        {
-            signatures = new[]
+        clientCapabilities ??= VbaSignatureHelpClientCapabilities.None;
+        var signatures = signatureHelp.Signatures
+            .Select(variant =>
             {
-                signature
-            },
-            activeSignature = 0,
-            activeParameter = signatureHelp.ActiveParameter
+                var projected = new Dictionary<string, object?>
+                {
+                    ["label"] = variant.DisplayLabel,
+                    ["parameters"] = variant.Signature.Parameters
+                        .Select(CreateSignatureParameter)
+                        .ToArray()
+                };
+                if (clientCapabilities.ActiveParameterSupport)
+                {
+                    if (variant.ActiveParameter is int activeParameter)
+                    {
+                        projected["activeParameter"] = activeParameter;
+                    }
+                    else if (clientCapabilities.NoActiveParameterSupport)
+                    {
+                        projected["activeParameter"] = null;
+                    }
+                }
+
+                return projected;
+            })
+            .ToArray();
+        var result = new Dictionary<string, object?>
+        {
+            ["signatures"] = signatures,
+            ["activeSignature"] = signatureHelp.ActiveSignature
         };
+        if (!clientCapabilities.ActiveParameterSupport)
+        {
+            if (signatureHelp.ActiveParameter is int activeParameter)
+            {
+                result["activeParameter"] = activeParameter;
+            }
+            else if (clientCapabilities.NoActiveParameterSupport)
+            {
+                result["activeParameter"] = null;
+            }
+        }
+
+        return result;
     }
 
     private static IReadOnlyDictionary<string, object?> CreateSignatureParameter(VbaCallableParameter parameter)
@@ -299,6 +370,11 @@ internal static class VbaLspFeatureProjection
         if (candidate.Kind == VbaCompletionCandidateKind.ReferenceQualifier)
         {
             return "Reference qualifier";
+        }
+
+        if (candidate.Kind == VbaCompletionCandidateKind.NamedArgument)
+        {
+            return candidate.IsConditionalFamily ? "[#If]" : null;
         }
 
         var definition = candidate.Definition;

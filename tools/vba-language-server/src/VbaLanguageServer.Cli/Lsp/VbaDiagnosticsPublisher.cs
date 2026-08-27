@@ -37,6 +37,7 @@ internal sealed class VbaDiagnosticsPublisher
     private readonly LspMessageTransport transport;
     private readonly VbaLanguageWorkspace workspace;
     private readonly IVbaDiagnosticsPublicationObserver publicationObserver;
+    private readonly VbaLspClientCapabilityState clientCapabilities;
     private VbaInteractiveWorkScheduler? scheduler;
     private VbaLatestOnlyBackgroundMailbox? publicationMailbox;
     private bool diskSourceDiagnosticsAttached;
@@ -49,12 +50,14 @@ internal sealed class VbaDiagnosticsPublisher
     public VbaDiagnosticsPublisher(
         LspMessageTransport transport,
         VbaLanguageWorkspace workspace,
-        IVbaDiagnosticsPublicationObserver? publicationObserver = null)
+        IVbaDiagnosticsPublicationObserver? publicationObserver = null,
+        VbaLspClientCapabilityState? clientCapabilities = null)
     {
         this.transport = transport;
         this.workspace = workspace;
         this.publicationObserver = publicationObserver
             ?? NullVbaDiagnosticsPublicationObserver.Instance;
+        this.clientCapabilities = clientCapabilities ?? new VbaLspClientCapabilityState();
     }
 
     internal int RetainedRevisionStateCount
@@ -387,13 +390,15 @@ internal sealed class VbaDiagnosticsPublisher
                 uri = analysis.Uri,
                 version,
                 diagnostics = VbaLspFeatureProjection.CreateDiagnostics(
-                    diagnostics.Diagnostics)
+                    diagnostics.Diagnostics,
+                    clientCapabilities.Snapshot.DiagnosticRelatedInformation)
             }
             : new
             {
                 uri = analysis.Uri,
                 diagnostics = VbaLspFeatureProjection.CreateDiagnostics(
-                    diagnostics.Diagnostics)
+                    diagnostics.Diagnostics,
+                    clientCapabilities.Snapshot.DiagnosticRelatedInformation)
             };
         return transport.WriteNotificationAsync(
             "textDocument/publishDiagnostics",

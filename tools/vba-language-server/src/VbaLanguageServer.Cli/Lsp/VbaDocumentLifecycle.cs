@@ -23,11 +23,15 @@ internal sealed class VbaDocumentLifecycle
     public VbaDocumentLifecycle(
         LspMessageTransport transport,
         VbaLanguageWorkspace workspace,
-        IReferenceCatalogLifecycle catalogRefresh)
+        IReferenceCatalogLifecycle catalogRefresh,
+        VbaLspClientCapabilityState? clientCapabilities = null)
     {
         this.workspace = workspace;
         catalogLifecycle = catalogRefresh;
-        diagnosticsPublisher = new VbaDiagnosticsPublisher(transport, workspace);
+        diagnosticsPublisher = new VbaDiagnosticsPublisher(
+            transport,
+            workspace,
+            clientCapabilities: clientCapabilities);
         pipeline = new VbaDocumentChangePipeline(
             workspace,
             catalogRefresh,

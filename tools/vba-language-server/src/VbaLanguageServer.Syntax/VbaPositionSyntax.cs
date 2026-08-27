@@ -105,7 +105,9 @@ public enum VbaCompletionExpectation
 public enum VbaCallSyntaxForm
 {
     Parenthesized,
-    Statement
+    Statement,
+    BareValueRead,
+    PropertyAssignment
 }
 
 /// <summary>
@@ -180,7 +182,9 @@ public sealed record VbaCallArgumentSyntax(
     int Index,
     string? Name,
     bool IsOmitted,
-    VbaSyntaxRange Range);
+    VbaSyntaxRange Range,
+    string? ValueText = null,
+    VbaSyntaxRange? ValueRange = null);
 
 /// <summary>
 /// Represents the call site surrounding an editor position.
@@ -191,7 +195,8 @@ public sealed record VbaCallSiteSyntax(
     IReadOnlyList<VbaCallArgumentSyntax> Arguments,
     int ActiveArgumentIndex,
     string? ActiveNamedArgument,
-    bool IsIncomplete);
+    bool IsIncomplete,
+    IReadOnlyList<VbaCallArgumentSyntax>? TrailingArguments = null);
 
 /// <summary>
 /// Represents one enclosing With scope. A null receiver preserves an invalid nested scope as a fail-closed barrier.
@@ -906,7 +911,8 @@ internal sealed class VbaPositionSyntaxIndex
             parsed.Arguments,
             parsed.ActiveArgumentIndex,
             parsed.ActiveNamedArgument,
-            parsed.IsIncomplete);
+            parsed.IsIncomplete,
+            parsed.TrailingArguments);
     }
 
     private VbaCompletionExpectation GetCompletionExpectation(

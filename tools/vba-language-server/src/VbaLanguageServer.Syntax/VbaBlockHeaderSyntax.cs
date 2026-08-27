@@ -717,7 +717,7 @@ public sealed record VbaBlockHeaderSyntax(
         return true;
     }
 
-    private static bool TryGetCompleteCallableShape(
+    internal static bool TryGetCompleteCallableShape(
         IReadOnlyList<VbaToken> tokens,
         VbaModuleKind moduleKind,
         out VbaCallableHeaderShape shape)
@@ -818,6 +818,133 @@ public sealed record VbaBlockHeaderSyntax(
         }
     }
 
+    internal static bool HasCompleteExternalCallableShape(
+        IReadOnlyList<VbaToken> tokens,
+        VbaModuleKind moduleKind,
+        bool isModuleLevel)
+    {
+        if (!isModuleLevel)
+        {
+            return false;
+        }
+
+        var index = 0;
+        var hasExplicitPrivateVisibility = index < tokens.Count
+            && Matches(tokens[index], "Private");
+        if (index < tokens.Count && IsVisibility(tokens[index].Text))
+        {
+            if (!Matches(tokens[index], "Public")
+                && !Matches(tokens[index], "Private"))
+            {
+                return false;
+            }
+
+            index++;
+        }
+
+        if (moduleKind != VbaModuleKind.StandardModule
+            && !hasExplicitPrivateVisibility)
+        {
+            return false;
+        }
+
+        if (index >= tokens.Count || !Matches(tokens[index++], "Declare"))
+        {
+            return false;
+        }
+
+        if (index < tokens.Count && Matches(tokens[index], "PtrSafe"))
+        {
+            index++;
+        }
+
+        var isFunction = index < tokens.Count && Matches(tokens[index], "Function");
+        var isSub = index < tokens.Count && Matches(tokens[index], "Sub");
+        if (!isFunction && !isSub)
+        {
+            return false;
+        }
+
+        index++;
+        if (index >= tokens.Count
+            || !VbaIdentifierSyntaxFacts.IsValidDeclaredName(tokens[index]))
+        {
+            return false;
+        }
+
+        var name = tokens[index++];
+        var hasTypeCharacter = index < tokens.Count
+            && IsAdjacentTypeCharacter(name, tokens[index]);
+        if (hasTypeCharacter)
+        {
+            if (!isFunction)
+            {
+                return false;
+            }
+
+            index++;
+        }
+
+        if (index + 1 >= tokens.Count
+            || !Matches(tokens[index++], "Lib")
+            || !IsCompleteStringLiteral(tokens[index++]))
+        {
+            return false;
+        }
+
+        if (index < tokens.Count && Matches(tokens[index], "Alias"))
+        {
+            index++;
+            if (index >= tokens.Count || !IsCompleteStringLiteral(tokens[index++]))
+            {
+                return false;
+            }
+        }
+
+        if (index < tokens.Count && Matches(tokens[index], "("))
+        {
+            var closeParenthesis = FindMatchingCloseParenthesis(tokens, index);
+            if (closeParenthesis < 0
+                || !HasCompleteParameterList(
+                    tokens,
+                    index + 1,
+                    closeParenthesis,
+                    isFunction ? name.Text : null,
+                    allowAnyTypeReference: true))
+            {
+                return false;
+            }
+
+            index = closeParenthesis + 1;
+        }
+
+        if (index == tokens.Count)
+        {
+            return true;
+        }
+
+        if (!isFunction
+            || hasTypeCharacter
+            || !Matches(tokens[index++], "As")
+            || !SkipCompleteTypeName(
+                tokens,
+                ref index,
+                tokens.Count,
+                allowAnyTypeReference: false,
+                out _))
+        {
+            return false;
+        }
+
+        return index == tokens.Count;
+
+        static bool IsCompleteStringLiteral(VbaToken token)
+            => token.Kind == VbaTokenKind.StringLiteral
+                && token.Text.Length >= 2
+                && token.Text[0] == '"'
+                && token.Text[^1] == '"';
+    }
+
     private static int GetCallableKeywordIndex(
         IReadOnlyList<VbaToken> tokens,
         string keyword)
@@ -864,6 +991,11 @@ public sealed record VbaBlockHeaderSyntax(
         var index = nameIndex + 1;
         var hasTypeCharacter = index < shapeEnd
             && IsAdjacentTypeCharacter(tokens[nameIndex], tokens[index]);
+        if (hasTypeCharacter && !allowReturnType)
+        {
+            return false;
+        }
+
         if (hasTypeCharacter)
         {
             index++;
@@ -917,7 +1049,12 @@ public sealed record VbaBlockHeaderSyntax(
         }
 
         index++;
-        if (!SkipCompleteTypeName(tokens, ref index, shapeEnd, out _))
+        if (!SkipCompleteTypeName(
+                tokens,
+                ref index,
+                shapeEnd,
+                allowAnyTypeReference: false,
+                out _))
         {
             return false;
         }
@@ -1001,7 +1138,7 @@ public sealed record VbaBlockHeaderSyntax(
         };
     }
 
-    private static int FindMatchingCloseParenthesis(
+    internal static int FindMatchingCloseParenthesis(
         IReadOnlyList<VbaToken> tokens,
         int openIndex)
     {
@@ -1196,12 +1333,27 @@ public sealed record VbaBlockHeaderSyntax(
         int end)
         => TryReadCompleteParameterList(tokens, start, end, out _);
 
+    internal static bool HasCompleteParameterList(
+        IReadOnlyList<VbaToken> tokens,
+        int start,
+        int end,
+        string? forbiddenParameterName,
+        bool allowAnyTypeReference = false)
+        => TryReadCompleteParameterList(
+            tokens,
+            start,
+            end,
+            out _,
+            forbiddenParameterName,
+            allowAnyTypeReference);
+
     private static bool TryReadCompleteParameterList(
         IReadOnlyList<VbaToken> tokens,
         int start,
         int end,
         out VbaParameterHeaderShape finalParameter,
-        string? forbiddenParameterName = null)
+        string? forbiddenParameterName = null,
+        bool allowAnyTypeReference = false)
     {
         finalParameter = default;
         if (start == end)
@@ -1226,7 +1378,12 @@ public sealed record VbaBlockHeaderSyntax(
 
             if (depth == 0 && Matches(tokens[index], ","))
             {
-                if (!TryReadCompleteParameter(tokens, segmentStart, index, out var parameter)
+                if (!TryReadCompleteParameter(
+                        tokens,
+                        segmentStart,
+                        index,
+                        out var parameter,
+                        allowAnyTypeReference)
                     || !parameterNames.Add(parameter.Name)
                     || parameter.Name.Equals(
                         forbiddenParameterName,
@@ -1243,7 +1400,12 @@ public sealed record VbaBlockHeaderSyntax(
         }
 
         if (depth != 0
-            || !TryReadCompleteParameter(tokens, segmentStart, end, out finalParameter))
+            || !TryReadCompleteParameter(
+                tokens,
+                segmentStart,
+                end,
+                out finalParameter,
+                allowAnyTypeReference))
         {
             return false;
         }
@@ -1260,7 +1422,8 @@ public sealed record VbaBlockHeaderSyntax(
         IReadOnlyList<VbaToken> tokens,
         int start,
         int end,
-        out VbaParameterHeaderShape shape)
+        out VbaParameterHeaderShape shape,
+        bool allowAnyTypeReference = false)
     {
         shape = default;
         var index = start;
@@ -1307,7 +1470,12 @@ public sealed record VbaBlockHeaderSyntax(
         if (hasExplicitType)
         {
             if (hasTypeCharacter
-                || !SkipCompleteTypeName(tokens, ref index, end, out parameterType)
+                || !SkipCompleteTypeName(
+                    tokens,
+                    ref index,
+                    end,
+                    allowAnyTypeReference,
+                    out parameterType)
                 || isParamArray && !parameterType.IsUnqualifiedVariant)
             {
                 return false;
@@ -1349,6 +1517,7 @@ public sealed record VbaBlockHeaderSyntax(
         IReadOnlyList<VbaToken> tokens,
         ref int index,
         int end,
+        bool allowAnyTypeReference,
         out VbaParameterTypeShape shape)
     {
         shape = default;
@@ -1386,8 +1555,22 @@ public sealed record VbaBlockHeaderSyntax(
             return true;
         }
 
-        if (!VbaIdentifierSyntaxFacts.IsValidDeclaredName(first)
-            || Matches(first, "Any"))
+        if (Matches(first, "Any"))
+        {
+            if (!allowAnyTypeReference)
+            {
+                return false;
+            }
+
+            index++;
+            shape = new VbaParameterTypeShape(
+                IsUnqualifiedVariant: false,
+                IsUnqualifiedObject: false,
+                TypeCategory: VbaParameterTypeCategory.Named);
+            return true;
+        }
+
+        if (!VbaIdentifierSyntaxFacts.IsValidDeclaredName(first))
         {
             return false;
         }
@@ -1442,7 +1625,9 @@ public sealed record VbaBlockHeaderSyntax(
 
     private static bool IsAdjacentTypeCharacter(VbaToken name, VbaToken candidate)
         => candidate.Range.Start.Offset == name.Range.End.Offset
-            && candidate.Text is "$" or "%" or "&" or "^" or "!" or "#" or "@";
+            && VbaLanguageVocabulary.TryGetTypeDeclarationCharacterTypeName(
+                candidate.Text,
+                out _);
 
     private static bool IsIntrinsicTypeKeyword(VbaToken token)
         => token.Kind == VbaTokenKind.Keyword

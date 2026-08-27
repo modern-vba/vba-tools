@@ -37,6 +37,7 @@ internal sealed class VbaLspRequestExecution
     private readonly LspMessageTransport transport;
     private readonly IVbaInteractiveWorkspaceCapture workspace;
     private readonly IVbaLspRequestExecutionGate executionGate;
+    private readonly VbaLspClientCapabilityState clientCapabilities;
     private int shutdownRequested;
 
     /// <summary>
@@ -47,11 +48,13 @@ internal sealed class VbaLspRequestExecution
     public VbaLspRequestExecution(
         LspMessageTransport transport,
         IVbaInteractiveWorkspaceCapture workspace,
-        IVbaLspRequestExecutionGate? executionGate = null)
+        IVbaLspRequestExecutionGate? executionGate = null,
+        VbaLspClientCapabilityState? clientCapabilities = null)
     {
         this.transport = transport;
         this.workspace = workspace;
         this.executionGate = executionGate ?? ImmediateVbaLspRequestExecutionGate.Instance;
+        this.clientCapabilities = clientCapabilities ?? new VbaLspClientCapabilityState();
     }
 
     /// <summary>
@@ -196,9 +199,13 @@ internal sealed class VbaLspRequestExecution
         cancellationToken.ThrowIfCancellationRequested();
         return method switch
         {
-            "initialize" => parameters is JsonObject
-                ? Direct(RequestOutcome.Success(
-                    VbaLspFeatureProjection.CreateInitializeResult(CapabilityContract)))
+            "initialize" => parameters is JsonObject initializeParameters
+                ? Captured(_ =>
+                {
+                    clientCapabilities.Update(initializeParameters);
+                    return RequestOutcome.Success(
+                        VbaLspFeatureProjection.CreateInitializeResult(CapabilityContract));
+                })
                 : Direct(RequestOutcome.InvalidParams()),
             "shutdown" => parameters is null
                 ? Captured(_ =>
@@ -286,21 +293,11 @@ internal sealed class VbaLspRequestExecution
                     },
                     Captured,
                     Direct),
-            "textDocument/signatureHelp" =>
-                CapturePositionRequest(
-                    parameters,
-                    cancellationToken,
-                    (request, inventory, token) =>
-                    {
-                        token.ThrowIfCancellationRequested();
-                        return VbaLspFeatureProjection.CreateSignatureHelp(
-                            inventory.GetSignatureHelp(
-                                request.Uri,
-                                request.Line,
-                                request.Character));
-                    },
-                    Captured,
-                    Direct),
+            "textDocument/signatureHelp" => CaptureSignatureHelpRequest(
+                parameters,
+                cancellationToken,
+                Captured,
+                Direct),
             "textDocument/prepareRename" =>
                 CapturePrepareRenameRequest(
                     parameters,
@@ -364,6 +361,37 @@ internal sealed class VbaLspRequestExecution
         {
             executionToken.ThrowIfCancellationRequested();
             var result = createResult(request, inventory, executionToken);
+            executionToken.ThrowIfCancellationRequested();
+            return RequestOutcome.Success(result);
+        });
+    }
+
+    private CapturedRequest CaptureSignatureHelpRequest(
+        JsonNode? parameters,
+        CancellationToken cancellationToken,
+        Func<Func<CancellationToken, RequestOutcome>, CapturedRequest> captured,
+        Func<RequestOutcome, CapturedRequest> direct)
+    {
+        if (!TryCreateSignatureHelpRequest(parameters, out var request))
+        {
+            return direct(RequestOutcome.InvalidParams());
+        }
+
+        var capabilities = clientCapabilities.Snapshot.SignatureHelp;
+        var retriggerIdentity = capabilities.ContextSupport
+            ? TryCreateRetriggerIdentity(parameters)
+            : null;
+        var inventory = CaptureSemanticInventory(request.Uri, cancellationToken);
+        return captured(executionToken =>
+        {
+            executionToken.ThrowIfCancellationRequested();
+            var result = VbaLspFeatureProjection.CreateSignatureHelp(
+                inventory.GetSignatureHelp(
+                    request.Uri,
+                    request.Line,
+                    request.Character,
+                    retriggerIdentity),
+                capabilities);
             executionToken.ThrowIfCancellationRequested();
             return RequestOutcome.Success(result);
         });
@@ -732,6 +760,75 @@ internal sealed class VbaLspRequestExecution
         return true;
     }
 
+    private static bool TryCreateSignatureHelpRequest(
+        JsonNode? parameters,
+        out SignatureHelpRequest request)
+    {
+        request = default!;
+        if (!TryCreatePositionRequest(parameters, out var position))
+        {
+            return false;
+        }
+
+        request = new SignatureHelpRequest(
+            position.Uri,
+            position.Line,
+            position.Character);
+        return true;
+    }
+
+    private static VbaSignaturePresentationIdentity? TryCreateRetriggerIdentity(
+        JsonNode? parameters)
+    {
+        if (parameters is not JsonObject parameterObject
+            || parameterObject["context"] is not JsonObject context
+            || !TryGetBoolean(context["isRetrigger"], out var isRetrigger)
+            || !isRetrigger
+            || context["activeSignatureHelp"] is not JsonObject activeSignatureHelp
+            || activeSignatureHelp["signatures"] is not JsonArray signatures)
+        {
+            return null;
+        }
+
+        var activeSignature = 0;
+        if (activeSignatureHelp["activeSignature"] is { } activeSignatureNode
+            && !TryGetInt32(activeSignatureNode, out activeSignature))
+        {
+            return null;
+        }
+
+        if (activeSignature < 0
+            || activeSignature >= signatures.Count
+            || signatures[activeSignature] is not JsonObject selectedSignature
+            || !TryGetString(selectedSignature["label"], out var label))
+        {
+            return null;
+        }
+
+        var parameterLabels = new List<string>();
+        if (selectedSignature["parameters"] is JsonArray parametersArray)
+        {
+            foreach (var parameter in parametersArray)
+            {
+                if (parameter is not JsonObject parameterObjectValue
+                    || !TryGetString(parameterObjectValue["label"], out var parameterLabel))
+                {
+                    return null;
+                }
+
+                parameterLabels.Add(parameterLabel);
+            }
+        }
+        else if (selectedSignature["parameters"] is not null)
+        {
+            return null;
+        }
+
+        return new VbaSignaturePresentationIdentity(
+            label,
+            Array.AsReadOnly(parameterLabels.ToArray()));
+    }
+
     private static bool TryCreateWorkspaceSymbolQuery(JsonNode? parameters, out string query)
     {
         query = "";
@@ -888,6 +985,11 @@ internal sealed class VbaLspRequestExecution
     private sealed record TextDocumentRequest(string Uri) : ITextDocumentRequest;
 
     private sealed record TextDocumentPositionRequest(
+        string Uri,
+        int Line,
+        int Character) : ITextDocumentRequest;
+
+    private sealed record SignatureHelpRequest(
         string Uri,
         int Line,
         int Character) : ITextDocumentRequest;

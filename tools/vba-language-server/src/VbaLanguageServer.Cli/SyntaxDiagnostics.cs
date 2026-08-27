@@ -16,6 +16,13 @@ public sealed record VbaPosition(int Line, int Character);
 /// <param name="End">The exclusive end position.</param>
 public sealed record VbaRange(VbaPosition Start, VbaPosition End);
 
+public sealed record VbaDiagnosticLocation(string Uri, VbaRange Range);
+
+public sealed record VbaDiagnosticDetail(
+    VbaDiagnosticLocation? Location,
+    string RelatedMessage,
+    string FallbackText);
+
 /// <summary>
 /// Represents a diagnostic published for a document, regardless of diagnostic category.
 /// </summary>
@@ -29,7 +36,8 @@ public sealed record VbaDiagnostic(
     string Message,
     VbaRange Range,
     string Severity = "error",
-    string Source = "vba-language-server");
+    string Source = "vba-language-server",
+    IReadOnlyList<VbaDiagnosticDetail>? Details = null);
 
 /// <summary>
 /// Represents a parser recovery or malformed-source diagnostic.

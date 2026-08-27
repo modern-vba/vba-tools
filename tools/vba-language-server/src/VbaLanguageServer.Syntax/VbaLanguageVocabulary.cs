@@ -215,6 +215,27 @@ public static class VbaLanguageVocabulary
     }
 
     /// <summary>
+    /// Resolves one VBA type-declaration character to its canonical intrinsic type.
+    /// </summary>
+    public static bool TryGetTypeDeclarationCharacterTypeName(
+        string value,
+        out string canonicalName)
+    {
+        canonicalName = value switch
+        {
+            "$" => "String",
+            "%" => "Integer",
+            "&" => "Long",
+            "^" => "LongLong",
+            "!" => "Single",
+            "#" => "Double",
+            "@" => "Currency",
+            _ => string.Empty
+        };
+        return canonicalName.Length != 0;
+    }
+
+    /// <summary>
     /// Determines whether a value is known fixed VBA language vocabulary.
     /// </summary>
     /// <param name="value">The candidate word.</param>

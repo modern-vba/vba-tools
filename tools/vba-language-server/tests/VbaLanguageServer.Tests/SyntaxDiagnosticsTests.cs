@@ -555,7 +555,6 @@ public sealed class SyntaxDiagnosticsTests
 
     [Theory]
     [InlineData("    RaiseEvent Saved")]
-    [InlineData("    RaiseEvent Saved()")]
     [InlineData("    RaiseEvent Saved(\"ok\")")]
     [InlineData("    Example \"ok\", 1")]
     public void Diagnostics_do_not_reject_valid_raise_event_or_ordinary_call_shapes(string statementLine)

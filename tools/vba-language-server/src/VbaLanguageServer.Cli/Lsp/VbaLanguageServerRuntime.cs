@@ -80,16 +80,22 @@ internal sealed class VbaLanguageServerRuntime
             catalogDiscovery,
             VbaProjectReferenceCatalogPersistentStore.CreateDefault());
         var workspace = new VbaLanguageWorkspace(referenceCatalogCache);
+        var clientCapabilities = new VbaLspClientCapabilityState();
         var requestExecution = new VbaLspRequestExecution(
             transport,
             workspace,
-            BlockingVbaLspRequestExecutionGate.CreateFromEnvironment());
+            BlockingVbaLspRequestExecutionGate.CreateFromEnvironment(),
+            clientCapabilities);
         var catalogRefresh = new ReferenceCatalogRefreshCoordinator(
             referenceCatalogCache,
             catalogRefreshService,
             workspace.ManifestWorkspace,
             transport);
-        var documentLifecycle = new VbaDocumentLifecycle(transport, workspace, catalogRefresh);
+        var documentLifecycle = new VbaDocumentLifecycle(
+            transport,
+            workspace,
+            catalogRefresh,
+            clientCapabilities);
         var projectReconciler =
             documentLifecycle.CreateProjectReconciler();
         return new VbaLanguageServerRuntime(

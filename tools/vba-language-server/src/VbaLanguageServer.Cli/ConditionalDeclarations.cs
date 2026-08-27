@@ -735,7 +735,8 @@ internal sealed class VbaProjectValidationDiagnosticIndex
         diagnosticsByUri;
 
     public VbaProjectValidationDiagnosticIndex(
-        IReadOnlyList<VbaSourceDocument> documents)
+        IReadOnlyList<VbaSourceDocument> documents,
+        VbaSemanticResolution semanticResolution)
     {
         var diagnostics = new Dictionary<string, List<VbaProjectValidationDiagnostic>>(
             StringComparer.OrdinalIgnoreCase);
@@ -787,6 +788,45 @@ internal sealed class VbaProjectValidationDiagnosticIndex
                 declaration.Range));
         }
 
+        foreach (var document in documents)
+        {
+            var syntaxTree = document.SyntaxTree
+                ?? VbaSyntaxTree.ParseModule(document.Uri, document.Text);
+            foreach (var argumentList in syntaxTree.Module.ArgumentLists)
+            {
+                if (argumentList.IsIncomplete
+                    || HasSpecificCallShapeDiagnostic(syntaxTree, argumentList))
+                {
+                    continue;
+                }
+
+                var compatibility = semanticResolution.AnalyzeCompleteCall(
+                    document.Uri,
+                    argumentList);
+                if (compatibility is null
+                    || compatibility.Variants.Count == 0
+                    || compatibility.Variants.Any(variant =>
+                        variant.State != VbaCallCompatibilityState.Inapplicable))
+                {
+                    continue;
+                }
+
+                if (!diagnostics.TryGetValue(document.Uri, out var documentDiagnostics))
+                {
+                    documentDiagnostics = [];
+                    diagnostics.Add(document.Uri, documentDiagnostics);
+                }
+
+                documentDiagnostics.Add(new VbaProjectValidationDiagnostic(
+                    "validation.incompatibleCallArgumentList",
+                    "No available callable signature accepts this argument list.",
+                    ToRange(GetCallDiagnosticRange(syntaxTree, argumentList)),
+                    Details: CreateCallDiagnosticDetails(
+                        compatibility,
+                        argumentList)));
+            }
+        }
+
         diagnosticsByUri = diagnostics.ToDictionary(
             pair => pair.Key,
             pair => (IReadOnlyList<VbaProjectValidationDiagnostic>)
@@ -806,4 +846,255 @@ internal sealed class VbaProjectValidationDiagnosticIndex
             || right.IsEmpty
             || left.IsPrefixOf(right)
             || right.IsPrefixOf(left);
+
+    private static bool HasSpecificCallShapeDiagnostic(
+        VbaSyntaxTree syntaxTree,
+        VbaArgumentListSyntax argumentList)
+    {
+        if (IsRaiseEventCall(syntaxTree, argumentList)
+            && syntaxTree.Diagnostics.Any(diagnostic =>
+                diagnostic.Code is "syntax.raiseEventArgumentListRequiresParentheses"
+                    or "syntax.raiseEventEmptyArgumentListNotAllowed"
+                    or "syntax.raiseEventOmittedArgumentNotAllowed"
+                && diagnostic.Range.Start.Offset <= argumentList.Range.End.Offset
+                && argumentList.Range.Start.Offset <= diagnostic.Range.End.Offset))
+        {
+            return true;
+        }
+
+        if (IsRaiseEventCall(syntaxTree, argumentList)
+            && argumentList.Arguments.Any(argument => argument.Name is not null))
+        {
+            return true;
+        }
+
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var hasNamedArgument = false;
+        foreach (var argument in argumentList.Arguments)
+        {
+            if (argument.Name is not null)
+            {
+                hasNamedArgument = true;
+                if (!names.Add(argument.Name))
+                {
+                    return true;
+                }
+            }
+            else if (hasNamedArgument)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsRaiseEventCall(
+        VbaSyntaxTree syntaxTree,
+        VbaArgumentListSyntax argumentList)
+    {
+        if (argumentList.CalleeRange is not { } calleeRange)
+        {
+            return false;
+        }
+
+        var precedingToken = syntaxTree.TokenStream.Tokens
+            .Where(token => token.Range.End.Offset <= calleeRange.Start.Offset)
+            .Where(token => token.Kind is not (
+                VbaTokenKind.Whitespace
+                or VbaTokenKind.NewLine
+                or VbaTokenKind.LineContinuation
+                or VbaTokenKind.Comment))
+            .LastOrDefault();
+        return precedingToken?.Text.Equals(
+            "RaiseEvent",
+            StringComparison.OrdinalIgnoreCase) == true;
+    }
+
+    private static VbaRange ToRange(VbaSyntaxRange range)
+        => new(
+            new VbaPosition(range.Start.Line, range.Start.Character),
+            new VbaPosition(range.End.Line, range.End.Character));
+
+    private static VbaSyntaxRange GetCallDiagnosticRange(
+        VbaSyntaxTree syntaxTree,
+        VbaArgumentListSyntax argumentList)
+    {
+        if (argumentList.Arguments.Count > 0)
+        {
+            return argumentList.Form == VbaCallSyntaxForm.Statement
+                ? new VbaSyntaxRange(
+                    argumentList.Arguments[0].Range.Start,
+                    argumentList.Range.End)
+                : argumentList.Range;
+        }
+
+        var calleeRange = argumentList.CalleeRange ?? argumentList.Range;
+        return syntaxTree.TokenStream.Tokens
+            .Where(token => calleeRange.Start.Offset <= token.Range.Start.Offset
+                && token.Range.End.Offset <= calleeRange.End.Offset)
+            .LastOrDefault(token => token.Kind is VbaTokenKind.Identifier or VbaTokenKind.Keyword)
+            ?.Range
+            ?? calleeRange;
+    }
+
+    private static IReadOnlyList<VbaDiagnosticDetail> CreateCallDiagnosticDetails(
+        VbaConditionalCallCompatibility compatibility,
+        VbaArgumentListSyntax argumentList)
+    {
+        var details = new List<VbaDiagnosticDetail>();
+        foreach (var variant in compatibility.Variants)
+        {
+            if (variant.Signature is null
+                || variant.InvocationSignature is null
+                || variant.Mapping is null)
+            {
+                continue;
+            }
+
+            var reasons = CreateCallMismatchReasons(
+                variant.Definition,
+                variant.Signature,
+                variant.InvocationSignature,
+                variant.Mapping,
+                argumentList,
+                compatibility.Context);
+            if (reasons.Count == 0)
+            {
+                continue;
+            }
+
+            var label = variant.Definition.ConditionalCompilationPath is
+                    { IsEmpty: false }
+                ? $"{variant.Signature.Label} [#If]"
+                : variant.Signature.Label;
+            var reasonText = string.Join("; ", reasons);
+            var location = variant.Definition.Identity.Origin == VbaDefinitionOrigin.Source
+                ? new VbaDiagnosticLocation(
+                    variant.Definition.Uri,
+                    variant.Definition.Range)
+                : null;
+            details.Add(new VbaDiagnosticDetail(
+                location,
+                $"Candidate signature: {label}. Mismatches: {reasonText}.",
+                $"Candidate signature: {label}.\nMismatches: {reasonText}."));
+        }
+
+        return Array.AsReadOnly(details.ToArray());
+    }
+
+    private static IReadOnlyList<string> CreateCallMismatchReasons(
+        VbaSourceDefinition definition,
+        VbaCallableSignature physicalSignature,
+        VbaCallableSignature invocationSignature,
+        VbaCompleteCallArgumentMapping completeMapping,
+        VbaArgumentListSyntax argumentList,
+        VbaCallContext context)
+    {
+        var reasons = new List<string>();
+        if (completeMapping.Mapping.ContextCompatibility
+            == VbaCallContextCompatibility.Incompatible)
+        {
+            reasons.Add(
+                $"call context: expected {GetExpectedCallableKinds(context)}, "
+                + $"found {GetPhysicalCallableKind(definition, physicalSignature)}");
+        }
+
+        foreach (var mismatch in completeMapping.Mapping.Mismatches)
+        {
+            if (mismatch.Kind == VbaCallMappingMismatchKind.DuplicateParameterAssignment
+                && mismatch.ParameterIndex is int duplicateParameterIndex)
+            {
+                reasons.Add(
+                    $"argument {mismatch.SourceIndex + 1} "
+                    + $"('{argumentList.Arguments[mismatch.SourceIndex].Name}') mapping: "
+                    + VbaCallDiagnosticText.GetParameterSubject(
+                        invocationSignature.Parameters[duplicateParameterIndex],
+                        duplicateParameterIndex)
+                    + " "
+                    + "is already supplied");
+            }
+            else if (mismatch.Kind
+                == VbaCallMappingMismatchKind.NamedArgumentsNotAccepted)
+            {
+                var writtenName = argumentList.Arguments[mismatch.SourceIndex].Name;
+                reasons.Add(
+                    $"argument {mismatch.SourceIndex + 1} ('{writtenName}') mapping: "
+                    + "named arguments are not accepted");
+            }
+            else if (mismatch.Kind == VbaCallMappingMismatchKind.UnknownNamedParameter)
+            {
+                var writtenName = argumentList.Arguments[mismatch.SourceIndex].Name;
+                reasons.Add(
+                    $"argument {mismatch.SourceIndex + 1} ('{writtenName}') mapping: "
+                    + $"no parameter named '{writtenName}'");
+            }
+            else if (mismatch.Kind == VbaCallMappingMismatchKind.ExcessPositionalArgument)
+            {
+                reasons.Add(
+                    $"argument {mismatch.SourceIndex + 1} mapping: "
+                    + "no parameter accepts this argument");
+            }
+        }
+
+        var requiredParameterIndexes = completeMapping.MissingRequiredParameterIndexes
+            .Concat(completeMapping.Mapping.Mismatches
+                .Where(mismatch => mismatch.Kind
+                    == VbaCallMappingMismatchKind.RequiredArgumentOmitted)
+                .Select(mismatch => mismatch.ParameterIndex)
+                .OfType<int>())
+            .Distinct()
+            .OrderBy(parameterIndex => parameterIndex);
+        foreach (var parameterIndex in requiredParameterIndexes)
+        {
+            reasons.Add(
+                VbaCallDiagnosticText.GetParameterSubject(
+                    invocationSignature.Parameters[parameterIndex],
+                    parameterIndex)
+                + ": required argument is missing");
+        }
+
+        reasons.AddRange(completeMapping.TypeMismatchReasons);
+
+        return reasons.Distinct(StringComparer.Ordinal).ToArray();
+    }
+
+    private static string GetExpectedCallableKinds(VbaCallContext context)
+        => context switch
+        {
+            VbaCallContext.StatementInvocation => "Sub or Function",
+            VbaCallContext.ValueRead => "Function or Property Get",
+            VbaCallContext.PropertyLetAssignment => "Property Let",
+            VbaCallContext.PropertySetAssignment => "Property Set",
+            VbaCallContext.RaiseEvent => "Event",
+            _ => "a compatible callable"
+        };
+
+    private static string GetPhysicalCallableKind(
+        VbaSourceDefinition definition,
+        VbaCallableSignature signature)
+    {
+        if (definition.PropertyAccessorKind is { } accessorKind)
+        {
+            return accessorKind switch
+            {
+                VbaPropertyAccessorKind.Get => "Property Get",
+                VbaPropertyAccessorKind.Let => "Property Let",
+                VbaPropertyAccessorKind.Set => "Property Set",
+                _ => "Property"
+            };
+        }
+
+        var kind = signature.CallableKind switch
+        {
+            VbaCallableKind.Sub => "Sub",
+            VbaCallableKind.Function => "Function",
+            VbaCallableKind.Property => "Property",
+            VbaCallableKind.Event => "Event",
+            _ => "callable"
+        };
+        return signature.Label.StartsWith("Declare ", StringComparison.OrdinalIgnoreCase)
+            ? $"Declare {kind}"
+            : kind;
+    }
 }

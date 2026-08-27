@@ -36,7 +36,7 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
             Assert.Contains(entry.Catalog.Definitions, definition =>
                 definition.Name == "GeneratedMethod"
                 && definition.Signature?.CallableKind == VbaCallableKind.Function
-                && definition.Signature.SupportsNamedArguments);
+                && definition.Signature.SupportsNamedArguments == true);
         }
         finally
         {
@@ -351,7 +351,7 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
             var generatedMethod = Assert.Single(
                 entry.Catalog.Definitions,
                 definition => definition.Name == "GeneratedMethod");
-            Assert.False(generatedMethod.Signature?.SupportsNamedArguments);
+            Assert.Null(generatedMethod.Signature?.SupportsNamedArguments);
         }
         finally
         {

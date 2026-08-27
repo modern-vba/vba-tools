@@ -109,23 +109,35 @@ public sealed class VbaCallArgumentAvailabilityTests
         var initial = ResolveCall(CreateCallLine(parenthesized, "Collect", ""));
         var availability = ResolveCall(CreateCallLine(parenthesized, "Collect", "\"prefix\", 1, 2, "));
 
-        Assert.Equal(["Prefix"], RemainingNames(initial));
+        Assert.Empty(RemainingNames(initial));
         Assert.True(availability.AllowsPositionalExpression);
         Assert.Empty(availability.RemainingNamedParameters);
     }
 
     [Theory]
-    [InlineData(true, "\"prefix\", , ")]
-    [InlineData(false, "\"prefix\", , ")]
     [InlineData(true, "Values:=1, ")]
     [InlineData(false, "Values:=1, ")]
-    public void OmittedOrNamedParamArrayInvalidatesTheSequence(
+    public void NamedParamArrayInvalidatesTheSequence(
         bool parenthesized,
         string arguments)
     {
         var availability = ResolveCall(CreateCallLine(parenthesized, "Collect", arguments));
 
         AssertInvalid(availability);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void OmittedParamArraySlotKeepsTheSequenceAvailable(bool parenthesized)
+    {
+        var availability = ResolveCall(CreateCallLine(
+            parenthesized,
+            "Collect",
+            "\"prefix\", , "));
+
+        Assert.True(availability.AllowsPositionalExpression);
+        Assert.Empty(availability.RemainingNamedParameters);
     }
 
     [Theory]
@@ -294,9 +306,9 @@ public sealed class VbaCallArgumentAvailabilityTests
             "End Function",
             "Public Sub ExampleSub(ByVal Arg1 As Long, Optional ByVal Arg2 As Boolean = False, Optional ByVal Arg3 As Boolean = False)",
             "End Sub",
-            "Public Sub Collect(Optional ByVal Prefix As String, ParamArray Values() As Variant)",
+            "Public Sub Collect(ByVal Prefix As String, ParamArray Values() As Variant)",
             "End Sub",
-            "Public Event Saved(ByVal Arg1 As Long, Optional ByVal Arg2 As Boolean)",
+            "Public Event Saved(ByVal Arg1 As Long, ByRef Arg2 As Boolean)",
             "Private Data As Variant",
             "Public Sub Main()",
             callLine,
@@ -314,7 +326,8 @@ public sealed class VbaCallArgumentAvailabilityTests
         var typeResolution = new VbaTypeResolution(nameResolution);
         var callSiteResolution = new VbaCallSiteResolution(
             nameResolution,
-            new VbaMemberChainResolution(typeResolution));
+            new VbaMemberChainResolution(typeResolution),
+            new VbaResolutionPolicy());
         var positionSyntax = syntaxTree.GetPositionSyntax(callLineIndex, callLine.Length);
 
         Assert.NotNull(positionSyntax.CallSite);

@@ -695,6 +695,9 @@ internal static class VbaSyntaxTreeIncrementalParser
         => argumentList with
         {
             Range = Shift(argumentList.Range, lineDelta, offsetDelta),
+            CalleeRange = argumentList.CalleeRange is null
+                ? null
+                : Shift(argumentList.CalleeRange, lineDelta, offsetDelta),
             Arguments = argumentList.Arguments.Select(argument => argument with
             {
                 Range = Shift(argument.Range, lineDelta, offsetDelta),

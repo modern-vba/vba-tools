@@ -126,6 +126,50 @@ public sealed class VbaSyntaxTreeProjectionTests
     }
 
     [Fact]
+    public void Incremental_parser_shifts_the_callee_range_of_an_unchanged_suffix_call()
+    {
+        const string uri = "file:///C:/work/IncrementalCallRange.bas";
+        var original = string.Join('\n', [
+            "Attribute VB_Name = \"IncrementalCallRange\"",
+            "Public Sub Before()",
+            "    Debug.Print 1",
+            "End Sub",
+            "Public Function ResolveValue(ByVal Key As String) As String",
+            "End Function",
+            "Public Sub Run()",
+            "    Debug.Print ResolveValue(Unknown:=1)",
+            "End Sub"
+        ]);
+        var updated = string.Join('\n', [
+            "Attribute VB_Name = \"IncrementalCallRange\"",
+            "Public Sub Before()",
+            "    Debug.Print 100000",
+            "End Sub",
+            "Public Function ResolveValue(ByVal Key As String) As String",
+            "End Function",
+            "Public Sub Run()",
+            "    Debug.Print ResolveValue(Unknown:=1)",
+            "End Sub"
+        ]);
+        var previousSyntaxTree = VbaSyntaxTree.ParseModule(uri, original);
+
+        var result = VbaSyntaxTree.ParseOrUpdate(uri, updated, previousSyntaxTree);
+        var clean = VbaSyntaxTree.ParseModule(uri, updated);
+        var incrementalCall = result.SyntaxTree.Module.ArgumentLists.Single(argumentList =>
+            argumentList.Callee.Equals("ResolveValue", StringComparison.OrdinalIgnoreCase));
+        var cleanCall = clean.Module.ArgumentLists.Single(argumentList =>
+            argumentList.Callee.Equals("ResolveValue", StringComparison.OrdinalIgnoreCase));
+        var incrementalArgument = Assert.Single(incrementalCall.Arguments);
+        var cleanArgument = Assert.Single(cleanCall.Arguments);
+
+        Assert.IsType<VbaSyntaxTreeChangeSet.ModuleMember>(result);
+        Assert.Equal(cleanCall.CalleeRange, incrementalCall.CalleeRange);
+        Assert.Equal(cleanCall.Range, incrementalCall.Range);
+        Assert.Equal(cleanArgument.NameRange, incrementalArgument.NameRange);
+        Assert.Equal(cleanArgument.ValueRange, incrementalArgument.ValueRange);
+    }
+
+    [Fact]
     public void Parser_returns_member_proof_for_a_conditional_directive_only_edit()
     {
         const string uri = "file:///C:/work/IncrementalConditionalFamily.bas";

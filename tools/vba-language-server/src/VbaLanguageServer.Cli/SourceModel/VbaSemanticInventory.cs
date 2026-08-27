@@ -46,7 +46,8 @@ public sealed class VbaSemanticInventory
             sourceDocuments,
             semanticResolution.ResolveSourceTarget);
         projectValidationDiagnostics = new VbaProjectValidationDiagnosticIndex(
-            sourceDocuments);
+            sourceDocuments,
+            semanticResolution);
         sourceFormatter = new VbaSourceFormatter(
             semanticResolution,
             resolvedOccurrences);
@@ -263,22 +264,77 @@ public sealed class VbaSemanticInventory
     internal VbaHoverResult? ResolveHover(string uri, int line, int character)
     {
         var target = ResolveSourceTarget(uri, line, character);
-        if (target is null)
+        var currentDocument = definitionCandidates.FindDocument(uri);
+        if (target is null || currentDocument is null)
         {
             return null;
         }
 
-        var definitions = target.IsConditionalFamily
-            ? target.PhysicalDefinitions
-            : [target.SelectedDefinition];
+        var syntaxTree = currentDocument.SyntaxTree
+            ?? VbaSyntaxTree.ParseModule(currentDocument.Uri, currentDocument.Text);
+        var positionSyntax = syntaxTree.GetPositionSyntax(line, character);
+        var identifier = positionSyntax.Identifier;
+        if (identifier is null)
+        {
+            return null;
+        }
+
+        var callablePropertyTarget = target as VbaPropertyNameTarget;
+        var isPropertyDeclarationIdentifier = callablePropertyTarget?.Property
+            .PropertyDefinitions.Any(definition =>
+                definition.Uri.Equals(uri, StringComparison.OrdinalIgnoreCase)
+                && definition.Range.Start.Line == identifier.Range.Start.Line
+                && definition.Range.Start.Character == identifier.Range.Start.Character
+                && definition.Range.End.Line == identifier.Range.End.Line
+                && definition.Range.End.Character == identifier.Range.End.Character) == true;
+        var followingToken = syntaxTree.TokenStream.Tokens
+            .Where(token => token.Range.Start.Offset >= identifier.Range.End.Offset)
+            .Where(token => token.Kind is not (
+                VbaTokenKind.Whitespace
+                or VbaTokenKind.Comment
+                or VbaTokenKind.NewLine
+                or VbaTokenKind.LineContinuation))
+            .FirstOrDefault();
+        var isCallablePropertyTarget = callablePropertyTarget is not null
+            && !isPropertyDeclarationIdentifier
+            && (syntaxTree.Module.ArgumentLists.Any(argumentList =>
+                    argumentList.CalleeRange == identifier.Range
+                    && argumentList.Form is VbaCallSyntaxForm.Parenthesized
+                        or VbaCallSyntaxForm.Statement)
+                || followingToken?.Text == "("
+                && followingToken.Range.Start.Line == identifier.Range.End.Line);
+        var definitions = isCallablePropertyTarget
+            ? callablePropertyTarget!.Property.PropertyDefinitions
+            : target.IsConditionalFamily
+                ? target.PhysicalDefinitions
+                : [target.SelectedDefinition];
+        var isMultiDefinitionPresentation = isCallablePropertyTarget
+            || target.IsConditionalFamily;
         return new VbaHoverResult(
-            target.CanonicalName,
+            isCallablePropertyTarget
+                ? callablePropertyTarget!.Property.CanonicalName
+                : target.CanonicalName,
             definitions,
-            target.IsConditionalFamily);
+            isMultiDefinitionPresentation,
+            new VbaRange(
+                new VbaPosition(
+                    identifier.Range.Start.Line,
+                    identifier.Range.Start.Character),
+                new VbaPosition(
+                    identifier.Range.End.Line,
+                    identifier.Range.End.Character)));
     }
 
-    public VbaSignatureHelp? GetSignatureHelp(string uri, int line, int character)
-        => semanticResolution.GetSignatureHelp(uri, line, character);
+    public VbaSignatureHelp? GetSignatureHelp(
+        string uri,
+        int line,
+        int character,
+        VbaSignaturePresentationIdentity? retriggerIdentity = null)
+        => semanticResolution.GetSignatureHelp(
+            uri,
+            line,
+            character,
+            retriggerIdentity);
 
     public VbaPrepareRenameResult? PrepareRename(
         string uri,
@@ -536,9 +592,17 @@ public sealed class VbaSemanticInventory
         VbaSourceDefinition target)
     {
         var definitions = GetLogicalRenameTargetDefinitions(target);
-        return definitions.Count == 1
-            ? definitions[0]
-            : VbaPropertyAccessorCoalescing.Coalesce(definitions).Single();
+        if (definitions.Count == 1)
+        {
+            return definitions[0];
+        }
+
+        var logicalTarget = resolutionPolicy.CreateNameTarget(target);
+        return definitions.FirstOrDefault(definition => string.Equals(
+                definition.Name,
+                logicalTarget.CanonicalName,
+                StringComparison.Ordinal))
+            ?? definitions[0];
     }
 
     private IReadOnlyList<VbaRenameConflict> FindInvalidPropertyFamilyConflicts(
@@ -582,7 +646,10 @@ public sealed class VbaSemanticInventory
     {
         if (target.Kind != VbaSourceDefinitionKind.Property)
         {
-            return [target];
+            var logicalTarget = resolutionPolicy.CreateNameTarget(target);
+            return logicalTarget.IsConditionalFamily
+                ? logicalTarget.PhysicalDefinitions
+                : [target];
         }
 
         var candidates = GetPropertyFamilyCandidates(target);
@@ -817,6 +884,7 @@ public sealed class VbaSemanticInventory
                     mappedRange.Start.Line,
                     mappedRange.Start.Character);
             if (!AreLogicalDefinitionsEquivalent(
+                hypothetical,
                 postDefinition,
                 hypotheticalTarget))
             {
@@ -858,6 +926,7 @@ public sealed class VbaSemanticInventory
             }
 
             if (!AreLogicalDefinitionsEquivalent(
+                hypothetical,
                 postDefinition,
                 expectedDefinition))
             {
@@ -1019,6 +1088,7 @@ public sealed class VbaSemanticInventory
     }
 
     private static bool AreLogicalDefinitionsEquivalent(
+        VbaSemanticInventory inventory,
         VbaSourceDefinition? left,
         VbaSourceDefinition? right)
     {
@@ -1027,19 +1097,8 @@ public sealed class VbaSemanticInventory
             return false;
         }
 
-        if (left.Identity == right.Identity)
-        {
-            return true;
-        }
-
-        return left.Kind == VbaSourceDefinitionKind.Property
-            && right.Kind == VbaSourceDefinitionKind.Property
-            && string.Equals(left.Uri, right.Uri, StringComparison.OrdinalIgnoreCase)
-            && string.Equals(
-                left.ModuleName,
-                right.ModuleName,
-                StringComparison.OrdinalIgnoreCase)
-            && string.Equals(left.Name, right.Name, StringComparison.OrdinalIgnoreCase);
+        return inventory.resolutionPolicy.CreateNameTarget(left).Identity
+            == inventory.resolutionPolicy.CreateNameTarget(right).Identity;
     }
 
     private static string ApplyTextEdits(

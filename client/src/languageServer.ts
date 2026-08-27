@@ -1,9 +1,12 @@
 import * as path from 'node:path';
 import type { FileSystemWatcher } from 'vscode';
 import type {
+  ClientCapabilities,
   FormattingMiddleware,
   LanguageClientOptions,
-  ServerOptions
+  ServerOptions,
+  SignatureHelpMiddleware,
+  StaticFeature
 } from 'vscode-languageclient/node';
 import { resolveBundledRuntimePath } from './distributionManifest';
 
@@ -24,6 +27,53 @@ export interface VbaLanguageServerOptions extends VbaLanguageServerPathOptions {
   readonly referenceCatalogCacheRoot?: string;
 }
 
+type Lsp318SignatureInformationCapabilities = {
+  noActiveParameterSupport?: boolean;
+};
+
+type NullableActiveParameterSignature = {
+  activeParameter?: number | null;
+  parameters?: readonly unknown[];
+};
+
+const provideVbaSignatureHelp: NonNullable<
+  SignatureHelpMiddleware['provideSignatureHelp']
+> = async (document, position, context, token, next) => {
+  const result = await next(document, position, context, token);
+  if (result === null || result === undefined) {
+    return result;
+  }
+
+  for (const signature of result.signatures) {
+    const nullableSignature = signature as typeof signature
+      & NullableActiveParameterSignature;
+    if (nullableSignature.activeParameter === null) {
+      nullableSignature.activeParameter = nullableSignature.parameters?.length ?? 0;
+    }
+  }
+
+  return result;
+};
+
+export function createVbaSignatureHelpClientCapabilitiesFeature(): StaticFeature {
+  return {
+    fillClientCapabilities(capabilities: ClientCapabilities): void {
+      const textDocument = capabilities.textDocument ??= {};
+      const signatureHelp = textDocument.signatureHelp ??= {};
+      const signatureInformation = signatureHelp.signatureInformation ??= {};
+      signatureHelp.contextSupport = true;
+      signatureInformation.activeParameterSupport = true;
+      (
+        signatureInformation as typeof signatureInformation
+          & Lsp318SignatureInformationCapabilities
+      ).noActiveParameterSupport = true;
+    },
+    initialize(): void {},
+    getState: () => ({ kind: 'static' }),
+    clear(): void {}
+  };
+}
+
 export function createVbaLanguageClientOptions(
   sourceFileWatcher: FileSystemWatcher,
   projectManifestWatcher: FileSystemWatcher,
@@ -39,9 +89,12 @@ export function createVbaLanguageClientOptions(
     synchronize: {
       fileEvents: [sourceFileWatcher, projectManifestWatcher]
     },
-    middleware: provideDocumentFormattingEdits === undefined
-      ? undefined
-      : { provideDocumentFormattingEdits }
+    middleware: {
+      provideSignatureHelp: provideVbaSignatureHelp,
+      ...(provideDocumentFormattingEdits === undefined
+        ? {}
+        : { provideDocumentFormattingEdits })
+    }
   };
 }
 

@@ -156,6 +156,55 @@ public sealed class VbaSyntaxTreeExpressionTests
     }
 
     [Fact]
+    public void ParserModelsCompleteZeroArgumentCallFormsWithoutDuplicateProjection()
+    {
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "Public Sub Run()",
+            "    result = ResolveValue",
+            "    Call Work",
+            "    RaiseEvent Saved",
+            "    Value = 1",
+            "    ResolveValue()",
+            "    Work",
+            "End Sub"
+        ]);
+
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Worker.bas", source);
+
+        var bareValueRead = Assert.Single(
+            tree.Module.ArgumentLists,
+            argumentList => argumentList.Callee == "ResolveValue"
+                && argumentList.Form == VbaCallSyntaxForm.BareValueRead);
+        Assert.Empty(bareValueRead.Arguments);
+        Assert.Equal(13, bareValueRead.CalleeRange?.Start.Character);
+        Assert.Equal(25, bareValueRead.CalleeRange?.End.Character);
+
+        Assert.Single(
+            tree.Module.ArgumentLists,
+            argumentList => argumentList.Callee == "Work"
+                && argumentList.Form == VbaCallSyntaxForm.Statement
+                && argumentList.CalleeRange?.Start.Line == 3);
+        Assert.Single(
+            tree.Module.ArgumentLists,
+            argumentList => argumentList.Callee == "Saved"
+                && argumentList.Form == VbaCallSyntaxForm.Statement);
+        Assert.Single(
+            tree.Module.ArgumentLists,
+            argumentList => argumentList.Callee == "Value"
+                && argumentList.Form == VbaCallSyntaxForm.PropertyAssignment);
+        Assert.Single(
+            tree.Module.ArgumentLists,
+            argumentList => argumentList.Callee == "ResolveValue"
+                && argumentList.Form == VbaCallSyntaxForm.Parenthesized);
+        Assert.Single(
+            tree.Module.ArgumentLists,
+            argumentList => argumentList.Callee == "Work"
+                && argumentList.Form == VbaCallSyntaxForm.Statement
+                && argumentList.CalleeRange?.Start.Line == 7);
+    }
+
+    [Fact]
     public void ParserModelsAStatementCallToANonReservedContextualIdentifier()
     {
         var source = string.Join('\n', [

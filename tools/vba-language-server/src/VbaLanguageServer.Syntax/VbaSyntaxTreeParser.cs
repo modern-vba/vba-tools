@@ -29,6 +29,7 @@ internal static class VbaSyntaxTreeParser
         + "(?:(?<kind>Sub|Function)|Property" + VbaIdentifier.RegexWhitespace + "+(?<propertyKind>Get|Let|Set))"
         + VbaIdentifier.RegexWhitespace + "+"
         + "(?<name>(?>" + VbaIdentifier.RegexIdentifierCandidate + "))"
+        + "(?<typeCharacter>[$%&^!#@])?"
         + VbaIdentifier.RegexWhitespace + "*(?:\\((?<parameters>.*)\\))?",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
@@ -39,6 +40,7 @@ internal static class VbaSyntaxTreeParser
         + "(?:PtrSafe" + VbaIdentifier.RegexWhitespace + "+)?"
         + "(?<kind>Sub|Function)" + VbaIdentifier.RegexWhitespace + "+"
         + "(?<name>(?>" + VbaIdentifier.RegexIdentifierCandidate + "))"
+        + "(?<typeCharacter>[$%&^!#@])?"
         + VbaIdentifier.RegexWhitespace + "+Lib" + VbaIdentifier.RegexWhitespace + "+\"[^\"]+\""
         + "(?:" + VbaIdentifier.RegexWhitespace + "+Alias" + VbaIdentifier.RegexWhitespace + "+\"[^\"]+\")?"
         + VbaIdentifier.RegexWhitespace + "*(?:\\((?<parameters>.*)\\))?",
@@ -149,6 +151,17 @@ internal static class VbaSyntaxTreeParser
             parsedPreprocessor.Blocks,
             codeStartLine);
         diagnostics.AddRange(parsedStatements.Diagnostics);
+        foreach (var diagnostic in CollectRaiseEventArgumentListDiagnostics(
+            tokenStream,
+            parsedExpressions.ArgumentLists))
+        {
+            if (!diagnostics.Any(existing => existing.Code == diagnostic.Code
+                && existing.Range == diagnostic.Range))
+            {
+                diagnostics.Add(diagnostic);
+            }
+        }
+
         diagnostics.AddRange(parsedPreprocessor.Diagnostics);
         var module = new VbaModuleSyntax(
             kind,
@@ -169,6 +182,77 @@ internal static class VbaSyntaxTreeParser
             codeStartLine,
             sourceText.FullRange);
         return new VbaSyntaxTree(uri, sourceText, tokenStream, module, diagnostics);
+    }
+
+    private static IEnumerable<VbaSyntaxDiagnostic> CollectRaiseEventArgumentListDiagnostics(
+        VbaTokenStream tokenStream,
+        IReadOnlyList<VbaArgumentListSyntax> argumentLists)
+    {
+        foreach (var argumentList in argumentLists)
+        {
+            if (argumentList.Form != VbaCallSyntaxForm.Parenthesized
+                || !IsRaiseEventArgumentList(tokenStream, argumentList))
+            {
+                continue;
+            }
+
+            if (argumentList.Arguments.Count == 0)
+            {
+                yield return new VbaSyntaxDiagnostic(
+                    "syntax.raiseEventEmptyArgumentListNotAllowed",
+                    "RaiseEvent must omit parentheses when no arguments are supplied.",
+                    argumentList.Range);
+                continue;
+            }
+
+            if (argumentList.Arguments.Any(argument =>
+                    argument.Kind == VbaArgumentKind.Omitted))
+            {
+                yield return new VbaSyntaxDiagnostic(
+                    "syntax.raiseEventOmittedArgumentNotAllowed",
+                    "RaiseEvent arguments cannot be omitted.",
+                    argumentList.Range);
+            }
+
+            foreach (var argument in argumentList.Arguments.Where(argument =>
+                         argument.Kind == VbaArgumentKind.Named
+                         && argument.NameRange is not null))
+            {
+                var nameRange = argument.NameRange!;
+                var namedOperator = tokenStream.Tokens.FirstOrDefault(token =>
+                    token.Range.Start.Offset >= nameRange.End.Offset
+                    && token.Range.End.Offset <= argument.Range.End.Offset
+                    && token.Text == ":=");
+                yield return new VbaSyntaxDiagnostic(
+                    "syntax.raiseEventNamedArgumentNotAllowed",
+                    "RaiseEvent arguments cannot use named-argument syntax.",
+                    new VbaSyntaxRange(
+                        nameRange.Start,
+                        namedOperator?.Range.End ?? nameRange.End));
+            }
+        }
+    }
+
+    private static bool IsRaiseEventArgumentList(
+        VbaTokenStream tokenStream,
+        VbaArgumentListSyntax argumentList)
+    {
+        if (argumentList.CalleeRange is not { } calleeRange)
+        {
+            return false;
+        }
+
+        var precedingToken = tokenStream.Tokens
+            .Where(token => token.Range.End.Offset <= calleeRange.Start.Offset)
+            .Where(token => token.Kind is not (
+                VbaTokenKind.Whitespace
+                or VbaTokenKind.NewLine
+                or VbaTokenKind.LineContinuation
+                or VbaTokenKind.Comment))
+            .LastOrDefault();
+        return precedingToken?.Text.Equals(
+            "RaiseEvent",
+            StringComparison.OrdinalIgnoreCase) == true;
     }
 
     private static VbaSourceText MaskPreprocessorDirectives(
@@ -811,8 +895,128 @@ internal static class VbaSyntaxTreeParser
         }
 
         var argumentStart = SkipWhitespace(codeLine, eventNameEnd);
-        if (argumentStart >= codeLine.Length || codeLine[argumentStart] == '(')
+        if (argumentStart >= codeLine.Length)
         {
+            yield break;
+        }
+
+        if (codeLine[argumentStart] == '(')
+        {
+            var argumentEnd = FindRaiseEventArgumentListEnd(codeLine, argumentStart);
+            if (argumentEnd >= 0
+                && string.IsNullOrWhiteSpace(
+                    codeLine[(argumentStart + 1)..argumentEnd]))
+            {
+                yield return new VbaSyntaxDiagnostic(
+                    "syntax.raiseEventEmptyArgumentListNotAllowed",
+                    "RaiseEvent must omit parentheses when no arguments are supplied.",
+                    new VbaSyntaxRange(
+                        new VbaSyntaxPosition(
+                            line.LineNumber,
+                            argumentStart,
+                            line.StartOffset + argumentStart),
+                        new VbaSyntaxPosition(
+                            line.LineNumber,
+                            argumentEnd + 1,
+                            line.StartOffset + argumentEnd + 1)));
+                yield break;
+            }
+
+            if (argumentEnd >= 0
+                && HasRaiseEventOmittedArgument(
+                    codeLine,
+                    argumentStart,
+                    argumentEnd))
+            {
+                yield return new VbaSyntaxDiagnostic(
+                    "syntax.raiseEventOmittedArgumentNotAllowed",
+                    "RaiseEvent arguments cannot be omitted.",
+                    new VbaSyntaxRange(
+                        new VbaSyntaxPosition(
+                            line.LineNumber,
+                            argumentStart,
+                            line.StartOffset + argumentStart),
+                        new VbaSyntaxPosition(
+                            line.LineNumber,
+                            argumentEnd + 1,
+                            line.StartOffset + argumentEnd + 1)));
+            }
+
+            var inString = false;
+            var parenthesisDepth = 1;
+            for (var argumentIndex = argumentStart + 1;
+                argumentIndex < codeLine.Length;
+                argumentIndex++)
+            {
+                if (codeLine[argumentIndex] == '"')
+                {
+                    if (inString
+                        && argumentIndex + 1 < codeLine.Length
+                        && codeLine[argumentIndex + 1] == '"')
+                    {
+                        argumentIndex++;
+                        continue;
+                    }
+
+                    inString = !inString;
+                    continue;
+                }
+
+                if (inString)
+                {
+                    continue;
+                }
+
+                if (codeLine[argumentIndex] == '(')
+                {
+                    parenthesisDepth++;
+                    continue;
+                }
+
+                if (codeLine[argumentIndex] == ')')
+                {
+                    parenthesisDepth--;
+                    if (parenthesisDepth == 0)
+                    {
+                        break;
+                    }
+
+                    continue;
+                }
+
+                if (parenthesisDepth != 1)
+                {
+                    continue;
+                }
+
+                var nameEnd = ReadIdentifierEnd(codeLine, argumentIndex);
+                if (nameEnd == argumentIndex)
+                {
+                    continue;
+                }
+
+                var operatorStart = SkipWhitespace(codeLine, nameEnd);
+                if (operatorStart + 1 < codeLine.Length
+                    && codeLine[operatorStart] == ':'
+                    && codeLine[operatorStart + 1] == '=')
+                {
+                    yield return new VbaSyntaxDiagnostic(
+                        "syntax.raiseEventNamedArgumentNotAllowed",
+                        "RaiseEvent arguments cannot use named-argument syntax.",
+                        new VbaSyntaxRange(
+                            new VbaSyntaxPosition(
+                                line.LineNumber,
+                                argumentIndex,
+                                line.StartOffset + argumentIndex),
+                            new VbaSyntaxPosition(
+                                line.LineNumber,
+                                operatorStart + 2,
+                                line.StartOffset + operatorStart + 2)));
+                }
+
+                argumentIndex = nameEnd - 1;
+            }
+
             yield break;
         }
 
@@ -822,6 +1026,118 @@ internal static class VbaSyntaxTreeParser
             new VbaSyntaxRange(
                 new VbaSyntaxPosition(line.LineNumber, argumentStart, line.StartOffset + argumentStart),
                 new VbaSyntaxPosition(line.LineNumber, codeLine.Length, line.StartOffset + codeLine.Length)));
+    }
+
+    private static int FindRaiseEventArgumentListEnd(string codeLine, int argumentStart)
+    {
+        var inString = false;
+        var depth = 0;
+        for (var index = argumentStart; index < codeLine.Length; index++)
+        {
+            if (codeLine[index] == '"')
+            {
+                if (inString
+                    && index + 1 < codeLine.Length
+                    && codeLine[index + 1] == '"')
+                {
+                    index++;
+                    continue;
+                }
+
+                inString = !inString;
+                continue;
+            }
+
+            if (inString)
+            {
+                continue;
+            }
+
+            if (codeLine[index] == '(')
+            {
+                depth++;
+            }
+            else if (codeLine[index] == ')')
+            {
+                depth--;
+                if (depth == 0)
+                {
+                    return index;
+                }
+            }
+        }
+
+        return -1;
+    }
+
+    private static bool HasRaiseEventOmittedArgument(
+        string codeLine,
+        int argumentStart,
+        int argumentEnd)
+    {
+        var inString = false;
+        var depth = 1;
+        var slotHasValue = false;
+        for (var index = argumentStart + 1; index < argumentEnd; index++)
+        {
+            if (codeLine[index] == '"')
+            {
+                if (inString
+                    && index + 1 < argumentEnd
+                    && codeLine[index + 1] == '"')
+                {
+                    index++;
+                    slotHasValue = true;
+                    continue;
+                }
+
+                inString = !inString;
+                slotHasValue = true;
+                continue;
+            }
+
+            if (inString)
+            {
+                slotHasValue = true;
+                continue;
+            }
+
+            if (codeLine[index] == '(')
+            {
+                depth++;
+                slotHasValue = true;
+                continue;
+            }
+
+            if (codeLine[index] == ')')
+            {
+                if (depth > 1)
+                {
+                    depth--;
+                }
+
+                slotHasValue = true;
+                continue;
+            }
+
+            if (depth == 1 && codeLine[index] == ',')
+            {
+                if (!slotHasValue)
+                {
+                    return true;
+                }
+
+                slotHasValue = false;
+                continue;
+            }
+
+            if (!char.IsWhiteSpace(codeLine[index]))
+            {
+                slotHasValue = true;
+            }
+        }
+
+        return !slotHasValue;
     }
 
     private static IEnumerable<VbaSyntaxDiagnostic> CollectLineContinuationDiagnostics(VbaSourceLine line)
@@ -1159,7 +1475,9 @@ internal static class VbaSyntaxTreeParser
                 continue;
             }
 
-            var typeReference = ParseTypeReference(line.Text);
+            var typeReference = ParseTypeReference(
+                line.Text,
+                declaredName: nameToken.Text);
             var isArray = IsArrayParameter(codeLine, nameToken.Text);
             declarations.Add(new VbaDeclarationSyntax(
                 nameToken.Text,
@@ -1239,7 +1557,9 @@ internal static class VbaSyntaxTreeParser
             var nameStart = segmentStart + nameToken.Range.Start.Offset;
             var isWithEvents = isWithEventsDefault || hasWithEventsModifier;
             var isArray = IsArrayParameter(segment.Text, name);
-            var typeReference = ParseTypeReference(segment.Text);
+            var typeReference = ParseTypeReference(
+                segment.Text,
+                declaredName: name);
             declarations.Add(new VbaDeclarationSyntax(
                 name,
                 kind,
@@ -1330,7 +1650,10 @@ internal static class VbaSyntaxTreeParser
                 documentation?.ParameterDocs.TryGetValue(name, out var parameterDocumentation) == true
                     ? parameterDocumentation
                     : null,
-                ParseTypeReference(segment.Text, allowAnyTypeReference),
+                ParseTypeReference(
+                    segment.Text,
+                    allowAnyTypeReference,
+                    name),
                 IsOptionalParameter(segment.Text),
                 IsByRefParameter(segment.Text),
                 IsParamArrayParameter(segment.Text),
@@ -1369,7 +1692,7 @@ internal static class VbaSyntaxTreeParser
                 documentation?.ParameterDocs.TryGetValue(name, out var parameterDocumentation) == true
                     ? parameterDocumentation
                     : null,
-                ParseTypeReference(segment.Text),
+                ParseTypeReference(segment.Text, declaredName: name),
                 IsOptionalParameter(segment.Text),
                 IsByRefParameter(segment.Text),
                 IsParamArrayParameter(segment.Text),
@@ -1559,14 +1882,25 @@ internal static class VbaSyntaxTreeParser
                 and not VbaTokenKind.NewLine
                 and not VbaTokenKind.Comment)
             .ToArray();
-        for (var index = 0; index + 1 < tokens.Length; index++)
+        for (var index = 0; index < tokens.Length; index++)
         {
             if (VbaIdentifierSyntaxFacts.IsValidDeclaredName(tokens[index])
-                && tokens[index].Text.Equals(name, StringComparison.Ordinal)
-                && tokens[index + 1].Kind == VbaTokenKind.Punctuation
-                && tokens[index + 1].Text == "(")
+                && tokens[index].Text.Equals(name, StringComparison.Ordinal))
             {
-                return true;
+                var arrayMarkerIndex = index + 1;
+                if (arrayMarkerIndex < tokens.Length
+                    && tokens[index].Range.End.Offset
+                        == tokens[arrayMarkerIndex].Range.Start.Offset
+                    && VbaLanguageVocabulary.TryGetTypeDeclarationCharacterTypeName(
+                        tokens[arrayMarkerIndex].Text,
+                        out _))
+                {
+                    arrayMarkerIndex++;
+                }
+
+                return arrayMarkerIndex < tokens.Length
+                    && tokens[arrayMarkerIndex].Kind == VbaTokenKind.Punctuation
+                    && tokens[arrayMarkerIndex].Text == "(";
             }
         }
 
@@ -1876,12 +2210,14 @@ internal static class VbaSyntaxTreeParser
     private static VbaTypeReferenceSyntax? ParseReturnTypeReference(Match match, string line)
     {
         var parametersGroup = match.Groups["parameters"];
-        if (parametersGroup.Success)
-        {
-            return ParseReturnTypeReference(line[(parametersGroup.Index + parametersGroup.Length)..]);
-        }
-
-        return ParseReturnTypeReference(line);
+        var explicitType = parametersGroup.Success
+            ? ParseReturnTypeReference(
+                line[(parametersGroup.Index + parametersGroup.Length)..])
+            : ParseReturnTypeReference(line);
+        return explicitType
+            ?? ParseTypeDeclarationCharacterReference(
+                line,
+                match.Groups["name"].Value);
     }
 
     private static VbaTypeReferenceSyntax? ParseReturnTypeReference(string text)
@@ -1889,8 +2225,45 @@ internal static class VbaSyntaxTreeParser
 
     private static VbaTypeReferenceSyntax? ParseTypeReference(
         string text,
-        bool allowAnyTypeReference = false)
-        => ParseTypeReferenceAfterAs(text, allowAnyTypeReference);
+        bool allowAnyTypeReference = false,
+        string? declaredName = null)
+        => ParseTypeReferenceAfterAs(text, allowAnyTypeReference)
+            ?? ParseTypeDeclarationCharacterReference(text, declaredName);
+
+    private static VbaTypeReferenceSyntax? ParseTypeDeclarationCharacterReference(
+        string text,
+        string? declaredName)
+    {
+        if (declaredName is null)
+        {
+            return null;
+        }
+
+        var tokens = VbaTokenStream.FromText(text).Tokens
+            .Where(token => token.Kind is not VbaTokenKind.Whitespace
+                and not VbaTokenKind.NewLine
+                and not VbaTokenKind.LineContinuation
+                and not VbaTokenKind.Comment)
+            .ToArray();
+        for (var index = 0; index + 1 < tokens.Length; index++)
+        {
+            var name = tokens[index];
+            var typeCharacter = tokens[index + 1];
+            if (name.Text.Equals(declaredName, StringComparison.Ordinal)
+                && typeCharacter.Range.Start.Offset == name.Range.End.Offset
+                && VbaLanguageVocabulary.TryGetTypeDeclarationCharacterTypeName(
+                    typeCharacter.Text,
+                    out var canonicalTypeName))
+            {
+                return new VbaTypeReferenceSyntax(
+                    canonicalTypeName,
+                    Qualifier: null,
+                    IsNew: false);
+            }
+        }
+
+        return null;
+    }
 
     private static VbaTypeReferenceSyntax? ParseTypeReferenceAfterAs(
         string text,

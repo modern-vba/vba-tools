@@ -460,7 +460,9 @@ public sealed class VbaCompletionCandidateResolutionTests
     [Fact]
     public void RaiseEventArgumentsOfferValuesButNeverNamedParameters()
     {
-        var result = Complete(CallContextSource("    RaiseEvent Saved(|)"));
+        var result = Complete(
+            CallContextSource("    RaiseEvent Saved(|)"),
+            mainUri: "file:///C:/work/Main.cls");
 
         Assert.DoesNotContain(result.Candidates, candidate =>
             candidate.Kind == VbaCompletionCandidateKind.NamedArgument);
@@ -1020,11 +1022,11 @@ public sealed class VbaCompletionCandidateResolutionTests
             "End Function",
             "Public Sub ExampleSub(ByVal Arg1 As Long, Optional ByVal Arg2 As Boolean = False, Optional ByVal Arg3 As Boolean = False)",
             "End Sub",
-            "Public Function CollectValues(Optional ByVal Prefix As String, ParamArray Values() As Variant) As Long",
+            "Public Function CollectValues(ByVal Prefix As String, ParamArray Values() As Variant) As Long",
             "End Function",
-            "Public Sub Collect(Optional ByVal Prefix As String, ParamArray Values() As Variant)",
+            "Public Sub Collect(ByVal Prefix As String, ParamArray Values() As Variant)",
             "End Sub",
-            "Public Event Saved(ByVal Arg1 As Long, Optional ByVal Arg2 As Boolean)",
+            "Public Event Saved(ByVal Arg1 As Long, ByRef Arg2 As Boolean)",
             "Public Sub Probe()",
             "    Dim result As Variant",
             "    Dim LocalValue As Long",

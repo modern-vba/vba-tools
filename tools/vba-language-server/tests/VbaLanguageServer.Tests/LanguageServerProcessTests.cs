@@ -2909,6 +2909,7 @@ public sealed class LanguageServerProcessTests
             .GetProperty("contents")
             .GetProperty("value")
             .GetString();
+        var range = hover.GetProperty("result").GetProperty("range");
 
         Assert.Contains("**BuildValue [#If]**", value, StringComparison.Ordinal);
         Assert.Contains("Function BuildValue() As String [#If]", value, StringComparison.Ordinal);
@@ -2918,6 +2919,10 @@ public sealed class LanguageServerProcessTests
             StringComparison.Ordinal);
         Assert.DoesNotContain("VBA7", value, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("Win64", value, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(10, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(16, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(10, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(26, range.GetProperty("end").GetProperty("character").GetInt32());
 
         await process.ShutdownAsync(3);
     }
@@ -2969,6 +2974,70 @@ public sealed class LanguageServerProcessTests
         Assert.DoesNotContain("[#If]", hoverValue, StringComparison.Ordinal);
 
         await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_uses_the_contextual_property_accessor_family_heading()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalPropertyCanonicalName.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalPropertyCanonicalName\"",
+            "Public Property Get value() As Long",
+            "End Property",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Property Let Value(ByVal Assigned As Long)",
+            "End Property",
+            "#Else",
+            "Public Property Let VALUE(ByVal Assigned As Long)",
+            "End Property",
+            "#End If",
+            "Public Sub Run()",
+            "    Debug.Print value",
+            "    Value = 1",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var readHover = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/hover",
+            uri,
+            text,
+            "    Debug.Print value",
+            "    Debug.Print ".Length);
+        var writeHover = await SendPositionRequestAsync(
+            process,
+            3,
+            "textDocument/hover",
+            uri,
+            text,
+            "    Value = 1",
+            "    ".Length);
+        var readValue = readHover
+            .GetProperty("result")
+            .GetProperty("contents")
+            .GetProperty("value")
+            .GetString();
+        var writeValue = writeHover
+            .GetProperty("result")
+            .GetProperty("contents")
+            .GetProperty("value")
+            .GetString();
+
+        Assert.DoesNotContain("[#If]", readValue, StringComparison.Ordinal);
+        Assert.Contains("**Value [#If]**", writeValue, StringComparison.Ordinal);
+        Assert.Contains("Property value() As Long", readValue, StringComparison.Ordinal);
+        Assert.Contains("Property Value(Assigned As Long) [#If]", writeValue, StringComparison.Ordinal);
+        Assert.Contains("Property VALUE(Assigned As Long) [#If]", writeValue, StringComparison.Ordinal);
+
+        await process.ShutdownAsync(4);
     }
 
     [Fact]
@@ -5601,6 +5670,7587 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
+    public async Task Server_returns_every_conditional_callable_signature_without_selecting_a_branch()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalCallableFamily.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalCallableFamily\"",
+            "#If STRING_CONFIGURATION Then",
+            "Public Function ResolveValue(ByVal Key As String) As String",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal Index As Long, Optional ByVal Fallback As String) As String",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As String",
+            "    result = ResolveValue(",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    result = ResolveValue(",
+            "    result = ResolveValue(".Length);
+        var labels = response
+            .GetProperty("result")
+            .GetProperty("signatures")
+            .EnumerateArray()
+            .Select(signature => signature.GetProperty("label").GetString() ?? string.Empty)
+            .ToArray();
+        Assert.Equal(
+            [
+                "Function ResolveValue(Key As String) As String [#If]",
+                "Function resolvevalue(Index As Long, [Fallback As String]) As String [#If]"
+            ],
+            labels);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_returns_every_conditional_member_callable_signature_without_selecting_a_branch()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string classUri = "file:///C:/work/ConditionalWorker.cls";
+        var classText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalWorker\"",
+            "#If STRING_CONFIGURATION Then",
+            "Public Function ResolveValue(ByVal Key As String) As String",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal Index As Long) As String",
+            "End Function",
+            "#End If"
+        ]);
+        const string callerUri = "file:///C:/work/ConditionalMemberCaller.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalMemberCaller\"",
+            "Public Sub Run()",
+            "    Dim worker As ConditionalWorker",
+            "    Dim result As String",
+            "    result = worker.ResolveValue(",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(classUri, classText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            callerUri,
+            callerText,
+            "    result = worker.ResolveValue(",
+            "    result = worker.ResolveValue(".Length);
+        var labels = response
+            .GetProperty("result")
+            .GetProperty("signatures")
+            .EnumerateArray()
+            .Select(signature => signature.GetProperty("label").GetString() ?? string.Empty)
+            .ToArray();
+        Assert.Equal(
+            [
+                "Function ResolveValue(Key As String) As String [#If]",
+                "Function resolvevalue(Index As Long) As String [#If]"
+            ],
+            labels);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_excludes_an_invalid_physical_signature_from_conditional_signature_help()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalRecoveredCallable.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalRecoveredCallable\"",
+            "#If INVALID_CONFIGURATION Then",
+            "Public Function ResolveValue(ByVal Key As String, ByVal key As Long) As String",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal Index As Long) As String",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As String",
+            "    result = ResolveValue(",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    result = ResolveValue(",
+            "    result = ResolveValue(".Length);
+        var signatures = response
+            .GetProperty("result")
+            .GetProperty("signatures")
+            .EnumerateArray()
+            .ToArray();
+
+        var signature = Assert.Single(signatures);
+        Assert.Equal(
+            "Function resolvevalue(Index As Long) As String [#If]",
+            signature.GetProperty("label").GetString());
+
+        var completion = await SendPositionRequestAsync(
+            process,
+            3,
+            "textDocument/completion",
+            uri,
+            text,
+            "    result = ResolveValue(",
+            "    result = ResolveValue(".Length);
+        var indexItem = Assert.Single(
+            completion.GetProperty("result").EnumerateArray(),
+            item => item.GetProperty("label").GetString() == "Index");
+        Assert.False(indexItem.TryGetProperty("detail", out _));
+        Assert.DoesNotContain(
+            completion.GetProperty("result").EnumerateArray(),
+            item => item.GetProperty("label").GetString() == "Key");
+
+        await process.ShutdownAsync(4);
+    }
+
+    [Fact]
+    public async Task Server_excludes_a_recovered_byval_param_array_signature_from_callable_variants()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalRecoveredParamArray.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalRecoveredParamArray\"",
+            "#If INVALID_CONFIGURATION Then",
+            "Public Function ResolveValue(ByVal ParamArray Values() As Variant) As String",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal Index As Long) As String",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As String",
+            "    result = ResolveValue(",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    result = ResolveValue(",
+            "    result = ResolveValue(".Length);
+        var signatures = response
+            .GetProperty("result")
+            .GetProperty("signatures")
+            .EnumerateArray()
+            .ToArray();
+
+        var signature = Assert.Single(signatures);
+        Assert.Equal(
+            "Function resolvevalue(Index As Long) As String [#If]",
+            signature.GetProperty("label").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_excludes_a_private_conditional_callable_variant_at_an_external_use_site()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string declarationsUri = "file:///C:/work/ConditionalVisibilityDeclarations.bas";
+        var declarationsText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalVisibilityDeclarations\"",
+            "#If PRIVATE_CONFIGURATION Then",
+            "Private Function ResolveValue(ByVal PrivateOnly As String) As String",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal PublicOnly As Long) As String",
+            "End Function",
+            "#End If"
+        ]);
+        const string callerUri = "file:///C:/work/ConditionalVisibilityCaller.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalVisibilityCaller\"",
+            "Public Sub Run()",
+            "    Dim result As String",
+            "    result = ResolveValue(",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(declarationsUri, declarationsText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            callerUri,
+            callerText,
+            "    result = ResolveValue(",
+            "    result = ResolveValue(".Length);
+        var signatures = response
+            .GetProperty("result")
+            .GetProperty("signatures")
+            .EnumerateArray()
+            .ToArray();
+
+        var signature = Assert.Single(signatures);
+        Assert.Equal(
+            "Function resolvevalue(PublicOnly As Long) As String [#If]",
+            signature.GetProperty("label").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_retains_and_ranks_every_conditional_source_declare_signature()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalSourceDeclare.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalSourceDeclare\"",
+            "#If ANSI_CONFIGURATION Then",
+            "Public Declare Function ResolveValue Lib \"kernel32\" Alias \"ResolveValueA\" (ByVal Text As String) As Long",
+            "#Else",
+            "Public Declare Function resolvevalue Lib \"kernel32\" Alias \"ResolveValueW\" (ByVal Code As Long) As Long",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As Long",
+            "    result = ResolveValue(1&",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    result = ResolveValue(1&",
+            "    result = ResolveValue(1&".Length);
+        var result = response.GetProperty("result");
+        Assert.Equal(
+            [
+                "Declare Function ResolveValue(Text As String) As Long [#If]",
+                "Declare Function resolvevalue(Code As Long) As Long [#If]"
+            ],
+            result
+                .GetProperty("signatures")
+                .EnumerateArray()
+                .Select(signature => signature.GetProperty("label").GetString()));
+        Assert.Equal(1, result.GetProperty("activeSignature").GetInt32());
+
+        var definition = await SendDefinitionRequestAsync(
+            process,
+            3,
+            uri,
+            text,
+            "    result = ResolveValue(1&",
+            "    result = ".Length);
+        Assert.Equal(
+            [2, 4],
+            definition
+                .EnumerateArray()
+                .Select(location => location
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32()));
+
+        await process.ShutdownAsync(4);
+    }
+
+    [Fact]
+    public async Task Server_retains_an_external_declare_variant_with_an_any_parameter()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalSourceDeclareAny.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalSourceDeclareAny\"",
+            "#If DESTINATION_CONFIGURATION Then",
+            "Public Declare Sub CopyMemory Lib \"kernel32\" (ByRef Destination As Any)",
+            "#Else",
+            "Public Declare Sub copymemory Lib \"kernel32\" (ByVal Source As LongPtr)",
+            "#End If",
+            "Public Sub Run()",
+            "    CopyMemory(",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var signatureResponse = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    CopyMemory(",
+            "    CopyMemory(".Length);
+        Assert.Equal(
+            [
+                "Declare Sub CopyMemory(ByRef Destination As Any) [#If]",
+                "Declare Sub copymemory(Source As LongPtr) [#If]"
+            ],
+            signatureResponse
+                .GetProperty("result")
+                .GetProperty("signatures")
+                .EnumerateArray()
+                .Select(signature => signature.GetProperty("label").GetString()));
+
+        var completionResponse = await SendPositionRequestAsync(
+            process,
+            3,
+            "textDocument/completion",
+            uri,
+            text,
+            "    CopyMemory(",
+            "    CopyMemory(".Length);
+        Assert.Contains(
+            completionResponse.GetProperty("result").EnumerateArray(),
+            item => item.GetProperty("kind").GetInt32() == 5
+                && item.GetProperty("label").GetString() == "Destination");
+
+        await process.ShutdownAsync(4);
+    }
+
+    [Fact]
+    public async Task Server_excludes_an_invalid_declare_header_from_callable_variants()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalInvalidDeclareHeader.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalInvalidDeclareHeader\"",
+            "#If INVALID_CONFIGURATION Then",
+            "Public Declare Sub Work Lib \"kernel32\" (ByVal Key As Long) As Long",
+            "#Else",
+            "Public Declare Sub work Lib \"kernel32\" (ByVal GoodKey As Long)",
+            "#End If",
+            "Public Sub Run()",
+            "    Work(",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var signatureResponse = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    Work(",
+            "    Work(".Length);
+        var signature = Assert.Single(signatureResponse
+            .GetProperty("result")
+            .GetProperty("signatures")
+            .EnumerateArray());
+        Assert.Equal(
+            "Declare Sub work(GoodKey As Long) [#If]",
+            signature.GetProperty("label").GetString());
+
+        var definitions = await SendDefinitionRequestAsync(
+            process,
+            3,
+            uri,
+            text,
+            "    Work(",
+            "    ".Length);
+        Assert.Equal(
+            [2, 4],
+            definitions
+                .EnumerateArray()
+                .Select(location => location
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32()));
+
+        await process.ShutdownAsync(4);
+    }
+
+    [Fact]
+    public async Task Server_requires_private_declare_members_in_an_object_module()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalObjectDeclare.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalObjectDeclare\"",
+            "#If INVALID_CONFIGURATION Then",
+            "Public Declare Function Work Lib \"kernel32\" (ByVal Key As Long) As Long",
+            "#Else",
+            "Private Declare Function work Lib \"kernel32\" (ByVal GoodKey As Long) As Long",
+            "#End If",
+            "Private Sub Run()",
+            "    Dim result As Long",
+            "    result = Work(",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var signatureResponse = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    result = Work(",
+            "    result = Work(".Length);
+        var signature = Assert.Single(signatureResponse
+            .GetProperty("result")
+            .GetProperty("signatures")
+            .EnumerateArray());
+        Assert.Equal(
+            "Declare Function work(GoodKey As Long) As Long [#If]",
+            signature.GetProperty("label").GetString());
+
+        var definitions = await SendDefinitionRequestAsync(
+            process,
+            3,
+            uri,
+            text,
+            "    result = Work(",
+            "    result = ".Length);
+        Assert.Equal(
+            [3, 5],
+            definitions
+                .EnumerateArray()
+                .Select(location => location
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32()));
+
+        await process.ShutdownAsync(4);
+    }
+
+    [Fact]
+    public async Task Server_excludes_a_property_setter_with_a_result_type_character()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalInvalidTypedPropertyLet.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalInvalidTypedPropertyLet\"",
+            "#If INVALID_CONFIGURATION Then",
+            "Public Property Let Item$(ByVal Assigned As String)",
+            "End Property",
+            "#Else",
+            "Public Property Let item(ByVal GoodAssigned As String)",
+            "End Property",
+            "#End If",
+            "Public Sub Run()",
+            "    Item() = \"value\"",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var signatureResponse = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    Item() = \"value\"",
+            "    Item(".Length);
+        var signature = Assert.Single(signatureResponse
+            .GetProperty("result")
+            .GetProperty("signatures")
+            .EnumerateArray());
+        Assert.Equal(
+            "Property item() [#If]",
+            signature.GetProperty("label").GetString());
+
+        var definitions = await SendDefinitionRequestAsync(
+            process,
+            3,
+            uri,
+            text,
+            "    Item() = \"value\"",
+            "    ".Length);
+        Assert.Equal(
+            [3, 6],
+            definitions
+                .EnumerateArray()
+                .Select(location => location
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32()));
+
+        await process.ShutdownAsync(4);
+    }
+
+    [Fact]
+    public async Task Server_projects_a_parameter_type_declaration_character_into_each_signature()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalParameterTypeCharacter.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalParameterTypeCharacter\"",
+            "#If SUFFIX_CONFIGURATION Then",
+            "Public Sub Work(ByRef Value&)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByRef Value As Long)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Work(",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    Work(",
+            "    Work(".Length);
+
+        Assert.Equal(
+            [
+                "Sub Work(ByRef Value As Long) [#If]",
+                "Sub work(ByRef Value As Long) [#If]"
+            ],
+            response
+                .GetProperty("result")
+                .GetProperty("signatures")
+                .EnumerateArray()
+                .Select(signature => signature.GetProperty("label").GetString()));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_projects_a_function_result_type_declaration_character_into_each_signature()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalResultTypeCharacter.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalResultTypeCharacter\"",
+            "#If SUFFIX_CONFIGURATION Then",
+            "Public Function BuildValue&()",
+            "End Function",
+            "#Else",
+            "Public Function buildvalue() As Long",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As Long",
+            "    result = BuildValue(",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    result = BuildValue(",
+            "    result = BuildValue(".Length);
+
+        Assert.Equal(
+            [
+                "Function BuildValue() As Long [#If]",
+                "Function buildvalue() As Long [#If]"
+            ],
+            response
+                .GetProperty("result")
+                .GetProperty("signatures")
+                .EnumerateArray()
+                .Select(signature => signature.GetProperty("label").GetString()));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_retains_parameters_after_a_function_result_type_character()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalTypedFunctionParameters.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalTypedFunctionParameters\"",
+            "#If SUFFIX_CONFIGURATION Then",
+            "Public Function BuildValue&(ByRef Key As Long)",
+            "End Function",
+            "#Else",
+            "Public Function buildvalue(ByRef Key As Long) As Long",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As Long",
+            "    result = BuildValue(",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    result = BuildValue(",
+            "    result = BuildValue(".Length);
+
+        Assert.Equal(
+            [
+                "Function BuildValue(ByRef Key As Long) As Long [#If]",
+                "Function buildvalue(ByRef Key As Long) As Long [#If]"
+            ],
+            response
+                .GetProperty("result")
+                .GetProperty("signatures")
+                .EnumerateArray()
+                .Select(signature => signature.GetProperty("label").GetString()));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_resolves_a_call_written_with_a_function_result_type_character()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalTypedFunctionCall.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalTypedFunctionCall\"",
+            "#If SUFFIX_CONFIGURATION Then",
+            "Public Function ResolveValue&(ByVal Key As String)",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal Key As String) As Long",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As Long",
+            "    result = ResolveValue&(",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    result = ResolveValue&(",
+            "    result = ResolveValue&(".Length);
+
+        Assert.Equal(
+            [
+                "Function ResolveValue(Key As String) As Long [#If]",
+                "Function resolvevalue(Key As String) As Long [#If]"
+            ],
+            response
+                .GetProperty("result")
+                .GetProperty("signatures")
+                .EnumerateArray()
+                .Select(signature => signature.GetProperty("label").GetString()));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_diagnoses_a_complete_call_written_with_a_function_result_type_character()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalTypedFunctionCompleteCall.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalTypedFunctionCompleteCall\"",
+            "#If SUFFIX_CONFIGURATION Then",
+            "Public Function ResolveValue&(ByVal Key As String)",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal Key As String) As Long",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As Long",
+            "    result = ResolveValue&()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostics = notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray()
+            .Where(candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList")
+            .ToArray();
+        var diagnostic = Assert.Single(diagnostics);
+        var messages = diagnostic
+            .GetProperty("relatedInformation")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("message").GetString()!)
+            .ToArray();
+
+        Assert.Equal(2, messages.Length);
+        Assert.All(messages, message => Assert.Contains(
+            "parameter 'Key': required argument is missing",
+            message,
+            StringComparison.Ordinal));
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_ranges_a_zero_argument_qualified_call_on_the_callee_identifier()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalQualifiedRange.bas";
+        const string callLine = "    result = ConditionalQualifiedRange.ResolveValue()";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalQualifiedRange\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function ResolveValue(ByVal Key As String) As String",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal Key As String) As String",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As String",
+            callLine,
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var range = diagnostic.GetProperty("range");
+        var identifierStart = callLine.IndexOf("ResolveValue", StringComparison.Ordinal);
+
+        Assert.Equal(10, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(identifierStart, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(10, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(
+            identifierStart + "ResolveValue".Length,
+            range.GetProperty("end").GetProperty("character").GetInt32());
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_ranges_a_statement_call_on_its_supplied_arguments()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalStatementArgumentRange.bas";
+        const string callLine = "    Work 1";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalStatementArgumentRange\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work()",
+            "End Sub",
+            "#Else",
+            "Public Sub work()",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            callLine,
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var range = diagnostic.GetProperty("range");
+        var argumentStart = callLine.IndexOf('1');
+
+        Assert.Equal(9, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(argumentStart, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(9, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(callLine.Length, range.GetProperty("end").GetProperty("character").GetInt32());
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_ranks_a_value_producing_conditional_signature_without_filtering_variants()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalValueCallContext.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalValueCallContext\"",
+            "#If SUB_CONFIGURATION Then",
+            "Public Sub ResolveValue(ByVal Key As String)",
+            "End Sub",
+            "#Else",
+            "Public Function resolvevalue(ByVal Key As String) As String",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As String",
+            "    result = ResolveValue(",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    result = ResolveValue(",
+            "    result = ResolveValue(".Length);
+        var result = response.GetProperty("result");
+        Assert.Equal(2, result.GetProperty("signatures").GetArrayLength());
+        Assert.Equal(1, result.GetProperty("activeSignature").GetInt32());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_retains_a_context_incompatible_conditional_property_signature()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalPropertyContext.cls";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalPropertyContext\"",
+            "#If WRITE_CONFIGURATION Then",
+            "Public Property Let Item(ByVal Index As Long, ByVal Assigned As String)",
+            "End Property",
+            "#Else",
+            "Public Property Get item(ByVal Index As Long) As String",
+            "End Property",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As String",
+            "    result = Item(",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    result = Item(",
+            "    result = Item(".Length);
+        var result = response.GetProperty("result");
+
+        Assert.Equal(2, result.GetProperty("signatures").GetArrayLength());
+        Assert.Equal(1, result.GetProperty("activeSignature").GetInt32());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_marks_only_guarded_physical_property_signatures_as_conditional()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/MixedConditionalPropertyContext.cls";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"MixedConditionalPropertyContext\"",
+            "Public Property Get Item(ByVal Index As Long) As String",
+            "End Property",
+            "#If FIRST_WRITE_CONFIGURATION Then",
+            "Public Property Let Item(ByVal Index As Long, ByVal Assigned As String)",
+            "End Property",
+            "#Else",
+            "Public Property Let item(ByVal Index As Long, ByVal Value As String)",
+            "End Property",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As String",
+            "    result = Item(",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    result = Item(",
+            "    result = Item(".Length);
+        var labels = response
+            .GetProperty("result")
+            .GetProperty("signatures")
+            .EnumerateArray()
+            .Select(signature => signature.GetProperty("label").GetString() ?? string.Empty)
+            .ToArray();
+        Assert.Equal(
+            [
+                "Property Item(Index As Long) As String",
+                "Property Item(Index As Long) [#If]",
+                "Property item(Index As Long) [#If]"
+            ],
+            labels);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_retains_every_physical_property_signature_regardless_of_accessor_source_order()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/MixedConditionalPropertySourceOrder.cls";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"MixedConditionalPropertySourceOrder\"",
+            "#If FIRST_WRITE_CONFIGURATION Then",
+            "Public Property Let Item(ByVal Index As Long, ByVal Assigned As String)",
+            "End Property",
+            "#Else",
+            "Public Property Let item(ByVal Index As Long, ByVal Value As String)",
+            "End Property",
+            "#End If",
+            "Public Property Get Item(ByVal Index As Long) As String",
+            "End Property",
+            "Public Sub Run()",
+            "    Dim result As String",
+            "    result = Item(",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    result = Item(",
+            "    result = Item(".Length);
+        var result = response.GetProperty("result");
+        var labels = result
+            .GetProperty("signatures")
+            .EnumerateArray()
+            .Select(signature => signature.GetProperty("label").GetString() ?? string.Empty)
+            .ToArray();
+        Assert.Equal(
+            [
+                "Property Item(Index As Long) [#If]",
+                "Property item(Index As Long) [#If]",
+                "Property Item(Index As Long) As String"
+            ],
+            labels);
+        Assert.Equal(2, result.GetProperty("activeSignature").GetInt32());
+
+        var hover = await SendPositionRequestAsync(
+            process,
+            3,
+            "textDocument/hover",
+            uri,
+            text,
+            "    result = Item(",
+            "    result = ".Length);
+        var hoverValue = hover
+            .GetProperty("result")
+            .GetProperty("contents")
+            .GetProperty("value")
+            .GetString();
+        Assert.Contains(
+            "Property Item(Index As Long, Assigned As String) [#If]",
+            hoverValue,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Property item(Index As Long, Value As String) [#If]",
+            hoverValue,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Property Item(Index As Long) As String",
+            hoverValue,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "Property Item(Index As Long) As String [#If]",
+            hoverValue,
+            StringComparison.Ordinal);
+
+        await process.ShutdownAsync(4);
+    }
+
+    [Fact]
+    public async Task Server_ranks_a_property_setter_while_its_explicit_assignment_is_incomplete()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalIncompletePropertySet.cls";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalIncompletePropertySet\"",
+            "#If READ_CONFIGURATION Then",
+            "Public Property Get Item(ByVal Index As Long) As String",
+            "End Property",
+            "#Else",
+            "Public Property Set item(ByVal Index As Long, ByVal Assigned As Object)",
+            "End Property",
+            "#End If",
+            "Public Sub Run()",
+            "    Set Item(",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    Set Item(",
+            "    Set Item(".Length);
+        var result = response.GetProperty("result");
+        Assert.Equal(2, result.GetProperty("signatures").GetArrayLength());
+        Assert.Equal(1, result.GetProperty("activeSignature").GetInt32());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_keeps_bare_incomplete_call_context_indeterminate()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalIndeterminateCallContext.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalIndeterminateCallContext\"",
+            "#If PROPERTY_CONFIGURATION Then",
+            "Public Property Let ResolveValue(ByVal Index As Long, ByVal Assigned As Long)",
+            "End Property",
+            "#Else",
+            "Public Sub resolvevalue(ByVal Index As Long)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    ResolveValue(",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    ResolveValue(",
+            "    ResolveValue(".Length);
+        var result = response.GetProperty("result");
+
+        Assert.Equal(2, result.GetProperty("signatures").GetArrayLength());
+        Assert.Equal(0, result.GetProperty("activeSignature").GetInt32());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_ranks_an_arity_compatible_signature_above_an_omitted_required_slot()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalOmittedArityRank.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalOmittedArityRank\"",
+            "#If REQUIRED_CONFIGURATION Then",
+            "Public Function ResolveValue(ByVal Required As Long, ByVal Tail As Long) As String",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(Optional ByVal Maybe As Long, Optional ByVal Tail As Long) As String",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As String",
+            "    result = ResolveValue(, ",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    result = ResolveValue(, ",
+            "    result = ResolveValue(, ".Length);
+        var result = response.GetProperty("result");
+
+        Assert.Equal(2, result.GetProperty("signatures").GetArrayLength());
+        Assert.Equal(1, result.GetProperty("activeSignature").GetInt32());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_does_not_offer_a_conditional_sub_family_for_raise_event()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalNonEventFamily.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalNonEventFamily\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Saved(ByVal Code As Long)",
+            "End Sub",
+            "#Else",
+            "Public Sub saved(ByVal Message As String)",
+            "End Sub",
+            "#End If",
+            "Public Sub Fire()",
+            "    RaiseEvent Saved(",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    RaiseEvent Saved(",
+            "    RaiseEvent Saved(".Length);
+
+        Assert.Equal(JsonValueKind.Null, response.GetProperty("result").ValueKind);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_excludes_an_invalid_optional_Event_variant_from_RaiseEvent_signature_help()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalRecoveredEventSignature.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalRecoveredEventSignature\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Event Saved(Optional ByVal Message As String)",
+            "#Else",
+            "Public Event saved(ByVal Message As String)",
+            "#End If",
+            "Public Sub Fire()",
+            "    RaiseEvent Saved(",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    RaiseEvent Saved(",
+            "    RaiseEvent Saved(".Length);
+        var signatures = response
+            .GetProperty("result")
+            .GetProperty("signatures")
+            .EnumerateArray()
+            .ToArray();
+
+        var signature = Assert.Single(signatures);
+        Assert.Equal(
+            "Event saved(Message As String) [#If]",
+            signature.GetProperty("label").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_excludes_an_Event_with_a_result_type_from_RaiseEvent_signature_help()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalRecoveredEventResultType.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalRecoveredEventResultType\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Event Saved() As Long",
+            "#Else",
+            "Public Event saved(ByVal Message As String)",
+            "#End If",
+            "Public Sub Fire()",
+            "    RaiseEvent Saved(",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    RaiseEvent Saved(",
+            "    RaiseEvent Saved(".Length);
+        var signatures = response
+            .GetProperty("result")
+            .GetProperty("signatures")
+            .EnumerateArray()
+            .ToArray();
+
+        var signature = Assert.Single(signatures);
+        Assert.Equal(
+            "Event saved(Message As String) [#If]",
+            signature.GetProperty("label").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_ranks_the_conditional_signature_containing_the_active_named_argument()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalNamedSignatureRank.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalNamedSignatureRank\"",
+            "#If KEY_CONFIGURATION Then",
+            "Public Function ResolveValue(ByVal Key As String) As String",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal Index As Long) As String",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As String",
+            "    result = ResolveValue(Index:=",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    result = ResolveValue(Index:=",
+            "    result = ResolveValue(Index:=".Length);
+        var result = response.GetProperty("result");
+        Assert.Equal(2, result.GetProperty("signatures").GetArrayLength());
+        Assert.Equal(1, result.GetProperty("activeSignature").GetInt32());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_ranks_the_conditional_signature_containing_every_supplied_named_argument()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalSuppliedNamedArguments.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalSuppliedNamedArguments\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function ResolveValue(ByVal FirstOnly As Long, ByVal Common As Long) As Long",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal SecondOnly As Long, ByVal Common As Long) As Long",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As Long",
+            "    result = ResolveValue(SecondOnly:=unknownValue, Common:=",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    result = ResolveValue(SecondOnly:=unknownValue, Common:=",
+            "    result = ResolveValue(SecondOnly:=unknownValue, Common:=".Length);
+        var result = response.GetProperty("result");
+
+        Assert.Equal(2, result.GetProperty("signatures").GetArrayLength());
+        Assert.Equal(1, result.GetProperty("activeSignature").GetInt32());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_ranks_a_signature_by_a_supplied_name_after_the_active_argument()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalTrailingNamedSignatureRank.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalTrailingNamedSignatureRank\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByVal First As Long, ByVal Common As Long)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByVal Second As Long, ByVal Common As Long)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Work , Second:=2&",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    Work , Second:=2&",
+            "    Work ".Length);
+        var result = response.GetProperty("result");
+
+        Assert.Equal(2, result.GetProperty("signatures").GetArrayLength());
+        Assert.Equal(1, result.GetProperty("activeSignature").GetInt32());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_does_not_partially_rank_supplied_named_argument_membership()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalPartialNamedArguments.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalPartialNamedArguments\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function ResolveValue(ByVal A As Variant, ByVal X As Variant) As Long",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal A As Variant, ByVal B As Variant) As Long",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As Long",
+            "    result = ResolveValue(A:=unknownA, B:=unknownB, C:=",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    result = ResolveValue(A:=unknownA, B:=unknownB, C:=",
+            "    result = ResolveValue(A:=unknownA, B:=unknownB, C:=".Length);
+        var result = response.GetProperty("result");
+
+        Assert.Equal(2, result.GetProperty("signatures").GetArrayLength());
+        Assert.Equal(0, result.GetProperty("activeSignature").GetInt32());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_ranks_the_conditional_signature_accepting_the_active_positional_argument()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalAritySignatureRank.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalAritySignatureRank\"",
+            "#If ONE_ARGUMENT Then",
+            "Public Function ResolveValue(ByVal Key As String) As String",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal Key As String, ByVal Fallback As String) As String",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As String",
+            "    result = ResolveValue(\"key\", ",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    result = ResolveValue(\"key\", ",
+            "    result = ResolveValue(\"key\", ".Length);
+        var result = response.GetProperty("result");
+        Assert.Equal(2, result.GetProperty("signatures").GetArrayLength());
+        Assert.Equal(1, result.GetProperty("activeSignature").GetInt32());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_ranks_an_exact_known_argument_type_without_selecting_a_variant()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalTypeSignatureRank.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalTypeSignatureRank\"",
+            "#If LONG_CONFIGURATION Then",
+            "Public Function ResolveValue(ByVal Value As Long) As String",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal Value As String) As String",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As String",
+            "    result = ResolveValue(\"text\"",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    result = ResolveValue(\"text\"",
+            "    result = ResolveValue(\"text\"".Length);
+        var result = response.GetProperty("result");
+        Assert.Equal(2, result.GetProperty("signatures").GetArrayLength());
+        Assert.Equal(1, result.GetProperty("activeSignature").GetInt32());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_ranks_an_exact_declared_argument_type_without_selecting_a_variant()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalDeclaredTypeSignatureRank.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalDeclaredTypeSignatureRank\"",
+            "#If LONG_CONFIGURATION Then",
+            "Public Function ResolveValue(ByVal Value As Long) As String",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal Value As String) As String",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim textValue As String",
+            "    Dim result As String",
+            "    result = ResolveValue(textValue",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    result = ResolveValue(textValue",
+            "    result = ResolveValue(textValue".Length);
+        var result = response.GetProperty("result");
+        Assert.Equal(2, result.GetProperty("signatures").GetArrayLength());
+        Assert.Equal(1, result.GetProperty("activeSignature").GetInt32());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_ranks_a_whitespace_separated_parenthesized_statement_argument_as_a_value_temporary()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string otherClassUri = "file:///C:/work/OtherClass.cls";
+        var otherClassText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"OtherClass\""
+        ]);
+        const string actualClassUri = "file:///C:/work/ActualClass.cls";
+        var actualClassText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ActualClass\""
+        ]);
+        const string uri = "file:///C:/work/ConditionalParenthesizedStatementSignatureRank.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalParenthesizedStatementSignatureRank\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByRef Value As OtherClass)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByRef Value As Object)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim value As ActualClass",
+            "    Work (value)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(otherClassUri, otherClassText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(actualClassUri, actualClassText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    Work (value)",
+            "    Work (value".Length);
+        var result = response.GetProperty("result");
+
+        Assert.Equal(2, result.GetProperty("signatures").GetArrayLength());
+        Assert.Equal(1, result.GetProperty("activeSignature").GetInt32());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_treats_qualified_and_unqualified_byref_types_as_one_canonical_identity()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-conditional-canonical-call-type-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(
+                projectRoot,
+                "Microsoft Excel 16.0 Object Library");
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+
+            await process.InitializeAsync();
+            var uri = ToFileUri(Path.Combine(
+                projectRoot,
+                "src",
+                "Book1",
+                "ConditionalCanonicalCallType.bas"));
+            var text = string.Join('\n', [
+                "Attribute VB_Name = \"ConditionalCanonicalCallType\"",
+                "#If FIRST_CONFIGURATION Then",
+                "Public Sub Work(ByRef Target As Excel.Range)",
+                "End Sub",
+                "#Else",
+                "Public Sub work(ByRef Target As Excel.Range)",
+                "End Sub",
+                "#End If",
+                "Public Sub Run()",
+                "    Dim cell As Range",
+                "    Work cell",
+                "End Sub"
+            ]);
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+
+            var notification = await process.WaitForDiagnosticsAsync(uri);
+
+            Assert.DoesNotContain(
+                notification
+                    .GetProperty("params")
+                    .GetProperty("diagnostics")
+                    .EnumerateArray(),
+                diagnostic => diagnostic.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList");
+
+            await process.ShutdownAsync(2);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_ranks_a_proven_class_to_object_assignment_without_selecting_a_variant()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-conditional-object-assignment-rank-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(
+                projectRoot,
+                "Microsoft Excel 16.0 Object Library");
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+
+            await process.InitializeAsync();
+            var uri = ToFileUri(Path.Combine(
+                projectRoot,
+                "src",
+                "Book1",
+                "ConditionalObjectAssignmentRank.bas"));
+            var text = string.Join('\n', [
+                "Attribute VB_Name = \"ConditionalObjectAssignmentRank\"",
+                "#If STRING_CONFIGURATION Then",
+                "Public Function ResolveValue(ByVal Value As String) As Long",
+                "End Function",
+                "#Else",
+                "Public Function resolvevalue(ByVal Value As Object) As Long",
+                "End Function",
+                "#End If",
+                "Public Sub Run()",
+                "    Dim cell As Range",
+                "    Dim result As Long",
+                "    result = ResolveValue(cell",
+                "End Sub"
+            ]);
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+
+            var response = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/signatureHelp",
+                uri,
+                text,
+                "    result = ResolveValue(cell",
+                "    result = ResolveValue(cell".Length);
+            var result = response.GetProperty("result");
+
+            Assert.Equal(2, result.GetProperty("signatures").GetArrayLength());
+            Assert.Equal(1, result.GetProperty("activeSignature").GetInt32());
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_retains_a_tied_conditional_signature_on_retrigger()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                signatureHelp = new
+                {
+                    contextSupport = true,
+                    signatureInformation = new
+                    {
+                        activeParameterSupport = true,
+                        noActiveParameterSupport = true
+                    }
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalSignatureRetrigger.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalSignatureRetrigger\"",
+            "#If KEY_CONFIGURATION Then",
+            "Public Function ResolveValue(ByVal Key As String) As String",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal Index As Long) As String",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As String",
+            "    result = ResolveValue(",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await process.SendRequestAsync(
+            2,
+            "textDocument/signatureHelp",
+            new
+            {
+                textDocument = new { uri },
+                position = new
+                {
+                    line = 10,
+                    character = "    result = ResolveValue(".Length
+                },
+                context = new
+                {
+                    triggerKind = 3,
+                    isRetrigger = true,
+                    activeSignatureHelp = new
+                    {
+                        signatures = new object[]
+                        {
+                            new
+                            {
+                                label = "Function ResolveValue(Key As String) As String [#If]",
+                                parameters = new[] { new { label = "Key As String" } }
+                            },
+                            new
+                            {
+                                label = "Function resolvevalue(Index As Long) As String [#If]",
+                                parameters = new[] { new { label = "Index As Long" } }
+                            }
+                        },
+                        activeSignature = 1,
+                        activeParameter = 0
+                    }
+                }
+            });
+        var result = response.GetProperty("result");
+        Assert.Equal(2, result.GetProperty("signatures").GetArrayLength());
+        Assert.Equal(1, result.GetProperty("activeSignature").GetInt32());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_ignores_retrigger_state_without_context_support()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                signatureHelp = new
+                {
+                    contextSupport = false
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalSignatureNoContext.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalSignatureNoContext\"",
+            "#If KEY_CONFIGURATION Then",
+            "Public Function ResolveValue(ByVal Key As String) As String",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal Index As Long) As String",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As String",
+            "    result = ResolveValue(",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await process.SendRequestAsync(
+            2,
+            "textDocument/signatureHelp",
+            new
+            {
+                textDocument = new { uri },
+                position = new
+                {
+                    line = 10,
+                    character = "    result = ResolveValue(".Length
+                },
+                context = new
+                {
+                    triggerKind = 3,
+                    isRetrigger = true,
+                    activeSignatureHelp = new
+                    {
+                        signatures = new object[]
+                        {
+                            new
+                            {
+                                label = "Function ResolveValue(Key As String) As String [#If]",
+                                parameters = new[] { new { label = "Key As String" } }
+                            },
+                            new
+                            {
+                                label = "Function resolvevalue(Index As Long) As String [#If]",
+                                parameters = new[] { new { label = "Index As Long" } }
+                            }
+                        },
+                        activeSignature = 1,
+                        activeParameter = 0
+                    }
+                }
+            });
+        var result = response.GetProperty("result");
+        Assert.Equal(2, result.GetProperty("signatures").GetArrayLength());
+        Assert.Equal(0, result.GetProperty("activeSignature").GetInt32());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_excludes_context_incompatible_variants_from_named_argument_completion()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalCompletionContext.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalCompletionContext\"",
+            "#If SUB_CONFIGURATION Then",
+            "Public Sub ResolveValue(ByVal SubOnly As String)",
+            "End Sub",
+            "#Else",
+            "Public Function resolvevalue(ByVal FunctionOnly As String) As String",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As String",
+            "    result = ResolveValue(",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/completion",
+            uri,
+            text,
+            "    result = ResolveValue(",
+            "    result = ResolveValue(".Length);
+        var labels = response
+            .GetProperty("result")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("label").GetString() ?? string.Empty)
+            .ToArray();
+        Assert.Contains("FunctionOnly", labels);
+        Assert.DoesNotContain("SubOnly", labels);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_projects_active_parameters_for_each_conditional_signature()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                signatureHelp = new
+                {
+                    signatureInformation = new
+                    {
+                        activeParameterSupport = true,
+                        noActiveParameterSupport = true
+                    }
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalSignatureParameters.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalSignatureParameters\"",
+            "#If STRING_CONFIGURATION Then",
+            "Public Function ResolveValue(ByVal Key As String, Optional ByVal FirstOnly As Variant) As String",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal Index As Long, Optional ByVal SecondOnly As Variant) As String",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As String",
+            "    result = ResolveValue(\"value\", ",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    result = ResolveValue(\"value\", ",
+            "    result = ResolveValue(\"value\", ".Length);
+        var signatures = response
+            .GetProperty("result")
+            .GetProperty("signatures")
+            .EnumerateArray()
+            .ToArray();
+        Assert.Equal(2, signatures.Length);
+        Assert.Equal(1, signatures[0].GetProperty("activeParameter").GetInt32());
+        Assert.Equal(1, signatures[1].GetProperty("activeParameter").GetInt32());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_projects_null_when_an_argument_does_not_map_to_a_conditional_signature()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                signatureHelp = new
+                {
+                    signatureInformation = new
+                    {
+                        activeParameterSupport = true,
+                        noActiveParameterSupport = true
+                    }
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalUnmappedParameter.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalUnmappedParameter\"",
+            "#If STRING_CONFIGURATION Then",
+            "Public Function ResolveValue(ByVal Key As String, Optional ByVal FirstOnly As Variant) As String",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal Index As Long, Optional ByVal SecondOnly As Variant) As String",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As String",
+            "    result = ResolveValue(SecondOnly:=",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    result = ResolveValue(SecondOnly:=",
+            "    result = ResolveValue(SecondOnly:=".Length);
+        var signatures = response
+            .GetProperty("result")
+            .GetProperty("signatures")
+            .EnumerateArray()
+            .ToArray();
+        Assert.Equal(2, signatures.Length);
+        Assert.Equal(JsonValueKind.Null, signatures[0].GetProperty("activeParameter").ValueKind);
+        Assert.Equal(1, signatures[1].GetProperty("activeParameter").GetInt32());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_omits_an_unmapped_active_parameter_without_null_support()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                signatureHelp = new
+                {
+                    signatureInformation = new
+                    {
+                        activeParameterSupport = true
+                    }
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalOmittedParameter.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalOmittedParameter\"",
+            "#If STRING_CONFIGURATION Then",
+            "Public Function ResolveValue(ByVal Key As String, Optional ByVal FirstOnly As Variant) As String",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal Index As Long, Optional ByVal SecondOnly As Variant) As String",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As String",
+            "    result = ResolveValue(SecondOnly:=",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    result = ResolveValue(SecondOnly:=",
+            "    result = ResolveValue(SecondOnly:=".Length);
+        var signatures = response
+            .GetProperty("result")
+            .GetProperty("signatures")
+            .EnumerateArray()
+            .ToArray();
+        Assert.Equal(2, signatures.Length);
+        Assert.False(signatures[0].TryGetProperty("activeParameter", out _));
+        Assert.Equal(1, signatures[1].GetProperty("activeParameter").GetInt32());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_does_not_map_a_named_raise_event_argument_to_any_conditional_signature()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                signatureHelp = new
+                {
+                    signatureInformation = new
+                    {
+                        activeParameterSupport = true,
+                        noActiveParameterSupport = true
+                    }
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalNamedRaiseEvent.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalNamedRaiseEvent\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Event Saved(ByVal Message As String)",
+            "#Else",
+            "Public Event saved(ByVal Code As Long)",
+            "#End If",
+            "Public Sub Fire()",
+            "    RaiseEvent Saved(Message:=",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    RaiseEvent Saved(Message:=",
+            "    RaiseEvent Saved(Message:=".Length);
+        var signatures = response
+            .GetProperty("result")
+            .GetProperty("signatures")
+            .EnumerateArray()
+            .ToArray();
+
+        Assert.Equal(2, signatures.Length);
+        Assert.All(
+            signatures,
+            signature => Assert.Equal(
+                JsonValueKind.Null,
+                signature.GetProperty("activeParameter").ValueKind));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_does_not_clamp_an_excess_argument_to_the_last_parameter()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                signatureHelp = new
+                {
+                    signatureInformation = new
+                    {
+                        activeParameterSupport = true,
+                        noActiveParameterSupport = true
+                    }
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ExcessSignatureParameter.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ExcessSignatureParameter\"",
+            "Public Function ResolveValue(ByVal Key As String) As String",
+            "End Function",
+            "Public Sub Run()",
+            "    Dim result As String",
+            "    result = ResolveValue(\"one\", ",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            uri,
+            text,
+            "    result = ResolveValue(\"one\", ",
+            "    result = ResolveValue(\"one\", ".Length);
+        var signature = Assert.Single(response
+            .GetProperty("result")
+            .GetProperty("signatures")
+            .EnumerateArray());
+        Assert.Equal(JsonValueKind.Null, signature.GetProperty("activeParameter").ValueKind);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_unions_remaining_named_arguments_across_conditional_callable_signatures()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalNamedArguments.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalNamedArguments\"",
+            "#If STRING_CONFIGURATION Then",
+            "Public Function ResolveValue(ByVal Key As String, Optional ByVal Common As Variant) As String",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal Index As Long, Optional ByVal common As Variant, Optional ByVal Fallback As String) As String",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As String",
+            "    result = ResolveValue(",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/completion",
+            uri,
+            text,
+            "    result = ResolveValue(",
+            "    result = ResolveValue(".Length);
+        var expectedNames = new HashSet<string>(
+            ["Key", "Common", "Index", "Fallback"],
+            StringComparer.OrdinalIgnoreCase);
+        var namedItems = response
+            .GetProperty("result")
+            .EnumerateArray()
+            .Where(item => item.GetProperty("kind").GetInt32() == 5)
+            .Where(item => expectedNames.Contains(
+                item.GetProperty("label").GetString() ?? string.Empty))
+            .ToArray();
+        Assert.Equal(4, namedItems.Length);
+        Assert.Equal(
+            expectedNames,
+            namedItems
+                .Select(item => item.GetProperty("label").GetString() ?? string.Empty)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase));
+        Assert.Single(namedItems, item =>
+            (item.GetProperty("label").GetString() ?? string.Empty).Equals(
+                "Common",
+                StringComparison.OrdinalIgnoreCase));
+        foreach (var conditionalName in new[] { "Key", "Index", "Fallback" })
+        {
+            var item = Assert.Single(namedItems, item =>
+                (item.GetProperty("label").GetString() ?? string.Empty).Equals(
+                    conditionalName,
+                    StringComparison.OrdinalIgnoreCase));
+            Assert.Equal("[#If]", item.GetProperty("detail").GetString());
+        }
+
+        var commonItem = Assert.Single(namedItems, item =>
+            (item.GetProperty("label").GetString() ?? string.Empty).Equals(
+                "Common",
+                StringComparison.OrdinalIgnoreCase));
+        Assert.False(commonItem.TryGetProperty("detail", out _));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_excludes_a_trailing_supplied_name_from_middle_argument_completion()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/MiddleArgumentNamedCompletion.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"MiddleArgumentNamedCompletion\"",
+            "Public Sub Work(ByVal First As Long, ByVal Second As Long)",
+            "End Sub",
+            "Public Sub Run()",
+            "    Work , Second:=2&",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/completion",
+            uri,
+            text,
+            "    Work , Second:=2&",
+            "    Work ".Length);
+        var namedLabels = response
+            .GetProperty("result")
+            .EnumerateArray()
+            .Where(item => item.GetProperty("kind").GetInt32() == 5)
+            .Select(item => item.GetProperty("label").GetString())
+            .ToArray();
+
+        Assert.Contains("First", namedLabels);
+        Assert.DoesNotContain("Second", namedLabels);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_offers_no_named_arguments_before_a_trailing_positional_argument()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/MiddleArgumentPositionalCompletion.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"MiddleArgumentPositionalCompletion\"",
+            "Public Sub Work(ByVal First As Long, ByVal Second As Long)",
+            "End Sub",
+            "Public Sub Run()",
+            "    Work , 2&",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/completion",
+            uri,
+            text,
+            "    Work , 2&",
+            "    Work ".Length);
+
+        Assert.DoesNotContain(
+            response.GetProperty("result").EnumerateArray(),
+            item => item.GetProperty("kind").GetInt32() == 5);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_unions_indexed_property_names_while_the_call_context_is_indeterminate()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalPropertyNamedArguments.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalPropertyNamedArguments\"",
+            "#If READ_CONFIGURATION Then",
+            "Public Property Get Item(ByVal ReadIndex As Long) As Variant",
+            "End Property",
+            "#Else",
+            "Public Property Let item(ByVal WriteIndex As Long, ByVal AssignedValue As Variant)",
+            "End Property",
+            "#End If",
+            "Public Sub Run()",
+            "    Item(",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/completion",
+            uri,
+            text,
+            "    Item(",
+            "    Item(".Length);
+        var expectedNames = new HashSet<string>(
+            ["ReadIndex", "WriteIndex"],
+            StringComparer.OrdinalIgnoreCase);
+        var namedItems = response
+            .GetProperty("result")
+            .EnumerateArray()
+            .Where(item => item.GetProperty("kind").GetInt32() == 5)
+            .Where(item => expectedNames.Contains(
+                item.GetProperty("label").GetString() ?? string.Empty))
+            .ToArray();
+
+        Assert.Equal(expectedNames, namedItems
+            .Select(item => item.GetProperty("label").GetString() ?? string.Empty)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase));
+        Assert.All(
+            namedItems,
+            item => Assert.Equal("[#If]", item.GetProperty("detail").GetString()));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_offers_no_named_arguments_for_a_paramarray_signature()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ParamArrayNamedArguments.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ParamArrayNamedArguments\"",
+            "Public Sub Collect(ByVal Prefix As String, ParamArray Values() As Variant)",
+            "End Sub",
+            "Public Sub Run()",
+            "    Collect ",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/completion",
+            uri,
+            text,
+            "    Collect ",
+            "    Collect ".Length);
+        Assert.DoesNotContain(
+            response.GetProperty("result").EnumerateArray(),
+            item => item.GetProperty("kind").GetInt32() == 5);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_accepts_an_omitted_paramarray_slot_before_more_positionals()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ParamArrayOmission.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ParamArrayOmission\"",
+            "Public Sub Collect(ByVal Prefix As String, ParamArray Values() As Variant)",
+            "End Sub",
+            "Public Sub Run()",
+            "    Collect \"prefix\", , ",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/completion",
+            uri,
+            text,
+            "    Collect \"prefix\", , ",
+            "    Collect \"prefix\", , ".Length);
+        Assert.Contains(
+            response.GetProperty("result").EnumerateArray(),
+            item => item.GetProperty("label").GetString() == "True");
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_diagnoses_a_complete_call_rejected_by_every_conditional_signature()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalRejectedCall.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalRejectedCall\"",
+            "#If KEY_CONFIGURATION Then",
+            "Public Function ResolveValue(ByVal Key As String) As String",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal Index As Long) As String",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As String",
+            "    result = ResolveValue(Unknown:=1)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        Assert.Equal(
+            "No available callable signature accepts this argument list.\n"
+                + "Candidate signature: Function ResolveValue(Key As String) As String [#If].\n"
+                + "Mismatches: argument 1 ('Unknown') mapping: no parameter named 'Unknown'.\n"
+                + "Candidate signature: Function resolvevalue(Index As Long) As String [#If].\n"
+                + "Mismatches: argument 1 ('Unknown') mapping: no parameter named 'Unknown'.",
+            diagnostic.GetProperty("message").GetString());
+        Assert.False(diagnostic.TryGetProperty("relatedInformation", out _));
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_diagnoses_a_complete_call_rejected_by_an_unconditional_signature()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string uri = "file:///C:/work/UnconditionalRejectedCall.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"UnconditionalRejectedCall\"",
+            "Public Sub Work(ByRef Text As String)",
+            "End Sub",
+            "Public Sub Run()",
+            "    Dim number As Long",
+            "    Work number",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var detail = Assert.Single(diagnostic
+            .GetProperty("relatedInformation")
+            .EnumerateArray())
+            .GetProperty("message")
+            .GetString();
+        Assert.Equal(
+            "Candidate signature: Sub Work(ByRef Text As String). Mismatches: "
+                + "argument 1 for parameter 'Text' ByRef type: expected String, found Long.",
+            detail);
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_diagnoses_a_zero_argument_statement_call_over_its_conditional_callee()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalZeroArgumentStatement.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalZeroArgumentStatement\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByVal Value As Long)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByVal Text As String)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Work",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var range = diagnostic.GetProperty("range");
+
+        Assert.Equal(9, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(4, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(9, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(8, range.GetProperty("end").GetProperty("character").GetInt32());
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_diagnoses_a_bare_zero_argument_value_read_through_the_shared_mapper()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalZeroArgumentValueRead.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalZeroArgumentValueRead\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function ResolveValue(ByVal Key As String) As Long",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal Index As Long) As Long",
+            "End Function",
+            "#End If",
+            "Public Function Run() As Long",
+            "    Run = ResolveValue",
+            "End Function"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var range = diagnostic.GetProperty("range");
+        Assert.Equal(9, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(10, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(9, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(22, range.GetProperty("end").GetProperty("character").GetInt32());
+        Assert.Equal(
+            [
+                "Candidate signature: Function ResolveValue(Key As String) As Long [#If]. Mismatches: parameter 'Key': required argument is missing.",
+                "Candidate signature: Function resolvevalue(Index As Long) As Long [#If]. Mismatches: parameter 'Index': required argument is missing."
+            ],
+            diagnostic
+                .GetProperty("relatedInformation")
+                .EnumerateArray()
+                .Select(item => item.GetProperty("message").GetString()!)
+                .ToArray());
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_diagnoses_a_bare_zero_argument_value_read_in_a_Print_statement()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalZeroArgumentPrintValue.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalZeroArgumentPrintValue\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function ResolveValue(ByVal Key As Long) As Long",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal Index As Long) As Long",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Debug.Print ResolveValue",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var range = diagnostic.GetProperty("range");
+        Assert.Equal(9, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(16, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(9, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(28, range.GetProperty("end").GetProperty("character").GetInt32());
+        var messages = diagnostic
+            .GetProperty("relatedInformation")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("message").GetString()!)
+            .ToArray();
+        Assert.Equal(2, messages.Length);
+        Assert.Contains("parameter 'Key': required argument is missing.", messages[0]);
+        Assert.Contains("parameter 'Index': required argument is missing.", messages[1]);
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_diagnoses_a_bare_zero_argument_value_read_in_an_If_condition()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalBareIfRead.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalBareIfRead\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function ResolveValue(ByVal Key As String) As Boolean",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal Key As String) As Boolean",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    If ResolveValue Then",
+            "    End If",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var range = diagnostic.GetProperty("range");
+        Assert.Equal(9, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(7, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(9, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(19, range.GetProperty("end").GetProperty("character").GetInt32());
+        Assert.All(
+            diagnostic
+                .GetProperty("relatedInformation")
+                .EnumerateArray(),
+            item => Assert.Contains(
+                "parameter 'Key': required argument is missing.",
+                item.GetProperty("message").GetString(),
+                StringComparison.Ordinal));
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_diagnoses_a_bare_zero_argument_value_read_inside_a_larger_expression()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalBareExpressionRead.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalBareExpressionRead\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function ResolveValue(ByVal Key As String) As Boolean",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal Key As String) As Boolean",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    If Not ResolveValue Then",
+            "    End If",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var range = diagnostic.GetProperty("range");
+        Assert.Equal(9, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(11, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(9, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(23, range.GetProperty("end").GetProperty("character").GetInt32());
+        Assert.All(
+            diagnostic
+                .GetProperty("relatedInformation")
+                .EnumerateArray(),
+            item => Assert.Contains(
+                "parameter 'Key': required argument is missing.",
+                item.GetProperty("message").GetString(),
+                StringComparison.Ordinal));
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_diagnoses_a_bare_zero_argument_value_read_before_a_comparison()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalBareComparisonRead.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalBareComparisonRead\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function ResolveValue(ByVal Key As String) As Boolean",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal Key As String) As Boolean",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    If ResolveValue = True Then",
+            "    End If",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var range = diagnostic.GetProperty("range");
+        Assert.Equal(9, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(7, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(9, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(19, range.GetProperty("end").GetProperty("character").GetInt32());
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_diagnoses_a_bare_zero_argument_callable_receiver_in_a_member_chain()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalBareCallableReceiver.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalBareCallableReceiver\"",
+            "Public Type Result",
+            "    Member As Long",
+            "End Type",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function Build(ByVal Key As Long) As Result",
+            "End Function",
+            "#Else",
+            "Public Function build(ByVal Index As Long) As Result",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Debug.Print Build.Member",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.Single(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_diagnoses_a_bare_zero_argument_value_read_in_a_ReDim_bound()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalBareReDimBoundRead.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalBareReDimBoundRead\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function ResolveBound(ByVal Key As Long) As Long",
+            "End Function",
+            "#Else",
+            "Public Function resolvebound(ByVal Index As Long) As Long",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim values() As Long",
+            "    ReDim values(ResolveBound)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        Assert.Equal(
+            [
+                "Candidate signature: Function ResolveBound(Key As Long) As Long [#If]. Mismatches: parameter 'Key': required argument is missing.",
+                "Candidate signature: Function resolvebound(Index As Long) As Long [#If]. Mismatches: parameter 'Index': required argument is missing."
+            ],
+            diagnostic
+                .GetProperty("relatedInformation")
+                .EnumerateArray()
+                .Select(item => item.GetProperty("message").GetString()!)
+                .ToArray());
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_diagnoses_a_bare_zero_argument_value_read_in_an_Open_statement()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalBareOpenPathRead.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalBareOpenPathRead\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function ResolvePath(ByVal Key As Long) As String",
+            "End Function",
+            "#Else",
+            "Public Function resolvepath(ByVal Index As Long) As String",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Open ResolvePath For Input As #1",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        Assert.Equal(
+            [
+                "Candidate signature: Function ResolvePath(Key As Long) As String [#If]. Mismatches: parameter 'Key': required argument is missing.",
+                "Candidate signature: Function resolvepath(Index As Long) As String [#If]. Mismatches: parameter 'Index': required argument is missing."
+            ],
+            diagnostic
+                .GetProperty("relatedInformation")
+                .EnumerateArray()
+                .Select(item => item.GetProperty("message").GetString()!)
+                .ToArray());
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_does_not_diagnose_a_label_declaration_as_a_bare_value_read()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalCallableNamedLabel.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalCallableNamedLabel\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function ResolveValue(ByVal Key As Long) As Long",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal Index As Long) As Long",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "ResolveValue:",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_does_not_diagnose_a_GoTo_label_reference_as_a_bare_value_read()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalCallableNamedGoToLabel.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalCallableNamedGoToLabel\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function ResolveValue(ByVal Key As Long) As Long",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal Index As Long) As Long",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    GoTo ResolveValue",
+            "ResolveValue:",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_does_not_diagnose_an_Enum_member_initializer_as_a_bare_value_read()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalCallableNamedEnumInitializer.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalCallableNamedEnumInitializer\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function ResolveValue(ByVal Key As Long) As Long",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal Index As Long) As Long",
+            "End Function",
+            "#End If",
+            "Public Enum Values",
+            "    Item = ResolveValue",
+            "End Enum"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_does_not_diagnose_a_DefType_range_as_a_bare_value_read()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalCallableDefTypeRange.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalCallableDefTypeRange\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function A(ByVal Key As Long) As Long",
+            "End Function",
+            "#Else",
+            "Public Function a(ByVal Index As Long) As Long",
+            "End Function",
+            "#End If",
+            "DefLng A-Z"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_does_not_diagnose_an_AddressOf_operand_as_a_bare_value_read()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalCallableAddressOfOperand.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalCallableAddressOfOperand\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function Callback(ByVal Key As Long) As Long",
+            "End Function",
+            "#Else",
+            "Public Function callback(ByVal Index As Long) As Long",
+            "End Function",
+            "#End If",
+            "Private Sub Consume(ByVal Pointer As LongPtr)",
+            "End Sub",
+            "Public Sub Run()",
+            "    Consume AddressOf Callback",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_does_not_diagnose_a_New_type_operand_as_a_bare_value_read()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string callerUri = "file:///C:/work/ConditionalCallableNewTypeOperand.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalCallableNewTypeOperand\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function Work(ByVal Key As Long) As Object",
+            "End Function",
+            "#Else",
+            "Public Function work(ByVal Index As Long) As Object",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim value As Object",
+            "    Set value = New Work",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var notification = await process.WaitForDiagnosticsAsync(callerUri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_does_not_diagnose_a_named_argument_label_as_a_bare_value_read()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalCallableNamedArgumentLabel.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalCallableNamedArgumentLabel\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function Key(ByVal Value As Long) As Long",
+            "End Function",
+            "#Else",
+            "Public Function key(ByVal Index As Long) As Long",
+            "End Function",
+            "#End If",
+            "Public Sub Work(ByVal Key As Long)",
+            "End Sub",
+            "Public Sub Run()",
+            "    Work Key:=1&",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_maps_a_statement_call_in_a_single_line_If_tail()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalSingleLineIfTailCall.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalSingleLineIfTailCall\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByVal Value As Long)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByVal Value As Long)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    If True Then Work 1&",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_maps_a_statement_call_in_a_nested_single_line_If_tail()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalNestedSingleLineIfTailCall.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalNestedSingleLineIfTailCall\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByVal Value As Long)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByVal Value As Long)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    If True Then If True Then Work 1&",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_maps_both_nested_and_outer_single_line_If_Else_tails()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalNestedSingleLineIfElseCalls.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalNestedSingleLineIfElseCalls\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByVal Value As Long)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByVal Value As Long)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    If True Then If True Then Work 1& Else Work 2& Else Work 3&",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_maps_colon_separated_single_line_If_statement_lists()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalSingleLineIfStatementLists.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalSingleLineIfStatementLists\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByVal Value As Long)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByVal Value As Long)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    If True Then Work 1&: Work 2& Else Work 3&",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_maps_an_explicit_Call_in_a_single_line_If_tail()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalSingleLineIfExplicitCall.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalSingleLineIfExplicitCall\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByVal Value As Long)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByVal Value As Long)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    If True Then Call Work(1&)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_maps_an_indexed_Property_Set_in_a_single_line_If_tail()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalSingleLineIfIndexedPropertySet.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalSingleLineIfIndexedPropertySet\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Property Set Item(ByVal Index As Long, ByVal assigned As Object)",
+            "End Property",
+            "#Else",
+            "Public Property Set item(ByVal Index As Long, ByVal assigned As Object)",
+            "End Property",
+            "#End If",
+            "Public Sub Run()",
+            "    If True Then Set Item(1&) = Me",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_maps_an_unindexed_Property_Set_in_a_single_line_If_tail()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalSingleLineIfUnindexedPropertySet.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalSingleLineIfUnindexedPropertySet\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Property Set Value(ByVal assigned As Object)",
+            "End Property",
+            "#Else",
+            "Public Property Set value(ByVal assigned As Object)",
+            "End Property",
+            "#End If",
+            "Public Sub Run()",
+            "    If True Then Set Value = Me",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_maps_an_indexed_Property_Let_in_a_single_line_If_tail()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalSingleLineIfIndexedPropertyLet.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalSingleLineIfIndexedPropertyLet\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Property Let Item(ByVal Index As Long, ByVal assigned As Long)",
+            "End Property",
+            "#Else",
+            "Public Property Let item(ByVal Index As Long, ByVal assigned As Long)",
+            "End Property",
+            "#End If",
+            "Public Sub Run()",
+            "    If True Then Let Item(1&) = 2&",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_diagnoses_a_zero_argument_Call_statement_through_the_shared_mapper()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalZeroArgumentCallStatement.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalZeroArgumentCallStatement\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByVal Key As String)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByVal Index As Long)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Call Work",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var range = diagnostic.GetProperty("range");
+        Assert.Equal(9, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(9, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(9, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(13, range.GetProperty("end").GetProperty("character").GetInt32());
+        Assert.Equal(
+            [
+                "Candidate signature: Sub Work(Key As String) [#If]. Mismatches: parameter 'Key': required argument is missing.",
+                "Candidate signature: Sub work(Index As Long) [#If]. Mismatches: parameter 'Index': required argument is missing."
+            ],
+            diagnostic
+                .GetProperty("relatedInformation")
+                .EnumerateArray()
+                .Select(item => item.GetProperty("message").GetString()!)
+                .ToArray());
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_reports_an_empty_RaiseEvent_argument_list_without_an_aggregate_call_diagnostic()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalEmptyRaiseEventArgumentList.cls";
+        const string statementLine = "    RaiseEvent Saved()";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalEmptyRaiseEventArgumentList\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Event Saved(ByVal Message As String)",
+            "#Else",
+            "Public Event saved(ByVal Message As String)",
+            "#End If",
+            "Public Sub Run()",
+            statementLine,
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostics = notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray()
+            .ToArray();
+        var diagnostic = Assert.Single(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "syntax.raiseEventEmptyArgumentListNotAllowed");
+        Assert.Equal(
+            "RaiseEvent must omit parentheses when no arguments are supplied.",
+            diagnostic.GetProperty("message").GetString());
+        var range = diagnostic.GetProperty("range");
+        var argumentListStart = statementLine.IndexOf("()", StringComparison.Ordinal);
+        Assert.Equal(8, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(argumentListStart, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(8, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(argumentListStart + 2, range.GetProperty("end").GetProperty("character").GetInt32());
+        Assert.DoesNotContain(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_reports_an_empty_RaiseEvent_list_in_a_single_line_If_tail_without_an_aggregate()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalSingleLineIfEmptyRaiseEvent.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalSingleLineIfEmptyRaiseEvent\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Event Saved(ByVal Message As String)",
+            "#Else",
+            "Public Event saved(ByVal Message As String)",
+            "#End If",
+            "Public Sub Run()",
+            "    If True Then RaiseEvent Saved()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostics = notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray()
+            .ToArray();
+        Assert.Single(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "syntax.raiseEventEmptyArgumentListNotAllowed");
+        Assert.DoesNotContain(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_reports_an_empty_continued_RaiseEvent_argument_list_without_an_aggregate()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalContinuedEmptyRaiseEvent.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalContinuedEmptyRaiseEvent\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Event Saved(ByVal Message As String)",
+            "#Else",
+            "Public Event saved(ByVal Message As String)",
+            "#End If",
+            "Public Sub Run()",
+            "    RaiseEvent Saved( _",
+            "    )",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostics = notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray()
+            .ToArray();
+        Assert.Single(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "syntax.raiseEventEmptyArgumentListNotAllowed");
+        Assert.DoesNotContain(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_reports_omitted_RaiseEvent_arguments_without_an_aggregate_call_diagnostic()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalOmittedRaiseEventArgument.cls";
+        const string statementLine = "    RaiseEvent Saved(,)";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalOmittedRaiseEventArgument\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Event Saved(ByVal Message As String)",
+            "#Else",
+            "Public Event saved(ByVal Message As String)",
+            "#End If",
+            "Public Sub Run()",
+            statementLine,
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostics = notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray()
+            .ToArray();
+        var diagnostic = Assert.Single(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "syntax.raiseEventOmittedArgumentNotAllowed");
+        Assert.Equal(
+            "RaiseEvent arguments cannot be omitted.",
+            diagnostic.GetProperty("message").GetString());
+        var range = diagnostic.GetProperty("range");
+        var argumentListStart = statementLine.IndexOf("(,)", StringComparison.Ordinal);
+        Assert.Equal(8, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(argumentListStart, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(8, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(argumentListStart + 3, range.GetProperty("end").GetProperty("character").GetInt32());
+        Assert.DoesNotContain(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_diagnoses_a_zero_argument_RaiseEvent_call_through_the_shared_mapper()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalZeroArgumentRaiseEvent.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalZeroArgumentRaiseEvent\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Event Saved(ByVal Message As String)",
+            "#Else",
+            "Public Event saved(ByVal Code As Long)",
+            "#End If",
+            "Public Sub Fire()",
+            "    RaiseEvent Saved",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var range = diagnostic.GetProperty("range");
+        Assert.Equal(8, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(15, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(8, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(20, range.GetProperty("end").GetProperty("character").GetInt32());
+        var messages = diagnostic
+            .GetProperty("relatedInformation")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("message").GetString()!)
+            .ToArray();
+        Assert.Equal(2, messages.Length);
+        Assert.Contains("parameter 'Message': required argument is missing.", messages[0]);
+        Assert.Contains("parameter 'Code': required argument is missing.", messages[1]);
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_diagnoses_an_unindexed_Property_assignment_through_the_shared_mapper()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalUnindexedPropertyAssignment.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalUnindexedPropertyAssignment\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Property Let Value(ByVal Key As String, ByVal assigned As Long)",
+            "End Property",
+            "#Else",
+            "Public Property Let value(ByVal Index As Long, ByVal assigned As Long)",
+            "End Property",
+            "#End If",
+            "Public Sub Run()",
+            "    Value = 1",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var range = diagnostic.GetProperty("range");
+        Assert.Equal(10, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(4, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(10, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(9, range.GetProperty("end").GetProperty("character").GetInt32());
+        var messages = diagnostic
+            .GetProperty("relatedInformation")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("message").GetString()!)
+            .ToArray();
+        Assert.Equal(2, messages.Length);
+        Assert.Contains("parameter 'Key': required argument is missing.", messages[0]);
+        Assert.Contains("parameter 'Index': required argument is missing.", messages[1]);
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_does_not_treat_a_Property_Get_result_assignment_as_a_setter_call()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/PropertyGetResultAssignment.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"PropertyGetResultAssignment\"",
+            "Public Property Get Value() As Long",
+            "    Value = 1&",
+            "End Property"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_reports_every_rejected_conditional_signature_as_related_information()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalRejectedCallDetails.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalRejectedCallDetails\"",
+            "#If KEY_CONFIGURATION Then",
+            "Public Function ResolveValue(ByVal Key As String) As String",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal Index As Long) As String",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As String",
+            "    result = ResolveValue(Unknown:=1)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var relatedInformation = diagnostic
+            .GetProperty("relatedInformation")
+            .EnumerateArray()
+            .ToArray();
+        Assert.Equal(2, relatedInformation.Length);
+        Assert.Equal(
+            [2, 5],
+            relatedInformation.Select(item => item
+                .GetProperty("location")
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32()));
+        Assert.Equal(
+            [
+                "Candidate signature: Function ResolveValue(Key As String) As String [#If]. Mismatches: argument 1 ('Unknown') mapping: no parameter named 'Unknown'.",
+                "Candidate signature: Function resolvevalue(Index As Long) As String [#If]. Mismatches: argument 1 ('Unknown') mapping: no parameter named 'Unknown'."
+            ],
+            relatedInformation.Select(item => item.GetProperty("message").GetString()));
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_reports_a_required_omitted_argument_for_every_conditional_signature()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalRequiredOmission.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalRequiredOmission\"",
+            "#If KEY_CONFIGURATION Then",
+            "Public Function ResolveValue(ByVal Key As String, Optional ByVal Fallback As String) As String",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal Index As Long, Optional ByVal Fallback As String) As String",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As String",
+            "    result = ResolveValue(, \"fallback\")",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var messages = diagnostic
+            .GetProperty("relatedInformation")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("message").GetString()!)
+            .ToArray();
+
+        Assert.Equal(
+            [
+                "Candidate signature: Function ResolveValue(Key As String, [Fallback As String]) As String [#If]. Mismatches: parameter 'Key': required argument is missing.",
+                "Candidate signature: Function resolvevalue(Index As Long, [Fallback As String]) As String [#If]. Mismatches: parameter 'Index': required argument is missing."
+            ],
+            messages);
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_orders_mapping_reasons_before_required_omission_reasons()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalCallMismatchReasonOrder.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalCallMismatchReasonOrder\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function Work(ByVal First As Long, ByVal Second As Long) As Long",
+            "End Function",
+            "#Else",
+            "Public Function work(ByVal First As Long, ByVal Second As Long) As Long",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As Long",
+            "    result = Work(, First:=1)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var messages = diagnostic
+            .GetProperty("relatedInformation")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("message").GetString()!)
+            .ToArray();
+
+        Assert.All(messages, message => Assert.Contains(
+            "Mismatches: argument 2 ('First') mapping: parameter 'First' is already supplied; parameter 'First': required argument is missing; parameter 'Second': required argument is missing.",
+            message,
+            StringComparison.Ordinal));
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_preserves_source_order_between_duplicate_and_unknown_named_arguments()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalNamedMismatchOrder.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalNamedMismatchOrder\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByVal A As Long, ByVal B As Long)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByVal A As Long, ByVal B As Long)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Work 1&, A:=2&, Unknown:=3&",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var messages = diagnostic
+            .GetProperty("relatedInformation")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("message").GetString()!)
+            .ToArray();
+
+        Assert.Equal(2, messages.Length);
+        Assert.All(messages, message => Assert.Contains(
+            "Mismatches: argument 2 ('A') mapping: parameter 'A' is already supplied; "
+                + "argument 3 ('Unknown') mapping: no parameter named 'Unknown'",
+            message,
+            StringComparison.Ordinal));
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_retains_missing_required_reasons_after_a_mapping_mismatch()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalIndependentRequiredReasons.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalIndependentRequiredReasons\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByVal A As Long, ByVal B As Long, ByVal C As Long)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByVal A As Long, ByVal B As Long, ByVal C As Long)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Work 1&, A:=2&",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var messages = diagnostic
+            .GetProperty("relatedInformation")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("message").GetString()!)
+            .ToArray();
+
+        Assert.Equal(2, messages.Length);
+        Assert.All(messages, message => Assert.Contains(
+            "Mismatches: argument 2 ('A') mapping: parameter 'A' is already supplied; "
+                + "parameter 'B': required argument is missing; "
+                + "parameter 'C': required argument is missing",
+            message,
+            StringComparison.Ordinal));
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_does_not_reject_conditional_signatures_for_an_incomplete_argument_expression()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalIncompleteArgument.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalIncompleteArgument\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByVal Only As Long)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByVal Only As Long)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Work 1&, (",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_does_not_reject_conditional_signatures_for_an_empty_named_argument_value()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalIncompleteNamedArgument.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalIncompleteNamedArgument\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByVal Only As Long)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByVal Only As Long)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Work Unknown:=",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_does_not_reject_conditional_signatures_for_an_incomplete_member_argument()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalIncompleteMemberArgument.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalIncompleteMemberArgument\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByVal Only As Long)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByVal Only As Long)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Work 1&, foo.",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_does_not_reject_a_call_while_an_earlier_argument_expression_is_incomplete()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalEarlierIncompleteMemberArgument.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalEarlierIncompleteMemberArgument\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByVal Only As Long)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByVal Only As Long)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Work foo., 1&",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_does_not_reject_an_outer_call_while_a_nested_argument_is_incomplete()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalNestedIncompleteArgument.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalNestedIncompleteArgument\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function Outer(ByVal Only As Long) As Long",
+            "End Function",
+            "#Else",
+            "Public Function outer(ByVal Only As Long) As Long",
+            "End Function",
+            "#End If",
+            "Private Function Inner(ByVal First As Variant, ByVal Second As Long) As Long",
+            "End Function",
+            "Public Sub Run()",
+            "    Dim result As Long",
+            "    result = Outer(Inner(foo., 1&), 2&)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_does_not_reject_conditional_signatures_for_an_incomplete_parenthesized_member_argument()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalIncompleteParenthesizedMemberArgument.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalIncompleteParenthesizedMemberArgument\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function Work(ByVal Only As Long) As Long",
+            "End Function",
+            "#Else",
+            "Public Function work(ByVal Only As Long) As Long",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As Long",
+            "    result = Work(1&, foo.)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_reports_only_the_first_mapping_reason_for_a_paramarray_named_argument()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalParamArrayMappingReason.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalParamArrayMappingReason\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Collect(ByVal Prefix As String, ParamArray Values() As Variant)",
+            "End Sub",
+            "#Else",
+            "Public Sub collect(ByVal Prefix As String, ParamArray Values() As Variant)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Collect \"a\", Prefix:=\"b\"",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var messages = diagnostic
+            .GetProperty("relatedInformation")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("message").GetString()!)
+            .ToArray();
+
+        Assert.Equal(2, messages.Length);
+        Assert.All(messages, message => Assert.Contains(
+            "Mismatches: argument 2 ('Prefix') mapping: named arguments are not accepted.",
+            message,
+            StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            messages,
+            message => message.Contains("already supplied", StringComparison.Ordinal));
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_reports_a_duplicate_parameter_assignment_for_every_conditional_signature()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalDuplicateAssignment.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalDuplicateAssignment\"",
+            "#If KEY_CONFIGURATION Then",
+            "Public Function ResolveValue(ByVal Key As String) As String",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal Key As Variant) As String",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As String",
+            "    result = ResolveValue(\"first\", Key:=\"second\")",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var messages = diagnostic
+            .GetProperty("relatedInformation")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("message").GetString()!)
+            .ToArray();
+
+        Assert.Equal(
+            [
+                "Candidate signature: Function ResolveValue(Key As String) As String [#If]. Mismatches: argument 2 ('Key') mapping: parameter 'Key' is already supplied.",
+                "Candidate signature: Function resolvevalue(Key As Variant) As String [#If]. Mismatches: argument 2 ('Key') mapping: parameter 'Key' is already supplied."
+            ],
+            messages);
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_reports_independent_mapping_and_byref_mismatches_for_each_conditional_signature()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalIndependentMismatches.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalIndependentMismatches\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function ResolveValue(ByRef Key As String) As String",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByRef Key As String) As String",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim result As String",
+            "    Dim number As Long",
+            "    result = ResolveValue(number, Unknown:=1)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var messages = diagnostic
+            .GetProperty("relatedInformation")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("message").GetString()!)
+            .ToArray();
+
+        Assert.Equal(2, messages.Length);
+        Assert.All(
+            messages,
+            message => Assert.Contains(
+                "Mismatches: argument 2 ('Unknown') mapping: no parameter named 'Unknown'; argument 1 for parameter 'Key' ByRef type: expected String, found Long.",
+                message,
+                StringComparison.Ordinal));
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_orders_byref_reasons_before_ordinary_type_reasons()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalTypeReasonOrder.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalTypeReasonOrder\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function ResolveValue(ByVal First As Object, ByRef Second As String) As Long",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByVal First As Object, ByRef Second As String) As Long",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim first As Long",
+            "    Dim second As Long",
+            "    Dim result As Long",
+            "    result = ResolveValue(first, second)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var messages = diagnostic
+            .GetProperty("relatedInformation")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("message").GetString()!)
+            .ToArray();
+
+        Assert.Equal(2, messages.Length);
+        Assert.All(messages, message => Assert.Contains(
+            "Mismatches: argument 2 for parameter 'Second' ByRef type: expected String, found Long; "
+                + "argument 1 for parameter 'First' type: expected Object, found Long.",
+            message,
+            StringComparison.Ordinal));
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_reports_call_context_mismatches_for_every_conditional_signature()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalContextMismatch.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalContextMismatch\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub PerformWork()",
+            "End Sub",
+            "#Else",
+            "Public Sub performwork()",
+            "End Sub",
+            "#End If",
+            "Public Function Run() As Long",
+            "    Run = PerformWork()",
+            "End Function"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var messages = diagnostic
+            .GetProperty("relatedInformation")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("message").GetString())
+            .ToArray();
+
+        Assert.Equal(2, messages.Length);
+        Assert.All(
+            messages,
+            message => Assert.Contains(
+                "call context: expected Function or Property Get, found Sub",
+                message,
+                StringComparison.Ordinal));
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_reports_every_conditional_property_accessor_rejected_by_the_assignment_context()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalPropertyContextMismatch.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalPropertyContextMismatch\"",
+            "#If READ_CONFIGURATION Then",
+            "Public Property Get Item(ByVal Index As Long) As Object",
+            "End Property",
+            "#Else",
+            "Public Property Let item(ByVal Index As Long, ByVal Assigned As String)",
+            "End Property",
+            "#End If",
+            "Public Sub Run()",
+            "    Set Item(0&) = Nothing",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var messages = diagnostic
+            .GetProperty("relatedInformation")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("message").GetString())
+            .ToArray();
+
+        Assert.Equal(2, messages.Length);
+        Assert.Contains(
+            messages,
+            message => message?.Contains(
+                "call context: expected Property Set, found Property Get",
+                StringComparison.Ordinal) == true);
+        Assert.Contains(
+            messages,
+            message => message?.Contains(
+                "call context: expected Property Set, found Property Let",
+                StringComparison.Ordinal) == true);
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_maps_property_assignment_names_only_to_index_parameters()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalPropertyValueName.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalPropertyValueName\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Property Let Item(ByVal Index As Long, ByVal Assigned As String)",
+            "End Property",
+            "#Else",
+            "Public Property Let item(ByVal Index As Long, ByVal Value As String)",
+            "End Property",
+            "#End If",
+            "Public Sub Run()",
+            "    Item(Assigned:=1&) = \"value\"",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var messages = diagnostic
+            .GetProperty("relatedInformation")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("message").GetString())
+            .ToArray();
+
+        Assert.Equal(2, messages.Length);
+        Assert.All(
+            messages,
+            message => Assert.Contains(
+                "argument 1 ('Assigned') mapping: no parameter named 'Assigned'",
+                message,
+                StringComparison.Ordinal));
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_suppresses_the_aggregate_diagnostic_when_a_conditional_signature_is_invalid()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalInvalidSignature.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalInvalidSignature\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByRef Value As String, ByRef value As Date)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByRef Value As String)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim number As Long",
+            "    Work number",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostics = notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray()
+            .ToArray();
+
+        Assert.Contains(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.duplicateCallableParameterName");
+        Assert.DoesNotContain(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_prefers_the_raise_event_named_argument_syntax_diagnostic()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalRaiseEvent.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalRaiseEvent\"",
+            "#If MESSAGE_CONFIGURATION Then",
+            "Public Event Saved(ByVal Message As String)",
+            "#Else",
+            "Public Event saved(ByVal Code As Long)",
+            "#End If",
+            "Public Sub Fire()",
+            "    RaiseEvent Saved(Unknown:=1)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostics = notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray()
+            .ToArray();
+
+        var diagnostic = Assert.Single(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "syntax.raiseEventNamedArgumentNotAllowed");
+        Assert.Equal(
+            "RaiseEvent arguments cannot use named-argument syntax.",
+            diagnostic.GetProperty("message").GetString());
+        Assert.DoesNotContain(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_reports_a_RaiseEvent_named_argument_in_a_single_line_If()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalSingleLineIfRaiseEvent.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalSingleLineIfRaiseEvent\"",
+            "#If MESSAGE_CONFIGURATION Then",
+            "Public Event Saved(ByVal Message As String)",
+            "#Else",
+            "Public Event saved(ByVal Code As Long)",
+            "#End If",
+            "Public Sub Fire()",
+            "    If True Then RaiseEvent Saved(Message:=value)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostics = notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray()
+            .ToArray();
+
+        var diagnostic = Assert.Single(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "syntax.raiseEventNamedArgumentNotAllowed");
+        var range = diagnostic.GetProperty("range");
+        Assert.Equal(8, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(34, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(8, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(43, range.GetProperty("end").GetProperty("character").GetInt32());
+        Assert.DoesNotContain(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_prefers_the_parenthesis_free_RaiseEvent_syntax_diagnostic()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalParenthesisFreeRaiseEvent.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalParenthesisFreeRaiseEvent\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Event Changed(ByVal First As Long, ByVal Second As Long)",
+            "#Else",
+            "Public Event changed(ByVal First As Long, ByVal Second As Long)",
+            "#End If",
+            "Public Sub Fire()",
+            "    RaiseEvent Changed 1&",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostics = notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray()
+            .ToArray();
+        Assert.Contains(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "syntax.raiseEventArgumentListRequiresParentheses");
+        Assert.DoesNotContain(
+            diagnostics,
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_allows_named_arguments_inside_a_nested_raise_event_argument_call()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalNestedRaiseEvent.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalNestedRaiseEvent\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Event Saved(ByVal Message As String)",
+            "#Else",
+            "Public Event saved(ByVal Message As String)",
+            "#End If",
+            "Private Function Build(ByVal x As Long) As String",
+            "End Function",
+            "Public Sub Fire()",
+            "    RaiseEvent Saved(Build(x:=1))",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "syntax.raiseEventNamedArgumentNotAllowed");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_analyzes_a_conditional_raise_event_family_despite_a_same_named_local()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalShadowedRaiseEvent.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalShadowedRaiseEvent\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Event Saved(ByRef Message As String)",
+            "#Else",
+            "Public Event saved(ByRef Text As String)",
+            "#End If",
+            "Public Sub Fire()",
+            "    Dim Saved As Variant",
+            "    Dim number As Long",
+            "    RaiseEvent Saved(number)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.Contains(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_accepts_scalar_elements_for_every_conditional_paramarray_signature()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalParamArrayCall.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalParamArrayCall\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Collect(ParamArray Values() As Variant)",
+            "End Sub",
+            "#Else",
+            "Public Sub collect(ParamArray Items() As Variant)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Collect 1&, 2&",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_accepts_direct_storage_as_a_conditional_paramarray_element()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalParamArrayStorage.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalParamArrayStorage\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Collect(ParamArray Values() As Variant)",
+            "End Sub",
+            "#Else",
+            "Public Sub collect(ParamArray Items() As Variant)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim item As String",
+            "    Collect item",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_diagnoses_proven_byref_storage_type_mismatches_for_every_variant()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalByRefMismatch.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalByRefMismatch\"",
+            "#If STRING_CONFIGURATION Then",
+            "Public Function ResolveValue(ByRef Value As String) As String",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByRef Value As Date) As String",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim value As Long",
+            "    Dim result As String",
+            "    result = ResolveValue(value)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.Contains(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_diagnoses_array_shape_independently_of_unresolved_types()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalIndependentArrayShape.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalIndependentArrayShape\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByRef Values() As MissingType)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByRef Values() As MissingType)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim value As MissingType",
+            "    Work value",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var messages = diagnostic
+            .GetProperty("relatedInformation")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("message").GetString()!)
+            .ToArray();
+
+        Assert.Equal(2, messages.Length);
+        Assert.All(messages, message => Assert.Contains(
+            "argument 1 for parameter 'Values' ByRef array shape: expected array, found scalar.",
+            message,
+            StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            messages,
+            message => message.Contains(" type:", StringComparison.Ordinal));
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_treats_a_member_argument_as_direct_storage()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string holderUri = "file:///C:/work/ConditionalStorageHolder.cls";
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(holderUri, string.Join('\n', [
+                "VERSION 1.0 CLASS",
+                "Attribute VB_Name = \"ConditionalStorageHolder\"",
+                "Public Value As Long"
+            ])));
+        const string callerUri = "file:///C:/work/ConditionalMemberStorage.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalMemberStorage\"",
+            "#If STRING_CONFIGURATION Then",
+            "Public Sub Work(ByRef InputValue As String)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByRef InputValue As Date)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim holder As ConditionalStorageHolder",
+            "    Work holder.Value",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var memberCompletion = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/completion",
+            callerUri,
+            callerText,
+            "    Work holder.Value",
+            "    Work holder.".Length);
+        Assert.Contains(
+            memberCompletion.GetProperty("result").EnumerateArray(),
+            item => item.GetProperty("label").GetString() == "Value");
+
+        var notification = await process.WaitForDiagnosticsAsync(callerUri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var messages = diagnostic
+            .GetProperty("relatedInformation")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("message").GetString()!)
+            .ToArray();
+
+        Assert.Equal(2, messages.Length);
+        Assert.Contains(
+            "argument 1 for parameter 'InputValue' ByRef type: expected String, found Long.",
+            messages[0],
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "argument 1 for parameter 'InputValue' ByRef type: expected Date, found Long.",
+            messages[1],
+            StringComparison.Ordinal);
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_treats_a_module_qualified_indexed_array_element_as_direct_storage()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string dataUri = "file:///C:/work/Data.bas";
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(dataUri, string.Join('\n', [
+                "Attribute VB_Name = \"Data\"",
+                "Public Values() As Long"
+            ])));
+        const string callerUri = "file:///C:/work/ConditionalQualifiedIndexedStorage.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalQualifiedIndexedStorage\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByRef Value As String)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByRef Value As Date)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Work Data.Values(0)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var notification = await process.WaitForDiagnosticsAsync(callerUri);
+        Assert.Single(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_treats_an_indexed_array_element_as_direct_storage()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalIndexedStorage.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalIndexedStorage\"",
+            "#If STRING_CONFIGURATION Then",
+            "Public Sub Work(ByRef InputValue As String)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByRef InputValue As Date)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim values() As Long",
+            "    Work values(0)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var messages = diagnostic
+            .GetProperty("relatedInformation")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("message").GetString()!)
+            .ToArray();
+
+        Assert.Equal(2, messages.Length);
+        Assert.Contains(
+            "argument 1 for parameter 'InputValue' ByRef type: expected String, found Long.",
+            messages[0],
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "argument 1 for parameter 'InputValue' ByRef type: expected Date, found Long.",
+            messages[1],
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            messages,
+            message => message.Contains("array shape", StringComparison.Ordinal));
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_treats_a_multidimensional_array_element_as_direct_storage()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalMultidimensionalIndexedStorage.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalMultidimensionalIndexedStorage\"",
+            "#If STRING_CONFIGURATION Then",
+            "Public Sub Work(ByRef InputValue As String)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByRef InputValue As Date)",
+            "End Sub",
+            "#End If",
+            "Private Values(0 To 1, 0 To 1) As Long",
+            "Public Sub Run()",
+            "    Work Values(0, 0)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.Single(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_treats_a_leading_dot_With_member_as_direct_storage()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string holderUri = "file:///C:/work/Holder.cls";
+        var holderText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Holder\"",
+            "Public Value As Long"
+        ]);
+        const string callerUri = "file:///C:/work/ConditionalWithMemberStorage.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalWithMemberStorage\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByRef Value As String)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByRef Value As String)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim holder As Holder",
+            "    With holder",
+            "        Work .Value",
+            "    End With",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(holderUri, holderText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var notification = await process.WaitForDiagnosticsAsync(callerUri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var messages = diagnostic
+            .GetProperty("relatedInformation")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("message").GetString()!)
+            .ToArray();
+
+        Assert.Equal(2, messages.Length);
+        Assert.All(messages, message => Assert.Contains(
+            "argument 1 for parameter 'Value' ByRef type: expected String, found Long.",
+            message,
+            StringComparison.Ordinal));
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_resolves_an_explicit_Call_to_a_leading_dot_With_member()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string holderUri = "file:///C:/work/ConditionalCallHolder.cls";
+        var holderText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalCallHolder\"",
+            "#If STRING_CONFIGURATION Then",
+            "Public Sub Work(ByVal Key As String)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByVal Key As Long)",
+            "End Sub",
+            "#End If"
+        ]);
+        const string callerUri = "file:///C:/work/ConditionalLeadingDotCall.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalLeadingDotCall\"",
+            "Public Sub Run()",
+            "    Dim holder As ConditionalCallHolder",
+            "    With holder",
+            "        Call .Work(",
+            "    End With",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(holderUri, holderText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/signatureHelp",
+            callerUri,
+            callerText,
+            "        Call .Work(",
+            "        Call .Work(".Length);
+
+        Assert.Equal(
+            [
+                "Sub Work(Key As String) [#If]",
+                "Sub work(Key As Long) [#If]"
+            ],
+            response
+                .GetProperty("result")
+                .GetProperty("signatures")
+                .EnumerateArray()
+                .Select(signature => signature.GetProperty("label").GetString()));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_retains_the_written_name_in_named_argument_type_reasons()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalNamedByRefMismatch.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalNamedByRefMismatch\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function ResolveValue(ByRef Key As String) As Long",
+            "End Function",
+            "#Else",
+            "Public Function resolvevalue(ByRef Key As Date) As Long",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim number As Long",
+            "    Dim result As Long",
+            "    result = ResolveValue(Key:=number)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var messages = diagnostic
+            .GetProperty("relatedInformation")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("message").GetString()!)
+            .ToArray();
+
+        Assert.Contains(
+            "argument 1 ('Key') for parameter 'Key' ByRef type: expected String, found Long.",
+            messages[0],
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "argument 1 ('Key') for parameter 'Key' ByRef type: expected Date, found Long.",
+            messages[1],
+            StringComparison.Ordinal);
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_treats_a_callable_result_argument_as_a_value_temporary()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalCallableArgumentResult.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalCallableArgumentResult\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByRef Value As Object)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByRef Value As Object)",
+            "End Sub",
+            "#End If",
+            "Public Function BuildNumber() As Long",
+            "End Function",
+            "Public Sub Run()",
+            "    Work BuildNumber",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var messages = diagnostic
+            .GetProperty("relatedInformation")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("message").GetString()!)
+            .ToArray();
+
+        Assert.Equal(2, messages.Length);
+        Assert.All(messages, message => Assert.Contains(
+            "argument 1 for parameter 'Value' type: expected Object, found Long.",
+            message,
+            StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            messages,
+            message => message.Contains("ByRef type", StringComparison.Ordinal));
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_uses_only_readable_property_accessors_for_callable_result_evidence()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalPropertyResultArgument.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalPropertyResultArgument\"",
+            "Public Property Get SourceValue() As Long",
+            "End Property",
+            "Public Property Let SourceValue(ByVal assigned As Long)",
+            "End Property",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByRef Value As Object)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByRef Value As Object)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Work SourceValue",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var messages = diagnostic
+            .GetProperty("relatedInformation")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("message").GetString()!)
+            .ToArray();
+
+        Assert.Equal(2, messages.Length);
+        Assert.All(messages, message => Assert.Contains(
+            "argument 1 for parameter 'Value' type: expected Object, found Long.",
+            message,
+            StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            messages,
+            message => message.Contains("ByRef type", StringComparison.Ordinal));
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Theory]
+    [InlineData("factory.BuildNumber")]
+    [InlineData("factory.BuildNumber()")]
+    public async Task Server_treats_a_member_callable_result_as_a_value_temporary(
+        string argumentExpression)
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string factoryUri = "file:///C:/work/Factory.cls";
+        var factoryText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Factory\"",
+            "Public Function BuildNumber() As Long",
+            "End Function"
+        ]);
+        const string callerUri = "file:///C:/work/ConditionalMemberCallableResult.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalMemberCallableResult\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByRef Value As Object)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByRef Value As Object)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim factory As Factory",
+            $"    Work {argumentExpression}",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(factoryUri, factoryText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var notification = await process.WaitForDiagnosticsAsync(callerUri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var messages = diagnostic
+            .GetProperty("relatedInformation")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("message").GetString()!)
+            .ToArray();
+
+        Assert.Equal(2, messages.Length);
+        Assert.All(messages, message => Assert.Contains(
+            "argument 1 for parameter 'Value' type: expected Object, found Long.",
+            message,
+            StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            messages,
+            message => message.Contains("ByRef type", StringComparison.Ordinal));
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_treats_a_qualified_type_character_callable_result_as_a_value_temporary()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string factoryUri = "file:///C:/work/TypeCharacterFactory.cls";
+        var factoryText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"TypeCharacterFactory\"",
+            "Public Function BuildNumber&()",
+            "End Function"
+        ]);
+        const string callerUri = "file:///C:/work/ConditionalQualifiedTypeCharacterCallableResult.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalQualifiedTypeCharacterCallableResult\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByRef Value As Object)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByRef Value As Object)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim factory As TypeCharacterFactory",
+            "    Work factory.BuildNumber&",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(factoryUri, factoryText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var notification = await process.WaitForDiagnosticsAsync(callerUri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var messages = diagnostic
+            .GetProperty("relatedInformation")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("message").GetString()!)
+            .ToArray();
+
+        Assert.Equal(2, messages.Length);
+        Assert.All(messages, message => Assert.Contains(
+            "argument 1 for parameter 'Value' type: expected Object, found Long.",
+            message,
+            StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            messages,
+            message => message.Contains("ByRef type", StringComparison.Ordinal));
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_treats_a_parameterized_member_callable_result_as_a_value_temporary()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string factoryUri = "file:///C:/work/ParameterizedFactory.cls";
+        var factoryText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ParameterizedFactory\"",
+            "Public Function BuildNumber(ByVal Key As Long) As Long",
+            "End Function"
+        ]);
+        const string callerUri = "file:///C:/work/ConditionalParameterizedMemberCallableResult.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalParameterizedMemberCallableResult\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByRef Value As Object)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByRef Value As Object)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim factory As ParameterizedFactory",
+            "    Work factory.BuildNumber(1&)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(factoryUri, factoryText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var notification = await process.WaitForDiagnosticsAsync(callerUri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var messages = diagnostic
+            .GetProperty("relatedInformation")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("message").GetString()!)
+            .ToArray();
+
+        Assert.Equal(2, messages.Length);
+        Assert.All(messages, message => Assert.Contains(
+            "argument 1 for parameter 'Value' type: expected Object, found Long.",
+            message,
+            StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            messages,
+            message => message.Contains("ByRef type", StringComparison.Ordinal));
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_uses_only_a_parameterized_property_get_for_callable_result_evidence()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string catalogUri = "file:///C:/work/ParameterizedCatalog.cls";
+        var catalogText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ParameterizedCatalog\"",
+            "Public Property Get Item(ByVal Key As Long) As Long",
+            "End Property",
+            "Public Property Let Item(ByVal Key As Long, ByVal AssignedValue As Long)",
+            "End Property"
+        ]);
+        const string callerUri = "file:///C:/work/ConditionalParameterizedPropertyResult.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalParameterizedPropertyResult\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByRef Value As Object)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByRef Value As Object)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim catalog As ParameterizedCatalog",
+            "    Work catalog.Item(1&)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(catalogUri, catalogText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var notification = await process.WaitForDiagnosticsAsync(callerUri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var messages = diagnostic
+            .GetProperty("relatedInformation")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("message").GetString()!)
+            .ToArray();
+
+        Assert.Equal(2, messages.Length);
+        Assert.All(messages, message => Assert.Contains(
+            "argument 1 for parameter 'Value' type: expected Object, found Long.",
+            message,
+            StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            messages,
+            message => message.Contains("ByRef type", StringComparison.Ordinal));
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_does_not_select_a_parameterized_conditional_member_result_for_argument_evidence()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string factoryUri = "file:///C:/work/ConditionalParameterizedFactory.cls";
+        var factoryText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalParameterizedFactory\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function Build(ByVal Key As Long) As Long",
+            "End Function",
+            "#Else",
+            "Public Function build(ByVal Key As Long) As String",
+            "End Function",
+            "#End If"
+        ]);
+        const string callerUri = "file:///C:/work/ConditionalParameterizedMemberResultEvidence.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalParameterizedMemberResultEvidence\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByRef Value As Object)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByRef Value As Object)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim factory As ConditionalParameterizedFactory",
+            "    Work factory.Build(1&)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(factoryUri, factoryText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var notification = await process.WaitForDiagnosticsAsync(callerUri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_does_not_publish_result_evidence_from_a_visible_callable_subset()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string factoryUri = "file:///C:/work/ConditionalVisibilityFactory.cls";
+        var factoryText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalVisibilityFactory\"",
+            "#If PUBLIC_CONFIGURATION Then",
+            "Public Function Build(ByVal Key As Long) As Long",
+            "End Function",
+            "#Else",
+            "Private Function build(ByVal Key As Long) As String",
+            "End Function",
+            "#End If"
+        ]);
+        const string callerUri = "file:///C:/work/ConditionalVisibleSubsetResultEvidence.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalVisibleSubsetResultEvidence\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByRef Value As Object)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByRef Value As Object)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim factory As ConditionalVisibilityFactory",
+            "    Work factory.Build(1&)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(factoryUri, factoryText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var notification = await process.WaitForDiagnosticsAsync(callerUri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("()")]
+    public async Task Server_does_not_publish_zero_argument_result_evidence_from_a_visible_callable_subset(
+        string callSuffix)
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string factoryUri = "file:///C:/work/ConditionalZeroArgumentVisibilityFactory.cls";
+        var factoryText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalZeroArgumentVisibilityFactory\"",
+            "#If PUBLIC_CONFIGURATION Then",
+            "Public Function BuildNumber() As Long",
+            "End Function",
+            "#Else",
+            "Private Function buildnumber() As String",
+            "End Function",
+            "#End If"
+        ]);
+        const string callerUri = "file:///C:/work/ConditionalZeroArgumentVisibleSubsetResultEvidence.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalZeroArgumentVisibleSubsetResultEvidence\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByRef Value As Object)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByRef Value As Object)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim factory As ConditionalZeroArgumentVisibilityFactory",
+            $"    Work factory.BuildNumber{callSuffix}",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(factoryUri, factoryText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var notification = await process.WaitForDiagnosticsAsync(callerUri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_treats_a_type_character_argument_as_direct_storage()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string uri = "file:///C:/work/ConditionalTypeCharacterStorage.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalTypeCharacterStorage\"",
+            "#If STRING_CONFIGURATION Then",
+            "Public Sub Work(ByRef Value As String)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByRef Value As Date)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim value&",
+            "    Work value&",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var messages = diagnostic
+            .GetProperty("relatedInformation")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("message").GetString()!)
+            .ToArray();
+
+        Assert.Equal(2, messages.Length);
+        Assert.Contains(
+            "Candidate signature: Sub Work(ByRef Value As String) [#If]. Mismatches: "
+                + "argument 1 for parameter 'Value' ByRef type: expected String, found Long.",
+            messages);
+        Assert.Contains(
+            "Candidate signature: Sub work(ByRef Value As Date) [#If]. Mismatches: "
+                + "argument 1 for parameter 'Value' ByRef type: expected Date, found Long.",
+            messages);
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_resolves_source_parameter_types_in_the_declaration_document()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string payloadUri = "file:///C:/work/Payload.cls";
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(payloadUri, string.Join('\n', [
+                "VERSION 1.0 CLASS",
+                "Attribute VB_Name = \"Payload\""
+            ])));
+        const string contractsUri = "file:///C:/work/Contracts.bas";
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(contractsUri, string.Join('\n', [
+                "Attribute VB_Name = \"Contracts\"",
+                "#If FIRST_CONFIGURATION Then",
+                "Public Sub Work(ByRef Value As Payload)",
+                "End Sub",
+                "#Else",
+                "Public Sub work(ByRef Value As Payload)",
+                "End Sub",
+                "#End If"
+            ])));
+        const string callerUri = "file:///C:/work/Caller.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"Caller\"",
+            "Private Type Payload",
+            "    Member As Long",
+            "End Type",
+            "Public Sub Run()",
+            "    Dim value As Payload",
+            "    Work value",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var notification = await process.WaitForDiagnosticsAsync(callerUri);
+        Assert.Single(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_preserves_an_array_marker_after_a_type_declaration_character()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalTypeCharacterArrayStorage.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalTypeCharacterArrayStorage\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByRef Values() As Long)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByRef Values() As Long)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim values&()",
+            "    Work values&",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_does_not_infer_a_literal_type_from_an_expression_suffix()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalExpressionSuffix.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalExpressionSuffix\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByVal Value As Object)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByVal Value As Object)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim unknown As Variant",
+            "    Work unknown + 1&",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_uses_value_compatibility_for_byval_and_parenthesized_byref_arguments()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string payloadUri = "file:///C:/work/Payload.cls";
+        var payloadText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Payload\""
+        ]);
+        const string callerUri = "file:///C:/work/ConditionalValueCompatibility.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalValueCompatibility\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByVal First As Payload, ByRef Second As Payload)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByVal First As Payload, ByRef Second As Payload)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim text As String",
+            "    Work text, (text)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(payloadUri, payloadText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var notification = await process.WaitForDiagnosticsAsync(callerUri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var messages = diagnostic
+            .GetProperty("relatedInformation")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("message").GetString()!)
+            .ToArray();
+
+        Assert.Equal(2, messages.Length);
+        Assert.All(messages, message => Assert.Contains(
+            "Mismatches: argument 1 for parameter 'First' type: expected Payload, found String; "
+                + "argument 2 for parameter 'Second' type: expected Payload, found String.",
+            message,
+            StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            messages,
+            message => message.Contains("ByRef type", StringComparison.Ordinal));
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_treats_a_whitespace_separated_parenthesized_statement_argument_as_a_value_temporary()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string payloadUri = "file:///C:/work/Payload.cls";
+        var payloadText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Payload\""
+        ]);
+        const string callerUri = "file:///C:/work/ConditionalWhitespaceParenthesizedArgument.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalWhitespaceParenthesizedArgument\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByRef Value As Payload)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByRef Value As Payload)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim text As String",
+            "    Work (text)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(payloadUri, payloadText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var notification = await process.WaitForDiagnosticsAsync(callerUri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var messages = diagnostic
+            .GetProperty("relatedInformation")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("message").GetString()!)
+            .ToArray();
+
+        Assert.Equal(2, messages.Length);
+        Assert.All(messages, message => Assert.Contains(
+            "argument 1 for parameter 'Value' type: expected Payload, found String.",
+            message,
+            StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            messages,
+            message => message.Contains("ByRef type", StringComparison.Ordinal));
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_treats_parentheses_after_an_explicit_Call_as_argument_list_delimiters()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string payloadUri = "file:///C:/work/Payload.cls";
+        var payloadText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Payload\""
+        ]);
+        const string callerUri = "file:///C:/work/ConditionalExplicitCallParentheses.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalExplicitCallParentheses\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByRef Value As Payload)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByRef Value As Payload)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim text As String",
+            "    Call Work (text)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(payloadUri, payloadText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var notification = await process.WaitForDiagnosticsAsync(callerUri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var messages = diagnostic
+            .GetProperty("relatedInformation")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("message").GetString()!)
+            .ToArray();
+
+        Assert.Equal(2, messages.Length);
+        Assert.All(messages, message => Assert.Contains(
+            "argument 1 for parameter 'Value' ByRef type: expected Payload, found String.",
+            message,
+            StringComparison.Ordinal));
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_peels_nested_parentheses_from_a_statement_value_temporary()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+        const string payloadUri = "file:///C:/work/Payload.cls";
+        var payloadText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Payload\""
+        ]);
+        const string callerUri = "file:///C:/work/ConditionalNestedParenthesizedArgument.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalNestedParenthesizedArgument\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByRef Value As Payload)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByRef Value As Payload)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim text As String",
+            "    Work ((text))",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(payloadUri, payloadText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var notification = await process.WaitForDiagnosticsAsync(callerUri);
+        var diagnostic = Assert.Single(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+        var messages = diagnostic
+            .GetProperty("relatedInformation")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("message").GetString()!)
+            .ToArray();
+
+        Assert.Equal(2, messages.Length);
+        Assert.All(messages, message => Assert.Contains(
+            "argument 1 for parameter 'Value' type: expected Payload, found String.",
+            message,
+            StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            messages,
+            message => message.Contains("ByRef type", StringComparison.Ordinal));
+
+        await process.ShutdownAsync(2);
+    }
+
+    [Fact]
+    public async Task Server_does_not_select_a_conditional_argument_storage_type_for_call_compatibility()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalArgumentStorageType.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalArgumentStorageType\"",
+            "#If LONG_VALUE_CONFIGURATION Then",
+            "Private value As Long",
+            "#Else",
+            "Private value As String",
+            "#End If",
+            "#If STRING_CALL_CONFIGURATION Then",
+            "Public Sub Work(ByRef inputValue As String)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByRef inputValue As Date)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Work value",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_keeps_unresolved_call_parameter_types_indeterminate()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalUnresolvedParameterType.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalUnresolvedParameterType\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Sub Work(ByRef inputValue As MissingFirstType)",
+            "End Sub",
+            "#Else",
+            "Public Sub work(ByRef inputValue As MissingSecondType)",
+            "End Sub",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim value As Long",
+            "    Work value",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(notification
+            .GetProperty("params")
+            .GetProperty("diagnostics")
+            .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_stops_member_completion_when_conditional_result_types_diverge()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalDivergentResult.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalDivergentResult\"",
+            "Public Type FirstResult",
+            "    FirstOnly As String",
+            "End Type",
+            "Public Type SecondResult",
+            "    SecondOnly As String",
+            "End Type",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function BuildValue() As FirstResult",
+            "End Function",
+            "#Else",
+            "Public Function buildvalue() As SecondResult",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Debug.Print BuildValue.",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/completion",
+            uri,
+            text,
+            "    Debug.Print BuildValue.",
+            "    Debug.Print BuildValue.".Length);
+        var labels = response
+            .GetProperty("result")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("label").GetString())
+            .ToArray();
+        Assert.DoesNotContain("FirstOnly", labels);
+        Assert.DoesNotContain("SecondOnly", labels);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_stops_zero_argument_result_completion_when_a_variant_is_private_at_the_use_site()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string providerUri = "file:///C:/work/ConditionalZeroArgumentProvider.bas";
+        var providerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalZeroArgumentProvider\"",
+            "Public Type SharedResult",
+            "    SharedMember As String",
+            "End Type",
+            "#If FIRST_CONFIGURATION Then",
+            "Private Function BuildValue() As SharedResult",
+            "End Function",
+            "#Else",
+            "Public Function buildvalue() As SharedResult",
+            "End Function",
+            "#End If"
+        ]);
+        const string callerUri = "file:///C:/work/ConditionalZeroArgumentCaller.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalZeroArgumentCaller\"",
+            "Public Sub Run()",
+            "    Debug.Print BuildValue.",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(providerUri, providerText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/completion",
+            callerUri,
+            callerText,
+            "    Debug.Print BuildValue.",
+            "    Debug.Print BuildValue.".Length);
+        Assert.DoesNotContain(
+            response.GetProperty("result").EnumerateArray(),
+            item => item.GetProperty("label").GetString() == "SharedMember");
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_completes_members_for_an_applicable_nonzero_conditional_call_with_convergent_results()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalConvergentCallResult.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalConvergentCallResult\"",
+            "Public Type SharedResult",
+            "    SharedMember As String",
+            "End Type",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function BuildValue(ByVal Key As Long) As SharedResult",
+            "End Function",
+            "#Else",
+            "Public Function buildvalue(ByVal Key As Long) As SharedResult",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Debug.Print BuildValue(1&).",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/completion",
+            uri,
+            text,
+            "    Debug.Print BuildValue(1&).",
+            "    Debug.Print BuildValue(1&).".Length);
+        Assert.Contains(
+            response.GetProperty("result").EnumerateArray(),
+            item => item.GetProperty("label").GetString() == "SharedMember");
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_resolves_conditional_result_types_in_the_declaration_document()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string payloadUri = "file:///C:/work/ResultPayload.cls";
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(payloadUri, string.Join('\n', [
+                "VERSION 1.0 CLASS",
+                "Attribute VB_Name = \"ResultPayload\"",
+                "Public Name As String"
+            ])));
+        const string contractsUri = "file:///C:/work/ResultContracts.bas";
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(contractsUri, string.Join('\n', [
+                "Attribute VB_Name = \"ResultContracts\"",
+                "#If FIRST_CONFIGURATION Then",
+                "Public Function Build() As ResultPayload",
+                "End Function",
+                "#Else",
+                "Public Function build() As ResultPayload",
+                "End Function",
+                "#End If"
+            ])));
+        const string callerUri = "file:///C:/work/ResultCaller.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"ResultCaller\"",
+            "Private Type ResultPayload",
+            "    LocalOnly As Long",
+            "End Type",
+            "Public Sub Run()",
+            "    Debug.Print Build().",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/completion",
+            callerUri,
+            callerText,
+            "    Debug.Print Build().",
+            "    Debug.Print Build().".Length);
+        var labels = response
+            .GetProperty("result")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("label").GetString())
+            .ToArray();
+
+        Assert.Contains("Name", labels);
+        Assert.DoesNotContain("LocalOnly", labels);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_completes_members_from_parameterized_conditional_Property_Get_despite_complementary_setters()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string resultUri = "file:///C:/work/ResultRecord.cls";
+        var resultText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ResultRecord\"",
+            "Public SharedMember As String"
+        ]);
+        const string catalogUri = "file:///C:/work/ConditionalCatalog.cls";
+        var catalogText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalCatalog\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Property Get Item(ByVal Key As Long) As ResultRecord",
+            "End Property",
+            "Public Property Set Item(ByVal Key As Long, ByVal Assigned As ResultRecord)",
+            "End Property",
+            "#Else",
+            "Public Property Get item(ByVal Key As Long) As ResultRecord",
+            "End Property",
+            "Public Property Set item(ByVal Key As Long, ByVal Assigned As ResultRecord)",
+            "End Property",
+            "#End If"
+        ]);
+        const string callerUri = "file:///C:/work/ConditionalPropertyCompletionCaller.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalPropertyCompletionCaller\"",
+            "Public Sub Run()",
+            "    Dim catalog As ConditionalCatalog",
+            "    Debug.Print catalog.Item(1&).",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(resultUri, resultText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(catalogUri, catalogText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/completion",
+            callerUri,
+            callerText,
+            "    Debug.Print catalog.Item(1&).",
+            "    Debug.Print catalog.Item(1&).".Length);
+        Assert.Contains(
+            response.GetProperty("result").EnumerateArray(),
+            item => item.GetProperty("label").GetString() == "SharedMember");
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_completes_members_from_zero_argument_conditional_Property_Get_despite_complementary_setters()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string resultUri = "file:///C:/work/ZeroArgumentResultRecord.cls";
+        var resultText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ZeroArgumentResultRecord\"",
+            "Public SharedMember As String"
+        ]);
+        const string catalogUri = "file:///C:/work/ConditionalZeroArgumentCatalog.cls";
+        var catalogText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalZeroArgumentCatalog\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Property Get Item() As ZeroArgumentResultRecord",
+            "End Property",
+            "Public Property Set Item(ByVal Assigned As ZeroArgumentResultRecord)",
+            "End Property",
+            "#Else",
+            "Public Property Get item() As ZeroArgumentResultRecord",
+            "End Property",
+            "Public Property Set item(ByVal Assigned As ZeroArgumentResultRecord)",
+            "End Property",
+            "#End If"
+        ]);
+        const string callerUri = "file:///C:/work/ConditionalZeroArgumentPropertyCompletionCaller.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalZeroArgumentPropertyCompletionCaller\"",
+            "Public Sub Run()",
+            "    Dim catalog As ConditionalZeroArgumentCatalog",
+            "    Debug.Print catalog.Item.",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(resultUri, resultText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(catalogUri, catalogText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/completion",
+            callerUri,
+            callerText,
+            "    Debug.Print catalog.Item.",
+            "    Debug.Print catalog.Item.".Length);
+        Assert.Contains(
+            response.GetProperty("result").EnumerateArray(),
+            item => item.GetProperty("label").GetString() == "SharedMember");
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_completes_members_after_modeled_byval_variant_coercion()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalVariantCallResult.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalVariantCallResult\"",
+            "Public Type SharedResult",
+            "    SharedMember As String",
+            "End Type",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function BuildValue(ByVal Key As Variant) As SharedResult",
+            "End Function",
+            "#Else",
+            "Public Function buildvalue(ByVal Key As Variant) As SharedResult",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Debug.Print BuildValue(1&).",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/completion",
+            uri,
+            text,
+            "    Debug.Print BuildValue(1&).",
+            "    Debug.Print BuildValue(1&).".Length);
+        Assert.Contains(
+            response.GetProperty("result").EnumerateArray(),
+            item => item.GetProperty("label").GetString() == "SharedMember");
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_treats_an_omitted_source_parameter_type_as_variant()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalImplicitVariantCallResult.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalImplicitVariantCallResult\"",
+            "Public Type SharedResult",
+            "    SharedMember As String",
+            "End Type",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function BuildValue(ByVal Key) As SharedResult",
+            "End Function",
+            "#Else",
+            "Public Function buildvalue(ByVal Key) As SharedResult",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Debug.Print BuildValue(1&).",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/completion",
+            uri,
+            text,
+            "    Debug.Print BuildValue(1&).",
+            "    Debug.Print BuildValue(1&).".Length);
+        Assert.Contains(
+            response.GetProperty("result").EnumerateArray(),
+            item => item.GetProperty("label").GetString() == "SharedMember");
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_completes_members_after_a_proven_numeric_widening()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalNumericWideningResult.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalNumericWideningResult\"",
+            "Public Type SharedResult",
+            "    SharedMember As String",
+            "End Type",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function BuildValue(ByVal Key As Long) As SharedResult",
+            "End Function",
+            "#Else",
+            "Public Function buildvalue(ByVal Key As Long) As SharedResult",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim key As Integer",
+            "    Debug.Print BuildValue(key).",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/completion",
+            uri,
+            text,
+            "    Debug.Print BuildValue(key).",
+            "    Debug.Print BuildValue(key).".Length);
+        Assert.Contains(
+            response.GetProperty("result").EnumerateArray(),
+            item => item.GetProperty("label").GetString() == "SharedMember");
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_keeps_an_unmodeled_scalar_coercion_indeterminate()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalUnmodeledCoercionResult.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalUnmodeledCoercionResult\"",
+            "Public Type SharedResult",
+            "    SharedMember As String",
+            "End Type",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function BuildValue(ByVal Key As Long) As SharedResult",
+            "End Function",
+            "#Else",
+            "Public Function buildvalue(ByVal Key As Long) As SharedResult",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim key As String",
+            "    Debug.Print BuildValue(key).",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var notification = await process.WaitForDiagnosticsAsync(uri);
+        Assert.DoesNotContain(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleCallArgumentList");
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/completion",
+            uri,
+            text,
+            "    Debug.Print BuildValue(key).",
+            "    Debug.Print BuildValue(key).".Length);
+        Assert.DoesNotContain(
+            response.GetProperty("result").EnumerateArray(),
+            item => item.GetProperty("label").GetString() == "SharedMember");
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_stops_result_member_completion_when_one_nonzero_conditional_call_variant_is_inapplicable()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalInapplicableCallResult.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalInapplicableCallResult\"",
+            "Public Type SharedResult",
+            "    SharedMember As String",
+            "End Type",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function BuildValue(ByRef Key As Long) As SharedResult",
+            "End Function",
+            "#Else",
+            "Public Function buildvalue(ByRef Key As String) As SharedResult",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Dim keyValue As Long",
+            "    Debug.Print BuildValue(keyValue).",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/completion",
+            uri,
+            text,
+            "    Debug.Print BuildValue(keyValue).",
+            "    Debug.Print BuildValue(keyValue).".Length);
+        Assert.DoesNotContain(
+            response.GetProperty("result").EnumerateArray(),
+            item => item.GetProperty("label").GetString() == "SharedMember");
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_stops_result_member_completion_when_nonzero_conditional_results_diverge()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalDivergentNonzeroCallResult.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalDivergentNonzeroCallResult\"",
+            "Public Type FirstResult",
+            "    FirstOnly As String",
+            "End Type",
+            "Public Type SecondResult",
+            "    SecondOnly As String",
+            "End Type",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function BuildValue(ByVal Key As Long) As FirstResult",
+            "End Function",
+            "#Else",
+            "Public Function buildvalue(ByVal Key As Long) As SecondResult",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Debug.Print BuildValue(1&).",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/completion",
+            uri,
+            text,
+            "    Debug.Print BuildValue(1&).",
+            "    Debug.Print BuildValue(1&).".Length);
+        var labels = response
+            .GetProperty("result")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("label").GetString())
+            .ToArray();
+        Assert.DoesNotContain("FirstOnly", labels);
+        Assert.DoesNotContain("SecondOnly", labels);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_does_not_select_a_conditional_member_callable_result_type()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string typesUri = "file:///C:/work/ConditionalMemberResultTypes.bas";
+        var typesText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalMemberResultTypes\"",
+            "Public Type FirstResult",
+            "    FirstOnly As String",
+            "End Type",
+            "Public Type SecondResult",
+            "    SecondOnly As String",
+            "End Type"
+        ]);
+        const string classUri = "file:///C:/work/ConditionalResultWorker.cls";
+        var classText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ConditionalResultWorker\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function BuildValue() As FirstResult",
+            "End Function",
+            "#Else",
+            "Public Function buildvalue() As SecondResult",
+            "End Function",
+            "#End If"
+        ]);
+        const string callerUri = "file:///C:/work/ConditionalMemberResultCaller.bas";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalMemberResultCaller\"",
+            "Public Sub Run()",
+            "    Dim worker As ConditionalResultWorker",
+            "    Debug.Print worker.BuildValue.",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(typesUri, typesText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(classUri, classText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/completion",
+            callerUri,
+            callerText,
+            "    Debug.Print worker.BuildValue.",
+            "    Debug.Print worker.BuildValue.".Length);
+        var labels = response
+            .GetProperty("result")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("label").GetString())
+            .ToArray();
+        Assert.DoesNotContain("FirstOnly", labels);
+        Assert.DoesNotContain("SecondOnly", labels);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
     public async Task Server_returns_hover_and_signature_help_for_source_callables()
     {
         await using var process = await LanguageServerProcessHarness.StartAsync();
@@ -5939,7 +13589,7 @@ public sealed class LanguageServerProcessTests
             "Public Type CustomerRecord",
             "    Id As Long",
             "End Type",
-            "Public Event Saved(ByVal Name As String, Optional RetryCount As Long)",
+            "Public Event Saved(ByVal Name As String, ByRef RetryCount As Long)",
             "Public Declare PtrSafe Function GetTickCount Lib \"kernel32\" () As Long",
             "Public Property Get DisplayName(Optional Fallback As String) As String",
             "End Property",
@@ -5971,7 +13621,7 @@ public sealed class LanguageServerProcessTests
         Assert.Equal("```vba\nType CustomerRecord\n```", await HoverValueAsync("CustomerRecord"));
         Assert.Equal("```vba\nId As Long\n```", await HoverValueAsync("Id As"));
         Assert.Equal(
-            "```vba\nEvent Saved(Name As String, [ByRef RetryCount As Long])\n```",
+            "```vba\nEvent Saved(Name As String, ByRef RetryCount As Long)\n```",
             await HoverValueAsync("Saved("));
         Assert.Equal(
             "```vba\nDeclare Function GetTickCount() As Long\n```",
@@ -6179,6 +13829,878 @@ public sealed class LanguageServerProcessTests
                     .ToArray());
 
             await process.ShutdownAsync(5);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_keeps_unknown_catalog_named_argument_support_indeterminate()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-catalog-unknown-named-").FullName;
+        var cacheRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-catalog-unknown-named-cache-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(projectRoot, "Generated Library");
+            new VbaProjectReferenceCatalogPersistentStore(cacheRoot).Save(
+                new VbaProjectReferenceCatalogPersistentEntry(
+                    CreateGeneratedReferenceCatalogIdentity("Generated Library"),
+                    new VbaProjectReferenceCatalog(
+                        "Generated Library",
+                        ["Generated"],
+                        [
+                            new VbaProjectReferenceDefinition(
+                                "Generated Library",
+                                "GeneratedType",
+                                VbaSourceDefinitionKind.Class),
+                            new VbaProjectReferenceDefinition(
+                                "Generated Library",
+                                "FallbackMethod",
+                                VbaSourceDefinitionKind.Procedure,
+                                Signature: new VbaCallableSignature(
+                                    "FallbackMethod(Value)",
+                                    [
+                                        new VbaCallableParameter(
+                                            "Value",
+                                            TypeReference: new VbaTypeReference("Long"),
+                                            IsByRef: false)
+                                    ],
+                                    CallableKind: VbaCallableKind.Sub),
+                                ParentTypeName: "GeneratedType")
+                        ])));
+
+            await using var process = await LanguageServerProcessHarness.StartAsync(
+                referenceCatalogCacheRoot: cacheRoot);
+            await process.InitializeAsync();
+            var uri = ToFileUri(Path.Combine(
+                projectRoot,
+                "src",
+                "Book1",
+                "Worker.bas"));
+            var text = string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Public Sub Run()",
+                "    Dim generatedObject As GeneratedType",
+                "    generatedObject.FallbackMethod(Value:=1)",
+                "End Sub"
+            ]);
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+            await process.WaitForLogTextAsync(
+                "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
+
+            var checkpoint = process.TranscriptCheckpoint;
+            await process.SendNotificationAsync(
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new { uri, version = 2 },
+                    contentChanges = new[] { new { text } }
+                });
+            var notification = await process.WaitForMessageAsync(
+                checkpoint,
+                message => message.TryGetProperty("method", out var method)
+                    && method.GetString() == "textDocument/publishDiagnostics"
+                    && message.GetProperty("params").GetProperty("uri").GetString() == uri);
+            Assert.DoesNotContain(
+                notification
+                    .GetProperty("params")
+                    .GetProperty("diagnostics")
+                    .EnumerateArray(),
+                candidate => candidate.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList");
+
+            var completion = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/completion",
+                uri,
+                text,
+                "    generatedObject.FallbackMethod(Value:=1)",
+                "    generatedObject.FallbackMethod(".Length);
+            Assert.DoesNotContain(
+                completion.GetProperty("result").EnumerateArray(),
+                item => item.GetProperty("kind").GetInt32() == 5
+                    && item.GetProperty("label").GetString() == "Value");
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_preserves_a_conclusively_missing_required_parameter_when_named_argument_support_is_unknown()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-catalog-unknown-named-missing-").FullName;
+        var cacheRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-catalog-unknown-named-missing-cache-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(projectRoot, "Generated Library");
+            new VbaProjectReferenceCatalogPersistentStore(cacheRoot).Save(
+                new VbaProjectReferenceCatalogPersistentEntry(
+                    CreateGeneratedReferenceCatalogIdentity("Generated Library"),
+                    new VbaProjectReferenceCatalog(
+                        "Generated Library",
+                        ["Generated"],
+                        [
+                            new VbaProjectReferenceDefinition(
+                                "Generated Library",
+                                "Work",
+                                VbaSourceDefinitionKind.Procedure,
+                                Signature: new VbaCallableSignature(
+                                    "Sub Work(ByVal First As Long, ByVal Second As Long)",
+                                    [
+                                        new VbaCallableParameter(
+                                            "First",
+                                            TypeReference: new VbaTypeReference("Long"),
+                                            IsByRef: false),
+                                        new VbaCallableParameter(
+                                            "Second",
+                                            TypeReference: new VbaTypeReference("Long"),
+                                            IsByRef: false)
+                                    ],
+                                    CallableKind: VbaCallableKind.Sub),
+                                GlobalExposure: ReferenceDefinitionGlobalExposure.LibraryGlobal)
+                        ])));
+
+            await using var process = await LanguageServerProcessHarness.StartAsync(
+                referenceCatalogCacheRoot: cacheRoot);
+            await process.InitializeAsync(new
+            {
+                textDocument = new
+                {
+                    publishDiagnostics = new
+                    {
+                        relatedInformation = true
+                    }
+                }
+            });
+            var uri = ToFileUri(Path.Combine(
+                projectRoot,
+                "src",
+                "Book1",
+                "Worker.bas"));
+            var text = string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Public Sub Run()",
+                "    Work First:=1&",
+                "End Sub"
+            ]);
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+            await process.WaitForLogTextAsync(
+                "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
+
+            var checkpoint = process.TranscriptCheckpoint;
+            await process.SendNotificationAsync(
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new { uri, version = 2 },
+                    contentChanges = new[] { new { text } }
+                });
+            var notification = await process.WaitForMessageAsync(
+                checkpoint,
+                message => message.TryGetProperty("method", out var method)
+                    && method.GetString() == "textDocument/publishDiagnostics"
+                    && message.GetProperty("params").GetProperty("uri").GetString() == uri);
+            var diagnostic = Assert.Single(notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+                candidate => candidate.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList");
+
+            Assert.Contains(
+                "parameter 'Second': required argument is missing.",
+                diagnostic.GetProperty("message").GetString(),
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                "parameter 'First': required argument is missing.",
+                diagnostic.GetProperty("message").GetString(),
+                StringComparison.Ordinal);
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_preserves_a_context_mismatch_when_named_argument_support_is_unknown()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-catalog-unknown-named-context-").FullName;
+        var cacheRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-catalog-unknown-named-context-cache-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(projectRoot, "Generated Library");
+            new VbaProjectReferenceCatalogPersistentStore(cacheRoot).Save(
+                new VbaProjectReferenceCatalogPersistentEntry(
+                    CreateGeneratedReferenceCatalogIdentity("Generated Library"),
+                    new VbaProjectReferenceCatalog(
+                        "Generated Library",
+                        ["Generated"],
+                        [
+                            new VbaProjectReferenceDefinition(
+                                "Generated Library",
+                                "Work",
+                                VbaSourceDefinitionKind.Procedure,
+                                Signature: new VbaCallableSignature(
+                                    "Work(Key)",
+                                    [
+                                        new VbaCallableParameter(
+                                            "Key",
+                                            TypeReference: new VbaTypeReference("Long"),
+                                            IsByRef: false)
+                                    ],
+                                    CallableKind: VbaCallableKind.Sub),
+                                GlobalExposure: ReferenceDefinitionGlobalExposure.LibraryGlobal)
+                        ])));
+
+            await using var process = await LanguageServerProcessHarness.StartAsync(
+                referenceCatalogCacheRoot: cacheRoot);
+            await process.InitializeAsync();
+            var uri = ToFileUri(Path.Combine(
+                projectRoot,
+                "src",
+                "Book1",
+                "Worker.bas"));
+            var text = string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Public Sub Run()",
+                "    Dim result As Long",
+                "    result = Work(Key:=1&)",
+                "End Sub"
+            ]);
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+            await process.WaitForLogTextAsync(
+                "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
+
+            var checkpoint = process.TranscriptCheckpoint;
+            await process.SendNotificationAsync(
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new { uri, version = 2 },
+                    contentChanges = new[] { new { text } }
+                });
+            var notification = await process.WaitForMessageAsync(
+                checkpoint,
+                message => message.TryGetProperty("method", out var method)
+                    && method.GetString() == "textDocument/publishDiagnostics"
+                    && message.GetProperty("params").GetProperty("uri").GetString() == uri);
+            var diagnostic = Assert.Single(notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+                candidate => candidate.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList");
+
+            Assert.Contains(
+                "call context: expected Function or Property Get, found Sub.",
+                diagnostic.GetProperty("message").GetString(),
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                "named arguments are not accepted",
+                diagnostic.GetProperty("message").GetString(),
+                StringComparison.Ordinal);
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_keeps_a_writable_catalog_property_accessor_kind_indeterminate()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-catalog-property-accessor-").FullName;
+        var cacheRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-catalog-property-accessor-cache-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(projectRoot, "Generated Library");
+            new VbaProjectReferenceCatalogPersistentStore(cacheRoot).Save(
+                new VbaProjectReferenceCatalogPersistentEntry(
+                    CreateGeneratedReferenceCatalogIdentity("Generated Library"),
+                    new VbaProjectReferenceCatalog(
+                        "Generated Library",
+                        ["Generated"],
+                        [
+                            new VbaProjectReferenceDefinition(
+                                "Generated Library",
+                                "GeneratedType",
+                                VbaSourceDefinitionKind.Class),
+                            new VbaProjectReferenceDefinition(
+                                "Generated Library",
+                                "Item",
+                                VbaSourceDefinitionKind.Property,
+                                Signature: new VbaCallableSignature(
+                                    "Property Item(Index As Long)",
+                                    [
+                                        new VbaCallableParameter(
+                                            "Index",
+                                            TypeReference: new VbaTypeReference("Long"),
+                                            IsByRef: false)
+                                    ],
+                                    CallableKind: VbaCallableKind.Property,
+                                    SupportsNamedArguments: true),
+                                ParentTypeName: "GeneratedType",
+                                TypeReference: new VbaTypeReference("Object"),
+                                PropertyAccess: VbaPropertyAccess.Writable)
+                        ])));
+
+            await using var process = await LanguageServerProcessHarness.StartAsync(
+                referenceCatalogCacheRoot: cacheRoot);
+            await process.InitializeAsync();
+            var uri = ToFileUri(Path.Combine(
+                projectRoot,
+                "src",
+                "Book1",
+                "Worker.bas"));
+            var text = string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Public Sub Run()",
+                "    Dim target As GeneratedType",
+                "    Dim other As Object",
+                "    Set target.Item(1&) = other",
+                "End Sub"
+            ]);
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+            await process.WaitForLogTextAsync(
+                "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
+
+            var checkpoint = process.TranscriptCheckpoint;
+            await process.SendNotificationAsync(
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new { uri, version = 2 },
+                    contentChanges = new[] { new { text } }
+                });
+            var notification = await process.WaitForMessageAsync(
+                checkpoint,
+                message => message.TryGetProperty("method", out var method)
+                    && method.GetString() == "textDocument/publishDiagnostics"
+                    && message.GetProperty("params").GetProperty("uri").GetString() == uri);
+
+            Assert.DoesNotContain(
+                notification
+                    .GetProperty("params")
+                    .GetProperty("diagnostics")
+                    .EnumerateArray(),
+                candidate => candidate.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList");
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_uses_a_parameter_ordinal_when_catalog_name_metadata_is_empty()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-catalog-empty-parameter-name-").FullName;
+        var cacheRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-catalog-empty-parameter-name-cache-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(projectRoot, "Generated Library");
+            new VbaProjectReferenceCatalogPersistentStore(cacheRoot).Save(
+                new VbaProjectReferenceCatalogPersistentEntry(
+                    CreateGeneratedReferenceCatalogIdentity("Generated Library"),
+                    new VbaProjectReferenceCatalog(
+                        "Generated Library",
+                        ["Generated"],
+                        [
+                            new VbaProjectReferenceDefinition(
+                                "Generated Library",
+                                "Work",
+                                VbaSourceDefinitionKind.Procedure,
+                                Signature: new VbaCallableSignature(
+                                    "Sub Work(ByVal Arg1 As Long)",
+                                    [
+                                        new VbaCallableParameter(
+                                            "",
+                                            DisplayLabel: "ByVal Arg1 As Long",
+                                            TypeReference: new VbaTypeReference("Long"),
+                                            IsByRef: false)
+                                    ],
+                                    CallableKind: VbaCallableKind.Sub,
+                                    SupportsNamedArguments: true),
+                                GlobalExposure: ReferenceDefinitionGlobalExposure.LibraryGlobal)
+                        ])));
+
+            await using var process = await LanguageServerProcessHarness.StartAsync(
+                referenceCatalogCacheRoot: cacheRoot);
+            await process.InitializeAsync();
+            var uri = ToFileUri(Path.Combine(
+                projectRoot,
+                "src",
+                "Book1",
+                "Worker.bas"));
+            var text = string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Public Sub Run()",
+                "    Work",
+                "End Sub"
+            ]);
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+            await process.WaitForLogTextAsync(
+                "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
+
+            var checkpoint = process.TranscriptCheckpoint;
+            await process.SendNotificationAsync(
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new { uri, version = 2 },
+                    contentChanges = new[] { new { text } }
+                });
+            var notification = await process.WaitForMessageAsync(
+                checkpoint,
+                message => message.TryGetProperty("method", out var method)
+                    && method.GetString() == "textDocument/publishDiagnostics"
+                    && message.GetProperty("params").GetProperty("uri").GetString() == uri);
+            var diagnostic = Assert.Single(notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+                candidate => candidate.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList");
+
+            Assert.Contains(
+                "Mismatches: parameter 1: required argument is missing.",
+                diagnostic.GetProperty("message").GetString(),
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                "parameter ''",
+                diagnostic.GetProperty("message").GetString(),
+                StringComparison.Ordinal);
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_keeps_a_named_call_indeterminate_when_catalog_parameter_name_metadata_is_empty()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-catalog-unknown-parameter-name-").FullName;
+        var cacheRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-catalog-unknown-parameter-name-cache-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(projectRoot, "Generated Library");
+            new VbaProjectReferenceCatalogPersistentStore(cacheRoot).Save(
+                new VbaProjectReferenceCatalogPersistentEntry(
+                    CreateGeneratedReferenceCatalogIdentity("Generated Library"),
+                    new VbaProjectReferenceCatalog(
+                        "Generated Library",
+                        ["Generated"],
+                        [
+                            new VbaProjectReferenceDefinition(
+                                "Generated Library",
+                                "Work",
+                                VbaSourceDefinitionKind.Procedure,
+                                Signature: new VbaCallableSignature(
+                                    "Sub Work(ByVal Arg1 As Long)",
+                                    [
+                                        new VbaCallableParameter(
+                                            "",
+                                            DisplayLabel: "ByVal Arg1 As Long",
+                                            TypeReference: new VbaTypeReference("Long"),
+                                            IsByRef: false)
+                                    ],
+                                    CallableKind: VbaCallableKind.Sub,
+                                    SupportsNamedArguments: true),
+                                GlobalExposure: ReferenceDefinitionGlobalExposure.LibraryGlobal)
+                        ])));
+
+            await using var process = await LanguageServerProcessHarness.StartAsync(
+                referenceCatalogCacheRoot: cacheRoot);
+            await process.InitializeAsync();
+            var uri = ToFileUri(Path.Combine(
+                projectRoot,
+                "src",
+                "Book1",
+                "Worker.bas"));
+            var text = string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Public Sub Run()",
+                "    Work Value:=1&",
+                "End Sub"
+            ]);
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+            await process.WaitForLogTextAsync(
+                "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
+
+            var checkpoint = process.TranscriptCheckpoint;
+            await process.SendNotificationAsync(
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new { uri, version = 2 },
+                    contentChanges = new[] { new { text } }
+                });
+            var notification = await process.WaitForMessageAsync(
+                checkpoint,
+                message => message.TryGetProperty("method", out var method)
+                    && method.GetString() == "textDocument/publishDiagnostics"
+                    && message.GetProperty("params").GetProperty("uri").GetString() == uri);
+
+            Assert.DoesNotContain(
+                notification
+                    .GetProperty("params")
+                    .GetProperty("diagnostics")
+                    .EnumerateArray(),
+                candidate => candidate.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList");
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_does_not_offer_an_empty_catalog_parameter_name()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-catalog-empty-parameter-completion-").FullName;
+        var cacheRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-catalog-empty-parameter-completion-cache-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(projectRoot, "Generated Library");
+            new VbaProjectReferenceCatalogPersistentStore(cacheRoot).Save(
+                new VbaProjectReferenceCatalogPersistentEntry(
+                    CreateGeneratedReferenceCatalogIdentity("Generated Library"),
+                    new VbaProjectReferenceCatalog(
+                        "Generated Library",
+                        ["Generated"],
+                        [
+                            new VbaProjectReferenceDefinition(
+                                "Generated Library",
+                                "Work",
+                                VbaSourceDefinitionKind.Procedure,
+                                Signature: new VbaCallableSignature(
+                                    "Sub Work(ByVal Arg1 As Long)",
+                                    [
+                                        new VbaCallableParameter(
+                                            "",
+                                            DisplayLabel: "ByVal Arg1 As Long",
+                                            TypeReference: new VbaTypeReference("Long"),
+                                            IsByRef: false)
+                                    ],
+                                    CallableKind: VbaCallableKind.Sub,
+                                    SupportsNamedArguments: true),
+                                GlobalExposure: ReferenceDefinitionGlobalExposure.LibraryGlobal)
+                        ])));
+
+            await using var process = await LanguageServerProcessHarness.StartAsync(
+                referenceCatalogCacheRoot: cacheRoot);
+            await process.InitializeAsync();
+            var uri = ToFileUri(Path.Combine(
+                projectRoot,
+                "src",
+                "Book1",
+                "Worker.bas"));
+            var text = string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Public Sub Run()",
+                "    Work ",
+                "End Sub"
+            ]);
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+            await process.WaitForLogTextAsync(
+                "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
+
+            var completion = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/completion",
+                uri,
+                text,
+                "    Work ",
+                "    Work ".Length);
+            Assert.DoesNotContain(
+                completion.GetProperty("result").EnumerateArray(),
+                item => item.GetProperty("kind").GetInt32() == 5
+                    && string.IsNullOrWhiteSpace(
+                        item.GetProperty("label").GetString()));
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_preserves_the_owner_of_a_catalog_parameter_type()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-catalog-parameter-type-owner-").FullName;
+        var cacheRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-catalog-parameter-type-owner-cache-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(projectRoot, "Generated Library");
+            new VbaProjectReferenceCatalogPersistentStore(cacheRoot).Save(
+                new VbaProjectReferenceCatalogPersistentEntry(
+                    CreateGeneratedReferenceCatalogIdentity("Generated Library"),
+                    new VbaProjectReferenceCatalog(
+                        "Generated Library",
+                        ["Generated"],
+                        [
+                            new VbaProjectReferenceDefinition(
+                                "Generated Library",
+                                "Payload",
+                                VbaSourceDefinitionKind.Class),
+                            new VbaProjectReferenceDefinition(
+                                "Generated Library",
+                                "Work",
+                                VbaSourceDefinitionKind.Procedure,
+                                Signature: new VbaCallableSignature(
+                                    "Sub Work(ByRef Value As Payload)",
+                                    [
+                                        new VbaCallableParameter(
+                                            "Value",
+                                            TypeReference: new VbaTypeReference("Payload"),
+                                            IsByRef: true)
+                                    ],
+                                    CallableKind: VbaCallableKind.Sub,
+                                    SupportsNamedArguments: true),
+                                GlobalExposure: ReferenceDefinitionGlobalExposure.LibraryGlobal)
+                        ])));
+
+            await using var process = await LanguageServerProcessHarness.StartAsync(
+                referenceCatalogCacheRoot: cacheRoot);
+            await process.InitializeAsync();
+            var payloadUri = ToFileUri(Path.Combine(
+                projectRoot,
+                "src",
+                "Book1",
+                "Payload.cls"));
+            var payloadText = string.Join('\n', [
+                "VERSION 1.0 CLASS",
+                "Attribute VB_Name = \"Payload\""
+            ]);
+            var callerUri = ToFileUri(Path.Combine(
+                projectRoot,
+                "src",
+                "Book1",
+                "Worker.bas"));
+            var callerText = string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Public Sub Run()",
+                "    Dim value As Payload",
+                "    Work value",
+                "End Sub"
+            ]);
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(payloadUri, payloadText));
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(callerUri, callerText));
+            await process.WaitForLogTextAsync(
+                "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
+
+            var checkpoint = process.TranscriptCheckpoint;
+            await process.SendNotificationAsync(
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new { uri = callerUri, version = 2 },
+                    contentChanges = new[] { new { text = callerText } }
+                });
+            var notification = await process.WaitForMessageAsync(
+                checkpoint,
+                message => message.TryGetProperty("method", out var method)
+                    && method.GetString() == "textDocument/publishDiagnostics"
+                    && message.GetProperty("params").GetProperty("uri").GetString()
+                        == callerUri);
+            var diagnostic = Assert.Single(notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+                candidate => candidate.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList");
+
+            Assert.Contains(
+                "argument 1 for parameter 'Value' ByRef type: expected Generated.Payload, found Payload.",
+                diagnostic.GetProperty("message").GetString(),
+                StringComparison.Ordinal);
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_preserves_the_owner_of_a_qualified_catalog_parameter_type()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-qualified-catalog-type-owner-").FullName;
+        var cacheRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-qualified-catalog-type-owner-cache-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(
+                projectRoot,
+                "Second Library",
+                "First Library");
+            var store = new VbaProjectReferenceCatalogPersistentStore(cacheRoot);
+            store.Save(new VbaProjectReferenceCatalogPersistentEntry(
+                CreateGeneratedReferenceCatalogIdentity("Second Library"),
+                new VbaProjectReferenceCatalog(
+                    "Second Library",
+                    ["Second", "Shared"],
+                    [
+                        new VbaProjectReferenceDefinition(
+                            "Second Library",
+                            "Payload",
+                            VbaSourceDefinitionKind.Class)
+                    ])));
+            store.Save(new VbaProjectReferenceCatalogPersistentEntry(
+                CreateGeneratedReferenceCatalogIdentity("First Library"),
+                new VbaProjectReferenceCatalog(
+                    "First Library",
+                    ["First", "Shared"],
+                    [
+                        new VbaProjectReferenceDefinition(
+                            "First Library",
+                            "Payload",
+                            VbaSourceDefinitionKind.Class),
+                        new VbaProjectReferenceDefinition(
+                            "First Library",
+                            "Work",
+                            VbaSourceDefinitionKind.Procedure,
+                            Signature: new VbaCallableSignature(
+                                "Sub Work(ByRef Value As Shared.Payload)",
+                                [
+                                    new VbaCallableParameter(
+                                        "Value",
+                                        TypeReference: new VbaTypeReference(
+                                            "Payload",
+                                            "Shared"),
+                                        IsByRef: true)
+                                ],
+                                CallableKind: VbaCallableKind.Sub,
+                                SupportsNamedArguments: true),
+                            GlobalExposure:
+                                ReferenceDefinitionGlobalExposure.LibraryGlobal)
+                    ])));
+
+            await using var process = await LanguageServerProcessHarness.StartAsync(
+                referenceCatalogCacheRoot: cacheRoot);
+            await process.InitializeAsync(new
+            {
+                textDocument = new
+                {
+                    publishDiagnostics = new
+                    {
+                        relatedInformation = true
+                    }
+                }
+            });
+            var uri = ToFileUri(Path.Combine(
+                projectRoot,
+                "src",
+                "Book1",
+                "Worker.bas"));
+            var text = string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Public Sub Run()",
+                "    Dim value As Second.Payload",
+                "    Work value",
+                "End Sub"
+            ]);
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+            await process.WaitForLogTextAsync(
+                "reference 'First Library' source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
+
+            var checkpoint = process.TranscriptCheckpoint;
+            await process.SendNotificationAsync(
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new { uri, version = 2 },
+                    contentChanges = new[] { new { text } }
+                });
+            var notification = await process.WaitForMessageAsync(
+                checkpoint,
+                message => message.TryGetProperty("method", out var method)
+                    && method.GetString() == "textDocument/publishDiagnostics"
+                    && message.GetProperty("params").GetProperty("uri").GetString() == uri);
+            var diagnostic = Assert.Single(notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+                candidate => candidate.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList");
+
+            Assert.Contains(
+                "argument 1 for parameter 'Value' ByRef type: expected First.Payload, found Second.Payload.",
+                diagnostic.GetProperty("message").GetString(),
+                StringComparison.Ordinal);
+
+            await process.ShutdownAsync(3);
         }
         finally
         {
@@ -7389,6 +15911,64 @@ public sealed class LanguageServerProcessTests
                 .GetInt32());
 
         await process.ShutdownAsync(10);
+    }
+
+    [Fact]
+    public async Task Server_renames_every_physical_conditional_callable_declaration_and_reference()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalRename.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalRename\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function BuildValue() As String",
+            "End Function",
+            "#Else",
+            "Public Function buildvalue() As String",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Debug.Print BuildValue()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            uri,
+            text,
+            "Public Function BuildValue",
+            "Public Function ".Length,
+            new { newName = "CreateValue" });
+        Assert.True(
+            rename.TryGetProperty("result", out var result),
+            rename.ToString());
+        var edits = result
+            .GetProperty("changes")
+            .GetProperty(uri)
+            .EnumerateArray()
+            .ToArray();
+
+        Assert.Equal(
+            [2, 5, 9],
+            edits.Select(edit => edit
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32()));
+        Assert.All(
+            edits,
+            edit => Assert.Equal(
+                "CreateValue",
+                edit.GetProperty("newText").GetString()));
+
+        await process.ShutdownAsync(3);
     }
 
     [Fact]

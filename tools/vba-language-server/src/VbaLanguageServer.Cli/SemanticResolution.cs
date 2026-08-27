@@ -33,7 +33,10 @@ internal sealed class VbaSemanticResolution
             resolutionPolicy);
         typeResolution = new VbaTypeResolution(nameResolution);
         memberChainResolution = new VbaMemberChainResolution(typeResolution);
-        callSiteResolution = new VbaCallSiteResolution(nameResolution, memberChainResolution);
+        callSiteResolution = new VbaCallSiteResolution(
+            nameResolution,
+            memberChainResolution,
+            resolutionPolicy);
     }
 
     /// <summary>
@@ -91,6 +94,21 @@ internal sealed class VbaSemanticResolution
             ResultTargetName = null,
             SetterPropertyName = null
         };
+
+        if (TryGetConditionalCallResultMemberCompletionDefinitions(
+                currentDocument,
+                syntaxTree,
+                line,
+                character,
+                out var conditionalCallResultMembers))
+        {
+            return Complete(
+                CreateDefinitionCandidates(FilterDefinitions(
+                    conditionalCallResultMembers,
+                    expectation,
+                    qualifiedCompletionContext)),
+                positionSyntax.CompletionReplacementRange);
+        }
 
         if (IsMemberCompletionPosition(
                 currentDocument,
@@ -265,6 +283,59 @@ internal sealed class VbaSemanticResolution
             positionSyntax.CompletionReplacementRange);
     }
 
+    private bool TryGetConditionalCallResultMemberCompletionDefinitions(
+        VbaSourceDocument currentDocument,
+        VbaSyntaxTree syntaxTree,
+        int line,
+        int character,
+        out IReadOnlyList<VbaSourceDefinition> definitions)
+    {
+        definitions = [];
+        if (line < 0
+            || line >= syntaxTree.SourceText.Lines.Count
+            || character < 0
+            || character > syntaxTree.SourceText.Lines[line].Text.Length)
+        {
+            return false;
+        }
+
+        var positionOffset = syntaxTree.SourceText.Lines[line].StartOffset
+            + character;
+        var argumentList = syntaxTree.Module.ArgumentLists
+            .Where(candidate => candidate.Form == VbaCallSyntaxForm.Parenthesized)
+            .Where(candidate => candidate.CalleeRange is not null)
+            .Where(candidate => candidate.Range.End.Offset < positionOffset)
+            .Where(candidate => candidate.Range.End.Offset
+                < syntaxTree.SourceText.Text.Length)
+            .Where(candidate => syntaxTree.SourceText.Text[
+                candidate.Range.End.Offset] == '.')
+                .Where(candidate => syntaxTree.SourceText.Text[
+                    (candidate.Range.End.Offset + 1)..positionOffset]
+                .All(VbaSourceText.IsIdentifierCharacter))
+            .OrderByDescending(candidate => candidate.Range.End.Offset)
+            .FirstOrDefault();
+        if (argumentList is null)
+        {
+            return false;
+        }
+
+        var compatibility = AnalyzeCompleteCall(
+            currentDocument.Uri,
+            argumentList);
+        if (compatibility is not null
+            && typeResolution.TryResolveConditionalCallResultType(
+                currentDocument,
+                compatibility,
+                out var resultType))
+        {
+            definitions = memberChainResolution.GetMembersOfType(
+                currentDocument,
+                resultType);
+        }
+
+        return true;
+    }
+
     /// <summary>
     /// Resolves the definition referenced at a source position.
     /// </summary>
@@ -279,6 +350,17 @@ internal sealed class VbaSemanticResolution
         string uri,
         int line,
         int character)
+        => ResolveSourceTarget(
+            uri,
+            line,
+            character,
+            retargetConditionalPropertyAccessor: true);
+
+    private VbaResolvedNameTarget? ResolveSourceTarget(
+        string uri,
+        int line,
+        int character,
+        bool retargetConditionalPropertyAccessor)
     {
         var currentDocument = definitionCandidates.FindDocument(uri);
         if (currentDocument is null)
@@ -354,12 +436,14 @@ internal sealed class VbaSemanticResolution
             var memberTarget = memberDefinition is null
                 ? null
                 : resolutionPolicy.CreateNameTarget(memberDefinition);
-            return RetargetConditionalPropertyAccessor(
-                currentDocument,
-                propertyUsageExpectation,
-                isCurrentResultTarget,
-                requestedWriteAccessorKind,
-                memberTarget);
+            return retargetConditionalPropertyAccessor
+                ? RetargetConditionalPropertyAccessor(
+                    currentDocument,
+                    propertyUsageExpectation,
+                    isCurrentResultTarget,
+                    requestedWriteAccessorKind,
+                    memberTarget)
+                : memberTarget;
         }
 
         var outcome = qualifier is null
@@ -374,12 +458,14 @@ internal sealed class VbaSemanticResolution
                 qualifier,
                 identifier.Name,
                 definition => !nameResolution.IsTypeDefinition(definition));
-        return RetargetConditionalPropertyAccessor(
-            currentDocument,
-            propertyUsageExpectation,
-            isCurrentResultTarget,
-            requestedWriteAccessorKind,
-            outcome.Target);
+        return retargetConditionalPropertyAccessor
+            ? RetargetConditionalPropertyAccessor(
+                currentDocument,
+                propertyUsageExpectation,
+                isCurrentResultTarget,
+                requestedWriteAccessorKind,
+                outcome.Target)
+            : outcome.Target;
     }
 
     private static VbaResolvedNameTarget? RetargetConditionalPropertyAccessor(
@@ -518,7 +604,11 @@ internal sealed class VbaSemanticResolution
     /// <param name="line">The zero-based line.</param>
     /// <param name="character">The zero-based character.</param>
     /// <returns>The signature help result, or null when no callable resolves.</returns>
-    public VbaSignatureHelp? GetSignatureHelp(string uri, int line, int character)
+    public VbaSignatureHelp? GetSignatureHelp(
+        string uri,
+        int line,
+        int character,
+        VbaSignaturePresentationIdentity? retriggerIdentity = null)
     {
         var currentDocument = definitionCandidates.FindDocument(uri);
         if (currentDocument is null)
@@ -527,7 +617,83 @@ internal sealed class VbaSemanticResolution
         }
 
         var positionSyntax = GetSyntaxTree(currentDocument).GetPositionSyntax(line, character);
-        return callSiteResolution.GetSignatureHelp(currentDocument, line, character, positionSyntax);
+        return callSiteResolution.GetSignatureHelp(
+            currentDocument,
+            line,
+            character,
+            positionSyntax,
+            retriggerIdentity);
+    }
+
+    internal VbaConditionalCallCompatibility? AnalyzeCompleteCall(
+        string uri,
+        VbaArgumentListSyntax argumentList)
+    {
+        var currentDocument = definitionCandidates.FindDocument(uri);
+        var calleeRange = argumentList.CalleeRange;
+        if (currentDocument is null || calleeRange is null)
+        {
+            return null;
+        }
+
+        if (IsCallableResultAssignment(currentDocument, argumentList, calleeRange))
+        {
+            return null;
+        }
+
+        VbaResolvedNameTarget? target;
+        if (!callSiteResolution.TryResolveRaiseEventTarget(
+                currentDocument,
+                argumentList,
+                out target))
+        {
+            target = ResolveSourceTarget(
+                uri,
+                calleeRange.End.Line,
+                Math.Max(
+                    calleeRange.Start.Character,
+                    calleeRange.End.Character - 1),
+                retargetConditionalPropertyAccessor: false);
+        }
+
+        if (target is null
+            || argumentList.Form == VbaCallSyntaxForm.PropertyAssignment
+                && !target.PhysicalDefinitions.Any(definition =>
+                    definition.Kind == VbaSourceDefinitionKind.Property))
+        {
+            return null;
+        }
+
+        return callSiteResolution.AnalyzeCompleteCall(
+            currentDocument,
+            argumentList,
+            target);
+    }
+
+    private static bool IsCallableResultAssignment(
+        VbaSourceDocument currentDocument,
+        VbaArgumentListSyntax argumentList,
+        VbaSyntaxRange calleeRange)
+    {
+        if (argumentList.Form != VbaCallSyntaxForm.PropertyAssignment
+            || argumentList.Callee.Contains('.', StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var syntaxTree = currentDocument.SyntaxTree
+            ?? VbaSyntaxTree.ParseModule(currentDocument.Uri, currentDocument.Text);
+        return syntaxTree.Module.CallableDeclarations.Any(declaration =>
+            declaration.BlockRange.Start.Offset <= calleeRange.Start.Offset
+            && calleeRange.End.Offset <= declaration.BlockRange.End.Offset
+            && declaration.Name.Equals(
+                argumentList.Callee,
+                StringComparison.OrdinalIgnoreCase)
+            && (declaration.PropertyAccessorKind == VbaPropertyAccessorKind.Get
+                || declaration.Kind == VbaDeclarationKind.Procedure
+                    && declaration.DeclarationKeyword?.Equals(
+                        "Function",
+                        StringComparison.OrdinalIgnoreCase) == true));
     }
 
     /// <summary>
@@ -782,7 +948,9 @@ internal sealed class VbaSemanticResolution
                 parameter.Name,
                 VbaCompletionCandidateKind.NamedArgument,
                 InsertText: $"{parameter.Name}:=",
-                FilterText: parameter.Name)));
+                FilterText: parameter.Name,
+                IsConditionalFamily: availability.IsConditionalNamedParameter(
+                    parameter.Name))));
         return candidates;
     }
 

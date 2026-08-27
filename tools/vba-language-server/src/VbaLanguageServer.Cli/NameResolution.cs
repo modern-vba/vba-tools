@@ -257,6 +257,28 @@ public sealed class VbaNameResolutionService
             definition => !resolutionPolicy.IsTypeDefinition(definition),
             fallbackToUnfiltered: false);
 
+    internal VbaNameResolutionOutcome ResolveCurrentDocumentEventOutcome(
+        string uri,
+        string identifier)
+    {
+        var currentDocument = candidates.FindDocument(uri);
+        if (currentDocument is null)
+        {
+            return VbaNameResolutionOutcome.AnalysisIncomplete;
+        }
+
+        return resolutionPolicy.ResolveRankedCandidatesOutcome(
+            currentDocument.Definitions
+                .Where(definition => definition.Kind == VbaSourceDefinitionKind.Event
+                    && definition.Name.Equals(
+                        identifier,
+                        StringComparison.OrdinalIgnoreCase))
+                .Select(definition => new VbaRankedDefinition(
+                    definition,
+                    VbaResolutionPolicy.CurrentModuleRank)),
+            candidates.ReferenceSelection);
+    }
+
     internal VbaSourceDefinition? ResolvePreferred(
         string uri,
         VbaPosition position,
@@ -557,6 +579,9 @@ public sealed class VbaNameResolutionService
             this.candidates.ReferenceSelection);
     }
 
+    internal VbaSourceDocument? FindDocument(string uri)
+        => candidates.FindDocument(uri);
+
     internal VbaSourceDefinition? ResolveTypeDefinition(
         VbaSourceDocument currentDocument,
         VbaTypeReference typeReference)
@@ -598,13 +623,31 @@ public sealed class VbaNameResolutionService
         string owningReferenceName,
         VbaTypeReference typeReference)
     {
-        var definitions = string.IsNullOrEmpty(typeReference.Qualifier)
-            ? candidates.GetReferenceCandidates(typeReference.Name)
-                .Where(candidate => SameName(candidate.ModuleName, owningReferenceName))
-                .Select(candidate => candidate.Definition)
-            : candidates.GetQualifiedReferenceDefinitions(
+        IEnumerable<VbaSourceDefinition> definitions;
+        if (string.IsNullOrEmpty(typeReference.Qualifier))
+        {
+            definitions = candidates.GetReferenceCandidates(typeReference.Name)
+                .Where(candidate => VbaProjectReferenceName.AreEquivalent(
+                    candidate.ModuleName,
+                    owningReferenceName))
+                .Select(candidate => candidate.Definition);
+        }
+        else
+        {
+            definitions = candidates.GetQualifiedReferenceDefinitions(
                 typeReference.Qualifier,
                 typeReference.Name);
+            if (candidates.GetCanonicalReferenceQualifier(
+                    owningReferenceName,
+                    typeReference.Qualifier) is not null)
+            {
+                definitions = definitions.Where(definition =>
+                    VbaProjectReferenceName.AreEquivalent(
+                        definition.Identity.ReferenceName ?? definition.ModuleName,
+                        owningReferenceName));
+            }
+        }
+
         return ResolveReferenceCandidates(definitions
             .Where(resolutionPolicy.IsTypeDefinition)
             .Where(definition => definition.ParentTypeName is null));
@@ -701,13 +744,28 @@ public sealed class VbaNameResolutionService
         VbaResolvedType resolvedType,
         string memberName,
         VbaSourceDefinitionKind? requiredKind = null)
+        => ResolveMemberOutcome(
+            currentDocument,
+            resolvedType,
+            memberName,
+            requiredKind).Target?.SelectedDefinition;
+
+    internal VbaNameResolutionOutcome ResolveMemberOutcome(
+        VbaSourceDocument currentDocument,
+        VbaResolvedType resolvedType,
+        string memberName,
+        VbaSourceDefinitionKind? requiredKind = null)
     {
         var matchingCandidates = GetMemberCandidates(currentDocument, resolvedType)
             .Where(candidate => SameName(candidate.Name, memberName))
             .Where(candidate => requiredKind is null || candidate.Definition.Kind == requiredKind)
             .Select(candidate => candidate.Definition)
             .ToArray();
-        return ResolveMemberCandidateGroup(matchingCandidates);
+        return resolutionPolicy.ResolveRankedCandidatesOutcome(
+            matchingCandidates.Select(definition => new VbaRankedDefinition(
+                definition,
+                VbaResolutionPolicy.CurrentModuleRank)),
+            candidates.ReferenceSelection);
     }
 
     internal VbaSourceDefinition? ResolveMember(
@@ -753,6 +811,14 @@ public sealed class VbaNameResolutionService
         => definition.Identity.Origin != VbaDefinitionOrigin.ProjectReference
             ? definition.ModuleName
             : candidates.GetCanonicalReferenceQualifier(definition.ModuleName, qualifier);
+
+    internal string? GetPreferredReferenceQualifierName(VbaSourceDefinition definition)
+        => definition.Identity.Origin == VbaDefinitionOrigin.ProjectReference
+            ? candidates.GetCanonicalReferenceQualifier(definition.ModuleName)
+            : null;
+
+    internal bool IsReferenceQualifierAmbiguous(string qualifier)
+        => candidates.IsReferenceQualifierAmbiguous(qualifier);
 
     private VbaSourceDefinition? ResolveReferenceTypeDefinition(string qualifier, string typeName)
         => ResolveReferenceTypeDefinitionOutcome(
@@ -1042,6 +1108,24 @@ internal sealed class VbaNameCandidateInventory
                 referenceName))
             .Select(candidate => candidate.Qualifier)
             .FirstOrDefault(candidate => candidate.Equals(qualifier, StringComparison.OrdinalIgnoreCase));
+
+    public string? GetCanonicalReferenceQualifier(string referenceName)
+        => activeReferenceQualifiers
+            .Where(candidate => VbaProjectReferenceName.AreEquivalent(
+                candidate.ReferenceName,
+                referenceName))
+            .Select(candidate => candidate.Qualifier)
+            .FirstOrDefault();
+
+    public bool IsReferenceQualifierAmbiguous(string qualifier)
+        => activeReferenceQualifiers
+            .Where(candidate => candidate.Qualifier.Equals(
+                qualifier,
+                StringComparison.OrdinalIgnoreCase))
+            .Select(candidate => candidate.ReferenceName)
+            .Distinct(VbaProjectReferenceName.Comparer)
+            .Skip(1)
+            .Any();
 }
 
 /// <summary>

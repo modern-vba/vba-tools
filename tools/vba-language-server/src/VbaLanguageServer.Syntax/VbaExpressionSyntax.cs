@@ -85,17 +85,21 @@ public sealed record VbaArgumentSyntax(
     VbaSyntaxRange? ValueRange = null);
 
 /// <summary>
-/// Represents a parenthesized or statement-form argument list at a call site.
+/// Represents an argument list projected from a complete call site.
 /// </summary>
 /// <param name="Callee">The callable expression text preceding the arguments.</param>
 /// <param name="Arguments">The ordered call arguments.</param>
 /// <param name="Range">The source range covered by the argument list.</param>
 /// <param name="IsContinued">Whether the argument list spans physical lines with continuation markers.</param>
+/// <param name="IsIncomplete">Whether the argument list contains an unfinished expression.</param>
 public sealed record VbaArgumentListSyntax(
     string Callee,
     IReadOnlyList<VbaArgumentSyntax> Arguments,
     VbaSyntaxRange Range,
-    bool IsContinued = false)
+    bool IsContinued = false,
+    VbaSyntaxRange? CalleeRange = null,
+    VbaCallSyntaxForm Form = VbaCallSyntaxForm.Parenthesized,
+    bool IsIncomplete = false)
 {
     /// <summary>
     /// Finds the active argument index for a source position inside the argument list.

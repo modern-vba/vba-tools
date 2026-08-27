@@ -75,11 +75,10 @@ internal sealed class VbaTypeResolution
 
             foreach (var memberName in parts)
             {
-                var member = ResolveMember(currentDocument, resolvedType, memberName);
-                if (member is null
-                    || !TryResolveDefinitionTypeReference(
+                if (!TryResolveMemberResultType(
                         currentDocument,
-                        member,
+                        resolvedType,
+                        memberName,
                         out resolvedType))
                 {
                     return false;
@@ -93,11 +92,10 @@ internal sealed class VbaTypeResolution
         {
             for (var index = 2; index < parts.Count; index++)
             {
-                var member = ResolveMember(currentDocument, resolvedType, parts[index]);
-                if (member is null
-                    || !TryResolveDefinitionTypeReference(
+                if (!TryResolveMemberResultType(
                         currentDocument,
-                        member,
+                        resolvedType,
+                        parts[index],
                         out resolvedType))
                 {
                     return false;
@@ -107,37 +105,51 @@ internal sealed class VbaTypeResolution
             return true;
         }
 
-        var firstDefinition = nameResolution.ResolveValue(
+        var firstOutcome = nameResolution.ResolveValueOutcome(
             currentDocument.Uri,
             new VbaPosition(line, character),
             qualifier: null,
             parts[0]);
-        if (firstDefinition?.TypeReference is not null)
+        var firstTarget = firstOutcome.Target;
+        if (firstTarget?.IsConditionalFamily == true)
         {
-            if (!TryResolveDefinitionTypeReference(
-                currentDocument,
-                firstDefinition,
-                out resolvedType))
+            if (!TryResolveConditionalZeroArgumentResultType(
+                    currentDocument,
+                    firstTarget,
+                    out resolvedType))
             {
                 return false;
             }
         }
-        else if (firstDefinition is not null && nameResolution.IsTypeDefinition(firstDefinition))
-        {
-            resolvedType = ToResolvedType(firstDefinition);
-        }
         else
         {
-            return false;
+            var firstDefinition = firstTarget?.SelectedDefinition;
+            if (firstDefinition?.TypeReference is not null)
+            {
+                if (!TryResolveDefinitionTypeReference(
+                    currentDocument,
+                    firstDefinition,
+                    out resolvedType))
+                {
+                    return false;
+                }
+            }
+            else if (firstDefinition is not null && nameResolution.IsTypeDefinition(firstDefinition))
+            {
+                resolvedType = ToResolvedType(firstDefinition);
+            }
+            else
+            {
+                return false;
+            }
         }
 
         for (var index = 1; index < parts.Count; index++)
         {
-            var member = ResolveMember(currentDocument, resolvedType, parts[index]);
-            if (member is null
-                || !TryResolveDefinitionTypeReference(
+            if (!TryResolveMemberResultType(
                     currentDocument,
-                    member,
+                    resolvedType,
+                    parts[index],
                     out resolvedType))
             {
                 return false;
@@ -145,6 +157,225 @@ internal sealed class VbaTypeResolution
         }
 
         return true;
+    }
+
+    private bool TryResolveMemberResultType(
+        VbaSourceDocument currentDocument,
+        VbaResolvedType receiverType,
+        string memberName,
+        out VbaResolvedType resolvedType)
+    {
+        resolvedType = default!;
+        var target = nameResolution.ResolveMemberOutcome(
+            currentDocument,
+            receiverType,
+            memberName).Target;
+        if (target is null)
+        {
+            return false;
+        }
+
+        if (!target.IsConditionalFamily)
+        {
+            return TryResolveDefinitionTypeReference(
+                currentDocument,
+                target.SelectedDefinition,
+                out resolvedType);
+        }
+
+        if (target.PhysicalDefinitions.Any(definition =>
+                definition.Signature is not null))
+        {
+            return TryResolveConditionalZeroArgumentResultType(
+                currentDocument,
+                target,
+                out resolvedType);
+        }
+
+        VbaResolvedType? converged = null;
+        foreach (var definition in target.PhysicalDefinitions)
+        {
+            if (!TryResolveDefinitionTypeReference(
+                    currentDocument,
+                    definition,
+                    out var variantType)
+                || converged is not null
+                    && !HasSameCanonicalIdentity(converged, variantType))
+            {
+                return false;
+            }
+
+            converged = variantType;
+        }
+
+        if (converged is null)
+        {
+            return false;
+        }
+
+        resolvedType = converged;
+        return true;
+    }
+
+    private bool TryResolveConditionalZeroArgumentResultType(
+        VbaSourceDocument currentDocument,
+        VbaResolvedNameTarget target,
+        out VbaResolvedType resolvedType)
+    {
+        resolvedType = default!;
+        var definitions = target.PhysicalDefinitions.ToArray();
+        if (target is VbaPropertyNameTarget)
+        {
+            definitions = definitions
+                .Where(definition => definition.PropertyAccessorKind is not (
+                    VbaPropertyAccessorKind.Let or VbaPropertyAccessorKind.Set))
+                .ToArray();
+        }
+
+        if (definitions.Length == 0
+            || definitions
+                .Select(definition => definition.Identity)
+                .Distinct()
+                .Count() != definitions.Length)
+        {
+            return false;
+        }
+
+        VbaResolvedType? converged = null;
+        foreach (var definition in definitions)
+        {
+            var signature = definition.Signature;
+            if (!string.Equals(
+                    definition.Uri,
+                    currentDocument.Uri,
+                    StringComparison.OrdinalIgnoreCase)
+                    && !definition.Visibility.IsProjectVisible()
+                || signature is null
+                || VbaCallArgumentMapper.MapCompleteZeroArgument(
+                        signature,
+                        VbaCallArgumentMapper.GetContextCompatibility(
+                            definition,
+                            signature,
+                            VbaCallContext.ValueRead)).State
+                    != VbaCallCompatibilityState.Applicable
+                || definition.TypeReference is null
+                || !TryResolveDefinitionTypeReference(
+                    currentDocument,
+                    definition,
+                    out var variantType))
+            {
+                return false;
+            }
+
+            if (converged is not null && !HasSameCanonicalIdentity(converged, variantType))
+            {
+                return false;
+            }
+
+            converged = variantType;
+        }
+
+        if (converged is null)
+        {
+            return false;
+        }
+
+        resolvedType = converged;
+        return true;
+    }
+
+    public bool TryResolveConditionalCallResultType(
+        VbaSourceDocument currentDocument,
+        VbaConditionalCallCompatibility compatibility,
+        out VbaResolvedType resolvedType)
+    {
+        resolvedType = default!;
+        if (!compatibility.Target.IsConditionalFamily
+            || compatibility.Variants.Count == 0)
+        {
+            return false;
+        }
+
+        var expectedDefinitions = compatibility.Target.PhysicalDefinitions.ToArray();
+        var variants = compatibility.Variants.ToArray();
+        if (compatibility.Target is VbaPropertyNameTarget)
+        {
+            expectedDefinitions = expectedDefinitions
+                .Where(definition => definition.PropertyAccessorKind is not (
+                    VbaPropertyAccessorKind.Let or VbaPropertyAccessorKind.Set))
+                .ToArray();
+            variants = variants
+                .Where(variant => variant.Definition.PropertyAccessorKind is not (
+                    VbaPropertyAccessorKind.Let or VbaPropertyAccessorKind.Set))
+                .ToArray();
+        }
+
+        var expectedIdentities = expectedDefinitions
+            .Select(definition => definition.Identity)
+            .ToHashSet();
+        var variantIdentities = variants
+            .Select(variant => variant.Definition.Identity)
+            .ToHashSet();
+        if (expectedDefinitions.Length == 0
+            || variants.Length != expectedDefinitions.Length
+            || expectedIdentities.Count != expectedDefinitions.Length
+            || variantIdentities.Count != variants.Length
+            || !expectedIdentities.SetEquals(variantIdentities))
+        {
+            return false;
+        }
+
+        VbaResolvedType? converged = null;
+        foreach (var variant in variants)
+        {
+            var signature = variant.Signature;
+            if (variant.State != VbaCallCompatibilityState.Applicable
+                || signature is null
+                || (signature.CallableKind != VbaCallableKind.Function
+                    && !(signature.CallableKind == VbaCallableKind.Property
+                        && variant.Definition.PropertyAccess.HasFlag(
+                            VbaPropertyAccess.Readable)))
+                || variant.Definition.TypeReference is null
+                || !TryResolveDefinitionTypeReference(
+                    currentDocument,
+                    variant.Definition,
+                    out var variantType))
+            {
+                return false;
+            }
+
+            if (converged is not null
+                && !HasSameCanonicalIdentity(converged, variantType))
+            {
+                return false;
+            }
+
+            converged = variantType;
+        }
+
+        if (converged is null)
+        {
+            return false;
+        }
+
+        resolvedType = converged;
+        return true;
+    }
+
+    private static bool HasSameCanonicalIdentity(
+        VbaResolvedType left,
+        VbaResolvedType right)
+    {
+        if (left.SourceDefinition is not null || right.SourceDefinition is not null)
+        {
+            return left.SourceDefinition?.Identity == right.SourceDefinition?.Identity;
+        }
+
+        return left.Name.Equals(right.Name, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(
+                left.ReferenceName,
+                right.ReferenceName,
+                StringComparison.OrdinalIgnoreCase);
     }
 
     public bool TryResolveTypeReference(
@@ -181,10 +412,11 @@ internal sealed class VbaTypeResolution
                 definition.Identity.ReferenceName ?? definition.ModuleName,
                 definition.TypeReference);
         }
-        else if (!TryResolveTypeReferenceDefinition(
-                     currentDocument,
-                     definition.TypeReference,
-                     out typeDefinition))
+        else if (nameResolution.FindDocument(definition.Uri) is not { } ownerDocument
+            || !TryResolveTypeReferenceDefinition(
+                ownerDocument,
+                definition.TypeReference,
+                out typeDefinition))
         {
             return false;
         }

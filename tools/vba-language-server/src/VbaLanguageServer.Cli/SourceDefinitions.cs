@@ -431,20 +431,67 @@ public enum VbaCallableKind
 /// <param name="Parameters">The ordered parameter metadata.</param>
 /// <param name="Documentation">The callable documentation retained for semantic consumers but omitted from LSP Signature Help.</param>
 /// <param name="CallableKind">The explicit callable kind when supplied by source or catalog metadata.</param>
-/// <param name="SupportsNamedArguments">Whether metadata establishes that call arguments may be supplied by name.</param>
+/// <param name="SupportsNamedArguments">
+/// Whether metadata establishes support or rejection for named arguments; null means unknown.
+/// </param>
 public sealed record VbaCallableSignature(
     string Label,
     IReadOnlyList<VbaCallableParameter> Parameters,
     string? Documentation = null,
     VbaCallableKind? CallableKind = null,
-    bool SupportsNamedArguments = false);
+    bool? SupportsNamedArguments = null);
+
+public sealed record VbaSignaturePresentationIdentity(
+    string Label,
+    IReadOnlyList<string> ParameterLabels)
+{
+    public bool Matches(VbaSignaturePresentationIdentity other)
+        => Label.Equals(other.Label, StringComparison.Ordinal)
+            && ParameterLabels.SequenceEqual(
+                other.ParameterLabels,
+                StringComparer.Ordinal);
+}
+
+/// <summary>
+/// Represents one physical callable signature retained by signature help.
+/// </summary>
+/// <param name="Signature">The physical callable signature.</param>
+/// <param name="ActiveParameter">The zero-based active parameter index, or null when no parameter maps.</param>
+/// <param name="IsConditionalVariant">Whether the signature is one variant of a conditional family.</param>
+public sealed record VbaSignatureHelpVariant(
+    VbaCallableSignature Signature,
+    int? ActiveParameter,
+    bool IsConditionalVariant = false)
+{
+    public string DisplayLabel => IsConditionalVariant
+        ? $"{Signature.Label} [#If]"
+        : Signature.Label;
+
+    public VbaSignaturePresentationIdentity PresentationIdentity => new(
+        DisplayLabel,
+        Signature.Parameters.Select(parameter => parameter.Label).ToArray());
+}
 
 /// <summary>
 /// Represents the signature help result for a call site.
 /// </summary>
-/// <param name="Signature">The callable signature to show.</param>
-/// <param name="ActiveParameter">The zero-based active parameter index.</param>
-public sealed record VbaSignatureHelp(VbaCallableSignature Signature, int ActiveParameter);
+/// <param name="Signature">The active callable signature retained for compatibility with editor-neutral consumers.</param>
+/// <param name="ActiveParameter">The active signature's zero-based parameter index, or null when no parameter maps.</param>
+/// <param name="PhysicalSignatures">Every physical signature retained for presentation.</param>
+/// <param name="ActiveSignature">The zero-based active signature index.</param>
+public sealed record VbaSignatureHelp(
+    VbaCallableSignature Signature,
+    int? ActiveParameter,
+    IReadOnlyList<VbaSignatureHelpVariant>? PhysicalSignatures = null,
+    int ActiveSignature = 0)
+{
+    /// <summary>
+    /// Gets every physical signature, including the ordinary single-signature fallback.
+    /// </summary>
+    public IReadOnlyList<VbaSignatureHelpVariant> Signatures { get; } =
+        PhysicalSignatures
+        ?? [new VbaSignatureHelpVariant(Signature, ActiveParameter)];
+}
 
 /// <summary>
 /// Represents one editor-neutral Hover result and every physical declaration
@@ -453,10 +500,12 @@ public sealed record VbaSignatureHelp(VbaCallableSignature Signature, int Active
 /// <param name="CanonicalName">The stable presentation name for the logical target.</param>
 /// <param name="Definitions">The physical declarations retained for presentation.</param>
 /// <param name="IsConditionalFamily">Whether the target is a conditional declaration family.</param>
+/// <param name="Range">The source range of the identifier occurrence being hovered.</param>
 internal sealed record VbaHoverResult(
     string CanonicalName,
     IReadOnlyList<VbaSourceDefinition> Definitions,
-    bool IsConditionalFamily);
+    bool IsConditionalFamily,
+    VbaRange Range);
 
 /// <summary>
 /// Identifies the semantic origin of a completed editor-neutral completion candidate.
@@ -907,7 +956,10 @@ internal static class VbaSourceDocumentProjector
             ParentProcedureName: declaration.ParentProcedureName,
             ParentProcedureRange: declaration.ParentProcedureRange is null ? null : MapRange(declaration.ParentProcedureRange),
             Documentation: declaration.Documentation,
-            Signature: declaration.Signature is null ? null : MapSignature(declaration),
+            Signature: declaration.Signature is null
+                || !HasValidSourceCallableSignature(syntaxTree, declaration)
+                    ? null
+                    : MapSignature(declaration),
             ParentTypeName: declaration.ParentTypeName,
             TypeReference: declaration.TypeReference is null ? null : MapTypeReference(declaration.TypeReference),
             IsWithEvents: declaration.IsWithEvents,
@@ -989,7 +1041,9 @@ internal static class VbaSourceDocumentProjector
                     Documentation: parameter.Documentation,
                     IsOptional: parameter.IsOptional,
                     DisplayLabel: parameterLabels[index],
-                    TypeReference: parameter.TypeReference is null ? null : MapTypeReference(parameter.TypeReference),
+                    TypeReference: parameter.TypeReference is null
+                        ? new VbaTypeReference("Variant")
+                        : MapTypeReference(parameter.TypeReference),
                     IsByRef: parameter.IsByRef,
                     IsParamArray: parameter.IsParamArray,
                     IsArray: parameter.IsArray))
@@ -998,6 +1052,111 @@ internal static class VbaSourceDocumentProjector
             CallableKind: callableKind,
             SupportsNamedArguments: true);
     }
+
+    private static bool HasValidSourceCallableSignature(
+        VbaSyntaxTree syntaxTree,
+        VbaDeclarationSyntax declaration)
+    {
+        var callableDeclaration = syntaxTree.Module.CallableDeclarations
+            .SingleOrDefault(candidate =>
+                candidate.LineIndex == declaration.LineIndex
+                && candidate.Name.Equals(
+                    declaration.Name,
+                    StringComparison.OrdinalIgnoreCase)
+                && candidate.IsExternal == declaration.IsExternal
+                && candidate.PropertyAccessorKind == declaration.PropertyAccessorKind);
+        if (callableDeclaration is not null)
+        {
+            var tokens = GetSignificantTokens(callableDeclaration.OriginalLine);
+            return callableDeclaration.IsExternal
+                ? VbaBlockHeaderSyntax.HasCompleteExternalCallableShape(
+                    tokens,
+                    syntaxTree.Module.Kind,
+                    declaration.ParentProcedureName is null)
+                : VbaBlockHeaderSyntax.TryGetCompleteCallableShape(
+                    tokens,
+                    syntaxTree.Module.Kind,
+                    out _);
+        }
+
+        if (declaration.Kind != VbaDeclarationKind.Event
+            || declaration.LineIndex < 0
+            || declaration.LineIndex >= syntaxTree.SourceText.Lines.Count)
+        {
+            return false;
+        }
+
+        if (syntaxTree.Module.Kind is not (
+                VbaModuleKind.ClassModule or VbaModuleKind.FormModule)
+            || declaration.ParentProcedureName is not null
+            || declaration.Visibility != VbaDeclarationVisibility.Public
+            || declaration.Name.Contains("_", StringComparison.Ordinal)
+            || !VbaIdentifier.IsLexIdentifier(declaration.Name)
+            || declaration.Signature is null
+            || declaration.Signature.Parameters.Any(parameter =>
+                parameter.IsOptional || parameter.IsParamArray))
+        {
+            return false;
+        }
+
+        return HasValidStandaloneEventShape(
+            GetSignificantTokens(
+                syntaxTree.SourceText.Lines[declaration.LineIndex].Text),
+            declaration);
+    }
+
+    private static bool HasValidStandaloneEventShape(
+        IReadOnlyList<VbaToken> tokens,
+        VbaDeclarationSyntax declaration)
+    {
+        var eventIndex = tokens.Count > 0
+                && tokens[0].Text.Equals("Event", StringComparison.OrdinalIgnoreCase)
+            ? 0
+            : tokens.Count > 1
+                && tokens[0].Text.Equals("Public", StringComparison.OrdinalIgnoreCase)
+                && tokens[1].Text.Equals("Event", StringComparison.OrdinalIgnoreCase)
+                    ? 1
+                    : -1;
+        var nameIndex = eventIndex + 1;
+        if (eventIndex < 0
+            || nameIndex >= tokens.Count
+            || !tokens[nameIndex].Text.Equals(
+                declaration.Name,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (nameIndex + 1 == tokens.Count)
+        {
+            return false;
+        }
+
+        var openParenthesis = nameIndex + 1;
+        if (tokens[openParenthesis].Text != "(")
+        {
+            return false;
+        }
+
+        var closeParenthesis = VbaBlockHeaderSyntax.FindMatchingCloseParenthesis(
+            tokens,
+            openParenthesis);
+        return closeParenthesis == tokens.Count - 1
+            && VbaBlockHeaderSyntax.HasCompleteParameterList(
+                tokens,
+                openParenthesis + 1,
+                closeParenthesis,
+                forbiddenParameterName: null,
+                allowAnyTypeReference: false);
+    }
+
+    private static IReadOnlyList<VbaToken> GetSignificantTokens(string text)
+        => VbaTokenStream.FromText(text).Tokens
+            .Where(token => token.Kind is not VbaTokenKind.Whitespace
+                and not VbaTokenKind.NewLine
+                and not VbaTokenKind.Comment
+                and not VbaTokenKind.LineContinuation)
+            .ToArray();
 
     private static VbaCallableKind GetCallableKind(VbaDeclarationSyntax declaration)
         => declaration.CallableKind?.ToUpperInvariant() switch

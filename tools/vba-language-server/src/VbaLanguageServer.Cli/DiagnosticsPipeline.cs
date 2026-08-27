@@ -15,7 +15,8 @@ public sealed record VbaProjectValidationDiagnostic(
     string Message,
     VbaRange Range,
     string Severity = "error",
-    string Source = "vba-language-server");
+    string Source = "vba-language-server",
+    IReadOnlyList<VbaDiagnosticDetail>? Details = null);
 
 /// <summary>
 /// Represents category-preserving diagnostics collected for publication.
@@ -45,7 +46,13 @@ public sealed record VbaDiagnosticPipelineResult(
         => new(diagnostic.Code, diagnostic.Message, diagnostic.Range, diagnostic.Severity, diagnostic.Source);
 
     private static VbaDiagnostic ToDocumentDiagnostic(VbaProjectValidationDiagnostic diagnostic)
-        => new(diagnostic.Code, diagnostic.Message, diagnostic.Range, diagnostic.Severity, diagnostic.Source);
+        => new(
+            diagnostic.Code,
+            diagnostic.Message,
+            diagnostic.Range,
+            diagnostic.Severity,
+            diagnostic.Source,
+            diagnostic.Details);
 }
 
 /// <summary>

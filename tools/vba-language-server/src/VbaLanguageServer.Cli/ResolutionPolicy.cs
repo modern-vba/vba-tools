@@ -33,7 +33,6 @@ internal sealed class VbaResolutionPolicy
 
     public bool IsRenameTarget(VbaSourceDefinition definition)
         => !VbaProjectReferenceCatalogSet.IsExternalDefinition(definition)
-            && conditionalFamilies.GetFamily(definition) is null
             && (definition.Visibility == VbaSourceDefinitionVisibility.Local || IsReferenceTarget(definition));
 
     public bool IsTypeDefinition(VbaSourceDefinition definition)

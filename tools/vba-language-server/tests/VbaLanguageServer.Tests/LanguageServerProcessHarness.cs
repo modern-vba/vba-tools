@@ -170,6 +170,15 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
     }
 
     public async Task<JsonElement> InitializeAsync(int requestId = 1, CancellationToken cancellationToken = default)
+        => await InitializeAsync(
+            new { },
+            requestId,
+            cancellationToken);
+
+    public async Task<JsonElement> InitializeAsync(
+        object capabilities,
+        int requestId = 1,
+        CancellationToken cancellationToken = default)
     {
         var response = await SendRequestAsync(
             requestId,
@@ -178,7 +187,7 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
             {
                 processId = Environment.ProcessId,
                 rootUri = (string?)null,
-                capabilities = new { }
+                capabilities
             },
             cancellationToken: cancellationToken);
         await SendNotificationAsync("initialized", new { }, cancellationToken);

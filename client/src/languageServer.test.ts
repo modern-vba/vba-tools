@@ -1,16 +1,68 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as path from 'node:path';
-import type { FileSystemWatcher } from 'vscode';
+import type { FileSystemWatcher, SignatureHelp } from 'vscode';
 import type { FormattingMiddleware } from 'vscode-languageclient/node';
+import type { ClientCapabilities } from 'vscode-languageclient/node';
 
 import {
   createVbaLanguageClientOptions,
+  createVbaSignatureHelpClientCapabilitiesFeature,
   createVbaLanguageServerReferenceCatalogCacheRoot,
   createVbaLanguageServerOptions,
   referenceCatalogCacheRootEnvironmentVariable,
   resolveVbaLanguageServerPath
 } from './languageServer';
+
+test('VbaLanguageServer client advertises explicit null active-parameter support', () => {
+  const capabilities: ClientCapabilities = {};
+
+  createVbaSignatureHelpClientCapabilitiesFeature()
+    .fillClientCapabilities(capabilities);
+
+  const signatureHelp = capabilities.textDocument?.signatureHelp;
+  assert.equal(signatureHelp?.contextSupport, true);
+  assert.equal(
+    signatureHelp?.signatureInformation?.activeParameterSupport,
+    true
+  );
+  assert.equal(
+    (signatureHelp?.signatureInformation as
+      | { noActiveParameterSupport?: boolean }
+      | undefined)?.noActiveParameterSupport,
+    true
+  );
+});
+
+test('VbaLanguageServer client preserves explicit no-active parameter through VS Code', async () => {
+  const options = createVbaLanguageClientOptions(
+    {} as FileSystemWatcher,
+    {} as FileSystemWatcher
+  );
+  const provideSignatureHelp = options.middleware?.provideSignatureHelp;
+  assert.ok(provideSignatureHelp);
+  const converted = {
+    signatures: [
+      {
+        label: 'Sub Work(Value As Long)',
+        parameters: [{ label: 'Value As Long' }],
+        activeParameter: null
+      }
+    ],
+    activeSignature: 0,
+    activeParameter: 0
+  } as unknown as SignatureHelp;
+
+  const result = await provideSignatureHelp(
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    () => converted
+  );
+
+  assert.equal(result?.signatures[0]?.activeParameter, 1);
+});
 
 test('VbaLanguageServer client synchronizes source and project manifest file events', () => {
   const sourceFileWatcher = {} as FileSystemWatcher;

@@ -1437,16 +1437,16 @@ public sealed class VbaSemanticResolutionTests
     [Fact]
     public void SignatureHelpFormatsRichSourceCallableSignatures()
     {
-        const string uri = "file:///C:/work/Worker.bas";
+        const string uri = "file:///C:/work/Worker.cls";
         var text = string.Join('\n', [
             "Attribute VB_Name = \"Worker\"",
-            "Public Sub ExampleSub(ByRef Values() As String, ByVal Fallback As String, Optional RetryCount As Long, ParamArray Rest() As Variant)",
+            "Public Sub ExampleSub(ByRef Values() As String, ByVal Fallback As String, ParamArray Rest() As Variant)",
             "End Sub",
             "Public Function ExampleFunc(ByVal Key As String, Optional Fallback As Variant) As String",
             "End Function",
-            "Friend Property Get DisplayName(Optional Name As String) As String",
+            "Public Property Get DisplayName(Optional Name As String) As String",
             "End Property",
-            "Public Event Saved(ByVal Name As String, Optional RetryCount As Long)",
+            "Public Event Saved(ByVal Name As String, ByRef RetryCount As Long)",
             "Public Sub Run()",
             "    ExampleSub(",
             "    result = ExampleFunc(",
@@ -1462,13 +1462,12 @@ public sealed class VbaSemanticResolutionTests
         var eventHelp = index.GetSignatureHelp(uri, 12, "    RaiseEvent Saved(".Length);
 
         Assert.Equal(
-            "Sub ExampleSub(ByRef Values() As String, Fallback As String, [ByRef RetryCount As Long], ParamArray Rest() As Variant)",
+            "Sub ExampleSub(ByRef Values() As String, Fallback As String, ParamArray Rest() As Variant)",
             subHelp?.Signature.Label);
         Assert.Equal(
             [
                 "ByRef Values() As String",
                 "Fallback As String",
-                "[ByRef RetryCount As Long]",
                 "ParamArray Rest() As Variant"
             ],
             subHelp!.Signature.Parameters.Select(parameter => parameter.Label).ToArray());
@@ -1479,12 +1478,12 @@ public sealed class VbaSemanticResolutionTests
             "Property DisplayName([ByRef Name As String]) As String",
             propertyHelp?.Signature.Label);
         Assert.Equal(
-            "Event Saved(Name As String, [ByRef RetryCount As Long])",
+            "Event Saved(Name As String, ByRef RetryCount As Long)",
             eventHelp?.Signature.Label);
     }
 
     [Fact]
-    public void SignatureHelpRejectsWriteOnlyPropertyCallTargets()
+    public void SignatureHelpRetainsContextIncompatibleWriteOnlyPropertyTargets()
     {
         const string uri = "file:///C:/work/Worker.cls";
         var text = string.Join('\n', [
@@ -1504,7 +1503,7 @@ public sealed class VbaSemanticResolutionTests
             6,
             "    result = WriteOnly(".Length);
 
-        Assert.Null(signatureHelp);
+        Assert.Equal("Property WriteOnly()", signatureHelp?.Signature.Label);
     }
 
     [Theory]
