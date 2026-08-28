@@ -486,6 +486,27 @@ access to the VBA project object model.
 
 ---
 
+## Semantic Module Rename
+
+Rename on an exported module identity starts from authoritative
+`Attribute VB_Name` metadata or another resolved use of that same module. A
+missing attribute is only a filename fallback, and malformed, misplaced,
+duplicate, invalid, or overlength metadata must be repaired or re-exported
+before Rename. VBA module names are limited to 31 Unicode code points.
+
+When the source basename matches the old module name, `.bas`, `.cls`, or `.frm`
+follows the semantic Rename; a matching `.frx` follows its form. A deliberately
+different basename is preserved, while an intentional case-only Rename applies
+the requested final casing. Installed CommonModules and workbook-owned form or
+document components are not silently detached or renamed through source F2.
+
+The server checks the complete semantic edit set, current project and
+reference-name authority, source and sidecar bytes, destination collisions, and
+client support for ordered file operations before returning all required text
+and file changes or no plan.
+
+---
+
 ## Complete Contract-Backed Declarations
 
 In a class, form, or document module, completion can supply names required by
@@ -618,6 +639,8 @@ cannot influence executable selection.
 | Excel blocks workbook automation | Enable trusted access to the VBA project object model in Excel Trust Center settings. |
 | Host Events remain queued, unavailable, or last-known-good | Select the `VBA Host Events` status item, review generation, context, reason, and cleanup details in VBA Tools Output, confirm the selected source template exists and is closed, then run `VBA Tools: Refresh Host Events`. There is no automatic retry. |
 | A form or document source cannot associate with Host Events | Review the complete association record in VBA Tools Output and repair or re-export its explicit `Attribute VB_Name`; file names and display names are not association fallbacks. |
+| Module Rename reports `resourceOperationConflict` | Follow its `condition`, `path`, and `guidance`: reload or restore a changed or missing source, repair or re-export a displaced form sidecar, or remove the destination collision, then invoke Rename again. No partial plan was returned. |
+| Module Rename changes only part of the workspace or reports an application failure | Run Undo immediately and verify both source text and source-unit files, including `.frx`. Repair the destination, permissions, or filesystem-provider state, then request Rename again. If VS Code retains stale file models, close the affected editors or reload the window before retrying. |
 | Tests do not appear in Test Explorer | Confirm that `vba-project.json` is in the opened workspace and reload the VS Code window after changing project layout. |
 | Format on save does not run | Set `editor.defaultFormatter` for `[vba]` to `modern-vba.vba-tools`. |
 | You need to test a custom CLI build | Set `vbaTools.devtool.path` to the full path of the replacement `vba-dev.exe`. |

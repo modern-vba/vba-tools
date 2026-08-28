@@ -36,7 +36,7 @@ public sealed class HostClassCommandTests
             "classes",
             "diagnostics",
             "warnings");
-        Assert.Equal("1.0", output.GetProperty("schemaVersion").GetString());
+        Assert.Equal("1.1", output.GetProperty("schemaVersion").GetString());
         Assert.Equal(Path.GetFullPath(root), output.GetProperty("project").GetString());
         Assert.Equal("Book1", output.GetProperty("document").GetString());
         Assert.Equal(
@@ -47,6 +47,50 @@ public sealed class HostClassCommandTests
         Assert.Empty(output.GetProperty("classes").EnumerateArray());
         Assert.Empty(output.GetProperty("diagnostics").EnumerateArray());
         Assert.Empty(output.GetProperty("warnings").EnumerateArray());
+    }
+
+    [Fact]
+    public void JsonListCarriesTheActualVbaProjectNameBoundToTheInspectedTemplateFingerprint()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var fingerprint = new string('A', 64);
+        var batch = HostClassInspectionBatch.CreateComplete([]) with
+        {
+            VbaProjectName = "ActualVbaProject",
+            SourceTemplateFingerprint = fingerprint
+        };
+        var application = CommandLineTestFactory.Create(
+            root,
+            hostClassInspectionAutomation:
+                new StubHostClassInspectionAutomation(batch));
+
+        var result = application.Run(
+            ["host-class", "list", "--format", "json"]);
+
+        Assert.Equal(0, result.ExitCode);
+        using var parsed = JsonDocument.Parse(result.StandardOutput);
+        var output = parsed.RootElement;
+        AssertJsonPropertyNames(
+            output,
+            "schemaVersion",
+            "project",
+            "document",
+            "sourceTemplate",
+            "vbaProjectName",
+            "sourceTemplateFingerprint",
+            "classEnumerationComplete",
+            "complete",
+            "classes",
+            "diagnostics",
+            "warnings");
+        Assert.Equal("1.1", output.GetProperty("schemaVersion").GetString());
+        Assert.Equal(
+            "ActualVbaProject",
+            output.GetProperty("vbaProjectName").GetString());
+        Assert.Equal(
+            fingerprint,
+            output.GetProperty("sourceTemplateFingerprint").GetString());
     }
 
     [Fact]

@@ -170,13 +170,17 @@ internal sealed class VbaDiagnosticsPublisher
         }
 
         var batchOwnership = snapshots[0];
+        var sourceTemplateFingerprint = snapshots
+            .Select(snapshot => snapshot.SourceTemplateFingerprint)
+            .FirstOrDefault(fingerprint => fingerprint is not null);
         EnqueuePublications(
             snapshots
                 .Select(snapshot => new DiagnosticsPublication(
                     snapshot.Analysis.Uri,
                     () => workspace.AreLatestDiagnosticsSnapshots(
                         snapshot.ProjectOwnership,
-                        snapshot.ProjectSnapshotOwnership),
+                        snapshot.ProjectSnapshotOwnership,
+                        snapshot.SourceTemplateFingerprint),
                     publicationCancellationToken =>
                         PublishDiagnosticsAsync(
                             snapshot,
@@ -184,7 +188,8 @@ internal sealed class VbaDiagnosticsPublisher
                 .ToArray(),
             () => workspace.AreLatestDiagnosticsSnapshots(
                 batchOwnership.ProjectOwnership,
-                batchOwnership.ProjectSnapshotOwnership));
+                batchOwnership.ProjectSnapshotOwnership,
+                sourceTemplateFingerprint));
 
         return Task.CompletedTask;
     }

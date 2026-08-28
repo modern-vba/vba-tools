@@ -104,7 +104,10 @@ internal sealed record VbaDocumentDiagnosticsSnapshot(
     IReadOnlyList<VbaProjectValidationDiagnostic> ProjectValidationDiagnostics,
     IReadOnlyList<VbaDocumentDiagnosticsOwnership> ProjectOwnership,
     VbaProjectSnapshotProvider.ProjectSnapshotOwnership?
-        ProjectSnapshotOwnership);
+        ProjectSnapshotOwnership)
+{
+    internal string? SourceTemplateFingerprint { get; init; }
+}
 
 /// <summary>
 /// Represents one document tracked in workspace memory or project source inventory.

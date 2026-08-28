@@ -93,14 +93,22 @@ public sealed class HostClassListCommand(IHostClassInspectionAutomation inspecti
             : complete
                 ? 0
                 : 1;
+        var hasProjectAuthority =
+            !string.IsNullOrWhiteSpace(batch.VbaProjectName)
+            && batch.SourceTemplateFingerprint is { Length: 64 } fingerprint
+            && fingerprint.All(Uri.IsHexDigit);
 
         if (format.Equals("json", StringComparison.OrdinalIgnoreCase))
         {
             var output = new HostClassProjectionOutput(
-                "1.0",
+                "1.1",
                 project,
                 context.DocumentName,
                 sourceTemplate,
+                hasProjectAuthority ? batch.VbaProjectName : null,
+                hasProjectAuthority
+                    ? batch.SourceTemplateFingerprint!.ToUpperInvariant()
+                    : null,
                 classEnumerationComplete,
                 complete,
                 classes.Select(CreateClassOutput).ToArray(),
@@ -115,7 +123,15 @@ public sealed class HostClassListCommand(IHostClassInspectionAutomation inspecti
         var text = new StringBuilder()
             .AppendLine($"Project: {project}")
             .AppendLine($"Document: {context.DocumentName}")
-            .AppendLine($"Source template: {sourceTemplate}")
+            .AppendLine($"Source template: {sourceTemplate}");
+        if (hasProjectAuthority)
+        {
+            text.AppendLine($"VBA project name: {batch.VbaProjectName}")
+                .AppendLine(
+                    $"Source template fingerprint: {batch.SourceTemplateFingerprint!.ToUpperInvariant()}");
+        }
+
+        text
             .AppendLine($"Class enumeration complete: {CreateBooleanText(classEnumerationComplete)}")
             .AppendLine($"Complete: {CreateBooleanText(complete)}")
             .AppendLine("Diagnostics:");
@@ -221,6 +237,8 @@ public sealed class HostClassListCommand(IHostClassInspectionAutomation inspecti
         string Project,
         string Document,
         string SourceTemplate,
+        string? VbaProjectName,
+        string? SourceTemplateFingerprint,
         bool ClassEnumerationComplete,
         bool Complete,
         IReadOnlyList<object> Classes,

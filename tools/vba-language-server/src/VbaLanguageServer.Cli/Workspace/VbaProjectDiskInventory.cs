@@ -41,7 +41,8 @@ internal sealed record VbaProjectDiskSource(
     string FullPath,
     string Text,
     VbaProjectSourceFileMetadata Metadata,
-    VbaProjectDiskContentIdentity ContentIdentity);
+    VbaProjectDiskContentIdentity ContentIdentity,
+    string RawContentDigest);
 
 /// <summary>
 /// Represents one closed source that could not be decoded without substitution.
@@ -716,6 +717,8 @@ internal sealed class VbaFileSystemProjectDiskInventory
                 }
 
                 CachedSource loaded;
+                var rawContentDigest = Convert.ToHexString(
+                    SHA256.HashData(sourceBytes));
                 lock (gate)
                 {
                     var identity =
@@ -730,7 +733,8 @@ internal sealed class VbaFileSystemProjectDiskInventory
                     loaded = new CachedSource(
                         loadedMetadata,
                         text,
-                        identity);
+                        identity,
+                        rawContentDigest);
                     publicationGenerations.TryGetValue(
                         fullPath,
                         out var currentPublicationGeneration);
@@ -775,7 +779,8 @@ internal sealed class VbaFileSystemProjectDiskInventory
             fullPath,
             cached.Text,
             cached.Metadata,
-            cached.ContentIdentity);
+            cached.ContentIdentity,
+            cached.RawContentDigest);
 
     private static HashSet<string> CreateLocalPathSet(
         IEnumerable<string> uris)
@@ -822,7 +827,8 @@ internal sealed class VbaFileSystemProjectDiskInventory
     private sealed record CachedSource(
         VbaProjectSourceFileMetadata Metadata,
         string Text,
-        VbaProjectDiskContentIdentity ContentIdentity);
+        VbaProjectDiskContentIdentity ContentIdentity,
+        string RawContentDigest);
 
     /// <summary>
     /// Determines whether exported sources remain owned by one resolved project

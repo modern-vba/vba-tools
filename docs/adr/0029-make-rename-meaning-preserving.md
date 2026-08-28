@@ -33,9 +33,10 @@ source template cannot supply an authoritative containing-project name, Rename
 fails with `analysisIncomplete` instead of claiming that the collision is
 absent. An `AdHocVbaProject` has no containing-project-name authority by design,
 so it skips only this check; that deliberate absence does not disable all ad-hoc
-module Rename. Acquisition of the template identity remains a language-server
-internal concern and introduces no new `VbaDev` command or public manifest
-field.
+module Rename. The existing `host-class list` result and extension-owned
+snapshot lifecycle supply this optional authority pair; the language server
+never launches Excel or reads a public manifest field to obtain it. No new
+`VbaDev` command is introduced.
 
 The containing `VbaProjectName` authority is bound to the exact source-template
 content captured at Rename request start. A cached or last-known-good observation
@@ -159,6 +160,11 @@ remains an ordinary filesystem rename and never implies semantic
 the final basename casing to the requested spelling on a case-insensitive
 filesystem; how the language server safely realizes that transition is an
 internal concern rather than a different user-visible operation.
+
+A conclusively absent `.frx` at request start is valid and produces no sidecar
+operation. Missing request-start evidence, later appearance, disappearance or
+byte change, displacement from the matching `.frm`, unreadable evidence, or a
+destination-sidecar collision fails with `sidecarConflict` and no edit.
 
 Project-local source includes both an unowned source inside a manifest-backed
 `DocumentSourceSet` and source inside an `AdHocVbaProject`. Ad-hoc Rename uses

@@ -11,9 +11,11 @@ namespace VbaLanguageServer.SourceModel;
 /// </summary>
 /// <param name="QualifierAlias">The preferred VBA qualifier alias for the library.</param>
 /// <param name="Types">The public types exposed by the library.</param>
+/// <param name="ReferencedVbaProjectName">The exact project name exported by the loaded TypeLib, without fallback.</param>
 public sealed record TypeLibCatalogMetadata(
     string QualifierAlias,
-    IReadOnlyList<TypeLibCatalogType> Types);
+    IReadOnlyList<TypeLibCatalogType> Types,
+    string? ReferencedVbaProjectName = null);
 
 /// <summary>
 /// Identifies the raw COM type category retained for TypeLib Event analysis.
@@ -203,7 +205,13 @@ public static class TypeLibReferenceCatalogBuilder
             DeduplicateDefinitions(definitions),
             metadata.Types
                 .Where(type => type.Metadata is not null)
-                .ToArray());
+                .ToArray())
+        {
+            ReferencedVbaProjectName = string.IsNullOrEmpty(
+                metadata.ReferencedVbaProjectName)
+                    ? null
+                    : metadata.ReferencedVbaProjectName
+        };
     }
 
     private static ReferenceDefinitionGlobalExposure GetGlobalExposure(TypeLibCatalogType type)
@@ -371,7 +379,8 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         types.AddRange(ReadCoClassForwardedMembers(typeInfos));
         return new TypeLibCatalogMetadata(
             string.IsNullOrEmpty(libraryName) ? CreateFallbackQualifier(identity.ReferenceName) : libraryName,
-            types);
+            types,
+            string.IsNullOrEmpty(libraryName) ? null : libraryName);
     }
 
     [SupportedOSPlatform("windows")]

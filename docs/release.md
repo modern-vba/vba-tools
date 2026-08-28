@@ -306,7 +306,8 @@ VSIX file list, and runs bundled executable probes:
   `procedure` atomic.
 - the bundled `vba-dev.exe` must answer `capabilities --format json` with the
   command and source-snapshot contract required by the extension, including
-  HostClass inspection schema `1.0`, without a DAP or debug-adapter surface.
+  HostClass feature `1.0` and command-output schema `1.1`, without a DAP or
+  debug-adapter surface.
 - the bundled `vba-debug-adapter.exe` must answer `capabilities --format json`
   with its independent contract, accept its pinned `vba-dev.exe` path, and start
   its stdio transport with a canonical session ID.

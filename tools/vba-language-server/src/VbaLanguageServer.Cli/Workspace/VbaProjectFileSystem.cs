@@ -28,6 +28,13 @@ internal interface IVbaProjectFileSystem
     string ReadManifestText(string path);
 
     byte[] ReadSourceBytes(string path);
+
+    bool PathsReferToSameEntry(string left, string right)
+        => Path.GetFullPath(left).Equals(
+            Path.GetFullPath(right),
+            OperatingSystem.IsWindows()
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal);
 }
 
 /// <summary>
@@ -75,4 +82,11 @@ internal sealed class SystemVbaProjectFileSystem : IVbaProjectFileSystem
 
     public byte[] ReadSourceBytes(string path)
         => File.ReadAllBytes(path);
+
+    public bool PathsReferToSameEntry(string left, string right)
+        => Path.GetFullPath(left).Equals(
+            Path.GetFullPath(right),
+            OperatingSystem.IsWindows()
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal);
 }

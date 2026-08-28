@@ -7615,7 +7615,10 @@ public sealed class VbaProjectDiskReconciliationTests
                         new VbaProjectSourceFileMetadata(
                             text.Length,
                             LastWriteTimeUtcTicks: 0),
-                        VbaProjectDiskContentIdentity.FromText(text));
+                        VbaProjectDiskContentIdentity.FromText(text),
+                        Convert.ToHexString(
+                            System.Security.Cryptography.SHA256.HashData(
+                                System.Text.Encoding.UTF8.GetBytes(text))));
                 })
             .ToArray();
         var manifest = observation.Manifest is null

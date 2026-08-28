@@ -5224,7 +5224,7 @@ public sealed class WithEventsLanguageServerProcessTests
         string eventName)
         => new
         {
-            schemaVersion = 1,
+            schemaVersion = 2,
             revision = 1,
             project = Path.GetFullPath(projectRoot),
             document = "Book1",

@@ -156,7 +156,15 @@ internal static class VbaSyntaxTreeParser
 
         var attributes = ParseAttributes(physicalAnalysisSourceText, codeStartLine);
         var options = ParseOptions(physicalAnalysisSourceText, codeStartLine);
-        var identity = CreateIdentity(uri, sourceText, kind, attributes);
+        var moduleIdentityMetadata = VbaModuleIdentityMetadataReader.Read(
+            sourceText.Text,
+            kind == VbaModuleKind.StandardModule
+                ? VbaModuleIdentitySourceKind.StandardModule
+                : VbaModuleIdentitySourceKind.ObjectModule);
+        var identity = CreateIdentity(uri, sourceText, moduleIdentityMetadata);
+        diagnostics.AddRange(CreateModuleIdentityMetadataDiagnostics(
+            sourceText,
+            moduleIdentityMetadata));
         var parsedPreprocessor = hasPreprocessorDirectives
             ? VbaPreprocessorParser.Parse(
                 sourceText,
@@ -967,6 +975,45 @@ internal static class VbaSyntaxTreeParser
         }
 
         return VbaSourceText.From(new string(characters));
+    }
+
+    private static IEnumerable<VbaSyntaxDiagnostic>
+        CreateModuleIdentityMetadataDiagnostics(
+            VbaSourceText sourceText,
+            VbaModuleIdentityMetadata metadata)
+    {
+        if (metadata.State != VbaModuleIdentityMetadataState.Invalid)
+        {
+            yield break;
+        }
+
+        var code = metadata.Condition
+            == VbaModuleIdentityMetadataCondition.Duplicate
+            ? "syntax.moduleIdentityMetadataDuplicate"
+            : "syntax.moduleIdentityMetadataMalformed";
+        var message = metadata.Condition
+            == VbaModuleIdentityMetadataCondition.Duplicate
+            ? "Module identity metadata is duplicated; re-export or repair the source before Rename."
+            : "Module identity metadata is malformed; re-export or repair the source before Rename.";
+        var ranges = metadata.Records
+            .Where(record => metadata.Condition
+                == VbaModuleIdentityMetadataCondition.Duplicate
+                || record.IsMalformedOrMisplaced)
+            .Select(record => record.RepairRange)
+            .ToArray();
+        if (ranges.Length == 0)
+        {
+            yield return new VbaSyntaxDiagnostic(
+                code,
+                message,
+                sourceText.FullRange);
+            yield break;
+        }
+
+        foreach (var range in ranges)
+        {
+            yield return new VbaSyntaxDiagnostic(code, message, range);
+        }
     }
 
     private static IReadOnlyList<VbaModuleAttributeSyntax> ParseAttributes(VbaSourceText sourceText, int startLine)
@@ -4441,25 +4488,24 @@ internal static class VbaSyntaxTreeParser
     private static VbaModuleIdentitySyntax CreateIdentity(
         string uri,
         VbaSourceText sourceText,
-        VbaModuleKind kind,
-        IReadOnlyList<VbaModuleAttributeSyntax> attributes)
+        VbaModuleIdentityMetadata metadata)
     {
-        var nameAttribute = attributes.FirstOrDefault(attribute =>
-            attribute.Name.Equals("VB_Name", StringComparison.OrdinalIgnoreCase));
-        if (nameAttribute is not null && IsValidModuleIdentity(nameAttribute.Value))
+        if (metadata.IsAuthoritative
+            && metadata.AuthoritativeRecordIndex is int authoritativeRecordIndex)
         {
-            return new VbaModuleIdentitySyntax(nameAttribute.Value, nameAttribute.ValueRange);
+            var record = metadata.Records[authoritativeRecordIndex];
+            return new VbaModuleIdentitySyntax(
+                metadata.Name!,
+                record.RepairRange,
+                metadata);
         }
 
         var fallbackName = GetFileBaseName(uri);
         return new VbaModuleIdentitySyntax(
             fallbackName,
-            new VbaSyntaxRange(sourceText.StartPosition, sourceText.StartPosition));
+            new VbaSyntaxRange(sourceText.StartPosition, sourceText.StartPosition),
+            metadata);
     }
-
-    private static bool IsValidModuleIdentity(string value)
-        => VbaIdentifier.IsIdentifier(value)
-            && value.EnumerateRunes().Take(32).Count() <= 31;
 
     private static VbaSourceLine? FindAttributeNameLine(VbaSourceText sourceText)
         => sourceText.Lines.FirstOrDefault(line =>

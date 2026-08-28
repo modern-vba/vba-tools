@@ -63,7 +63,7 @@ public sealed class VbaLanguageServerRuntimeTests
                     method = "vba/hostClassProjectionSnapshot",
                     @params = new
                     {
-                        schemaVersion = 1,
+                        schemaVersion = 2,
                         revision = 1,
                         project = Path.GetFullPath(projectRoot),
                         document = "Book1",
@@ -515,7 +515,7 @@ public sealed class VbaLanguageServerRuntimeTests
             method = "vba/hostClassProjectionSnapshot",
             @params = new
             {
-                schemaVersion = 1,
+                schemaVersion = 2,
                 revision,
                 project = "C:\\work\\Project",
                 document,

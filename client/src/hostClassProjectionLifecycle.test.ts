@@ -21,7 +21,7 @@ test('HostClass projection activation publishes revision one from the public CLI
       return {
         exitCode: 0,
         stdout: JSON.stringify({
-          schemaVersion: '1.0',
+          schemaVersion: '1.1',
           project,
           document: 'Book1',
           sourceTemplate,
@@ -71,7 +71,7 @@ test('HostClass projection activation publishes revision one from the public CLI
     {
       method: 'vba/hostClassProjectionSnapshot',
       parameters: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         revision: 1,
         project,
         document: 'Book1',
@@ -96,6 +96,91 @@ test('HostClass projection activation publishes revision one from the public CLI
   ]);
 });
 
+test('HostClass projection publishes the actual VBA project name with its template fingerprint', async () => {
+  const project = String.raw`C:\work\Invoices`;
+  const sourceTemplate = String.raw`C:\work\Invoices\src\Book1\Book1.xlsm`;
+  const sourceTemplateFingerprint = 'A'.repeat(64);
+  const notifications: Array<{ method: string; parameters: unknown }> = [];
+  const lifecycle = new HostClassProjectionLifecycle({
+    runHostClassList: async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        schemaVersion: '1.1',
+        project,
+        document: 'Book1',
+        sourceTemplate,
+        vbaProjectName: 'ActualVbaProject',
+        sourceTemplateFingerprint,
+        classEnumerationComplete: true,
+        complete: true,
+        classes: [],
+        diagnostics: [],
+        warnings: []
+      }),
+      stderr: '',
+      cancelled: false
+    }),
+    sendNotification: async (method, parameters) => {
+      notifications.push({ method, parameters });
+    }
+  });
+
+  lifecycle.activateDocument({ project, document: 'Book1', sourceTemplate });
+  await lifecycle.flush();
+
+  assert.deepEqual(notifications, [{
+    method: 'vba/hostClassProjectionSnapshot',
+    parameters: {
+      schemaVersion: 2,
+      revision: 1,
+      project,
+      document: 'Book1',
+      sourceTemplate,
+      state: 'present',
+      vbaProjectName: 'ActualVbaProject',
+      sourceTemplateFingerprint,
+      classEnumerationComplete: true,
+      classes: []
+    }
+  }]);
+});
+
+test('HostClass projection rejects a half project-name authority pair', async () => {
+  const context = {
+    project: String.raw`C:\work\Invoices`,
+    document: 'Book1',
+    sourceTemplate: String.raw`C:\work\Invoices\src\Book1\Book1.xlsm`
+  };
+  const transitions: HostClassProjectionLifecycleTransition[] = [];
+  const lifecycle = new HostClassProjectionLifecycle({
+    runHostClassList: async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        schemaVersion: '1.1',
+        ...context,
+        vbaProjectName: 'ActualVbaProject',
+        classEnumerationComplete: true,
+        complete: true,
+        classes: [],
+        diagnostics: [],
+        warnings: []
+      }),
+      stderr: '',
+      cancelled: false
+    }),
+    sendNotification: async () => undefined,
+    onTransition: transition => {
+      transitions.push(transition);
+    }
+  });
+
+  lifecycle.activateDocument(context);
+  await lifecycle.flush();
+
+  assert.equal(transitions.at(-1)?.kind, 'discarded');
+  assert.equal(transitions.at(-1)?.reasonCode, 'schemaMismatch');
+});
+
 test('HostClass source-template identity change clears the old snapshot before replacement', async () => {
   const project = String.raw`C:\work\Invoices`;
   const firstTemplate = String.raw`C:\work\Invoices\src\Book1\Book1.xlsm`;
@@ -113,7 +198,7 @@ test('HostClass source-template identity change clears the old snapshot before r
   const completedResult = (sourceTemplate: string): HostClassListRunResult => ({
     exitCode: 0,
     stdout: JSON.stringify({
-      schemaVersion: '1.0',
+      schemaVersion: '1.1',
       project,
       document: 'Book1',
       sourceTemplate,
@@ -158,7 +243,7 @@ test('HostClass source-template identity change clears the old snapshot before r
   assert.deepEqual(notifications[1], {
     method: 'vba/hostClassProjectionSnapshot',
     parameters: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       revision: 2,
       project,
       document: 'Book1',
@@ -187,7 +272,7 @@ test('HostClass exact context identity change clears before replacement', async 
     runHostClassList: async (invocation) => ({
       exitCode: 0,
       stdout: JSON.stringify({
-        schemaVersion: '1.0',
+        schemaVersion: '1.1',
         ...invocation.context,
         classEnumerationComplete: true,
         complete: true,
@@ -246,7 +331,7 @@ test('HostClass same-template refresh retains an unverified class as last known 
       return {
         exitCode: invocationCount === 1 ? 0 : 1,
         stdout: JSON.stringify({
-          schemaVersion: '1.0',
+          schemaVersion: '1.1',
           ...context,
           classEnumerationComplete: true,
           complete: invocationCount === 1,
@@ -280,7 +365,7 @@ test('HostClass same-template refresh retains an unverified class as last known 
   assert.deepEqual(notifications[1], {
     method: 'vba/hostClassProjectionSnapshot',
     parameters: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       revision: 2,
       ...context,
       state: 'present',
@@ -335,7 +420,7 @@ test('HostClass failed same-template change degrades prior current projection to
       return {
         exitCode: 0,
         stdout: JSON.stringify({
-          schemaVersion: '1.0',
+          schemaVersion: '1.1',
           ...context,
           classEnumerationComplete: true,
           complete: true,
@@ -368,7 +453,7 @@ test('HostClass failed same-template change degrades prior current projection to
   await lifecycle.flush();
 
   assert.deepEqual(notifications[1], {
-    schemaVersion: 1,
+    schemaVersion: 2,
     revision: 2,
     ...context,
     state: 'present',
@@ -401,7 +486,7 @@ test('HostClass failed same-template change degrades authoritative empty enumera
         ? {
             exitCode: 0,
             stdout: JSON.stringify({
-              schemaVersion: '1.0',
+              schemaVersion: '1.1',
               ...context,
               classEnumerationComplete: true,
               complete: true,
@@ -435,7 +520,7 @@ test('HostClass failed same-template change degrades authoritative empty enumera
   await lifecycle.flush();
 
   assert.deepEqual(notifications[1], {
-    schemaVersion: 1,
+    schemaVersion: 2,
     revision: 2,
     ...context,
     state: 'present',
@@ -466,7 +551,7 @@ test('HostClass enumeration completeness controls absent identity retention and 
       return {
         exitCode: classEnumerationComplete ? 0 : 1,
         stdout: JSON.stringify({
-          schemaVersion: '1.0',
+          schemaVersion: '1.1',
           ...context,
           classEnumerationComplete,
           complete: classEnumerationComplete,
@@ -541,7 +626,7 @@ test('HostClass duplicate identities reject the complete invocation and preserve
       return {
         exitCode: duplicate ? 1 : 0,
         stdout: JSON.stringify({
-          schemaVersion: '1.0',
+          schemaVersion: '1.1',
           ...context,
           classEnumerationComplete: !duplicate,
           complete: !duplicate,
@@ -598,7 +683,7 @@ test('HostClass replacement cooperatively cancels its running document and waits
   const completedResult = (): HostClassListRunResult => ({
     exitCode: 0,
     stdout: JSON.stringify({
-      schemaVersion: '1.0',
+      schemaVersion: '1.1',
       ...context,
       classEnumerationComplete: true,
       complete: true,
@@ -700,7 +785,7 @@ test('HostClass scheduler moves a replaced queued document behind other waiting 
   const completedResult = (context: typeof runningContext): HostClassListRunResult => ({
     exitCode: 0,
     stdout: JSON.stringify({
-      schemaVersion: '1.0',
+      schemaVersion: '1.1',
       ...context,
       classEnumerationComplete: true,
       complete: true,
@@ -807,7 +892,7 @@ test('HostClass lifecycle shutdown cancels the running invocation and drops queu
   completeRunning?.({
     exitCode: 0,
     stdout: JSON.stringify({
-      schemaVersion: '1.0',
+      schemaVersion: '1.1',
       ...runningContext,
       classEnumerationComplete: true,
       complete: true,
@@ -854,7 +939,7 @@ test('HostClass lifecycle shutdown discards a late invocation rejection without 
   const successfulResult: HostClassListRunResult = {
     exitCode: 0,
     stdout: JSON.stringify({
-      schemaVersion: '1.0',
+      schemaVersion: '1.1',
       ...context,
       classEnumerationComplete: true,
       complete: true,
@@ -922,7 +1007,7 @@ test('HostClass automatic template changes use a one-second trailing-edge deboun
       return {
         exitCode: 0,
         stdout: JSON.stringify({
-          schemaVersion: '1.0',
+          schemaVersion: '1.1',
           ...context,
           classEnumerationComplete: true,
           complete: true,
@@ -994,7 +1079,7 @@ test('HostClass automatic manifest changes use a one-second trailing-edge deboun
       return {
         exitCode: 0,
         stdout: JSON.stringify({
-          schemaVersion: '1.0',
+          schemaVersion: '1.1',
           ...context,
           classEnumerationComplete: true,
           complete: true,
@@ -1051,7 +1136,7 @@ test('HostClass delayed replacement immediately supersedes an older queued gener
   const completedResult = (context: typeof runningContext): HostClassListRunResult => ({
     exitCode: 0,
     stdout: JSON.stringify({
-      schemaVersion: '1.0',
+      schemaVersion: '1.1',
       ...context,
       classEnumerationComplete: true,
       complete: true,
@@ -1120,7 +1205,7 @@ test('HostClass source reassociation clears repaired metadata without inspection
       return {
         exitCode: 0,
         stdout: JSON.stringify({
-          schemaVersion: '1.0',
+          schemaVersion: '1.1',
           ...context,
           classEnumerationComplete: true,
           complete: true,
@@ -1219,7 +1304,7 @@ test('HostClass source candidates observed during initial inspection associate w
   complete?.({
     exitCode: 0,
     stdout: JSON.stringify({
-      schemaVersion: '1.0',
+      schemaVersion: '1.1',
       ...context,
       classEnumerationComplete: true,
       complete: true,
@@ -1271,7 +1356,7 @@ test('HostClass desired snapshot commits before notification transport acknowled
       return {
         exitCode: invocationCount === 1 ? 0 : 1,
         stdout: JSON.stringify({
-          schemaVersion: '1.0',
+          schemaVersion: '1.1',
           ...context,
           classEnumerationComplete: true,
           complete: invocationCount === 1,
@@ -1339,7 +1424,7 @@ test('HostClass clear notification failure does not discard replacement inspecti
       return {
         exitCode: 0,
         stdout: JSON.stringify({
-          schemaVersion: '1.0',
+          schemaVersion: '1.1',
           ...invocation.context,
           classEnumerationComplete: true,
           complete: true,
@@ -1387,7 +1472,7 @@ test('HostClass restart replay republishes desired snapshots without another ins
       return {
         exitCode: 0,
         stdout: JSON.stringify({
-          schemaVersion: '1.0',
+          schemaVersion: '1.1',
           ...context,
           classEnumerationComplete: true,
           complete: true,
@@ -1441,7 +1526,7 @@ test('HostClass completed replay cannot overwrite a newer running refresh genera
   const successfulResult: HostClassListRunResult = {
     exitCode: 0,
     stdout: JSON.stringify({
-      schemaVersion: '1.0',
+      schemaVersion: '1.1',
       ...context,
       classEnumerationComplete: true,
       complete: true,
@@ -1512,7 +1597,7 @@ test('HostClass failed replay cannot restore attention after its document is rem
     runHostClassList: async () => ({
       exitCode: 0,
       stdout: JSON.stringify({
-        schemaVersion: '1.0',
+        schemaVersion: '1.1',
         ...context,
         classEnumerationComplete: true,
         complete: true,
@@ -1562,7 +1647,7 @@ test('HostClass replay continues with every active document after one notificati
     runHostClassList: async (invocation) => ({
       exitCode: 0,
       stdout: JSON.stringify({
-        schemaVersion: '1.0',
+        schemaVersion: '1.1',
         ...invocation.context,
         classEnumerationComplete: true,
         complete: true,
@@ -1605,7 +1690,7 @@ test('HostClass explicit refresh handle resolves its committed generation', asyn
     runHostClassList: async () => ({
       exitCode: 0,
       stdout: JSON.stringify({
-        schemaVersion: '1.0',
+        schemaVersion: '1.1',
         ...context,
         classEnumerationComplete: true,
         complete: true,
@@ -1647,7 +1732,7 @@ test('HostClass explicit refresh cancellation drops only its own queued generati
       return {
         exitCode: 0,
         stdout: JSON.stringify({
-          schemaVersion: '1.0',
+          schemaVersion: '1.1',
           ...invocation.context,
           classEnumerationComplete: true,
           complete: true,
@@ -1698,7 +1783,7 @@ test('HostClass queued explicit cancellation settles without waiting for another
       return {
         exitCode: 0,
         stdout: JSON.stringify({
-          schemaVersion: '1.0',
+          schemaVersion: '1.1',
           ...invocation.context,
           classEnumerationComplete: true,
           complete: true,
@@ -1751,7 +1836,7 @@ test('HostClass current cancelled refresh commits schema-valid terminal partial 
       return {
         exitCode: 130,
         stdout: JSON.stringify({
-          schemaVersion: '1.0',
+          schemaVersion: '1.1',
           ...context,
           classEnumerationComplete: false,
           complete: false,
@@ -1802,7 +1887,7 @@ test('HostClass explicit cancellation discards exit-zero output marked incomplet
       return {
         exitCode: 0,
         stdout: JSON.stringify({
-          schemaVersion: '1.0',
+          schemaVersion: '1.1',
           ...context,
           classEnumerationComplete: false,
           complete: false,
@@ -1898,7 +1983,7 @@ test('HostClass lifecycle reports structured queue start and commit transitions'
     runHostClassList: async () => ({
       exitCode: 0,
       stdout: JSON.stringify({
-        schemaVersion: '1.0',
+        schemaVersion: '1.1',
         ...context,
         classEnumerationComplete: true,
         complete: true,
@@ -1932,7 +2017,7 @@ test('HostClass lifecycle reports structured queue start and commit transitions'
   );
 });
 
-test('HostClass lifecycle reports invalid output as a stable discard transition', async () => {
+test('HostClass lifecycle rejects the superseded CLI output schema', async () => {
   const context = {
     project: String.raw`C:\work\Invoices`,
     document: 'Book1',
@@ -1942,7 +2027,15 @@ test('HostClass lifecycle reports invalid output as a stable discard transition'
   const lifecycle = new HostClassProjectionLifecycle({
     runHostClassList: async () => ({
       exitCode: 0,
-      stdout: '{"schemaVersion":"unexpected"}',
+      stdout: JSON.stringify({
+        schemaVersion: '1.0',
+        ...context,
+        classEnumerationComplete: true,
+        complete: true,
+        classes: [],
+        diagnostics: [],
+        warnings: []
+      }),
       stderr: '',
       cancelled: false
     }),
@@ -1978,7 +2071,7 @@ test('HostClass exit zero with incomplete output preserves the prior snapshot', 
       return {
         exitCode: 0,
         stdout: JSON.stringify({
-          schemaVersion: '1.0',
+          schemaVersion: '1.1',
           ...context,
           classEnumerationComplete: invocationCount === 1,
           complete: invocationCount === 1,
@@ -2022,7 +2115,7 @@ test('HostClass exit one with complete output preserves the prior snapshot', asy
       return {
         exitCode: invocationCount === 1 ? 0 : 1,
         stdout: JSON.stringify({
-          schemaVersion: '1.0',
+          schemaVersion: '1.1',
           ...context,
           classEnumerationComplete: true,
           complete: true,
@@ -2067,7 +2160,7 @@ test('HostClass exit 130 with complete output remains cancelled without committi
     runHostClassList: async () => ({
       exitCode: 130,
       stdout: JSON.stringify({
-        schemaVersion: '1.0',
+        schemaVersion: '1.1',
         ...context,
         classEnumerationComplete: true,
         complete: true,
@@ -2109,7 +2202,7 @@ test('HostClass schema-valid mismatched CLI context preserves the prior snapshot
       return {
         exitCode: 0,
         stdout: JSON.stringify({
-          schemaVersion: '1.0',
+          schemaVersion: '1.1',
           ...context,
           sourceTemplate: invocationCount === 1
             ? context.sourceTemplate
@@ -2156,7 +2249,7 @@ test('HostClass lifecycle reports complete source-association failure detail', a
     runHostClassList: async () => ({
       exitCode: 0,
       stdout: JSON.stringify({
-        schemaVersion: '1.0',
+        schemaVersion: '1.1',
         ...context,
         classEnumerationComplete: true,
         complete: true,
@@ -2198,7 +2291,7 @@ test('HostClass lifecycle preserves exact code-page class and intrinsic source i
     runHostClassList: async () => ({
       exitCode: 0,
       stdout: JSON.stringify({
-        schemaVersion: '1.0',
+        schemaVersion: '1.1',
         ...context,
         classEnumerationComplete: true,
         complete: true,
@@ -2254,7 +2347,7 @@ test('HostClass lifecycle preserves an exact code-page Event name', async () => 
     runHostClassList: async () => ({
       exitCode: 0,
       stdout: JSON.stringify({
-        schemaVersion: '1.0',
+        schemaVersion: '1.1',
         ...context,
         classEnumerationComplete: true,
         complete: true,
@@ -2300,7 +2393,7 @@ test('HostClass lifecycle preserves an exact code-page Event parameter name', as
     runHostClassList: async () => ({
       exitCode: 0,
       stdout: JSON.stringify({
-        schemaVersion: '1.0',
+        schemaVersion: '1.1',
         ...context,
         classEnumerationComplete: true,
         complete: true,
@@ -2355,7 +2448,7 @@ test('HostClass lifecycle preserves an exact code-page TypeLib parameter type na
     runHostClassList: async () => ({
       exitCode: 0,
       stdout: JSON.stringify({
-        schemaVersion: '1.0',
+        schemaVersion: '1.1',
         ...context,
         classEnumerationComplete: true,
         complete: true,
@@ -2428,7 +2521,7 @@ test('HostClass lifecycle preserves an exact unresolved parameter type display n
     runHostClassList: async () => ({
       exitCode: 0,
       stdout: JSON.stringify({
-        schemaVersion: '1.0',
+        schemaVersion: '1.1',
         ...context,
         classEnumerationComplete: true,
         complete: true,
@@ -2493,7 +2586,7 @@ test('HostClass invalid nested Event schema preserves the complete prior snapsho
       return {
         exitCode: 0,
         stdout: JSON.stringify({
-          schemaVersion: '1.0',
+          schemaVersion: '1.1',
           ...context,
           classEnumerationComplete: true,
           complete: true,
@@ -2547,7 +2640,7 @@ test('HostClass notification-incompatible nested values preserve the complete pr
       return {
         exitCode: 0,
         stdout: JSON.stringify({
-          schemaVersion: '1.0',
+          schemaVersion: '1.1',
           ...context,
           classEnumerationComplete: true,
           complete: true,
@@ -2611,7 +2704,7 @@ test('HostClass document removal publishes a cleared revision without another in
       return {
         exitCode: 0,
         stdout: JSON.stringify({
-          schemaVersion: '1.0',
+          schemaVersion: '1.1',
           ...context,
           classEnumerationComplete: true,
           complete: true,
@@ -2638,7 +2731,7 @@ test('HostClass document removal publishes a cleared revision without another in
   assert.deepEqual(notifications[1], {
     method: 'vba/hostClassProjectionSnapshot',
     parameters: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       revision: 2,
       ...context,
       state: 'cleared'
@@ -2708,7 +2801,7 @@ test('HostClass removal preserves a pending identity-change clear before replace
       return {
         exitCode: 0,
         stdout: JSON.stringify({
-          schemaVersion: '1.0',
+          schemaVersion: '1.1',
           ...invocation.context,
           classEnumerationComplete: true,
           complete: true,
@@ -2767,7 +2860,7 @@ test('HostClass removal during identity clear prevents replacement inspection fr
       return {
         exitCode: 0,
         stdout: JSON.stringify({
-          schemaVersion: '1.0',
+          schemaVersion: '1.1',
           ...invocation.context,
           classEnumerationComplete: true,
           complete: true,

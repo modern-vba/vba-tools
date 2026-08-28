@@ -186,10 +186,17 @@ cannot restore an older pending revision.
 The extension owns Host Event inspection, refresh generations, operational
 status, last-known-good folding, and desired snapshot replay. The language
 server receives only the closed `vba/hostClassProjectionSnapshot` notification
-schema `1`: an immutable full `present` snapshot or `cleared` state for one
+schema `2`: an immutable full `present` snapshot or `cleared` state for one
 manifest document. This transport schema is independent from the
-`host-class list --format json` CLI schema `1.0` and from source or workspace
+`host-class list --format json` CLI schema `1.1` and from source or workspace
 revisions.
+
+A `present` schema-`2` notification either omits both containing-project
+authority fields or supplies both `vbaProjectName` and
+`sourceTemplateFingerprint`. Rename compares the fingerprint with the
+request-start template bytes before using the actual project name; absent or
+stale authority fails closed without starting Excel or guessing from project
+metadata.
 
 Admission parses the complete nested schema before mutation scheduling. Pending
 notifications with the same project-document key are ranked by their positive
@@ -213,6 +220,31 @@ its already captured immutable inventory; a later request sees the accepted
 replacement. No completion, hover, signature-help, diagnostic, or other editor
 request invokes `vba-dev`, launches Excel, or waits for inspection or
 notification completion.
+
+### Semantic module-identity Rename
+
+Prepare Rename treats only the unquoted payload of a correctly placed,
+authoritative `Attribute VB_Name` record as the declaration occurrence. The
+same source-owned identity also resolves through type uses, module and
+predeclared-instance qualifiers, and conclusive interface prefixes. Missing
+metadata remains filename-only fallback; malformed, misplaced, duplicate, or
+overlength metadata is invalid. Neither state authorizes mutation.
+
+A basename that case-insensitively equals the old identity follows a semantic
+Rename for `.bas`, `.cls`, and `.frm`; a matching `.frx` follows its form. A
+deliberately different basename remains unchanged. The server requires ordered
+`documentChanges` plus the `rename` resource operation, validates every text
+edit and raw-byte file precondition, then returns all required operations or no
+plan. `resourceOperationConflict` distinguishes `sourceMissing`,
+`sourceChanged`, `destinationExists`, and `sidecarConflict` with a path and
+repair guidance.
+
+Containing and referenced project names participate only when current
+authoritative evidence is complete. Manifest labels and generated aliases do
+not substitute. Installed CommonModules and current host-associated components
+retain their managed ownership. A later provider or filesystem failure is a
+client-observed `WorkspaceEditApplicationFailure`; the client owns Undo, repair,
+and a fresh request rather than relying on server rollback.
 
 ### Contract declaration-name completion
 

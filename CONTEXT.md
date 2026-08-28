@@ -1309,7 +1309,9 @@ The immutable, document-wide effective host-class state that `VscodeExtension`
 atomically supplies to the language server after combining current projections,
 last-known-good projections, indeterminate identities, and authoritative
 deletion. It is a full replacement rather than a CLI result, class delta, or
-class tombstone.
+class tombstone. A present schema-`2` snapshot may carry the actual
+`VbaProjectName` and its `SourceTemplateFingerprint` only as a complete pair;
+cleared state carries neither.
 _Avoid_: HostClassProjectionResult, incremental projection update, operational log
 
 **HostClassProjectionSnapshotRevision**:
@@ -1346,7 +1348,17 @@ only when that set and every class projection are complete. A structurally
 complete class remains `resolved` when a successfully inspected parameter has
 an unresolved `HostEventTypeReference`; incomplete or untrusted inspection,
 including an unavailable `HostEventAvailability` value, makes it `unverified`.
+Schema `1.1` may additionally pair the actual inspected `VbaProjectName` with
+the exact `SourceTemplateFingerprint`; absence of that pair does not invalidate
+Host Event projection but supplies no containing-project mutation authority.
 _Avoid_: all-or-nothing host projection, omitted empty class, partial class inference
+
+**SourceTemplateFingerprint**:
+The uppercase SHA-256 fingerprint of the exact source-template private-copy
+bytes inspected for one `VbaProjectName` observation. It binds containing-project
+mutation authority to content, not merely to a path, timestamp, document name,
+workbook file name, or manifest label.
+_Avoid_: HostClassProjectionRefreshGeneration, source-template mtime, project label
 
 **UnverifiedHostClassEntry**:
 The non-authoritative `HostClassProjectionResult` entry for an enumerated class
@@ -3901,7 +3913,7 @@ Dev: "Who owns `HostClassProjection` refresh and storage?"
 Domain Expert: "`HostClassList` performs one read-only, machine-readable inspection of the selected `ProjectDocument` source template and owns only that invocation and its Excel process. `VscodeExtension` owns the background `HostClassProjectionLifecycle` and supplies committed immutable snapshots to the language server. The manifest stores neither generated Event members nor projection state, and an `AdHocVbaProject` has no projection."
 
 Dev: "Can a slow host-class refresh overwrite a newer project state?"
-Domain Expert: "No. `VscodeExtension` binds each invocation to a `HostClassProjectionRefreshGeneration` and commits only while it remains current and the response's canonical absolute project root, manifest-resolved document name, and canonical absolute source-template path still match. A superseded result changes neither resolved entries nor deletion state. The generation remains consumer-local; `VbaDev` inspects the template copy selected at invocation start and serializes no VS Code request ID, source hash, mtime, or inspection timestamp."
+Domain Expert: "No. `VscodeExtension` binds each invocation to a `HostClassProjectionRefreshGeneration` and commits only while it remains current and the response's canonical absolute project root, manifest-resolved document name, and canonical absolute source-template path still match. A superseded result changes neither resolved entries nor deletion state. The generation remains consumer-local; `VbaDev` inspects the template copy selected at invocation start and serializes no VS Code request ID, mtime, or inspection timestamp. Its optional `SourceTemplateFingerprint` instead binds the actual inspected project name to those exact bytes."
 
 Dev: "Should editing `Module1.bas` or refreshing a reference catalog start host-class inspection?"
 Domain Expert: "No. A `HostClassProjectionRefreshTrigger` is initial project-document activation, an effective manifest document or source-template identity change, a create/change/delete event for the selected template file, or an explicit consumer refresh. Removing a document or changing its template identity cancels in-flight work and removes the old projection. A same-path template change advances the generation but preserves last-known-good on failure; temporary template absence is unavailable rather than authoritative deletion. Source edits, reference-only changes, editor changes, and bin or publish changes do not trigger inspection. Relevant source and manifest changes may still run `HostClassSourceAssociationReevaluation` against the current snapshot without starting Excel."
@@ -3925,7 +3937,10 @@ Dev: "Can a `lastKnownGood` host Event still prove a validation error or authori
 Domain Expert: "No. It may continue to supply completion, hover, Signature Help, existing-handler association, and navigation, but `HostClassProjectionAuthority` remains indeterminate for semantic conclusions. Do not establish `invalidNoEvents`, handler incompatibility, result type, or type compatibility from stale evidence, and reject a mutation that needs current host evidence with `analysisIncomplete`. `current` alone is authoritative; an `indeterminate` entry supplies no projected candidates. The status bar reports stale use rather than annotating every editor item."
 
 Dev: "What is the public CLI for obtaining a host-class projection?"
-Domain Expert: "Use `vba-dev host-class list --project <path> --document <name> --format json`. It follows normal project discovery, defaults to the primary document when `--document` is omitted, defaults to human-readable text, and advertises JSON schema `1.0` as `featureVersions[\"hostClass.list\"]`. It starts an owned hidden Excel process but does not write the workbook, source, manifest, or a projection cache."
+Domain Expert: "Use `vba-dev host-class list --project <path> --document <name> --format json`. It follows normal project discovery, defaults to the primary document when `--document` is omitted, defaults to human-readable text, and advertises feature `1.0` as `featureVersions[\"hostClass.list\"]` plus JSON output schema `1.1` as `commandSchemaVersions[\"host-class list\"]`. It starts an owned hidden Excel process but does not write the workbook, source, manifest, or a projection cache."
+
+Dev: "How does module Rename know the containing VBA project name came from the same template content?"
+Domain Expert: "CLI schema `1.1` emits the actual inspected `VBProject.Name` and uppercase SHA-256 `SourceTemplateFingerprint` only as a pair. The extension carries that pair in `vba/hostClassProjectionSnapshot` schema `2`. Rename compares the fingerprint with the exact request-start template bytes; an absent or stale pair is `analysisIncomplete`, and manifest project label, document name, or workbook filename never substitutes."
 
 Dev: "Does `host-class list` open and lock the source template itself?"
 Domain Expert: "No. It copies the selected source template into a unique `HostClassInspectionWorkspace`, opens only that copy with macros and Excel Events disabled, imports no source, changes no references, and never saves. It releases the owned Excel process before removing the workspace. If the copy cannot be prepared, the command fails without guessing a projection."

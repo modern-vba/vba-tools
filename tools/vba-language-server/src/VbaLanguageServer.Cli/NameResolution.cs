@@ -472,6 +472,15 @@ public sealed class VbaNameResolutionService
             .Where(candidate => ContainsPosition(candidate.Definition, position))
             .Any(candidate => SameName(candidate.Name, qualifier));
 
+    internal bool HasLocalSourceQualifierShadow(
+        VbaSourceDocument currentDocument,
+        VbaPosition position,
+        string qualifier)
+        => HasLocalQualifierShadow(
+            currentDocument,
+            position,
+            qualifier);
+
     private IReadOnlyList<VbaSourceDefinition> GetVisibleSourceModuleDefinitions(
         VbaSourceDocument currentDocument,
         string qualifier)

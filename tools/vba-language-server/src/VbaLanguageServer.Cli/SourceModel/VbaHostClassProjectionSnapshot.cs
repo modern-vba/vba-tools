@@ -15,7 +15,9 @@ public sealed record VbaHostClassProjectionSnapshot(
     long Revision,
     VbaHostClassProjectionContext Context,
     bool ClassEnumerationComplete,
-    IReadOnlyList<VbaHostClassProjectionEntry> Classes);
+    IReadOnlyList<VbaHostClassProjectionEntry> Classes,
+    string? VbaProjectName = null,
+    string? SourceTemplateFingerprint = null);
 
 /// <summary>
 /// Identifies the supported host-class component kinds.

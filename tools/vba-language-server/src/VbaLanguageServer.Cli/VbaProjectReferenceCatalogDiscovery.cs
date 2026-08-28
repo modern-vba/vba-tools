@@ -632,7 +632,8 @@ public sealed class VbaProjectReferenceCatalogCache
 
     internal VbaProjectReferenceCatalogSelectionState CaptureSelectionState(
         IReadOnlyList<VbaProjectReference> references,
-        string? scopeKey)
+        string? scopeKey,
+        string? selectionFingerprint = null)
     {
         lock (gate)
         {
@@ -642,6 +643,16 @@ public sealed class VbaProjectReferenceCatalogCache
                 VbaProjectReferenceName.Comparer);
             var selectedIdentities = new Dictionary<string, VbaProjectReferenceCatalogIdentity>(
                 VbaProjectReferenceName.Comparer);
+            var authoritativeProjectNames = new Dictionary<string, string>(
+                VbaProjectReferenceName.Comparer);
+            var standardCatalog = catalogSet.FindCatalog(
+                VbaProjectReferenceCatalogSet.StandardLibraryReferenceName);
+            if (!string.IsNullOrEmpty(standardCatalog?.ReferencedVbaProjectName))
+            {
+                authoritativeProjectNames[
+                    VbaProjectReferenceCatalogSet.StandardLibraryReferenceName] =
+                    standardCatalog.ReferencedVbaProjectName;
+            }
             Dictionary<string, ScopedReferenceCatalogBinding>? scopeBindings = null;
             if (scopeKey is not null)
             {
@@ -650,6 +661,7 @@ public sealed class VbaProjectReferenceCatalogCache
             for (var index = 0; index < references.Count; index++)
             {
                 var referenceName = references[index].Name;
+                ScopedReferenceCatalogBinding? selectedScopedBinding = null;
                 selectedSources[referenceName] = catalogSources.TryGetValue(
                     referenceName,
                     out var catalogSource)
@@ -665,6 +677,7 @@ public sealed class VbaProjectReferenceCatalogCache
                 if (scopeBindings is not null
                     && scopeBindings.TryGetValue(referenceName, out var scopedBinding))
                 {
+                    selectedScopedBinding = scopedBinding;
                     selectedCatalogSet = selectedCatalogSet.WithCatalog(scopedBinding.Catalog);
                     selectedSources[referenceName] = scopedBinding.Source;
                     if (scopedBinding.Identity is not null)
@@ -682,13 +695,48 @@ public sealed class VbaProjectReferenceCatalogCache
                 {
                     selectedIdentities[referenceName] = identity;
                 }
+
+                var selectedCatalog = selectedCatalogSet.FindCatalog(referenceName);
+                if (string.IsNullOrEmpty(selectedCatalog?.ReferencedVbaProjectName))
+                {
+                    continue;
+                }
+
+                if (selectedSources[referenceName]
+                    == VbaProjectReferenceCatalogSource.Bundled)
+                {
+                    authoritativeProjectNames[referenceName] =
+                        selectedCatalog.ReferencedVbaProjectName;
+                    continue;
+                }
+
+                var currentConcreteSource = selectedSources[referenceName] is
+                    VbaProjectReferenceCatalogSource.Persisted
+                        or VbaProjectReferenceCatalogSource.Generated;
+                var currentConcreteIdentity = scopeKey is null
+                    || selectedScopedBinding is null
+                    ? selectedIdentities.ContainsKey(referenceName)
+                    : selectedScopedBinding?.Identity is not null
+                        && !string.IsNullOrEmpty(
+                            selectedScopedBinding.SelectionFingerprint)
+                        && !string.IsNullOrEmpty(selectionFingerprint)
+                        && string.Equals(
+                            selectedScopedBinding.SelectionFingerprint,
+                            selectionFingerprint,
+                            StringComparison.Ordinal);
+                if (currentConcreteSource && currentConcreteIdentity)
+                {
+                    authoritativeProjectNames[referenceName] =
+                        selectedCatalog.ReferencedVbaProjectName;
+                }
             }
 
             return new VbaProjectReferenceCatalogSelectionState(
                 selectedCatalogSet,
                 selectedRevision,
                 selectedSources,
-                selectedIdentities);
+                selectedIdentities,
+                authoritativeProjectNames);
         }
     }
 
@@ -1221,7 +1269,8 @@ internal readonly record struct VbaProjectReferenceCatalogSelectionState(
     VbaProjectReferenceCatalogSet CatalogSet,
     long Revision,
     IReadOnlyDictionary<string, VbaProjectReferenceCatalogSource> Sources,
-    IReadOnlyDictionary<string, VbaProjectReferenceCatalogIdentity> Identities);
+    IReadOnlyDictionary<string, VbaProjectReferenceCatalogIdentity> Identities,
+    IReadOnlyDictionary<string, string> AuthoritativeProjectNames);
 
 /// <summary>
 /// Identifies where the active catalog for a reference came from.

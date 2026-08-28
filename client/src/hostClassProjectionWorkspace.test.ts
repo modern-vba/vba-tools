@@ -415,7 +415,7 @@ test('HostClass pending manifest resolution fences an old-context invocation res
   ): HostClassListRunResult => ({
     exitCode: 0,
     stdout: JSON.stringify({
-      schemaVersion: '1.0',
+      schemaVersion: '1.1',
       ...context,
       classEnumerationComplete: true,
       complete: true,

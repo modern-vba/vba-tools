@@ -99,6 +99,11 @@ internal static class VbaLspFeatureProjection
                     }
                 }
 
+                if (diagnostic.Data is not null)
+                {
+                    projected["data"] = diagnostic.Data;
+                }
+
                 return projected;
             })
             .ToArray<object>();
@@ -315,12 +320,18 @@ internal static class VbaLspFeatureProjection
         return projected;
     }
 
-    public static object? CreateWorkspaceEdit(IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>>? changes)
-        => changes is null
-            ? null
-            : new
+    public static object? CreateWorkspaceEdit(VbaRenamePlan? plan)
+    {
+        if (plan is null)
+        {
+            return null;
+        }
+
+        if (plan.FileRenames.Count == 0)
+        {
+            return new
             {
-                changes = changes.ToDictionary(
+                changes = plan.Changes.ToDictionary(
                     pair => pair.Key,
                     pair => pair.Value.Select(edit => new
                     {
@@ -329,6 +340,48 @@ internal static class VbaLspFeatureProjection
                     }).ToArray(),
                     StringComparer.OrdinalIgnoreCase)
             };
+        }
+
+        var documentChanges = new List<object>();
+        foreach (var (uri, edits) in plan.Changes
+            .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(pair => pair.Key, StringComparer.Ordinal))
+        {
+            documentChanges.Add(new
+            {
+                textDocument = new
+                {
+                    uri,
+                    version = (int?)null
+                },
+                edits = edits.Select(edit => new
+                {
+                    range = edit.Range,
+                    newText = edit.NewText
+                }).ToArray()
+            });
+        }
+
+        foreach (var rename in plan.FileRenames)
+        {
+            documentChanges.Add(new
+            {
+                kind = "rename",
+                oldUri = rename.OldUri,
+                newUri = rename.NewUri,
+                options = new
+                {
+                    overwrite = rename.Overwrite,
+                    ignoreIfExists = false
+                }
+            });
+        }
+
+        return new
+        {
+            documentChanges = documentChanges.ToArray()
+        };
+    }
 
     public static object[] CreateFormattingEdits(VbaTextEdit? edit)
         => edit is null

@@ -58,6 +58,96 @@ public sealed class VbaSyntaxTreeModuleTests
     }
 
     [Fact]
+    public void ParserReportsMalformedModuleIdentityMetadataOnTheRepairablePayload()
+    {
+        const string source = "Attribute VB_Name = \"123Bad\"";
+
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            source);
+
+        var diagnostic = Assert.Single(
+            tree.Diagnostics,
+            candidate => candidate.Code
+                == "syntax.moduleIdentityMetadataMalformed");
+        Assert.Equal(RangeOf(source, "123Bad"), diagnostic.Range);
+        Assert.Contains(
+            "re-export or repair",
+            diagnostic.Message,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ParserReportsOnlyTheMalformedModuleIdentityRepairCandidate()
+    {
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"GoodIdentity\"",
+            "Attribute VB_Name.\"BadIdentity\""
+        ]);
+
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            source);
+
+        var diagnostic = Assert.Single(
+            tree.Diagnostics,
+            candidate => candidate.Code
+                == "syntax.moduleIdentityMetadataMalformed");
+        Assert.Equal(RangeOf(source, "VB_Name", occurrence: 1), diagnostic.Range);
+    }
+
+    [Fact]
+    public void ParserReportsEveryDuplicateStandardModuleIdentityPayload()
+    {
+        var source = string.Join('\n', [
+            "Attribute VB_Name = \"FirstIdentity\"",
+            "Attribute VB_Name = \"SecondIdentity\""
+        ]);
+
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.bas",
+            source);
+
+        var diagnostics = tree.Diagnostics
+            .Where(candidate => candidate.Code
+                == "syntax.moduleIdentityMetadataDuplicate")
+            .ToArray();
+        Assert.Collection(
+            diagnostics,
+            first => Assert.Equal(RangeOf(source, "FirstIdentity"), first.Range),
+            second => Assert.Equal(RangeOf(source, "SecondIdentity"), second.Range));
+    }
+
+    [Fact]
+    public void ParserUsesTheLastRepeatedClassIdentityAsAuthority()
+    {
+        var source = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "BEGIN",
+            "  MultiUse = -1",
+            "END",
+            "Attribute VB_Name = \"ShadowedIdentity\"",
+            "Attribute VB_Name = \"CurrentIdentity\"",
+            "Attribute VB_GlobalNameSpace = False",
+            "Attribute VB_Creatable = False",
+            "Attribute VB_PredeclaredId = False",
+            "Attribute VB_Exposed = True"
+        ]);
+
+        var tree = VbaSyntaxTree.ParseModule(
+            "file:///C:/work/Worker.cls",
+            source);
+
+        Assert.Equal("CurrentIdentity", tree.Module.Identity.Name);
+        Assert.Equal(RangeOf(source, "CurrentIdentity"), tree.Module.Identity.Range);
+        Assert.DoesNotContain(
+            tree.Diagnostics,
+            candidate => candidate.Code.StartsWith(
+                "syntax.moduleIdentityMetadata",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void VbNameUsesSharedMultilingualIdentifierRecognitionAndThe31RuneLimit()
     {
         var valid = VbaSyntaxTree.ParseModule(
@@ -159,9 +249,20 @@ public sealed class VbaSyntaxTreeModuleTests
         Assert.Equal("Form module is missing an Attribute VB_Name code-section boundary.", diagnostic.Message);
     }
 
-    private static VbaSyntaxRange RangeOf(string source, string value)
+    private static VbaSyntaxRange RangeOf(
+        string source,
+        string value,
+        int occurrence = 0)
     {
-        var startOffset = source.IndexOf(value, StringComparison.Ordinal);
+        var startOffset = -1;
+        for (var index = 0; index <= occurrence; index++)
+        {
+            startOffset = source.IndexOf(
+                value,
+                startOffset + 1,
+                StringComparison.Ordinal);
+        }
+
         Assert.True(startOffset >= 0, $"Could not find '{value}' in source.");
         return new VbaSyntaxRange(
             PositionAt(source, startOffset),

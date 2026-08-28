@@ -92,9 +92,11 @@ public sealed record VbaDefTypeDirectiveSyntax(
 /// </summary>
 /// <param name="Name">The module identity name.</param>
 /// <param name="Range">The source range of the identity name.</param>
+/// <param name="Metadata">The complete source metadata classification.</param>
 public sealed record VbaModuleIdentitySyntax(
     string Name,
-    VbaSyntaxRange Range);
+    VbaSyntaxRange Range,
+    VbaModuleIdentityMetadata? Metadata = null);
 
 /// <summary>
 /// Represents a module-level Attribute assignment.

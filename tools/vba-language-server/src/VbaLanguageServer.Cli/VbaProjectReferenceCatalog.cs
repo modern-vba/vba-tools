@@ -80,7 +80,14 @@ public sealed record VbaProjectReferenceCatalog(
     string ReferenceName,
     IReadOnlyList<string> QualifierAliases,
     IReadOnlyList<VbaProjectReferenceDefinition> Definitions,
-    IReadOnlyList<TypeLibCatalogType>? TypeLibTypes = null);
+    IReadOnlyList<TypeLibCatalogType>? TypeLibTypes = null)
+{
+    /// <summary>
+    /// Gets the authoritative VBA project name exported by this concrete library.
+    /// Display names and qualifier aliases are deliberately not substitutes.
+    /// </summary>
+    public string? ReferencedVbaProjectName { get; init; }
+}
 
 internal enum VbaTypeLibEventSurfaceState
 {
@@ -459,10 +466,28 @@ public sealed class VbaProjectReferenceCatalogSet
         };
 
         return new VbaProjectReferenceCatalogSet(
-            bundledCatalogs.ToDictionary(
+            bundledCatalogs
+                .Select(catalog => catalog with
+                {
+                    ReferencedVbaProjectName = catalog.ReferenceName switch
+                    {
+                        StandardLibraryReferenceName => "VBA",
+                        "Microsoft Excel 16.0 Object Library" => "Excel",
+                        "Microsoft Scripting Runtime" => "Scripting",
+                        "Microsoft Office 16.0 Object Library" => "Office",
+                        "Microsoft Outlook 16.0 Object Library" => "Outlook",
+                        _ => null
+                    }
+                })
+                .ToDictionary(
                 catalog => catalog.ReferenceName,
                 VbaProjectReferenceName.Comparer));
     }
+
+    internal VbaProjectReferenceCatalog? FindCatalog(string referenceName)
+        => catalogs.TryGetValue(referenceName, out var catalog)
+            ? catalog
+            : null;
 
     /// <summary>
     /// Gets the reference names that currently have catalogs.

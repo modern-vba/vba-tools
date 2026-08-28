@@ -208,7 +208,7 @@ public sealed class VbaLanguageWorkspaceTests
             var beforeB = workspace.CreateProjectSnapshot(projectBUri);
             var payload = JsonNode.Parse(JsonSerializer.Serialize(new
             {
-                schemaVersion = 1,
+                schemaVersion = 2,
                 revision = 1,
                 project = Path.GetFullPath(projectRoot),
                 document = "Book1",
@@ -230,6 +230,50 @@ public sealed class VbaLanguageWorkspaceTests
             Assert.Equal(
                 1,
                 afterA.SemanticInventory.HostClassProjectionSnapshot?.Revision);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Host_class_snapshot_rejects_the_superseded_transport_schema()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-host-schema-").FullName;
+        try
+        {
+            WriteProjectManifest(projectRoot);
+            var projectUri = ToFileUri(
+                Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
+            var sourceTemplate = Path.GetFullPath(Path.Combine(
+                projectRoot,
+                "src",
+                "Book1",
+                "Book1.xlsm"));
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()));
+            workspace.UpdateDocument(
+                projectUri,
+                "Attribute VB_Name = \"ProjectA\"\nPublic Sub RunA()\nEnd Sub\n");
+            var handler = new VbaHostClassProjectionSnapshotHandler(workspace);
+            Assert.True(handler.TryApply(CreateEmptyHostSnapshotPayload(
+                projectRoot,
+                sourceTemplate,
+                revision: 1)));
+            var superseded = CreateEmptyHostSnapshotPayload(
+                projectRoot,
+                sourceTemplate,
+                revision: 2);
+            superseded["schemaVersion"] = 1;
+
+            Assert.False(handler.TryApply(superseded));
+            Assert.Equal(
+                1,
+                workspace.CreateProjectSnapshot(projectUri)
+                    .SemanticInventory.HostClassProjectionSnapshot?.Revision);
         }
         finally
         {
@@ -362,7 +406,7 @@ public sealed class VbaLanguageWorkspaceTests
             };
             var present = JsonNode.Parse(JsonSerializer.Serialize(new
             {
-                schemaVersion = 1,
+                schemaVersion = 2,
                 revision = 1,
                 context.project,
                 context.document,
@@ -373,7 +417,7 @@ public sealed class VbaLanguageWorkspaceTests
             }))!;
             var cleared = JsonNode.Parse(JsonSerializer.Serialize(new
             {
-                schemaVersion = 1,
+                schemaVersion = 2,
                 revision = 2,
                 context.project,
                 context.document,
@@ -408,7 +452,7 @@ public sealed class VbaLanguageWorkspaceTests
                 VbaProjectReferenceCatalogSet.CreateBundled()));
         var payload = JsonNode.Parse(JsonSerializer.Serialize(new
         {
-            schemaVersion = 1,
+            schemaVersion = 2,
             revision = 1,
             project = "C:\\work\0bad",
             document = "Book1",
@@ -586,7 +630,7 @@ public sealed class VbaLanguageWorkspaceTests
                 revision: 1)));
             var invalid = JsonNode.Parse(JsonSerializer.Serialize(new
             {
-                schemaVersion = 1,
+                schemaVersion = 2,
                 revision = 2,
                 project = Path.GetFullPath(projectRoot),
                 document = "Book1",
@@ -612,7 +656,7 @@ public sealed class VbaLanguageWorkspaceTests
             Assert.False(handler.TryApply(invalid));
             var invalidIntrinsicType = JsonNode.Parse(JsonSerializer.Serialize(new
             {
-                schemaVersion = 1,
+                schemaVersion = 2,
                 revision = 2,
                 project = Path.GetFullPath(projectRoot),
                 document = "Book1",
@@ -694,7 +738,7 @@ public sealed class VbaLanguageWorkspaceTests
                 revision: 1)));
             var invalid = JsonNode.Parse(JsonSerializer.Serialize(new
             {
-                schemaVersion = 1,
+                schemaVersion = 2,
                 revision = 2,
                 project = Path.GetFullPath(projectRoot),
                 document = "Book1",
@@ -745,7 +789,7 @@ public sealed class VbaLanguageWorkspaceTests
             _ = workspace.CreateProjectSnapshot(projectUri);
             var payload = JsonNode.Parse(JsonSerializer.Serialize(new
             {
-                schemaVersion = 1,
+                schemaVersion = 2,
                 revision = 1,
                 project = Path.GetFullPath(projectRoot),
                 document = "Book1",
@@ -930,7 +974,7 @@ public sealed class VbaLanguageWorkspaceTests
             _ = workspace.CreateProjectSnapshot(projectUri);
             var payload = JsonNode.Parse(JsonSerializer.Serialize(new
             {
-                schemaVersion = 1,
+                schemaVersion = 2,
                 revision = 1,
                 project = Path.GetFullPath(projectRoot),
                 document = "Book1",
@@ -1057,7 +1101,7 @@ public sealed class VbaLanguageWorkspaceTests
             _ = workspace.CreateProjectSnapshot(projectUri);
             var payload = JsonNode.Parse(JsonSerializer.Serialize(new
             {
-                schemaVersion = 1,
+                schemaVersion = 2,
                 revision = 1,
                 project = Path.GetFullPath(projectRoot),
                 document = "Book1",
@@ -1116,7 +1160,7 @@ public sealed class VbaLanguageWorkspaceTests
             Assert.True(workspace.RemoveDocument(projectUri));
             var cleared = JsonNode.Parse(JsonSerializer.Serialize(new
             {
-                schemaVersion = 1,
+                schemaVersion = 2,
                 revision = 2,
                 project = Path.GetFullPath(projectRoot),
                 document = "Book1",
@@ -1162,7 +1206,7 @@ public sealed class VbaLanguageWorkspaceTests
             _ = workspace.CreateProjectSnapshot(projectUri);
             var payload = JsonNode.Parse(JsonSerializer.Serialize(new
             {
-                schemaVersion = 1,
+                schemaVersion = 2,
                 revision = 1,
                 project = Path.GetFullPath(projectRoot),
                 document = "Book1",
@@ -1277,7 +1321,7 @@ public sealed class VbaLanguageWorkspaceTests
 
             JsonNode CreatePayload(bool authoringAvailable) => JsonNode.Parse(JsonSerializer.Serialize(new
             {
-                schemaVersion = 1,
+                schemaVersion = 2,
                 revision = 1,
                 project = Path.GetFullPath(projectRoot),
                 document = "Book1",
@@ -1341,7 +1385,7 @@ public sealed class VbaLanguageWorkspaceTests
             _ = workspace.CreateProjectSnapshot(projectUri);
             var payload = JsonNode.Parse(JsonSerializer.Serialize(new
             {
-                schemaVersion = 1,
+                schemaVersion = 2,
                 revision = 1,
                 project = Path.GetFullPath(projectRoot),
                 document = "Book1",
@@ -2482,7 +2526,7 @@ public sealed class VbaLanguageWorkspaceTests
         long revision)
         => JsonNode.Parse(JsonSerializer.Serialize(new
         {
-            schemaVersion = 1,
+            schemaVersion = 2,
             revision,
             project = Path.GetFullPath(projectRoot),
             document = "Book1",

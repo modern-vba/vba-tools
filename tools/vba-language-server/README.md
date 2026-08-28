@@ -59,7 +59,7 @@ reference manifest edits stay in `vba-dev`; the language server owns editor
 language features.
 
 The VS Code extension also owns Host Event inspection and retained projection
-state. It sends `vba/hostClassProjectionSnapshot` schema `1` notifications as
+state. It sends `vba/hostClassProjectionSnapshot` schema `2` notifications as
 immutable full replacements or clears for one manifest document. Each payload
 has an independent, monotonically increasing document-local revision and exact
 canonical project, document, and source-template context. The language server
@@ -68,11 +68,41 @@ contexts, coalesces queued notifications for the same document to the greatest
 revision, atomically replaces the accepted snapshot, and invalidates only that
 project's semantic inventory.
 
+A present schema-`2` snapshot may carry `vbaProjectName` and
+`sourceTemplateFingerprint` only together. The pair binds the actual inspected
+VBA project name to exact template bytes. Missing, stale, malformed, or
+half-present authority cannot authorize a module Rename and produces
+`analysisIncomplete`; the server never substitutes manifest or file naming.
+
 `current` entries are authoritative Host Event evidence,
 `lastKnownGood` entries are advisory, and `indeterminate` entries provide no
 projected Event candidate. Interactive requests capture committed immutable
 state; they never invoke `vba-dev`, launch Excel, or wait for inspection or
 notification completion.
+
+### Semantic module-identity Rename protocol
+
+`textDocument/prepareRename` selects only the unquoted payload of the
+authoritative valid `Attribute VB_Name`. `textDocument/rename` returns one
+ordered `documentChanges` edit containing every required text edit and
+non-overwriting `RenameFile` operation, or returns no edit. Matching `.bas`,
+`.cls`, and `.frm` basenames follow the identity, and a matching `.frx` follows
+its form; a deliberately different basename is preserved.
+
+A recognized rejection uses Request Failed (`-32803`) with
+`error.data.reason`. Module-specific reasons include
+`moduleIdentityNotExplicit`, `moduleIdentityInvalid`,
+`managedModuleIdentity`, `hostManagedModuleIdentity`,
+`clientCapabilityMissing`, `analysisIncomplete`, `sameScopeCollision`, and
+`resourceOperationConflict`. Invalid metadata may add `condition: "duplicate"`
+or `"malformed"`. Resource conflicts add `condition`, `path`, and `guidance`;
+conditions are `sourceMissing`, `sourceChanged`, `destinationExists`, and
+`sidecarConflict`. A scope collision carries its complete deterministic
+`conflicts` array.
+
+`WorkspaceEditApplicationFailure` is not a server rejection reason. It occurs
+after a valid complete edit reaches the client; recovery is client Undo,
+filesystem repair, and a fresh Rename request rather than server rollback.
 
 ### Contract declaration-name completion
 

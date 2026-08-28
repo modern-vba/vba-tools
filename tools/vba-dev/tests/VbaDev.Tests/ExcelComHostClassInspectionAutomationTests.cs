@@ -1,5 +1,6 @@
 using System.Text;
 using System.IO.Compression;
+using System.Security.Cryptography;
 using VbaDev.App.HostClasses;
 using VbaDev.App.Workbooks;
 using VbaDev.Infrastructure.Debugging;
@@ -52,6 +53,11 @@ public sealed class ExcelComHostClassInspectionAutomationTests
 
         Assert.True(completion.Batch.ClassEnumerationComplete);
         Assert.IsType<ResolvedHostClassInspectionEntry>(Assert.Single(completion.Batch.Classes));
+        Assert.Equal("BookProject", completion.Batch.VbaProjectName);
+        Assert.Equal(
+            Convert.ToHexString(SHA256.HashData(
+                Encoding.UTF8.GetBytes("fixed template bytes"))),
+            completion.Batch.SourceTemplateFingerprint);
         Assert.Empty(completion.Warnings);
         Assert.Equal("mutated after the start-time copy", File.ReadAllText(sourceTemplate, Encoding.UTF8));
         Assert.Equal("fixed template bytes", lifecycle.ObservedPrivateCopyContents);
@@ -1221,7 +1227,10 @@ public sealed class ExcelComHostClassInspectionAutomationTests
                             new HostClassIdentity(
                                 "UserForm1",
                                 HostClassComponentKind.Form))
-                    ]);
+                    ]) with
+                {
+                    VbaProjectName = "BookProject"
+                };
             }
 
             var components = new List<HostClassComponentDescriptor>
@@ -1250,7 +1259,10 @@ public sealed class ExcelComHostClassInspectionAutomationTests
                         HostClassComponentKind.Form)));
             }
 
-            return HostClassIdentityEnumeration.CreateComplete(components);
+            return HostClassIdentityEnumeration.CreateComplete(components) with
+            {
+                VbaProjectName = "BookProject"
+            };
         }
 
         public HostClassInspectionEntry InspectClass(

@@ -5,6 +5,7 @@ import type {
   CompletionMiddleware,
   FormattingMiddleware,
   LanguageClientOptions,
+  RenameMiddleware,
   ServerOptions,
   SignatureHelpMiddleware,
   StaticFeature
@@ -111,7 +112,8 @@ export function createVbaLanguageClientOptions(
   projectManifestWatcher: FileSystemWatcher,
   provideDocumentFormattingEdits?: NonNullable<
     FormattingMiddleware['provideDocumentFormattingEdits']
-  >
+  >,
+  provideRenameEdits?: NonNullable<RenameMiddleware['provideRenameEdits']>
 ): LanguageClientOptions {
   return {
     documentSelector: [
@@ -126,7 +128,8 @@ export function createVbaLanguageClientOptions(
       provideSignatureHelp: provideVbaSignatureHelp,
       ...(provideDocumentFormattingEdits === undefined
         ? {}
-        : { provideDocumentFormattingEdits })
+        : { provideDocumentFormattingEdits }),
+      ...(provideRenameEdits === undefined ? {} : { provideRenameEdits })
     }
   };
 }

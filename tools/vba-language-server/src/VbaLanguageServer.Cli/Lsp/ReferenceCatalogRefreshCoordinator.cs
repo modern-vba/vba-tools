@@ -1048,15 +1048,9 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
     }
 
     private static string CreateSelectionFingerprint(VbaProjectReferenceSelectionContext context)
-        => string.Join(
-            "\u001f",
-            context.DocumentKind.Trim().ToUpperInvariant(),
-            context.Selection.MainVbaProjectReference?.Name.Trim().ToUpperInvariant() ?? "",
-            context.Selection.MissingExpectedMainReference?.Trim().ToUpperInvariant() ?? "",
-            string.Join(
-                "\u001e",
-                context.Selection.References
-                    .Select(reference => reference.Name.Trim().ToUpperInvariant())));
+        => LanguageServerManifestResolution.CreateSelectionFingerprint(
+            context.DocumentKind,
+            context.Selection);
 
     private string CreateAutomaticWorkKey(
         VbaProjectReferenceSelectionContext context,

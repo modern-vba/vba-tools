@@ -37,7 +37,8 @@ public sealed record VbaDiagnostic(
     VbaRange Range,
     string Severity = "error",
     string Source = "vba-language-server",
-    IReadOnlyList<VbaDiagnosticDetail>? Details = null);
+    IReadOnlyList<VbaDiagnosticDetail>? Details = null,
+    object? Data = null);
 
 /// <summary>
 /// Represents a parser recovery or malformed-source diagnostic.

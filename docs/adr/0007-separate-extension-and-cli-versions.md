@@ -23,10 +23,10 @@ schema and identify their mode in the payload.
 
 Read-only Host Event inspection is independently advertised as
 `featureVersions["hostClass.list"] == "1.0"` and CLI spelling
-`commandSchemaVersions["host-class list"] == "1.0"`. The extension consumes
+`commandSchemaVersions["host-class list"] == "1.1"`. The extension consumes
 that complete invocation result, owns refresh generations and retained state,
 and folds it into the separate `vba/hostClassProjectionSnapshot` notification
-schema `1`; CLI schema `1.0`, LSP schema `1`, document-local snapshot revision,
+schema `2`; CLI schema `1.1`, LSP schema `2`, document-local snapshot revision,
 and extension refresh generation are distinct compatibility and freshness
 values.
 

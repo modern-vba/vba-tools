@@ -284,9 +284,11 @@ Resource-specific operations follow .NET CLI-style noun-first command groups whe
 ordinary project discovery, selects the requested document or the primary
 document when `--document` is omitted, identifies that document in its output,
 defaults to human-readable text, and supports `--format json` for
-`HostClassProjectionLifecycle`. Its command-specific JSON schema `1.0` is
+`HostClassProjectionLifecycle`. Its command-specific JSON schema `1.1` is
 advertised by `capabilities --format json` as
-`featureVersions: { "hostClass.list": "1.0" }`. The command inspects the
+`commandSchemaVersions: { "host-class list": "1.1" }`; the independent
+`featureVersions: { "hostClass.list": "1.0" }` capability remains unchanged.
+The command inspects the
 selected source template in a dedicated hidden **AutomationExcelProcess** and
 changes neither the workbook, source, manifest, nor consumer-owned projection
 storage.
@@ -331,6 +333,13 @@ classes are unknown and never represent authoritative empty Event surfaces.
 Malformed JSON, schema or request-context mismatch, or process-release failure
 makes the entire invocation untrusted.
 
+Schema `1.1` emits `vbaProjectName` and `sourceTemplateFingerprint` only as a
+pair. They are the actual valid `VBProject.Name` observed from the inspected
+private copy and the uppercase SHA-256 fingerprint of those exact workbook
+bytes. If either value cannot be established, both fields are absent and the
+result supplies no containing-project-name authority. Manifest project labels,
+document names, and workbook filenames are never substitutes.
+
 Within the top-level project and document request scope, every class entry
 carries an identity containing the inspected `VBComponent.Name` and component
 kind `form` or `document`. Consumers compare the name case-insensitively while
@@ -351,7 +360,7 @@ VBE-equivalent object/Event association and never derives it from
 `VBComponent.Name`, component kind, source file name, or optional base host type
 identity. Failure to establish it makes the class `unverified` with
 `reasonCode: "intrinsicEventSourceNameReadFailure"`. Because the command is
-unreleased, schema `1.0` requires this field and provides no compatibility
+unreleased, schema `1.1` requires this field and provides no compatibility
 default or alias.
 
 A class identity may occur at most once in one enumeration. Two observations
@@ -507,9 +516,10 @@ selected project document. It may commit a result only while the invocation's
 generation remains current and `project`, `document`, and `sourceTemplate`
 match its current canonical request context. A superseded or mismatched result
 changes neither resolved projections nor deletion state. The generation is not
-a CLI option or output field, and host-class schema `1.0` contains no
-consumer-specific request ID, source-template hash, mtime, or inspection
-timestamp.
+a CLI option or output field, and host-class schema `1.1` contains no
+consumer-specific request ID, mtime, or inspection timestamp. Its optional
+source-template fingerprint binds the actual project name to the inspected
+bytes but is not consumer freshness state.
 
 The consumer schedules host-class inspection when a project document first
 becomes active, when manifest reconciliation adds or removes a document or
@@ -546,7 +556,7 @@ supersession likewise do not create retry work; supersession already has the
 newest generation queued. Recovery begins only from a later lifecycle trigger
 or explicit consumer refresh, which creates a new generation. Explicit refresh
 bypasses debounce but still obeys single-flight scheduling and cleanup
-ordering. Host-class schema `1.0` adds no retryability or backoff fields.
+ordering. Host-class schema `1.1` adds no retryability or backoff fields.
 
 The extension contributes `VBA Tools: Refresh Host Events` with command ID
 `vbaTools.hostClasses.refresh`. It uses the ordinary project and document

@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Security.Cryptography;
 using VbaLanguageServer.SourceModel;
 using VbaTools.TypeLibRegistry;
 using Xunit;
@@ -17052,6 +17053,2343 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
+    public async Task Server_prepares_the_authoritative_module_identity_payload_for_rename()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/Orders.bas";
+        const string text = "Attribute VB_Name = \"InvoiceModule\"\nOption Explicit";
+        await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
+
+        var prepare = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/prepareRename",
+            uri,
+            text,
+            "InvoiceModule");
+
+        var result = prepare.GetProperty("result");
+        Assert.Equal("InvoiceModule", result.GetProperty("placeholder").GetString());
+        Assert.Equal(0, result.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(21, result.GetProperty("range").GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(0, result.GetProperty("range").GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(34, result.GetProperty("range").GetProperty("end").GetProperty("character").GetInt32());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_keeps_managed_module_identity_owned_while_member_rename_remains_available()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-managed-module-rename-").FullName;
+        try
+        {
+            var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
+            Directory.CreateDirectory(sourceRoot);
+            var sourcePath = Path.Combine(sourceRoot, "ManagedHelper.bas");
+            var consumerPath = Path.Combine(sourceRoot, "Consumer.bas");
+            var text = string.Join('\n', [
+                "Attribute VB_Name = \"ManagedHelper\"",
+                "Public Sub Run()",
+                "End Sub"
+            ]);
+            var consumerText = string.Join('\n', [
+                "Attribute VB_Name = \"Consumer\"",
+                "Public Sub Execute()",
+                "    ManagedHelper.Run",
+                "End Sub"
+            ]);
+            File.WriteAllText(sourcePath, text);
+            File.WriteAllText(consumerPath, consumerText);
+            WriteModuleRenameProjectManifest(
+                projectRoot,
+                ("ManagedHelper", "ManagedHelper.bas"));
+            var manifestPath = Path.Combine(projectRoot, "vba-project.json");
+            var originalManifestBytes = File.ReadAllBytes(manifestPath);
+            var originalSourceBytes = File.ReadAllBytes(sourcePath);
+            var uri = ToFileUri(sourcePath);
+            var consumerUri = ToFileUri(consumerPath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+
+            await process.InitializeAsync();
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(consumerUri, consumerText));
+
+            var prepare = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/prepareRename",
+                uri,
+                text,
+                "ManagedHelper");
+
+            Assert.False(prepare.TryGetProperty("result", out _));
+            var error = prepare.GetProperty("error");
+            Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+            var data = error.GetProperty("data");
+            Assert.Equal(
+                "managedModuleIdentity",
+                data.GetProperty("reason").GetString());
+            Assert.Equal(sourcePath, data.GetProperty("path").GetString(), ignoreCase: true);
+            Assert.Contains(
+                "CommonModules",
+                data.GetProperty("guidance").GetString(),
+                StringComparison.Ordinal);
+
+            var qualifierPrepare = await SendPositionRequestAsync(
+                process,
+                3,
+                "textDocument/prepareRename",
+                consumerUri,
+                consumerText,
+                "ManagedHelper.Run");
+            Assert.Equal(
+                "managedModuleIdentity",
+                qualifierPrepare
+                    .GetProperty("error")
+                    .GetProperty("data")
+                    .GetProperty("reason")
+                    .GetString());
+
+            var memberRename = await SendPositionRequestAsync(
+                process,
+                4,
+                "textDocument/rename",
+                consumerUri,
+                consumerText,
+                "ManagedHelper.Run",
+                "ManagedHelper.".Length,
+                new { newName = "RunManaged" });
+            var changes = memberRename.GetProperty("result").GetProperty("changes");
+            Assert.Equal(
+                "RunManaged",
+                Assert.Single(changes.GetProperty(uri).EnumerateArray())
+                    .GetProperty("newText")
+                    .GetString());
+            Assert.Equal(
+                "RunManaged",
+                Assert.Single(changes.GetProperty(consumerUri).EnumerateArray())
+                    .GetProperty("newText")
+                    .GetString());
+            Assert.Equal(originalManifestBytes, File.ReadAllBytes(manifestPath));
+            Assert.Equal(originalSourceBytes, File.ReadAllBytes(sourcePath));
+
+            await process.ShutdownAsync(5);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_reports_managed_module_ownership_before_file_capability_gating()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-managed-module-capability-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(
+                projectRoot,
+                "src",
+                "Book1",
+                "ManagedHelper.bas");
+            Directory.CreateDirectory(Path.GetDirectoryName(sourcePath)!);
+            const string text = "Attribute VB_Name = \"ManagedHelper\"";
+            File.WriteAllText(sourcePath, text);
+            WriteModuleRenameProjectManifest(
+                projectRoot,
+                ("ManagedHelper", "ManagedHelper.bas"));
+            var uri = ToFileUri(sourcePath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+
+            await process.InitializeAsync();
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+
+            var rename = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/rename",
+                uri,
+                text,
+                "ManagedHelper",
+                0,
+                new { newName = "RenamedHelper" });
+
+            Assert.False(rename.TryGetProperty("result", out _));
+            Assert.Equal(
+                "managedModuleIdentity",
+                rename
+                    .GetProperty("error")
+                    .GetProperty("data")
+                    .GetProperty("reason")
+                    .GetString());
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_rejects_manifest_module_rename_without_current_containing_project_name_authority()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-module-project-authority-").FullName;
+        try
+        {
+            WriteModuleRenameProjectManifest(projectRoot);
+            var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
+            var sourcePath = Path.Combine(sourceRoot, "SourceUnit.bas");
+            var consumerPath = Path.Combine(sourceRoot, "Consumer.bas");
+            var templatePath = Path.Combine(sourceRoot, "Book1.xlsm");
+            var text = string.Join('\n', [
+                "Attribute VB_Name = \"InvoiceModule\"",
+                "Public Function BuildValue() As Long",
+                "    BuildValue = 1",
+                "End Function"
+            ]);
+            var consumerText = string.Join('\n', [
+                "Attribute VB_Name = \"Consumer\"",
+                "Public Sub Run()",
+                "    Debug.Print ",
+                "End Sub"
+            ]);
+            File.WriteAllText(sourcePath, text);
+            File.WriteAllText(consumerPath, consumerText);
+            File.WriteAllBytes(templatePath, [0x01, 0x02, 0x03]);
+            var uri = ToFileUri(sourcePath);
+            var consumerUri = ToFileUri(consumerPath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+
+            await process.InitializeAsync();
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(consumerUri, consumerText));
+
+            var completion = await process.SendRequestAsync(
+                2,
+                "textDocument/completion",
+                MergePositionParameters(
+                    consumerUri,
+                    2,
+                    "    Debug.Print ".Length,
+                    null));
+            Assert.Contains(
+                completion.GetProperty("result").EnumerateArray(),
+                item => item.GetProperty("label").GetString() == "BuildValue");
+
+            var hover = await SendPositionRequestAsync(
+                process,
+                3,
+                "textDocument/hover",
+                uri,
+                text,
+                "BuildValue");
+            Assert.Contains(
+                "BuildValue",
+                hover.GetProperty("result").GetRawText(),
+                StringComparison.Ordinal);
+
+            var memberRename = await SendPositionRequestAsync(
+                process,
+                4,
+                "textDocument/rename",
+                uri,
+                text,
+                "BuildValue",
+                0,
+                new { newName = "CreateValue" });
+            Assert.Equal(
+                2,
+                memberRename
+                    .GetProperty("result")
+                    .GetProperty("changes")
+                    .GetProperty(uri)
+                    .GetArrayLength());
+
+            var rename = await SendPositionRequestAsync(
+                process,
+                5,
+                "textDocument/rename",
+                uri,
+                text,
+                "InvoiceModule",
+                0,
+                new { newName = "BillingModule" });
+
+            Assert.False(rename.TryGetProperty("result", out _));
+            var error = rename.GetProperty("error");
+            Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+            Assert.Equal(
+                "analysisIncomplete",
+                error.GetProperty("data").GetProperty("reason").GetString());
+            Assert.Contains(
+                "VBProject.Name",
+                error.GetProperty("message").GetString(),
+                StringComparison.Ordinal);
+
+            await process.ShutdownAsync(6);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_rejects_module_rename_with_a_stale_source_template_fingerprint()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-module-stale-template-authority-").FullName;
+        try
+        {
+            WriteModuleRenameProjectManifest(projectRoot);
+            var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
+            var sourcePath = Path.Combine(sourceRoot, "SourceUnit.bas");
+            var templatePath = Path.Combine(sourceRoot, "Book1.xlsm");
+            const string text = "Attribute VB_Name = \"InvoiceModule\"";
+            var inspectedTemplateBytes = new byte[] { 0x10, 0x20, 0x30, 0x40 };
+            File.WriteAllText(sourcePath, text);
+            File.WriteAllBytes(templatePath, inspectedTemplateBytes);
+            var uri = ToFileUri(sourcePath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+
+            await process.InitializeAsync();
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+            await process.WaitForDiagnosticsAsync(uri);
+            await process.SendNotificationAsync(
+                "vba/hostClassProjectionSnapshot",
+                new
+                {
+                    schemaVersion = 2,
+                    revision = 1,
+                    project = Path.GetFullPath(projectRoot),
+                    document = "Book1",
+                    sourceTemplate = Path.GetFullPath(templatePath),
+                    state = "present",
+                    vbaProjectName = "ContainingProject",
+                    sourceTemplateFingerprint = Convert.ToHexString(
+                        SHA256.HashData(inspectedTemplateBytes)),
+                    classEnumerationComplete = true,
+                    classes = Array.Empty<object>()
+                });
+            File.WriteAllBytes(
+                templatePath,
+                [0x50, 0x60, 0x70, 0x80]);
+
+            var rename = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/rename",
+                uri,
+                text,
+                "InvoiceModule",
+                0,
+                new { newName = "BillingModule" });
+
+            Assert.False(rename.TryGetProperty("result", out _));
+            var error = rename.GetProperty("error");
+            Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+            var data = error.GetProperty("data");
+            Assert.Equal("analysisIncomplete", data.GetProperty("reason").GetString());
+            Assert.Equal(
+                "containingProjectNameUnavailable",
+                data.GetProperty("condition").GetString());
+            Assert.Equal(
+                templatePath,
+                data.GetProperty("path").GetString(),
+                ignoreCase: true);
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_reports_an_existing_authoritative_referenced_project_name_conflict_without_blocking_repairing_rename()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-existing-module-reference-collision-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(
+                projectRoot,
+                "Microsoft Excel 16.0 Object Library");
+            var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
+            var sourcePath = Path.Combine(sourceRoot, "SourceUnit.bas");
+            var consumerPath = Path.Combine(sourceRoot, "Consumer.bas");
+            var templatePath = Path.Combine(sourceRoot, "Book1.xlsm");
+            var text = string.Join('\n', [
+                "Attribute VB_Name = \"Excel\"",
+                "Public Sub Run()",
+                "End Sub"
+            ]);
+            var consumerText = string.Join('\n', [
+                "Attribute VB_Name = \"Consumer\"",
+                "Public Sub Execute()",
+                "    Excel.Run",
+                "End Sub"
+            ]);
+            var templateBytes = new byte[] { 0x42, 0x24, 0x18, 0x81 };
+            File.WriteAllText(sourcePath, text);
+            File.WriteAllText(consumerPath, consumerText);
+            File.WriteAllBytes(templatePath, templateBytes);
+            var uri = ToFileUri(sourcePath);
+            var consumerUri = ToFileUri(consumerPath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+
+            await process.InitializeAsync();
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(consumerUri, consumerText));
+            await process.WaitForDiagnosticsAsync(uri);
+            await process.SendNotificationAsync(
+                "vba/hostClassProjectionSnapshot",
+                new
+                {
+                    schemaVersion = 2,
+                    revision = 1,
+                    project = Path.GetFullPath(projectRoot),
+                    document = "Book1",
+                    sourceTemplate = Path.GetFullPath(templatePath),
+                    state = "present",
+                    vbaProjectName = "ContainingProject",
+                    sourceTemplateFingerprint = Convert.ToHexString(
+                        SHA256.HashData(templateBytes)),
+                    classEnumerationComplete = true,
+                    classes = Array.Empty<object>()
+                });
+            await process.SendNotificationAsync(
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new { uri, version = 2 },
+                    contentChanges = new[] { new { text } }
+                });
+
+            var notification = await process.WaitForDiagnosticsAsync(uri);
+            var diagnostic = Assert.Single(
+                notification
+                    .GetProperty("params")
+                    .GetProperty("diagnostics")
+                    .EnumerateArray());
+            Assert.Equal(
+                "validation.moduleIdentityNameConflict",
+                diagnostic.GetProperty("code").GetString());
+            Assert.Equal(
+                "Module name 'Excel' conflicts with referenced project or object library 'Excel'.",
+                diagnostic.GetProperty("message").GetString());
+            var range = diagnostic.GetProperty("range");
+            Assert.Equal(0, range.GetProperty("start").GetProperty("line").GetInt32());
+            Assert.Equal(21, range.GetProperty("start").GetProperty("character").GetInt32());
+            Assert.Equal(0, range.GetProperty("end").GetProperty("line").GetInt32());
+            Assert.Equal(26, range.GetProperty("end").GetProperty("character").GetInt32());
+            var conflict = Assert.Single(
+                diagnostic
+                    .GetProperty("data")
+                    .GetProperty("conflicts")
+                    .EnumerateArray());
+            Assert.Equal(
+                "referencedProject",
+                conflict.GetProperty("collisionKind").GetString());
+            Assert.Equal("Excel", conflict.GetProperty("name").GetString());
+            Assert.Equal(
+                "Microsoft Excel 16.0 Object Library",
+                conflict.GetProperty("referenceName").GetString());
+            Assert.False(conflict.TryGetProperty("uri", out _));
+            Assert.False(conflict.TryGetProperty("range", out _));
+            Assert.False(diagnostic.TryGetProperty("relatedInformation", out _));
+
+            var definition = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/definition",
+                consumerUri,
+                consumerText,
+                "Excel.Run");
+            var definitionLocation = definition.GetProperty("result");
+            Assert.Equal(uri, definitionLocation.GetProperty("uri").GetString());
+            Assert.Equal(
+                0,
+                definitionLocation
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32());
+
+            var references = await SendPositionRequestAsync(
+                process,
+                3,
+                "textDocument/references",
+                consumerUri,
+                consumerText,
+                "Excel.Run");
+            var referenceLocations = references
+                .GetProperty("result")
+                .EnumerateArray()
+                .ToArray();
+            Assert.Contains(referenceLocations, location =>
+                location.GetProperty("uri").GetString() == uri
+                && location.GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32() == 0);
+            Assert.Contains(referenceLocations, location =>
+                location.GetProperty("uri").GetString() == consumerUri
+                && location.GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32() == 2);
+
+            var rename = await SendPositionRequestAsync(
+                process,
+                4,
+                "textDocument/rename",
+                uri,
+                text,
+                "Excel",
+                0,
+                new { newName = "BillingModule" });
+
+            Assert.True(rename.TryGetProperty("result", out var repair));
+            Assert.Equal(JsonValueKind.Object, repair.ValueKind);
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_reports_a_current_containing_vba_project_name_collision()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-module-project-collision-").FullName;
+        try
+        {
+            WriteModuleRenameProjectManifest(projectRoot);
+            var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
+            var sourcePath = Path.Combine(sourceRoot, "SourceUnit.bas");
+            var templatePath = Path.Combine(sourceRoot, "Book1.xlsm");
+            const string text = "Attribute VB_Name = \"InvoiceModule\"";
+            var templateBytes = new byte[] { 0x10, 0x20, 0x30, 0x40 };
+            File.WriteAllText(sourcePath, text);
+            File.WriteAllBytes(templatePath, templateBytes);
+            var uri = ToFileUri(sourcePath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+
+            await process.InitializeAsync();
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+            await process.WaitForDiagnosticsAsync(uri);
+            await process.SendNotificationAsync(
+                "vba/hostClassProjectionSnapshot",
+                new
+                {
+                    schemaVersion = 2,
+                    revision = 1,
+                    project = Path.GetFullPath(projectRoot),
+                    document = "Book1",
+                    sourceTemplate = Path.GetFullPath(templatePath),
+                    state = "present",
+                    vbaProjectName = "BillingModule",
+                    sourceTemplateFingerprint = Convert.ToHexString(
+                        SHA256.HashData(templateBytes)),
+                    classEnumerationComplete = true,
+                    classes = Array.Empty<object>()
+                });
+            await process.SendNotificationAsync(
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new { uri, version = 2 },
+                    contentChanges = new[] { new { text } }
+                });
+            await process.WaitForDiagnosticsAsync(uri);
+
+            var rename = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/rename",
+                uri,
+                text,
+                "InvoiceModule",
+                0,
+                new { newName = "BillingModule" });
+
+            Assert.False(rename.TryGetProperty("result", out _));
+            var error = rename.GetProperty("error");
+            Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+            var data = error.GetProperty("data");
+            Assert.Equal(
+                "sameScopeCollision",
+                data.GetProperty("reason").GetString());
+            var conflict = Assert.Single(
+                data.GetProperty("conflicts").EnumerateArray());
+            Assert.Equal(
+                "containingProject",
+                conflict.GetProperty("collisionKind").GetString());
+            Assert.Equal(
+                "BillingModule",
+                conflict.GetProperty("name").GetString());
+            Assert.Equal(
+                ToFileUri(templatePath),
+                conflict.GetProperty("uri").GetString());
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_reports_an_authoritative_bundled_referenced_project_name_collision()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-module-reference-collision-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(
+                projectRoot,
+                "Microsoft Excel 16.0 Object Library");
+            var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
+            var sourcePath = Path.Combine(sourceRoot, "SourceUnit.bas");
+            var templatePath = Path.Combine(sourceRoot, "Book1.xlsm");
+            const string text = "Attribute VB_Name = \"InvoiceModule\"";
+            var templateBytes = new byte[] { 0x11, 0x22, 0x33, 0x44 };
+            File.WriteAllText(sourcePath, text);
+            File.WriteAllBytes(templatePath, templateBytes);
+            var uri = ToFileUri(sourcePath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+
+            await process.InitializeAsync();
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+            await process.WaitForDiagnosticsAsync(uri);
+            await process.SendNotificationAsync(
+                "vba/hostClassProjectionSnapshot",
+                new
+                {
+                    schemaVersion = 2,
+                    revision = 1,
+                    project = Path.GetFullPath(projectRoot),
+                    document = "Book1",
+                    sourceTemplate = Path.GetFullPath(templatePath),
+                    state = "present",
+                    vbaProjectName = "ContainingProject",
+                    sourceTemplateFingerprint = Convert.ToHexString(
+                        SHA256.HashData(templateBytes)),
+                    classEnumerationComplete = true,
+                    classes = Array.Empty<object>()
+                });
+            await process.SendNotificationAsync(
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new { uri, version = 2 },
+                    contentChanges = new[] { new { text } }
+                });
+            await process.WaitForDiagnosticsAsync(uri);
+
+            var rename = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/rename",
+                uri,
+                text,
+                "InvoiceModule",
+                0,
+                new { newName = "Excel" });
+
+            Assert.False(rename.TryGetProperty("result", out _));
+            var error = rename.GetProperty("error");
+            Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+            Assert.Equal(
+                "Module name 'Excel' conflicts with referenced project or object library 'Excel'.",
+                error.GetProperty("message").GetString());
+            var data = error.GetProperty("data");
+            Assert.Equal(
+                "sameScopeCollision",
+                data.GetProperty("reason").GetString());
+            var conflict = Assert.Single(
+                data.GetProperty("conflicts").EnumerateArray());
+            Assert.Equal(
+                "referencedProject",
+                conflict.GetProperty("collisionKind").GetString());
+            Assert.Equal("Excel", conflict.GetProperty("name").GetString());
+            Assert.Equal(
+                "Microsoft Excel 16.0 Object Library",
+                conflict.GetProperty("referenceName").GetString());
+            Assert.False(conflict.TryGetProperty("uri", out _));
+            Assert.False(conflict.TryGetProperty("range", out _));
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_uses_only_the_current_concrete_referenced_project_name_for_module_collisions()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-module-generated-reference-collision-").FullName;
+        var cacheRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-module-generated-reference-cache-").FullName;
+        try
+        {
+            const string referenceName = "FriendlyLibrary";
+            WriteReferenceCatalogProjectManifest(projectRoot, referenceName);
+            var catalog = new VbaProjectReferenceCatalog(
+                referenceName,
+                ["DisplayAlias"],
+                [])
+            {
+                ReferencedVbaProjectName = "ActualReferenceProject"
+            };
+            new VbaProjectReferenceCatalogPersistentStore(cacheRoot).Save(
+                new VbaProjectReferenceCatalogPersistentEntry(
+                    CreateGeneratedReferenceCatalogIdentity(referenceName),
+                    catalog));
+            var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
+            var sourcePath = Path.Combine(sourceRoot, "SourceUnit.bas");
+            var templatePath = Path.Combine(sourceRoot, "Book1.xlsm");
+            const string text = "Attribute VB_Name = \"InvoiceModule\"";
+            var templateBytes = new byte[] { 0x12, 0x24, 0x36, 0x48 };
+            File.WriteAllText(sourcePath, text);
+            File.WriteAllBytes(templatePath, templateBytes);
+            var uri = ToFileUri(sourcePath);
+            await using var process = await LanguageServerProcessHarness.StartAsync(
+                referenceCatalogCacheRoot: cacheRoot);
+
+            await process.InitializeAsync();
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+            await process.WaitForLogTextAsync(
+                "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
+            await process.SendNotificationAsync(
+                "vba/hostClassProjectionSnapshot",
+                new
+                {
+                    schemaVersion = 2,
+                    revision = 1,
+                    project = Path.GetFullPath(projectRoot),
+                    document = "Book1",
+                    sourceTemplate = Path.GetFullPath(templatePath),
+                    state = "present",
+                    vbaProjectName = "ContainingProject",
+                    sourceTemplateFingerprint = Convert.ToHexString(
+                        SHA256.HashData(templateBytes)),
+                    classEnumerationComplete = true,
+                    classes = Array.Empty<object>()
+                });
+            await process.SendNotificationAsync(
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new { uri, version = 2 },
+                    contentChanges = new[] { new { text } }
+                });
+            await process.WaitForDiagnosticsAsync(uri);
+
+            var displayNameRename = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/rename",
+                uri,
+                text,
+                "InvoiceModule",
+                0,
+                new { newName = referenceName });
+            Assert.True(displayNameRename.TryGetProperty("result", out _));
+
+            var aliasRename = await SendPositionRequestAsync(
+                process,
+                3,
+                "textDocument/rename",
+                uri,
+                text,
+                "InvoiceModule",
+                0,
+                new { newName = "DisplayAlias" });
+            Assert.True(aliasRename.TryGetProperty("result", out _));
+
+            var rename = await SendPositionRequestAsync(
+                process,
+                4,
+                "textDocument/rename",
+                uri,
+                text,
+                "InvoiceModule",
+                0,
+                new { newName = "ActualReferenceProject" });
+
+            var data = rename.GetProperty("error").GetProperty("data");
+            Assert.Equal("sameScopeCollision", data.GetProperty("reason").GetString());
+            var conflict = Assert.Single(
+                data.GetProperty("conflicts").EnumerateArray());
+            Assert.Equal(
+                "referencedProject",
+                conflict.GetProperty("collisionKind").GetString());
+            Assert.Equal(
+                "ActualReferenceProject",
+                conflict.GetProperty("name").GetString());
+            Assert.Equal(
+                referenceName,
+                conflict.GetProperty("referenceName").GetString());
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_orders_complete_module_conflicts_from_source_to_project_to_reference()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-module-complete-collision-order-").FullName;
+        var cacheRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-module-complete-collision-cache-").FullName;
+        try
+        {
+            const string referenceName = "FriendlyLibrary";
+            const string collisionName = "CollisionName";
+            WriteReferenceCatalogProjectManifest(projectRoot, referenceName);
+            var catalog = new VbaProjectReferenceCatalog(
+                referenceName,
+                ["DisplayAlias"],
+                [])
+            {
+                ReferencedVbaProjectName = collisionName
+            };
+            new VbaProjectReferenceCatalogPersistentStore(cacheRoot).Save(
+                new VbaProjectReferenceCatalogPersistentEntry(
+                    CreateGeneratedReferenceCatalogIdentity(referenceName),
+                    catalog));
+            var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
+            var targetPath = Path.Combine(sourceRoot, "SourceUnit.bas");
+            var conflictPath = Path.Combine(sourceRoot, "CollisionName.bas");
+            var templatePath = Path.Combine(sourceRoot, "Book1.xlsm");
+            const string targetText = "Attribute VB_Name = \"InvoiceModule\"";
+            const string conflictText = "Attribute VB_Name = \"CollisionName\"";
+            var templateBytes = new byte[] { 0x14, 0x28, 0x42, 0x56 };
+            File.WriteAllText(targetPath, targetText);
+            File.WriteAllText(conflictPath, conflictText);
+            File.WriteAllBytes(templatePath, templateBytes);
+            var targetUri = ToFileUri(targetPath);
+            var conflictUri = ToFileUri(conflictPath);
+            await using var process = await LanguageServerProcessHarness.StartAsync(
+                referenceCatalogCacheRoot: cacheRoot);
+
+            await process.InitializeAsync();
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(targetUri, targetText));
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(conflictUri, conflictText));
+            await process.WaitForLogTextAsync(
+                "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
+            await process.SendNotificationAsync(
+                "vba/hostClassProjectionSnapshot",
+                new
+                {
+                    schemaVersion = 2,
+                    revision = 1,
+                    project = Path.GetFullPath(projectRoot),
+                    document = "Book1",
+                    sourceTemplate = Path.GetFullPath(templatePath),
+                    state = "present",
+                    vbaProjectName = collisionName,
+                    sourceTemplateFingerprint = Convert.ToHexString(
+                        SHA256.HashData(templateBytes)),
+                    classEnumerationComplete = true,
+                    classes = Array.Empty<object>()
+                });
+            await process.SendNotificationAsync(
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new { uri = targetUri, version = 2 },
+                    contentChanges = new[] { new { text = targetText } }
+                });
+            await process.WaitForDiagnosticsAsync(targetUri);
+
+            var rename = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/rename",
+                targetUri,
+                targetText,
+                "InvoiceModule",
+                0,
+                new { newName = collisionName });
+
+            Assert.False(rename.TryGetProperty("result", out _));
+            var error = rename.GetProperty("error");
+            Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+            var data = error.GetProperty("data");
+            Assert.Equal("sameScopeCollision", data.GetProperty("reason").GetString());
+            var conflicts = data.GetProperty("conflicts").EnumerateArray().ToArray();
+            Assert.Equal(
+                ["sourceDeclaration", "containingProject", "referencedProject"],
+                conflicts.Select(conflict => conflict
+                    .GetProperty("collisionKind")
+                    .GetString()));
+            Assert.All(conflicts, conflict => Assert.Equal(
+                collisionName,
+                conflict.GetProperty("name").GetString()));
+            Assert.Equal(conflictUri, conflicts[0].GetProperty("uri").GetString());
+            Assert.Equal(
+                0,
+                conflicts[0]
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32());
+            Assert.Equal(
+                ToFileUri(templatePath),
+                conflicts[1].GetProperty("uri").GetString());
+            Assert.Equal(
+                referenceName,
+                conflicts[2].GetProperty("referenceName").GetString());
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_rejects_module_rename_when_an_active_reference_project_name_is_unavailable()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-module-reference-authority-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(
+                projectRoot,
+                "Unavailable Project Name Authority Library");
+            var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
+            var sourcePath = Path.Combine(sourceRoot, "SourceUnit.bas");
+            var templatePath = Path.Combine(sourceRoot, "Book1.xlsm");
+            const string text = "Attribute VB_Name = \"InvoiceModule\"";
+            var templateBytes = new byte[] { 0x21, 0x32, 0x43, 0x54 };
+            File.WriteAllText(sourcePath, text);
+            File.WriteAllBytes(templatePath, templateBytes);
+            var uri = ToFileUri(sourcePath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+
+            await process.InitializeAsync();
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+            await process.WaitForDiagnosticsAsync(uri);
+            await process.SendNotificationAsync(
+                "vba/hostClassProjectionSnapshot",
+                new
+                {
+                    schemaVersion = 2,
+                    revision = 1,
+                    project = Path.GetFullPath(projectRoot),
+                    document = "Book1",
+                    sourceTemplate = Path.GetFullPath(templatePath),
+                    state = "present",
+                    vbaProjectName = "ContainingProject",
+                    sourceTemplateFingerprint = Convert.ToHexString(
+                        SHA256.HashData(templateBytes)),
+                    classEnumerationComplete = true,
+                    classes = Array.Empty<object>()
+                });
+            await process.SendNotificationAsync(
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new { uri, version = 2 },
+                    contentChanges = new[] { new { text } }
+                });
+            var unavailableAuthorityDiagnostics =
+                await process.WaitForDiagnosticsAsync(uri);
+            Assert.DoesNotContain(
+                unavailableAuthorityDiagnostics
+                    .GetProperty("params")
+                    .GetProperty("diagnostics")
+                    .EnumerateArray(),
+                diagnostic => diagnostic.GetProperty("code").GetString()
+                    == "validation.moduleIdentityNameConflict");
+
+            var rename = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/rename",
+                uri,
+                text,
+                "InvoiceModule",
+                0,
+                new { newName = "BillingModule" });
+
+            Assert.False(rename.TryGetProperty("result", out _));
+            var data = rename.GetProperty("error").GetProperty("data");
+            Assert.Equal("analysisIncomplete", data.GetProperty("reason").GetString());
+            Assert.Equal(
+                "referenceProjectNameUnavailable",
+                data.GetProperty("condition").GetString());
+            Assert.Contains(
+                "Unavailable Project Name Authority Library",
+                rename.GetProperty("error").GetProperty("message").GetString(),
+                StringComparison.Ordinal);
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_prepares_only_the_last_valid_class_module_identity_record()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/Customer.cls";
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"LegacyCustomer\"",
+            "Attribute VB_Name = \"CustomerRecord\"",
+            "Option Explicit"
+        ]);
+        await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
+
+        var shadowed = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/prepareRename",
+            uri,
+            text,
+            "LegacyCustomer");
+        Assert.Equal(JsonValueKind.Null, shadowed.GetProperty("result").ValueKind);
+
+        var authoritative = await SendPositionRequestAsync(
+            process,
+            3,
+            "textDocument/prepareRename",
+            uri,
+            text,
+            "CustomerRecord");
+        var result = authoritative.GetProperty("result");
+        Assert.Equal("CustomerRecord", result.GetProperty("placeholder").GetString());
+        Assert.Equal(2, result.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(21, result.GetProperty("range").GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(2, result.GetProperty("range").GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(35, result.GetProperty("range").GetProperty("end").GetProperty("character").GetInt32());
+
+        await process.ShutdownAsync(4);
+    }
+
+    [Fact]
+    public async Task Server_prepares_only_the_last_valid_form_module_identity_record()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/Customer.frm";
+        var text = string.Join('\n', [
+            "VERSION 5.00",
+            "Begin VB.Form Customer",
+            "End",
+            "Attribute VB_Name = \"LegacyCustomer\"",
+            "Attribute VB_Name = \"CustomerDialog\"",
+            "Option Explicit"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var shadowed = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/prepareRename",
+            uri,
+            text,
+            "LegacyCustomer");
+        Assert.Equal(JsonValueKind.Null, shadowed.GetProperty("result").ValueKind);
+
+        var authoritative = await SendPositionRequestAsync(
+            process,
+            3,
+            "textDocument/prepareRename",
+            uri,
+            text,
+            "CustomerDialog");
+        var result = authoritative.GetProperty("result");
+        Assert.Equal("CustomerDialog", result.GetProperty("placeholder").GetString());
+        Assert.Equal(
+            4,
+            result.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(
+            21,
+            result.GetProperty("range").GetProperty("start").GetProperty("character").GetInt32());
+
+        await process.ShutdownAsync(4);
+    }
+
+    [Fact]
+    public async Task Server_renames_an_explicit_module_identity_and_qualifier_without_renaming_a_deliberately_different_source_path()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string moduleUri = "file:///C:/work/Orders.bas";
+        const string consumerUri = "file:///C:/work/Consumer.bas";
+        var moduleText = string.Join('\n', [
+            "Attribute VB_Name = \"InvoiceModule\"",
+            "Public Sub Run()",
+            "End Sub"
+        ]);
+        var consumerText = string.Join('\n', [
+            "Attribute VB_Name = \"Consumer\"",
+            "Public Sub Execute()",
+            "    InvoiceModule.Run",
+            "    Debug.Print \"InvoiceModule\"",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(moduleUri, moduleText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(consumerUri, consumerText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            consumerUri,
+            consumerText,
+            "InvoiceModule",
+            0,
+            new { newName = "BillingModule" });
+
+        var result = rename.GetProperty("result");
+        Assert.False(result.TryGetProperty("documentChanges", out _));
+        var changes = result.GetProperty("changes");
+        var declarationEdit = Assert.Single(changes.GetProperty(moduleUri).EnumerateArray());
+        Assert.Equal("BillingModule", declarationEdit.GetProperty("newText").GetString());
+        Assert.Equal(21, declarationEdit.GetProperty("range").GetProperty("start").GetProperty("character").GetInt32());
+        var qualifierEdit = Assert.Single(changes.GetProperty(consumerUri).EnumerateArray());
+        Assert.Equal("BillingModule", qualifierEdit.GetProperty("newText").GetString());
+        Assert.Equal(4, qualifierEdit.GetProperty("range").GetProperty("start").GetProperty("character").GetInt32());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_enforces_the_31_code_point_module_identity_rename_boundary()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/Orders.bas";
+        const string text = "Attribute VB_Name = \"InvoiceModule\"";
+        await process.SendNotificationAsync("textDocument/didOpen", CreateOpenDocument(uri, text));
+
+        var boundaryName = "A" + new string('界', 30);
+        var accepted = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            uri,
+            text,
+            "InvoiceModule",
+            0,
+            new { newName = boundaryName });
+        Assert.Equal(
+            boundaryName,
+            Assert.Single(
+                    accepted
+                        .GetProperty("result")
+                        .GetProperty("changes")
+                        .GetProperty(uri)
+                        .EnumerateArray())
+                .GetProperty("newText")
+                .GetString());
+
+        var overLengthName = "A" + new string('界', 31);
+        var rejected = await SendPositionRequestAsync(
+            process,
+            3,
+            "textDocument/rename",
+            uri,
+            text,
+            "InvoiceModule",
+            0,
+            new { newName = overLengthName });
+        var error = rejected.GetProperty("error");
+        Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+        Assert.Equal("invalidName", error.GetProperty("data").GetProperty("reason").GetString());
+        Assert.Contains("31 Unicode code points", error.GetProperty("message").GetString(), StringComparison.Ordinal);
+
+        await process.ShutdownAsync(4);
+    }
+
+    [Fact]
+    public async Task Server_rejects_a_file_following_module_rename_without_ordered_resource_operation_capabilities()
+    {
+        var sourceRoot = Directory.CreateTempSubdirectory("vba-ls-module-rename-capability-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(sourceRoot, "InvoiceModule.bas");
+            const string text = "Attribute VB_Name = \"InvoiceModule\"";
+            File.WriteAllText(sourcePath, text);
+            var uri = ToFileUri(sourcePath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+
+            await process.InitializeAsync();
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+
+            var rename = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/rename",
+                uri,
+                text,
+                "InvoiceModule",
+                0,
+                new { newName = "BillingModule" });
+
+            var error = rename.GetProperty("error");
+            Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+            Assert.Equal(
+                "clientCapabilityMissing",
+                error.GetProperty("data").GetProperty("reason").GetString());
+            Assert.Contains("documentChanges", error.GetProperty("message").GetString(), StringComparison.Ordinal);
+            Assert.Contains("rename resource operation", error.GetProperty("message").GetString(), StringComparison.OrdinalIgnoreCase);
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(sourceRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_rejects_an_incapable_file_following_client_before_semantic_collision_planning()
+    {
+        var sourceRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-module-rename-entry-capability-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(sourceRoot, "InvoiceModule.bas");
+            var conflictPath = Path.Combine(sourceRoot, "Existing.bas");
+            const string sourceText =
+                "Attribute VB_Name = \"InvoiceModule\"";
+            const string conflictText =
+                "Attribute VB_Name = \"BillingModule\"";
+            File.WriteAllText(sourcePath, sourceText);
+            File.WriteAllText(conflictPath, conflictText);
+            var sourceUri = ToFileUri(sourcePath);
+            var conflictUri = ToFileUri(conflictPath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+
+            await process.InitializeAsync();
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(sourceUri, sourceText));
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(conflictUri, conflictText));
+
+            var rename = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/rename",
+                sourceUri,
+                sourceText,
+                "InvoiceModule",
+                0,
+                new { newName = "BillingModule" });
+
+            var error = rename.GetProperty("error");
+            Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+            Assert.Equal(
+                "clientCapabilityMissing",
+                error.GetProperty("data").GetProperty("reason").GetString());
+            Assert.Contains(
+                "documentChanges",
+                error.GetProperty("message").GetString(),
+                StringComparison.Ordinal);
+            Assert.False(rename.TryGetProperty("result", out _));
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(sourceRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_returns_ordered_text_and_rename_file_document_changes_for_a_file_following_module_rename()
+    {
+        var sourceRoot = Directory.CreateTempSubdirectory("vba-ls-module-rename-plan-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(sourceRoot, "InvoiceModule.bas");
+            var destinationPath = Path.Combine(sourceRoot, "BillingModule.bas");
+            const string text = "Attribute VB_Name = \"InvoiceModule\"";
+            File.WriteAllText(sourcePath, text);
+            var uri = ToFileUri(sourcePath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+
+            await process.InitializeAsync(new
+            {
+                workspace = new
+                {
+                    workspaceEdit = new
+                    {
+                        documentChanges = true,
+                        resourceOperations = new[] { "rename" }
+                    }
+                }
+            });
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+
+            var rename = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/rename",
+                uri,
+                text,
+                "InvoiceModule",
+                0,
+                new { newName = "BillingModule" });
+
+            var result = rename.GetProperty("result");
+            Assert.False(result.TryGetProperty("changes", out _));
+            var documentChanges = result.GetProperty("documentChanges").EnumerateArray().ToArray();
+            Assert.Equal(2, documentChanges.Length);
+            var textDocumentEdit = documentChanges[0];
+            Assert.Equal(uri, textDocumentEdit.GetProperty("textDocument").GetProperty("uri").GetString());
+            Assert.Equal(JsonValueKind.Null, textDocumentEdit.GetProperty("textDocument").GetProperty("version").ValueKind);
+            var textEdit = Assert.Single(textDocumentEdit.GetProperty("edits").EnumerateArray());
+            Assert.Equal("BillingModule", textEdit.GetProperty("newText").GetString());
+            var renameFile = documentChanges[1];
+            Assert.Equal("rename", renameFile.GetProperty("kind").GetString());
+            Assert.Equal(uri, renameFile.GetProperty("oldUri").GetString());
+            Assert.Equal(ToFileUri(destinationPath), renameFile.GetProperty("newUri").GetString());
+            Assert.False(renameFile.GetProperty("options").GetProperty("overwrite").GetBoolean());
+            Assert.False(renameFile.GetProperty("options").GetProperty("ignoreIfExists").GetBoolean());
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(sourceRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_preserves_an_intentional_case_only_module_and_source_basename_rename()
+    {
+        var sourceRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-module-case-rename-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(sourceRoot, "invoiceModule.bas");
+            var destinationPath = Path.Combine(sourceRoot, "INVOICEMODULE.bas");
+            const string text = "Attribute VB_Name = \"InvoiceModule\"";
+            File.WriteAllText(sourcePath, text);
+            var uri = ToFileUri(sourcePath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+
+            await process.InitializeAsync(new
+            {
+                workspace = new
+                {
+                    workspaceEdit = new
+                    {
+                        documentChanges = true,
+                        resourceOperations = new[] { "rename" }
+                    }
+                }
+            });
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+
+            var rename = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/rename",
+                uri,
+                text,
+                "InvoiceModule",
+                0,
+                new { newName = "INVOICEMODULE" });
+
+            Assert.False(
+                rename.TryGetProperty("error", out var renameError),
+                renameError.ToString());
+            var documentChanges = rename
+                .GetProperty("result")
+                .GetProperty("documentChanges")
+                .EnumerateArray()
+                .ToArray();
+            Assert.Equal(2, documentChanges.Length);
+            Assert.Equal(
+                "INVOICEMODULE",
+                Assert.Single(documentChanges[0].GetProperty("edits").EnumerateArray())
+                    .GetProperty("newText")
+                    .GetString());
+            Assert.Equal(uri, documentChanges[1].GetProperty("oldUri").GetString());
+            Assert.Equal(
+                ToFileUri(destinationPath),
+                documentChanges[1].GetProperty("newUri").GetString());
+            Assert.True(
+                documentChanges[1]
+                    .GetProperty("options")
+                    .GetProperty("overwrite")
+                    .GetBoolean());
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(sourceRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_returns_the_matching_form_sidecar_as_part_of_the_ordered_rename_plan()
+    {
+        var sourceRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-form-rename-plan-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(sourceRoot, "Dialog.frm");
+            var sidecarPath = Path.Combine(sourceRoot, "Dialog.frx");
+            var destinationPath = Path.Combine(sourceRoot, "DialogView.frm");
+            var sidecarDestinationPath = Path.Combine(sourceRoot, "DialogView.frx");
+            var text = string.Join('\n', [
+                "VERSION 5.00",
+                "Begin VB.Form Dialog",
+                "End",
+                "Attribute VB_Name = \"Dialog\""
+            ]);
+            File.WriteAllText(sourcePath, text);
+            File.WriteAllBytes(sidecarPath, [0x01, 0x02, 0x03]);
+            var uri = ToFileUri(sourcePath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+
+            await process.InitializeAsync(new
+            {
+                workspace = new
+                {
+                    workspaceEdit = new
+                    {
+                        documentChanges = true,
+                        resourceOperations = new[] { "rename" }
+                    }
+                }
+            });
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+
+            var rename = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/rename",
+                uri,
+                text,
+                "Dialog\"",
+                0,
+                new { newName = "DialogView" });
+
+            Assert.False(
+                rename.TryGetProperty("error", out var renameError),
+                renameError.ToString());
+            var documentChanges = rename
+                .GetProperty("result")
+                .GetProperty("documentChanges")
+                .EnumerateArray()
+                .ToArray();
+            Assert.Equal(3, documentChanges.Length);
+            Assert.True(documentChanges[0].TryGetProperty("textDocument", out _));
+            Assert.Equal("rename", documentChanges[1].GetProperty("kind").GetString());
+            Assert.Equal(uri, documentChanges[1].GetProperty("oldUri").GetString());
+            Assert.Equal(ToFileUri(destinationPath), documentChanges[1].GetProperty("newUri").GetString());
+            Assert.Equal("rename", documentChanges[2].GetProperty("kind").GetString());
+            Assert.Equal(ToFileUri(sidecarPath), documentChanges[2].GetProperty("oldUri").GetString());
+            Assert.Equal(ToFileUri(sidecarDestinationPath), documentChanges[2].GetProperty("newUri").GetString());
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(sourceRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_rejects_a_form_rename_when_the_sidecar_destination_exists()
+    {
+        var sourceRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-form-sidecar-destination-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(sourceRoot, "Dialog.frm");
+            var sidecarPath = Path.Combine(sourceRoot, "Dialog.frx");
+            var sidecarDestinationPath = Path.Combine(sourceRoot, "dialogview.FRX");
+            var text = string.Join('\n', [
+                "VERSION 5.00",
+                "Begin VB.Form Dialog",
+                "End",
+                "Attribute VB_Name = \"Dialog\""
+            ]);
+            File.WriteAllText(sourcePath, text);
+            File.WriteAllBytes(sidecarPath, [0x01, 0x02, 0x03]);
+            File.WriteAllBytes(sidecarDestinationPath, [0x09, 0x08, 0x07]);
+            var uri = ToFileUri(sourcePath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+
+            await process.InitializeAsync(new
+            {
+                workspace = new
+                {
+                    workspaceEdit = new
+                    {
+                        documentChanges = true,
+                        resourceOperations = new[] { "rename" }
+                    }
+                }
+            });
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+
+            var rename = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/rename",
+                uri,
+                text,
+                "Dialog\"",
+                0,
+                new { newName = "DialogView" });
+
+            Assert.False(rename.TryGetProperty("result", out _));
+            var error = rename.GetProperty("error");
+            Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+            var data = error.GetProperty("data");
+            Assert.Equal(
+                "resourceOperationConflict",
+                data.GetProperty("reason").GetString());
+            Assert.Equal("sidecarConflict", data.GetProperty("condition").GetString());
+            Assert.Equal(
+                sidecarDestinationPath,
+                data.GetProperty("path").GetString(),
+                ignoreCase: true);
+            Assert.Contains(
+                "remove",
+                data.GetProperty("guidance").GetString(),
+                StringComparison.OrdinalIgnoreCase);
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(sourceRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_rejects_a_file_following_module_rename_when_the_destination_exists()
+    {
+        var sourceRoot = Directory.CreateTempSubdirectory("vba-ls-module-rename-conflict-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(sourceRoot, "InvoiceModule.bas");
+            var destinationPath = Path.Combine(sourceRoot, "billingmodule.BAS");
+            const string text = "Attribute VB_Name = \"InvoiceModule\"";
+            File.WriteAllText(sourcePath, text);
+            File.WriteAllText(destinationPath, "Attribute VB_Name = \"Existing\"");
+            var uri = ToFileUri(sourcePath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+
+            await process.InitializeAsync(new
+            {
+                workspace = new
+                {
+                    workspaceEdit = new
+                    {
+                        documentChanges = true,
+                        resourceOperations = new[] { "rename" }
+                    }
+                }
+            });
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+
+            var rename = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/rename",
+                uri,
+                text,
+                "InvoiceModule",
+                0,
+                new { newName = "BillingModule" });
+
+            var error = rename.GetProperty("error");
+            Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+            var data = error.GetProperty("data");
+            Assert.Equal("resourceOperationConflict", data.GetProperty("reason").GetString());
+            Assert.Equal("destinationExists", data.GetProperty("condition").GetString());
+            Assert.Equal(destinationPath, data.GetProperty("path").GetString(), ignoreCase: true);
+            Assert.Contains("choose another module name", data.GetProperty("guidance").GetString(), StringComparison.OrdinalIgnoreCase);
+            Assert.False(rename.TryGetProperty("result", out _));
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(sourceRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_rejects_a_file_following_module_rename_when_the_source_is_missing()
+    {
+        var sourceRoot = Directory.CreateTempSubdirectory("vba-ls-module-rename-missing-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(sourceRoot, "InvoiceModule.bas");
+            const string text = "Attribute VB_Name = \"InvoiceModule\"";
+            File.WriteAllText(sourcePath, text);
+            var uri = ToFileUri(sourcePath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+
+            await process.InitializeAsync(new
+            {
+                workspace = new
+                {
+                    workspaceEdit = new
+                    {
+                        documentChanges = true,
+                        resourceOperations = new[] { "rename" }
+                    }
+                }
+            });
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+            File.Delete(sourcePath);
+
+            var rename = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/rename",
+                uri,
+                text,
+                "InvoiceModule",
+                0,
+                new { newName = "BillingModule" });
+
+            var error = rename.GetProperty("error");
+            Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+            var data = error.GetProperty("data");
+            Assert.Equal("resourceOperationConflict", data.GetProperty("reason").GetString());
+            Assert.Equal("sourceMissing", data.GetProperty("condition").GetString());
+            Assert.Equal(sourcePath, data.GetProperty("path").GetString(), ignoreCase: true);
+            Assert.Contains("restore or reload", data.GetProperty("guidance").GetString(), StringComparison.OrdinalIgnoreCase);
+            Assert.False(rename.TryGetProperty("result", out _));
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(sourceRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_rejects_rename_of_a_filename_fallback_module_identity_without_returning_an_edit()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string moduleUri = "file:///C:/work/Orders.bas";
+        const string consumerUri = "file:///C:/work/Consumer.bas";
+        const string moduleText = "Public Sub Run()\nEnd Sub";
+        var consumerText = string.Join('\n', [
+            "Attribute VB_Name = \"Consumer\"",
+            "Public Sub Execute()",
+            "    Orders.Run",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(moduleUri, moduleText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(consumerUri, consumerText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            consumerUri,
+            consumerText,
+            "Orders",
+            0,
+            new { newName = "Billing" });
+
+        var error = rename.GetProperty("error");
+        Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+        Assert.Equal(
+            "moduleIdentityNotExplicit",
+            error.GetProperty("data").GetProperty("reason").GetString());
+        Assert.Contains("Attribute VB_Name", error.GetProperty("message").GetString(), StringComparison.Ordinal);
+        Assert.False(rename.TryGetProperty("result", out _));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_allows_an_exact_module_identity_no_op_before_explicit_metadata_authority()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string moduleUri = "file:///C:/work/Orders.bas";
+        const string consumerUri = "file:///C:/work/Consumer.bas";
+        const string moduleText = "Public Sub Run()\nEnd Sub";
+        var consumerText = string.Join('\n', [
+            "Attribute VB_Name = \"Consumer\"",
+            "Public Sub Execute()",
+            "    Orders.Run",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(moduleUri, moduleText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(consumerUri, consumerText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            consumerUri,
+            consumerText,
+            "Orders.Run",
+            0,
+            new { newName = "Orders" });
+
+        Assert.Equal(JsonValueKind.Null, rename.GetProperty("result").ValueKind);
+        Assert.False(rename.TryGetProperty("error", out _));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_rejects_prepare_rename_from_a_filename_fallback_module_qualifier()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string moduleUri = "file:///C:/work/Orders.bas";
+        const string consumerUri = "file:///C:/work/Consumer.bas";
+        const string moduleText = "Public Sub Run()\nEnd Sub";
+        var consumerText = string.Join('\n', [
+            "Attribute VB_Name = \"Consumer\"",
+            "Public Sub Execute()",
+            "    Orders.Run",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(moduleUri, moduleText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(consumerUri, consumerText));
+
+        var prepare = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/prepareRename",
+            consumerUri,
+            consumerText,
+            "Orders");
+
+        var error = prepare.GetProperty("error");
+        Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+        Assert.Equal(
+            "moduleIdentityNotExplicit",
+            error.GetProperty("data").GetProperty("reason").GetString());
+        Assert.Contains("Attribute VB_Name", error.GetProperty("message").GetString(), StringComparison.Ordinal);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_rejects_prepare_rename_for_duplicate_procedural_module_identity_metadata()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string moduleUri = "file:///C:/work/Orders.bas";
+        const string consumerUri = "file:///C:/work/Consumer.bas";
+        var moduleText = string.Join('\n', [
+            "Attribute VB_Name = \"InvoiceModule\"",
+            "Attribute VB_Name = \"DuplicateModule\"",
+            "Public Sub Run()",
+            "End Sub"
+        ]);
+        var consumerText = string.Join('\n', [
+            "Attribute VB_Name = \"Consumer\"",
+            "Public Sub Execute()",
+            "    Orders.Run",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(moduleUri, moduleText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(consumerUri, consumerText));
+
+        var prepare = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/prepareRename",
+            consumerUri,
+            consumerText,
+            "Orders");
+
+        var error = prepare.GetProperty("error");
+        Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+        var data = error.GetProperty("data");
+        Assert.Equal("moduleIdentityInvalid", data.GetProperty("reason").GetString());
+        Assert.Equal("duplicate", data.GetProperty("condition").GetString());
+        Assert.Contains("re-export or repair", error.GetProperty("message").GetString(), StringComparison.OrdinalIgnoreCase);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_rejects_rename_from_a_qualifier_when_module_identity_metadata_is_invalid()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string moduleUri = "file:///C:/work/Orders.bas";
+        const string consumerUri = "file:///C:/work/Consumer.bas";
+        var moduleText = string.Join('\n', [
+            "Attribute VB_Name = \"InvoiceModule\"",
+            "Attribute VB_Name = \"DuplicateModule\"",
+            "Public Sub Run()",
+            "End Sub"
+        ]);
+        var consumerText = string.Join('\n', [
+            "Attribute VB_Name = \"Consumer\"",
+            "Public Sub Execute()",
+            "    Orders.Run",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(moduleUri, moduleText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(consumerUri, consumerText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            consumerUri,
+            consumerText,
+            "Orders",
+            0,
+            new { newName = "BillingModule" });
+
+        var error = rename.GetProperty("error");
+        Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+        var data = error.GetProperty("data");
+        Assert.Equal("moduleIdentityInvalid", data.GetProperty("reason").GetString());
+        Assert.Equal("duplicate", data.GetProperty("condition").GetString());
+        Assert.False(rename.TryGetProperty("result", out _));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_rejects_prepare_rename_for_a_valid_but_misplaced_module_identity_record()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/MisplacedModule.bas";
+        var text = string.Join('\n', [
+            "Option Explicit",
+            "Attribute VB_Name = \"MisplacedModule\"",
+            "Public Sub Run()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var prepare = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/prepareRename",
+            uri,
+            text,
+            "MisplacedModule");
+
+        var error = prepare.GetProperty("error");
+        Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+        var data = error.GetProperty("data");
+        Assert.Equal("moduleIdentityInvalid", data.GetProperty("reason").GetString());
+        Assert.Equal("malformed", data.GetProperty("condition").GetString());
+        Assert.Contains(
+            "re-export or repair",
+            error.GetProperty("message").GetString(),
+            StringComparison.OrdinalIgnoreCase);
+        Assert.False(prepare.TryGetProperty("result", out _));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_rejects_prepare_rename_directly_on_malformed_module_identity_metadata()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/BadModule.bas";
+        const string text = "Attribute VB_Name = \"123Bad\"";
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var prepare = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/prepareRename",
+            uri,
+            text,
+            "123Bad");
+
+        var error = prepare.GetProperty("error");
+        Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+        var data = error.GetProperty("data");
+        Assert.Equal("moduleIdentityInvalid", data.GetProperty("reason").GetString());
+        Assert.Equal("malformed", data.GetProperty("condition").GetString());
+        Assert.Contains("re-export or repair", error.GetProperty("message").GetString(), StringComparison.OrdinalIgnoreCase);
+        Assert.False(prepare.TryGetProperty("result", out _));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_rejects_prepare_rename_on_the_exact_malformed_module_identity_repair_candidate()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/BadModule.bas";
+        const string text = "Attribute VB_Name.\"BadIdentity\"";
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var prepare = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/prepareRename",
+            uri,
+            text,
+            "VB_Name");
+
+        var error = prepare.GetProperty("error");
+        Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+        var data = error.GetProperty("data");
+        Assert.Equal("moduleIdentityInvalid", data.GetProperty("reason").GetString());
+        Assert.Equal("malformed", data.GetProperty("condition").GetString());
+        Assert.False(prepare.TryGetProperty("result", out _));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_rejects_rename_directly_on_malformed_module_identity_metadata()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/BadModule.bas";
+        const string text = "Attribute VB_Name = \"123Bad\"";
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            uri,
+            text,
+            "123Bad",
+            0,
+            new { newName = "RepairedModule" });
+
+        var error = rename.GetProperty("error");
+        Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+        var data = error.GetProperty("data");
+        Assert.Equal("moduleIdentityInvalid", data.GetProperty("reason").GetString());
+        Assert.Equal("malformed", data.GetProperty("condition").GetString());
+        Assert.False(rename.TryGetProperty("result", out _));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_renames_class_type_occurrences_without_manufacturing_an_object_receiver_occurrence()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string classUri = "file:///C:/work/WorkerSource.cls";
+        const string consumerUri = "file:///C:/work/Consumer.bas";
+        var classText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Attribute VB_PredeclaredId = False",
+            "Public Sub Run()",
+            "End Sub"
+        ]);
+        var consumerText = string.Join('\n', [
+            "Attribute VB_Name = \"Consumer\"",
+            "Public Sub Execute()",
+            "    Dim worker As Worker",
+            "    Set worker = New Worker",
+            "    worker.Run",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(classUri, classText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(consumerUri, consumerText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            classUri,
+            classText,
+            "Worker",
+            0,
+            new { newName = "Employee" });
+
+        var changes = rename.GetProperty("result").GetProperty("changes");
+        Assert.Single(changes.GetProperty(classUri).EnumerateArray());
+        var consumerEdits = changes.GetProperty(consumerUri).EnumerateArray().ToArray();
+        Assert.Equal(2, consumerEdits.Length);
+        Assert.Contains(
+            consumerEdits,
+            edit => edit.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32() == 2
+                && edit.GetProperty("range").GetProperty("start").GetProperty("character").GetInt32() == 18);
+        Assert.Contains(
+            consumerEdits,
+            edit => edit.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32() == 3
+                && edit.GetProperty("range").GetProperty("start").GetProperty("character").GetInt32() == 21);
+        Assert.DoesNotContain(
+            consumerEdits,
+            edit => edit.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32() == 4);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_renames_a_conclusively_resolved_source_interface_declaration_prefix()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/Contract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"I_Worker\"",
+            "Public Sub Run()",
+            "End Sub"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Implements I_Worker",
+            "Private Sub I_Worker_Run()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            interfaceUri,
+            interfaceText,
+            "I_Worker",
+            0,
+            new { newName = "I_Service" });
+
+        Assert.False(
+            rename.TryGetProperty("error", out var renameError),
+            renameError.ToString());
+        var changes = rename.GetProperty("result").GetProperty("changes");
+        Assert.Single(changes.GetProperty(interfaceUri).EnumerateArray());
+        var implementationEdits = changes
+            .GetProperty(implementationUri)
+            .EnumerateArray()
+            .OrderBy(edit => edit
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32())
+            .ToArray();
+        Assert.Equal(2, implementationEdits.Length);
+        Assert.Equal(2, implementationEdits[0].GetProperty("range").GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(3, implementationEdits[1].GetProperty("range").GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(12, implementationEdits[1].GetProperty("range").GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(20, implementationEdits[1].GetProperty("range").GetProperty("end").GetProperty("character").GetInt32());
+        Assert.All(implementationEdits, edit =>
+            Assert.Equal("I_Service", edit.GetProperty("newText").GetString()));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_prepares_only_a_conclusively_resolved_source_interface_declaration_prefix()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/Contract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"I_Worker\"",
+            "Public Sub Run()",
+            "End Sub"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Implements I_Worker",
+            "Private Sub I_Worker_Run()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var prepare = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/prepareRename",
+            implementationUri,
+            implementationText,
+            "I_Worker_Run");
+
+        var result = prepare.GetProperty("result");
+        Assert.Equal("I_Worker", result.GetProperty("placeholder").GetString());
+        var range = result.GetProperty("range");
+        Assert.Equal(3, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(12, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(3, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(20, range.GetProperty("end").GetProperty("character").GetInt32());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_does_not_prepare_an_indeterminate_source_interface_declaration_prefix()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/Contract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"I_Worker\"",
+            "Public Sub Run()",
+            "End Sub"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "#If VBA7 Then",
+            "Implements I_Worker",
+            "Private Sub I_Worker_Run()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var prepare = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/prepareRename",
+            implementationUri,
+            implementationText,
+            "I_Worker_Run");
+
+        var error = prepare.GetProperty("error");
+        Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+        Assert.Equal(
+            "analysisIncomplete",
+            error.GetProperty("data").GetProperty("reason").GetString());
+        Assert.False(prepare.TryGetProperty("result", out _));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_does_not_rename_a_local_receiver_that_shadows_a_predeclared_class()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string classUri = "file:///C:/work/WorkerSource.cls";
+        const string consumerUri = "file:///C:/work/Consumer.bas";
+        var classText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Attribute VB_PredeclaredId = True",
+            "Public Sub Run()",
+            "End Sub"
+        ]);
+        var consumerText = string.Join('\n', [
+            "Attribute VB_Name = \"Consumer\"",
+            "Public Sub Execute()",
+            "    Dim Worker As Worker",
+            "    Set Worker = New Worker",
+            "    Worker.Run",
+            "End Sub",
+            "Public Sub ExecuteDefault()",
+            "    Worker.Run",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(classUri, classText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(consumerUri, consumerText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            classUri,
+            classText,
+            "Worker",
+            0,
+            new { newName = "Employee" });
+
+        Assert.False(
+            rename.TryGetProperty("error", out var renameError),
+            renameError.ToString());
+        var edits = rename
+            .GetProperty("result")
+            .GetProperty("changes")
+            .GetProperty(consumerUri)
+            .EnumerateArray()
+            .ToArray();
+        Assert.Equal(3, edits.Length);
+        Assert.Contains(edits, edit =>
+            edit.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32() == 2
+            && edit.GetProperty("range").GetProperty("start").GetProperty("character").GetInt32() == 18);
+        Assert.Contains(edits, edit =>
+            edit.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32() == 3
+            && edit.GetProperty("range").GetProperty("start").GetProperty("character").GetInt32() == 21);
+        Assert.Contains(edits, edit =>
+            edit.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32() == 7
+            && edit.GetProperty("range").GetProperty("start").GetProperty("character").GetInt32() == 4);
+        Assert.DoesNotContain(edits, edit =>
+            edit.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32() == 4);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
     public async Task Server_renames_source_targets_and_rejects_non_renameable_inputs()
     {
         await using var process = await LanguageServerProcessHarness.StartAsync();
@@ -21052,6 +23390,41 @@ public sealed class LanguageServerProcessTests
                 {
                     WriteIndented = true
                 }));
+    }
+
+    private static void WriteModuleRenameProjectManifest(
+        string projectRoot,
+        params (string Name, string ModuleFile)[] commonModules)
+    {
+        Directory.CreateDirectory(Path.Combine(projectRoot, "src", "Book1"));
+        var manifest = new
+        {
+            schemaVersion = 1,
+            projectName = "ModuleRenameProject",
+            primaryDocument = "Book1",
+            documents = new Dictionary<string, object>
+            {
+                ["Book1"] = new
+                {
+                    kind = "excel",
+                    sourcePath = "src/Book1",
+                    templatePath = "src/Book1/Book1.xlsm",
+                    binPath = "bin/Book1.xlsm",
+                    publishPath = "publish/Book1.xlsm",
+                    commonModules = commonModules.Select(module => new
+                    {
+                        name = module.Name,
+                        moduleFile = module.ModuleFile,
+                        requested = true,
+                        testOnly = false
+                    }),
+                    references = Array.Empty<object>()
+                }
+            }
+        };
+        File.WriteAllText(
+            Path.Combine(projectRoot, "vba-project.json"),
+            JsonSerializer.Serialize(manifest));
     }
 
     private static VbaProjectReferenceCatalogIdentity CreateGeneratedReferenceCatalogIdentity(string referenceName)

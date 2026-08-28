@@ -1109,6 +1109,113 @@ public sealed class VbaDiagnosticsPublisherTests
     }
 
     [Fact]
+    public async Task Template_change_after_diagnostic_capture_prevents_stale_module_identity_conflict_publication()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-stale-template-diagnostics-").FullName;
+        TaskCompletionSource? releaseSchedulerBlocker = null;
+        try
+        {
+            var sourceRoot = Directory.CreateDirectory(Path.Combine(
+                projectRoot,
+                "src",
+                "Book1")).FullName;
+            var templatePath = Path.Combine(sourceRoot, "Book1.xlsm");
+            var templateBytes = new byte[] { 0x11, 0x33, 0x55, 0x77 };
+            File.WriteAllBytes(templatePath, templateBytes);
+            File.WriteAllText(
+                Path.Combine(projectRoot, "vba-project.json"),
+                System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    schemaVersion = 1,
+                    projectName = "TemplateDiagnostics",
+                    primaryDocument = "Book1",
+                    documents = new Dictionary<string, object>
+                    {
+                        ["Book1"] = new
+                        {
+                            kind = "excel",
+                            sourcePath = "src/Book1",
+                            templatePath = "src/Book1/Book1.xlsm",
+                            binPath = "bin/Book1/Book1.xlsm",
+                            publishPath = "publish/Book1/Book1.xlsm",
+                            commonModules = Array.Empty<object>(),
+                            references = Array.Empty<object>()
+                        }
+                    }
+                }));
+            var sourcePath = Path.Combine(sourceRoot, "SourceUnit.bas");
+            const string text = "Attribute VB_Name = \"ContainingProject\"";
+            File.WriteAllText(sourcePath, text);
+            var uri = new Uri(Path.GetFullPath(sourcePath)).AbsoluteUri;
+            var context = new VbaHostClassProjectionContext(
+                Path.GetFullPath(projectRoot),
+                "Book1",
+                Path.GetFullPath(templatePath));
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()));
+            workspace.OpenDocument(uri, 7, text);
+            _ = workspace.CreateProjectSnapshot(uri);
+            Assert.True(workspace.TryApplyHostClassProjectionSnapshot(
+                new VbaHostClassProjectionSnapshotUpdate(
+                    context,
+                    Revision: 1,
+                    new VbaHostClassProjectionSnapshot(
+                        Revision: 1,
+                        context,
+                        ClassEnumerationComplete: true,
+                        Classes: [],
+                        VbaProjectName: "ContainingProject",
+                        SourceTemplateFingerprint: Convert.ToHexString(
+                            System.Security.Cryptography.SHA256.HashData(
+                                templateBytes))))));
+            var diagnosticSnapshot = Assert.Single(
+                workspace.GetProjectDiagnosticsSnapshots(uri)!);
+            Assert.Contains(
+                diagnosticSnapshot.ProjectValidationDiagnostics,
+                diagnostic => diagnostic.Code
+                    == "validation.moduleIdentityNameConflict");
+
+            await using var output = new CapturingWriteStream();
+            var blockerStarted = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            releaseSchedulerBlocker = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            await using var scheduler = new VbaInteractiveWorkScheduler(
+                options: new VbaInteractiveWorkSchedulerOptions(
+                    CoalesceSupersededMutations: true,
+                    MaxOwnedWork: 1));
+            var blocker = scheduler.AdmitMutation(async cancellationToken =>
+            {
+                blockerStarted.TrySetResult();
+                await releaseSchedulerBlocker.Task.WaitAsync(cancellationToken);
+            });
+            await blockerStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var publisher = new VbaDiagnosticsPublisher(
+                new LspMessageTransport(Stream.Null, output),
+                workspace);
+            publisher.AttachScheduler(scheduler);
+
+            await publisher.PublishProjectDiagnosticsAsync(
+                uri,
+                CancellationToken.None);
+            File.WriteAllBytes(templatePath, [0x22, 0x44, 0x66, 0x88]);
+            releaseSchedulerBlocker.TrySetResult();
+            await blocker.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+            await publisher.WaitForIdleAsync(uri)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Empty(ReadJsonMessages(output.ReadText()));
+        }
+        finally
+        {
+            releaseSchedulerBlocker?.TrySetResult();
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Project_capture_unavailable_while_peer_builds_does_not_publish_document_only_clear()
     {
         const string firstUri = "file:///C:/work/First.bas";

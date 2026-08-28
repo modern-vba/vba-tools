@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using System.Text.Json.Nodes;
 using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.SourceModel;
 using Xunit;
@@ -11,7 +12,7 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
     public void TypeLibContractEvidenceUsesANewGeneratorVersion()
     {
         Assert.Equal(
-            "typelib-catalog-v11",
+            "typelib-catalog-v12",
             VbaProjectReferenceCatalogPersistentStore.CurrentGeneratorVersion);
     }
 
@@ -204,6 +205,90 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
             var rawMember = Assert.Single(
                 Assert.Single(entry.Catalog.TypeLibTypes!).Members);
             Assert.Null(rawMember.Metadata?.IsReturnArray);
+        }
+        finally
+        {
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void PersistentStoreLoadsV11DefinitionsWithoutGrantingReferencedProjectNameAuthority()
+    {
+        var cacheRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-catalog-v11-project-name-authority-").FullName;
+        try
+        {
+            const string referenceName = "Generated Library";
+            var identity = CreateIdentity(referenceName);
+            var catalog = CreateGeneratedCatalog(
+                referenceName,
+                "GeneratedType",
+                "GeneratedMember") with
+            {
+                QualifierAliases = ["ActualReferenceProject"],
+                ReferencedVbaProjectName = "ActualReferenceProject"
+            };
+            var store = new VbaProjectReferenceCatalogPersistentStore(cacheRoot);
+            store.Save(new VbaProjectReferenceCatalogPersistentEntry(
+                identity,
+                catalog));
+
+            var entryPath = Path.Combine(
+                cacheRoot,
+                "catalogs",
+                VbaProjectReferenceCatalogPersistentStore
+                    .CreateCatalogEntryKey(identity));
+            var entryJson = JsonNode.Parse(File.ReadAllText(entryPath))!
+                .AsObject();
+            entryJson["generatorVersion"] = "typelib-catalog-v11";
+            Assert.True(entryJson["catalog"]!.AsObject().Remove(
+                "referencedVbaProjectName"));
+            File.WriteAllText(entryPath, entryJson.ToJsonString());
+            var indexPath = store.GetReferenceIndexPath(referenceName);
+            File.WriteAllText(
+                indexPath,
+                File.ReadAllText(indexPath).Replace(
+                    VbaProjectReferenceCatalogPersistentStore
+                        .CurrentGeneratorVersion,
+                    "typelib-catalog-v11",
+                    StringComparison.Ordinal));
+
+            var load = store.Load(referenceName);
+
+            Assert.Equal(
+                VbaProjectReferenceCatalogPersistentLoadStatus.Stale,
+                load.Status);
+            var loaded = Assert.IsType<
+                VbaProjectReferenceCatalogPersistentEntry>(load.Entry);
+            Assert.Null(loaded.Catalog.ReferencedVbaProjectName);
+            Assert.Contains(
+                "ActualReferenceProject",
+                loaded.Catalog.QualifierAliases);
+            Assert.Contains(
+                loaded.Catalog.Definitions,
+                definition => definition.Name == "GeneratedType");
+            Assert.Contains(
+                loaded.Catalog.Definitions,
+                definition => definition.Name == "GeneratedMember");
+
+            var cache = new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.Empty);
+            cache.StoreStaleCatalog(loaded.Catalog);
+            var selection = VbaProjectReferenceSelection.Create(
+                ProjectDocument.ExcelKind,
+                [new VbaProjectReference(referenceName)]);
+            var state = cache.CaptureSelectionState(selection.References);
+            var activeDefinitions = state.CatalogSet
+                .GetActiveDefinitions(selection);
+            Assert.Contains(
+                activeDefinitions,
+                definition => definition.Name == "GeneratedType");
+            Assert.Contains(
+                activeDefinitions,
+                definition => definition.Name == "GeneratedMember");
+            Assert.False(state.AuthoritativeProjectNames.ContainsKey(
+                referenceName));
         }
         finally
         {

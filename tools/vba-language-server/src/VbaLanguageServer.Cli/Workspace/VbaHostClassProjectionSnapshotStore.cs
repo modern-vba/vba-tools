@@ -199,7 +199,9 @@ internal sealed class VbaHostClassProjectionSnapshotStore
                     update.Snapshot.Revision,
                     context,
                     update.Snapshot.ClassEnumerationComplete,
-                    FreezeList(update.Snapshot.Classes.Select(CaptureEntry))));
+                    FreezeList(update.Snapshot.Classes.Select(CaptureEntry)),
+                    update.Snapshot.VbaProjectName,
+                    update.Snapshot.SourceTemplateFingerprint));
     }
 
     private static VbaHostClassProjectionEntry CaptureEntry(

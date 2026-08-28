@@ -203,15 +203,17 @@ export type HostClassProjectionSnapshotEntry =
   | IndeterminateHostClassProjectionEntry;
 
 export interface PresentHostClassProjectionSnapshot extends HostClassProjectionContext {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly revision: number;
   readonly state: 'present';
+  readonly vbaProjectName?: string;
+  readonly sourceTemplateFingerprint?: string;
   readonly classEnumerationComplete: boolean;
   readonly classes: readonly HostClassProjectionSnapshotEntry[];
 }
 
 export interface ClearedHostClassProjectionSnapshot extends HostClassProjectionContext {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly revision: number;
   readonly state: 'cleared';
 }
@@ -221,6 +223,8 @@ export type HostClassProjectionSnapshot =
   | ClearedHostClassProjectionSnapshot;
 
 interface ParsedHostClassProjectionResult extends HostClassProjectionContext {
+  readonly vbaProjectName?: string;
+  readonly sourceTemplateFingerprint?: string;
   readonly classEnumerationComplete: boolean;
   readonly complete: boolean;
   readonly classes: readonly ParsedHostClassEntry[];
@@ -261,6 +265,8 @@ interface DocumentLifecycleState {
   generation: number;
   revision: number;
   hasProjection: boolean;
+  vbaProjectName: string | undefined;
+  sourceTemplateFingerprint: string | undefined;
   classEnumerationComplete: boolean;
   classes: readonly HostClassProjectionSnapshotEntry[];
   sourceCandidates: readonly HostClassSourceCandidate[];
@@ -489,11 +495,13 @@ export class HostClassProjectionLifecycle {
 
     state.revision += 1;
     state.hasProjection = false;
+    state.vbaProjectName = undefined;
+    state.sourceTemplateFingerprint = undefined;
     state.classEnumerationComplete = false;
     state.classes = [];
     state.associationResult = undefined;
     const cleared: ClearedHostClassProjectionSnapshot = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       revision: state.revision,
       project: state.context.project,
       document: state.context.document,
@@ -719,6 +727,8 @@ export class HostClassProjectionLifecycle {
       generation: (previous?.generation ?? 0) + 1,
       revision: previous?.revision ?? 0,
       hasProjection: previous?.hasProjection ?? false,
+      vbaProjectName: previous?.vbaProjectName,
+      sourceTemplateFingerprint: previous?.sourceTemplateFingerprint,
       classEnumerationComplete: previous?.classEnumerationComplete ?? false,
       classes: previous?.classes ?? [],
       sourceCandidates: previous?.active === true && contextsEqual(previous.context, context)
@@ -733,9 +743,11 @@ export class HostClassProjectionLifecycle {
         !contextsEqual(previous.context, state.context)) {
       state.revision += 1;
       state.hasProjection = false;
+      state.vbaProjectName = undefined;
+      state.sourceTemplateFingerprint = undefined;
       state.classEnumerationComplete = false;
       clearBeforeStart = {
-        schemaVersion: 1,
+        schemaVersion: 2,
         revision: state.revision,
         project: state.context.project,
         document: state.context.document,
@@ -1092,7 +1104,7 @@ export class HostClassProjectionLifecycle {
           ? 'cancelledInvalidResult'
           : parsed === undefined ? 'schemaMismatch' : 'contextMismatch',
         parsed === undefined
-          ? 'The host-class inspection output did not match schema 1.0.'
+          ? 'The host-class inspection output did not match schema 1.1.'
           : 'The host-class inspection output did not exactly match its request context.'
       );
       invocation.completeExplicitRefresh?.(invocationCancelled
@@ -1127,16 +1139,24 @@ export class HostClassProjectionLifecycle {
       parsed.classEnumerationComplete
     );
     const snapshot: PresentHostClassProjectionSnapshot = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       revision: current.revision,
       project: current.context.project,
       document: current.context.document,
       sourceTemplate: current.context.sourceTemplate,
       state: 'present',
+      ...(parsed.vbaProjectName === undefined
+        ? {}
+        : {
+            vbaProjectName: parsed.vbaProjectName,
+            sourceTemplateFingerprint: parsed.sourceTemplateFingerprint
+          }),
       classEnumerationComplete: parsed.classEnumerationComplete,
       classes
     };
     current.hasProjection = true;
+    current.vbaProjectName = parsed.vbaProjectName;
+    current.sourceTemplateFingerprint = parsed.sourceTemplateFingerprint;
     current.classEnumerationComplete = parsed.classEnumerationComplete;
     current.classes = classes;
     current.associationResult = current.sourceCandidates.length === 0
@@ -1286,12 +1306,18 @@ export class HostClassProjectionLifecycle {
     }
 
     const snapshot: PresentHostClassProjectionSnapshot = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       revision: state.revision,
       project: state.context.project,
       document: state.context.document,
       sourceTemplate: state.context.sourceTemplate,
       state: 'present',
+      ...(state.vbaProjectName === undefined
+        ? {}
+        : {
+            vbaProjectName: state.vbaProjectName,
+            sourceTemplateFingerprint: state.sourceTemplateFingerprint
+          }),
       classEnumerationComplete: false,
       classes: state.classes
     };
@@ -1404,8 +1430,23 @@ function parseCompletedHostClassProjectionResult(
     return undefined;
   }
 
-  if (!isRecord(value) ||
-      !hasOnlyProperties(value, [
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const isCurrentSchema = value.schemaVersion === '1.1';
+  const hasProjectName = Object.prototype.hasOwnProperty.call(
+    value,
+    'vbaProjectName'
+  );
+  const hasTemplateFingerprint = Object.prototype.hasOwnProperty.call(
+    value,
+    'sourceTemplateFingerprint'
+  );
+  const hasProjectAuthority = isCurrentSchema
+    && hasProjectName
+    && hasTemplateFingerprint;
+  const allowedProperties = [
         'schemaVersion',
         'project',
         'document',
@@ -1415,11 +1456,21 @@ function parseCompletedHostClassProjectionResult(
         'classes',
         'diagnostics',
         'warnings'
-      ]) ||
-      value.schemaVersion !== '1.0' ||
+      ];
+  if (isCurrentSchema) {
+    allowedProperties.push('vbaProjectName', 'sourceTemplateFingerprint');
+  }
+
+  if (!hasOnlyProperties(value, allowedProperties) ||
+      !isCurrentSchema ||
+      hasProjectName !== hasTemplateFingerprint ||
       !isNonemptyString(value.project) ||
       !isNonemptyString(value.document) ||
       !isNonemptyString(value.sourceTemplate) ||
+      (hasProjectAuthority &&
+        (!isExactNonemptyString(value.vbaProjectName) ||
+         [...value.vbaProjectName].length > 31 ||
+         !isSha256Fingerprint(value.sourceTemplateFingerprint))) ||
       typeof value.classEnumerationComplete !== 'boolean' ||
       typeof value.complete !== 'boolean' ||
       !Array.isArray(value.classes) ||
@@ -1448,6 +1499,13 @@ function parseCompletedHostClassProjectionResult(
     project: value.project,
     document: value.document,
     sourceTemplate: value.sourceTemplate,
+    ...(hasProjectAuthority
+      ? {
+          vbaProjectName: value.vbaProjectName as string,
+          sourceTemplateFingerprint:
+            (value.sourceTemplateFingerprint as string).toUpperCase()
+        }
+      : {}),
     classEnumerationComplete: value.classEnumerationComplete,
     complete: value.complete,
     classes,
@@ -1732,7 +1790,7 @@ function desiredSnapshot(
 
   if (!state.hasProjection) {
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       revision: state.revision,
       project: state.context.project,
       document: state.context.document,
@@ -1742,12 +1800,18 @@ function desiredSnapshot(
   }
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     revision: state.revision,
     project: state.context.project,
     document: state.context.document,
     sourceTemplate: state.context.sourceTemplate,
     state: 'present',
+    ...(state.vbaProjectName === undefined
+      ? {}
+      : {
+          vbaProjectName: state.vbaProjectName,
+          sourceTemplateFingerprint: state.sourceTemplateFingerprint
+        }),
     classEnumerationComplete: state.classEnumerationComplete,
     classes: state.classes
   };
@@ -1784,6 +1848,10 @@ function isExactNonemptyString(value: unknown): value is string {
   }
 
   return false;
+}
+
+function isSha256Fingerprint(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/iu.test(value);
 }
 
 function hasOnlyProperties(

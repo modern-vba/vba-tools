@@ -636,7 +636,7 @@ test('Packaged VbaDev contract requires snapshot build and HostClass inspection'
     '1.0'
   );
   assert.equal(contract.featureVersions?.['hostClass.list'], '1.0');
-  assert.equal(contract.commandSchemaVersions['host-class list'], '1.0');
+  assert.equal(contract.commandSchemaVersions['host-class list'], '1.1');
   assert.equal('debugAdapterProtocolVersion' in contract, false);
 });
 

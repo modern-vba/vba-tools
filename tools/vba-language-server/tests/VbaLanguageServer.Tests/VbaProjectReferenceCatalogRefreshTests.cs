@@ -473,6 +473,61 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
     }
 
     [Fact]
+    public async Task ScopedReferencedProjectNameAuthorityRequiresTheExactActiveSelectionFingerprint()
+    {
+        const string referenceName = "Scoped Library";
+        const string scopeKey = "scope-a";
+        const string currentFingerprint = "fingerprint-a";
+        var selection = VbaProjectReferenceSelection.Create(
+            ProjectDocument.ExcelKind,
+            [new VbaProjectReference(referenceName)]);
+        var catalog = CreateReferenceCatalog(referenceName, "ScopedType") with
+        {
+            ReferencedVbaProjectName = "ScopedProject"
+        };
+        var discoveryResult = VbaProjectReferenceCatalogDiscoveryResult.Success(
+            new VbaProjectReferenceCatalogIdentity(
+                referenceName,
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                1,
+                0,
+                0,
+                @"C:\TypeLibs\Scoped.tlb"),
+            catalog);
+        var cache = new VbaProjectReferenceCatalogCache(
+            VbaProjectReferenceCatalogSet.Empty);
+        var service = new VbaProjectReferenceCatalogRefreshService(
+            cache,
+            new InlineCatalogDiscovery(discoveryResult));
+
+        await service.RefreshAutomaticallyAsync(
+            new VbaProjectReferenceCatalogRefreshContext(
+                Path.GetFullPath(@"C:\work\Scoped"),
+                "Book1",
+                selection,
+                scopeKey,
+                SelectionFingerprint: currentFingerprint),
+            CancellationToken.None);
+
+        var current = cache.CaptureSelectionState(
+            selection.References,
+            scopeKey,
+            currentFingerprint);
+        Assert.Equal(
+            "ScopedProject",
+            current.AuthoritativeProjectNames[referenceName]);
+
+        var superseded = cache.CaptureSelectionState(
+            selection.References,
+            scopeKey,
+            "fingerprint-b");
+        Assert.Empty(superseded.AuthoritativeProjectNames);
+        Assert.Contains(
+            superseded.CatalogSet.GetActiveDefinitions(selection),
+            definition => definition.Name == "ScopedType");
+    }
+
+    [Fact]
     public async Task CompleteUnavailableCliEntryPreservesScopedLastKnownGood()
     {
         const string referenceName = "Unavailable Library";

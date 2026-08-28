@@ -24,6 +24,7 @@ import {
 import {
   DocumentFormattingRequest,
   LanguageClient,
+  RenameRequest,
   State
 } from 'vscode-languageclient/node';
 import {
@@ -77,6 +78,8 @@ import {
   createVbaLanguageServerReferenceCatalogCacheRoot,
   createVbaSignatureHelpClientCapabilitiesFeature
 } from './languageServer';
+import { CaseOnlyVbaFileRenameAdapter } from './caseOnlyVbaFileRename';
+import { createVbaRenameMiddleware } from './rename';
 import {
   ProjectManifestLanguageServerSync,
   registerProjectManifestLanguageServerSync
@@ -161,6 +164,10 @@ export async function activate(context: ExtensionContext): Promise<void> {
   );
   outputChannel = extensionOutputChannel;
   context.subscriptions.push(extensionOutputChannel);
+  const caseOnlyVbaFileRenameAdapter = new CaseOnlyVbaFileRenameAdapter(
+    message => extensionOutputChannel.appendLine(message)
+  );
+  context.subscriptions.push(caseOnlyVbaFileRenameAdapter);
   const vbaDevResolver = new VbaDevSessionResolver({
     extensionRoot: context.extensionPath,
     configuredPathProvider: getConfiguredDevToolPath,
@@ -542,6 +549,43 @@ export async function activate(context: ExtensionContext): Promise<void> {
             insertFinalNewline: filesConfiguration.get<boolean>('insertFinalNewline')
           };
         }
+      }),
+      createVbaRenameMiddleware({
+        getLanguageClient: () => {
+          const languageClient = client;
+          return languageClient === undefined
+            ? undefined
+            : {
+                asTextDocumentIdentifier: document => (
+                  languageClient.code2ProtocolConverter
+                    .asTextDocumentIdentifier(document)
+                ),
+                asPosition: position => (
+                  languageClient.code2ProtocolConverter.asPosition(position)
+                ),
+                sendRenameRequest: (parameters, token) => (
+                  languageClient.sendRequest(
+                    RenameRequest.type,
+                    parameters,
+                    token
+                  )
+                ),
+                asWorkspaceEdit: (edit, token) => (
+                  languageClient.protocol2CodeConverter.asWorkspaceEdit(edit, token)
+                ),
+                handleFailedRenameRequest: (error, token) => (
+                  languageClient.handleFailedRequest(
+                    RenameRequest.type,
+                    token,
+                    error,
+                    null
+                  )
+                )
+              };
+        },
+        captureCaseOnlyFileRenames: renames => (
+          caseOnlyVbaFileRenameAdapter.capture(renames)
+        )
       })
     );
 

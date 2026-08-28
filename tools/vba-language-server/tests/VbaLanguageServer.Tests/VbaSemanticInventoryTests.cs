@@ -1,4 +1,5 @@
 using System.Reflection;
+using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.SourceModel;
 using VbaLanguageServer.Syntax;
 using Xunit;
@@ -7,6 +8,51 @@ namespace VbaLanguageServer.Tests;
 
 public sealed class VbaSemanticInventoryTests
 {
+    [Fact]
+    public void Intrinsic_document_source_provenance_is_always_template_owned()
+    {
+        var sourcePath = Path.GetFullPath(Path.Combine(
+            "C:\\work",
+            "src",
+            "Book1",
+            "Sheet1.cls"));
+        var uri = new Uri(sourcePath).AbsoluteUri;
+        var text = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "BEGIN",
+            "  MultiUse = -1",
+            "END",
+            "Attribute VB_Name = \"Sheet1\""
+        ]);
+        var document = VbaSourceDocumentProjector.Project(
+            uri,
+            VbaSyntaxTree.ParseModule(uri, text)) with
+        {
+            Provenance = VbaSourceDocumentProvenance.IntrinsicDocument
+        };
+        var inventory = VbaSemanticInventory.Create(
+            new Dictionary<string, VbaSourceDocument>
+            {
+                [uri] = document
+            },
+            projectResolution: new VbaProjectResolution(
+                VbaProjectResolutionKind.ManifestDocument,
+                Path.GetFullPath("C:\\work"),
+                ManifestPath: Path.GetFullPath("C:\\work\\vba-project.json"),
+                DocumentName: "Book1",
+                SourceTemplatePath: Path.GetFullPath(
+                    "C:\\work\\src\\Book1\\Book1.xlsm")));
+
+        var rename = inventory.CreateRenameResult(
+            uri,
+            4,
+            "Attribute VB_Name = \"".Length,
+            "InvoiceSheet");
+
+        Assert.Null(rename.Plan);
+        Assert.Equal("hostManagedModuleIdentity", rename.Failure?.Reason);
+    }
+
     [Fact]
     public void Inventory_serves_definition_oriented_queries_from_project_source()
     {

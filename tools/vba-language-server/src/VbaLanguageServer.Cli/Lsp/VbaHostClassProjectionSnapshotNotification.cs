@@ -34,6 +34,12 @@ public sealed class VbaHostClassProjectionSnapshotHandler(
         "classEnumerationComplete",
         "classes"
     ];
+    private static readonly HashSet<string> PresentAuthorityProperties =
+    [
+        .. PresentProperties,
+        "vbaProjectName",
+        "sourceTemplateFingerprint"
+    ];
     private static readonly HashSet<string> ClearedProperties =
     [
         "schemaVersion",
@@ -45,7 +51,7 @@ public sealed class VbaHostClassProjectionSnapshotHandler(
     ];
 
     /// <summary>
-    /// Applies a complete schema-1 snapshot when it matches a current manifest document context.
+    /// Applies a complete schema-2 snapshot when it matches a current manifest document context.
     /// </summary>
     public bool TryApply(JsonNode? parameters)
         => TryParse(parameters, out var update)
@@ -70,7 +76,7 @@ public sealed class VbaHostClassProjectionSnapshotHandler(
         update = default!;
         if (parameters is not JsonObject payload
             || !TryGetInt64(payload["schemaVersion"], out var schemaVersion)
-            || schemaVersion != 1
+            || schemaVersion != 2
             || !TryGetInt64(payload["revision"], out var revision)
             || revision <= 0
             || !TryGetCanonicalAbsolutePath(payload["project"], out var project)
@@ -101,8 +107,14 @@ public sealed class VbaHostClassProjectionSnapshotHandler(
             return true;
         }
 
+        var hasProjectAuthority = HasExactProperties(
+            payload,
+            PresentAuthorityProperties);
+        string? vbaProjectName = null;
+        string? sourceTemplateFingerprint = null;
         if (state != "present"
-            || !HasExactProperties(payload, PresentProperties)
+            || !hasProjectAuthority
+                && !HasExactProperties(payload, PresentProperties)
             || !TryGetBoolean(
                 payload["classEnumerationComplete"],
                 out var classEnumerationComplete)
@@ -112,15 +124,46 @@ public sealed class VbaHostClassProjectionSnapshotHandler(
             return false;
         }
 
+        if (hasProjectAuthority
+            && (!TryGetNonemptyString(
+                    payload["vbaProjectName"],
+                    out vbaProjectName)
+                || !VbaIdentifier.IsIdentifier(vbaProjectName)
+                || vbaProjectName.EnumerateRunes().Take(32).Count() > 31
+                || !TryGetSourceTemplateFingerprint(
+                    payload["sourceTemplateFingerprint"],
+                    out sourceTemplateFingerprint)))
+        {
+            return false;
+        }
+
         var snapshot = new VbaHostClassProjectionSnapshot(
             revision,
             context,
             classEnumerationComplete,
-            classes);
+            classes,
+            vbaProjectName,
+            sourceTemplateFingerprint);
         update = new VbaHostClassProjectionSnapshotUpdate(
             context,
             revision,
             snapshot);
+        return true;
+    }
+
+    private static bool TryGetSourceTemplateFingerprint(
+        JsonNode? value,
+        out string fingerprint)
+    {
+        fingerprint = "";
+        if (!TryGetString(value, out var candidate)
+            || candidate.Length != 64
+            || candidate.Any(character => !Uri.IsHexDigit(character)))
+        {
+            return false;
+        }
+
+        fingerprint = candidate.ToUpperInvariant();
         return true;
     }
 

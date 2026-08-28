@@ -95,7 +95,12 @@ internal sealed record VbaProjectSnapshotIdentity(string Key)
             resolution.ManifestPath ?? "",
             resolution.DocumentName ?? "",
             resolution.DocumentKind ?? "",
-            string.Join("\u001f", resolution.ReferenceEntries.Select(reference => reference.Name))));
+            string.Join("\u001f", resolution.ReferenceEntries.Select(reference => reference.Name)),
+            string.Join(
+                "\u001f",
+                resolution.InstalledCommonModuleEntries
+                    .Select(module => module.ModuleFile)
+                    .OrderBy(moduleFile => moduleFile, StringComparer.OrdinalIgnoreCase))));
 }
 
 /// <summary>
@@ -271,7 +276,9 @@ internal sealed class VbaProjectSnapshotProvider
             manifestBarriers,
             referenceCatalogCache.CaptureSelectionState(
                 seed.Resolution.ReferenceEntries,
-                LanguageServerManifestResolution.CreateScopeKey(seed.Resolution)),
+                LanguageServerManifestResolution.CreateScopeKey(seed.Resolution),
+                LanguageServerManifestResolution.CreateSelectionFingerprint(
+                    seed.Resolution)),
             hostClassProjectionStore.CaptureSelectionState(seed.Resolution),
             new VbaProjectSnapshotIdentity(seed.CacheKey),
             SupersededCacheIdentity: null);
@@ -321,7 +328,8 @@ internal sealed class VbaProjectSnapshotProvider
         var resolution = manifestCapture.Resolution;
         var referenceCatalogState = referenceCatalogCache.CaptureSelectionState(
             resolution.ReferenceEntries,
-            LanguageServerManifestResolution.CreateScopeKey(resolution));
+            LanguageServerManifestResolution.CreateScopeKey(resolution),
+            LanguageServerManifestResolution.CreateSelectionFingerprint(resolution));
         var cacheIdentity = VbaProjectSnapshotIdentity.Create(activeUri, resolution);
         return new ProjectScopeCapture(
             activeUri,
@@ -384,7 +392,8 @@ internal sealed class VbaProjectSnapshotProvider
                 capture.ReferenceCatalogState.CatalogSet,
                 capture.ReferenceCatalogState.Sources,
                 capture.HostClassProjectionState.Snapshot,
-                capture.ReferenceCatalogState.Identities) with
+                capture.ReferenceCatalogState.Identities,
+                capture.ReferenceCatalogState.AuthoritativeProjectNames) with
             {
                 ManifestBarrierOverrides =
                     capture.ManifestBarriers.Overrides,

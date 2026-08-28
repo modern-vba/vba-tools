@@ -617,6 +617,19 @@ internal sealed class VbaSemanticResolution
             return resolutionPolicy.CreateNameTarget(declaredDefinition);
         }
 
+        if (declaredDefinition is not null
+            && interfaceSemantics.TryResolveSourceInterfaceDeclarationPrefix(
+                currentDocument,
+                declaredDefinition,
+                out var interfaceTarget,
+                out var interfacePrefixLength)
+            && line == declaredDefinition.Range.Start.Line
+            && character - declaredDefinition.Range.Start.Character
+                < interfacePrefixLength)
+        {
+            return interfaceTarget;
+        }
+
         if (declaredDefinition is not null)
         {
             return resolutionPolicy.CreateNameTarget(declaredDefinition);
@@ -642,6 +655,31 @@ internal sealed class VbaSemanticResolution
                 : memberTarget;
         }
 
+        if (positionSyntax.MemberAccess is { IsLeadingDot: false } moduleAccess
+            && moduleAccess.TargetSegmentIndex == 0
+            && moduleAccess.Segments.Count > 1)
+        {
+            if (!nameResolution.HasLocalSourceQualifierShadow(
+                    currentDocument,
+                    new VbaPosition(line, character),
+                    identifier.Name))
+            {
+                var moduleOutcome = resolutionPolicy.ResolveRankedCandidatesOutcome(
+                    definitionCandidates
+                        .GetSourceCandidates(identifier.Name)
+                        .Select(candidate => candidate.Definition)
+                        .Where(CanUseAsSourceModuleValueQualifier)
+                        .Select(definition => new VbaRankedDefinition(
+                            definition,
+                            VbaResolutionPolicy.ProjectRank)),
+                    referenceSelection: null);
+                if (moduleOutcome.Target is not null)
+                {
+                    return moduleOutcome.Target;
+                }
+            }
+        }
+
         var outcome = qualifier is null
             ? nameResolution.ResolveValueOutcome(
                 uri,
@@ -662,6 +700,34 @@ internal sealed class VbaSemanticResolution
                 requestedWriteAccessorKind,
                 outcome.Target)
             : outcome.Target;
+    }
+
+    private static bool IsModuleIdentityDefinition(VbaSourceDefinition definition)
+        => definition.Kind is VbaSourceDefinitionKind.Module
+            or VbaSourceDefinitionKind.Class
+            or VbaSourceDefinitionKind.Form;
+
+    private bool CanUseAsSourceModuleValueQualifier(
+        VbaSourceDefinition definition)
+    {
+        if (definition.Kind == VbaSourceDefinitionKind.Module)
+        {
+            return true;
+        }
+
+        if (!IsModuleIdentityDefinition(definition))
+        {
+            return false;
+        }
+
+        var document = definitionCandidates.FindDocument(definition.Uri);
+        var syntaxTree = document is null ? null : GetSyntaxTree(document);
+        return syntaxTree?.Module.Attributes
+            .LastOrDefault(attribute => attribute.Name.Equals(
+                "VB_PredeclaredId",
+                StringComparison.OrdinalIgnoreCase))?
+            .Value.Equals("True", StringComparison.OrdinalIgnoreCase)
+            == true;
     }
 
     private static bool HasRaiseEventPlacementDiagnostic(
@@ -1356,12 +1422,35 @@ internal sealed class VbaSemanticResolution
             return null;
         }
 
+        var positionSyntax = GetSyntaxTree(document).GetPositionSyntax(
+            lineIndex,
+            occurrence.Start);
         if (canonicalNamesByRange.TryGetValue(occurrenceRange, out var resolvedCanonicalName))
         {
+            if (positionSyntax.MemberAccess is
+                    {
+                        IsLeadingDot: false,
+                        TargetSegmentIndex: 0,
+                        Segments.Count: > 1
+                    } access
+                && ResolveSourceTarget(
+                    document.Uri,
+                    lineIndex,
+                    occurrence.Start) is { } resolvedTarget
+                && IsModuleIdentityDefinition(resolvedTarget.SelectedDefinition)
+                && !TryGetQualifiedCanonicalName(
+                    access,
+                    occurrence,
+                    document.Uri,
+                    lineIndex,
+                    out _))
+            {
+                return null;
+            }
+
             return resolvedCanonicalName;
         }
 
-        var positionSyntax = GetSyntaxTree(document).GetPositionSyntax(lineIndex, occurrence.Start);
         if (TryGetMemberChainCanonicalName(
             positionSyntax,
             occurrence,

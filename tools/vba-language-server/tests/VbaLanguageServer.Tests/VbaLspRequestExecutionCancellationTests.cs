@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using System.Text.Json;
+using System.Text;
 using VbaLanguageServer.Lsp;
 using VbaLanguageServer.SourceModel;
 using VbaLanguageServer.Workspace;
@@ -151,6 +152,503 @@ public sealed class VbaLspRequestExecutionCancellationTests
         Assert.Null(outcome.Result);
         Assert.Equal(0, workspace.RetainedSourceRevisionCount);
         Assert.Equal(0, workspace.RetainedRenameSourceRevisionCount);
+    }
+
+    [Fact]
+    public async Task File_following_module_rename_reports_the_changed_source_path_and_repair_guidance()
+    {
+        var sourceRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-rename-source-change-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(sourceRoot, "InvoiceModule.bas");
+            const string text =
+                "Attribute VB_Name = \"InvoiceModule\"\n"
+                + "Public Sub Run()\n"
+                + "End Sub";
+            File.WriteAllText(sourcePath, text);
+            var uri = new Uri(sourcePath).AbsoluteUri;
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()));
+            workspace.OpenDocument(uri, version: 1, text);
+            await using var output = new MemoryStream();
+            var clientCapabilities = new VbaLspClientCapabilityState();
+            clientCapabilities.Update(new JsonObject
+            {
+                ["capabilities"] = new JsonObject
+                {
+                    ["workspace"] = new JsonObject
+                    {
+                        ["workspaceEdit"] = new JsonObject
+                        {
+                            ["documentChanges"] = true,
+                            ["resourceOperations"] = new JsonArray("rename")
+                        }
+                    }
+                }
+            });
+            var executor = new VbaLspRequestExecution(
+                new LspMessageTransport(Stream.Null, output),
+                workspace,
+                clientCapabilities: clientCapabilities);
+            var parameters = CreateRenameParameters();
+            parameters["textDocument"]!["uri"] = uri;
+            parameters["position"]!["line"] = 0;
+            parameters["position"]!["character"] =
+                "Attribute VB_Name = \"".Length;
+            parameters["newName"] = "BillingModule";
+            var request = new JsonObject
+            {
+                ["jsonrpc"] = "2.0",
+                ["id"] = 1,
+                ["method"] = "textDocument/rename",
+                ["params"] = parameters
+            };
+
+            var captured = executor.Capture(request, CancellationToken.None);
+            Assert.True(workspace.ChangeDocument(
+                uri,
+                version: 2,
+                text + "\n' changed while Rename was planning"));
+
+            var outcome = captured.Execute(CancellationToken.None);
+            var data = Assert.IsAssignableFrom<
+                IReadOnlyDictionary<string, object?>>(outcome.ErrorData);
+
+            Assert.Equal(-32803, outcome.ErrorCode);
+            Assert.Equal("resourceOperationConflict", data["reason"]);
+            Assert.Equal("sourceChanged", data["condition"]);
+            Assert.Equal(sourcePath, Assert.IsType<string>(data["path"]), ignoreCase: true);
+            Assert.Contains("retry", Assert.IsType<string>(data["guidance"]), StringComparison.OrdinalIgnoreCase);
+            Assert.Null(outcome.Result);
+        }
+        finally
+        {
+            Directory.Delete(sourceRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task File_following_form_rename_reports_sidecar_conflict_when_frx_appears_after_request_capture()
+    {
+        var sourceRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-rename-sidecar-appeared-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(sourceRoot, "Dialog.frm");
+            var sidecarPath = Path.Combine(sourceRoot, "Dialog.frx");
+            var text = string.Join('\n', [
+                "VERSION 5.00",
+                "Begin VB.Form Dialog",
+                "End",
+                "Attribute VB_Name = \"Dialog\""
+            ]);
+            File.WriteAllText(sourcePath, text);
+            var uri = new Uri(sourcePath).AbsoluteUri;
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()));
+            workspace.OpenDocument(uri, version: 1, text);
+            await using var output = new MemoryStream();
+            var clientCapabilities = new VbaLspClientCapabilityState();
+            clientCapabilities.Update(new JsonObject
+            {
+                ["capabilities"] = new JsonObject
+                {
+                    ["workspace"] = new JsonObject
+                    {
+                        ["workspaceEdit"] = new JsonObject
+                        {
+                            ["documentChanges"] = true,
+                            ["resourceOperations"] = new JsonArray("rename")
+                        }
+                    }
+                }
+            });
+            var executor = new VbaLspRequestExecution(
+                new LspMessageTransport(Stream.Null, output),
+                workspace,
+                clientCapabilities: clientCapabilities);
+            var parameters = CreateRenameParameters();
+            parameters["textDocument"]!["uri"] = uri;
+            parameters["position"]!["line"] = 3;
+            parameters["position"]!["character"] =
+                "Attribute VB_Name = \"".Length;
+            parameters["newName"] = "DialogView";
+            var request = new JsonObject
+            {
+                ["jsonrpc"] = "2.0",
+                ["id"] = 1,
+                ["method"] = "textDocument/rename",
+                ["params"] = parameters
+            };
+
+            var captured = executor.Capture(request, CancellationToken.None);
+            File.WriteAllBytes(sidecarPath, [0x01, 0x02, 0x03]);
+
+            var outcome = captured.Execute(CancellationToken.None);
+            var data = Assert.IsAssignableFrom<
+                IReadOnlyDictionary<string, object?>>(outcome.ErrorData);
+
+            Assert.Equal(-32803, outcome.ErrorCode);
+            Assert.Equal("resourceOperationConflict", data["reason"]);
+            Assert.Equal("sidecarConflict", data["condition"]);
+            Assert.Equal(
+                sidecarPath,
+                Assert.IsType<string>(data["path"]),
+                ignoreCase: true);
+            Assert.Contains(
+                "retry",
+                Assert.IsType<string>(data["guidance"]),
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Null(outcome.Result);
+        }
+        finally
+        {
+            Directory.Delete(sourceRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task File_following_form_rename_reports_sidecar_conflict_when_frx_becomes_unreadable()
+    {
+        var sourceRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-rename-sidecar-unreadable-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(sourceRoot, "Dialog.frm");
+            var sidecarPath = Path.Combine(sourceRoot, "Dialog.frx");
+            var text = string.Join('\n', [
+                "VERSION 5.00",
+                "Begin VB.Form Dialog",
+                "End",
+                "Attribute VB_Name = \"Dialog\""
+            ]);
+            File.WriteAllText(sourcePath, text);
+            File.WriteAllBytes(sidecarPath, [0x01, 0x02, 0x03]);
+            var uri = new Uri(sourcePath).AbsoluteUri;
+            var fileSystem = new UnreadableSecondSidecarReadFileSystem(
+                sidecarPath);
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()),
+                NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+                NullVbaDocumentAnalysisBuildObserver.Instance,
+                NullVbaProjectSnapshotBuildObserver.Instance,
+                fileSystem);
+            workspace.OpenDocument(uri, version: 1, text);
+            await using var output = new MemoryStream();
+            var clientCapabilities = new VbaLspClientCapabilityState();
+            clientCapabilities.Update(new JsonObject
+            {
+                ["capabilities"] = new JsonObject
+                {
+                    ["workspace"] = new JsonObject
+                    {
+                        ["workspaceEdit"] = new JsonObject
+                        {
+                            ["documentChanges"] = true,
+                            ["resourceOperations"] = new JsonArray("rename")
+                        }
+                    }
+                }
+            });
+            var executor = new VbaLspRequestExecution(
+                new LspMessageTransport(Stream.Null, output),
+                workspace,
+                clientCapabilities: clientCapabilities);
+            var parameters = CreateRenameParameters();
+            parameters["textDocument"]!["uri"] = uri;
+            parameters["position"]!["line"] = 3;
+            parameters["position"]!["character"] =
+                "Attribute VB_Name = \"".Length;
+            parameters["newName"] = "DialogView";
+            var request = new JsonObject
+            {
+                ["jsonrpc"] = "2.0",
+                ["id"] = 1,
+                ["method"] = "textDocument/rename",
+                ["params"] = parameters
+            };
+
+            var captured = executor.Capture(request, CancellationToken.None);
+            var outcome = captured.Execute(CancellationToken.None);
+            var data = Assert.IsAssignableFrom<
+                IReadOnlyDictionary<string, object?>>(outcome.ErrorData);
+
+            Assert.Equal(-32803, outcome.ErrorCode);
+            Assert.Equal("resourceOperationConflict", data["reason"]);
+            Assert.Equal("sidecarConflict", data["condition"]);
+            Assert.Equal(
+                sidecarPath,
+                Assert.IsType<string>(data["path"]),
+                ignoreCase: true);
+            Assert.Contains(
+                "retry",
+                Assert.IsType<string>(data["guidance"]),
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Null(outcome.Result);
+        }
+        finally
+        {
+            Directory.Delete(sourceRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task File_following_rename_rechecks_source_revision_after_preflight()
+    {
+        var sourceRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-rename-final-source-fence-").FullName;
+        BlockingSecondSourceReadFileSystem? fileSystem = null;
+        try
+        {
+            var sourcePath = Path.Combine(sourceRoot, "InvoiceModule.bas");
+            const string text =
+                "Attribute VB_Name = \"InvoiceModule\"\n"
+                + "Public Sub Run()\n"
+                + "End Sub";
+            File.WriteAllText(sourcePath, text);
+            var uri = new Uri(sourcePath).AbsoluteUri;
+            fileSystem = new BlockingSecondSourceReadFileSystem(sourcePath);
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()),
+                NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+                NullVbaDocumentAnalysisBuildObserver.Instance,
+                NullVbaProjectSnapshotBuildObserver.Instance,
+                fileSystem);
+            workspace.OpenDocument(uri, version: 1, text);
+            await using var output = new MemoryStream();
+            var clientCapabilities = new VbaLspClientCapabilityState();
+            clientCapabilities.Update(new JsonObject
+            {
+                ["capabilities"] = new JsonObject
+                {
+                    ["workspace"] = new JsonObject
+                    {
+                        ["workspaceEdit"] = new JsonObject
+                        {
+                            ["documentChanges"] = true,
+                            ["resourceOperations"] = new JsonArray("rename")
+                        }
+                    }
+                }
+            });
+            var executor = new VbaLspRequestExecution(
+                new LspMessageTransport(Stream.Null, output),
+                workspace,
+                clientCapabilities: clientCapabilities);
+            var parameters = CreateRenameParameters();
+            parameters["textDocument"]!["uri"] = uri;
+            parameters["position"]!["line"] = 0;
+            parameters["position"]!["character"] =
+                "Attribute VB_Name = \"".Length;
+            parameters["newName"] = "BillingModule";
+            var request = new JsonObject
+            {
+                ["jsonrpc"] = "2.0",
+                ["id"] = 1,
+                ["method"] = "textDocument/rename",
+                ["params"] = parameters
+            };
+
+            var captured = executor.Capture(request, CancellationToken.None);
+            var execution = Task.Run(
+                () => captured.Execute(CancellationToken.None));
+            await fileSystem.SecondReadStarted.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.True(workspace.ChangeDocument(
+                uri,
+                version: 2,
+                text + "\n' changed during preflight"));
+            fileSystem.ReleaseSecondRead();
+
+            var outcome = await execution.WaitAsync(TimeSpan.FromSeconds(5));
+            var data = Assert.IsAssignableFrom<
+                IReadOnlyDictionary<string, object?>>(outcome.ErrorData);
+            Assert.Equal(-32803, outcome.ErrorCode);
+            Assert.Equal("resourceOperationConflict", data["reason"]);
+            Assert.Equal("sourceChanged", data["condition"]);
+            Assert.Null(outcome.Result);
+        }
+        finally
+        {
+            fileSystem?.ReleaseSecondRead();
+            Directory.Delete(sourceRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Case_only_file_following_rename_rejects_a_distinct_case_variant_destination_peer()
+    {
+        var sourceRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-rename-case-variant-peer-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(sourceRoot, "Dialog.bas");
+            var destinationPeerPath = Path.Combine(sourceRoot, "dialog.bas");
+            const string text = "Attribute VB_Name = \"Dialog\"";
+            File.WriteAllText(sourcePath, text);
+            var uri = new Uri(sourcePath).AbsoluteUri;
+            var fileSystem = new CaseSensitiveDestinationPeerFileSystem(
+                destinationPeerPath);
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()),
+                NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+                NullVbaDocumentAnalysisBuildObserver.Instance,
+                NullVbaProjectSnapshotBuildObserver.Instance,
+                fileSystem);
+            workspace.OpenDocument(uri, version: 1, text);
+            await using var output = new MemoryStream();
+            var clientCapabilities = new VbaLspClientCapabilityState();
+            clientCapabilities.Update(new JsonObject
+            {
+                ["capabilities"] = new JsonObject
+                {
+                    ["workspace"] = new JsonObject
+                    {
+                        ["workspaceEdit"] = new JsonObject
+                        {
+                            ["documentChanges"] = true,
+                            ["resourceOperations"] = new JsonArray("rename")
+                        }
+                    }
+                }
+            });
+            var executor = new VbaLspRequestExecution(
+                new LspMessageTransport(Stream.Null, output),
+                workspace,
+                clientCapabilities: clientCapabilities);
+            var parameters = CreateRenameParameters();
+            parameters["textDocument"]!["uri"] = uri;
+            parameters["position"]!["line"] = 0;
+            parameters["position"]!["character"] =
+                "Attribute VB_Name = \"".Length;
+            parameters["newName"] = "dialog";
+            var request = new JsonObject
+            {
+                ["jsonrpc"] = "2.0",
+                ["id"] = 1,
+                ["method"] = "textDocument/rename",
+                ["params"] = parameters
+            };
+
+            var captured = executor.Capture(request, CancellationToken.None);
+            var outcome = captured.Execute(CancellationToken.None);
+            var data = Assert.IsAssignableFrom<
+                IReadOnlyDictionary<string, object?>>(outcome.ErrorData);
+
+            Assert.Equal(-32803, outcome.ErrorCode);
+            Assert.Equal("resourceOperationConflict", data["reason"]);
+            Assert.Equal("destinationExists", data["condition"]);
+            Assert.Equal(
+                destinationPeerPath,
+                Assert.IsType<string>(data["path"]),
+                ignoreCase: false);
+            Assert.Null(outcome.Result);
+        }
+        finally
+        {
+            Directory.Delete(sourceRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Rename_rejects_a_cold_module_that_changes_between_semantic_capture_and_file_evidence_capture()
+    {
+        var sourceRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-rename-cold-evidence-race-").FullName;
+        try
+        {
+            var modulePath = Path.Combine(sourceRoot, "InvoiceModule.bas");
+            const string originalModuleText =
+                "Attribute VB_Name = \"InvoiceModule\"\n"
+                + "Public Sub Run()\n"
+                + "End Sub";
+            const string changedModuleText =
+                "Attribute VB_Name = \"CurrentModule\"\n"
+                + "Public Sub Run()\n"
+                + "End Sub";
+            Assert.Equal(originalModuleText.Length, changedModuleText.Length);
+            File.WriteAllText(modulePath, originalModuleText);
+            var consumerPath = Path.Combine(sourceRoot, "Consumer.bas");
+            const string consumerText =
+                "Attribute VB_Name = \"Consumer\"\n"
+                + "Public Sub Execute()\n"
+                + "    InvoiceModule.Run\n"
+                + "End Sub";
+            File.WriteAllText(consumerPath, consumerText);
+            var consumerUri = new Uri(consumerPath).AbsoluteUri;
+            var fileSystem = new ChangingColdSourceFileSystem(
+                modulePath,
+                originalModuleText,
+                changedModuleText);
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()),
+                NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+                NullVbaDocumentAnalysisBuildObserver.Instance,
+                NullVbaProjectSnapshotBuildObserver.Instance,
+                fileSystem);
+            workspace.OpenDocument(consumerUri, version: 1, consumerText);
+            await using var output = new MemoryStream();
+            var clientCapabilities = new VbaLspClientCapabilityState();
+            clientCapabilities.Update(new JsonObject
+            {
+                ["capabilities"] = new JsonObject
+                {
+                    ["workspace"] = new JsonObject
+                    {
+                        ["workspaceEdit"] = new JsonObject
+                        {
+                            ["documentChanges"] = true,
+                            ["resourceOperations"] = new JsonArray("rename")
+                        }
+                    }
+                }
+            });
+            var executor = new VbaLspRequestExecution(
+                new LspMessageTransport(Stream.Null, output),
+                workspace,
+                clientCapabilities: clientCapabilities);
+            var parameters = CreateRenameParameters();
+            parameters["textDocument"]!["uri"] = consumerUri;
+            parameters["position"]!["line"] = 2;
+            parameters["position"]!["character"] = 4;
+            parameters["newName"] = "BillingModule";
+            var request = new JsonObject
+            {
+                ["jsonrpc"] = "2.0",
+                ["id"] = 1,
+                ["method"] = "textDocument/rename",
+                ["params"] = parameters
+            };
+
+            var captured = executor.Capture(request, CancellationToken.None);
+            var outcome = captured.Execute(CancellationToken.None);
+            var data = Assert.IsAssignableFrom<
+                IReadOnlyDictionary<string, object?>>(outcome.ErrorData);
+
+            Assert.Equal(-32803, outcome.ErrorCode);
+            Assert.Equal("resourceOperationConflict", data["reason"]);
+            Assert.Equal("sourceChanged", data["condition"]);
+            Assert.Equal(
+                modulePath,
+                Assert.IsType<string>(data["path"]),
+                ignoreCase: true);
+            Assert.Contains(
+                "retry",
+                Assert.IsType<string>(data["guidance"]),
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Null(outcome.Result);
+        }
+        finally
+        {
+            Directory.Delete(sourceRoot, recursive: true);
+        }
     }
 
     [Fact]
@@ -794,6 +1292,232 @@ public sealed class VbaLspRequestExecutionCancellationTests
         Project,
         Workspace,
         ExactDocument
+    }
+
+    private sealed class BlockingSecondSourceReadFileSystem(
+        string sourcePath)
+        : IVbaProjectFileSystem
+    {
+        private readonly string sourcePath = Path.GetFullPath(sourcePath);
+        private readonly TaskCompletionSource releaseSecondRead = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int sourceReadCount;
+
+        public TaskCompletionSource SecondReadStarted { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public bool FileExists(string path)
+            => File.Exists(path);
+
+        public bool DirectoryExists(string path)
+            => Directory.Exists(path);
+
+        public IEnumerable<string> EnumerateSourceFiles(
+            string rootPath,
+            string searchPattern,
+            SearchOption searchOption)
+            => Directory.EnumerateFiles(rootPath, searchPattern, searchOption);
+
+        public bool TryGetSourceMetadata(
+            string path,
+            out VbaProjectSourceFileMetadata metadata)
+        {
+            var fileInfo = new FileInfo(path);
+            if (!fileInfo.Exists)
+            {
+                metadata = default;
+                return false;
+            }
+
+            metadata = new VbaProjectSourceFileMetadata(
+                fileInfo.Length,
+                fileInfo.LastWriteTimeUtc.Ticks);
+            return true;
+        }
+
+        public string ReadManifestText(string path)
+            => File.ReadAllText(path);
+
+        public byte[] ReadSourceBytes(string path)
+        {
+            if (Path.GetFullPath(path).Equals(
+                    sourcePath,
+                    StringComparison.OrdinalIgnoreCase)
+                && Interlocked.Increment(ref sourceReadCount) == 2)
+            {
+                SecondReadStarted.TrySetResult();
+                releaseSecondRead.Task.GetAwaiter().GetResult();
+            }
+
+            return File.ReadAllBytes(path);
+        }
+
+        public void ReleaseSecondRead()
+            => releaseSecondRead.TrySetResult();
+    }
+
+    private sealed class CaseSensitiveDestinationPeerFileSystem(
+        string destinationPeerPath)
+        : IVbaProjectFileSystem
+    {
+        private readonly string destinationPeerPath =
+            Path.GetFullPath(destinationPeerPath);
+
+        public bool FileExists(string path)
+            => File.Exists(path);
+
+        public bool DirectoryExists(string path)
+            => Directory.Exists(path);
+
+        public IEnumerable<string> EnumerateSourceFiles(
+            string rootPath,
+            string searchPattern,
+            SearchOption searchOption)
+            => Directory
+                .EnumerateFiles(rootPath, searchPattern, searchOption)
+                .Append(destinationPeerPath);
+
+        public bool TryGetSourceMetadata(
+            string path,
+            out VbaProjectSourceFileMetadata metadata)
+        {
+            var fileInfo = new FileInfo(path);
+            if (!fileInfo.Exists)
+            {
+                metadata = default;
+                return false;
+            }
+
+            metadata = new VbaProjectSourceFileMetadata(
+                fileInfo.Length,
+                fileInfo.LastWriteTimeUtc.Ticks);
+            return true;
+        }
+
+        public string ReadManifestText(string path)
+            => File.ReadAllText(path);
+
+        public byte[] ReadSourceBytes(string path)
+            => File.ReadAllBytes(path);
+
+        public bool PathsReferToSameEntry(string left, string right)
+            => Path.GetFullPath(left).Equals(
+                Path.GetFullPath(right),
+                StringComparison.Ordinal);
+    }
+
+    private sealed class UnreadableSecondSidecarReadFileSystem(
+        string sidecarPath)
+        : IVbaProjectFileSystem
+    {
+        private readonly string sidecarPath = Path.GetFullPath(sidecarPath);
+        private int sidecarReadCount;
+
+        public bool FileExists(string path)
+            => File.Exists(path);
+
+        public bool DirectoryExists(string path)
+            => Directory.Exists(path);
+
+        public IEnumerable<string> EnumerateSourceFiles(
+            string rootPath,
+            string searchPattern,
+            SearchOption searchOption)
+            => Directory.EnumerateFiles(rootPath, searchPattern, searchOption);
+
+        public bool TryGetSourceMetadata(
+            string path,
+            out VbaProjectSourceFileMetadata metadata)
+        {
+            var fileInfo = new FileInfo(path);
+            if (!fileInfo.Exists)
+            {
+                metadata = default;
+                return false;
+            }
+
+            metadata = new VbaProjectSourceFileMetadata(
+                fileInfo.Length,
+                fileInfo.LastWriteTimeUtc.Ticks);
+            return true;
+        }
+
+        public string ReadManifestText(string path)
+            => File.ReadAllText(path);
+
+        public byte[] ReadSourceBytes(string path)
+        {
+            if (Path.GetFullPath(path).Equals(
+                    sidecarPath,
+                    StringComparison.OrdinalIgnoreCase)
+                && Interlocked.Increment(ref sidecarReadCount) == 2)
+            {
+                throw new UnauthorizedAccessException(
+                    "The form sidecar became unreadable.");
+            }
+
+            return File.ReadAllBytes(path);
+        }
+    }
+
+    private sealed class ChangingColdSourceFileSystem(
+        string modulePath,
+        string originalModuleText,
+        string changedModuleText)
+        : IVbaProjectFileSystem
+    {
+        private readonly byte[] changedModuleBytes =
+            Encoding.UTF8.GetBytes(changedModuleText);
+        private readonly string modulePath = Path.GetFullPath(modulePath);
+        private readonly byte[] originalModuleBytes =
+            Encoding.UTF8.GetBytes(originalModuleText);
+        private int moduleReadCount;
+
+        public bool FileExists(string path)
+            => File.Exists(path);
+
+        public bool DirectoryExists(string path)
+            => Directory.Exists(path);
+
+        public IEnumerable<string> EnumerateSourceFiles(
+            string rootPath,
+            string searchPattern,
+            SearchOption searchOption)
+            => Directory.EnumerateFiles(rootPath, searchPattern, searchOption);
+
+        public bool TryGetSourceMetadata(
+            string path,
+            out VbaProjectSourceFileMetadata metadata)
+        {
+            var fileInfo = new FileInfo(path);
+            if (!fileInfo.Exists)
+            {
+                metadata = default;
+                return false;
+            }
+
+            metadata = new VbaProjectSourceFileMetadata(
+                fileInfo.Length,
+                fileInfo.LastWriteTimeUtc.Ticks);
+            return true;
+        }
+
+        public string ReadManifestText(string path)
+            => File.ReadAllText(path);
+
+        public byte[] ReadSourceBytes(string path)
+        {
+            if (!Path.GetFullPath(path).Equals(
+                    modulePath,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return File.ReadAllBytes(path);
+            }
+
+            return Interlocked.Increment(ref moduleReadCount) == 1
+                ? originalModuleBytes.ToArray()
+                : changedModuleBytes.ToArray();
+        }
     }
 
     private sealed class RecordingInteractiveWorkspaceCapture

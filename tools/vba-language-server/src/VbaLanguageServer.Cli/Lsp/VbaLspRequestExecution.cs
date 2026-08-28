@@ -521,25 +521,42 @@ internal sealed class VbaLspRequestExecution
             using (renameCapture)
             {
                 executionToken.ThrowIfCancellationRequested();
+                if (renameCapture.SemanticInventory
+                        .RequiresFileFollowingModuleRename(
+                            request.Uri,
+                            request.Line,
+                            request.Character,
+                            request.NewName,
+                            renameCapture.SourceTemplateFingerprint)
+                    && !clientCapabilities.Snapshot.WorkspaceEdit
+                        .SupportsRenameFile)
+                {
+                    var failure = new VbaRenameFailure(
+                        "clientCapabilityMissing",
+                        "File-following module Rename requires ordered "
+                        + "documentChanges and the rename resource operation.");
+                    return RequestOutcome.Error(
+                        -32803,
+                        failure.Message,
+                        CreateRenameFailureData(failure));
+                }
+
                 var rename = renameCapture.SemanticInventory.CreateRenameResult(
                     request.Uri,
                     request.Line,
                     request.Character,
                     request.NewName,
-                    executionToken);
+                    executionToken,
+                    renameCapture.SourceTemplateFingerprint);
                 executionToken.ThrowIfCancellationRequested();
-                if (renameCapture.HasParticipatingSourceChanged())
+                var sourceChangeFailure =
+                    renameCapture.GetParticipatingSourceChangeFailure();
+                if (sourceChangeFailure is not null)
                 {
-                    var failure = new VbaRenameFailure(
-                        "resourceOperationConflict",
-                        "A participating source changed while Rename was "
-                        + "being prepared. Retry Rename against the latest "
-                        + "project snapshot.",
-                        Condition: "sourceChanged");
                     return RequestOutcome.Error(
                         -32803,
-                        failure.Message,
-                        CreateRenameFailureData(failure));
+                        sourceChangeFailure.Message,
+                        CreateRenameFailureData(sourceChangeFailure));
                 }
 
                 if (rename.Failure?.Reason == "invalidName")
@@ -555,6 +572,27 @@ internal sealed class VbaLspRequestExecution
                     return RequestOutcome.Success(null);
                 }
 
+                if (rename.Failure is not null)
+                {
+                    return RequestOutcome.Error(
+                        -32803,
+                        rename.Failure.Message,
+                        CreateRenameFailureData(rename.Failure));
+                }
+
+                if (rename.Plan!.FileRenames.Count > 0
+                    && !clientCapabilities.Snapshot.WorkspaceEdit.SupportsRenameFile)
+                {
+                    var failure = new VbaRenameFailure(
+                        "clientCapabilityMissing",
+                        "File-following module Rename requires ordered "
+                        + "documentChanges and the rename resource operation.");
+                    return RequestOutcome.Error(
+                        -32803,
+                        failure.Message,
+                        CreateRenameFailureData(failure));
+                }
+
                 if (renameCapture.AnalysisFailureMessage is not null)
                 {
                     var failure = new VbaRenameFailure(
@@ -566,17 +604,29 @@ internal sealed class VbaLspRequestExecution
                         CreateRenameFailureData(failure));
                 }
 
-                if (rename.Failure is not null)
+                var fileRenamePreflight =
+                    renameCapture.PreflightFileRenames(rename.Plan);
+                if (fileRenamePreflight.Failure is not null)
                 {
                     return RequestOutcome.Error(
                         -32803,
-                        rename.Failure.Message,
-                        CreateRenameFailureData(rename.Failure));
+                        fileRenamePreflight.Failure.Message,
+                        CreateRenameFailureData(fileRenamePreflight.Failure));
+                }
+
+                var finalSourceChangeFailure =
+                    renameCapture.GetParticipatingSourceChangeFailure();
+                if (finalSourceChangeFailure is not null)
+                {
+                    return RequestOutcome.Error(
+                        -32803,
+                        finalSourceChangeFailure.Message,
+                        CreateRenameFailureData(finalSourceChangeFailure));
                 }
 
                 return RequestOutcome.Success(
                     VbaLspFeatureProjection.CreateWorkspaceEdit(
-                        rename.Plan?.Changes));
+                        fileRenamePreflight.Plan));
             }
         }) with
         {
@@ -593,12 +643,47 @@ internal sealed class VbaLspRequestExecution
         };
         if (failure.Conflicts is not null)
         {
-            data["conflicts"] = failure.Conflicts;
+            data["conflicts"] = failure.Conflicts
+                .Select(conflict =>
+                {
+                    var projected = new Dictionary<string, object?>
+                    {
+                        ["collisionKind"] = conflict.CollisionKind,
+                        ["name"] = conflict.Name
+                    };
+                    if (conflict.Uri is not null)
+                    {
+                        projected["uri"] = conflict.Uri;
+                    }
+
+                    if (conflict.Range is not null)
+                    {
+                        projected["range"] = conflict.Range;
+                    }
+
+                    if (conflict.ReferenceName is not null)
+                    {
+                        projected["referenceName"] = conflict.ReferenceName;
+                    }
+
+                    return projected;
+                })
+                .ToArray();
         }
 
         if (failure.Condition is not null)
         {
             data["condition"] = failure.Condition;
+        }
+
+        if (failure.Path is not null)
+        {
+            data["path"] = failure.Path;
+        }
+
+        if (failure.Guidance is not null)
+        {
+            data["guidance"] = failure.Guidance;
         }
 
         return data;

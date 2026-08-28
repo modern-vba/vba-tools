@@ -1,4 +1,4 @@
-# Host-class list and JSON schema 1.0
+# Host-class list and JSON schema 1.1
 
 `vba-dev host-class list` is the document-scoped, read-only producer of
 intrinsic form and document-class Event projections. It reports inspected Event
@@ -24,6 +24,9 @@ capability document advertises support as:
 {
   "featureVersions": {
     "hostClass.list": "1.0"
+  },
+  "commandSchemaVersions": {
+    "host-class list": "1.1"
   }
 }
 ```
@@ -49,10 +52,12 @@ The top-level object has exactly these properties:
 
 ```json
 {
-  "schemaVersion": "1.0",
+  "schemaVersion": "1.1",
   "project": "C:\\absolute\\project",
   "document": "Book1",
   "sourceTemplate": "C:\\absolute\\project\\src\\Book1\\Book1.xlsm",
+  "vbaProjectName": "VBAProject",
+  "sourceTemplateFingerprint": "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF",
   "classEnumerationComplete": true,
   "complete": true,
   "classes": [],
@@ -64,6 +69,12 @@ The top-level object has exactly these properties:
 - `project` and `sourceTemplate` are canonical absolute paths fixed at
   invocation start.
 - `document` is the manifest-resolved document name.
+- `vbaProjectName` and `sourceTemplateFingerprint` are either both present or
+  both absent. When present, they are the actual `VBProject.Name` observed from
+  the inspected private copy and the uppercase SHA-256 fingerprint of the exact
+  private-copy bytes. A missing pair means the invocation supplied no containing
+  VBA-project-name authority; consumers must not substitute manifest or file
+  names.
 - `classEnumerationComplete` is true only for a complete, unambiguous intrinsic
   class identity set.
 - `complete` is true only for a normally completed invocation with complete
@@ -275,8 +286,10 @@ cleanup receives five seconds before owned-process termination and proof.
 
 ## Consumer ownership
 
-The command owns one inspection invocation only. Schema `1.0` has no generation,
-request ID, source hash, file modification time, or inspection timestamp.
+The command owns one inspection invocation only. Schema `1.1` has no generation,
+request ID, file modification time, or inspection timestamp. Its optional
+project-name/fingerprint pair binds only the inspected VBA project name to the
+exact inspected bytes; it is not consumer freshness state.
 Consumers choose refresh triggers, retries, and scheduling; associate results
 with their own request generation; and own any in-memory or durable
 last-known-good state.

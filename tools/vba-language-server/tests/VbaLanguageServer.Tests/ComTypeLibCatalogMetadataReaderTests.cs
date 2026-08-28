@@ -9,6 +9,29 @@ namespace VbaLanguageServer.Tests;
 public sealed class ComTypeLibCatalogMetadataReaderTests
 {
     [Fact]
+    public void GeneratedCatalogPreservesTheRawTypeLibProjectNameSeparatelyFromDisplayAndAliasNames()
+    {
+        var reader = new ComTypeLibCatalogMetadataReader(
+            _ => CreateTypeLib("ActualProjectName"));
+
+        var metadata = reader.ReadMetadata(new VbaProjectReferenceCatalogIdentity(
+            "Human Visible Library Name",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            1,
+            0,
+            0,
+            @"C:\TypeLibs\Library.tlb"));
+        var catalog = TypeLibReferenceCatalogBuilder.Build(
+            "Human Visible Library Name",
+            metadata);
+
+        Assert.Equal("ActualProjectName", catalog.ReferencedVbaProjectName);
+        Assert.Contains("ActualProjectName", catalog.QualifierAliases);
+        Assert.Contains("HumanVisibleLibraryName", catalog.QualifierAliases);
+        Assert.Equal("Human Visible Library Name", catalog.ReferenceName);
+    }
+
+    [Fact]
     public void ReadMetadataPreservesAnExactCodePageLibraryQualifier()
     {
         var reader = new ComTypeLibCatalogMetadataReader(

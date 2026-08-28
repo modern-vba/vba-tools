@@ -26,6 +26,7 @@ public enum VbaProjectResolutionKind
 /// <param name="DocumentKind">The manifest document kind for manifest-backed projects.</param>
 /// <param name="References">The manifest references active for the resolved document.</param>
 /// <param name="SourceTemplatePath">The canonical selected source-template path for manifest-backed projects.</param>
+/// <param name="CommonModules">The CommonModules entries installed into the resolved document source set.</param>
 public sealed record VbaProjectResolution(
     VbaProjectResolutionKind Kind,
     string RootPath,
@@ -33,7 +34,8 @@ public sealed record VbaProjectResolution(
     string? DocumentName = null,
     string? DocumentKind = null,
     IReadOnlyList<VbaProjectReference>? References = null,
-    string? SourceTemplatePath = null)
+    string? SourceTemplatePath = null,
+    IReadOnlyList<InstalledCommonModule>? CommonModules = null)
 {
     internal FileSystemPathIdentity? RootIdentity { get; init; }
 
@@ -41,6 +43,12 @@ public sealed record VbaProjectResolution(
     /// Gets the active manifest reference entries, or an empty list for ad-hoc projects.
     /// </summary>
     public IReadOnlyList<VbaProjectReference> ReferenceEntries => References ?? [];
+
+    /// <summary>
+    /// Gets the installed CommonModules entries, or an empty list for ad-hoc projects.
+    /// </summary>
+    public IReadOnlyList<InstalledCommonModule> InstalledCommonModuleEntries
+        => CommonModules ?? [];
 
     /// <summary>
     /// Determines whether a URI belongs to this resolved project boundary.
@@ -116,7 +124,8 @@ public static class VbaProjectResolver
                         document.References ?? [],
                         ResolveManifestPath(
                             directory.FullName,
-                            document.TemplatePath))
+                            document.TemplatePath),
+                        document.CommonModules ?? [])
                     {
                         RootIdentity = sourceRootIdentity
                     };

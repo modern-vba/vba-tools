@@ -192,6 +192,35 @@ internal static class LanguageServerManifestResolution
                 ? CreateScopeKey(resolution.ManifestPath, resolution.DocumentName)
                 : null;
 
+    internal static string? CreateSelectionFingerprint(
+        VbaProjectResolution resolution)
+    {
+        if (resolution.Kind != VbaProjectResolutionKind.ManifestDocument
+            || string.IsNullOrEmpty(resolution.DocumentKind))
+        {
+            return null;
+        }
+
+        return CreateSelectionFingerprint(
+            resolution.DocumentKind,
+            VbaProjectReferenceSelection.Create(
+                resolution.DocumentKind,
+                resolution.ReferenceEntries));
+    }
+
+    internal static string CreateSelectionFingerprint(
+        string documentKind,
+        VbaProjectReferenceSelection selection)
+        => string.Join(
+            "\u001f",
+            documentKind.Trim().ToUpperInvariant(),
+            selection.MainVbaProjectReference?.Name.Trim().ToUpperInvariant() ?? "",
+            selection.MissingExpectedMainReference?.Trim().ToUpperInvariant() ?? "",
+            string.Join(
+                "\u001e",
+                selection.References
+                    .Select(reference => reference.Name.Trim().ToUpperInvariant())));
+
     private static string CreateProjectPath(string manifestIdentity)
     {
         var manifestPath = Path.GetFullPath(manifestIdentity);

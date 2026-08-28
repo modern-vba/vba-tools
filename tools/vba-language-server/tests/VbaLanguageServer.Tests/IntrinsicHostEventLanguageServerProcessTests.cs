@@ -6,6 +6,452 @@ namespace VbaLanguageServer.Tests;
 public sealed class IntrinsicHostEventLanguageServerProcessTests
 {
     [Fact]
+    public async Task Current_host_associated_form_module_identity_is_not_a_source_rename_target()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-host-owned-form-rename-").FullName;
+        try
+        {
+            var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
+            Directory.CreateDirectory(sourceRoot);
+            var sourceTemplate = Path.Combine(sourceRoot, "Book1.xlsm");
+            WriteProjectManifest(projectRoot);
+            var sourcePath = Path.Combine(sourceRoot, "Dialog.frm");
+            var uri = new Uri(sourcePath).AbsoluteUri;
+            var text = string.Join('\n', [
+                "VERSION 5.00",
+                "Begin VB.Form Dialog",
+                "End",
+                "Attribute VB_Name = \"Dialog\""
+            ]);
+            File.WriteAllText(sourcePath, text);
+
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+            await process.InitializeAsync();
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+            await process.WaitForDiagnosticsAsync(uri);
+            await process.SendNotificationAsync(
+                "vba/hostClassProjectionSnapshot",
+                CreateSnapshotNotification(
+                    projectRoot,
+                    sourceTemplate,
+                    "current",
+                    "Initialize",
+                    [],
+                    "Initializes the form."));
+            await FenceSnapshotAsync(process, uri, text, 2);
+
+            var prepare = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/prepareRename",
+                uri,
+                text,
+                "Dialog\"");
+
+            Assert.False(prepare.TryGetProperty("result", out _));
+            var error = prepare.GetProperty("error");
+            Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+            var data = error.GetProperty("data");
+            Assert.Equal(
+                "hostManagedModuleIdentity",
+                data.GetProperty("reason").GetString());
+            Assert.Equal(sourcePath, data.GetProperty("path").GetString(), ignoreCase: true);
+            Assert.Contains(
+                "source template",
+                data.GetProperty("guidance").GetString(),
+                StringComparison.OrdinalIgnoreCase);
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Current_complete_host_projection_without_form_association_allows_manifest_local_form_rename()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-host-unassociated-form-rename-").FullName;
+        try
+        {
+            var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
+            Directory.CreateDirectory(sourceRoot);
+            var sourceTemplate = Path.Combine(sourceRoot, "Book1.xlsm");
+            var templateBytes = new byte[] { 0x10, 0x32, 0x54, 0x76 };
+            File.WriteAllBytes(sourceTemplate, templateBytes);
+            WriteProjectManifest(projectRoot);
+            var sourcePath = Path.Combine(sourceRoot, "Dialog.frm");
+            var sidecarPath = Path.Combine(sourceRoot, "Dialog.frx");
+            var uri = new Uri(sourcePath).AbsoluteUri;
+            var text = string.Join('\n', [
+                "VERSION 5.00",
+                "Begin VB.Form Dialog",
+                "End",
+                "Attribute VB_Name = \"Dialog\""
+            ]);
+            File.WriteAllText(sourcePath, text);
+            File.WriteAllBytes(sidecarPath, [0x01, 0x02, 0x03]);
+
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+            await process.InitializeAsync(new
+            {
+                workspace = new
+                {
+                    workspaceEdit = new
+                    {
+                        documentChanges = true,
+                        resourceOperations = new[] { "rename" }
+                    }
+                }
+            });
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+            await process.WaitForDiagnosticsAsync(uri);
+            await process.SendNotificationAsync(
+                "vba/hostClassProjectionSnapshot",
+                new
+                {
+                    schemaVersion = 2,
+                    revision = 1,
+                    project = Path.GetFullPath(projectRoot),
+                    document = "Book1",
+                    sourceTemplate = Path.GetFullPath(sourceTemplate),
+                    state = "present",
+                    vbaProjectName = "ContainingProject",
+                    sourceTemplateFingerprint = Convert.ToHexString(
+                        System.Security.Cryptography.SHA256.HashData(
+                            templateBytes)),
+                    classEnumerationComplete = true,
+                    classes = Array.Empty<object>()
+                });
+            await FenceSnapshotAsync(process, uri, text, version: 2);
+
+            var rename = await process.SendRequestAsync(
+                2,
+                "textDocument/rename",
+                new
+                {
+                    textDocument = new { uri },
+                    position = new
+                    {
+                        line = 3,
+                        character = "Attribute VB_Name = \"".Length
+                    },
+                    newName = "DialogView"
+                });
+
+            Assert.False(
+                rename.TryGetProperty("error", out var error),
+                error.ToString());
+            var documentChanges = rename
+                .GetProperty("result")
+                .GetProperty("documentChanges")
+                .EnumerateArray()
+                .ToArray();
+            Assert.Equal(3, documentChanges.Length);
+            Assert.Equal(uri, documentChanges[1].GetProperty("oldUri").GetString());
+            Assert.Equal(
+                new Uri(Path.Combine(sourceRoot, "DialogView.frm")).AbsoluteUri,
+                documentChanges[1].GetProperty("newUri").GetString());
+            Assert.Equal(
+                new Uri(sidecarPath).AbsoluteUri,
+                documentChanges[2].GetProperty("oldUri").GetString());
+            Assert.Equal(
+                new Uri(Path.Combine(sourceRoot, "DialogView.frx")).AbsoluteUri,
+                documentChanges[2].GetProperty("newUri").GetString());
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Manifest_form_rename_fails_closed_when_its_sidecar_is_displaced()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-displaced-form-sidecar-rename-").FullName;
+        try
+        {
+            var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
+            var displacedRoot = Path.Combine(sourceRoot, "displaced");
+            Directory.CreateDirectory(displacedRoot);
+            var sourceTemplate = Path.Combine(sourceRoot, "Book1.xlsm");
+            var templateBytes = new byte[] { 0x10, 0x32, 0x54, 0x76 };
+            File.WriteAllBytes(sourceTemplate, templateBytes);
+            WriteProjectManifest(projectRoot);
+            var sourcePath = Path.Combine(sourceRoot, "Dialog.frm");
+            var displacedSidecarPath = Path.Combine(displacedRoot, "Dialog.frx");
+            var uri = new Uri(sourcePath).AbsoluteUri;
+            var text = string.Join('\n', [
+                "VERSION 5.00",
+                "Begin VB.Form Dialog",
+                "End",
+                "Attribute VB_Name = \"Dialog\""
+            ]);
+            File.WriteAllText(sourcePath, text);
+            File.WriteAllBytes(displacedSidecarPath, [0x01, 0x02, 0x03]);
+
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+            await process.InitializeAsync(new
+            {
+                workspace = new
+                {
+                    workspaceEdit = new
+                    {
+                        documentChanges = true,
+                        resourceOperations = new[] { "rename" }
+                    }
+                }
+            });
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+            await process.WaitForDiagnosticsAsync(uri);
+            await process.SendNotificationAsync(
+                "vba/hostClassProjectionSnapshot",
+                new
+                {
+                    schemaVersion = 2,
+                    revision = 1,
+                    project = Path.GetFullPath(projectRoot),
+                    document = "Book1",
+                    sourceTemplate = Path.GetFullPath(sourceTemplate),
+                    state = "present",
+                    vbaProjectName = "ContainingProject",
+                    sourceTemplateFingerprint = Convert.ToHexString(
+                        System.Security.Cryptography.SHA256.HashData(
+                            templateBytes)),
+                    classEnumerationComplete = true,
+                    classes = Array.Empty<object>()
+                });
+            await FenceSnapshotAsync(process, uri, text, version: 2);
+
+            var rename = await process.SendRequestAsync(
+                2,
+                "textDocument/rename",
+                new
+                {
+                    textDocument = new { uri },
+                    position = new
+                    {
+                        line = 3,
+                        character = "Attribute VB_Name = \"".Length
+                    },
+                    newName = "DialogView"
+                });
+
+            Assert.False(rename.TryGetProperty("result", out _));
+            var data = rename.GetProperty("error").GetProperty("data");
+            Assert.Equal(
+                "resourceOperationConflict",
+                data.GetProperty("reason").GetString());
+            Assert.Equal("sidecarConflict", data.GetProperty("condition").GetString());
+            Assert.Equal(
+                displacedSidecarPath,
+                data.GetProperty("path").GetString(),
+                ignoreCase: true);
+            Assert.Contains(
+                "beside the form",
+                data.GetProperty("guidance").GetString(),
+                StringComparison.OrdinalIgnoreCase);
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Last_known_good_form_association_fails_module_identity_mutation_as_incomplete()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-host-lkg-form-rename-").FullName;
+        try
+        {
+            var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
+            Directory.CreateDirectory(sourceRoot);
+            var sourceTemplate = Path.Combine(sourceRoot, "Book1.xlsm");
+            WriteProjectManifest(projectRoot);
+            var sourcePath = Path.Combine(sourceRoot, "Dialog.frm");
+            var uri = new Uri(sourcePath).AbsoluteUri;
+            var text = string.Join('\n', [
+                "VERSION 5.00",
+                "Begin VB.Form Dialog",
+                "End",
+                "Attribute VB_Name = \"Dialog\""
+            ]);
+            File.WriteAllText(sourcePath, text);
+
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+            await process.InitializeAsync();
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+            await process.WaitForDiagnosticsAsync(uri);
+            await process.SendNotificationAsync(
+                "vba/hostClassProjectionSnapshot",
+                CreateSnapshotNotification(
+                    projectRoot,
+                    sourceTemplate,
+                    "lastKnownGood",
+                    "Initialize",
+                    [],
+                    "Initializes the form."));
+            await FenceSnapshotAsync(process, uri, text, version: 2);
+
+            var rename = await process.SendRequestAsync(
+                2,
+                "textDocument/rename",
+                new
+                {
+                    textDocument = new { uri },
+                    position = new
+                    {
+                        line = 3,
+                        character = "Attribute VB_Name = \"".Length
+                    },
+                    newName = "DialogView"
+                });
+
+            Assert.False(rename.TryGetProperty("result", out _));
+            var data = rename.GetProperty("error").GetProperty("data");
+            Assert.Equal("analysisIncomplete", data.GetProperty("reason").GetString());
+            Assert.Equal(
+                "hostOwnershipUnavailable",
+                data.GetProperty("condition").GetString());
+            Assert.Contains(
+                "retry",
+                data.GetProperty("guidance").GetString(),
+                StringComparison.OrdinalIgnoreCase);
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Ordinary_exported_class_remains_project_local_when_a_document_projection_shares_its_name()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-host-owned-document-rename-").FullName;
+        try
+        {
+            var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
+            Directory.CreateDirectory(sourceRoot);
+            var sourceTemplate = Path.Combine(sourceRoot, "Book1.xlsm");
+            var templateBytes = new byte[] { 0x10, 0x32, 0x54, 0x76 };
+            File.WriteAllBytes(sourceTemplate, templateBytes);
+            WriteProjectManifest(projectRoot);
+            var sourcePath = Path.Combine(sourceRoot, "Sheet1.cls");
+            var uri = new Uri(sourcePath).AbsoluteUri;
+            var text = string.Join('\n', [
+                "VERSION 1.0 CLASS",
+                "BEGIN",
+                "  MultiUse = -1",
+                "END",
+                "Attribute VB_Name = \"Sheet1\""
+            ]);
+            File.WriteAllText(sourcePath, text);
+
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+            await process.InitializeAsync(new
+            {
+                workspace = new
+                {
+                    workspaceEdit = new
+                    {
+                        documentChanges = true,
+                        resourceOperations = new[] { "rename" }
+                    }
+                }
+            });
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+            await process.WaitForDiagnosticsAsync(uri);
+            await process.SendNotificationAsync(
+                "vba/hostClassProjectionSnapshot",
+                new
+                {
+                    schemaVersion = 2,
+                    revision = 1,
+                    project = Path.GetFullPath(projectRoot),
+                    document = "Book1",
+                    sourceTemplate = Path.GetFullPath(sourceTemplate),
+                    state = "present",
+                    vbaProjectName = "ContainingProject",
+                    sourceTemplateFingerprint = Convert.ToHexString(
+                        System.Security.Cryptography.SHA256.HashData(
+                            templateBytes)),
+                    classEnumerationComplete = true,
+                    classes = new object[]
+                    {
+                        new
+                        {
+                            identity = new { name = "Sheet1", kind = "document" },
+                            authority = "current",
+                            projection = new
+                            {
+                                intrinsicEventSourceName = "Worksheet",
+                                events = Array.Empty<object>()
+                            }
+                        }
+                    }
+                });
+            await FenceSnapshotAsync(process, uri, text, version: 2);
+
+            var rename = await process.SendRequestAsync(
+                2,
+                "textDocument/rename",
+                new
+                {
+                    textDocument = new { uri },
+                    position = new
+                    {
+                        line = 4,
+                        character = "Attribute VB_Name = \"".Length
+                    },
+                    newName = "InvoiceSheet"
+                });
+
+            Assert.False(
+                rename.TryGetProperty("error", out var error),
+                error.ToString());
+            var documentChanges = rename
+                .GetProperty("result")
+                .GetProperty("documentChanges")
+                .EnumerateArray()
+                .ToArray();
+            Assert.Equal(2, documentChanges.Length);
+            Assert.True(documentChanges[0].TryGetProperty("textDocument", out _));
+            Assert.Equal(uri, documentChanges[1].GetProperty("oldUri").GetString());
+            Assert.Equal(
+                new Uri(Path.Combine(sourceRoot, "InvoiceSheet.cls")).AbsoluteUri,
+                documentChanges[1].GetProperty("newUri").GetString());
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Empty_Sub_declaration_name_offers_only_the_intrinsic_host_prefix()
     {
         var completion = await GetIntrinsicCompletionAsync("Private Sub ");
@@ -944,7 +1390,7 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
         int revision = 1)
         => new
         {
-            schemaVersion = 1,
+            schemaVersion = 2,
             revision,
             project = Path.GetFullPath(projectRoot),
             document = "Book1",
@@ -982,7 +1428,7 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
         int revision)
         => new
         {
-            schemaVersion = 1,
+            schemaVersion = 2,
             revision,
             project = Path.GetFullPath(projectRoot),
             document = "Book1",

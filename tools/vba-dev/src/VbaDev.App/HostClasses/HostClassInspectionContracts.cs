@@ -221,6 +221,16 @@ public sealed record HostClassInspectionBatch(
     IReadOnlyList<HostClassInspectionEntry> Classes)
 {
     /// <summary>
+    /// Gets the actual VBA project name observed from the inspected private copy.
+    /// </summary>
+    public string? VbaProjectName { get; init; }
+
+    /// <summary>
+    /// Gets the SHA-256 fingerprint of the exact private-copy bytes that were inspected.
+    /// </summary>
+    public string? SourceTemplateFingerprint { get; init; }
+
+    /// <summary>
     /// Gets top-level diagnostics that describe enumeration or shared-state outcomes.
     /// </summary>
     public IReadOnlyList<HostClassInspectionDiagnostic> Diagnostics { get; init; } = [];

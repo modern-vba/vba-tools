@@ -215,10 +215,10 @@ adapter.
 
 The same CLI requirement independently pins
 `featureVersions["hostClass.list"] == "1.0"` and
-`commandSchemaVersions["host-class list"] == "1.0"` for the extension-owned
+`commandSchemaVersions["host-class list"] == "1.1"` for the extension-owned
 Host Event lifecycle. These values do not become debug-adapter requirements:
 the extension invokes and validates the inspection result, then supplies the
-language server's separate numeric snapshot schema `1`.
+language server's separate numeric snapshot schema `2`.
 
 The debug component separately versions its DAP extensions and advertises its
 stdio entry point through `vba-debug-adapter capabilities --format json`. The

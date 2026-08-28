@@ -9,10 +9,10 @@ document-scoped `vba-dev host-class list` command. It follows ordinary project
 discovery, selects the requested `ProjectDocument` or the primary document when
 `--document` is omitted, defaults to human-readable text, and exposes
 schema-versioned JSON through `--format json`; `capabilities --format json`
-advertises `featureVersions["hostClass.list"]` and
-`commandSchemaVersions["host-class list"]` as `1.0`. These string-valued CLI
+advertises `featureVersions["hostClass.list"]` as `1.0` and
+`commandSchemaVersions["host-class list"]` as `1.1`. These string-valued CLI
 contracts are independent from the extension-to-language-server notification
-schema `1`, extension refresh generation, and document-local snapshot revision.
+schema `2`, extension refresh generation, and document-local snapshot revision.
 The command owns its
 inspection invocation and dedicated Excel/VBIDE process, but does not persist
 projection state, choose refresh timing, or write the workbook, source,
@@ -52,6 +52,12 @@ true only when `classEnumerationComplete` is true and every class projection is
 manifest-resolved document name, and the canonical absolute source-template
 path selected at invocation start. The consumer may commit `resolved` entries
 independently.
+Schema `1.1` also carries `vbaProjectName` and
+`sourceTemplateFingerprint` as an all-or-nothing pair when inspection can read
+a valid actual `VBProject.Name`. The fingerprint is the uppercase SHA-256 of
+the exact private-copy bytes inspected. It lets a later Rename compare that
+actual name only with identical current template content; a missing pair is no
+authority and never falls back to manifest, document, or file naming.
 Each entry carries a `HostClassIdentity` scoped by the selected
 `ProjectDocument` and composed of the projection-supplied `VBComponent.Name`
 plus component kind (`form` or `document`). Name equality is case-insensitive
@@ -101,7 +107,7 @@ object/Event association and never infers it from `VBComponent.Name`, component
 kind, source file name, or optional base-type provenance. Failure to establish
 it makes the class `unverified` with
 `intrinsicEventSourceNameReadFailure` and preserves applicable last-known-good
-projection data. Because the command is unreleased, schema `1.0` makes the field
+projection data. Because the command is unreleased, schema `1.1` makes the field
 required rather than introducing a compatibility alias or default.
 
 A class identity may occur at most once in one enumeration. Two observations
@@ -272,9 +278,10 @@ the selected `ProjectDocument`. A result commits only when that generation
 remains current and its `project`, `document`, and `sourceTemplate` context
 matches the current selection. A superseded or mismatched result changes
 neither resolved projections nor identity deletion state. The generation is
-not passed to or serialized by `VbaDev`, and schema `1.0` carries no
-consumer-specific request ID, source-template hash, mtime, or inspection
-timestamp. Synchronous editor requests never invoke or wait for inspection; an
+not passed to or serialized by `VbaDev`, and schema `1.1` carries no
+consumer-specific request ID, mtime, or inspection timestamp. Its optional
+source-template fingerprint binds the observed project name to inspected bytes
+but is not a refresh generation. Synchronous editor requests never invoke or wait for inspection; an
 unavailable projection leaves host Event evidence `indeterminate`, and an
 `AdHocVbaProject` receives no projection rather than inferring one from source
 file or module names.
@@ -331,7 +338,7 @@ supersession likewise do not create retry work; supersession already has the
 newest generation queued. Recovery begins only from a later lifecycle trigger
 or explicit consumer refresh, which creates a new generation. Explicit refresh
 bypasses debounce but still obeys single-flight scheduling and cleanup
-ordering. Host-class schema `1.0` therefore adds no retryability or backoff
+ordering. Host-class schema `1.1` therefore adds no retryability or backoff
 fields, and the extension surfaces the failed state and explicit recovery
 action instead of repeatedly starting Excel in the background.
 
@@ -391,10 +398,13 @@ deltas to the language server. It folds current results, last-known-good state,
 indeterminate classes, and authoritative identity deletion into one immutable
 document-wide `HostClassProjectionSnapshot`. A custom
 `vba/hostClassProjectionSnapshot` LSP notification carries an independent
-transport schema version `1`, a monotonically increasing document-local
+transport schema version `2`, a monotonically increasing document-local
 `revision`, canonical project, document, and source-template context, and
 `state: "present"` or `state: "cleared"`. A present payload carries
-`classEnumerationComplete` and the complete class entry set. Each entry is
+`classEnumerationComplete` and the complete class entry set. It may carry
+`vbaProjectName` and `sourceTemplateFingerprint` only together; a cleared
+payload carries neither. The language server rejects schema `1`, a half pair,
+malformed authority, and unknown payload shapes. Each entry is
 `current`, `lastKnownGood`, or `indeterminate`; only current and last-known-good
 entries carry a complete `HostClassProjection`. Operational reason messages and
 Output history remain extension-owned.

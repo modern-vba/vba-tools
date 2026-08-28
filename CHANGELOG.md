@@ -27,6 +27,10 @@ CLI history.
 - Two-stage, name-only completion for intrinsic Host Event, `WithEvents`, and
   `Implements` declarations, with coalesced contract names, retained signature
   variants, and stateless semantic continuation in the VS Code client.
+- Semantic module-identity Rename across authoritative exported metadata,
+  resolved uses, and matching source-unit files, with CommonModules and host
+  ownership boundaries, project/reference collision authority, form-sidecar
+  and case-only handling, and complete-plan preflight safeguards.
 - Immutable debug snapshots that include dirty editor content without saving and
   run in disposable same-filename workbooks without changing persistent outputs.
 - Bound Restart Debugging with generation-scoped snapshots, owned process-tree

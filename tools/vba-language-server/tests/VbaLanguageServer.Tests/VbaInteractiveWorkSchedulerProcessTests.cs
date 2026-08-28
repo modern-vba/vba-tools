@@ -183,7 +183,7 @@ public sealed class VbaInteractiveWorkSchedulerProcessTests
                 "vba/hostClassProjectionSnapshot",
                 new
                 {
-                    schemaVersion = 1,
+                    schemaVersion = 2,
                     revision = 1,
                     project = Path.GetFullPath(projectRoot),
                     document = "Book1",

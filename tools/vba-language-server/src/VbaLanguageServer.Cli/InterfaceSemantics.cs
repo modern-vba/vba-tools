@@ -734,6 +734,51 @@ internal sealed class VbaInterfaceSemanticModel
         return [];
     }
 
+    internal bool TryResolveSourceInterfaceDeclarationPrefix(
+        VbaSourceDocument implementingDocument,
+        VbaSourceDefinition declaration,
+        out VbaResolvedNameTarget interfaceTarget,
+        out int prefixLength)
+    {
+        var candidates = GetContractSets(implementingDocument)
+            .Where(contract =>
+                !HasIndeterminateConditionalCompilationOwnership(
+                    contract.Relationship)
+                && contract.Variants.All(variant =>
+                    !HasIndeterminateConditionalCompilationOwnership(
+                        variant)))
+            .Where(contract => contract.ImplementedName.Equals(
+                declaration.Name,
+                StringComparison.OrdinalIgnoreCase))
+            .Select(contract => contract.Relationship)
+            .Where(relationship => relationship.InterfaceTarget
+                .PhysicalDefinitions.All(definition =>
+                    definition.Identity.Origin == VbaDefinitionOrigin.Source
+                    && definition.Kind == VbaSourceDefinitionKind.Class))
+            .Select(relationship => new
+            {
+                relationship.InterfaceTarget,
+                Prefix = relationship.InterfaceTarget.SelectedDefinition.Name
+            })
+            .Where(candidate => declaration.Name.StartsWith(
+                    candidate.Prefix,
+                    StringComparison.OrdinalIgnoreCase)
+                && declaration.Name.Length > candidate.Prefix.Length
+                && declaration.Name[candidate.Prefix.Length] == '_')
+            .DistinctBy(candidate => candidate.InterfaceTarget.Identity)
+            .ToArray();
+        if (candidates.Length != 1)
+        {
+            interfaceTarget = null!;
+            prefixLength = 0;
+            return false;
+        }
+
+        interfaceTarget = candidates[0].InterfaceTarget;
+        prefixLength = candidates[0].Prefix.Length;
+        return true;
+    }
+
     public VbaSignatureHelp? GetAccessorSignatureHelp(
         VbaSourceDocument implementingDocument,
         int line,

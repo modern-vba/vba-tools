@@ -321,7 +321,7 @@ public sealed class VbaDevCommandLine
             hostClassCommand,
             "list",
             "List intrinsic host classes for the selected document.",
-            "1.0",
+            "1.1",
             capabilityCommands);
         var hostClassListOptions = AddProjectDocumentOptions(hostClassListCommand);
         var hostClassListFormatOption = CreateStringOption(

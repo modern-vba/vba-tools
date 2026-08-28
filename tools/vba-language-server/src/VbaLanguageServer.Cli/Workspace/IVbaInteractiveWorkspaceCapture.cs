@@ -43,19 +43,31 @@ public interface IVbaInteractiveWorkspaceCapture
 /// </summary>
 public sealed class VbaRenameProjectSnapshotCapture : IDisposable
 {
-    private readonly Func<bool> hasParticipatingSourceChanged;
+    private readonly Func<VbaRenameFailure?>
+        getParticipatingSourceChangeFailure;
+    private readonly Func<VbaRenamePlan, VbaRenameFilePreflightResult>
+        preflightFileRenames;
     private IDisposable? revisionLease;
 
     internal VbaRenameProjectSnapshotCapture(
         VbaSemanticInventory semanticInventory,
-        Func<bool> hasParticipatingSourceChanged,
+        Func<VbaRenameFailure?> getParticipatingSourceChangeFailure,
         IDisposable? revisionLease,
-        string? analysisFailureMessage = null)
+        Func<VbaRenamePlan, VbaRenameFilePreflightResult>?
+            preflightFileRenames = null,
+        string? analysisFailureMessage = null,
+        string? sourceTemplateFingerprint = null)
     {
         SemanticInventory = semanticInventory;
-        this.hasParticipatingSourceChanged = hasParticipatingSourceChanged;
+        this.getParticipatingSourceChangeFailure =
+            getParticipatingSourceChangeFailure;
+        this.preflightFileRenames = preflightFileRenames
+            ?? (static plan => new VbaRenameFilePreflightResult(
+                plan,
+                Failure: null));
         this.revisionLease = revisionLease;
         AnalysisFailureMessage = analysisFailureMessage;
+        SourceTemplateFingerprint = sourceTemplateFingerprint;
     }
 
     /// <summary>
@@ -65,12 +77,20 @@ public sealed class VbaRenameProjectSnapshotCapture : IDisposable
 
     internal string? AnalysisFailureMessage { get; }
 
-    internal bool HasParticipatingSourceChanged()
-        => hasParticipatingSourceChanged();
+    internal string? SourceTemplateFingerprint { get; }
+
+    internal VbaRenameFailure? GetParticipatingSourceChangeFailure()
+        => getParticipatingSourceChangeFailure();
+
+    internal VbaRenameFilePreflightResult PreflightFileRenames(
+        VbaRenamePlan plan)
+        => plan.FileRenames.Count == 0
+            ? new VbaRenameFilePreflightResult(plan, Failure: null)
+            : preflightFileRenames(plan);
 
     internal static VbaRenameProjectSnapshotCapture CreateStable(
         VbaSemanticInventory semanticInventory)
-        => new(semanticInventory, static () => false, revisionLease: null);
+        => new(semanticInventory, static () => null, revisionLease: null);
 
     /// <inheritdoc />
     public void Dispose()

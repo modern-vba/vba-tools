@@ -1036,7 +1036,8 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
                     document.References ?? [],
                     VbaProjectResolver.ResolveManifestPath(
                         Path.GetDirectoryName(manifestPath)!,
-                        document.TemplatePath))
+                        document.TemplatePath),
+                    document.CommonModules ?? [])
                 {
                     RootIdentity = sourceRootIdentity
                 };
@@ -1199,7 +1200,8 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
                 document.References ?? [],
                 VbaProjectResolver.ResolveManifestPath(
                     Path.GetDirectoryName(manifestPath)!,
-                    document.TemplatePath))
+                    document.TemplatePath),
+                document.CommonModules ?? [])
             {
                 RootIdentity = sourceRootIdentity
             };
@@ -1297,7 +1299,8 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
                             document.References ?? [],
                             VbaProjectResolver.ResolveManifestPath(
                                 Path.GetDirectoryName(manifestPath)!,
-                                document.TemplatePath))
+                                document.TemplatePath),
+                            document.CommonModules ?? [])
                         {
                             RootIdentity = sourceRootIdentity
                         };
@@ -1383,7 +1386,8 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
                         document.References ?? [],
                         VbaProjectResolver.ResolveManifestPath(
                             Path.GetDirectoryName(manifestPath)!,
-                            document.TemplatePath))
+                            document.TemplatePath),
+                        document.CommonModules ?? [])
                     {
                         RootIdentity = sourceRootIdentity
                     };

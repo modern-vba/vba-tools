@@ -79,6 +79,34 @@ async function createDebugConfigurationFixture(): Promise<string> {
     'Option Explicit',
     ''
   ].join('\r\n'), 'utf8');
+  await writeFile(path.join(outsidePath, 'InvoiceModule.bas'), [
+    'Attribute VB_Name = "InvoiceModule"',
+    'Option Explicit',
+    '',
+    'Public Sub Run()',
+    'End Sub',
+    '',
+    'Public Sub Invoke()',
+    '    InvoiceModule.Run',
+    'End Sub',
+    ''
+  ].join('\r\n'), 'utf8');
+  await writeFile(path.join(outsidePath, 'ApplicationModule.bas'), [
+    'Attribute VB_Name = "ApplicationModule"',
+    'Option Explicit',
+    ''
+  ].join('\r\n'), 'utf8');
+  await writeFile(path.join(outsidePath, 'Dialog.frm'), [
+    'VERSION 5.00',
+    'Begin VB.Form Dialog',
+    'End',
+    'Attribute VB_Name = "Dialog"',
+    ''
+  ].join('\r\n'), 'utf8');
+  await writeFile(
+    path.join(outsidePath, 'Dialog.frx'),
+    Uint8Array.from([0x00, 0x01, 0x02, 0x03])
+  );
   return fixtureRoot;
 }
 

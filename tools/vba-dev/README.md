@@ -254,11 +254,11 @@ Options:
   --format <text|json>, -f <text|json> Host-class projection output format.
 ```
 
-Text is the default. JSON output uses the closed schema version `1.0` and is
+Text is the default. JSON output uses the closed schema version `1.1` and is
 published only after the dedicated Excel process is proved released. The
 command inspects a read-only private copy with macros and Excel Events disabled;
 it does not generate source or persist projection state. See
-[Host-class list and JSON schema 1.0](docs/host-class-list.md) for the schema,
+[Host-class list and JSON schema 1.1](docs/host-class-list.md) for the schema,
 exit behavior, partial-result semantics, safety boundary, and consumer
 responsibilities.
 

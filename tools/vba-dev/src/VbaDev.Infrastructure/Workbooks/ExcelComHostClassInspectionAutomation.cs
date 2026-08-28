@@ -1,9 +1,11 @@
 using System.IO.Compression;
 using System.Runtime.ExceptionServices;
+using System.Security.Cryptography;
 using System.Xml.Linq;
 using VbaDev.App.HostClasses;
 using VbaDev.App.Workbooks;
 using VbaDev.Infrastructure.Debugging;
+using VbaLanguageServer.Syntax;
 
 namespace VbaDev.Infrastructure.Workbooks;
 
@@ -16,6 +18,8 @@ internal sealed record HostClassIdentityEnumeration(
     IReadOnlyList<HostClassComponentDescriptor> Components,
     IReadOnlyList<HostClassInspectionDiagnostic> Diagnostics)
 {
+    public string? VbaProjectName { get; init; }
+
     public static HostClassIdentityEnumeration CreateComplete(
         IReadOnlyList<HostClassComponentDescriptor> components)
         => new(true, components, []);
@@ -94,6 +98,8 @@ public sealed class ExcelComHostClassInspectionAutomation : IHostClassInspection
         ArgumentNullException.ThrowIfNull(request.Timeouts);
 
         var workspace = workspaceFactory.Create(request.SourceTemplatePath);
+        var sourceTemplateFingerprint = Convert.ToHexString(
+            SHA256.HashData(File.ReadAllBytes(workspace.WorkbookPath)));
         try
         {
             lifecycle.ValidateSafePrivateCopy(workspace.WorkbookPath);
@@ -230,6 +236,7 @@ public sealed class ExcelComHostClassInspectionAutomation : IHostClassInspection
                 batch.ClassEnumerationComplete,
                 batch.Classes)
             {
+                VbaProjectName = batch.VbaProjectName,
                 Outcome = HostClassInspectionOutcome.Cancelled,
                 Diagnostics =
                 [
@@ -262,7 +269,11 @@ public sealed class ExcelComHostClassInspectionAutomation : IHostClassInspection
                     "inspectionWorkspaceRetained",
                     $"The released host-class inspection workspace could not be removed and was retained at '{cleanup.RetainedPath}'.")
             };
-        return new HostClassInspectionCompletion(batch!, warnings);
+        batch = batch! with
+        {
+            SourceTemplateFingerprint = sourceTemplateFingerprint
+        };
+        return new HostClassInspectionCompletion(batch, warnings);
     }
 
     private static string CreateRetainedWorkspaceErrorSuffix(
@@ -378,10 +389,12 @@ public sealed class ExcelComHostClassInspectionAutomation : IHostClassInspection
                         $"Host-class inspection was cancelled before '{cancelled.Identity.Name}' completed."));
                 }
 
-                return HostClassInspectionBatch.CreateCancelled(
+                return WithProjectName(
+                    HostClassInspectionBatch.CreateCancelled(
                     enumeration.Complete,
                     entries,
-                    exception.Message);
+                    exception.Message),
+                    enumeration);
             }
             catch (WorkbookAutomationTimeoutException exception)
             {
@@ -400,10 +413,12 @@ public sealed class ExcelComHostClassInspectionAutomation : IHostClassInspection
                         $"Host-class inspection for '{aborted.Identity.Name}' was not started after shared inspection state became untrusted."));
                 }
 
-                return HostClassInspectionBatch.CreateInspectionStateUntrusted(
+                return WithProjectName(
+                    HostClassInspectionBatch.CreateInspectionStateUntrusted(
                     enumeration.Complete,
                     entries,
-                    exception.Message);
+                    exception.Message),
+                    enumeration);
             }
             catch (WorkbookAutomationProcessLostException exception)
             {
@@ -422,10 +437,12 @@ public sealed class ExcelComHostClassInspectionAutomation : IHostClassInspection
                         $"Host-class inspection for '{aborted.Identity.Name}' was not started after shared inspection state became untrusted."));
                 }
 
-                return HostClassInspectionBatch.CreateInspectionStateUntrusted(
+                return WithProjectName(
+                    HostClassInspectionBatch.CreateInspectionStateUntrusted(
                     enumeration.Complete,
                     entries,
-                    exception.Message);
+                    exception.Message),
+                    enumeration);
             }
             catch (HostClassInspectionStateUntrustedException exception)
             {
@@ -444,10 +461,12 @@ public sealed class ExcelComHostClassInspectionAutomation : IHostClassInspection
                         $"Host-class inspection for '{aborted.Identity.Name}' was not started after shared inspection state became untrusted."));
                 }
 
-                return HostClassInspectionBatch.CreateInspectionStateUntrusted(
+                return WithProjectName(
+                    HostClassInspectionBatch.CreateInspectionStateUntrusted(
                     enumeration.Complete,
                     entries,
-                    exception.Message);
+                    exception.Message),
+                    enumeration);
             }
             catch (Exception exception) when (
                 exception is not OperationCanceledException and
@@ -462,9 +481,15 @@ public sealed class ExcelComHostClassInspectionAutomation : IHostClassInspection
 
         return new HostClassInspectionBatch(enumeration.Complete, entries)
         {
+            VbaProjectName = enumeration.VbaProjectName,
             Diagnostics = enumeration.Diagnostics
         };
     }
+
+    private static HostClassInspectionBatch WithProjectName(
+        HostClassInspectionBatch batch,
+        HostClassIdentityEnumeration enumeration)
+        => batch with { VbaProjectName = enumeration.VbaProjectName };
 
     private static HostClassIdentityEnumeration OmitDuplicateIdentities(
         HostClassIdentityEnumeration enumeration)
@@ -500,7 +525,10 @@ public sealed class ExcelComHostClassInspectionAutomation : IHostClassInspection
                 new HostClassInspectionDiagnostic(
                     "classEnumerationFailure",
                     $"Duplicate case-insensitive host-class identities were omitted: {string.Join(", ", duplicateNames)}.")
-            ]);
+            ])
+        {
+            VbaProjectName = enumeration.VbaProjectName
+        };
     }
 
     private async Task<OwnedHostReleaseResult> ReleaseOwnedHostAsync(
@@ -729,6 +757,30 @@ public sealed class ExcelComHostClassInspectionAutomation : IHostClassInspection
                 dynamic openedWorkbook = workbook;
                 projectObject = openedWorkbook.VBProject;
                 dynamic project = projectObject;
+                string? vbaProjectName = null;
+                var diagnostics = new List<HostClassInspectionDiagnostic>();
+                try
+                {
+                    var observedName = (string)project.Name;
+                    if (VbaIdentifier.IsIdentifier(observedName)
+                        && observedName.EnumerateRunes().Take(32).Count() <= 31)
+                    {
+                        vbaProjectName = observedName;
+                    }
+                    else
+                    {
+                        diagnostics.Add(new HostClassInspectionDiagnostic(
+                            "vbaProjectNameInvalid",
+                            "The inspected VBA project name is not a valid module identifier."));
+                    }
+                }
+                catch (Exception exception)
+                {
+                    diagnostics.Add(new HostClassInspectionDiagnostic(
+                        "vbaProjectNameReadFailure",
+                        $"The inspected VBA project name could not be read: {exception.Message}"));
+                }
+
                 componentsObject = project.VBComponents;
                 dynamic collection = componentsObject;
                 var count = (int)collection.Count;
@@ -758,7 +810,13 @@ public sealed class ExcelComHostClassInspectionAutomation : IHostClassInspection
                     }
                 }
 
-                return HostClassIdentityEnumeration.CreateComplete(components);
+                return new HostClassIdentityEnumeration(
+                    Complete: true,
+                    Components: components,
+                    Diagnostics: diagnostics)
+                {
+                    VbaProjectName = vbaProjectName
+                };
             }
             finally
             {
