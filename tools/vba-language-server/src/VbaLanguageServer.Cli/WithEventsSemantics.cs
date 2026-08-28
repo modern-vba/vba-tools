@@ -186,6 +186,36 @@ internal sealed record VbaWithEventsHandlerAnalysis(
     VbaWithEventsHandlerRecognition Recognition,
     VbaWithEventsEventNameTarget? EventTarget);
 
+internal enum VbaHandlerEventRenameConvergenceKind
+{
+    Convergent,
+    NotCandidate,
+    ConflictingTargets,
+    Indeterminate
+}
+
+internal sealed record VbaHandlerEventRenameConvergence(
+    VbaWithEventsHandlerAnalysis HandlerAnalysis,
+    VbaHandlerEventRenameConvergenceKind Kind,
+    VbaResolvedNameTarget? EventTarget);
+
+internal sealed record VbaWithEventsDependentRenameTarget(
+    VbaResolvedNameTarget Target,
+    IReadOnlyList<VbaHandlerEventRenameConvergence> Associations);
+
+internal enum VbaConditionalDependentRenameCoverageKind
+{
+    CompleteDependent,
+    ConclusiveMixed,
+    IndeterminateCoverage
+}
+
+internal sealed record VbaConditionalDependentRenameCoverage(
+    VbaResolvedNameTarget Target,
+    VbaConditionalDependentRenameCoverageKind Kind,
+    IReadOnlyList<VbaSourceDefinition> PhysicalDefinitions,
+    IReadOnlyList<VbaHandlerEventRenameConvergence> Associations);
+
 internal enum VbaEventHandlerCompatibilityState
 {
     Compatible,
@@ -280,6 +310,140 @@ internal sealed class VbaWithEventsSemanticModel
         this.referenceCatalogIdentities = referenceCatalogIdentities
             ?? new Dictionary<string, VbaProjectReferenceCatalogIdentity>(
                 VbaProjectReferenceName.Comparer);
+    }
+
+    public VbaHandlerEventRenameConvergence
+        AnalyzeHandlerEventRenameConvergence(
+            VbaWithEventsHandlerAnalysis handlerAnalysis)
+    {
+        var bindingSet = handlerAnalysis.BindingSet;
+        if (nameResolution.HasIndeterminateConditionalCompilationOwnership(
+                handlerAnalysis.Handler)
+            || bindingSet.Entries.Any(entry =>
+                entry.Status == VbaWithEventsEventBindingStatus.Indeterminate
+                || entry.HasRecoveredEventEvidence))
+        {
+            return new VbaHandlerEventRenameConvergence(
+                handlerAnalysis,
+                VbaHandlerEventRenameConvergenceKind.Indeterminate,
+                EventTarget: null);
+        }
+
+        var resolvedEntries = bindingSet.ResolvedEntries;
+        var eventTargets = resolvedEntries
+            .SelectMany(entry => entry.ResolvedEventTargets)
+            .DistinctBy(target => target.Identity)
+            .ToArray();
+        if (eventTargets.Length == 0)
+        {
+            return new VbaHandlerEventRenameConvergence(
+                handlerAnalysis,
+                VbaHandlerEventRenameConvergenceKind.NotCandidate,
+                EventTarget: null);
+        }
+
+        var sourceEventTargets = eventTargets
+            .Where(target => target is not VbaHostEventNameTarget
+                && target.PhysicalDefinitions.Count > 0
+                && target.PhysicalDefinitions.All(definition =>
+                    definition.Identity.Origin == VbaDefinitionOrigin.Source
+                    && definition.Kind == VbaSourceDefinitionKind.Event))
+            .ToArray();
+        if (sourceEventTargets.Length == 0)
+        {
+            return new VbaHandlerEventRenameConvergence(
+                handlerAnalysis,
+                VbaHandlerEventRenameConvergenceKind.NotCandidate,
+                EventTarget: null);
+        }
+
+        var targetlessResolvedEntries = resolvedEntries
+            .Where(entry => entry.ResolvedEventTargets.Count == 0)
+            .ToArray();
+        var hasConclusiveExternalTypeLibAssociation =
+            targetlessResolvedEntries.Any(entry =>
+                entry.EventContracts is { Count: > 0 }
+                && entry.EventContracts.All(contract =>
+                    contract.ValidationAuthority
+                        == VbaEventHandlerValidationAuthority
+                            .ExternalTypeLibAdvisory));
+        var hasIndeterminateTargetlessAssociation =
+            targetlessResolvedEntries.Any(entry =>
+                entry.EventContracts is not { Count: > 0 }
+                || entry.EventContracts.Any(contract =>
+                    contract.ValidationAuthority
+                        != VbaEventHandlerValidationAuthority
+                            .ExternalTypeLibAdvisory));
+        if (eventTargets.Any(target => target is VbaHostEventNameTarget)
+            || hasIndeterminateTargetlessAssociation)
+        {
+            return new VbaHandlerEventRenameConvergence(
+                handlerAnalysis,
+                VbaHandlerEventRenameConvergenceKind.Indeterminate,
+                EventTarget: null);
+        }
+
+        if (sourceEventTargets.Length != eventTargets.Length
+            || hasConclusiveExternalTypeLibAssociation
+            || sourceEventTargets.Length > 1)
+        {
+            return new VbaHandlerEventRenameConvergence(
+                handlerAnalysis,
+                VbaHandlerEventRenameConvergenceKind.ConflictingTargets,
+                EventTarget: null);
+        }
+
+        return sourceEventTargets.Length == 1
+            ? new VbaHandlerEventRenameConvergence(
+                handlerAnalysis,
+                VbaHandlerEventRenameConvergenceKind.Convergent,
+                sourceEventTargets[0])
+            : new VbaHandlerEventRenameConvergence(
+                handlerAnalysis,
+                VbaHandlerEventRenameConvergenceKind.ConflictingTargets,
+                EventTarget: null);
+    }
+
+    public IReadOnlyList<VbaResolvedEventContract>
+        CreateTypeLibEventContracts(
+            string? referenceName,
+            string typeName,
+            VbaTypeLibEventSurface eventSurface,
+            string eventName,
+            bool isConditionalBinding)
+    {
+        if (referenceName is null
+            || eventSurface.State != VbaTypeLibEventSurfaceState.Complete)
+        {
+            return [];
+        }
+
+        referenceCatalogIdentities.TryGetValue(
+            referenceName,
+            out var catalogIdentity);
+        return eventSurface.ExistingHandlerRecognitionEvents
+            .Where(member => member.Name.Equals(
+                eventName,
+                StringComparison.OrdinalIgnoreCase))
+            .Select(member => new VbaResolvedEventContract(
+                new VbaProjectedEventContractIdentity(
+                    "typeLib",
+                    string.Join(
+                        '\u001f',
+                        catalogIdentity?.Guid ?? referenceName,
+                        catalogIdentity?.MajorVersion.ToString() ?? "",
+                        catalogIdentity?.MinorVersion.ToString() ?? "",
+                        catalogIdentity?.Lcid.ToString() ?? "",
+                        typeName,
+                        member.Metadata?.MemberId.ToString() ?? "",
+                        member.Name)),
+                member.Name,
+                member.Signature,
+                member.Documentation,
+                VbaEventHandlerValidationAuthority.ExternalTypeLibAdvisory,
+                isConditionalBinding,
+                TypeLibCatalogMemberFacts.IsAuthoringAvailable(member)))
+            .ToArray();
     }
 
     public VbaWithEventsTypeEligibility? ClassifyType(

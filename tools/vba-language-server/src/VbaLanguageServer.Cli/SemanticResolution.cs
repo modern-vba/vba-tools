@@ -2739,6 +2739,17 @@ internal sealed class VbaSemanticResolution
                 continue;
             }
 
+            var typeLibEventContracts = eligibility.Kind
+                    == VbaWithEventsTypeEligibilityKind.Eligible
+                && eligibility.TypeLibEventSurface is { } typeLibEventSurface
+                ? withEventsSemantics.CreateTypeLibEventContracts(
+                    receiverType.ReferenceName,
+                    receiverType.Name,
+                    typeLibEventSurface,
+                    eventName,
+                    variableTarget.IsConditionalFamily)
+                : [];
+
             var outcome = nameResolution.ResolveMemberOutcome(
                 currentDocument,
                 receiverType,
@@ -2810,6 +2821,17 @@ internal sealed class VbaSemanticResolution
                 continue;
             }
 
+            if (outcome.Kind == VbaNameResolutionKind.Unresolved
+                && typeLibEventContracts.Count > 0)
+            {
+                entries.Add(new VbaWithEventsEventBindingEntry(
+                    variable,
+                    VbaWithEventsEventBindingStatus.Resolved,
+                    EventTarget: null,
+                    EventContracts: typeLibEventContracts));
+                continue;
+            }
+
             if (outcome.Kind is VbaNameResolutionKind.Ambiguous
                 or VbaNameResolutionKind.AnalysisIncomplete)
             {
@@ -2860,6 +2882,12 @@ internal sealed class VbaSemanticResolution
             recognition,
             eventTarget);
     }
+
+    internal VbaHandlerEventRenameConvergence
+        AnalyzeHandlerEventRenameConvergence(
+            VbaWithEventsHandlerAnalysis handlerAnalysis)
+        => withEventsSemantics.AnalyzeHandlerEventRenameConvergence(
+            handlerAnalysis);
 
     private (
         IReadOnlyList<VbaResolvedEventContract> Contracts,

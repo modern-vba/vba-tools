@@ -738,6 +738,23 @@ public sealed class VbaSemanticInventory
                 Failure: null);
         }
 
+        if (document is not null
+            && TryResolveWithEventsHandlerSegment(
+                document,
+                line,
+                character,
+                out var handlerSegment))
+        {
+            return new VbaPrepareRenameOutcome(
+                handlerSegment.Target is null
+                    || handlerSegment.Range is null
+                    ? null
+                    : new VbaPrepareRenameResult(
+                        handlerSegment.Range,
+                        handlerSegment.Target.CanonicalName),
+                Failure: null);
+        }
+
         var resolvedTarget = ResolveSourceTarget(uri, line, character);
         if (resolvedTarget is not null
             && IsIncompleteSourceInterfaceImplementationTarget(resolvedTarget))
@@ -777,6 +794,12 @@ public sealed class VbaSemanticInventory
         if (document is not null
             && resolvedTarget is not null
             && GetIntrinsicHostHandlerAuthority(document, resolvedTarget) is not null)
+        {
+            return new VbaPrepareRenameOutcome(Result: null, Failure: null);
+        }
+
+        if (resolvedTarget is not null
+            && HasWithEventsDependentRenameVariant(resolvedTarget))
         {
             return new VbaPrepareRenameOutcome(Result: null, Failure: null);
         }
@@ -967,6 +990,27 @@ public sealed class VbaSemanticInventory
         VbaResolvedNameTarget? Target,
         VbaRange? Range,
         VbaResolvedNameTarget CompleteTarget);
+
+    private sealed record VbaWithEventsHandlerSegmentResolution(
+        VbaResolvedNameTarget? Target,
+        VbaRange? Range,
+        VbaResolvedNameTarget CompleteTarget);
+
+    private sealed record VbaWithEventsRenameDependency(
+        VbaHandlerEventRenameConvergence Convergence,
+        bool RenamesEvent,
+        bool RenamesVariable);
+
+    private sealed record VbaWithEventsAssociationProofKey(
+        string Handler,
+        string HandlerTarget,
+        string VariableTarget,
+        string Prefix,
+        string Separator,
+        string Suffix,
+        VbaWithEventsHandlerRecognition Recognition,
+        VbaHandlerEventRenameConvergenceKind Convergence,
+        string BindingEntries);
 
     private sealed record VbaInterfaceAssociationProofKey(
         string Relationship,
@@ -1312,6 +1356,25 @@ public sealed class VbaSemanticInventory
                     + "contract evidence."));
         }
 
+        if (resolvedTarget is not null
+            && HasWithEventsDependentRenameVariant(resolvedTarget))
+        {
+            if (string.Equals(
+                resolvedTarget.CanonicalName,
+                newName,
+                StringComparison.Ordinal))
+            {
+                return new VbaRenameResult(Plan: null, Failure: null);
+            }
+
+            return new VbaRenameResult(
+                Plan: null,
+                new VbaRenameFailure(
+                    "notRenameTarget",
+                    "A WithEvents handler is a dependent Rename target; "
+                    + "rename its WithEvents variable or source Event instead."));
+        }
+
         if (document is not null
             && resolvedTarget is not null
             && ClassifySourceInterfaceDependentRenameTarget(resolvedTarget)
@@ -1467,6 +1530,15 @@ public sealed class VbaSemanticInventory
                     + "dependent coverage."));
         }
 
+        var withEventsCoverageFailure =
+            GetWithEventsDependentRenameCoverageFailure(target);
+        if (withEventsCoverageFailure is not null)
+        {
+            return new VbaRenameResult(
+                Plan: null,
+                withEventsCoverageFailure);
+        }
+
         var invalidTargetConflicts = FindInvalidPropertyFamilyConflicts(target);
         if (invalidTargetConflicts.Count > 0)
         {
@@ -1487,6 +1559,7 @@ public sealed class VbaSemanticInventory
 
         var collisions = FindSameScopeCollisions(target, newName)
             .Concat(FindInterfaceDependentRenameCollisions(target, newName))
+            .Concat(FindWithEventsDependentRenameCollisions(target, newName))
             .Distinct()
             .ToArray();
         if (collisions.Length > 0)
@@ -1539,6 +1612,10 @@ public sealed class VbaSemanticInventory
                 occurrence.Uri,
                 new VbaTextEdit(occurrence.Range, newName)))
             .Concat(CreateInterfaceDependentRenameEdits(
+                target,
+                newName,
+                cancellationToken))
+            .Concat(CreateWithEventsDependentRenameEdits(
                 target,
                 newName,
                 cancellationToken));
@@ -1781,6 +1858,526 @@ public sealed class VbaSemanticInventory
         return edits;
     }
 
+    private IReadOnlyList<VbaHandlerEventRenameConvergence>
+        GetHandlerEventRenameConvergences()
+        => sourceDocuments
+            .SelectMany(document => document.Definitions
+                .Where(definition => definition.Kind is
+                    VbaSourceDefinitionKind.Procedure
+                        or VbaSourceDefinitionKind.Property)
+                .Select(definition => semanticResolution
+                    .AnalyzeWithEventsHandler(document, definition))
+                .Where(analysis => analysis is not null)
+                .Select(analysis => semanticResolution
+                    .AnalyzeHandlerEventRenameConvergence(analysis!)))
+            .ToArray();
+
+    private bool TryResolveWithEventsHandlerSegment(
+        VbaSourceDocument document,
+        int line,
+        int character,
+        out VbaWithEventsHandlerSegmentResolution result)
+    {
+        result = null!;
+        var position = new VbaPosition(line, character);
+        var handler = document.Definitions.FirstOrDefault(definition =>
+            definition.Kind is VbaSourceDefinitionKind.Procedure
+                or VbaSourceDefinitionKind.Property
+            && ContainsCharacter(definition.Range, position));
+        if (handler is null
+            || semanticResolution.AnalyzeWithEventsHandler(document, handler)
+                is not { } analysis
+            || analysis.Recognition
+                == VbaWithEventsHandlerRecognition.OrdinaryProcedure
+            || handler.Range.Start.Line != handler.Range.End.Line)
+        {
+            return false;
+        }
+
+        var separatorOffset = analysis.Decomposition.VariableName.Length;
+        if (separatorOffset <= 0
+            || separatorOffset >= handler.Name.Length - 1
+            || handler.Name[separatorOffset] != '_')
+        {
+            return false;
+        }
+
+        var start = handler.Range.Start;
+        var separatorCharacter = start.Character + separatorOffset;
+        var prefixRange = new VbaRange(
+            start,
+            new VbaPosition(start.Line, separatorCharacter));
+        var separatorRange = new VbaRange(
+            new VbaPosition(start.Line, separatorCharacter),
+            new VbaPosition(start.Line, separatorCharacter + 1));
+        var suffixRange = new VbaRange(
+            new VbaPosition(start.Line, separatorCharacter + 1),
+            handler.Range.End);
+        var completeTarget = resolutionPolicy.CreateNameTarget(
+            GetLogicalRenameTarget(handler));
+        if (ContainsCharacter(prefixRange, position))
+        {
+            result = new VbaWithEventsHandlerSegmentResolution(
+                analysis.BindingSet.VariableTarget,
+                prefixRange,
+                completeTarget);
+            return true;
+        }
+
+        if (ContainsCharacter(separatorRange, position))
+        {
+            result = new VbaWithEventsHandlerSegmentResolution(
+                Target: null,
+                separatorRange,
+                completeTarget);
+            return true;
+        }
+
+        var convergence = semanticResolution
+            .AnalyzeHandlerEventRenameConvergence(analysis);
+        result = new VbaWithEventsHandlerSegmentResolution(
+            convergence.Kind
+                    == VbaHandlerEventRenameConvergenceKind.Convergent
+                ? convergence.EventTarget
+                : null,
+            suffixRange,
+            completeTarget);
+        return true;
+    }
+
+    private VbaWithEventsDependentRenameTarget?
+        ClassifyWithEventsDependentRenameTarget(
+            VbaResolvedNameTarget target)
+    {
+        var coverage = GetConditionalDependentRenameCoverages(
+                GetHandlerEventRenameConvergences())
+            .SingleOrDefault(candidate => candidate.Target.Identity
+                == target.Identity);
+        return coverage?.Kind
+                != VbaConditionalDependentRenameCoverageKind.CompleteDependent
+            ? null
+            : new VbaWithEventsDependentRenameTarget(
+                target,
+                coverage.Associations);
+    }
+
+    private bool HasWithEventsDependentRenameVariant(
+        VbaResolvedNameTarget target)
+        => ClassifyWithEventsDependentRenameTarget(target) is not null
+            || GetHandlerEventRenameConvergences().Any(convergence =>
+                convergence.HandlerAnalysis.Recognition is
+                    VbaWithEventsHandlerRecognition.ResolvedHandler
+                        or VbaWithEventsHandlerRecognition
+                            .NonSubProcedureAssociation
+                && resolutionPolicy.CreateNameTarget(
+                    GetLogicalRenameTarget(
+                        convergence.HandlerAnalysis.Handler)).Identity
+                    == target.Identity);
+
+    private IReadOnlyList<VbaConditionalDependentRenameCoverage>
+        GetConditionalDependentRenameCoverages(
+            IReadOnlyList<VbaHandlerEventRenameConvergence> convergences)
+        => convergences
+            .GroupBy(convergence => resolutionPolicy.CreateNameTarget(
+                GetLogicalRenameTarget(
+                    convergence.HandlerAnalysis.Handler)).Identity)
+            .Select(group =>
+            {
+                var first = group.First();
+                var targetDefinition = GetLogicalRenameTarget(
+                    first.HandlerAnalysis.Handler);
+                var target = resolutionPolicy.CreateNameTarget(
+                    targetDefinition);
+                var physicalDefinitions = GetLogicalRenameTargetDefinitions(
+                    targetDefinition);
+                var associations = group.ToArray();
+                var hasConclusiveNonDependentDefinition = false;
+                var hasIndeterminateDefinition = false;
+                foreach (var definition in physicalDefinitions)
+                {
+                    var definitionAssociations = associations
+                        .Where(association => association.HandlerAnalysis
+                            .Handler.Identity == definition.Identity)
+                        .ToArray();
+                    if (definition.Kind is not (
+                            VbaSourceDefinitionKind.Procedure
+                                or VbaSourceDefinitionKind.Property))
+                    {
+                        hasConclusiveNonDependentDefinition = true;
+                        continue;
+                    }
+
+                    if (definitionAssociations.Length == 0
+                        || semanticResolution
+                            .HasIndeterminateConditionalCompilationOwnership(
+                                definition))
+                    {
+                        hasIndeterminateDefinition = true;
+                        continue;
+                    }
+
+                    if (definitionAssociations.Any(association =>
+                            association.HandlerAnalysis.Recognition
+                                == VbaWithEventsHandlerRecognition
+                                    .OrdinaryProcedure))
+                    {
+                        hasConclusiveNonDependentDefinition = true;
+                        continue;
+                    }
+
+                    if (definitionAssociations.Any(association =>
+                            association.HandlerAnalysis.Recognition
+                                == VbaWithEventsHandlerRecognition
+                                    .IndeterminateCandidate))
+                    {
+                        hasIndeterminateDefinition = true;
+                        continue;
+                    }
+
+                    if (definitionAssociations.Any(association =>
+                            association.HandlerAnalysis.Recognition is not (
+                                VbaWithEventsHandlerRecognition.ResolvedHandler
+                                    or VbaWithEventsHandlerRecognition
+                                        .NonSubProcedureAssociation)))
+                    {
+                        hasConclusiveNonDependentDefinition = true;
+                    }
+                }
+
+                var kind = hasConclusiveNonDependentDefinition
+                    ? VbaConditionalDependentRenameCoverageKind.ConclusiveMixed
+                    : hasIndeterminateDefinition
+                        ? VbaConditionalDependentRenameCoverageKind
+                            .IndeterminateCoverage
+                        : VbaConditionalDependentRenameCoverageKind
+                            .CompleteDependent;
+                return new VbaConditionalDependentRenameCoverage(
+                    target,
+                    kind,
+                    physicalDefinitions,
+                    associations);
+            })
+            .ToArray();
+
+    private VbaRenameFailure?
+        GetWithEventsDependentRenameCoverageFailure(
+            VbaSourceDefinition target)
+    {
+        var logicalDefinitions = GetLogicalRenameTargetDefinitions(target);
+        var targetIdentities = logicalDefinitions
+            .Select(resolutionPolicy.CreateNameTarget)
+            .Select(logicalTarget => logicalTarget.Identity)
+            .ToHashSet();
+        var hasEventTarget = logicalDefinitions.Any(definition =>
+            definition.Kind == VbaSourceDefinitionKind.Event);
+        var hasModuleVariableTarget = logicalDefinitions
+            .Any(definition =>
+                definition.Kind == VbaSourceDefinitionKind.Variable
+                && definition.ParentProcedureName is null);
+        if (!hasEventTarget && !hasModuleVariableTarget)
+        {
+            return null;
+        }
+
+        var convergences = GetHandlerEventRenameConvergences();
+        var relevantEventConvergences = hasEventTarget
+            ? convergences.Where(convergence => convergence.HandlerAnalysis
+                    .BindingSet.ResolvedEntries
+                    .SelectMany(entry => entry.ResolvedEventTargets)
+                    .Any(eventTarget => targetIdentities.Contains(
+                        eventTarget.Identity)))
+                .ToArray()
+            : [];
+        if (relevantEventConvergences.Any(convergence =>
+                convergence.Kind
+                    == VbaHandlerEventRenameConvergenceKind
+                        .ConflictingTargets))
+        {
+            return ResolutionChanged(
+                "Rename would change a handler shared by distinct source "
+                + "Event targets.");
+        }
+
+        var relevantVariableConvergences = hasModuleVariableTarget
+            ? convergences
+            .Where(convergence => targetIdentities.Contains(
+                convergence.HandlerAnalysis.BindingSet.VariableTarget
+                    .Identity))
+            .ToArray()
+            : [];
+
+        var relevantDependentTargetIdentities = relevantEventConvergences
+            .Concat(relevantVariableConvergences.Where(convergence =>
+                convergence.HandlerAnalysis.Recognition is
+                    VbaWithEventsHandlerRecognition.ResolvedHandler
+                        or VbaWithEventsHandlerRecognition
+                            .NonSubProcedureAssociation))
+            .Select(convergence => resolutionPolicy.CreateNameTarget(
+                GetLogicalRenameTarget(
+                    convergence.HandlerAnalysis.Handler)).Identity)
+            .ToHashSet();
+        var relevantCoverage = GetConditionalDependentRenameCoverages(
+                convergences)
+            .Where(coverage => relevantDependentTargetIdentities.Contains(
+                coverage.Target.Identity))
+            .ToArray();
+        if (relevantCoverage.Any(coverage => coverage.Kind
+                == VbaConditionalDependentRenameCoverageKind
+                    .ConclusiveMixed))
+        {
+            return ResolutionChanged(
+                "Rename would change a conclusively mixed conditional "
+                + "WithEvents dependent family.");
+        }
+
+        if (relevantCoverage.Any(coverage => coverage.Kind
+                == VbaConditionalDependentRenameCoverageKind
+                    .IndeterminateCoverage))
+        {
+            return AnalysisIncomplete(
+                "Rename could not establish complete conditional "
+                + "WithEvents dependent coverage.");
+        }
+
+        if (relevantEventConvergences.Any(convergence =>
+                convergence.Kind
+                    == VbaHandlerEventRenameConvergenceKind.Indeterminate))
+        {
+            return AnalysisIncomplete(
+                "Rename could not establish complete conditional handler "
+                + "coverage for the source Event.");
+        }
+
+        var eventDefinitions = logicalDefinitions
+            .Where(definition => definition.Kind
+                == VbaSourceDefinitionKind.Event)
+            .ToArray();
+        if (hasEventTarget
+            && convergences.Any(convergence =>
+                convergence.Kind
+                    == VbaHandlerEventRenameConvergenceKind.Indeterminate
+                && eventDefinitions.Any(eventDefinition =>
+                    eventDefinition.Name.Equals(
+                        convergence.HandlerAnalysis.Decomposition.EventName,
+                        StringComparison.OrdinalIgnoreCase))
+                && convergence.HandlerAnalysis.BindingSet.Entries.Any(entry =>
+                    eventDefinitions.Any(eventDefinition =>
+                        IsPotentialIndeterminateWithEventsBindingForEvent(
+                            entry,
+                            eventDefinition)))))
+        {
+            return AnalysisIncomplete(
+                "Rename could not exclude an indeterminate WithEvents "
+                + "handler candidate for the source Event.");
+        }
+
+        if (relevantVariableConvergences.Any(convergence =>
+                convergence.HandlerAnalysis.Recognition
+                    == VbaWithEventsHandlerRecognition
+                        .IndeterminateCandidate
+                || convergence.HandlerAnalysis.BindingSet.Entries.Any(entry =>
+                    entry.Status
+                        == VbaWithEventsEventBindingStatus.Indeterminate
+                    || entry.HasRecoveredEventEvidence)))
+        {
+            return AnalysisIncomplete(
+                "Rename could not establish complete WithEvents handler "
+                + "ownership for every conditional variable variant.");
+        }
+
+        return null;
+    }
+
+    private bool IsPotentialIndeterminateWithEventsBindingForEvent(
+        VbaWithEventsEventBindingEntry entry,
+        VbaSourceDefinition eventDefinition)
+    {
+        if (entry.Status != VbaWithEventsEventBindingStatus.Indeterminate
+            || entry.Variable.TypeReference is not { } typeReference
+            || !eventDefinition.ModuleName.Equals(
+                typeReference.Name,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var variableDocument = sourceDocuments.FirstOrDefault(document =>
+            document.Uri.Equals(
+                entry.Variable.Uri,
+                StringComparison.OrdinalIgnoreCase));
+        var eligibility = variableDocument is null
+            ? null
+            : semanticResolution.GetWithEventsTypeEligibility(
+                variableDocument,
+                entry.Variable);
+        return eligibility?.TypeDefinition?.Identity.Origin
+            != VbaDefinitionOrigin.ProjectReference;
+    }
+
+    private IReadOnlyList<KeyValuePair<string, VbaTextEdit>>
+        CreateWithEventsDependentRenameEdits(
+            VbaSourceDefinition target,
+            string newName,
+            CancellationToken cancellationToken)
+    {
+        var dependencies = GetWithEventsRenameDependencies(target);
+        var edits = new List<KeyValuePair<string, VbaTextEdit>>();
+        foreach (var dependentGroup in dependencies.GroupBy(dependency =>
+                     resolutionPolicy.CreateNameTarget(
+                         GetLogicalRenameTarget(
+                             dependency.Convergence.HandlerAnalysis.Handler))
+                         .Identity))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var dependency = dependentGroup
+                .OrderBy(candidate =>
+                    candidate.Convergence.HandlerAnalysis.Handler.Uri,
+                    StringComparer.OrdinalIgnoreCase)
+                .ThenBy(candidate =>
+                    candidate.Convergence.HandlerAnalysis.Handler.Uri,
+                    StringComparer.Ordinal)
+                .ThenBy(candidate => candidate.Convergence.HandlerAnalysis
+                    .Handler.Range.Start.Line)
+                .ThenBy(candidate => candidate.Convergence.HandlerAnalysis
+                    .Handler.Range.Start.Character)
+                .First();
+            var analysis = dependency.Convergence.HandlerAnalysis;
+            var dependentTargetDefinition = GetLogicalRenameTarget(
+                analysis.Handler);
+            var dependentTarget = resolutionPolicy.CreateNameTarget(
+                dependentTargetDefinition);
+            var dependentDefinitions = GetLogicalRenameTargetDefinitions(
+                dependentTargetDefinition);
+            var dependentName = dependency.RenamesVariable
+                ? $"{newName}_{analysis.Decomposition.EventName}"
+                : $"{analysis.Decomposition.VariableName}_{newName}";
+            var separatorOffset = analysis.Decomposition.VariableName.Length;
+            foreach (var definition in dependentDefinitions.Where(definition =>
+                         (analysis.Handler.Kind
+                                 == VbaSourceDefinitionKind.Property
+                             ? definition.Kind
+                                 == VbaSourceDefinitionKind.Property
+                             : definition.Kind
+                                     == VbaSourceDefinitionKind.Procedure
+                                 && definition.CallableKind
+                                     == analysis.Handler.CallableKind)
+                         && definition.Range.Start.Line
+                             == definition.Range.End.Line
+                         && definition.Name.Equals(
+                             analysis.Handler.Name,
+                             StringComparison.OrdinalIgnoreCase)
+                         && separatorOffset > 0
+                         && separatorOffset < definition.Name.Length - 1
+                         && definition.Name[separatorOffset] == '_'))
+            {
+                edits.Add(new KeyValuePair<string, VbaTextEdit>(
+                    definition.Uri,
+                    new VbaTextEdit(
+                        dependency.RenamesVariable
+                            ? new VbaRange(
+                                definition.Range.Start,
+                                new VbaPosition(
+                                    definition.Range.Start.Line,
+                                    definition.Range.Start.Character
+                                        + separatorOffset))
+                            : new VbaRange(
+                                new VbaPosition(
+                                    definition.Range.Start.Line,
+                                    definition.Range.Start.Character
+                                        + separatorOffset + 1),
+                                definition.Range.End),
+                        newName)));
+            }
+
+            foreach (var occurrence in resolvedOccurrences.FindMatching(
+                         dependentTarget,
+                         cancellationToken))
+            {
+                var isDeclarationSegment = dependentDefinitions.Any(definition =>
+                    definition.Uri.Equals(
+                        occurrence.Uri,
+                        StringComparison.OrdinalIgnoreCase)
+                    && definition.Range.Start.Line
+                        == occurrence.Range.Start.Line
+                    && definition.Range.Start.Character
+                        <= occurrence.Range.Start.Character
+                    && occurrence.Range.End.Character
+                        <= definition.Range.End.Character);
+                if (isDeclarationSegment)
+                {
+                    continue;
+                }
+
+                edits.Add(new KeyValuePair<string, VbaTextEdit>(
+                    occurrence.Uri,
+                    new VbaTextEdit(occurrence.Range, dependentName)));
+            }
+        }
+
+        return edits;
+    }
+
+    private IReadOnlyList<VbaWithEventsRenameDependency>
+        GetWithEventsRenameDependencies(VbaSourceDefinition target)
+    {
+        var logicalDefinitions = GetLogicalRenameTargetDefinitions(target);
+        var targetIdentities = logicalDefinitions
+            .Select(resolutionPolicy.CreateNameTarget)
+            .Select(logicalTarget => logicalTarget.Identity)
+            .ToHashSet();
+        var hasEventTarget = logicalDefinitions.Any(definition =>
+            definition.Kind == VbaSourceDefinitionKind.Event);
+        var hasVariableTarget = logicalDefinitions.Any(definition =>
+            definition.Kind == VbaSourceDefinitionKind.Variable
+            && definition.ParentProcedureName is null);
+        return GetHandlerEventRenameConvergences()
+            .Select(convergence => new VbaWithEventsRenameDependency(
+                convergence,
+                RenamesEvent: hasEventTarget
+                    && convergence.Kind
+                        == VbaHandlerEventRenameConvergenceKind.Convergent
+                    && convergence.EventTarget is { } eventTarget
+                    && targetIdentities.Contains(eventTarget.Identity),
+                RenamesVariable: hasVariableTarget
+                    && targetIdentities.Contains(convergence.HandlerAnalysis
+                        .BindingSet.VariableTarget.Identity)
+                    && convergence.HandlerAnalysis.Recognition is
+                        VbaWithEventsHandlerRecognition.ResolvedHandler
+                            or VbaWithEventsHandlerRecognition
+                                .NonSubProcedureAssociation))
+            .Where(dependency => dependency.RenamesEvent
+                || dependency.RenamesVariable)
+            .ToArray();
+    }
+
+    private IReadOnlyList<VbaRenameConflict>
+        FindWithEventsDependentRenameCollisions(
+            VbaSourceDefinition target,
+            string newName)
+        => GetWithEventsRenameDependencies(target)
+            .GroupBy(dependency => resolutionPolicy.CreateNameTarget(
+                GetLogicalRenameTarget(
+                    dependency.Convergence.HandlerAnalysis.Handler)).Identity)
+            .SelectMany(dependentGroup =>
+            {
+                var dependency = dependentGroup.First();
+                var analysis = dependency.Convergence.HandlerAnalysis;
+                var dependentTarget = GetLogicalRenameTarget(
+                    analysis.Handler);
+                var dependentName = dependency.RenamesVariable
+                    ? $"{newName}_{analysis.Decomposition.EventName}"
+                    : $"{analysis.Decomposition.VariableName}_{newName}";
+                return FindSameScopeCollisions(
+                    dependentTarget,
+                    dependentName);
+            })
+            .Distinct()
+            .OrderBy(conflict => conflict.Uri, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(conflict => conflict.Uri, StringComparer.Ordinal)
+            .ThenBy(conflict => conflict.Range?.Start.Line)
+            .ThenBy(conflict => conflict.Range?.Start.Character)
+            .ToArray();
+
     private IReadOnlyList<VbaRenameConflict>
         FindInterfaceDependentRenameCollisions(
             VbaSourceDefinition target,
@@ -1825,6 +2422,23 @@ public sealed class VbaSemanticInventory
             .ThenBy(conflict => conflict.Range?.Start.Line)
             .ThenBy(conflict => conflict.Range?.Start.Character)
             .ToArray();
+    }
+
+    private IReadOnlySet<string> GetWithEventsDependentRenameNames(
+        VbaSourceDefinition target,
+        string newName)
+    {
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var dependency in GetWithEventsRenameDependencies(target))
+        {
+            var analysis = dependency.Convergence.HandlerAnalysis;
+            names.Add(analysis.Handler.Name);
+            names.Add(dependency.RenamesVariable
+                ? $"{newName}_{analysis.Decomposition.EventName}"
+                : $"{analysis.Decomposition.VariableName}_{newName}");
+        }
+
+        return names;
     }
 
     private IReadOnlySet<string> GetInterfaceDependentRenameNames(
@@ -2649,6 +3263,15 @@ public sealed class VbaSemanticInventory
             return interfaceAssociationFailure;
         }
 
+        var withEventsAssociationFailure =
+            ProveWithEventsAssociationsArePreserved(
+                hypothetical,
+                changes);
+        if (withEventsAssociationFailure is not null)
+        {
+            return withEventsAssociationFailure;
+        }
+
         var hypotheticalTarget = FindHypotheticalDefinition(
             hypothetical,
             target,
@@ -2753,6 +3376,46 @@ public sealed class VbaSemanticInventory
                 occurrence.Uri,
                 occurrence.Range,
                 changes);
+            if (occurrence.Target is VbaHostEventNameTarget hostEventTarget)
+            {
+                var projectedPostTarget = hypothetical.ResolveSourceTarget(
+                    occurrence.Uri,
+                    mappedOccurrenceRange.Start.Line,
+                    mappedOccurrenceRange.Start.Character);
+                var postHostTargets = projectedPostTarget switch
+                {
+                    VbaHostEventNameTarget projectedHostTarget =>
+                        [projectedHostTarget],
+                    VbaWithEventsEventNameTarget projectedWithEventsTarget =>
+                        projectedWithEventsTarget.EventTargets
+                        .OfType<VbaHostEventNameTarget>()
+                        .ToArray(),
+                    _ => []
+                };
+                var matchingPostHostTargets = postHostTargets
+                    .Where(target => target.HostEventIdentity
+                        == hostEventTarget.HostEventIdentity)
+                    .ToArray();
+                if (matchingPostHostTargets.Length != 1)
+                {
+                    return ResolutionChanged(
+                        "Rename would change an existing projected host "
+                        + "Event binding.");
+                }
+
+                var postHostTarget = matchingPostHostTargets[0];
+                if (postHostTarget.EventContract.Identity
+                        != hostEventTarget.EventContract.Identity
+                    || postHostTarget.EventContract.ValidationAuthority
+                        != hostEventTarget.EventContract.ValidationAuthority)
+                {
+                    return ResolutionChanged(
+                        "Rename would change projected host Event authority.");
+                }
+
+                continue;
+            }
+
             var postDefinition = IsDeclarationOccurrence(occurrence)
                 ? FindHypotheticalDefinition(
                     hypothetical,
@@ -2790,6 +3453,8 @@ public sealed class VbaSemanticInventory
         };
         affectedSemanticNames.UnionWith(
             GetInterfaceDependentRenameNames(target, newName));
+        affectedSemanticNames.UnionWith(
+            GetWithEventsDependentRenameNames(target, newName));
         foreach (var occurrence in GetUnresolvedSemanticOccurrences(
             cancellationToken))
         {
@@ -2938,6 +3603,188 @@ public sealed class VbaSemanticInventory
         return null;
     }
 
+    private VbaRenameFailure? ProveWithEventsAssociationsArePreserved(
+        VbaSemanticInventory hypothetical,
+        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes)
+    {
+        var before = GetHandlerEventRenameConvergences();
+        var after = hypothetical.GetHandlerEventRenameConvergences();
+        var beforeIncompleteCounts = before
+            .Where(convergence => convergence.Kind
+                == VbaHandlerEventRenameConvergenceKind.Indeterminate)
+            .Select(convergence => CreateWithEventsAssociationProofKey(
+                convergence,
+                changes))
+            .GroupBy(key => key)
+            .ToDictionary(group => group.Key, group => group.Count());
+        var afterIncompleteCounts = after
+            .Where(convergence => convergence.Kind
+                == VbaHandlerEventRenameConvergenceKind.Indeterminate)
+            .Select(convergence => hypothetical
+                .CreateWithEventsAssociationProofKey(
+                    convergence,
+                    changes: null))
+            .GroupBy(key => key)
+            .ToDictionary(group => group.Key, group => group.Count());
+        if (!HaveEqualProofCounts(
+                beforeIncompleteCounts,
+                afterIncompleteCounts))
+        {
+            return AnalysisIncomplete(
+                "Rename would change incomplete WithEvents handler "
+                + "association evidence.");
+        }
+
+        var beforeCounts = before
+            .Where(convergence => convergence.Kind
+                    != VbaHandlerEventRenameConvergenceKind.Indeterminate
+                && convergence.HandlerAnalysis.Recognition is
+                    VbaWithEventsHandlerRecognition.ResolvedHandler
+                        or VbaWithEventsHandlerRecognition
+                            .NonSubProcedureAssociation)
+            .Select(convergence => CreateWithEventsAssociationProofKey(
+                convergence,
+                changes))
+            .GroupBy(key => key)
+            .ToDictionary(group => group.Key, group => group.Count());
+        var afterCounts = after
+            .Where(convergence => convergence.Kind
+                    != VbaHandlerEventRenameConvergenceKind.Indeterminate
+                && convergence.HandlerAnalysis.Recognition is
+                    VbaWithEventsHandlerRecognition.ResolvedHandler
+                        or VbaWithEventsHandlerRecognition
+                            .NonSubProcedureAssociation)
+            .Select(convergence => hypothetical
+                .CreateWithEventsAssociationProofKey(
+                    convergence,
+                    changes: null))
+            .GroupBy(key => key)
+            .ToDictionary(group => group.Key, group => group.Count());
+        return HaveEqualProofCounts(beforeCounts, afterCounts)
+            ? null
+            : ResolutionChanged(
+                "Rename would change a WithEvents handler association.");
+    }
+
+    private VbaWithEventsAssociationProofKey
+        CreateWithEventsAssociationProofKey(
+            VbaHandlerEventRenameConvergence convergence,
+            IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>>? changes)
+    {
+        VbaRange Map(string uri, VbaRange range)
+            => changes is null ? range : MapRange(uri, range, changes);
+
+        var analysis = convergence.HandlerAnalysis;
+        var handler = analysis.Handler;
+        var separatorOffset = analysis.Decomposition.VariableName.Length;
+        var separatorCharacter = handler.Range.Start.Character
+            + separatorOffset;
+        var prefixRange = new VbaRange(
+            handler.Range.Start,
+            new VbaPosition(handler.Range.Start.Line, separatorCharacter));
+        var separatorRange = new VbaRange(
+            new VbaPosition(handler.Range.Start.Line, separatorCharacter),
+            new VbaPosition(handler.Range.Start.Line, separatorCharacter + 1));
+        var suffixRange = new VbaRange(
+            new VbaPosition(handler.Range.Start.Line, separatorCharacter + 1),
+            handler.Range.End);
+        var handlerTarget = resolutionPolicy.CreateNameTarget(
+            GetLogicalRenameTarget(handler));
+        var bindingEntries = string.Join(
+            "\u001d",
+            analysis.BindingSet.Entries
+                .Select(entry => CreateWithEventsBindingEntryProofKey(
+                    entry,
+                    changes))
+                .OrderBy(key => key, StringComparer.Ordinal));
+        return new VbaWithEventsAssociationProofKey(
+            CreateOccurrenceKey(handler.Uri, Map(handler.Uri, handler.Range)),
+            CreateInterfaceTargetProofKey(handlerTarget, changes),
+            CreateInterfaceTargetProofKey(
+                analysis.BindingSet.VariableTarget,
+                changes),
+            CreateOccurrenceKey(handler.Uri, Map(handler.Uri, prefixRange)),
+            CreateOccurrenceKey(handler.Uri, Map(handler.Uri, separatorRange)),
+            CreateOccurrenceKey(handler.Uri, Map(handler.Uri, suffixRange)),
+            analysis.Recognition,
+            convergence.Kind,
+            bindingEntries);
+    }
+
+    private string CreateWithEventsBindingEntryProofKey(
+        VbaWithEventsEventBindingEntry entry,
+        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>>? changes)
+    {
+        var variableRange = changes is null
+            ? entry.Variable.Range
+            : MapRange(entry.Variable.Uri, entry.Variable.Range, changes);
+        var eventTargets = string.Join(
+            "\u001c",
+            entry.ResolvedEventTargets
+                .Select(target => CreateWithEventsEventTargetProofKey(
+                    target,
+                    changes))
+                .OrderBy(key => key, StringComparer.Ordinal));
+        var eventContracts = string.Join(
+            "\u001c",
+            (entry.EventContracts ?? [])
+                .Select(contract => CreateWithEventsEventContractProofKey(
+                    contract,
+                    changes))
+                .OrderBy(key => key, StringComparer.Ordinal));
+        return $"{entry.Status}:{entry.HasRecoveredEventEvidence}:"
+            + $"{entry.Variable.Kind}:"
+            + CreateOccurrenceKey(entry.Variable.Uri, variableRange)
+            + $":{eventTargets}:{eventContracts}";
+    }
+
+    private string CreateWithEventsEventTargetProofKey(
+        VbaResolvedNameTarget target,
+        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>>? changes)
+        => target switch
+        {
+            VbaHostEventNameTarget hostTarget =>
+                "host:"
+                + CreateWithEventsEventContractProofKey(
+                    hostTarget.EventContract,
+                    changes),
+            _ => "definition:" + CreateInterfaceTargetProofKey(
+                target,
+                changes)
+        };
+
+    private string CreateWithEventsEventContractProofKey(
+        VbaResolvedEventContract contract,
+        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>>? changes)
+    {
+        var identity = contract.Identity switch
+        {
+            VbaProjectedEventContractIdentity projected =>
+                $"projected:{projected.Provider}:{projected.StableIdentity}",
+            VbaDefinitionEventContractIdentity when contract.Definition is { }
+                definition =>
+                "definition:"
+                + CreateOccurrenceKey(
+                    definition.Uri,
+                    changes is null
+                        ? definition.Range
+                        : MapRange(definition.Uri, definition.Range, changes)),
+            _ => contract.Identity.ToString() ?? contract.Identity.GetType().Name
+        };
+        return $"{identity}:{contract.ValidationAuthority}:"
+            + $"{contract.IsConditionalContract}:"
+            + $"{contract.IsAuthoringAvailable}";
+    }
+
+    private static bool HaveEqualProofCounts<TKey>(
+        IReadOnlyDictionary<TKey, int> before,
+        IReadOnlyDictionary<TKey, int> after)
+        where TKey : notnull
+        => before.Count == after.Count
+            && before.All(pair =>
+                after.TryGetValue(pair.Key, out var afterCount)
+                && afterCount == pair.Value);
+
     private VbaInterfaceAssociationProofKey CreateInterfaceAssociationProofKey(
         VbaInterfaceImplementationAssociation association,
         IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>>? changes)
@@ -3050,8 +3897,9 @@ public sealed class VbaSemanticInventory
         }
 
         if (!expectedAfterIdentities.SetEquals(actualAfterIdentities)
-            || occurrence.Target.IsConditionalFamily
-                != postTarget.IsConditionalFamily)
+            || postTarget is not VbaWithEventsEventNameTarget
+                && occurrence.Target.IsConditionalFamily
+                    != postTarget.IsConditionalFamily)
         {
             return ResolutionChanged(
                 "Rename would change a target occurrence's possible "

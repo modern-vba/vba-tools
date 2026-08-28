@@ -5162,6 +5162,2648 @@ public sealed class WithEventsLanguageServerProcessTests
         }
     }
 
+    [Fact]
+    public async Task Source_Event_Rename_updates_its_handler_suffix_and_complete_name_references()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string publisherUri = "file:///C:/work/Publisher.cls";
+        var publisherText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Publisher\"",
+            "Public Event Changed(ByVal value As Long)",
+            "Private Sub Fire(ByVal value As Long)",
+            "    RaiseEvent Changed(value)",
+            "End Sub"
+        ]);
+        const string workerUri = "file:///C:/work/Worker.cls";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Private WithEvents publisher As Publisher",
+            "Private Sub publisher_Changed(ByVal value As Long)",
+            "End Sub",
+            "Private Sub Invoke()",
+            "    publisher_Changed 1",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(publisherUri, publisherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+
+        var rename = await process.SendRequestAsync(
+            2,
+            "textDocument/rename",
+            new
+            {
+                textDocument = new { uri = publisherUri },
+                position = new
+                {
+                    line = 2,
+                    character = "Public Event ".Length
+                },
+                newName = "Updated"
+            });
+
+        Assert.False(
+            rename.TryGetProperty("error", out var renameError),
+            renameError.ToString());
+        var changes = rename.GetProperty("result").GetProperty("changes");
+        Assert.Equal(
+            [(Line: 2, NewText: "Updated"), (Line: 4, NewText: "Updated")],
+            changes.GetProperty(publisherUri).EnumerateArray().Select(edit => (
+                Line: edit.GetProperty("range").GetProperty("start")
+                    .GetProperty("line").GetInt32(),
+                NewText: edit.GetProperty("newText").GetString())));
+        Assert.Equal(
+            [
+                (Line: 3, NewText: "Updated"),
+                (Line: 6, NewText: "publisher_Updated")
+            ],
+            changes.GetProperty(workerUri).EnumerateArray().Select(edit => (
+                Line: edit.GetProperty("range").GetProperty("start")
+                    .GetProperty("line").GetInt32(),
+                NewText: edit.GetProperty("newText").GetString())));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Source_Event_Rename_treats_notWithEvents_and_notEvent_entries_as_neutral()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string publisherUri = "file:///C:/work/Publisher.cls";
+        const string publisherText = """
+            Attribute VB_Name = "FirstPublisher"
+            Public Event Changed()
+            """;
+        const string otherPublisherUri = "file:///C:/work/OtherPublisher.cls";
+        const string otherPublisherText = """
+            Attribute VB_Name = "SecondPublisher"
+            Public Event Other()
+            """;
+        const string workerUri = "file:///C:/work/Worker.cls";
+        var workerText = string.Join('\n', [
+            "Attribute VB_Name = \"Worker\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Private WithEvents publisher As FirstPublisher",
+            "#ElseIf SECOND_CONFIGURATION Then",
+            "Private publisher As FirstPublisher",
+            "#Else",
+            "Private WithEvents publisher As SecondPublisher",
+            "#End If",
+            "Private Sub publisher_Changed()",
+            "End Sub",
+            "Private Sub Invoke()",
+            "    publisher_Changed",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(publisherUri, publisherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(otherPublisherUri, otherPublisherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+
+        var rename = await process.SendRequestAsync(
+            2,
+            "textDocument/rename",
+            new
+            {
+                textDocument = new { uri = publisherUri },
+                position = new
+                {
+                    line = 1,
+                    character = "Public Event ".Length
+                },
+                newName = "Updated"
+            });
+
+        Assert.False(
+            rename.TryGetProperty("error", out var renameError),
+            renameError.ToString());
+        var changes = rename.GetProperty("result").GetProperty("changes");
+        Assert.Equal(
+            [(Line: 1, NewText: "Updated")],
+            changes.GetProperty(publisherUri).EnumerateArray().Select(edit => (
+                Line: edit.GetProperty("range").GetProperty("start")
+                    .GetProperty("line").GetInt32(),
+                NewText: edit.GetProperty("newText").GetString())));
+        Assert.Equal(
+            [
+                (Line: 8, NewText: "Updated"),
+                (Line: 11, NewText: "publisher_Updated")
+            ],
+            changes.GetProperty(workerUri).EnumerateArray().Select(edit => (
+                Line: edit.GetProperty("range").GetProperty("start")
+                    .GetProperty("line").GetInt32(),
+                NewText: edit.GetProperty("newText").GetString())));
+        Assert.False(changes.TryGetProperty(otherPublisherUri, out _));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task RaiseEvent_case_only_Rename_updates_every_conditional_Event_variant_and_dependent()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string publisherUri = "file:///C:/work/Publisher.cls";
+        var publisherText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Publisher\"",
+            "#If VBA7 Then",
+            "Public Event Changed()",
+            "#Else",
+            "Public Event Changed()",
+            "#End If",
+            "Private Sub Fire()",
+            "    RaiseEvent Changed",
+            "End Sub"
+        ]);
+        const string workerUri = "file:///C:/work/Worker.cls";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Private WithEvents publisher As Publisher",
+            "Private Sub publisher_Changed()",
+            "End Sub",
+            "Private Sub Invoke()",
+            "    publisher_Changed",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(publisherUri, publisherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+
+        var rename = await process.SendRequestAsync(
+            2,
+            "textDocument/rename",
+            new
+            {
+                textDocument = new { uri = publisherUri },
+                position = new
+                {
+                    line = 8,
+                    character = "    RaiseEvent ".Length
+                },
+                newName = "changed"
+            });
+
+        Assert.False(
+            rename.TryGetProperty("error", out var renameError),
+            renameError.ToString());
+        var changes = rename.GetProperty("result").GetProperty("changes");
+        Assert.Equal(
+            [
+                (Line: 3, NewText: "changed"),
+                (Line: 5, NewText: "changed"),
+                (Line: 8, NewText: "changed")
+            ],
+            changes.GetProperty(publisherUri).EnumerateArray().Select(edit => (
+                Line: edit.GetProperty("range").GetProperty("start")
+                    .GetProperty("line").GetInt32(),
+                NewText: edit.GetProperty("newText").GetString())));
+        Assert.Equal(
+            [
+                (Line: 3, NewText: "changed"),
+                (Line: 6, NewText: "publisher_changed")
+            ],
+            changes.GetProperty(workerUri).EnumerateArray().Select(edit => (
+                Line: edit.GetProperty("range").GetProperty("start")
+                    .GetProperty("line").GetInt32(),
+                NewText: edit.GetProperty("newText").GetString())));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task WithEvents_variable_Rename_updates_handler_prefixes_and_complete_name_references()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string publisherUri = "file:///C:/work/Publisher.cls";
+        const string publisherText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Publisher"
+            Public Event Changed(ByVal value As Long)
+            """;
+        const string workerUri = "file:///C:/work/Worker.cls";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Private WithEvents publisher As Publisher",
+            "Private Sub publisher_Changed(ByVal value As Long)",
+            "End Sub",
+            "Private Sub Invoke()",
+            "    Set publisher = New Publisher",
+            "    publisher_Changed 1",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(publisherUri, publisherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+
+        var rename = await process.SendRequestAsync(
+            2,
+            "textDocument/rename",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new
+                {
+                    line = 2,
+                    character = "Private WithEvents ".Length
+                },
+                newName = "source"
+            });
+
+        Assert.False(
+            rename.TryGetProperty("error", out var renameError),
+            renameError.ToString());
+        var changes = rename.GetProperty("result").GetProperty("changes");
+        Assert.False(changes.TryGetProperty(publisherUri, out _));
+        Assert.Equal(
+            [
+                (Line: 2, NewText: "source"),
+                (Line: 3, NewText: "source"),
+                (Line: 6, NewText: "source"),
+                (Line: 7, NewText: "source_Changed")
+            ],
+            changes.GetProperty(workerUri).EnumerateArray().Select(edit => (
+                Line: edit.GetProperty("range").GetProperty("start")
+                    .GetProperty("line").GetInt32(),
+                NewText: edit.GetProperty("newText").GetString())));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task WithEvents_variable_case_only_Rename_updates_its_dependents()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string publisherUri = "file:///C:/work/Publisher.cls";
+        const string publisherText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Publisher"
+            Public Event Changed()
+            """;
+        const string workerUri = "file:///C:/work/Worker.cls";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Private WithEvents source As Publisher",
+            "Private Sub source_Changed()",
+            "End Sub",
+            "Private Sub Invoke()",
+            "    Set source = Nothing",
+            "    source_Changed",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(publisherUri, publisherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+
+        var rename = await process.SendRequestAsync(
+            2,
+            "textDocument/rename",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new
+                {
+                    line = 2,
+                    character = "Private WithEvents ".Length
+                },
+                newName = "Source"
+            });
+
+        Assert.False(
+            rename.TryGetProperty("error", out var renameError),
+            renameError.ToString());
+        Assert.Equal(
+            [
+                (Line: 2, NewText: "Source"),
+                (Line: 3, NewText: "Source"),
+                (Line: 6, NewText: "Source"),
+                (Line: 7, NewText: "Source_Changed")
+            ],
+            rename.GetProperty("result").GetProperty("changes")
+                .GetProperty(workerUri).EnumerateArray().Select(edit => (
+                    Line: edit.GetProperty("range").GetProperty("start")
+                        .GetProperty("line").GetInt32(),
+                    NewText: edit.GetProperty("newText").GetString())));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Dependent_handler_complete_name_cannot_initiate_non_no_op_Rename()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string publisherUri = "file:///C:/work/Publisher.cls";
+        const string publisherText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Publisher"
+            Public Event Changed()
+            """;
+        const string workerUri = "file:///C:/work/Worker.cls";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Private WithEvents publisher As Publisher",
+            "Private Sub publisher_Changed()",
+            "End Sub",
+            "Private Sub Invoke()",
+            "    publisher_Changed",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(publisherUri, publisherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+
+        var rename = await process.SendRequestAsync(
+            2,
+            "textDocument/rename",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new { line = 6, character = "    ".Length },
+                newName = "DetachedHandler"
+            });
+
+        Assert.False(rename.TryGetProperty("result", out _));
+        Assert.Equal(
+            "notRenameTarget",
+            rename.GetProperty("error").GetProperty("data")
+                .GetProperty("reason").GetString());
+
+        var noOpRename = await process.SendRequestAsync(
+            3,
+            "textDocument/rename",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new { line = 6, character = "    ".Length },
+                newName = "publisher_Changed"
+            });
+        Assert.False(
+            noOpRename.TryGetProperty("error", out var noOpError),
+            noOpError.ToString());
+        Assert.Equal(
+            JsonValueKind.Null,
+            noOpRename.GetProperty("result").ValueKind);
+
+        await process.ShutdownAsync(4);
+    }
+
+    [Fact]
+    public async Task Event_Rename_rejects_a_handler_shared_with_a_distinct_source_Event()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string firstPublisherUri = "file:///C:/work/FirstPublisher.cls";
+        const string firstPublisherText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "FirstPublisher"
+            Public Event Changed()
+            """;
+        const string secondPublisherUri = "file:///C:/work/SecondPublisher.cls";
+        const string secondPublisherText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "SecondPublisher"
+            Public Event Changed()
+            """;
+        const string workerUri = "file:///C:/work/Worker.cls";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Private WithEvents source As FirstPublisher",
+            "#Else",
+            "Private WithEvents source As SecondPublisher",
+            "#End If",
+            "Private Sub source_Changed()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(firstPublisherUri, firstPublisherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(secondPublisherUri, secondPublisherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+
+        var rename = await process.SendRequestAsync(
+            2,
+            "textDocument/rename",
+            new
+            {
+                textDocument = new { uri = firstPublisherUri },
+                position = new
+                {
+                    line = 2,
+                    character = "Public Event ".Length
+                },
+                newName = "Updated"
+            });
+
+        Assert.False(rename.TryGetProperty("result", out _));
+        Assert.Equal(
+            "resolutionChanged",
+            rename.GetProperty("error").GetProperty("data")
+                .GetProperty("reason").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task WithEvents_variable_Rename_fails_closed_for_indeterminate_conditional_type_evidence()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string publisherUri = "file:///C:/work/Publisher.cls";
+        const string publisherText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Publisher"
+            Public Event Changed()
+            """;
+        const string workerUri = "file:///C:/work/Worker.cls";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "#If KNOWN_CONFIGURATION Then",
+            "Private WithEvents source As Publisher",
+            "#Else",
+            "Private WithEvents source As MissingPublisher",
+            "#End If",
+            "Private Sub source_Changed()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(publisherUri, publisherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+
+        var rename = await process.SendRequestAsync(
+            2,
+            "textDocument/rename",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new
+                {
+                    line = 3,
+                    character = "Private WithEvents ".Length
+                },
+                newName = "publisher"
+            });
+
+        Assert.False(rename.TryGetProperty("result", out _));
+        Assert.Equal(
+            "analysisIncomplete",
+            rename.GetProperty("error").GetProperty("data")
+                .GetProperty("reason").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Convergent_handler_suffix_Prepare_Rename_selects_only_the_source_Event_name()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string publisherUri = "file:///C:/work/Publisher.cls";
+        const string publisherText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Publisher"
+            Public Event Changed()
+            """;
+        const string workerUri = "file:///C:/work/Worker.cls";
+        const string declaration = "Private Sub publisher_Changed()";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Private WithEvents publisher As Publisher",
+            declaration,
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(publisherUri, publisherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+
+        var prepare = await process.SendRequestAsync(
+            2,
+            "textDocument/prepareRename",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new
+                {
+                    line = 3,
+                    character = "Private Sub publisher_".Length
+                }
+            });
+
+        var result = prepare.GetProperty("result");
+        Assert.Equal("Changed", result.GetProperty("placeholder").GetString());
+        Assert.Equal(
+            (
+                Start: "Private Sub publisher_".Length,
+                End: "Private Sub publisher_Changed".Length
+            ),
+            (
+                Start: result.GetProperty("range").GetProperty("start")
+                    .GetProperty("character").GetInt32(),
+                End: result.GetProperty("range").GetProperty("end")
+                    .GetProperty("character").GetInt32()
+            ));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Handler_prefix_Prepare_Rename_selects_the_variable_but_separator_and_complete_occurrence_do_not()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string publisherUri = "file:///C:/work/Publisher.cls";
+        const string publisherText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Publisher"
+            Public Event Changed()
+            """;
+        const string workerUri = "file:///C:/work/Worker.cls";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Private WithEvents publisher As Publisher",
+            "Private Sub publisher_Changed()",
+            "End Sub",
+            "Private Sub Invoke()",
+            "    publisher_Changed",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(publisherUri, publisherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+
+        var prefixPrepare = await process.SendRequestAsync(
+            2,
+            "textDocument/prepareRename",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new
+                {
+                    line = 3,
+                    character = "Private Sub ".Length
+                }
+            });
+        var prefixResult = prefixPrepare.GetProperty("result");
+        Assert.Equal(
+            "publisher",
+            prefixResult.GetProperty("placeholder").GetString());
+        Assert.Equal(
+            (
+                Start: "Private Sub ".Length,
+                End: "Private Sub publisher".Length
+            ),
+            (
+                Start: prefixResult.GetProperty("range").GetProperty("start")
+                    .GetProperty("character").GetInt32(),
+                End: prefixResult.GetProperty("range").GetProperty("end")
+                    .GetProperty("character").GetInt32()
+            ));
+
+        var separatorPrepare = await process.SendRequestAsync(
+            3,
+            "textDocument/prepareRename",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new
+                {
+                    line = 3,
+                    character = "Private Sub publisher".Length
+                }
+            });
+        Assert.False(separatorPrepare.TryGetProperty("error", out _));
+        Assert.Equal(
+            JsonValueKind.Null,
+            separatorPrepare.GetProperty("result").ValueKind);
+
+        var completeOccurrencePrepare = await process.SendRequestAsync(
+            4,
+            "textDocument/prepareRename",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new { line = 6, character = "    ".Length }
+            });
+        Assert.False(completeOccurrencePrepare.TryGetProperty("error", out _));
+        Assert.Equal(
+            JsonValueKind.Null,
+            completeOccurrencePrepare.GetProperty("result").ValueKind);
+
+        await process.ShutdownAsync(5);
+    }
+
+    [Fact]
+    public async Task Handler_navigation_preserves_segment_and_complete_definition_identities()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string publisherUri = "file:///C:/work/Publisher.cls";
+        var publisherText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Publisher\"",
+            "Public Event Changed()",
+            "Private Sub Fire()",
+            "    RaiseEvent Changed",
+            "End Sub"
+        ]);
+        const string workerUri = "file:///C:/work/Worker.cls";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Private WithEvents publisher As Publisher",
+            "Private Sub publisher_Changed()",
+            "End Sub",
+            "Private Sub Invoke()",
+            "    Set publisher = Nothing",
+            "    publisher_Changed",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(publisherUri, publisherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+
+        var prefixDefinition = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/definition",
+            workerUri,
+            workerText,
+            "publisher_Changed",
+            offset: 0);
+        Assert.Equal(
+            (
+                Uri: workerUri,
+                Line: 2,
+                Start: "Private WithEvents ".Length,
+                End: "Private WithEvents publisher".Length
+            ),
+            GetLocation(prefixDefinition.GetProperty("result")));
+
+        var suffixDefinition = await SendPositionRequestAsync(
+            process,
+            3,
+            "textDocument/definition",
+            workerUri,
+            workerText,
+            "publisher_Changed",
+            offset: "publisher_".Length);
+        Assert.Equal(
+            (
+                Uri: publisherUri,
+                Line: 2,
+                Start: "Public Event ".Length,
+                End: "Public Event Changed".Length
+            ),
+            GetLocation(suffixDefinition.GetProperty("result")));
+
+        var completeDefinition = await SendPositionRequestAsync(
+            process,
+            4,
+            "textDocument/definition",
+            workerUri,
+            workerText,
+            "    publisher_Changed",
+            offset: "    ".Length);
+        Assert.Equal(
+            (
+                Uri: workerUri,
+                Line: 3,
+                Start: "Private Sub ".Length,
+                End: "Private Sub publisher_Changed".Length
+            ),
+            GetLocation(completeDefinition.GetProperty("result")));
+
+        var prefixReferences = await SendPositionRequestAsync(
+            process,
+            5,
+            "textDocument/references",
+            workerUri,
+            workerText,
+            "publisher_Changed",
+            offset: 0,
+            includeDeclaration: true);
+        Assert.Equal(
+            [
+                (
+                    Uri: workerUri,
+                    Line: 2,
+                    Start: "Private WithEvents ".Length,
+                    End: "Private WithEvents publisher".Length
+                ),
+                (
+                    Uri: workerUri,
+                    Line: 3,
+                    Start: "Private Sub ".Length,
+                    End: "Private Sub publisher".Length
+                ),
+                (
+                    Uri: workerUri,
+                    Line: 6,
+                    Start: "    Set ".Length,
+                    End: "    Set publisher".Length
+                )
+            ],
+            prefixReferences.GetProperty("result").EnumerateArray()
+                .Select(GetLocation));
+
+        var suffixReferences = await SendPositionRequestAsync(
+            process,
+            6,
+            "textDocument/references",
+            workerUri,
+            workerText,
+            "publisher_Changed",
+            offset: "publisher_".Length,
+            includeDeclaration: true);
+        Assert.Equal(
+            [
+                (
+                    Uri: publisherUri,
+                    Line: 2,
+                    Start: "Public Event ".Length,
+                    End: "Public Event Changed".Length
+                ),
+                (
+                    Uri: publisherUri,
+                    Line: 4,
+                    Start: "    RaiseEvent ".Length,
+                    End: "    RaiseEvent Changed".Length
+                ),
+                (
+                    Uri: workerUri,
+                    Line: 3,
+                    Start: "Private Sub publisher_".Length,
+                    End: "Private Sub publisher_Changed".Length
+                )
+            ],
+            suffixReferences.GetProperty("result").EnumerateArray()
+                .Select(GetLocation));
+
+        var completeReferences = await SendPositionRequestAsync(
+            process,
+            7,
+            "textDocument/references",
+            workerUri,
+            workerText,
+            "    publisher_Changed",
+            offset: "    ".Length,
+            includeDeclaration: true);
+        Assert.Equal(
+            [
+                (
+                    Uri: workerUri,
+                    Line: 3,
+                    Start: "Private Sub ".Length,
+                    End: "Private Sub publisher_Changed".Length
+                ),
+                (
+                    Uri: workerUri,
+                    Line: 7,
+                    Start: "    ".Length,
+                    End: "    publisher_Changed".Length
+                )
+            ],
+            completeReferences.GetProperty("result").EnumerateArray()
+                .Select(GetLocation));
+
+        await process.ShutdownAsync(8);
+
+        static (string? Uri, int Line, int Start, int End) GetLocation(
+            JsonElement location)
+            => (
+                location.GetProperty("uri").GetString(),
+                location.GetProperty("range").GetProperty("start")
+                    .GetProperty("line").GetInt32(),
+                location.GetProperty("range").GetProperty("start")
+                    .GetProperty("character").GetInt32(),
+                location.GetProperty("range").GetProperty("end")
+                    .GetProperty("character").GetInt32());
+    }
+
+    [Fact]
+    public async Task Nonconvergent_handler_suffix_has_no_Prepare_Rename_target()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string firstPublisherUri = "file:///C:/work/FirstPublisher.cls";
+        const string firstPublisherText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "FirstPublisher"
+            Public Event Changed()
+            """;
+        const string secondPublisherUri = "file:///C:/work/SecondPublisher.cls";
+        const string secondPublisherText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "SecondPublisher"
+            Public Event Changed()
+            """;
+        const string workerUri = "file:///C:/work/Worker.cls";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "#If FIRST_CONFIGURATION Then",
+            "Private WithEvents source As FirstPublisher",
+            "#Else",
+            "Private WithEvents source As SecondPublisher",
+            "#End If",
+            "Private Sub source_Changed()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(firstPublisherUri, firstPublisherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(secondPublisherUri, secondPublisherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+
+        var prepare = await process.SendRequestAsync(
+            2,
+            "textDocument/prepareRename",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new
+                {
+                    line = 7,
+                    character = "Private Sub source_".Length
+                }
+            });
+
+        Assert.False(prepare.TryGetProperty("error", out _));
+        Assert.Equal(JsonValueKind.Null, prepare.GetProperty("result").ValueKind);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task WithEvents_variable_Rename_reports_a_derived_handler_collision()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string publisherUri = "file:///C:/work/Publisher.cls";
+        const string publisherText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Publisher"
+            Public Event Changed()
+            """;
+        const string workerUri = "file:///C:/work/Worker.cls";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Private WithEvents publisher As Publisher",
+            "Private Sub publisher_Changed()",
+            "End Sub",
+            "Private Sub source_Changed()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(publisherUri, publisherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+
+        var rename = await process.SendRequestAsync(
+            2,
+            "textDocument/rename",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new
+                {
+                    line = 2,
+                    character = "Private WithEvents ".Length
+                },
+                newName = "source"
+            });
+
+        Assert.False(rename.TryGetProperty("result", out _));
+        var error = rename.GetProperty("error");
+        Assert.Equal(
+            "sameScopeCollision",
+            error.GetProperty("data").GetProperty("reason").GetString());
+        var conflict = Assert.Single(
+            error.GetProperty("data").GetProperty("conflicts")
+                .EnumerateArray());
+        Assert.Equal(5, conflict.GetProperty("range").GetProperty("start")
+            .GetProperty("line").GetInt32());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Event_Rename_fails_closed_for_incomplete_conditional_handler_coverage()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string publisherUri = "file:///C:/work/Publisher.cls";
+        const string publisherText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Publisher"
+            Public Event Changed()
+            """;
+        const string workerUri = "file:///C:/work/Worker.cls";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Private WithEvents publisher As Publisher",
+            "#If INCOMPLETE_CONFIGURATION Then",
+            "Private Sub publisher_Changed()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(publisherUri, publisherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+
+        var rename = await process.SendRequestAsync(
+            2,
+            "textDocument/rename",
+            new
+            {
+                textDocument = new { uri = publisherUri },
+                position = new
+                {
+                    line = 2,
+                    character = "Public Event ".Length
+                },
+                newName = "Updated"
+            });
+
+        Assert.False(rename.TryGetProperty("result", out _));
+        Assert.Equal(
+            "analysisIncomplete",
+            rename.GetProperty("error").GetProperty("data")
+                .GetProperty("reason").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Event_Rename_fails_closed_for_an_unlinked_indeterminate_handler_candidate()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string firstPublisherUri = "file:///C:/work/FirstPublisher.cls";
+        const string firstPublisherText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Publisher"
+            Public Event Changed()
+            """;
+        const string secondPublisherUri = "file:///C:/work/SecondPublisher.cls";
+        const string secondPublisherText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Publisher"
+            Public Event Changed()
+            """;
+        const string workerUri = "file:///C:/work/Worker.cls";
+        const string workerText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Worker"
+            Private WithEvents publisher As Publisher
+            Private Sub publisher_Changed()
+            End Sub
+            """;
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(firstPublisherUri, firstPublisherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(secondPublisherUri, secondPublisherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+
+        var rename = await process.SendRequestAsync(
+            2,
+            "textDocument/rename",
+            new
+            {
+                textDocument = new { uri = firstPublisherUri },
+                position = new
+                {
+                    line = 2,
+                    character = "Public Event ".Length
+                },
+                newName = "Updated"
+            });
+
+        Assert.False(rename.TryGetProperty("result", out _));
+        Assert.Equal(
+            "analysisIncomplete",
+            rename.GetProperty("error").GetProperty("data")
+                .GetProperty("reason").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Event_Rename_ignores_an_unrelated_indeterminate_handler_candidate()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string publisherUri = "file:///C:/work/Publisher.cls";
+        const string publisherText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Publisher"
+            Public Event Changed()
+            """;
+        const string workerUri = "file:///C:/work/Worker.cls";
+        const string workerText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Worker"
+            Private WithEvents missing As MissingPublisher
+            Private Sub missing_Changed()
+            End Sub
+            """;
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(publisherUri, publisherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+
+        var rename = await process.SendRequestAsync(
+            2,
+            "textDocument/rename",
+            new
+            {
+                textDocument = new { uri = publisherUri },
+                position = new
+                {
+                    line = 2,
+                    character = "Public Event ".Length
+                },
+                newName = "Updated"
+            });
+
+        Assert.False(
+            rename.TryGetProperty("error", out var renameError),
+            renameError.ToString());
+        var changes = rename.GetProperty("result").GetProperty("changes");
+        Assert.Equal(
+            [(Line: 2, NewText: "Updated")],
+            changes.GetProperty(publisherUri).EnumerateArray().Select(edit => (
+                Line: edit.GetProperty("range").GetProperty("start")
+                    .GetProperty("line").GetInt32(),
+                NewText: edit.GetProperty("newText").GetString())));
+        Assert.False(changes.TryGetProperty(workerUri, out _));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Source_Event_Rename_ignores_an_indeterminate_qualified_external_candidate_with_the_same_type_name()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-withevents-rename-qualified-external-").FullName;
+        var cacheRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-withevents-rename-qualified-external-cache-").FullName;
+        try
+        {
+            const string referenceName = "Generated Library";
+            WriteReferenceCatalogProjectManifest(projectRoot, referenceName);
+            var knownEvent = new TypeLibCatalogMember(
+                "Changed",
+                VbaSourceDefinitionKind.Procedure,
+                Documentation: null,
+                new VbaCallableSignature(
+                    "Sub Changed()",
+                    [],
+                    CallableKind: VbaCallableKind.Sub),
+                Metadata: new TypeLibCatalogCallableMetadata(
+                    MemberId: 1,
+                    FunctionFlags: 0));
+            var incompleteEvent = new TypeLibCatalogMember(
+                "Broken",
+                VbaSourceDefinitionKind.Procedure,
+                Documentation: null,
+                new VbaCallableSignature(
+                    "Sub Broken(value)",
+                    [new VbaCallableParameter("value")],
+                    CallableKind: VbaCallableKind.Sub),
+                Metadata: new TypeLibCatalogCallableMetadata(
+                    MemberId: 2,
+                    FunctionFlags: 0));
+            var catalog = TypeLibReferenceCatalogBuilder.Build(
+                referenceName,
+                new TypeLibCatalogMetadata(
+                    "Generated",
+                    [
+                        new TypeLibCatalogType(
+                            "Publisher",
+                            VbaSourceDefinitionKind.Class,
+                            Documentation: null,
+                            Members: [],
+                            IsCreatable: true,
+                            Metadata: new TypeLibCatalogTypeMetadata(
+                                TypeLibCatalogRawTypeKind.CoClass,
+                                TypeFlags: 0,
+                                ImplementedInterfaces:
+                                [
+                                    new TypeLibCatalogImplementedInterface(
+                                        "_PublisherEvents",
+                                        TypeFlags: 0,
+                                        ImplementationFlags: 0x1 | 0x2,
+                                        CallableMembers:
+                                            [knownEvent, incompleteEvent],
+                                        RawTypeKind:
+                                            TypeLibCatalogRawTypeKind.Dispatch)
+                                ]))
+                    ]));
+            new VbaProjectReferenceCatalogPersistentStore(cacheRoot).Save(
+                new VbaProjectReferenceCatalogPersistentEntry(
+                    CreateGeneratedReferenceCatalogIdentity(referenceName),
+                    catalog));
+
+            await using var process = await LanguageServerProcessHarness.StartAsync(
+                referenceCatalogCacheRoot: cacheRoot);
+            await process.InitializeAsync();
+
+            var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
+            var publisherPath = Path.Combine(sourceRoot, "Publisher.cls");
+            var publisherUri = new Uri(publisherPath).AbsoluteUri;
+            const string publisherText = """
+                VERSION 1.0 CLASS
+                Attribute VB_Name = "Publisher"
+                Public Event Changed()
+                """;
+            File.WriteAllText(publisherPath, publisherText);
+            var workerPath = Path.Combine(sourceRoot, "Worker.cls");
+            var workerUri = new Uri(workerPath).AbsoluteUri;
+            const string workerText = """
+                VERSION 1.0 CLASS
+                Attribute VB_Name = "Worker"
+                Private WithEvents external As Generated.Publisher
+                Private Sub external_Changed()
+                End Sub
+                """;
+            File.WriteAllText(workerPath, workerText);
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(publisherUri, publisherText));
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(workerUri, workerText));
+            await process.WaitForDiagnosticsAsync(workerUri);
+            await process.WaitForLogTextAsync(
+                "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
+            await process.SendNotificationAsync(
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new { uri = workerUri, version = 2 },
+                    contentChanges = new[] { new { text = workerText } }
+                });
+            await process.WaitForDiagnosticsAsync(workerUri);
+
+            var rename = await process.SendRequestAsync(
+                2,
+                "textDocument/rename",
+                new
+                {
+                    textDocument = new { uri = publisherUri },
+                    position = new
+                    {
+                        line = 2,
+                        character = "Public Event ".Length
+                    },
+                    newName = "Updated"
+                });
+
+            Assert.False(
+                rename.TryGetProperty("error", out var renameError),
+                renameError.ToString());
+            var changes = rename.GetProperty("result").GetProperty("changes");
+            Assert.Equal(
+                [(Line: 2, NewText: "Updated")],
+                changes.GetProperty(publisherUri).EnumerateArray().Select(edit => (
+                    Line: edit.GetProperty("range").GetProperty("start")
+                        .GetProperty("line").GetInt32(),
+                    NewText: edit.GetProperty("newText").GetString())));
+            Assert.False(changes.TryGetProperty(workerUri, out _));
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Event_Rename_rejects_a_conclusively_mixed_conditional_dependent_family()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string publisherUri = "file:///C:/work/Publisher.cls";
+        const string publisherText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Publisher"
+            Public Event Changed()
+            """;
+        const string workerUri = "file:///C:/work/Worker.cls";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Private WithEvents publisher As Publisher",
+            "#If HANDLER_CONFIGURATION Then",
+            "Private Sub publisher_Changed()",
+            "End Sub",
+            "#Else",
+            "Private publisher_Changed As Long",
+            "#End If"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(publisherUri, publisherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+
+        var rename = await process.SendRequestAsync(
+            2,
+            "textDocument/rename",
+            new
+            {
+                textDocument = new { uri = publisherUri },
+                position = new
+                {
+                    line = 2,
+                    character = "Public Event ".Length
+                },
+                newName = "Updated"
+            });
+
+        Assert.False(rename.TryGetProperty("result", out _));
+        Assert.Equal(
+            "resolutionChanged",
+            rename.GetProperty("error").GetProperty("data")
+                .GetProperty("reason").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Event_Rename_prioritizes_conclusive_mixed_coverage_over_indeterminate_evidence()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string publisherUri = "file:///C:/work/Publisher.cls";
+        const string publisherText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Publisher"
+            Public Event Changed()
+            """;
+        const string workerUri = "file:///C:/work/Worker.cls";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "#If VARIABLE_CONFIGURATION Then",
+            "Private WithEvents publisher As Publisher",
+            "#Else",
+            "Private WithEvents publisher As MissingPublisher",
+            "#End If",
+            "#If HANDLER_CONFIGURATION Then",
+            "Private Sub publisher_Changed()",
+            "End Sub",
+            "#Else",
+            "Private publisher_Changed As Long",
+            "#End If"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(publisherUri, publisherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+
+        var rename = await process.SendRequestAsync(
+            2,
+            "textDocument/rename",
+            new
+            {
+                textDocument = new { uri = publisherUri },
+                position = new
+                {
+                    line = 2,
+                    character = "Public Event ".Length
+                },
+                newName = "Updated"
+            });
+
+        Assert.False(rename.TryGetProperty("result", out _));
+        Assert.Equal(
+            "resolutionChanged",
+            rename.GetProperty("error").GetProperty("data")
+                .GetProperty("reason").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task WithEvents_variable_Rename_leaves_a_conclusively_ordinary_procedure_unchanged()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string publisherUri = "file:///C:/work/Publisher.cls";
+        const string publisherText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Publisher"
+            Public Event Changed()
+            """;
+        const string workerUri = "file:///C:/work/Worker.cls";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Private WithEvents publisher As Publisher",
+            "Private Sub publisher_Changed()",
+            "End Sub",
+            "Private Sub publisher_NotAnEvent()",
+            "End Sub",
+            "Private Sub Invoke()",
+            "    Set publisher = New Publisher",
+            "    publisher_Changed",
+            "    publisher_NotAnEvent",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(publisherUri, publisherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+
+        var rename = await process.SendRequestAsync(
+            2,
+            "textDocument/rename",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new
+                {
+                    line = 2,
+                    character = "Private WithEvents ".Length
+                },
+                newName = "source"
+            });
+
+        Assert.False(
+            rename.TryGetProperty("error", out var renameError),
+            renameError.ToString());
+        var changes = rename.GetProperty("result").GetProperty("changes");
+        Assert.Equal(
+            [
+                (Line: 2, NewText: "source"),
+                (Line: 3, NewText: "source"),
+                (Line: 8, NewText: "source"),
+                (Line: 9, NewText: "source_Changed")
+            ],
+            changes.GetProperty(workerUri).EnumerateArray().Select(edit => (
+                Line: edit.GetProperty("range").GetProperty("start")
+                    .GetProperty("line").GetInt32(),
+                NewText: edit.GetProperty("newText").GetString())));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task WithEvents_variable_Rename_rejects_a_newly_bound_derived_name_occurrence()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string publisherUri = "file:///C:/work/Publisher.cls";
+        const string publisherText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Publisher"
+            Public Event Changed()
+            """;
+        const string workerUri = "file:///C:/work/Worker.cls";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Private WithEvents publisher As Publisher",
+            "Private Sub publisher_Changed()",
+            "End Sub",
+            "Private Sub Invoke()",
+            "    source_Changed",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(publisherUri, publisherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+
+        var rename = await process.SendRequestAsync(
+            2,
+            "textDocument/rename",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new
+                {
+                    line = 2,
+                    character = "Private WithEvents ".Length
+                },
+                newName = "source"
+            });
+
+        Assert.False(rename.TryGetProperty("result", out _));
+        Assert.Equal(
+            "resolutionChanged",
+            rename.GetProperty("error").GetProperty("data")
+                .GetProperty("reason").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task WithEvents_variable_Rename_rejects_a_newly_created_non_target_handler_association()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string publisherUri = "file:///C:/work/Publisher.cls";
+        var publisherText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Publisher\"",
+            "Public Event Changed()",
+            "Public Event Other()"
+        ]);
+        const string workerUri = "file:///C:/work/Worker.cls";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Private WithEvents publisher As Publisher",
+            "Private Sub publisher_Changed()",
+            "End Sub",
+            "Private Sub source_Other()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(publisherUri, publisherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+
+        var rename = await process.SendRequestAsync(
+            2,
+            "textDocument/rename",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new
+                {
+                    line = 2,
+                    character = "Private WithEvents ".Length
+                },
+                newName = "source"
+            });
+
+        Assert.False(rename.TryGetProperty("result", out _));
+        Assert.Equal(
+            "resolutionChanged",
+            rename.GetProperty("error").GetProperty("data")
+                .GetProperty("reason").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Source_Event_Rename_rejects_a_newly_created_non_target_handler_association()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string publisherUri = "file:///C:/work/Publisher.cls";
+        const string publisherText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Publisher"
+            Public Event Changed()
+            """;
+        const string workerUri = "file:///C:/work/Worker.cls";
+        const string workerText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Worker"
+            Private WithEvents publisher As Publisher
+            Private WithEvents other As Publisher
+            Private Sub publisher_Changed()
+            End Sub
+            Private Sub other_Updated()
+            End Sub
+            """;
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(publisherUri, publisherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+
+        var rename = await process.SendRequestAsync(
+            2,
+            "textDocument/rename",
+            new
+            {
+                textDocument = new { uri = publisherUri },
+                position = new
+                {
+                    line = 2,
+                    character = "Public Event ".Length
+                },
+                newName = "Updated"
+            });
+
+        Assert.False(rename.TryGetProperty("result", out _));
+        Assert.Equal(
+            "resolutionChanged",
+            rename.GetProperty("error").GetProperty("data")
+                .GetProperty("reason").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Interface_member_Rename_rejects_detaching_an_overlapping_WithEvents_handler()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string interfaceUri = "file:///C:/work/IContract.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IContract\"",
+            "Public Sub Changed()",
+            "End Sub"
+        ]);
+        const string publisherUri = "file:///C:/work/Publisher.cls";
+        const string publisherText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Publisher"
+            Public Event Changed()
+            """;
+        const string workerUri = "file:///C:/work/Worker.cls";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Implements IContract",
+            "Private WithEvents IContract As Publisher",
+            "Private Sub IContract_Changed()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(publisherUri, publisherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+
+        var rename = await process.SendRequestAsync(
+            2,
+            "textDocument/rename",
+            new
+            {
+                textDocument = new { uri = interfaceUri },
+                position = new
+                {
+                    line = 2,
+                    character = "Public Sub ".Length
+                },
+                newName = "Updated"
+            });
+
+        Assert.False(rename.TryGetProperty("result", out _));
+        Assert.Equal(
+            "resolutionChanged",
+            rename.GetProperty("error").GetProperty("data")
+                .GetProperty("reason").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Mixed_handler_family_cannot_initiate_independent_Rename()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string publisherUri = "file:///C:/work/Publisher.cls";
+        const string publisherText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Publisher"
+            Public Event Changed()
+            """;
+        const string workerUri = "file:///C:/work/Worker.cls";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Private WithEvents publisher As Publisher",
+            "#If HANDLER_CONFIGURATION Then",
+            "Private Sub publisher_Changed()",
+            "End Sub",
+            "#Else",
+            "Private publisher_Changed As Long",
+            "#End If",
+            "Private Sub Invoke()",
+            "    publisher_Changed",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(publisherUri, publisherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+
+        var rename = await process.SendRequestAsync(
+            2,
+            "textDocument/rename",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new
+                {
+                    line = 10,
+                    character = "    ".Length
+                },
+                newName = "Detached"
+            });
+
+        Assert.False(rename.TryGetProperty("result", out _));
+        Assert.Equal(
+            "notRenameTarget",
+            rename.GetProperty("error").GetProperty("data")
+                .GetProperty("reason").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task TypeLib_WithEvents_variable_Rename_preserves_the_external_Event_association()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-withevents-rename-typelib-").FullName;
+        var cacheRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-withevents-rename-typelib-cache-").FullName;
+        try
+        {
+            const string referenceName = "Generated Library";
+            WriteReferenceCatalogProjectManifest(projectRoot, referenceName);
+            new VbaProjectReferenceCatalogPersistentStore(cacheRoot).Save(
+                new VbaProjectReferenceCatalogPersistentEntry(
+                    CreateGeneratedReferenceCatalogIdentity(referenceName),
+                    CreateGeneratedTypeLibEventCatalog(referenceName)));
+
+            await using var process = await LanguageServerProcessHarness.StartAsync(
+                referenceCatalogCacheRoot: cacheRoot);
+            await process.InitializeAsync();
+
+            var sourcePath = Path.Combine(
+                projectRoot,
+                "src",
+                "Book1",
+                "Worker.cls");
+            var uri = new Uri(sourcePath).AbsoluteUri;
+            var text = string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Private WithEvents publisher As Publisher",
+                "Private Function publisher_Changed(ByVal value As Long) As Boolean",
+                "End Function",
+                "Private Sub Invoke()",
+                "    Set publisher = Nothing",
+                "    publisher_Changed 1",
+                "End Sub"
+            ]);
+            File.WriteAllText(sourcePath, text);
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+            await process.WaitForDiagnosticsAsync(uri);
+            await process.WaitForLogTextAsync(
+                "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
+            await process.SendNotificationAsync(
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new { uri, version = 2 },
+                    contentChanges = new[] { new { text } }
+                });
+            var diagnosticsBeforeRename =
+                await process.WaitForDiagnosticsAsync(uri);
+            Assert.DoesNotContain(
+                diagnosticsBeforeRename.GetProperty("params")
+                    .GetProperty("diagnostics").EnumerateArray(),
+                diagnostic => diagnostic.GetProperty("code").GetString()
+                    == "validation.eventHandlerMustBeSub");
+
+            var rename = await process.SendRequestAsync(
+                2,
+                "textDocument/rename",
+                new
+                {
+                    textDocument = new { uri },
+                    position = new
+                    {
+                        line = 1,
+                        character = "Private WithEvents ".Length
+                    },
+                    newName = "source"
+                });
+
+            Assert.False(
+                rename.TryGetProperty("error", out var renameError),
+                renameError.ToString());
+            Assert.Equal(
+                [
+                    (Line: 1, NewText: "source"),
+                    (Line: 2, NewText: "source"),
+                    (Line: 5, NewText: "source"),
+                    (Line: 6, NewText: "source_Changed")
+                ],
+                rename.GetProperty("result").GetProperty("changes")
+                    .GetProperty(uri).EnumerateArray().Select(edit => (
+                        Line: edit.GetProperty("range").GetProperty("start")
+                            .GetProperty("line").GetInt32(),
+                        NewText: edit.GetProperty("newText").GetString())));
+
+            var renamedText = text.Replace(
+                "publisher",
+                "source",
+                StringComparison.Ordinal);
+            await process.SendNotificationAsync(
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new { uri, version = 3 },
+                    contentChanges = new[] { new { text = renamedText } }
+                });
+            var diagnosticsAfterRename =
+                await process.WaitForDiagnosticsAsync(uri);
+            Assert.DoesNotContain(
+                diagnosticsAfterRename.GetProperty("params")
+                    .GetProperty("diagnostics").EnumerateArray(),
+                diagnostic => diagnostic.GetProperty("code").GetString()
+                    == "validation.eventHandlerMustBeSub");
+
+            await process.ShutdownAsync(4);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("current")]
+    [InlineData("lastKnownGood")]
+    public async Task Host_WithEvents_variable_Rename_preserves_the_projected_Event_association(
+        string authority)
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-withevents-rename-host-").FullName;
+        try
+        {
+            WriteReferenceCatalogProjectManifest(projectRoot);
+            var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
+            var sourceTemplate = Path.Combine(sourceRoot, "Book1.xlsm");
+
+            var publisherPath = Path.Combine(sourceRoot, "Publisher.frm");
+            var publisherUri = new Uri(publisherPath).AbsoluteUri;
+            var publisherText = string.Join('\n', [
+                "VERSION 5.00",
+                "Begin VB.Form Publisher",
+                "End",
+                "Attribute VB_Name = \"Publisher\""
+            ]);
+            File.WriteAllText(publisherPath, publisherText);
+
+            var workerPath = Path.Combine(sourceRoot, "Worker.cls");
+            var workerUri = new Uri(workerPath).AbsoluteUri;
+            var workerText = string.Join('\n', [
+                "VERSION 1.0 CLASS",
+                "Attribute VB_Name = \"Worker\"",
+                "Private WithEvents publisher As Publisher",
+                "Private Function publisher_Change() As Boolean",
+                "End Function",
+                "Private Sub Invoke()",
+                "    Set publisher = Nothing",
+                "    publisher_Change",
+                "End Sub"
+            ]);
+            File.WriteAllText(workerPath, workerText);
+
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+            await process.InitializeAsync();
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(publisherUri, publisherText));
+            await process.WaitForDiagnosticsAsync(publisherUri);
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(workerUri, workerText));
+            await process.WaitForDiagnosticsAsync(workerUri);
+            await process.SendNotificationAsync(
+                "vba/hostClassProjectionSnapshot",
+                CreateHostProjectionSnapshot(
+                    projectRoot,
+                    sourceTemplate,
+                    "Publisher",
+                    "Change",
+                    authority));
+            await process.SendNotificationAsync(
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new { uri = workerUri, version = 2 },
+                    contentChanges = new[] { new { text = workerText } }
+                });
+            var diagnosticsBeforeRename =
+                await process.WaitForDiagnosticsAsync(workerUri);
+            Assert.Equal(
+                authority == "current",
+                diagnosticsBeforeRename.GetProperty("params")
+                    .GetProperty("diagnostics").EnumerateArray().Any(
+                        diagnostic => diagnostic.GetProperty("code").GetString()
+                            == "validation.eventHandlerMustBeSub"));
+
+            var rename = await process.SendRequestAsync(
+                2,
+                "textDocument/rename",
+                new
+                {
+                    textDocument = new { uri = workerUri },
+                    position = new
+                    {
+                        line = 2,
+                        character = "Private WithEvents ".Length
+                    },
+                    newName = "source"
+                });
+
+            Assert.False(
+                rename.TryGetProperty("error", out var renameError),
+                renameError.ToString());
+            Assert.Equal(
+                [
+                    (Line: 2, NewText: "source"),
+                    (Line: 3, NewText: "source"),
+                    (Line: 6, NewText: "source"),
+                    (Line: 7, NewText: "source_Change")
+                ],
+                rename.GetProperty("result").GetProperty("changes")
+                    .GetProperty(workerUri).EnumerateArray().Select(edit => (
+                        Line: edit.GetProperty("range").GetProperty("start")
+                            .GetProperty("line").GetInt32(),
+                        NewText: edit.GetProperty("newText").GetString())));
+
+            var renamedWorkerText = workerText.Replace(
+                "publisher",
+                "source",
+                StringComparison.Ordinal);
+            await process.SendNotificationAsync(
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new { uri = workerUri, version = 3 },
+                    contentChanges = new[] { new { text = renamedWorkerText } }
+                });
+            var diagnosticsAfterRename =
+                await process.WaitForDiagnosticsAsync(workerUri);
+            Assert.Equal(
+                authority == "current",
+                diagnosticsAfterRename.GetProperty("params")
+                    .GetProperty("diagnostics").EnumerateArray().Any(
+                        diagnostic => diagnostic.GetProperty("code").GetString()
+                            == "validation.eventHandlerMustBeSub"));
+
+            await process.ShutdownAsync(4);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Interface_member_Rename_rejects_detaching_an_overlapping_TypeLib_Event_handler()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-withevents-rename-overlap-typelib-").FullName;
+        var cacheRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-withevents-rename-overlap-typelib-cache-").FullName;
+        try
+        {
+            const string referenceName = "Generated Library";
+            WriteReferenceCatalogProjectManifest(projectRoot, referenceName);
+            new VbaProjectReferenceCatalogPersistentStore(cacheRoot).Save(
+                new VbaProjectReferenceCatalogPersistentEntry(
+                    CreateGeneratedReferenceCatalogIdentity(referenceName),
+                    CreateGeneratedTypeLibEventCatalog(referenceName)));
+
+            var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
+            var interfacePath = Path.Combine(sourceRoot, "IContract.cls");
+            var interfaceUri = new Uri(interfacePath).AbsoluteUri;
+            var interfaceText = string.Join('\n', [
+                "VERSION 1.0 CLASS",
+                "Attribute VB_Name = \"IContract\"",
+                "Public Sub Changed(ByVal value As Long)",
+                "End Sub"
+            ]);
+            File.WriteAllText(interfacePath, interfaceText);
+
+            var workerPath = Path.Combine(sourceRoot, "Worker.cls");
+            var workerUri = new Uri(workerPath).AbsoluteUri;
+            var workerText = string.Join('\n', [
+                "VERSION 1.0 CLASS",
+                "Attribute VB_Name = \"Worker\"",
+                "Implements IContract",
+                "Private WithEvents IContract As Publisher",
+                "Private Sub IContract_Changed(ByVal value As Long)",
+                "End Sub"
+            ]);
+            File.WriteAllText(workerPath, workerText);
+
+            await using var process = await LanguageServerProcessHarness.StartAsync(
+                referenceCatalogCacheRoot: cacheRoot);
+            await process.InitializeAsync();
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(interfaceUri, interfaceText));
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(workerUri, workerText));
+            await process.WaitForDiagnosticsAsync(workerUri);
+            await process.WaitForLogTextAsync(
+                "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
+            await process.SendNotificationAsync(
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new { uri = workerUri, version = 2 },
+                    contentChanges = new[] { new { text = workerText } }
+                });
+            await process.WaitForDiagnosticsAsync(workerUri);
+
+            var rename = await process.SendRequestAsync(
+                2,
+                "textDocument/rename",
+                new
+                {
+                    textDocument = new { uri = interfaceUri },
+                    position = new
+                    {
+                        line = 2,
+                        character = "Public Sub ".Length
+                    },
+                    newName = "Updated"
+                });
+
+            Assert.False(rename.TryGetProperty("result", out _));
+            Assert.Equal(
+                "resolutionChanged",
+                rename.GetProperty("error").GetProperty("data")
+                    .GetProperty("reason").GetString());
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task WithEvents_variable_Rename_updates_every_callable_kind_in_a_complete_conditional_family()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string publisherUri = "file:///C:/work/Publisher.cls";
+        const string publisherText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Publisher"
+            Public Event Changed()
+            """;
+        const string workerUri = "file:///C:/work/Worker.cls";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Private WithEvents publisher As Publisher",
+            "#If VBA7 Then",
+            "Private Sub publisher_Changed()",
+            "End Sub",
+            "#Else",
+            "Private Function publisher_Changed() As Boolean",
+            "End Function",
+            "#End If",
+            "Private Sub Invoke()",
+            "    publisher_Changed",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(publisherUri, publisherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+
+        var rename = await process.SendRequestAsync(
+            2,
+            "textDocument/rename",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new
+                {
+                    line = 2,
+                    character = "Private WithEvents ".Length
+                },
+                newName = "source"
+            });
+
+        Assert.False(
+            rename.TryGetProperty("error", out var renameError),
+            renameError.ToString());
+        Assert.Equal(
+            [
+                (Line: 2, NewText: "source"),
+                (Line: 4, NewText: "source"),
+                (Line: 7, NewText: "source"),
+                (Line: 11, NewText: "source_Changed")
+            ],
+            rename.GetProperty("result").GetProperty("changes")
+                .GetProperty(workerUri).EnumerateArray().Select(edit => (
+                    Line: edit.GetProperty("range").GetProperty("start")
+                        .GetProperty("line").GetInt32(),
+                    NewText: edit.GetProperty("newText").GetString())));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task WithEvents_variable_Rename_updates_every_Property_accessor_and_complete_name_reference()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string publisherUri = "file:///C:/work/Publisher.cls";
+        const string publisherText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Publisher"
+            Public Event Changed()
+            """;
+        const string workerUri = "file:///C:/work/Worker.cls";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Private WithEvents publisher As Publisher",
+            "Private Property Get publisher_Changed() As Object",
+            "    Set publisher_Changed = Nothing",
+            "End Property",
+            "Private Property Let publisher_Changed(ByVal value As Long)",
+            "End Property",
+            "Private Property Set publisher_Changed(ByVal value As Object)",
+            "End Property",
+            "Private Sub Invoke()",
+            "    Dim value As Object",
+            "    Set publisher = Nothing",
+            "    Set value = publisher_Changed",
+            "    publisher_Changed = 1",
+            "    Set publisher_Changed = value",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(publisherUri, publisherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+        var initialDiagnostics = await process.WaitForDiagnosticsAsync(workerUri);
+        Assert.Equal(
+            [3, 6, 8],
+            initialDiagnostics.GetProperty("params")
+                .GetProperty("diagnostics").EnumerateArray()
+                .Where(diagnostic => diagnostic.GetProperty("code").GetString()
+                    == "validation.eventHandlerMustBeSub")
+                .Select(diagnostic => diagnostic.GetProperty("range")
+                    .GetProperty("start").GetProperty("line").GetInt32()));
+
+        var rename = await process.SendRequestAsync(
+            2,
+            "textDocument/rename",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new
+                {
+                    line = 2,
+                    character = "Private WithEvents ".Length
+                },
+                newName = "source"
+            });
+
+        Assert.False(
+            rename.TryGetProperty("error", out var renameError),
+            renameError.ToString());
+        Assert.Equal(
+            [
+                (Line: 2, NewText: "source"),
+                (Line: 3, NewText: "source"),
+                (Line: 4, NewText: "source_Changed"),
+                (Line: 6, NewText: "source"),
+                (Line: 8, NewText: "source"),
+                (Line: 12, NewText: "source"),
+                (Line: 13, NewText: "source_Changed"),
+                (Line: 14, NewText: "source_Changed"),
+                (Line: 15, NewText: "source_Changed")
+            ],
+            rename.GetProperty("result").GetProperty("changes")
+                .GetProperty(workerUri).EnumerateArray().Select(edit => (
+                    Line: edit.GetProperty("range").GetProperty("start")
+                        .GetProperty("line").GetInt32(),
+                    NewText: edit.GetProperty("newText").GetString())));
+
+        var renamedWorkerText = workerText.Replace(
+            "publisher",
+            "source",
+            StringComparison.Ordinal);
+        await process.SendNotificationAsync(
+            "textDocument/didChange",
+            new
+            {
+                textDocument = new { uri = workerUri, version = 2 },
+                contentChanges = new[] { new { text = renamedWorkerText } }
+            });
+        var renamedDiagnostics = await process.WaitForDiagnosticsAsync(workerUri);
+        Assert.Equal(
+            [3, 6, 8],
+            renamedDiagnostics.GetProperty("params")
+                .GetProperty("diagnostics").EnumerateArray()
+                .Where(diagnostic => diagnostic.GetProperty("code").GetString()
+                    == "validation.eventHandlerMustBeSub")
+                .Select(diagnostic => diagnostic.GetProperty("range")
+                    .GetProperty("start").GetProperty("line").GetInt32()));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Source_Event_Rename_updates_every_Property_accessor_and_complete_name_reference()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string publisherUri = "file:///C:/work/Publisher.cls";
+        var publisherText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Publisher\"",
+            "Public Event Changed()"
+        ]);
+        const string workerUri = "file:///C:/work/Worker.cls";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Private WithEvents publisher As Publisher",
+            "Private Property Get publisher_Changed() As Object",
+            "    Set publisher_Changed = Nothing",
+            "End Property",
+            "Private Property Let publisher_Changed(ByVal value As Long)",
+            "End Property",
+            "Private Property Set publisher_Changed(ByVal value As Object)",
+            "End Property",
+            "Private Sub Invoke()",
+            "    Dim value As Object",
+            "    Set value = publisher_Changed",
+            "    publisher_Changed = 1",
+            "    Set publisher_Changed = value",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(publisherUri, publisherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+
+        var rename = await process.SendRequestAsync(
+            2,
+            "textDocument/rename",
+            new
+            {
+                textDocument = new { uri = publisherUri },
+                position = new
+                {
+                    line = 2,
+                    character = "Public Event ".Length
+                },
+                newName = "Updated"
+            });
+
+        Assert.False(
+            rename.TryGetProperty("error", out var renameError),
+            renameError.ToString());
+        Assert.Equal(
+            [(Line: 2, NewText: "Updated")],
+            rename.GetProperty("result").GetProperty("changes")
+                .GetProperty(publisherUri).EnumerateArray().Select(edit => (
+                    Line: edit.GetProperty("range").GetProperty("start")
+                        .GetProperty("line").GetInt32(),
+                    NewText: edit.GetProperty("newText").GetString())));
+        Assert.Equal(
+            [
+                (Line: 3, NewText: "Updated"),
+                (Line: 4, NewText: "publisher_Updated"),
+                (Line: 6, NewText: "Updated"),
+                (Line: 8, NewText: "Updated"),
+                (Line: 12, NewText: "publisher_Updated"),
+                (Line: 13, NewText: "publisher_Updated"),
+                (Line: 14, NewText: "publisher_Updated")
+            ],
+            rename.GetProperty("result").GetProperty("changes")
+                .GetProperty(workerUri).EnumerateArray().Select(edit => (
+                    Line: edit.GetProperty("range").GetProperty("start")
+                        .GetProperty("line").GetInt32(),
+                    NewText: edit.GetProperty("newText").GetString())));
+
+        var renamedPublisherText = publisherText.Replace(
+            "Changed",
+            "Updated",
+            StringComparison.Ordinal);
+        var renamedWorkerText = workerText.Replace(
+            "publisher_Changed",
+            "publisher_Updated",
+            StringComparison.Ordinal);
+        await process.SendNotificationAsync(
+            "textDocument/didChange",
+            new
+            {
+                textDocument = new { uri = publisherUri, version = 2 },
+                contentChanges = new[] { new { text = renamedPublisherText } }
+            });
+        await process.SendNotificationAsync(
+            "textDocument/didChange",
+            new
+            {
+                textDocument = new { uri = workerUri, version = 2 },
+                contentChanges = new[] { new { text = renamedWorkerText } }
+            });
+        var renamedDiagnostics = await process.WaitForDiagnosticsAsync(workerUri);
+        Assert.Equal(
+            [3, 6, 8],
+            renamedDiagnostics.GetProperty("params")
+                .GetProperty("diagnostics").EnumerateArray()
+                .Where(diagnostic => diagnostic.GetProperty("code").GetString()
+                    == "validation.eventHandlerMustBeSub")
+                .Select(diagnostic => diagnostic.GetProperty("range")
+                    .GetProperty("start").GetProperty("line").GetInt32()));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Recovered_WithEvents_variable_Rename_creates_no_dependent_handler_edits()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string workerUri = "file:///C:/work/Worker.cls";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Private WithEvents source As",
+            "Private Sub source_Changed()",
+            "End Sub",
+            "Private Sub Invoke()",
+            "    Set source = Nothing",
+            "    source_Changed",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+
+        var rename = await process.SendRequestAsync(
+            2,
+            "textDocument/rename",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new
+                {
+                    line = 2,
+                    character = "Private WithEvents ".Length
+                },
+                newName = "publisher"
+            });
+
+        Assert.False(
+            rename.TryGetProperty("error", out var renameError),
+            renameError.ToString());
+        Assert.Equal(
+            [(Line: 2, NewText: "publisher"), (Line: 6, NewText: "publisher")],
+            rename.GetProperty("result").GetProperty("changes")
+                .GetProperty(workerUri).EnumerateArray().Select(edit => (
+                    Line: edit.GetProperty("range").GetProperty("start")
+                        .GetProperty("line").GetInt32(),
+                    NewText: edit.GetProperty("newText").GetString())));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Invalid_type_WithEvents_variable_Rename_creates_no_dependent_handler_edits()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string workerUri = "file:///C:/work/Worker.cls";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Private WithEvents source As Long",
+            "Private Sub source_Changed()",
+            "End Sub",
+            "Private Sub Invoke()",
+            "    source = 1",
+            "    source_Changed",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+
+        var rename = await process.SendRequestAsync(
+            2,
+            "textDocument/rename",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new
+                {
+                    line = 2,
+                    character = "Private WithEvents ".Length
+                },
+                newName = "value"
+            });
+
+        Assert.False(
+            rename.TryGetProperty("error", out var renameError),
+            renameError.ToString());
+        Assert.Equal(
+            [(Line: 2, NewText: "value"), (Line: 6, NewText: "value")],
+            rename.GetProperty("result").GetProperty("changes")
+                .GetProperty(workerUri).EnumerateArray().Select(edit => (
+                    Line: edit.GetProperty("range").GetProperty("start")
+                        .GetProperty("line").GetInt32(),
+                    NewText: edit.GetProperty("newText").GetString())));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Eligible_conditional_variable_sibling_establishes_family_wide_dependent_Rename()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+
+        const string publisherUri = "file:///C:/work/Publisher.cls";
+        const string publisherText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Publisher"
+            Public Event Changed()
+            """;
+        const string workerUri = "file:///C:/work/Worker.cls";
+        var workerText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "#If VBA7 Then",
+            "Private WithEvents source As Publisher",
+            "#Else",
+            "Private WithEvents source As Long",
+            "#End If",
+            "Private Sub source_Changed()",
+            "End Sub",
+            "Private Sub Invoke()",
+            "    Set source = Nothing",
+            "    source_Changed",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(publisherUri, publisherText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(workerUri, workerText));
+
+        var rename = await process.SendRequestAsync(
+            2,
+            "textDocument/rename",
+            new
+            {
+                textDocument = new { uri = workerUri },
+                position = new
+                {
+                    line = 3,
+                    character = "Private WithEvents ".Length
+                },
+                newName = "publisher"
+            });
+
+        Assert.False(
+            rename.TryGetProperty("error", out var renameError),
+            renameError.ToString());
+        Assert.Equal(
+            [
+                (Line: 3, NewText: "publisher"),
+                (Line: 5, NewText: "publisher"),
+                (Line: 7, NewText: "publisher"),
+                (Line: 10, NewText: "publisher"),
+                (Line: 11, NewText: "publisher_Changed")
+            ],
+            rename.GetProperty("result").GetProperty("changes")
+                .GetProperty(workerUri).EnumerateArray().Select(edit => (
+                    Line: edit.GetProperty("range").GetProperty("start")
+                        .GetProperty("line").GetInt32(),
+                    NewText: edit.GetProperty("newText").GetString())));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Source_Event_Rename_fails_closed_for_a_shared_TypeLib_Event_association()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-withevents-rename-shared-typelib-").FullName;
+        var cacheRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-withevents-rename-shared-typelib-cache-").FullName;
+        try
+        {
+            const string referenceName = "Generated Library";
+            WriteReferenceCatalogProjectManifest(projectRoot, referenceName);
+            new VbaProjectReferenceCatalogPersistentStore(cacheRoot).Save(
+                new VbaProjectReferenceCatalogPersistentEntry(
+                    CreateGeneratedReferenceCatalogIdentity(referenceName),
+                    CreateGeneratedTypeLibEventCatalog(referenceName)));
+
+            var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
+            var publisherPath = Path.Combine(sourceRoot, "Publisher.cls");
+            var publisherUri = new Uri(publisherPath).AbsoluteUri;
+            var publisherText = string.Join('\n', [
+                "VERSION 1.0 CLASS",
+                "Attribute VB_Name = \"Publisher\"",
+                "Public Event Changed(ByVal value As Long)"
+            ]);
+            File.WriteAllText(publisherPath, publisherText);
+
+            var workerPath = Path.Combine(sourceRoot, "Worker.cls");
+            var workerUri = new Uri(workerPath).AbsoluteUri;
+            var workerText = string.Join('\n', [
+                "VERSION 1.0 CLASS",
+                "Attribute VB_Name = \"Worker\"",
+                "#If SOURCE_CONFIGURATION Then",
+                "Private WithEvents publisher As Publisher",
+                "#Else",
+                "Private WithEvents publisher As Generated.Publisher",
+                "#End If",
+                "Private Sub publisher_Changed(ByVal value As Long)",
+                "End Sub"
+            ]);
+            File.WriteAllText(workerPath, workerText);
+
+            await using var process = await LanguageServerProcessHarness.StartAsync(
+                referenceCatalogCacheRoot: cacheRoot);
+            await process.InitializeAsync();
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(publisherUri, publisherText));
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(workerUri, workerText));
+            await process.WaitForDiagnosticsAsync(workerUri);
+            await process.WaitForLogTextAsync(
+                "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
+            await process.SendNotificationAsync(
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new { uri = workerUri, version = 2 },
+                    contentChanges = new[] { new { text = workerText } }
+                });
+            await process.WaitForDiagnosticsAsync(workerUri);
+
+            var rename = await process.SendRequestAsync(
+                2,
+                "textDocument/rename",
+                new
+                {
+                    textDocument = new { uri = publisherUri },
+                    position = new
+                    {
+                        line = 2,
+                        character = "Public Event ".Length
+                    },
+                    newName = "Updated"
+                });
+
+            Assert.False(rename.TryGetProperty("result", out _));
+            Assert.Equal(
+                "resolutionChanged",
+                rename.GetProperty("error").GetProperty("data")
+                    .GetProperty("reason").GetString());
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
     private static object CreateOpenDocument(string uri, string text)
         => new
         {
@@ -5217,11 +7859,58 @@ public sealed class WithEventsLanguageServerProcessTests
             0,
             @"C:\TypeLibs\Generated.tlb");
 
+    private static VbaProjectReferenceCatalog CreateGeneratedTypeLibEventCatalog(
+        string referenceName)
+    {
+        var changedEvent = new TypeLibCatalogMember(
+            "Changed",
+            VbaSourceDefinitionKind.Procedure,
+            "Changed Event.",
+            new VbaCallableSignature(
+                "Sub Changed(ByVal value As Long)",
+                [
+                    new VbaCallableParameter(
+                        "value",
+                        TypeReference: new VbaTypeReference("Long"),
+                        IsByRef: false)
+                ],
+                CallableKind: VbaCallableKind.Sub),
+            Metadata: new TypeLibCatalogCallableMetadata(
+                MemberId: 1,
+                FunctionFlags: 0));
+        return TypeLibReferenceCatalogBuilder.Build(
+            referenceName,
+            new TypeLibCatalogMetadata(
+                "Generated",
+                [
+                    new TypeLibCatalogType(
+                        "Publisher",
+                        VbaSourceDefinitionKind.Class,
+                        Documentation: null,
+                        Members: [],
+                        IsCreatable: true,
+                        Metadata: new TypeLibCatalogTypeMetadata(
+                            TypeLibCatalogRawTypeKind.CoClass,
+                            TypeFlags: 0,
+                            ImplementedInterfaces:
+                            [
+                                new TypeLibCatalogImplementedInterface(
+                                    "_PublisherEvents",
+                                    TypeFlags: 0,
+                                    ImplementationFlags: 0x1 | 0x2,
+                                    CallableMembers: [changedEvent],
+                                    RawTypeKind:
+                                        TypeLibCatalogRawTypeKind.Dispatch)
+                            ]))
+                ]));
+    }
+
     private static object CreateHostProjectionSnapshot(
         string projectRoot,
         string sourceTemplate,
         string className,
-        string eventName)
+        string eventName,
+        string authority = "current")
         => new
         {
             schemaVersion = 2,
@@ -5236,7 +7925,7 @@ public sealed class WithEventsLanguageServerProcessTests
                 new
                 {
                     identity = new { name = className, kind = "form" },
-                    authority = "current",
+                    authority,
                     projection = new
                     {
                         intrinsicEventSourceName = "UserForm",
@@ -5277,20 +7966,29 @@ public sealed class WithEventsLanguageServerProcessTests
         string uri,
         string text,
         string needle,
-        int offset = 0)
+        int offset = 0,
+        bool includeDeclaration = false)
     {
         var characterOffset = text.IndexOf(needle, StringComparison.Ordinal) + offset;
         var prefix = text[..characterOffset];
         var line = prefix.Count(character => character == '\n');
         var lineStart = prefix.LastIndexOf('\n');
         var character = lineStart < 0 ? characterOffset : characterOffset - lineStart - 1;
-        return process.SendRequestAsync(
-            id,
-            method,
-            new
+        object parameters = includeDeclaration
+            ? new
+            {
+                textDocument = new { uri },
+                position = new { line, character },
+                context = new { includeDeclaration = true }
+            }
+            : new
             {
                 textDocument = new { uri },
                 position = new { line, character }
-            });
+            };
+        return process.SendRequestAsync(
+            id,
+            method,
+            parameters);
     }
 }
