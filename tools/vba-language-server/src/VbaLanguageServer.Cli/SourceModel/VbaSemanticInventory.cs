@@ -390,10 +390,34 @@ public sealed class VbaSemanticInventory
             target is VbaWithEventsEventNameTarget withEventsTarget
                 ? withEventsTarget.EventTargets
                 : [target];
+        var interfaceDependentDeclarationRanges = sourceDocuments
+            .SelectMany(document => semanticResolution
+                .GetConclusiveSourceInterfaceImplementationAssociations(
+                    document))
+            .GroupBy(association => association.ImplementationTarget.Identity)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .SelectMany(association =>
+                        GetLogicalRenameTargetDefinitions(
+                            association.Implementation))
+                    .DistinctBy(definition => definition.Identity)
+                    .ToArray());
         var references = occurrenceTargets
             .SelectMany(occurrenceTarget => resolvedOccurrences.FindMatching(
-                occurrenceTarget,
-                cancellationToken))
+                    occurrenceTarget,
+                    cancellationToken)
+                .Where(occurrence =>
+                    !interfaceDependentDeclarationRanges.TryGetValue(
+                        occurrenceTarget.Identity,
+                        out var dependentDeclarationDefinitions)
+                    || !dependentDeclarationDefinitions.Any(definition =>
+                        definition.Uri.Equals(
+                            occurrence.Uri,
+                            StringComparison.OrdinalIgnoreCase)
+                        && definition.Range != occurrence.Range
+                        && Contains(definition.Range, occurrence.Range.Start)
+                        && Contains(definition.Range, occurrence.Range.End))))
             .Select(occurrence => new VbaDefinitionLocation(occurrence.Uri, occurrence.Range))
             .Concat(declarationDefinitions
                 .Where(definition => definition.Identity.Origin
@@ -563,11 +587,13 @@ public sealed class VbaSemanticInventory
                         or VbaCallSyntaxForm.Statement)
                 || followingToken?.Text == "("
                 && followingToken.Range.Start.Line == identifier.Range.End.Line);
-        var definitions = isCallablePropertyTarget
+        var definitions = (isCallablePropertyTarget
             ? callablePropertyTarget!.Property.PropertyDefinitions
             : target.IsConditionalFamily
                 ? target.PhysicalDefinitions
-                : [target.SelectedDefinition];
+                : [target.SelectedDefinition])
+            .Select(semanticResolution.ProjectSourceInterfaceDocumentation)
+            .ToArray();
         var isMultiDefinitionPresentation = isCallablePropertyTarget
             || target.IsConditionalFamily;
         return new VbaHoverResult(
@@ -635,6 +661,17 @@ public sealed class VbaSemanticInventory
                     directOwnershipFailure);
             }
 
+            if (moduleTarget is not null
+                && HasIncompleteSourceInterfaceDependentCoverage(
+                    moduleTarget))
+            {
+                return new VbaPrepareRenameOutcome(
+                    Result: null,
+                    AnalysisIncomplete(
+                        "Prepare Rename could not establish complete source "
+                        + "Implements dependent coverage."));
+            }
+
             return new VbaPrepareRenameOutcome(
                 new VbaPrepareRenameResult(
                     new VbaRange(
@@ -671,10 +708,82 @@ public sealed class VbaSemanticInventory
             return new VbaPrepareRenameOutcome(Result: null, Failure: null);
         }
 
+        if (document is not null
+            && TryResolveSourceInterfaceImplementationSegment(
+                document,
+                line,
+                character,
+                out var interfaceSegment))
+        {
+            if (IsIncompleteSourceInterfaceImplementationTarget(
+                    interfaceSegment.CompleteTarget)
+                || interfaceSegment.Target is not null
+                    && HasIncompleteSourceInterfaceDependentCoverage(
+                        interfaceSegment.Target.SelectedDefinition))
+            {
+                return new VbaPrepareRenameOutcome(
+                    Result: null,
+                    AnalysisIncomplete(
+                        "Prepare Rename could not establish complete source "
+                        + "Implements contract evidence."));
+            }
+
+            return new VbaPrepareRenameOutcome(
+                interfaceSegment.Target is null
+                    || interfaceSegment.Range is null
+                    ? null
+                    : new VbaPrepareRenameResult(
+                        interfaceSegment.Range,
+                        interfaceSegment.Target.CanonicalName),
+                Failure: null);
+        }
+
         var resolvedTarget = ResolveSourceTarget(uri, line, character);
+        if (resolvedTarget is not null
+            && IsIncompleteSourceInterfaceImplementationTarget(resolvedTarget))
+        {
+            return new VbaPrepareRenameOutcome(
+                Result: null,
+                AnalysisIncomplete(
+                    "Prepare Rename could not establish complete source "
+                    + "Implements contract evidence."));
+        }
+
+        var declarationAtPosition = document?.Definitions.FirstOrDefault(
+            definition => definition.Range.Start.Line == line
+                && ContainsCharacter(
+                    definition.Range,
+                    new VbaPosition(line, character)));
+        if (document is not null
+            && declarationAtPosition is not null
+            && semanticResolution.IsPotentialInterfaceImplementationDeclaration(
+                document,
+                declarationAtPosition))
+        {
+            if (semanticResolution
+                .HasIndeterminateConditionalCompilationOwnership(
+                    declarationAtPosition))
+            {
+                return new VbaPrepareRenameOutcome(
+                    Result: null,
+                    AnalysisIncomplete(
+                        "Prepare Rename could not establish complete source "
+                        + "Implements ownership."));
+            }
+
+            return new VbaPrepareRenameOutcome(Result: null, Failure: null);
+        }
+
         if (document is not null
             && resolvedTarget is not null
             && GetIntrinsicHostHandlerAuthority(document, resolvedTarget) is not null)
+        {
+            return new VbaPrepareRenameOutcome(Result: null, Failure: null);
+        }
+
+        if (resolvedTarget is not null
+            && ClassifySourceInterfaceDependentRenameTarget(resolvedTarget)
+                is not null)
         {
             return new VbaPrepareRenameOutcome(Result: null, Failure: null);
         }
@@ -753,6 +862,15 @@ public sealed class VbaSemanticInventory
         }
 
         target = GetLogicalRenameTarget(target);
+        if (HasIncompleteSourceInterfaceDependentCoverage(target))
+        {
+            return new VbaPrepareRenameOutcome(
+                Result: null,
+                AnalysisIncomplete(
+                    "Prepare Rename could not establish complete source "
+                    + "Implements dependent coverage."));
+        }
+
         var logicalTarget = resolutionPolicy.CreateNameTarget(target);
         var occurrenceRange = resolvedOccurrences
             .GetDocumentOccurrences(uri)
@@ -781,6 +899,142 @@ public sealed class VbaSemanticInventory
                 target.Name),
             Failure: null);
     }
+
+    private bool TryResolveSourceInterfaceImplementationSegment(
+        VbaSourceDocument document,
+        int line,
+        int character,
+        out VbaInterfaceImplementationSegmentResolution result)
+    {
+        result = null!;
+        var associations = semanticResolution
+            .GetConclusiveSourceInterfaceImplementationAssociations(document)
+            .Where(association => association.Implementation.Range.Start.Line
+                    == line
+                && association.Implementation.Range.Start.Character
+                    <= character
+                && character < association.Implementation.Range.End.Character)
+            .ToArray();
+        if (associations.Length == 0)
+        {
+            return false;
+        }
+
+        var position = new VbaPosition(line, character);
+        var candidates = associations.Select(association =>
+                ContainsCharacter(association.SeparatorRange, position)
+                    ? new VbaInterfaceImplementationSegmentCandidate(
+                        VbaInterfaceImplementationSegmentKind.Separator,
+                        Target: null,
+                        association.SeparatorRange)
+                    : ContainsCharacter(
+                        association.InterfacePrefixRange,
+                        position)
+                        ? new VbaInterfaceImplementationSegmentCandidate(
+                            VbaInterfaceImplementationSegmentKind.InterfacePrefix,
+                            association.Relationship.InterfaceTarget,
+                            association.InterfacePrefixRange)
+                        : new VbaInterfaceImplementationSegmentCandidate(
+                            VbaInterfaceImplementationSegmentKind.MemberSuffix,
+                            association.MemberTarget,
+                            association.MemberSuffixRange))
+            .ToArray();
+        var first = candidates[0];
+        var hasOneMeaning = first.Target is not null
+            && candidates.All(candidate => candidate.Kind == first.Kind
+                && candidate.Range == first.Range
+                && candidate.Target?.Identity == first.Target.Identity);
+        result = new VbaInterfaceImplementationSegmentResolution(
+            hasOneMeaning ? first.Target : null,
+            hasOneMeaning ? first.Range : null,
+            associations[0].ImplementationTarget);
+        return true;
+    }
+
+    private enum VbaInterfaceImplementationSegmentKind
+    {
+        InterfacePrefix,
+        Separator,
+        MemberSuffix
+    }
+
+    private sealed record VbaInterfaceImplementationSegmentCandidate(
+        VbaInterfaceImplementationSegmentKind Kind,
+        VbaResolvedNameTarget? Target,
+        VbaRange Range);
+
+    private sealed record VbaInterfaceImplementationSegmentResolution(
+        VbaResolvedNameTarget? Target,
+        VbaRange? Range,
+        VbaResolvedNameTarget CompleteTarget);
+
+    private sealed record VbaInterfaceAssociationProofKey(
+        string Relationship,
+        string InterfaceTarget,
+        string ContractOrigin,
+        string MemberTarget,
+        VbaInterfaceAccessorContractKind ContractKind,
+        bool IsDerivedVariableAccessor,
+        VbaInterfaceContractCompatibilityState CompatibilityState,
+        string Implementation,
+        string ImplementationTarget,
+        string InterfacePrefix,
+        string Separator,
+        string MemberSuffix);
+
+    private enum VbaIncompleteInterfaceTargetRole
+    {
+        Upstream,
+        Dependent
+    }
+
+    private sealed record VbaIncompleteInterfaceTargetProofKey(
+        string ImplementingDocument,
+        VbaIncompleteInterfaceTargetRole Role,
+        string Target);
+
+    private static bool ContainsCharacter(
+        VbaRange range,
+        VbaPosition position)
+        => IsAtOrAfter(position, range.Start)
+            && !IsAtOrAfter(position, range.End);
+
+    private VbaDependentRenameTarget?
+        ClassifySourceInterfaceDependentRenameTarget(
+        VbaResolvedNameTarget target)
+    {
+        var associations = sourceDocuments
+            .SelectMany(document => semanticResolution
+                .GetConclusiveSourceInterfaceImplementationAssociations(
+                    document))
+            .Where(association => association.ImplementationTarget.Identity
+                == target.Identity)
+            .ToArray();
+        return associations.Length == 0
+            ? null
+            : new VbaDependentRenameTarget(target, associations);
+    }
+
+    private bool IsIncompleteSourceInterfaceImplementationTarget(
+        VbaResolvedNameTarget target)
+        => sourceDocuments
+            .Select(semanticResolution
+                .AnalyzeSourceInterfaceImplementationAssociations)
+            .SelectMany(analysis => analysis.IncompleteDependentTargets)
+            .Any(incompleteTarget => incompleteTarget.Identity
+                == target.Identity);
+
+    private bool IsSourceInterfaceImplementationDeclarationPosition(
+        VbaSourceDocument document,
+        int line,
+        int character)
+        => semanticResolution
+            .GetConclusiveSourceInterfaceImplementationAssociations(document)
+            .Any(association => association.Implementation.Range.Start.Line
+                    == line
+                && association.Implementation.Range.Start.Character
+                    <= character
+                && character < association.Implementation.Range.End.Character);
 
     private static bool TryGetAuthoritativeModuleIdentityAtPosition(
         VbaSourceDocument document,
@@ -951,8 +1205,61 @@ public sealed class VbaSemanticInventory
                 document,
                 line,
                 character);
+        VbaInterfaceImplementationSegmentResolution? interfaceSegment = null;
+        if (moduleTarget is null
+            && document is not null
+            && TryResolveSourceInterfaceImplementationSegment(
+                document,
+                line,
+                character,
+                out var resolvedInterfaceSegment))
+        {
+            interfaceSegment = resolvedInterfaceSegment;
+            if (IsIncompleteSourceInterfaceImplementationTarget(
+                    interfaceSegment.CompleteTarget)
+                || interfaceSegment.Target is not null
+                    && HasIncompleteSourceInterfaceDependentCoverage(
+                        interfaceSegment.Target.SelectedDefinition))
+            {
+                var noOpName = interfaceSegment.Target?.CanonicalName
+                    ?? interfaceSegment.CompleteTarget.CanonicalName;
+                if (string.Equals(
+                    noOpName,
+                    newName,
+                    StringComparison.Ordinal))
+                {
+                    return new VbaRenameResult(Plan: null, Failure: null);
+                }
+
+                return new VbaRenameResult(
+                    Plan: null,
+                    AnalysisIncomplete(
+                        "Rename could not establish complete source Implements "
+                        + "contract evidence."));
+            }
+
+            if (interfaceSegment.Target is null)
+            {
+                if (string.Equals(
+                    interfaceSegment.CompleteTarget.CanonicalName,
+                    newName,
+                    StringComparison.Ordinal))
+                {
+                    return new VbaRenameResult(Plan: null, Failure: null);
+                }
+
+                return new VbaRenameResult(
+                    Plan: null,
+                    new VbaRenameFailure(
+                        "notRenameTarget",
+                        "The semantic separator of an Implements implementation "
+                        + "is not a Rename target."));
+            }
+        }
+
         var resolvedTarget = moduleTarget is null
-            ? ResolveSourceTarget(uri, line, character)
+            ? interfaceSegment?.Target
+                ?? ResolveSourceTarget(uri, line, character)
             : resolutionPolicy.CreateNameTarget(moduleTarget);
         if (document is not null && resolvedTarget is not null)
         {
@@ -987,7 +1294,51 @@ public sealed class VbaSemanticInventory
             }
         }
 
+        if (resolvedTarget is not null
+            && IsIncompleteSourceInterfaceImplementationTarget(resolvedTarget))
+        {
+            if (string.Equals(
+                resolvedTarget.CanonicalName,
+                newName,
+                StringComparison.Ordinal))
+            {
+                return new VbaRenameResult(Plan: null, Failure: null);
+            }
+
+            return new VbaRenameResult(
+                Plan: null,
+                AnalysisIncomplete(
+                    "Rename could not establish complete source Implements "
+                    + "contract evidence."));
+        }
+
+        if (document is not null
+            && resolvedTarget is not null
+            && ClassifySourceInterfaceDependentRenameTarget(resolvedTarget)
+                is not null
+            && !IsSourceInterfaceImplementationDeclarationPosition(
+                document,
+                line,
+                character))
+        {
+            if (string.Equals(
+                resolvedTarget.CanonicalName,
+                newName,
+                StringComparison.Ordinal))
+            {
+                return new VbaRenameResult(Plan: null, Failure: null);
+            }
+
+            return new VbaRenameResult(
+                Plan: null,
+                new VbaRenameFailure(
+                    "notRenameTarget",
+                    "An Implements implementation is a dependent Rename target; "
+                    + "rename its source interface type or member instead."));
+        }
+
         var target = moduleTarget
+            ?? interfaceSegment?.Target?.SelectedDefinition
             ?? ResolveSourceDefinition(uri, line, character);
         if (target is null)
         {
@@ -1107,6 +1458,15 @@ public sealed class VbaSemanticInventory
             return new VbaRenameResult(Plan: null, Failure: null);
         }
 
+        if (HasIncompleteSourceInterfaceDependentCoverage(target))
+        {
+            return new VbaRenameResult(
+                Plan: null,
+                AnalysisIncomplete(
+                    "Rename could not establish complete source Implements "
+                    + "dependent coverage."));
+        }
+
         var invalidTargetConflicts = FindInvalidPropertyFamilyConflicts(target);
         if (invalidTargetConflicts.Count > 0)
         {
@@ -1125,8 +1485,11 @@ public sealed class VbaSemanticInventory
                     invalidTargetConflicts));
         }
 
-        var collisions = FindSameScopeCollisions(target, newName);
-        if (collisions.Count > 0)
+        var collisions = FindSameScopeCollisions(target, newName)
+            .Concat(FindInterfaceDependentRenameCollisions(target, newName))
+            .Distinct()
+            .ToArray();
+        if (collisions.Length > 0)
         {
             var locations = string.Join(
                 ", ",
@@ -1171,21 +1534,28 @@ public sealed class VbaSemanticInventory
                     "Rename cannot prove complete dependent-handler coverage across source and projected host Event alternatives."));
         }
 
-        var changes = targetOccurrences
-            .GroupBy(occurrence => occurrence.Uri, StringComparer.OrdinalIgnoreCase)
-            .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(
-                group => group.Key,
-                group => (IReadOnlyList<VbaTextEdit>)group
-                    .Select(occurrence => new VbaTextEdit(occurrence.Range, newName))
-                    .ToArray(),
-                StringComparer.OrdinalIgnoreCase);
+        var plannedEdits = targetOccurrences
+            .Select(occurrence => new KeyValuePair<string, VbaTextEdit>(
+                occurrence.Uri,
+                new VbaTextEdit(occurrence.Range, newName)))
+            .Concat(CreateInterfaceDependentRenameEdits(
+                target,
+                newName,
+                cancellationToken));
+        var changeSetFailure = TryCreateRenameChangeSet(
+            plannedEdits,
+            out var changes);
+        if (changeSetFailure is not null)
+        {
+            return new VbaRenameResult(Plan: null, changeSetFailure);
+        }
 
         cancellationToken.ThrowIfCancellationRequested();
         var proofFailure = ProveBindingsArePreserved(
             target,
             targetOccurrences,
             changes,
+            newName,
             cancellationToken,
             out var targetCorrespondence);
         if (proofFailure is not null)
@@ -1204,6 +1574,289 @@ public sealed class VbaSemanticInventory
                     TargetCorrespondence = targetCorrespondence
                 },
             Failure: null);
+    }
+
+    private static VbaRenameFailure? TryCreateRenameChangeSet(
+        IEnumerable<KeyValuePair<string, VbaTextEdit>> plannedEdits,
+        out IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes)
+    {
+        var result = new Dictionary<string, IReadOnlyList<VbaTextEdit>>(
+            StringComparer.OrdinalIgnoreCase);
+        foreach (var documentGroup in plannedEdits
+                     .GroupBy(edit => edit.Key,
+                         StringComparer.OrdinalIgnoreCase)
+                     .OrderBy(group => group.Key,
+                         StringComparer.OrdinalIgnoreCase))
+        {
+            var edits = new List<VbaTextEdit>();
+            foreach (var rangeGroup in documentGroup
+                         .Select(edit => edit.Value)
+                         .GroupBy(edit => GetRangeKey(edit.Range)))
+            {
+                var replacements = rangeGroup
+                    .Select(edit => edit.NewText)
+                    .Distinct(StringComparer.Ordinal)
+                    .ToArray();
+                if (replacements.Length != 1)
+                {
+                    changes = new Dictionary<
+                        string,
+                        IReadOnlyList<VbaTextEdit>>(
+                            StringComparer.OrdinalIgnoreCase);
+                    return AnalysisIncomplete(
+                        "Rename produced conflicting replacements for one "
+                        + "source range.");
+                }
+
+                edits.Add(new VbaTextEdit(
+                    rangeGroup.First().Range,
+                    replacements[0]));
+            }
+
+            edits.Sort((left, right) =>
+            {
+                var line = left.Range.Start.Line.CompareTo(
+                    right.Range.Start.Line);
+                return line != 0
+                    ? line
+                    : left.Range.Start.Character.CompareTo(
+                        right.Range.Start.Character);
+            });
+            for (var index = 0; index < edits.Count; index++)
+            {
+                for (var laterIndex = index + 1;
+                     laterIndex < edits.Count;
+                     laterIndex++)
+                {
+                    if (!IsStrictlyBefore(
+                            edits[laterIndex].Range.Start,
+                            edits[index].Range.End))
+                    {
+                        break;
+                    }
+
+                    if (IsStrictlyBefore(
+                        edits[index].Range.Start,
+                        edits[laterIndex].Range.End))
+                    {
+                        changes = new Dictionary<
+                            string,
+                            IReadOnlyList<VbaTextEdit>>(
+                                StringComparer.OrdinalIgnoreCase);
+                        return AnalysisIncomplete(
+                            "Rename produced overlapping source edits that "
+                            + "could not be applied atomically.");
+                    }
+                }
+            }
+
+            result[documentGroup.Key] = edits.ToArray();
+        }
+
+        changes = result;
+        return null;
+    }
+
+    private static bool IsStrictlyBefore(
+        VbaPosition left,
+        VbaPosition right)
+        => left.Line < right.Line
+            || left.Line == right.Line
+                && left.Character < right.Character;
+
+    private IReadOnlyList<KeyValuePair<string, VbaTextEdit>>
+        CreateInterfaceDependentRenameEdits(
+            VbaSourceDefinition target,
+            string newName,
+            CancellationToken cancellationToken)
+    {
+        var targetIdentity = resolutionPolicy.CreateNameTarget(target).Identity;
+        var associations = sourceDocuments
+            .SelectMany(document => semanticResolution
+                .GetConclusiveSourceInterfaceImplementationAssociations(
+                    document))
+            .Select(association => new
+            {
+                Association = association,
+                RenamesInterfaceType = association.Relationship.InterfaceTarget.Identity
+                    == targetIdentity,
+                RenamesInterfaceMember = resolutionPolicy.CreateNameTarget(
+                        GetLogicalRenameTarget(
+                            association.Contract.OriginDefinition))
+                    .Identity == targetIdentity
+            })
+            .Where(dependency => dependency.RenamesInterfaceType
+                || dependency.RenamesInterfaceMember)
+            .ToArray();
+        if (associations.Length == 0)
+        {
+            return [];
+        }
+
+        var edits = new List<KeyValuePair<string, VbaTextEdit>>();
+        foreach (var dependentGroup in associations.GroupBy(dependency =>
+                     resolutionPolicy.CreateNameTarget(
+                         GetLogicalRenameTarget(
+                             dependency.Association.Implementation))
+                         .Identity))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var dependency = dependentGroup
+                .OrderBy(candidate => candidate.Association.Implementation.Uri,
+                    StringComparer.OrdinalIgnoreCase)
+                .ThenBy(candidate => candidate.Association.Implementation.Uri,
+                    StringComparer.Ordinal)
+                .ThenBy(candidate => candidate.Association.Implementation.Range.Start.Line)
+                .ThenBy(candidate => candidate.Association.Implementation.Range.Start.Character)
+                .First();
+            var association = dependency.Association;
+            var dependentTargetDefinition = GetLogicalRenameTarget(
+                association.Implementation);
+            var dependentTarget = resolutionPolicy.CreateNameTarget(
+                dependentTargetDefinition);
+            var dependentDefinitions = GetLogicalRenameTargetDefinitions(
+                dependentTargetDefinition);
+            var dependentName = dependency.RenamesInterfaceType
+                ? $"{newName}_{association.MemberSuffix}"
+                : $"{association.InterfacePrefix}_{newName}";
+            var separatorOffset = association.InterfacePrefix.Length;
+            foreach (var definition in dependentDefinitions.Where(definition =>
+                         (association.Implementation.Kind
+                                 == VbaSourceDefinitionKind.Property
+                             ? definition.Kind
+                                 == VbaSourceDefinitionKind.Property
+                             : definition.Kind
+                                     == VbaSourceDefinitionKind.Procedure
+                                 && definition.CallableKind
+                                     == association.Implementation.CallableKind)
+                         && definition.Range.Start.Line == definition.Range.End.Line
+                         && definition.Name.Equals(
+                             association.Implementation.Name,
+                             StringComparison.OrdinalIgnoreCase)
+                         && separatorOffset > 0
+                         && separatorOffset < definition.Name.Length - 1
+                         && definition.Name[separatorOffset] == '_'))
+            {
+                var start = definition.Range.Start;
+                var segmentRange = dependency.RenamesInterfaceType
+                    ? new VbaRange(
+                        start,
+                        new VbaPosition(
+                            start.Line,
+                            start.Character + separatorOffset))
+                    : new VbaRange(
+                        new VbaPosition(
+                            start.Line,
+                            start.Character + separatorOffset + 1),
+                        definition.Range.End);
+                edits.Add(new KeyValuePair<string, VbaTextEdit>(
+                    definition.Uri,
+                    new VbaTextEdit(segmentRange, newName)));
+            }
+
+            foreach (var occurrence in resolvedOccurrences.FindMatching(
+                         dependentTarget,
+                         cancellationToken))
+            {
+                var isDeclarationSegment = dependentDefinitions.Any(definition =>
+                    definition.Uri.Equals(
+                        occurrence.Uri,
+                        StringComparison.OrdinalIgnoreCase)
+                    && definition.Range.Start.Line == occurrence.Range.Start.Line
+                    && definition.Range.Start.Character
+                        <= occurrence.Range.Start.Character
+                    && occurrence.Range.End.Character
+                        <= definition.Range.End.Character);
+                if (isDeclarationSegment)
+                {
+                    continue;
+                }
+
+                edits.Add(new KeyValuePair<string, VbaTextEdit>(
+                    occurrence.Uri,
+                    new VbaTextEdit(occurrence.Range, dependentName)));
+            }
+        }
+
+        return edits;
+    }
+
+    private IReadOnlyList<VbaRenameConflict>
+        FindInterfaceDependentRenameCollisions(
+            VbaSourceDefinition target,
+            string newName)
+    {
+        var targetIdentity = resolutionPolicy.CreateNameTarget(target).Identity;
+        return sourceDocuments
+            .SelectMany(document => semanticResolution
+                .GetConclusiveSourceInterfaceImplementationAssociations(
+                    document))
+            .Select(association => new
+            {
+                Association = association,
+                RenamesInterfaceType = association.Relationship.InterfaceTarget.Identity
+                    == targetIdentity,
+                RenamesInterfaceMember = resolutionPolicy.CreateNameTarget(
+                        GetLogicalRenameTarget(
+                            association.Contract.OriginDefinition))
+                    .Identity == targetIdentity
+            })
+            .Where(dependency => dependency.RenamesInterfaceType
+                || dependency.RenamesInterfaceMember)
+            .GroupBy(dependency => resolutionPolicy.CreateNameTarget(
+                GetLogicalRenameTarget(
+                    dependency.Association.Implementation)).Identity)
+            .SelectMany(dependentGroup =>
+            {
+                var dependency = dependentGroup.First();
+                var association = dependency.Association;
+                var dependentTarget = GetLogicalRenameTarget(
+                    association.Implementation);
+                var dependentName = dependency.RenamesInterfaceType
+                    ? $"{newName}_{association.MemberSuffix}"
+                    : $"{association.InterfacePrefix}_{newName}";
+                return FindSameScopeCollisions(
+                    dependentTarget,
+                    dependentName);
+            })
+            .Distinct()
+            .OrderBy(conflict => conflict.Uri, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(conflict => conflict.Uri, StringComparer.Ordinal)
+            .ThenBy(conflict => conflict.Range?.Start.Line)
+            .ThenBy(conflict => conflict.Range?.Start.Character)
+            .ToArray();
+    }
+
+    private IReadOnlySet<string> GetInterfaceDependentRenameNames(
+        VbaSourceDefinition target,
+        string newName)
+    {
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var targetIdentity = resolutionPolicy.CreateNameTarget(target).Identity;
+        foreach (var association in sourceDocuments.SelectMany(document =>
+                     semanticResolution
+                         .GetConclusiveSourceInterfaceImplementationAssociations(
+                             document)))
+        {
+            var renamesInterfaceType =
+                association.Relationship.InterfaceTarget.Identity
+                    == targetIdentity;
+            var renamesInterfaceMember = resolutionPolicy.CreateNameTarget(
+                    GetLogicalRenameTarget(
+                        association.Contract.OriginDefinition))
+                .Identity == targetIdentity;
+            if (!renamesInterfaceType && !renamesInterfaceMember)
+            {
+                continue;
+            }
+
+            names.Add(association.Implementation.Name);
+            names.Add(renamesInterfaceType
+                ? $"{newName}_{association.MemberSuffix}"
+                : $"{association.InterfacePrefix}_{newName}");
+        }
+
+        return names;
     }
 
     private static IReadOnlyList<VbaRenameFileOperation>
@@ -1677,6 +2330,43 @@ public sealed class VbaSemanticInventory
                 IsSameDeclarationScope(definition, candidate)));
     }
 
+    private bool HasIncompleteSourceInterfaceDependentCoverage(
+        VbaSourceDefinition target)
+    {
+        var targetIdentities = GetLogicalRenameTargetDefinitions(target)
+            .Select(resolutionPolicy.CreateNameTarget)
+            .Select(logicalTarget => logicalTarget.Identity)
+            .ToHashSet();
+        var analyses = sourceDocuments
+            .Select(semanticResolution
+                .AnalyzeSourceInterfaceImplementationAssociations)
+            .ToArray();
+        if (analyses
+            .SelectMany(analysis => analysis.IncompleteUpstreamTargets)
+            .Any(incompleteTarget =>
+                targetIdentities.Contains(incompleteTarget.Identity)))
+        {
+            return true;
+        }
+
+        var incompleteDependentIdentities = analyses
+            .SelectMany(analysis => analysis.IncompleteDependentTargets)
+            .Select(incompleteTarget => incompleteTarget.Identity)
+            .ToHashSet();
+        return incompleteDependentIdentities.Count > 0
+            && analyses
+                .SelectMany(analysis => analysis.Associations)
+                .Any(association => incompleteDependentIdentities.Contains(
+                        association.ImplementationTarget.Identity)
+                    && (targetIdentities.Contains(
+                            association.Relationship.InterfaceTarget.Identity)
+                        || targetIdentities.Contains(
+                            resolutionPolicy.CreateNameTarget(
+                                GetLogicalRenameTarget(
+                                    association.Contract.OriginDefinition))
+                                .Identity)));
+    }
+
     private VbaSourceDefinition GetLogicalRenameTarget(
         VbaSourceDefinition target)
     {
@@ -1937,6 +2627,7 @@ public sealed class VbaSemanticInventory
         VbaSourceDefinition target,
         IReadOnlyList<VbaResolvedIdentifierOccurrence> targetOccurrences,
         IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        string newName,
         CancellationToken cancellationToken,
         out VbaRenameTargetCorrespondence? targetCorrespondence)
     {
@@ -1949,10 +2640,15 @@ public sealed class VbaSemanticInventory
         }
 
         var hypothetical = CreateHypotheticalInventory(changes, cancellationToken);
-        var newName = changes.Values
-            .SelectMany(edits => edits)
-            .Select(edit => edit.NewText)
-            .FirstOrDefault() ?? target.Name;
+        var interfaceAssociationFailure =
+            ProveSourceInterfaceAssociationsArePreserved(
+                hypothetical,
+                changes);
+        if (interfaceAssociationFailure is not null)
+        {
+            return interfaceAssociationFailure;
+        }
+
         var hypotheticalTarget = FindHypotheticalDefinition(
             hypothetical,
             target,
@@ -2086,18 +2782,19 @@ public sealed class VbaSemanticInventory
             }
         }
 
+        var affectedSemanticNames = new HashSet<string>(
+            StringComparer.OrdinalIgnoreCase)
+        {
+            target.Name,
+            newName
+        };
+        affectedSemanticNames.UnionWith(
+            GetInterfaceDependentRenameNames(target, newName));
         foreach (var occurrence in GetUnresolvedSemanticOccurrences(
             cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!string.Equals(
-                    occurrence.Name,
-                    target.Name,
-                    StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(
-                    occurrence.Name,
-                    newName,
-                    StringComparison.OrdinalIgnoreCase))
+            if (!affectedSemanticNames.Contains(occurrence.Name))
             {
                 continue;
             }
@@ -2151,6 +2848,161 @@ public sealed class VbaSemanticInventory
 
         return null;
     }
+
+    private VbaRenameFailure? ProveSourceInterfaceAssociationsArePreserved(
+        VbaSemanticInventory hypothetical,
+        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes)
+    {
+        var beforeAnalyses = sourceDocuments
+            .Select(document => new
+            {
+                Document = document,
+                Analysis = semanticResolution
+                    .AnalyzeSourceInterfaceImplementationAssociations(document)
+            })
+            .ToArray();
+        var afterAnalyses = hypothetical.sourceDocuments
+            .Select(document => new
+            {
+                Document = document,
+                Analysis = hypothetical.semanticResolution
+                    .AnalyzeSourceInterfaceImplementationAssociations(document)
+            })
+            .ToArray();
+        var beforeCounts = beforeAnalyses
+            .SelectMany(item => item.Analysis.Associations)
+            .Select(association => CreateInterfaceAssociationProofKey(
+                association,
+                changes))
+            .GroupBy(key => key)
+            .ToDictionary(group => group.Key, group => group.Count());
+        var afterCounts = afterAnalyses
+            .SelectMany(item => item.Analysis.Associations)
+            .Select(association => hypothetical
+                .CreateInterfaceAssociationProofKey(
+                    association,
+                    changes: null))
+            .GroupBy(key => key)
+            .ToDictionary(group => group.Key, group => group.Count());
+        if (beforeCounts.Count != afterCounts.Count
+            || beforeCounts.Any(pair =>
+                !afterCounts.TryGetValue(pair.Key, out var afterCount)
+                || afterCount != pair.Value))
+        {
+            return ResolutionChanged(
+                "Rename would change a source Implements association.");
+        }
+
+        var beforeIncompleteCounts = beforeAnalyses
+            .SelectMany(item => item.Analysis.IncompleteUpstreamTargets
+                .Select(target => new VbaIncompleteInterfaceTargetProofKey(
+                    item.Document.Uri,
+                    VbaIncompleteInterfaceTargetRole.Upstream,
+                    CreateInterfaceTargetProofKey(target, changes)))
+                .Concat(item.Analysis.IncompleteDependentTargets.Select(
+                    target => new VbaIncompleteInterfaceTargetProofKey(
+                        item.Document.Uri,
+                        VbaIncompleteInterfaceTargetRole.Dependent,
+                        CreateInterfaceTargetProofKey(target, changes)))))
+            .GroupBy(key => key)
+            .ToDictionary(group => group.Key, group => group.Count());
+        var afterIncompleteCounts = afterAnalyses
+            .SelectMany(item => item.Analysis.IncompleteUpstreamTargets
+                .Select(target => new VbaIncompleteInterfaceTargetProofKey(
+                    item.Document.Uri,
+                    VbaIncompleteInterfaceTargetRole.Upstream,
+                    hypothetical.CreateInterfaceTargetProofKey(
+                        target,
+                        changes: null)))
+                .Concat(item.Analysis.IncompleteDependentTargets.Select(
+                    target => new VbaIncompleteInterfaceTargetProofKey(
+                        item.Document.Uri,
+                        VbaIncompleteInterfaceTargetRole.Dependent,
+                        hypothetical.CreateInterfaceTargetProofKey(
+                            target,
+                            changes: null)))))
+            .GroupBy(key => key)
+            .ToDictionary(group => group.Key, group => group.Count());
+        if (beforeIncompleteCounts.Count != afterIncompleteCounts.Count
+            || beforeIncompleteCounts.Any(pair =>
+                !afterIncompleteCounts.TryGetValue(
+                    pair.Key,
+                    out var afterCount)
+                || afterCount != pair.Value))
+        {
+            return AnalysisIncomplete(
+                "Rename would change incomplete source Implements "
+                + "association evidence.");
+        }
+
+        return null;
+    }
+
+    private VbaInterfaceAssociationProofKey CreateInterfaceAssociationProofKey(
+        VbaInterfaceImplementationAssociation association,
+        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>>? changes)
+    {
+        VbaRange Map(string uri, VbaRange range)
+            => changes is null ? range : MapRange(uri, range, changes);
+
+        var implementingUri = association.Relationship.ImplementingDocument.Uri;
+        var implementationUri = association.Implementation.Uri;
+        var contractUri = association.Contract.OriginDefinition.Uri;
+        return new VbaInterfaceAssociationProofKey(
+            CreateOccurrenceKey(
+                implementingUri,
+                Map(
+                    implementingUri,
+                    association.Relationship.InterfaceTypeRange)),
+            CreateInterfaceTargetProofKey(
+                association.Relationship.InterfaceTarget,
+                changes),
+            CreateOccurrenceKey(
+                contractUri,
+                Map(contractUri, association.Contract.OriginDefinition.Range)),
+            CreateInterfaceTargetProofKey(association.MemberTarget, changes),
+            association.Contract.Kind,
+            association.Contract.IsDerivedVariableAccessor,
+            association.CompatibilityState,
+            CreateOccurrenceKey(
+                implementationUri,
+                Map(implementationUri, association.Implementation.Range)),
+            CreateInterfaceTargetProofKey(
+                association.ImplementationTarget,
+                changes),
+            CreateOccurrenceKey(
+                implementationUri,
+                Map(implementationUri, association.InterfacePrefixRange)),
+            CreateOccurrenceKey(
+                implementationUri,
+                Map(implementationUri, association.SeparatorRange)),
+            CreateOccurrenceKey(
+                implementationUri,
+                Map(implementationUri, association.MemberSuffixRange)));
+    }
+
+    private string CreateInterfaceTargetProofKey(
+        VbaResolvedNameTarget target,
+        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>>? changes)
+        => string.Join(
+            ";",
+            target.PhysicalDefinitions
+                .OrderBy(
+                    definition => definition.Uri,
+                    StringComparer.OrdinalIgnoreCase)
+                .ThenBy(definition => definition.Uri, StringComparer.Ordinal)
+                .ThenBy(definition => definition.Range.Start.Line)
+                .ThenBy(definition => definition.Range.Start.Character)
+                .Select(definition =>
+                    $"{definition.Kind}:{definition.PropertyAccessorKind}:"
+                    + CreateOccurrenceKey(
+                        definition.Uri,
+                        changes is null
+                            ? definition.Range
+                            : MapRange(
+                                definition.Uri,
+                                definition.Range,
+                                changes))));
 
     private static VbaRenameFailure?
         TryCreateOccurrenceTargetCorrespondence(

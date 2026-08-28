@@ -52,7 +52,9 @@ internal sealed class VbaCallSiteResolution
         int line,
         int character,
         VbaPositionSyntax positionSyntax,
-        VbaSignaturePresentationIdentity? retriggerIdentity = null)
+        VbaSignaturePresentationIdentity? retriggerIdentity = null,
+        Func<VbaSourceDefinition, VbaSourceDefinition>?
+            definitionProjector = null)
     {
         var callSite = positionSyntax.CallSite;
         if (callSite is null
@@ -75,8 +77,12 @@ internal sealed class VbaCallSiteResolution
             VbaSignatureHelpVariant Variant,
             VbaCallArgumentMapping Mapping,
             VbaCallArgumentMapping RankingMapping)>();
-        foreach (var definition in GetCallableUseSiteDefinitions(currentDocument, target))
+        foreach (var unprojectedDefinition in
+                 GetCallableUseSiteDefinitions(currentDocument, target))
         {
+            var definition = definitionProjector?.Invoke(
+                    unprojectedDefinition)
+                ?? unprojectedDefinition;
             var physicalSignature = definition.Signature;
             if (physicalSignature is null)
             {

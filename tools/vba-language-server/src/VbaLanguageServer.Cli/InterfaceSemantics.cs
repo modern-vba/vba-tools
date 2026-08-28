@@ -159,6 +159,28 @@ internal sealed record VbaInterfaceContractSet(
     VbaInterfaceAccessorContractKind Kind,
     IReadOnlyList<VbaInterfaceContractVariant> Variants);
 
+internal sealed record VbaInterfaceImplementationAssociation(
+    VbaSourceImplementsRelationship Relationship,
+    VbaInterfaceContractVariant Contract,
+    VbaSourceDefinition Implementation,
+    VbaResolvedNameTarget MemberTarget,
+    VbaResolvedNameTarget ImplementationTarget,
+    VbaInterfaceContractCompatibilityState CompatibilityState,
+    VbaRange InterfacePrefixRange,
+    VbaRange SeparatorRange,
+    VbaRange MemberSuffixRange,
+    string InterfacePrefix,
+    string MemberSuffix);
+
+internal sealed record VbaInterfaceImplementationAssociationAnalysis(
+    IReadOnlyList<VbaInterfaceImplementationAssociation> Associations,
+    IReadOnlyList<VbaResolvedNameTarget> IncompleteUpstreamTargets,
+    IReadOnlyList<VbaResolvedNameTarget> IncompleteDependentTargets);
+
+internal sealed record VbaDependentRenameTarget(
+    VbaResolvedNameTarget Target,
+    IReadOnlyList<VbaInterfaceImplementationAssociation> Associations);
+
 internal enum VbaInterfaceContractCompatibilityState
 {
     Compatible,
@@ -168,7 +190,8 @@ internal enum VbaInterfaceContractCompatibilityState
 
 internal sealed record VbaInterfaceContractCompatibility(
     VbaInterfaceContractCompatibilityState State,
-    IReadOnlyList<string> Mismatches);
+    IReadOnlyList<string> Mismatches,
+    bool HasIndeterminateEvidence = false);
 
 /// <summary>
 /// Projects source Implements relationships and source-interface variable accessor contracts
@@ -177,6 +200,12 @@ internal sealed record VbaInterfaceContractCompatibility(
 internal sealed class VbaInterfaceSemanticModel
 {
     private readonly VbaNameResolutionService nameResolution;
+    private readonly object sourceImplementationAssociationCacheGate = new();
+    private readonly Dictionary<
+        string,
+        VbaInterfaceImplementationAssociationAnalysis>
+        sourceImplementationAssociationCache =
+            new(StringComparer.OrdinalIgnoreCase);
 
     public VbaInterfaceSemanticModel(VbaNameResolutionService nameResolution)
     {
@@ -732,6 +761,411 @@ internal sealed class VbaInterfaceSemanticModel
         }
 
         return [];
+    }
+
+    internal IReadOnlyList<VbaInterfaceImplementationAssociation>
+        GetConclusiveSourceImplementationAssociations(
+            VbaSourceDocument implementingDocument)
+        => AnalyzeSourceImplementationAssociations(implementingDocument)
+            .Associations;
+
+    internal VbaInterfaceImplementationAssociationAnalysis
+        AnalyzeSourceImplementationAssociations(
+            VbaSourceDocument implementingDocument)
+    {
+        lock (sourceImplementationAssociationCacheGate)
+        {
+            if (sourceImplementationAssociationCache.TryGetValue(
+                implementingDocument.Uri,
+                out var cached))
+            {
+                return cached;
+            }
+
+            var analysis = AnalyzeSourceImplementationAssociationsCore(
+                implementingDocument);
+            sourceImplementationAssociationCache[implementingDocument.Uri] =
+                analysis;
+            return analysis;
+        }
+    }
+
+    private VbaInterfaceImplementationAssociationAnalysis
+        AnalyzeSourceImplementationAssociationsCore(
+            VbaSourceDocument implementingDocument)
+    {
+        var associations = new List<VbaInterfaceImplementationAssociation>();
+        var incompleteUpstreamTargets = new List<VbaResolvedNameTarget>();
+        var incompleteDependentTargets = new List<VbaResolvedNameTarget>();
+        CollectIncompleteSourceContractCandidates(
+            implementingDocument,
+            incompleteUpstreamTargets,
+            incompleteDependentTargets);
+        foreach (var contractSet in GetContractSets(implementingDocument).Where(set =>
+                     set.Relationship.InterfaceTarget.PhysicalDefinitions.All(
+                         definition => definition.Identity.Origin
+                                 == VbaDefinitionOrigin.Source
+                             && definition.Kind == VbaSourceDefinitionKind.Class)))
+        {
+            var implementations = GetSameKindImplementations(
+                    implementingDocument,
+                    contractSet.ImplementedName,
+                    contractSet.Kind)
+                .ToArray();
+            var comparisons = implementations
+                .SelectMany(implementation => contractSet.Variants.Select(
+                    contract => new
+                    {
+                        Contract = contract,
+                        Implementation = implementation,
+                        Compatibility = CompareContract(
+                            implementingDocument,
+                            contract,
+                            implementation)
+                    }))
+                .ToArray();
+            var hasIncompleteCoverage =
+                HasIndeterminateConditionalCompilationOwnership(
+                    contractSet.Relationship)
+                || contractSet.Variants.Any(
+                    HasIndeterminateConditionalCompilationOwnership)
+                || implementations.Any(implementation =>
+                    nameResolution
+                        .HasIndeterminateConditionalCompilationOwnership(
+                            implementation))
+                || comparisons.Any(comparison => comparison.Compatibility.State
+                    == VbaInterfaceContractCompatibilityState.Indeterminate)
+                || comparisons.Any(comparison =>
+                    comparison.Compatibility.HasIndeterminateEvidence);
+            if (hasIncompleteCoverage)
+            {
+                incompleteUpstreamTargets.Add(
+                    contractSet.Relationship.InterfaceTarget);
+                if (implementations.Length > 0)
+                {
+                    incompleteUpstreamTargets.AddRange(
+                        contractSet.Variants.Select(variant =>
+                            nameResolution.CreateNameTarget(
+                                variant.OriginDefinition)));
+                    incompleteDependentTargets.AddRange(
+                        implementations.Select(
+                            nameResolution.CreateNameTarget));
+                }
+
+                continue;
+            }
+
+            foreach (var comparison in comparisons)
+            {
+                var implementation = comparison.Implementation;
+                var contract = comparison.Contract;
+                var memberName = contract.OriginDefinition.Name;
+                var separatorOffset = contract.ImplementedName.Length
+                    - memberName.Length
+                    - 1;
+                if (separatorOffset <= 0
+                    || separatorOffset >= implementation.Name.Length - 1
+                    || implementation.Name[separatorOffset] != '_'
+                    || !implementation.Name[(separatorOffset + 1)..].Equals(
+                        memberName,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var line = implementation.Range.Start.Line;
+                var startCharacter = implementation.Range.Start.Character;
+                var separatorCharacter = startCharacter + separatorOffset;
+                associations.Add(new VbaInterfaceImplementationAssociation(
+                    contractSet.Relationship,
+                    contract,
+                    implementation,
+                    nameResolution.CreateNameTarget(
+                        contract.OriginDefinition),
+                    nameResolution.CreateNameTarget(implementation),
+                    comparison.Compatibility.State,
+                    new VbaRange(
+                        new VbaPosition(line, startCharacter),
+                        new VbaPosition(line, separatorCharacter)),
+                    new VbaRange(
+                        new VbaPosition(line, separatorCharacter),
+                        new VbaPosition(line, separatorCharacter + 1)),
+                    new VbaRange(
+                        new VbaPosition(line, separatorCharacter + 1),
+                        implementation.Range.End),
+                    implementation.Name[..separatorOffset],
+                    implementation.Name[(separatorOffset + 1)..]));
+            }
+        }
+
+        return new VbaInterfaceImplementationAssociationAnalysis(
+            associations,
+            incompleteUpstreamTargets
+                .DistinctBy(target => target.Identity)
+                .ToArray(),
+            incompleteDependentTargets
+                .DistinctBy(target => target.Identity)
+                .ToArray());
+    }
+
+    private void CollectIncompleteSourceContractCandidates(
+        VbaSourceDocument implementingDocument,
+        ICollection<VbaResolvedNameTarget> incompleteUpstreamTargets,
+        ICollection<VbaResolvedNameTarget> incompleteDependentTargets)
+    {
+        void Record(
+            VbaSourceImplementsRelationship relationship,
+            VbaSourceDefinition origin,
+            IEnumerable<VbaSourceDefinition> implementations)
+        {
+            var candidates = implementations.ToArray();
+            if (candidates.Length == 0)
+            {
+                return;
+            }
+
+            incompleteUpstreamTargets.Add(relationship.InterfaceTarget);
+            incompleteUpstreamTargets.Add(
+                nameResolution.CreateNameTarget(origin));
+            foreach (var implementation in candidates)
+            {
+                incompleteDependentTargets.Add(
+                    nameResolution.CreateNameTarget(implementation));
+            }
+        }
+
+        foreach (var relationship in GetRelationships(implementingDocument)
+                     .Where(candidate => candidate.InterfaceTarget
+                         .PhysicalDefinitions.All(definition =>
+                             definition.Identity.Origin
+                                 == VbaDefinitionOrigin.Source
+                             && definition.Kind
+                                 == VbaSourceDefinitionKind.Class)))
+        {
+            foreach (var interfaceDefinition in relationship.InterfaceTarget
+                         .PhysicalDefinitions)
+            {
+                var interfaceDocument = nameResolution.FindDocument(
+                    interfaceDefinition.Uri);
+                if (interfaceDocument is null)
+                {
+                    continue;
+                }
+
+                var syntaxTree = interfaceDocument.SyntaxTree
+                    ?? VbaSyntaxTree.ParseModule(
+                        interfaceDocument.Uri,
+                        interfaceDocument.Text);
+                foreach (var variable in interfaceDocument.Definitions.Where(
+                             definition => definition.Kind
+                                     == VbaSourceDefinitionKind.Variable
+                                 && definition.Visibility
+                                     == VbaSourceDefinitionVisibility.Public
+                                 && definition.ParentProcedureName is null
+                                 && !definition.IsArray
+                                 && !definition.IsFixedLengthString))
+                {
+                    var effectiveType = GetEffectiveType(
+                        interfaceDocument,
+                        variable);
+                    if (effectiveType is { Identity: not null })
+                    {
+                        continue;
+                    }
+
+                    var implementedName =
+                        $"{interfaceDefinition.Name}_{variable.Name}";
+                    Record(
+                        relationship,
+                        variable,
+                        implementingDocument.Definitions.Where(definition =>
+                            definition.Name.Equals(
+                                implementedName,
+                                StringComparison.OrdinalIgnoreCase)
+                            && definition.Kind
+                                == VbaSourceDefinitionKind.Property));
+                }
+
+                foreach (var definition in interfaceDocument.Definitions.Where(
+                             candidate => candidate.ParentProcedureName is null
+                                 && candidate.Visibility
+                                     == VbaSourceDefinitionVisibility.Public
+                                 && candidate.Kind is
+                                     VbaSourceDefinitionKind.Procedure
+                                         or VbaSourceDefinitionKind.Property))
+                {
+                    if (!TryGetContractKind(definition, out var kind))
+                    {
+                        continue;
+                    }
+
+                    var callable = FindCallable(syntaxTree, definition);
+                    var hasIncompleteEvidence = definition.Signature is null
+                        || callable is null;
+                    if (!hasIncompleteEvidence && callable is not null)
+                    {
+                        hasIncompleteEvidence = callable.Parameters.Any(
+                            parameter => GetEffectiveType(
+                                interfaceDocument,
+                                parameter.Name,
+                                parameter.TypeReference is null
+                                    ? null
+                                    : new VbaTypeReference(
+                                        parameter.TypeReference.Name,
+                                        parameter.TypeReference.Qualifier),
+                                definition.ConditionalCompilationPath)
+                                is not { Identity: not null });
+                    }
+
+                    if (!hasIncompleteEvidence
+                        && kind is VbaInterfaceAccessorContractKind.Function
+                            or VbaInterfaceAccessorContractKind.Get)
+                    {
+                        hasIncompleteEvidence = GetEffectiveType(
+                            interfaceDocument,
+                            definition.Name,
+                            definition.TypeReference,
+                            definition.ConditionalCompilationPath)
+                            is not { Identity: not null };
+                    }
+
+                    if (!hasIncompleteEvidence)
+                    {
+                        continue;
+                    }
+
+                    var implementedName =
+                        $"{interfaceDefinition.Name}_{definition.Name}";
+                    Record(
+                        relationship,
+                        definition,
+                        GetSameKindImplementations(
+                            implementingDocument,
+                            implementedName,
+                            kind));
+                }
+            }
+        }
+    }
+
+    internal bool IsPotentialInterfaceImplementationDeclaration(
+        VbaSourceDocument implementingDocument,
+        VbaSourceDefinition declaration)
+    {
+        if (declaration.Kind is not VbaSourceDefinitionKind.Procedure
+            and not VbaSourceDefinitionKind.Property)
+        {
+            return false;
+        }
+
+        var syntaxTree = implementingDocument.SyntaxTree
+            ?? VbaSyntaxTree.ParseModule(
+                implementingDocument.Uri,
+                implementingDocument.Text);
+        return syntaxTree.Module.ImplementsRelationships
+            .Where(relationship =>
+        {
+            var interfaceName = relationship.InterfaceType.Name;
+            return declaration.Name.Length > interfaceName.Length + 1
+                && declaration.Name.StartsWith(
+                    interfaceName,
+                    StringComparison.OrdinalIgnoreCase)
+                && declaration.Name[interfaceName.Length] == '_';
+        })
+            .Any(relationship =>
+            {
+                var outcome = nameResolution.ResolveTypeDefinitionOutcome(
+                    implementingDocument,
+                    new VbaTypeReference(
+                        relationship.InterfaceType.Name,
+                        relationship.InterfaceType.Qualifier));
+                return outcome.Kind != VbaNameResolutionKind.Resolved
+                    || outcome.Target is null
+                    || !outcome.Target.PhysicalDefinitions.All(definition =>
+                        definition.Identity.Origin
+                            == VbaDefinitionOrigin.Source
+                        && definition.Kind == VbaSourceDefinitionKind.Class);
+            });
+    }
+
+    internal VbaSourceDefinition ProjectSourceInterfaceDocumentation(
+        VbaSourceDefinition definition)
+    {
+        if (definition.Documentation is not null
+            || definition.Identity.Origin != VbaDefinitionOrigin.Source
+            || nameResolution.FindDocument(definition.Uri) is not { }
+                implementingDocument)
+        {
+            return definition;
+        }
+
+        var associations = GetConclusiveSourceImplementationAssociations(
+                implementingDocument)
+            .Where(association => association.Implementation.Identity
+                == definition.Identity)
+            .ToArray();
+        if (associations.Length == 0)
+        {
+            return definition;
+        }
+
+        var firstContract = associations[0].Contract.OriginDefinition;
+        if (associations.Any(association => !string.Equals(
+                association.Contract.OriginDefinition.Documentation,
+                firstContract.Documentation,
+                StringComparison.Ordinal)))
+        {
+            return definition;
+        }
+
+        var projectedSignature = definition.Signature;
+        if (definition.Signature is { } implementationSignature)
+        {
+            var contractSignatures = associations
+                .Select(association =>
+                    association.Contract.OriginDefinition.Signature)
+                .ToArray();
+            if (contractSignatures.Any(signature => signature is null
+                    || signature.Parameters.Count
+                        != implementationSignature.Parameters.Count))
+            {
+                return definition;
+            }
+
+            var firstSignature = contractSignatures[0]!;
+            if (contractSignatures.Skip(1).Any(signature =>
+                    !string.Equals(
+                        signature!.Documentation,
+                        firstSignature.Documentation,
+                        StringComparison.Ordinal)
+                    || !signature.Parameters
+                        .Select(parameter => parameter.Documentation)
+                        .SequenceEqual(
+                            firstSignature.Parameters.Select(parameter =>
+                                parameter.Documentation),
+                            StringComparer.Ordinal)))
+            {
+                return definition;
+            }
+
+            projectedSignature = implementationSignature with
+            {
+                Documentation = firstSignature.Documentation,
+                Parameters = implementationSignature.Parameters
+                    .Select((parameter, index) => parameter with
+                    {
+                        Documentation = firstSignature.Parameters[index]
+                            .Documentation
+                    })
+                    .ToArray()
+            };
+        }
+
+        return definition with
+        {
+            Documentation = firstContract.Documentation,
+            Signature = projectedSignature
+        };
     }
 
     internal bool TryResolveSourceInterfaceDeclarationPrefix(
@@ -1765,7 +2199,8 @@ internal sealed class VbaInterfaceSemanticModel
         {
             return new VbaInterfaceContractCompatibility(
                 VbaInterfaceContractCompatibilityState.Indeterminate,
-                []);
+                [],
+                HasIndeterminateEvidence: true);
         }
 
         var implementationSignature = GetFulfillmentSignature(
@@ -1775,7 +2210,8 @@ internal sealed class VbaInterfaceSemanticModel
         {
             return new VbaInterfaceContractCompatibility(
                 VbaInterfaceContractCompatibilityState.Indeterminate,
-                []);
+                [],
+                HasIndeterminateEvidence: true);
         }
 
         var mismatches = new List<string>();
@@ -1808,6 +2244,23 @@ internal sealed class VbaInterfaceSemanticModel
             foundOrdinaryParameters = foundParameters[..^1];
             foundValueParameter = foundParameters[^1] with { IsByRef = false };
         }
+
+        hasIndeterminateEvidence = contract.Parameters.Any(parameter =>
+                HasIndeterminateParameterEvidence(
+                    parameter,
+                    normalizePassing: false))
+            || contract.PropertyValueParameter is { } expectedValueParameter
+                && HasIndeterminateParameterEvidence(
+                    expectedValueParameter,
+                    normalizePassing: true)
+            || foundOrdinaryParameters.Any(parameter =>
+                HasIndeterminateParameterEvidence(
+                    parameter,
+                    normalizePassing: false))
+            || foundValueParameter is { } valueParameter
+                && HasIndeterminateParameterEvidence(
+                    valueParameter,
+                    normalizePassing: true);
 
         var expectedParameterCount = contract.Parameters.Count
             + (contract.PropertyValueParameter is null ? 0 : 1);
@@ -1887,8 +2340,18 @@ internal sealed class VbaInterfaceSemanticModel
                 : hasIndeterminateEvidence
                     ? VbaInterfaceContractCompatibilityState.Indeterminate
                     : VbaInterfaceContractCompatibilityState.Compatible,
-            mismatches);
+            mismatches,
+            hasIndeterminateEvidence);
     }
+
+    private static bool HasIndeterminateParameterEvidence(
+        VbaInterfaceContractParameter parameter,
+        bool normalizePassing)
+        => parameter.Type is null
+            || parameter.Type.Identity is null
+            || !normalizePassing && parameter.IsByRef is null
+            || parameter.EffectiveDefault.State
+                == VbaInterfaceContractDefaultState.Indeterminate;
 
     private static void CompareParameter(
         VbaInterfaceContractParameter expected,

@@ -78,6 +78,29 @@ internal sealed class VbaSemanticResolution
             line,
             character);
 
+    internal IReadOnlyList<VbaInterfaceImplementationAssociation>
+        GetConclusiveSourceInterfaceImplementationAssociations(
+            VbaSourceDocument currentDocument)
+        => interfaceSemantics.GetConclusiveSourceImplementationAssociations(
+            currentDocument);
+
+    internal VbaInterfaceImplementationAssociationAnalysis
+        AnalyzeSourceInterfaceImplementationAssociations(
+            VbaSourceDocument currentDocument)
+        => interfaceSemantics.AnalyzeSourceImplementationAssociations(
+            currentDocument);
+
+    internal bool IsPotentialInterfaceImplementationDeclaration(
+        VbaSourceDocument currentDocument,
+        VbaSourceDefinition declaration)
+        => interfaceSemantics.IsPotentialInterfaceImplementationDeclaration(
+            currentDocument,
+            declaration);
+
+    internal VbaSourceDefinition ProjectSourceInterfaceDocumentation(
+        VbaSourceDefinition definition)
+        => interfaceSemantics.ProjectSourceInterfaceDocumentation(definition);
+
     internal VbaEventHandlerCompatibility AnalyzeWithEventsHandlerCompatibility(
         VbaSourceDocument currentDocument,
         VbaWithEventsHandlerAnalysis handlerAnalysis)
@@ -977,7 +1000,8 @@ internal sealed class VbaSemanticResolution
             line,
             character,
             positionSyntax,
-            retriggerIdentity);
+            retriggerIdentity,
+            interfaceSemantics.ProjectSourceInterfaceDocumentation);
     }
 
     private VbaSignatureHelp? TryGetContractDeclarationSignatureHelp(

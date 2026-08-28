@@ -215,6 +215,106 @@ public sealed class SourceInterfaceCallableContractLanguageServerProcessTests
     }
 
     [Fact]
+    public async Task TypeLib_interface_implementation_has_no_source_Prepare_Rename_projection()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-interface-prepare-typelib-").FullName;
+        var cacheRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-interface-prepare-typelib-cache-").FullName;
+        try
+        {
+            const string referenceName = "Generated Interfaces";
+            WriteReferenceCatalogProjectManifest(projectRoot, referenceName);
+            var runMember = new TypeLibCatalogMember(
+                "Run",
+                VbaSourceDefinitionKind.Procedure,
+                Documentation: null,
+                new VbaCallableSignature(
+                    "Sub Run()",
+                    [],
+                    CallableKind: VbaCallableKind.Sub),
+                Metadata: new TypeLibCatalogCallableMetadata(
+                    MemberId: 1,
+                    FunctionFlags: 0));
+            var catalog = TypeLibReferenceCatalogBuilder.Build(
+                referenceName,
+                new TypeLibCatalogMetadata(
+                    "Generated",
+                    [
+                        new TypeLibCatalogType(
+                            "IRunner",
+                            VbaSourceDefinitionKind.Class,
+                            Documentation: null,
+                            Members: [runMember],
+                            IsCreatable: false,
+                            Metadata: new TypeLibCatalogTypeMetadata(
+                                TypeLibCatalogRawTypeKind.Dispatch,
+                                TypeFlags: 0,
+                                ImplementedInterfaces: []))
+                    ]));
+            new VbaProjectReferenceCatalogPersistentStore(cacheRoot).Save(
+                new VbaProjectReferenceCatalogPersistentEntry(
+                    CreateGeneratedReferenceCatalogIdentity(referenceName),
+                    catalog));
+
+            await using var process =
+                await LanguageServerProcessHarness.StartAsync(
+                    referenceCatalogCacheRoot: cacheRoot);
+            await process.InitializeAsync();
+
+            var sourcePath = Path.Combine(
+                projectRoot,
+                "src",
+                "Book1",
+                "Worker.cls");
+            var uri = new Uri(sourcePath).AbsoluteUri;
+            var text = string.Join('\n', [
+                "VERSION 1.0 CLASS",
+                "Attribute VB_Name = \"Worker\"",
+                "Implements IRunner",
+                "Private Sub IRunner_Run()",
+                "End Sub"
+            ]);
+            File.WriteAllText(sourcePath, text);
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+            await process.WaitForDiagnosticsAsync(uri);
+            await process.WaitForLogTextAsync(
+                "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
+            await process.SendNotificationAsync(
+                "textDocument/didChange",
+                new
+                {
+                    textDocument = new { uri, version = 2 },
+                    contentChanges = new[] { new { text } }
+                });
+            await process.WaitForDiagnosticsAsync(uri);
+
+            var prepare = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/prepareRename",
+                uri,
+                text,
+                "IRunner_Run");
+            Assert.False(
+                prepare.TryGetProperty("error", out var prepareError),
+                prepareError.ToString());
+            Assert.Equal(
+                JsonValueKind.Null,
+                prepare.GetProperty("result").ValueKind);
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task TypeLib_interface_parameter_keeps_its_reference_type_owner()
     {
         var projectRoot = Directory.CreateTempSubdirectory(

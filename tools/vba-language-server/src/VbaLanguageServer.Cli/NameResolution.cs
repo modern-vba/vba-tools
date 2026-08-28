@@ -612,6 +612,10 @@ public sealed class VbaNameResolutionService
         VbaSourceDefinition definition)
         => candidates.ConditionalFamilies.GetLogicalDefinitions(definition);
 
+    internal VbaResolvedNameTarget CreateNameTarget(
+        VbaSourceDefinition definition)
+        => resolutionPolicy.CreateNameTarget(definition);
+
     internal bool HasIndeterminateConditionalCompilationOwnership(
         VbaSourceDefinition definition)
         => definition.Identity.Origin == VbaDefinitionOrigin.Source

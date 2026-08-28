@@ -19228,6 +19228,2558 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
+    public async Task Server_renames_an_implementation_complete_name_reference_with_its_source_interface_type()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/Contract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"I_Worker\"",
+            "Public Sub Run()",
+            "End Sub"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Implements I_Worker",
+            "Private Sub I_Worker_Run()",
+            "End Sub",
+            "Private Sub Invoke()",
+            "    I_Worker_Run",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/rename",
+            interfaceUri,
+            interfaceText,
+            "I_Worker",
+            0,
+            new { newName = "I_Service" });
+
+        Assert.False(
+            rename.TryGetProperty("error", out var renameError),
+            renameError.ToString());
+        var implementationEdits = rename
+            .GetProperty("result")
+            .GetProperty("changes")
+            .GetProperty(implementationUri)
+            .EnumerateArray()
+            .ToArray();
+        var referenceEdit = Assert.Single(implementationEdits, edit =>
+            edit.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32() == 6);
+        Assert.Equal(4, referenceEdit.GetProperty("range").GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(16, referenceEdit.GetProperty("range").GetProperty("end").GetProperty("character").GetInt32());
+        Assert.Equal("I_Service_Run", referenceEdit.GetProperty("newText").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_renames_a_Sub_implementation_and_reference_with_its_source_interface_member()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/Contract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IWorker\"",
+            "Public Sub Run()",
+            "End Sub"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Implements IWorker",
+            "Private Sub IWorker_Run()",
+            "End Sub",
+            "Private Sub Invoke()",
+            "    IWorker_Run",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            3,
+            "textDocument/rename",
+            interfaceUri,
+            interfaceText,
+            "Run",
+            0,
+            new { newName = "Execute" });
+
+        Assert.False(
+            rename.TryGetProperty("error", out var renameError),
+            renameError.ToString());
+        var implementationEdits = rename
+            .GetProperty("result")
+            .GetProperty("changes")
+            .GetProperty(implementationUri)
+            .EnumerateArray()
+            .OrderBy(edit => edit.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32())
+            .ToArray();
+        Assert.Equal(2, implementationEdits.Length);
+        Assert.Equal(3, implementationEdits[0].GetProperty("range").GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(20, implementationEdits[0].GetProperty("range").GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(23, implementationEdits[0].GetProperty("range").GetProperty("end").GetProperty("character").GetInt32());
+        Assert.Equal("Execute", implementationEdits[0].GetProperty("newText").GetString());
+        Assert.Equal(6, implementationEdits[1].GetProperty("range").GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(4, implementationEdits[1].GetProperty("range").GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(15, implementationEdits[1].GetProperty("range").GetProperty("end").GetProperty("character").GetInt32());
+        Assert.Equal("IWorker_Execute", implementationEdits[1].GetProperty("newText").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_keeps_a_conclusively_incompatible_implementation_dependent_during_rename()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/Contract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IWorker\"",
+            "Public Sub Run(ByVal value As Long)",
+            "End Sub"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Implements IWorker",
+            "Private Sub IWorker_Run(ByVal value As String)",
+            "End Sub",
+            "Private Sub Invoke()",
+            "    IWorker_Run \"1\"",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            39,
+            "textDocument/rename",
+            interfaceUri,
+            interfaceText,
+            "Run",
+            0,
+            new { newName = "Execute" });
+
+        Assert.False(
+            rename.TryGetProperty("error", out var renameError),
+            renameError.ToString());
+        var changes = rename.GetProperty("result").GetProperty("changes");
+        Assert.Equal(
+            "Execute",
+            Assert.Single(changes.GetProperty(interfaceUri).EnumerateArray())
+                .GetProperty("newText").GetString());
+        Assert.Equal(
+            ["Execute", "IWorker_Execute"],
+            changes.GetProperty(implementationUri).EnumerateArray()
+                .OrderBy(edit => edit.GetProperty("range").GetProperty("start")
+                    .GetProperty("line").GetInt32())
+                .Select(edit => edit.GetProperty("newText").GetString()));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_renames_a_Function_implementation_result_and_call_with_its_source_interface_member()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/Contract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IWorker\"",
+            "Public Function Calculate(ByVal Value As Long) As Long",
+            "End Function"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Implements IWorker",
+            "Private Function IWorker_Calculate(ByVal Value As Long) As Long",
+            "    IWorker_Calculate = Value + 1",
+            "End Function",
+            "Private Sub Invoke()",
+            "    Debug.Print IWorker_Calculate(1)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            16,
+            "textDocument/rename",
+            interfaceUri,
+            interfaceText,
+            "Calculate",
+            0,
+            new { newName = "Compute" });
+
+        Assert.False(
+            rename.TryGetProperty("error", out var renameError),
+            renameError.ToString());
+        var implementationEdits = rename
+            .GetProperty("result")
+            .GetProperty("changes")
+            .GetProperty(implementationUri)
+            .EnumerateArray()
+            .OrderBy(edit => edit
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32())
+            .ToArray();
+        Assert.Equal(3, implementationEdits.Length);
+        Assert.Equal([3, 4, 7], implementationEdits.Select(edit => edit
+            .GetProperty("range")
+            .GetProperty("start")
+            .GetProperty("line")
+            .GetInt32()));
+        Assert.Equal("Compute", implementationEdits[0]
+            .GetProperty("newText").GetString());
+        Assert.All(
+            implementationEdits[1..],
+            edit => Assert.Equal(
+                "IWorker_Compute",
+                edit.GetProperty("newText").GetString()));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_prepares_only_the_source_interface_member_suffix_of_an_implementation()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/Contract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IWorker\"",
+            "Public Sub Run()",
+            "End Sub"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Implements IWorker",
+            "Private Sub IWorker_Run()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var prepare = await SendPositionRequestAsync(
+            process,
+            4,
+            "textDocument/prepareRename",
+            implementationUri,
+            implementationText,
+            "IWorker_Run",
+            9);
+
+        Assert.False(
+            prepare.TryGetProperty("error", out var prepareError),
+            prepareError.ToString());
+        var result = prepare.GetProperty("result");
+        Assert.Equal("Run", result.GetProperty("placeholder").GetString());
+        var range = result.GetProperty("range");
+        Assert.Equal(3, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(20, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(3, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(23, range.GetProperty("end").GetProperty("character").GetInt32());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_uses_the_resolved_contract_boundary_for_underscored_implementation_segments()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/Contract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"I_Worker_Group\"",
+            "Public Sub Run_Task_Now()",
+            "End Sub"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Implements I_Worker_Group",
+            "Private Sub I_Worker_Group_Run_Task_Now()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var prefixPrepare = await SendPositionRequestAsync(
+            process,
+            17,
+            "textDocument/prepareRename",
+            implementationUri,
+            implementationText,
+            "I_Worker_Group_Run_Task_Now",
+            2);
+        var suffixPrepare = await SendPositionRequestAsync(
+            process,
+            18,
+            "textDocument/prepareRename",
+            implementationUri,
+            implementationText,
+            "I_Worker_Group_Run_Task_Now",
+            "I_Worker_Group_".Length + 4);
+
+        var prefix = prefixPrepare.GetProperty("result");
+        Assert.Equal(
+            "I_Worker_Group",
+            prefix.GetProperty("placeholder").GetString());
+        Assert.Equal(12, prefix.GetProperty("range")
+            .GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(26, prefix.GetProperty("range")
+            .GetProperty("end").GetProperty("character").GetInt32());
+        var suffix = suffixPrepare.GetProperty("result");
+        Assert.Equal(
+            "Run_Task_Now",
+            suffix.GetProperty("placeholder").GetString());
+        Assert.Equal(27, suffix.GetProperty("range")
+            .GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(39, suffix.GetProperty("range")
+            .GetProperty("end").GetProperty("character").GetInt32());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_does_not_choose_between_overlapping_interface_implementation_segments()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string shortInterfaceUri = "file:///C:/work/ShortContract.cls";
+        const string longInterfaceUri = "file:///C:/work/LongContract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var shortInterfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"I_Left\"",
+            "Public Sub Right_Run()",
+            "End Sub"
+        ]);
+        var longInterfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"I_Left_Right\"",
+            "Public Sub Run()",
+            "End Sub"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Implements I_Left",
+            "Implements I_Left_Right",
+            "Private Sub I_Left_Right_Run()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(shortInterfaceUri, shortInterfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(longInterfaceUri, longInterfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var prepare = await SendPositionRequestAsync(
+            process,
+            71,
+            "textDocument/prepareRename",
+            implementationUri,
+            implementationText,
+            "I_Left_Right_Run",
+            "I_Left_R".Length);
+
+        Assert.False(
+            prepare.TryGetProperty("error", out var prepareError),
+            prepareError.ToString());
+        Assert.Equal(JsonValueKind.Null, prepare.GetProperty("result").ValueKind);
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            72,
+            "textDocument/rename",
+            implementationUri,
+            implementationText,
+            "I_Left_Right_Run",
+            "I_Left_R".Length,
+            new { newName = "I_Changed" });
+
+        Assert.False(rename.TryGetProperty("result", out _));
+        Assert.Equal(
+            "notRenameTarget",
+            rename.GetProperty("error").GetProperty("data")
+                .GetProperty("reason").GetString());
+
+        await process.ShutdownAsync(7);
+    }
+
+    [Fact]
+    public async Task Server_rejects_a_conclusive_segment_that_shares_an_indeterminate_dependent_target()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string shortInterfaceUri = "file:///C:/work/ShortContract.cls";
+        const string longInterfaceUri = "file:///C:/work/LongContract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var shortInterfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"I_Left\"",
+            "Public Sub Right_Run(ByVal value As Long)",
+            "End Sub"
+        ]);
+        var longInterfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"I_Left_Right\"",
+            "Public Sub Run(ByVal value As MissingType)",
+            "End Sub"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Implements I_Left",
+            "Implements I_Left_Right",
+            "Private Sub I_Left_Right_Run(ByVal value As Long)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(shortInterfaceUri, shortInterfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(longInterfaceUri, longInterfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var prepare = await SendPositionRequestAsync(
+            process,
+            73,
+            "textDocument/prepareRename",
+            implementationUri,
+            implementationText,
+            "I_Left_Right_Run",
+            "I_Left_R".Length);
+        Assert.Equal(
+            "analysisIncomplete",
+            prepare.GetProperty("error").GetProperty("data")
+                .GetProperty("reason").GetString());
+
+        var segmentRename = await SendPositionRequestAsync(
+            process,
+            74,
+            "textDocument/rename",
+            implementationUri,
+            implementationText,
+            "I_Left_Right_Run",
+            "I_Left_R".Length,
+            new { newName = "Execute" });
+        Assert.Equal(
+            "analysisIncomplete",
+            segmentRename.GetProperty("error").GetProperty("data")
+                .GetProperty("reason").GetString());
+
+        var upstreamRename = await SendPositionRequestAsync(
+            process,
+            75,
+            "textDocument/rename",
+            shortInterfaceUri,
+            shortInterfaceText,
+            "Right_Run",
+            0,
+            new { newName = "Execute" });
+        Assert.Equal(
+            "analysisIncomplete",
+            upstreamRename.GetProperty("error").GetProperty("data")
+                .GetProperty("reason").GetString());
+
+        await process.ShutdownAsync(7);
+    }
+
+    [Fact]
+    public async Task Server_renames_the_source_interface_member_from_an_implementation_suffix()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/Contract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IWorker\"",
+            "Public Sub Run()",
+            "End Sub"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Implements IWorker",
+            "Private Sub IWorker_Run()",
+            "End Sub",
+            "Private Sub Invoke()",
+            "    IWorker_Run",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            9,
+            "textDocument/rename",
+            implementationUri,
+            implementationText,
+            "IWorker_Run",
+            9,
+            new { newName = "Execute" });
+
+        Assert.False(
+            rename.TryGetProperty("error", out var renameError),
+            renameError.ToString());
+        var changes = rename.GetProperty("result").GetProperty("changes");
+        var interfaceEdit = Assert.Single(changes.GetProperty(interfaceUri).EnumerateArray());
+        Assert.Equal("Execute", interfaceEdit.GetProperty("newText").GetString());
+        var implementationEdits = changes
+            .GetProperty(implementationUri)
+            .EnumerateArray()
+            .OrderBy(edit => edit.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32())
+            .ToArray();
+        Assert.Equal(2, implementationEdits.Length);
+        Assert.Equal("Execute", implementationEdits[0].GetProperty("newText").GetString());
+        Assert.Equal("IWorker_Execute", implementationEdits[1].GetProperty("newText").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_renames_every_derived_accessor_with_its_owning_Public_variable()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/SettingsContract.cls";
+        const string implementationUri = "file:///C:/work/Settings.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ISettings\"",
+            "Public Value"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Settings\"",
+            "Implements ISettings",
+            "Private Property Get ISettings_Value() As Variant",
+            "    ISettings_Value = Empty",
+            "End Property",
+            "Private Property Let ISettings_Value(ByVal AssignedValue As Variant)",
+            "End Property",
+            "Private Property Set ISettings_Value(ByVal AssignedValue As Variant)",
+            "End Property",
+            "Private Sub Use()",
+            "    Dim current As Variant",
+            "    current = ISettings_Value",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            10,
+            "textDocument/rename",
+            interfaceUri,
+            interfaceText,
+            "Public Value",
+            "Public ".Length,
+            new { newName = "Count" });
+
+        Assert.False(
+            rename.TryGetProperty("error", out var renameError),
+            renameError.ToString());
+        var implementationEdits = rename
+            .GetProperty("result")
+            .GetProperty("changes")
+            .GetProperty(implementationUri)
+            .EnumerateArray()
+            .ToArray();
+        Assert.Equal(5, implementationEdits.Length);
+        Assert.Equal(
+            3,
+            implementationEdits.Count(edit =>
+                edit.GetProperty("newText").GetString() == "Count"));
+        Assert.Equal(
+            2,
+            implementationEdits.Count(edit =>
+                edit.GetProperty("newText").GetString() == "ISettings_Count"));
+        Assert.DoesNotContain(
+            implementationEdits,
+            edit => edit.GetProperty("range").GetProperty("start").GetProperty("character").GetInt32() >= 47);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_renames_conditional_Public_variable_and_complementary_accessor_families_orthogonally()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/SettingsContract.cls";
+        const string implementationUri = "file:///C:/work/Settings.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ISettings\"",
+            "#If VBA7 Then",
+            "Public Value As Long",
+            "#Else",
+            "Public VALUE As Long",
+            "#End If"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Settings\"",
+            "Implements ISettings",
+            "#If VBA7 Then",
+            "Private Property Get ISettings_Value() As Long",
+            "    ISettings_Value = 1",
+            "End Property",
+            "Private Property Let ISettings_Value(ByVal AssignedValue As Long)",
+            "End Property",
+            "#Else",
+            "Private Property Get ISettings_VALUE() As Long",
+            "    ISettings_VALUE = 2",
+            "End Property",
+            "Private Property Let ISettings_VALUE(ByVal AssignedValue As Long)",
+            "End Property",
+            "#End If"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            36,
+            "textDocument/rename",
+            interfaceUri,
+            interfaceText,
+            "Public Value",
+            "Public ".Length,
+            new { newName = "Count" });
+
+        Assert.False(
+            rename.TryGetProperty("error", out var renameError),
+            renameError.ToString());
+        var changes = rename.GetProperty("result").GetProperty("changes");
+        Assert.Equal(
+            [3, 5],
+            changes.GetProperty(interfaceUri).EnumerateArray().Select(edit =>
+                edit.GetProperty("range").GetProperty("start")
+                    .GetProperty("line").GetInt32()));
+        var implementationEdits = changes.GetProperty(implementationUri)
+            .EnumerateArray()
+            .ToArray();
+        Assert.Equal(6, implementationEdits.Length);
+        Assert.Equal(
+            [4, 5, 7, 10, 11, 13],
+            implementationEdits.Select(edit => edit.GetProperty("range")
+                .GetProperty("start").GetProperty("line").GetInt32()));
+        Assert.Equal(
+            4,
+            implementationEdits.Count(edit =>
+                edit.GetProperty("newText").GetString() == "Count"));
+        Assert.Equal(
+            2,
+            implementationEdits.Count(edit =>
+                edit.GetProperty("newText").GetString()
+                    == "ISettings_Count"));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_prepares_a_derived_accessor_suffix_as_its_owning_Public_variable()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/SettingsContract.cls";
+        const string implementationUri = "file:///C:/work/Settings.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ISettings\"",
+            "Public Value"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Settings\"",
+            "Implements ISettings",
+            "Private Property Get ISettings_Value() As Variant",
+            "    ISettings_Value = Empty",
+            "End Property"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var prepare = await SendPositionRequestAsync(
+            process,
+            19,
+            "textDocument/prepareRename",
+            implementationUri,
+            implementationText,
+            "ISettings_Value",
+            "ISettings_".Length + 2);
+
+        Assert.False(
+            prepare.TryGetProperty("error", out var prepareError),
+            prepareError.ToString());
+        var result = prepare.GetProperty("result");
+        Assert.Equal("Value", result.GetProperty("placeholder").GetString());
+        var range = result.GetProperty("range");
+        Assert.Equal(31, range.GetProperty("start")
+            .GetProperty("character").GetInt32());
+        Assert.Equal(36, range.GetProperty("end")
+            .GetProperty("character").GetInt32());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_renames_complementary_Property_implementations_and_references_atomically()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/SettingsContract.cls";
+        const string implementationUri = "file:///C:/work/Settings.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ISettings\"",
+            "Public Property Get Value() As Long",
+            "End Property",
+            "Public Property Let Value(ByVal AssignedValue As Long)",
+            "End Property"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Settings\"",
+            "Implements ISettings",
+            "Private Property Get ISettings_Value() As Long",
+            "    ISettings_Value = 1",
+            "End Property",
+            "Private Property Let ISettings_Value(ByVal AssignedValue As Long)",
+            "End Property",
+            "Private Sub Invoke()",
+            "    Debug.Print ISettings_Value",
+            "    ISettings_Value = 2",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            20,
+            "textDocument/rename",
+            interfaceUri,
+            interfaceText,
+            "Property Get Value",
+            "Property Get ".Length,
+            new { newName = "Count" });
+
+        Assert.False(
+            rename.TryGetProperty("error", out var renameError),
+            renameError.ToString());
+        var changes = rename.GetProperty("result").GetProperty("changes");
+        Assert.Equal(2, changes.GetProperty(interfaceUri).GetArrayLength());
+        var implementationEdits = changes
+            .GetProperty(implementationUri)
+            .EnumerateArray()
+            .OrderBy(edit => edit.GetProperty("range")
+                .GetProperty("start").GetProperty("line").GetInt32())
+            .ToArray();
+        Assert.Equal(5, implementationEdits.Length);
+        Assert.Equal(
+            [3, 4, 6, 9, 10],
+            implementationEdits.Select(edit => edit.GetProperty("range")
+                .GetProperty("start").GetProperty("line").GetInt32()));
+        Assert.Equal(
+            2,
+            implementationEdits.Count(edit =>
+                edit.GetProperty("newText").GetString() == "Count"));
+        Assert.Equal(
+            3,
+            implementationEdits.Count(edit =>
+                edit.GetProperty("newText").GetString()
+                    == "ISettings_Count"));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_expands_a_Get_contract_rename_to_a_complementary_implementation_Let()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/Contract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IWorker\"",
+            "Public Property Get Value() As Long",
+            "    Value = 1",
+            "End Property"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Implements IWorker",
+            "Private Property Get IWorker_Value() As Long",
+            "    IWorker_Value = 1",
+            "End Property",
+            "Private Property Let IWorker_Value(ByVal AssignedValue As Long)",
+            "End Property",
+            "Private Sub UseValue()",
+            "    IWorker_Value = 2",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            42,
+            "textDocument/rename",
+            interfaceUri,
+            interfaceText,
+            "Value",
+            0,
+            new { newName = "CurrentValue" });
+
+        Assert.False(
+            rename.TryGetProperty("error", out var renameError),
+            renameError.ToString());
+        var changes = rename.GetProperty("result").GetProperty("changes");
+        Assert.Equal(
+            ["CurrentValue", "CurrentValue"],
+            changes.GetProperty(interfaceUri).EnumerateArray()
+                .OrderBy(edit => edit.GetProperty("range").GetProperty("start")
+                    .GetProperty("line").GetInt32())
+                .Select(edit => edit.GetProperty("newText").GetString()));
+        Assert.Equal(
+            [
+                "CurrentValue",
+                "IWorker_CurrentValue",
+                "CurrentValue",
+                "IWorker_CurrentValue"
+            ],
+            changes.GetProperty(implementationUri).EnumerateArray()
+                .OrderBy(edit => edit.GetProperty("range").GetProperty("start")
+                    .GetProperty("line").GetInt32())
+                .Select(edit => edit.GetProperty("newText").GetString()));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_renames_complete_conditional_interface_and_implementation_families()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/Contract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IWorker\"",
+            "#If VBA7 Then",
+            "Public Sub Run()",
+            "End Sub",
+            "#Else",
+            "Public Sub RUN()",
+            "End Sub",
+            "#End If"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "#If VBA7 Then",
+            "Implements IWorker",
+            "Private Sub IWorker_Run()",
+            "End Sub",
+            "#Else",
+            "Implements IWorker",
+            "Private Sub IWorker_RUN()",
+            "End Sub",
+            "#End If"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            21,
+            "textDocument/rename",
+            interfaceUri,
+            interfaceText,
+            "Public Sub Run",
+            "Public Sub ".Length,
+            new { newName = "Execute" });
+
+        Assert.False(
+            rename.TryGetProperty("error", out var renameError),
+            renameError.ToString());
+        var changes = rename.GetProperty("result").GetProperty("changes");
+        Assert.Equal(
+            [3, 6],
+            changes.GetProperty(interfaceUri).EnumerateArray().Select(edit =>
+                edit.GetProperty("range").GetProperty("start")
+                    .GetProperty("line").GetInt32()));
+        Assert.Equal(
+            [4, 8],
+            changes.GetProperty(implementationUri).EnumerateArray().Select(edit =>
+                edit.GetProperty("range").GetProperty("start")
+                    .GetProperty("line").GetInt32()));
+        Assert.All(
+            changes.GetProperty(implementationUri).EnumerateArray(),
+            edit => Assert.Equal(
+                "Execute",
+                edit.GetProperty("newText").GetString()));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_renames_every_conditional_Implements_relationship_and_implementation_prefix()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/Contract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IWorker\"",
+            "Public Sub Run()",
+            "End Sub"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "#If VBA7 Then",
+            "Implements IWorker",
+            "Private Sub IWorker_Run()",
+            "End Sub",
+            "#Else",
+            "Implements IWorker",
+            "Private Sub IWorker_Run()",
+            "End Sub",
+            "#End If"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            37,
+            "textDocument/rename",
+            interfaceUri,
+            interfaceText,
+            "IWorker",
+            0,
+            new { newName = "IService" });
+
+        Assert.False(
+            rename.TryGetProperty("error", out var renameError),
+            renameError.ToString());
+        var implementationEdits = rename.GetProperty("result")
+            .GetProperty("changes").GetProperty(implementationUri)
+            .EnumerateArray().ToArray();
+        Assert.Equal(4, implementationEdits.Length);
+        Assert.Equal(
+            [3, 4, 7, 8],
+            implementationEdits.Select(edit => edit.GetProperty("range")
+                .GetProperty("start").GetProperty("line").GetInt32()));
+        Assert.All(
+            implementationEdits,
+            edit => Assert.Equal(
+                "IService",
+                edit.GetProperty("newText").GetString()));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_preserves_an_ordinal_case_only_interface_member_rename_in_dependents()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/Contract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IWorker\"",
+            "Public Sub Run()",
+            "End Sub"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Implements IWorker",
+            "Private Sub IWorker_Run()",
+            "End Sub",
+            "Private Sub Invoke()",
+            "    IWorker_Run",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            22,
+            "textDocument/rename",
+            interfaceUri,
+            interfaceText,
+            "Run",
+            0,
+            new { newName = "run" });
+
+        Assert.False(
+            rename.TryGetProperty("error", out var renameError),
+            renameError.ToString());
+        var changes = rename.GetProperty("result").GetProperty("changes");
+        Assert.Equal(
+            "run",
+            Assert.Single(changes.GetProperty(interfaceUri).EnumerateArray())
+                .GetProperty("newText").GetString());
+        var implementationEdits = changes.GetProperty(implementationUri)
+            .EnumerateArray()
+            .ToArray();
+        Assert.Equal(2, implementationEdits.Length);
+        Assert.Contains(
+            implementationEdits,
+            edit => edit.GetProperty("newText").GetString() == "run");
+        Assert.Contains(
+            implementationEdits,
+            edit => edit.GetProperty("newText").GetString()
+                == "IWorker_run");
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_inherits_source_interface_documentation_for_an_undocumented_implementation_hover()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/ReaderContract.cls";
+        const string implementationUri = "file:///C:/work/Reader.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IReader\"",
+            "'* @brief Reads through the interface.",
+            "'* @param Key Key to read.",
+            "'* @return The requested value.",
+            "Public Function ReadValue(ByVal Key As String) As String",
+            "End Function"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Reader\"",
+            "Implements IReader",
+            "Private Function IReader_ReadValue(ByVal Key As String) As String",
+            "    IReader_ReadValue = Key",
+            "End Function",
+            "Private Sub Invoke()",
+            "    Dim result As String",
+            "    result = IReader_ReadValue(\"id\")",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var hover = await SendPositionRequestAsync(
+            process,
+            24,
+            "textDocument/hover",
+            implementationUri,
+            implementationText,
+            "IReader_ReadValue(\"id\")");
+
+        var value = hover.GetProperty("result")
+            .GetProperty("contents").GetProperty("value").GetString();
+        Assert.Contains("Reads through the interface.", value);
+        Assert.Contains("Key to read.", value);
+        Assert.EndsWith(
+            "---\n\n```vba\nFunction IReader_ReadValue(Key As String) As String\n```",
+            value,
+            StringComparison.Ordinal);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_inherits_source_interface_parameter_documentation_for_implementation_signature_help()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/ReaderContract.cls";
+        const string implementationUri = "file:///C:/work/Reader.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IReader\"",
+            "'* @brief Reads through the interface.",
+            "'* @param Key Key to read.",
+            "Public Function ReadValue(ByVal Key As String) As String",
+            "End Function"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Reader\"",
+            "Implements IReader",
+            "Private Function IReader_ReadValue(ByVal Key As String) As String",
+            "    IReader_ReadValue = Key",
+            "End Function",
+            "Private Sub Invoke()",
+            "    Dim result As String",
+            "    result = IReader_ReadValue(",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var help = await SendPositionRequestAsync(
+            process,
+            25,
+            "textDocument/signatureHelp",
+            implementationUri,
+            implementationText,
+            "    result = IReader_ReadValue(",
+            "    result = IReader_ReadValue(".Length);
+
+        var signature = Assert.Single(help.GetProperty("result")
+            .GetProperty("signatures").EnumerateArray());
+        Assert.Equal(
+            "Function IReader_ReadValue(Key As String) As String",
+            signature.GetProperty("label").GetString());
+        Assert.False(signature.TryGetProperty("documentation", out _));
+        var parameter = Assert.Single(
+            signature.GetProperty("parameters").EnumerateArray());
+        Assert.Equal("Key As String", parameter.GetProperty("label").GetString());
+        Assert.Contains(
+            "Key to read.",
+            parameter.GetProperty("documentation")
+                .GetProperty("value").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_prefers_implementation_documentation_over_the_source_interface_fallback()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/ReaderContract.cls";
+        const string implementationUri = "file:///C:/work/Reader.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IReader\"",
+            "'* @brief Interface documentation.",
+            "'* @param Key Interface parameter documentation.",
+            "Public Function ReadValue(ByVal Key As String) As String",
+            "End Function"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Reader\"",
+            "Implements IReader",
+            "'* @brief Implementation documentation.",
+            "Private Function IReader_ReadValue(ByVal Key As String) As String",
+            "    IReader_ReadValue = Key",
+            "End Function",
+            "Private Sub Invoke()",
+            "    Dim result As String",
+            "    result = IReader_ReadValue(\"id\")",
+            "    Dim result2 As String",
+            "    result2 = IReader_ReadValue(",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var hover = await SendPositionRequestAsync(
+            process,
+            26,
+            "textDocument/hover",
+            implementationUri,
+            implementationText,
+            "IReader_ReadValue(\"id\")");
+        var hoverValue = hover.GetProperty("result")
+            .GetProperty("contents").GetProperty("value").GetString();
+        Assert.Contains("Implementation documentation.", hoverValue);
+        Assert.DoesNotContain("Interface documentation.", hoverValue);
+
+        var help = await SendPositionRequestAsync(
+            process,
+            27,
+            "textDocument/signatureHelp",
+            implementationUri,
+            implementationText,
+            "    result2 = IReader_ReadValue(",
+            "    result2 = IReader_ReadValue(".Length);
+        var signature = Assert.Single(help.GetProperty("result")
+            .GetProperty("signatures").EnumerateArray());
+        Assert.DoesNotContain(
+            signature.GetProperty("parameters").EnumerateArray(),
+            parameter => parameter.TryGetProperty("documentation", out _));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_preserves_Implements_documentation_and_navigation_after_member_rename()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/ReaderContract.cls";
+        const string implementationUri = "file:///C:/work/Reader.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IReader\"",
+            "'* @brief Reads through the interface.",
+            "'* @param Key Key to read.",
+            "Public Sub ReadValue(ByVal Key As String)",
+            "End Sub"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Reader\"",
+            "Implements IReader",
+            "Private Sub IReader_ReadValue(ByVal Key As String)",
+            "End Sub",
+            "Private Sub Invoke()",
+            "    IReader_ReadValue \"id\"",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            28,
+            "textDocument/rename",
+            interfaceUri,
+            interfaceText,
+            "ReadValue",
+            0,
+            new { newName = "FetchValue" });
+        Assert.False(
+            rename.TryGetProperty("error", out var renameError),
+            renameError.ToString());
+
+        var renamedInterfaceText = interfaceText.Replace(
+            "ReadValue",
+            "FetchValue",
+            StringComparison.Ordinal);
+        var renamedImplementationText = implementationText.Replace(
+            "IReader_ReadValue",
+            "IReader_FetchValue",
+            StringComparison.Ordinal);
+        await process.SendNotificationAsync(
+            "textDocument/didChange",
+            new
+            {
+                textDocument = new { uri = interfaceUri, version = 2 },
+                contentChanges = new[] { new { text = renamedInterfaceText } }
+            });
+        await process.SendNotificationAsync(
+            "textDocument/didChange",
+            new
+            {
+                textDocument = new { uri = implementationUri, version = 2 },
+                contentChanges = new[] { new { text = renamedImplementationText } }
+            });
+
+        var hover = await SendPositionRequestAsync(
+            process,
+            29,
+            "textDocument/hover",
+            implementationUri,
+            renamedImplementationText,
+            "    IReader_FetchValue \"id\"",
+            "    ".Length);
+        Assert.Contains(
+            "Reads through the interface.",
+            hover.GetProperty("result").GetProperty("contents")
+                .GetProperty("value").GetString());
+
+        var prefixDefinition = await SendPositionRequestAsync(
+            process,
+            30,
+            "textDocument/definition",
+            implementationUri,
+            renamedImplementationText,
+            "Private Sub IReader_FetchValue",
+            "Private Sub ".Length + 2);
+        var prefixLocation = prefixDefinition.GetProperty("result");
+        Assert.Equal(interfaceUri, prefixLocation.GetProperty("uri").GetString());
+        Assert.Equal(1, prefixLocation.GetProperty("range")
+            .GetProperty("start").GetProperty("line").GetInt32());
+
+        var suffixDefinition = await SendPositionRequestAsync(
+            process,
+            31,
+            "textDocument/definition",
+            implementationUri,
+            renamedImplementationText,
+            "Private Sub IReader_FetchValue",
+            "Private Sub IReader_".Length + 2);
+        var suffixLocation = suffixDefinition.GetProperty("result");
+        Assert.Equal(
+            implementationUri,
+            suffixLocation.GetProperty("uri").GetString());
+        Assert.Equal(3, suffixLocation.GetProperty("range")
+            .GetProperty("start").GetProperty("line").GetInt32());
+
+        var callDefinition = await SendPositionRequestAsync(
+            process,
+            32,
+            "textDocument/definition",
+            implementationUri,
+            renamedImplementationText,
+            "    IReader_FetchValue \"id\"",
+            "    ".Length);
+        var callLocation = callDefinition.GetProperty("result");
+        Assert.Equal(
+            implementationUri,
+            callLocation.GetProperty("uri").GetString());
+        Assert.Equal(3, callLocation.GetProperty("range")
+            .GetProperty("start").GetProperty("line").GetInt32());
+
+        var references = await SendPositionRequestAsync(
+            process,
+            33,
+            "textDocument/references",
+            implementationUri,
+            renamedImplementationText,
+            "    IReader_FetchValue \"id\"",
+            "    ".Length);
+        Assert.Equal(
+            [
+                (implementationUri, 3, 12, 30),
+                (implementationUri, 6, 4, 22)
+            ],
+            references.GetProperty("result").EnumerateArray().Select(location =>
+                (
+                    location.GetProperty("uri").GetString(),
+                    location.GetProperty("range").GetProperty("start")
+                        .GetProperty("line").GetInt32(),
+                    location.GetProperty("range").GetProperty("start")
+                        .GetProperty("character").GetInt32(),
+                    location.GetProperty("range").GetProperty("end")
+                        .GetProperty("character").GetInt32())));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_reports_analysis_incomplete_instead_of_skipping_an_incomplete_interface_implementation()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/Contract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IWorker\"",
+            "Public Sub Run()",
+            "End Sub"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "#If VBA7 Then",
+            "Implements IWorker",
+            "Private Sub IWorker_Run()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            11,
+            "textDocument/rename",
+            interfaceUri,
+            interfaceText,
+            "IWorker",
+            0,
+            new { newName = "IService" });
+
+        var error = rename.GetProperty("error");
+        Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+        Assert.Equal(
+            "analysisIncomplete",
+            error.GetProperty("data").GetProperty("reason").GetString());
+        Assert.False(rename.TryGetProperty("result", out _));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_reports_analysis_incomplete_for_unresolved_interface_contract_type_evidence()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/Contract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IWorker\"",
+            "Public Sub Run(ByVal value As MissingType)",
+            "End Sub"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Implements IWorker",
+            "Private Sub IWorker_Run(ByVal value As MissingType)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            39,
+            "textDocument/rename",
+            interfaceUri,
+            interfaceText,
+            "Run",
+            0,
+            new { newName = "Execute" });
+
+        Assert.False(rename.TryGetProperty("result", out _));
+        var error = rename.GetProperty("error");
+        Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+        Assert.Equal(
+            "analysisIncomplete",
+            error.GetProperty("data").GetProperty("reason").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_reports_analysis_incomplete_when_an_implementation_mixes_unresolved_and_mismatched_type_evidence()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/Contract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IWorker\"",
+            "Public Sub Run(ByVal first As Long, ByVal second As Long)",
+            "End Sub"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Implements IWorker",
+            "Private Sub IWorker_Run(ByVal first As MissingType, ByVal second As String)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            76,
+            "textDocument/rename",
+            interfaceUri,
+            interfaceText,
+            "Run",
+            0,
+            new { newName = "Execute" });
+
+        Assert.False(rename.TryGetProperty("result", out _));
+        Assert.Equal(
+            "analysisIncomplete",
+            rename.GetProperty("error").GetProperty("data")
+                .GetProperty("reason").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_reports_analysis_incomplete_for_an_unmatched_implementation_parameter_with_unresolved_type_evidence()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/Contract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IWorker\"",
+            "Public Sub Run(ByVal first As Long)",
+            "End Sub"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Implements IWorker",
+            "Private Sub IWorker_Run(ByVal first As Long, ByVal extra As MissingType)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            78,
+            "textDocument/rename",
+            interfaceUri,
+            interfaceText,
+            "Run",
+            0,
+            new { newName = "Execute" });
+
+        Assert.False(rename.TryGetProperty("result", out _));
+        Assert.Equal(
+            "analysisIncomplete",
+            rename.GetProperty("error").GetProperty("data")
+                .GetProperty("reason").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_rejects_a_rename_that_creates_an_incomplete_Implements_candidate()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/Contract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IWorker\"",
+            "Public Sub Old(ByVal value As Long)",
+            "End Sub"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Implements IWorker",
+            "Private Sub IWorker_Execute(ByVal value As MissingType)",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            79,
+            "textDocument/rename",
+            interfaceUri,
+            interfaceText,
+            "Old",
+            0,
+            new { newName = "Execute" });
+
+        Assert.False(rename.TryGetProperty("result", out _));
+        Assert.Equal(
+            "analysisIncomplete",
+            rename.GetProperty("error").GetProperty("data")
+                .GetProperty("reason").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_rejects_direct_rename_of_an_indeterminate_interface_implementation_reference()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/Contract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IWorker\"",
+            "Public Sub Run(ByVal value As MissingType)",
+            "End Sub"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Implements IWorker",
+            "Private Sub IWorker_Run(ByVal value As MissingType)",
+            "End Sub",
+            "Private Sub Invoke(ByVal value As MissingType)",
+            "    IWorker_Run value",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            40,
+            "textDocument/rename",
+            implementationUri,
+            implementationText,
+            "IWorker_Run",
+            1,
+            new { newName = "DetachedRun" });
+
+        Assert.False(rename.TryGetProperty("result", out _));
+        Assert.Equal(
+            "analysisIncomplete",
+            rename.GetProperty("error").GetProperty("data")
+                .GetProperty("reason").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_rejects_a_partial_Public_variable_rename_with_indeterminate_accessor_kinds()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/SettingsContract.cls";
+        const string implementationUri = "file:///C:/work/Settings.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ISettings\"",
+            "Public Value As MissingType"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Settings\"",
+            "Implements ISettings",
+            "Private Property Let ISettings_Value(ByVal AssignedValue As MissingType)",
+            "End Property"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            41,
+            "textDocument/rename",
+            interfaceUri,
+            interfaceText,
+            "Value",
+            0,
+            new { newName = "CurrentValue" });
+
+        Assert.False(rename.TryGetProperty("result", out _));
+        Assert.Equal(
+            "analysisIncomplete",
+            rename.GetProperty("error").GetProperty("data")
+                .GetProperty("reason").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_does_not_prepare_an_upstream_interface_target_with_incomplete_dependent_coverage()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/Contract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IWorker\"",
+            "Public Sub Run()",
+            "End Sub"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "#If VBA7 Then",
+            "Implements IWorker",
+            "Private Sub IWorker_Run()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var prepare = await SendPositionRequestAsync(
+            process,
+            38,
+            "textDocument/prepareRename",
+            interfaceUri,
+            interfaceText,
+            "IWorker");
+
+        Assert.False(prepare.TryGetProperty("result", out _));
+        var error = prepare.GetProperty("error");
+        Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+        Assert.Equal(
+            "analysisIncomplete",
+            error.GetProperty("data").GetProperty("reason").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_does_not_block_an_unimplemented_member_for_an_unrelated_incomplete_relationship()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/Contract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IWorker\"",
+            "Public Sub Run()",
+            "End Sub",
+            "Public Sub StopWork()",
+            "End Sub"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "#If VBA7 Then",
+            "Implements IWorker",
+            "Private Sub IWorker_Run()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            35,
+            "textDocument/rename",
+            interfaceUri,
+            interfaceText,
+            "StopWork",
+            0,
+            new { newName = "HaltWork" });
+
+        Assert.False(
+            rename.TryGetProperty("error", out var renameError),
+            renameError.ToString());
+        var changes = rename.GetProperty("result").GetProperty("changes");
+        Assert.Equal([interfaceUri], changes.EnumerateObject()
+            .Select(property => property.Name));
+        Assert.Equal(
+            "HaltWork",
+            Assert.Single(changes.GetProperty(interfaceUri).EnumerateArray())
+                .GetProperty("newText").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_reports_a_collision_from_a_derived_interface_implementation_name()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/Contract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IWorker\"",
+            "Public Sub Old()",
+            "End Sub"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Implements IWorker",
+            "Private Sub IWorker_Old()",
+            "End Sub",
+            "Private Sub IWorker_Execute()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            12,
+            "textDocument/rename",
+            interfaceUri,
+            interfaceText,
+            "Old",
+            0,
+            new { newName = "Execute" });
+
+        Assert.False(rename.TryGetProperty("result", out _));
+        var error = rename.GetProperty("error");
+        Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+        var data = error.GetProperty("data");
+        Assert.Equal(
+            "sameScopeCollision",
+            data.GetProperty("reason").GetString());
+        var conflict = Assert.Single(
+            data.GetProperty("conflicts").EnumerateArray());
+        Assert.Equal(implementationUri, conflict.GetProperty("uri").GetString());
+        Assert.Equal(
+            5,
+            conflict
+                .GetProperty("range")
+                .GetProperty("start")
+                .GetProperty("line")
+                .GetInt32());
+        Assert.Equal("IWorker_Execute", conflict.GetProperty("name").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_rejects_a_partial_dependent_rename_of_a_mixed_conditional_family()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/Contract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IWorker\"",
+            "Public Sub Run()",
+            "End Sub"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Implements IWorker",
+            "#If VBA7 Then",
+            "Private Sub IWorker_Run()",
+            "End Sub",
+            "#Else",
+            "Private Function IWorker_Run() As Long",
+            "End Function",
+            "#End If"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            13,
+            "textDocument/rename",
+            interfaceUri,
+            interfaceText,
+            "Run",
+            0,
+            new { newName = "Execute" });
+
+        Assert.False(rename.TryGetProperty("result", out _));
+        var error = rename.GetProperty("error");
+        Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+        Assert.Equal(
+            "resolutionChanged",
+            error.GetProperty("data").GetProperty("reason").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_returns_only_complete_references_for_a_mixed_conditional_implementation_family()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/Contract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IWorker\"",
+            "Public Sub Run()",
+            "End Sub"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Implements IWorker",
+            "#If VBA7 Then",
+            "Private Sub IWorker_Run()",
+            "End Sub",
+            "#Else",
+            "Private Function IWorker_Run() As Long",
+            "End Function",
+            "#End If",
+            "Private Sub Invoke()",
+            "    IWorker_Run",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var references = await SendPositionRequestAsync(
+            process,
+            77,
+            "textDocument/references",
+            implementationUri,
+            implementationText,
+            "    IWorker_Run",
+            "    ".Length);
+
+        Assert.False(
+            references.TryGetProperty("error", out var referenceError),
+            referenceError.ToString());
+        Assert.Equal(
+            [
+                (Line: 4, Start: "Private Sub ".Length, End: "Private Sub IWorker_Run".Length),
+                (Line: 7, Start: "Private Function ".Length, End: "Private Function IWorker_Run".Length),
+                (Line: 11, Start: "    ".Length, End: "    IWorker_Run".Length)
+            ],
+            references.GetProperty("result").EnumerateArray().Select(location =>
+            {
+                var range = location.GetProperty("range");
+                return (
+                    Line: range.GetProperty("start").GetProperty("line").GetInt32(),
+                    Start: range.GetProperty("start").GetProperty("character").GetInt32(),
+                    End: range.GetProperty("end").GetProperty("character").GetInt32());
+            }));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_rejects_a_dependent_rename_that_changes_another_Implements_association()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string firstInterfaceUri = "file:///C:/work/FirstContract.cls";
+        const string secondInterfaceUri = "file:///C:/work/SecondContract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var firstInterfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"I_Left\"",
+            "Public Sub Right_Run()",
+            "End Sub"
+        ]);
+        var secondInterfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"I_Left_Right\"",
+            "Public Sub Run()",
+            "End Sub"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Implements I_Left",
+            "Implements I_Left_Right",
+            "Private Sub I_Left_Right_Run()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(firstInterfaceUri, firstInterfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(secondInterfaceUri, secondInterfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            14,
+            "textDocument/rename",
+            firstInterfaceUri,
+            firstInterfaceText,
+            "Right_Run",
+            0,
+            new { newName = "Other_Run" });
+
+        Assert.False(rename.TryGetProperty("result", out _));
+        var error = rename.GetProperty("error");
+        Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+        Assert.Equal(
+            "resolutionChanged",
+            error.GetProperty("data").GetProperty("reason").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_preserves_unresolved_occurrences_of_a_derived_implementation_name()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/Contract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IWorker\"",
+            "Public Sub Run()",
+            "End Sub"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Implements IWorker",
+            "Private Sub IWorker_Run()",
+            "End Sub",
+            "Private Sub Invoke()",
+            "    IWorker_Execute",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            15,
+            "textDocument/rename",
+            interfaceUri,
+            interfaceText,
+            "Run",
+            0,
+            new { newName = "Execute" });
+
+        Assert.False(rename.TryGetProperty("result", out _));
+        var error = rename.GetProperty("error");
+        Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+        Assert.Equal(
+            "resolutionChanged",
+            error.GetProperty("data").GetProperty("reason").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_does_not_prepare_the_semantic_separator_of_an_interface_implementation()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/Contract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IWorker\"",
+            "Public Sub Run()",
+            "End Sub"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Implements IWorker",
+            "Private Sub IWorker_Run()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var prepare = await SendPositionRequestAsync(
+            process,
+            5,
+            "textDocument/prepareRename",
+            implementationUri,
+            implementationText,
+            "IWorker_Run",
+            7);
+
+        Assert.False(
+            prepare.TryGetProperty("error", out var prepareError),
+            prepareError.ToString());
+        Assert.Equal(JsonValueKind.Null, prepare.GetProperty("result").ValueKind);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_keeps_a_prefixed_procedure_without_an_interface_contract_as_an_ordinary_rename_target()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/Contract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IWorker\"",
+            "Public Sub Run()",
+            "End Sub"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Implements IWorker",
+            "Private Sub IWorker_Helper()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var prepare = await SendPositionRequestAsync(
+            process,
+            49,
+            "textDocument/prepareRename",
+            implementationUri,
+            implementationText,
+            "IWorker_Helper",
+            "IWorker_".Length);
+
+        var prepareResult = prepare.GetProperty("result");
+        Assert.Equal(
+            "IWorker_Helper",
+            prepareResult.GetProperty("placeholder").GetString());
+        Assert.Equal(
+            3,
+            prepareResult.GetProperty("range").GetProperty("start")
+                .GetProperty("line").GetInt32());
+        Assert.Equal(
+            "Private Sub ".Length,
+            prepareResult.GetProperty("range").GetProperty("start")
+                .GetProperty("character").GetInt32());
+        Assert.Equal(
+            "Private Sub IWorker_Helper".Length,
+            prepareResult.GetProperty("range").GetProperty("end")
+                .GetProperty("character").GetInt32());
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            50,
+            "textDocument/rename",
+            implementationUri,
+            implementationText,
+            "IWorker_Helper",
+            "IWorker_".Length,
+            new { newName = "RunHelper" });
+
+        Assert.False(
+            rename.TryGetProperty("error", out var renameError),
+            renameError.ToString());
+        var changes = rename.GetProperty("result").GetProperty("changes");
+        Assert.Equal([implementationUri], changes.EnumerateObject()
+            .Select(property => property.Name));
+        Assert.Equal(
+            "RunHelper",
+            Assert.Single(changes.GetProperty(implementationUri).EnumerateArray())
+                .GetProperty("newText").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_does_not_prepare_an_implementation_with_an_unresolved_upstream_interface()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Implements MissingContract",
+            "Private Sub MissingContract_Run()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var prepare = await SendPositionRequestAsync(
+            process,
+            23,
+            "textDocument/prepareRename",
+            implementationUri,
+            implementationText,
+            "MissingContract_Run",
+            2);
+
+        Assert.False(
+            prepare.TryGetProperty("error", out var prepareError),
+            prepareError.ToString());
+        Assert.Equal(JsonValueKind.Null, prepare.GetProperty("result").ValueKind);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_does_not_prepare_an_implementation_with_an_ambiguous_upstream_interface()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string firstInterfaceUri = "file:///C:/work/FirstContract.cls";
+        const string secondInterfaceUri = "file:///C:/work/SecondContract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IWorker\"",
+            "Public Sub Run()",
+            "End Sub"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Implements IWorker",
+            "Private Sub IWorker_Run()",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(firstInterfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(secondInterfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var prepare = await SendPositionRequestAsync(
+            process,
+            34,
+            "textDocument/prepareRename",
+            implementationUri,
+            implementationText,
+            "IWorker_Run",
+            2);
+
+        Assert.False(
+            prepare.TryGetProperty("error", out var prepareError),
+            prepareError.ToString());
+        Assert.Equal(JsonValueKind.Null, prepare.GetProperty("result").ValueKind);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_does_not_prepare_an_ordinary_complete_interface_implementation_reference()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/Contract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IWorker\"",
+            "Public Sub Run()",
+            "End Sub"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Implements IWorker",
+            "Private Sub IWorker_Run()",
+            "End Sub",
+            "Private Sub Invoke()",
+            "    IWorker_Run",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var prepare = await SendPositionRequestAsync(
+            process,
+            6,
+            "textDocument/prepareRename",
+            implementationUri,
+            implementationText,
+            "    IWorker_Run",
+            4);
+
+        Assert.False(
+            prepare.TryGetProperty("error", out var prepareError),
+            prepareError.ToString());
+        Assert.Equal(JsonValueKind.Null, prepare.GetProperty("result").ValueKind);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_rejects_direct_non_no_op_rename_of_a_dependent_interface_implementation()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/Contract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IWorker\"",
+            "Public Sub Run()",
+            "End Sub"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Implements IWorker",
+            "Private Sub IWorker_Run()",
+            "End Sub",
+            "Private Sub Invoke()",
+            "    IWorker_Run",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            7,
+            "textDocument/rename",
+            implementationUri,
+            implementationText,
+            "    IWorker_Run",
+            4,
+            new { newName = "Detached" });
+
+        var error = rename.GetProperty("error");
+        Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+        Assert.Equal(
+            "notRenameTarget",
+            error.GetProperty("data").GetProperty("reason").GetString());
+        Assert.False(rename.TryGetProperty("result", out _));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
+    public async Task Server_accepts_an_ordinal_no_op_rename_of_a_dependent_interface_implementation()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string interfaceUri = "file:///C:/work/Contract.cls";
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        var interfaceText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"IWorker\"",
+            "Public Sub Run()",
+            "End Sub"
+        ]);
+        var implementationText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"Worker\"",
+            "Implements IWorker",
+            "Private Sub IWorker_Run()",
+            "End Sub",
+            "Private Sub Invoke()",
+            "    IWorker_Run",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var rename = await SendPositionRequestAsync(
+            process,
+            8,
+            "textDocument/rename",
+            implementationUri,
+            implementationText,
+            "    IWorker_Run",
+            4,
+            new { newName = "IWorker_Run" });
+
+        Assert.False(
+            rename.TryGetProperty("error", out var renameError),
+            renameError.ToString());
+        Assert.Equal(JsonValueKind.Null, rename.GetProperty("result").ValueKind);
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Fact]
     public async Task Server_prepares_only_a_conclusively_resolved_source_interface_declaration_prefix()
     {
         await using var process = await LanguageServerProcessHarness.StartAsync();
