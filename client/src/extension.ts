@@ -1,6 +1,7 @@
 import * as path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { Buffer } from 'node:buffer';
 
 import {
   CancellationTokenSource,
@@ -152,6 +153,7 @@ import {
   CommandPaletteInvocationSnapshot,
   CommandPaletteProjectTarget,
   CommandPaletteTargetScope,
+  resolveCommandPaletteProjectTargetFromManifestText,
   resolveCommandPaletteTarget
 } from './commandPaletteTarget';
 import {
@@ -168,6 +170,10 @@ import {
   createManagedToolingCommandHandlers,
   resolveCompanionExecutableForLanguageActivation
 } from './workspaceTrust';
+import { ProjectManifestMutationCoordinator } from './projectManifestMutation';
+import {
+  createProjectManifestMutationVscodeAdapter
+} from './projectManifestMutationVscodeAdapter';
 
 let client: LanguageClient | undefined;
 let outputChannel: OutputChannel | undefined;
@@ -187,6 +193,54 @@ export async function activate(context: ExtensionContext): Promise<void> {
   );
   outputChannel = extensionOutputChannel;
   context.subscriptions.push(extensionOutputChannel);
+  const projectManifestMutationAdapter = createProjectManifestMutationVscodeAdapter({
+    resolvePathIdentity: resolveCommandPalettePathIdentity,
+    readFileBytes: (filePath) => fs.readFile(filePath),
+    decodeManifestBytes: decodeProjectManifestBytes,
+    loadProjectTarget: async (manifestPath, bytes) =>
+      resolveCommandPaletteProjectTargetFromManifestText(
+        manifestPath,
+        decodeProjectManifestBytes(bytes),
+        resolveCommandPalettePathIdentity
+      ),
+    getOpenTextDocuments: () => workspace.textDocuments,
+    onDidOpenTextDocument: (listener) => workspace.onDidOpenTextDocument(listener),
+    onDidChangeTextDocument: (listener) => workspace.onDidChangeTextDocument(listener),
+    onDidSaveTextDocument: (listener) => workspace.onDidSaveTextDocument(listener),
+    onDidCloseTextDocument: (listener) => workspace.onDidCloseTextDocument(listener),
+    getActiveTextEditor: () => window.activeTextEditor,
+    showTextDocument: async (document) => {
+      const openDocument = workspace.textDocuments.find((candidate) =>
+        candidate.uri.toString() === document.uri.toString());
+      if (openDocument === undefined) {
+        throw new Error('The selected project manifest buffer is no longer open.');
+      }
+      return window.showTextDocument(openDocument, {
+        preview: false,
+        preserveFocus: false
+      });
+    },
+    executeRevertCommand: () => commands.executeCommand('workbench.action.files.revert'),
+    showWarningMessage: (message, options, ...items) =>
+      window.showWarningMessage(message, options, ...items),
+    createSnapshotUri: (scheme, snapshotId, role) => Uri.from({
+      scheme,
+      path: `/${snapshotId}/${role}/vba-project.json`
+    }),
+    registerSnapshotContentProvider: (scheme, provider) =>
+      workspace.registerTextDocumentContentProvider(scheme, provider),
+    showDiff: (editorSnapshot, diskSnapshot, title) => commands.executeCommand(
+      'vscode.diff',
+      editorSnapshot,
+      diskSnapshot,
+      title
+    ),
+    outputChannel: extensionOutputChannel
+  });
+  context.subscriptions.push(projectManifestMutationAdapter);
+  const projectManifestMutationCoordinator = new ProjectManifestMutationCoordinator(
+    projectManifestMutationAdapter
+  );
   const caseOnlyVbaFileRenameAdapter = new CaseOnlyVbaFileRenameAdapter(
     message => extensionOutputChannel.appendLine(message)
   );
@@ -833,7 +887,11 @@ export async function activate(context: ExtensionContext): Promise<void> {
   });
   const managedToolingOperations = {
     'vbaTools.doctor': async () => {
-      await runDoctorWithProgress(context, vbaDevResolver);
+      await runDoctorWithProgress(
+        context,
+        vbaDevResolver,
+        projectManifestMutationCoordinator
+      );
     },
     'vbaTools.openVbaDevTerminal': async () => {
       await openVbaDevTerminalCommand(context, vbaDevResolver);
@@ -907,6 +965,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
       await runCommonModulesCommandWithProgress(
         context,
         vbaDevResolver,
+        projectManifestMutationCoordinator,
         'add',
         'VBA Tools: Add Common Module'
       );
@@ -915,6 +974,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
       await runCommonModulesCommandWithProgress(
         context,
         vbaDevResolver,
+        projectManifestMutationCoordinator,
         'list',
         'VBA Tools: List Common Modules'
       );
@@ -923,6 +983,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
       await runCommonModulesCommandWithProgress(
         context,
         vbaDevResolver,
+        projectManifestMutationCoordinator,
         'update',
         'VBA Tools: Update Common Modules'
       );
@@ -931,6 +992,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
       await runReferenceCommandWithProgress(
         context,
         vbaDevResolver,
+        projectManifestMutationCoordinator,
         'list',
         'VBA Tools: List References'
       );
@@ -939,6 +1001,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
       await runReferenceCommandWithProgress(
         context,
         vbaDevResolver,
+        projectManifestMutationCoordinator,
         'add',
         'VBA Tools: Add Reference'
       );
@@ -947,6 +1010,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
       await runReferenceCommandWithProgress(
         context,
         vbaDevResolver,
+        projectManifestMutationCoordinator,
         'remove',
         'VBA Tools: Remove Reference'
       );
@@ -1047,7 +1111,8 @@ async function promptForActiveWorkbookBackedProject(
 
 async function runDoctorWithProgress(
   context: ExtensionContext,
-  vbaDevResolver: CompanionExecutableResolver
+  vbaDevResolver: CompanionExecutableResolver,
+  projectManifestMutationCoordinator: ProjectManifestMutationCoordinator
 ): Promise<void> {
   const targetSnapshot = captureVscodeCommandPaletteInvocationSnapshot();
   const resolveTarget = createCommandPaletteTargetResolver(targetSnapshot);
@@ -1071,6 +1136,7 @@ async function runDoctorWithProgress(
         findProjectManifests,
         chooseProject,
         resolveCommandPaletteTarget: resolveTarget,
+        projectManifestMutationCoordinator,
         outputChannel: channel,
         diagnosticReporter: toolDiagnosticReporter,
         showErrorMessage: (message) => window.showErrorMessage(message),
@@ -1179,6 +1245,7 @@ async function runExportCommandWithConsent(
 async function runCommonModulesCommandWithProgress(
   context: ExtensionContext,
   vbaDevResolver: CompanionExecutableResolver,
+  projectManifestMutationCoordinator: ProjectManifestMutationCoordinator,
   toolCommandName: CommonModulesToolCommand,
   title: string
 ): Promise<void> {
@@ -1209,6 +1276,7 @@ async function runCommonModulesCommandWithProgress(
         findProjectManifests,
         chooseProject,
         resolveCommandPaletteTarget: resolveTarget,
+        projectManifestMutationCoordinator,
         outputChannel: channel,
         diagnosticReporter: toolDiagnosticReporter,
         showErrorMessage: (message: string) => window.showErrorMessage(message),
@@ -1244,6 +1312,7 @@ async function promptForCommonModuleNames(): Promise<readonly string[] | undefin
 async function runReferenceCommandWithProgress(
   context: ExtensionContext,
   vbaDevResolver: CompanionExecutableResolver,
+  projectManifestMutationCoordinator: ProjectManifestMutationCoordinator,
   toolCommandName: ReferenceToolCommand,
   title: string
 ): Promise<void> {
@@ -1274,6 +1343,7 @@ async function runReferenceCommandWithProgress(
         findProjectManifests,
         chooseProject,
         resolveCommandPaletteTarget: resolveTarget,
+        projectManifestMutationCoordinator,
         outputChannel: channel,
         diagnosticReporter: toolDiagnosticReporter,
         showErrorMessage: (message: string) => window.showErrorMessage(message),
@@ -1509,6 +1579,17 @@ async function readTextFile(filePath: string): Promise<string> {
     return buffer.subarray(3).toString('utf8');
   }
 
+  return buffer.toString('utf8');
+}
+
+function decodeProjectManifestBytes(bytes: Uint8Array): string {
+  const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {
+    return buffer.subarray(2).toString('utf16le');
+  }
+  if (buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf) {
+    return buffer.subarray(3).toString('utf8');
+  }
   return buffer.toString('utf8');
 }
 

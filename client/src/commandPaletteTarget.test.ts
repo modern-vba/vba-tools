@@ -4,8 +4,10 @@ import * as path from 'node:path';
 
 import {
   CommandPaletteProjectTarget,
+  CommandPaletteTarget,
   CommandPaletteTargetResolutionOptions,
   parseCommandPaletteManifestSelectionProjection,
+  retainExactCommandPaletteTarget,
   resolveCommandPaletteTarget,
   selectInitialCommandPaletteDocumentFocus
 } from './commandPaletteTarget';
@@ -624,6 +626,45 @@ test('repeated invocations use the newly captured active context without remembe
   assert.equal(second?.document?.name, 'Book2');
 });
 
+test('exact target retention accepts only the same project and physical document identity', () => {
+  const selected = createExactTarget();
+  const refreshedDocument = {
+    ...selected.document!,
+    sourceRoot: 'C:\\canonical\\Book1',
+    sourceRootIdentity: {
+      canonicalPath: 'C:\\canonical\\Book1',
+      objectIdentity: 'volume-1:file-42'
+    }
+  };
+  const refreshedProject: CommandPaletteProjectTarget = {
+    ...selected.project,
+    documents: [refreshedDocument]
+  };
+
+  const retained = retainExactCommandPaletteTarget(selected, refreshedProject);
+
+  assert.equal(retained?.project, refreshedProject);
+  assert.equal(retained?.document, refreshedDocument);
+});
+
+test('exact target retention rejects project, document, and source identity changes', () => {
+  const selected = createExactTarget();
+  const changedDocument = {
+    ...selected.document!,
+    sourceRoot: 'C:\\other\\Book1',
+    sourceRootIdentity: { canonicalPath: 'C:\\other\\Book1' }
+  };
+
+  for (const refreshed of [
+    { ...selected.project, projectName: 'Retargeted' },
+    { ...selected.project, documents: [] },
+    { ...selected.project, documents: [changedDocument] },
+    { ...selected.project, manifestPath: 'C:\\work\\Other\\vba-project.json' }
+  ]) {
+    assert.equal(retainExactCommandPaletteTarget(selected, refreshed), undefined);
+  }
+});
+
 function manifestText(
   documents: Record<string, { sourcePath: string }> = {
     Book1: { sourcePath: 'src/Book1' }
@@ -636,6 +677,30 @@ function manifestText(
     primaryDocument,
     documents
   });
+}
+
+function createExactTarget(): CommandPaletteTarget {
+  const projectRoot = 'C:\\work\\Project';
+  const manifestPath = windowsPath.join(projectRoot, 'vba-project.json');
+  const document = {
+    name: 'Book1',
+    sourcePath: 'src/Book1',
+    sourceRoot: windowsPath.join(projectRoot, 'src', 'Book1'),
+    sourceRootIdentity: {
+      canonicalPath: windowsPath.join(projectRoot, 'src', 'Book1'),
+      objectIdentity: 'volume-1:file-42'
+    }
+  };
+  return {
+    project: {
+      projectRoot,
+      manifestPath,
+      projectName: 'Project',
+      primaryDocument: 'Book1',
+      documents: [document]
+    },
+    document
+  };
 }
 
 function emptySnapshot(): CommandPaletteTargetResolutionOptions['snapshot'] {

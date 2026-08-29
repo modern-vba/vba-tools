@@ -53,12 +53,23 @@ invokes `vba-dev`.
 
 Expected capabilities:
 
-- detect `vba-project.json` by walking upward from the active VBA, manifest, or
-  workbook-related file;
-- use the manifest directory as the `WorkbookBackedProject` root and pass it to
-  `vba-dev` explicitly as `--project`;
-- choose from workspace `vba-project.json` candidates when no active file determines
-  one project unambiguously;
+- detect the nearest `vba-project.json` from the active file, require a usable
+  on-disk `CommandPaletteManifestSelectionProjection`, and fail rather than
+  falling past an existing unusable nearest manifest; only when no containing
+  manifest exists, use the sole selection-capable workspace project or ask the
+  user to choose a `CommandPaletteProjectTarget`, without replacing full
+  `VbaDev` validation;
+- resolve a document-scoped command to a `CommandPaletteDocumentTarget` from
+  the active `ExportedVbaSource`, the selected project's sole document, or an
+  explicit document QuickPick whose initial focus follows
+  `CommandPaletteDocumentFocus`;
+- pass `--project` and `--document` explicitly for every document-scoped
+  Command Palette invocation, while keeping project-only commands such as
+  Doctor and `common-module update` free of an artificial document selector;
+- apply ADR 0033's preflight, outcome, post-mutation coherence, divergence, and
+  same-manifest busy guards around extension-managed Reference and CommonModules
+  manifest mutations without sending editor state to `vba-dev` or automatically
+  merging manifest content;
 - resolve the bundled `vba-dev` executable by default, or an explicit
   `vbaTools.devtool.path` override when configured;
 - check the companion CLI command contract expected by the extension, warn when

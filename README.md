@@ -273,6 +273,22 @@ usable workspace projects, selects one automatically, and requires a Quick Pick
 for multiple projects. Cancelling a chooser starts no child process and makes no
 mutation.
 
+Reference Add/Remove and CommonModules Add/Update protect the selected manifest
+at the editor boundary. A dirty `vba-project.json` offers only `Save and
+Continue` or `Cancel`, saves no unrelated editor, and revalidates the exact
+project and document from disk before launch. A clean buffer that differs from
+disk can be compared, explicitly reloaded, or cancelled; it is never passed to
+`vba-dev` as hidden input.
+
+After a manifest mutation, VBA Tools compares exact pre/post disk bytes and
+allows up to two seconds for VS Code's native clean-buffer synchronization.
+Competing edits are preserved without automatic focus, reload, save, merge, or
+editor-to-CLI transfer. Recovery offers immutable comparison, a confirmed and
+verified `Reload from Disk`, or `Keep Editing`; another mutation for that
+manifest remains blocked until coherence is proved. Reference/CommonModules
+List and project Doctor explicitly identify disk as their source while such a
+block remains; debug-adapter Doctor stays independent.
+
 Within the selected project, an active `.bas`, `.cls`, or `.frm` source with one
 exact canonical owner selects that document. With no such source, a sole
 document is selected automatically, while multiple documents always require a

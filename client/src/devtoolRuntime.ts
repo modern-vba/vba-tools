@@ -57,6 +57,7 @@ export interface VbaDevCommandRuntimeOptions extends VbaDevInvocationRuntimeOpti
 }
 
 export interface VbaDevProjectCommandContext {
+  target: CommandPaletteTarget;
   project: WorkbookBackedProjectCandidate;
   document?: CommandPaletteDocumentTarget | undefined;
   targetReported?: boolean | undefined;
@@ -113,6 +114,7 @@ export async function resolveVbaDevProjectCommandContext(
   }
 
   return {
+    target,
     project: target.project,
     document: target.document,
     targetReported: true,

@@ -18,6 +18,7 @@ test('Doctor command validates the CLI and invokes doctor with an explicit proje
   const notifications: string[] = [];
   const diagnosticRefreshes: Array<{ scopeKey: string; output: string }> = [];
   const targetScopes: string[] = [];
+  const routeEvents: string[] = [];
 
   const result = await runDoctorCommand({
     extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
@@ -39,6 +40,7 @@ test('Doctor command validates the CLI and invokes doctor with an explicit proje
         }
       };
     },
+    projectManifestMutationCoordinator: createDoctorReadOnlyCoordinator(routeEvents),
     capabilitiesProcess: async (file, args) => {
       calls.push({ file, args });
       return {
@@ -110,6 +112,7 @@ test('Doctor command validates the CLI and invokes doctor with an explicit proje
     ['doctor', '--format', 'json', '--project', projectRoot]
   ]);
   assert.deepEqual(targetScopes, ['project']);
+  assert.deepEqual(routeEvents, ['basis:Doctor:BookProject:(project)']);
   assert.match(output.join(''), /\[FAIL\] project\.manifest: Project manifest is missing\./);
   assert.match(notifications[0], /Doctor found blocking issues/);
   assert.equal(diagnosticRefreshes.length, 1);
@@ -136,11 +139,44 @@ test('Doctor runs VBE debugging after a failed project diagnostic', async () => 
     `project:doctor --format json --project ${fixture.projectRoot}`,
     'adapter:doctor --format json --cancellation-transport stdin-v1'
   ]);
+  assert.deepEqual(fixture.routeEvents, [
+    'basis:Doctor:BookProject:(project)',
+    'process:project',
+    'process:adapter'
+  ]);
   assert.match(
     fixture.output.join(''),
     /\[FAIL\] project\.manifest: Project manifest is invalid\./
   );
   assert.doesNotMatch(fixture.output.join(''), /Doctor command infrastructure failure/);
+});
+
+test('Doctor keeps project and VBE diagnostics independent when manifest divergence requires a disk-basis notice', async () => {
+  const fixture = createAggregateDoctorFixture({ projectExitCode: 1 });
+
+  await runDoctorCommand({
+    ...fixture.options,
+    projectManifestMutationCoordinator: {
+      reportReadOnlyDiskBasis: async ({ command, target }) => {
+        fixture.routeEvents.push(
+          `basis:${command}:${target.project.projectName}:${target.document?.name ?? '(project)'}:diverged`
+        );
+        return true;
+      }
+    }
+  });
+
+  assert.deepEqual(fixture.invocations, [
+    `project:doctor --format json --project ${fixture.projectRoot}`,
+    'adapter:doctor --format json --cancellation-transport stdin-v1'
+  ]);
+  assert.deepEqual(fixture.routeEvents, [
+    'basis:Doctor:BookProject:(project):diverged',
+    'process:project',
+    'process:adapter'
+  ]);
+  assert.match(fixture.output.join(''), /Project automation/);
+  assert.match(fixture.output.join(''), /VBE debugging/);
 });
 
 test('Doctor rejects a vba-dev diagnostic for a different project', async () => {
@@ -1383,6 +1419,7 @@ test('Doctor reports configured and effective vba-dev paths after bundled fallba
         }
       };
     },
+    projectManifestMutationCoordinator: createDoctorReadOnlyCoordinator(),
     startProcess: (file) => {
       assert.equal(file, effectivePath);
       return {
@@ -1431,6 +1468,7 @@ test('Doctor stops without another notification when companion resolution failur
         documents: []
       }
     }),
+    projectManifestMutationCoordinator: createDoctorReadOnlyCoordinator(),
     startProcess: () => {
       processStarts += 1;
       throw new Error('Doctor must not start');
@@ -1521,6 +1559,7 @@ function createAggregateDoctorFixture(
   invocations: string[];
   output: string[];
   notifications: string[];
+  routeEvents: string[];
   options: DoctorCommandOptions;
 } {
   const projectRoot = path.join('C:', 'work', 'BookProject');
@@ -1534,6 +1573,7 @@ function createAggregateDoctorFixture(
   const invocations: string[] = [];
   const output: string[] = [];
   const notifications: string[] = [];
+  const routeEvents: string[] = [];
   const projectStdout = getProjectDoctorStdout(config, projectRoot);
   const options: DoctorCommandOptions = {
     extensionRoot: path.join('C:', 'extension'),
@@ -1589,8 +1629,10 @@ function createAggregateDoctorFixture(
         }
       };
     },
+    projectManifestMutationCoordinator: createDoctorReadOnlyCoordinator(routeEvents),
     startProcess: (_file, args) => {
       invocations.push(`project:${args.join(' ')}`);
+      routeEvents.push('process:project');
       return {
         onStdout: (listener) => {
           listener(projectStdout);
@@ -1606,6 +1648,7 @@ function createAggregateDoctorFixture(
     },
     startDebugAdapterProcess: (_file, args) => {
       invocations.push(`adapter:${args.join(' ')}`);
+      routeEvents.push('process:adapter');
       return {
         onStdout: (listener) => listener(
           config.adapterStdout ?? JSON.stringify(
@@ -1634,7 +1677,20 @@ function createAggregateDoctorFixture(
       return undefined;
     }
   };
-  return { projectRoot, invocations, output, notifications, options };
+  return { projectRoot, invocations, output, notifications, routeEvents, options };
+}
+
+function createDoctorReadOnlyCoordinator(
+  routeEvents: string[] = []
+): DoctorCommandOptions['projectManifestMutationCoordinator'] {
+  return {
+    reportReadOnlyDiskBasis: async ({ command, target }) => {
+      routeEvents.push(
+        `basis:${command}:${target.project.projectName}:${target.document?.name ?? '(project)'}`
+      );
+      return false;
+    }
+  };
 }
 
 function getProjectDoctorStdout(

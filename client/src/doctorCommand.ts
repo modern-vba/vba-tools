@@ -24,6 +24,7 @@ import {
   StartVbaDevProcess,
   runCompanionCommand
 } from './devtoolCommand';
+import { ProjectManifestMutationCommandCoordinator } from './projectManifestMutation';
 
 export const FirstRunDoctorPromptState = {
   Prompted: 'vbaTools.doctor.firstRunPrompted',
@@ -36,6 +37,10 @@ export interface WorkspaceState {
 }
 
 export interface DoctorCommandOptions extends VbaDevCommandRuntimeOptions {
+  projectManifestMutationCoordinator: Pick<
+    ProjectManifestMutationCommandCoordinator,
+    'reportReadOnlyDiskBasis'
+  >;
   vbaDebugAdapterResolver?: VbaDebugAdapterResolver | undefined;
   configuredDebugAdapterPath?: string | undefined;
   requiredDebugAdapterContract?: RequiredVbaDebugAdapterContract | undefined;
@@ -64,6 +69,10 @@ export async function runDoctorCommand(options: DoctorCommandOptions): Promise<D
     return undefined;
   }
   options.outputChannel.appendLine('Project automation');
+  await options.projectManifestMutationCoordinator.reportReadOnlyDiskBasis({
+    command: 'Doctor',
+    target: context.target
+  });
   const resolution = await options.vbaDevResolver?.resolve();
   if (
     resolution?.source === 'bundled'

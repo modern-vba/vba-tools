@@ -9,6 +9,8 @@ import './projectCreationPathValidation.test';
 import './projectDiscovery.test';
 import './commandPaletteTarget.test';
 import './commandPaletteTargetAdapter.test';
+import './projectManifestMutation.test';
+import './projectManifestMutationVscodeAdapter.test';
 import './devtoolCommand.test';
 import './devtoolRuntime.test';
 import './workspaceTrust.test';

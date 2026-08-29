@@ -10,8 +10,11 @@ import {
   ReferenceListItem,
   parseReferenceListOutput
 } from './vbaDevOutputContract';
+import { ProjectManifestMutationCommandCoordinator } from './projectManifestMutation';
 
-export interface ReferenceCommandOptions extends VbaDevCommandRuntimeOptions {}
+export interface ReferenceCommandOptions extends VbaDevCommandRuntimeOptions {
+  projectManifestMutationCoordinator: ProjectManifestMutationCommandCoordinator;
+}
 
 export type ReferenceToolCommand = 'add' | 'list' | 'remove';
 
@@ -82,11 +85,24 @@ async function runReferenceMutatingCommand(
     return undefined;
   }
 
-  const result = await runResolvedVbaDevProjectCommand(
-    options,
-    context,
-    ['reference', commandName, normalizedReferenceName]
-  );
+  const coordinated = await options.projectManifestMutationCoordinator.run({
+    command: commandName === 'add' ? 'Reference Add' : 'Reference Remove',
+    target: context.target,
+    run: () => runResolvedVbaDevProjectCommand(
+      options,
+      context,
+      ['reference', commandName, normalizedReferenceName]
+    )
+  });
+  if (coordinated.status === 'rejected') {
+    return undefined;
+  }
+  if (coordinated.processResult === undefined) {
+    throw coordinated.processError ?? new Error(
+      'Reference mutation completed without a process result.'
+    );
+  }
+  const result = coordinated.processResult;
 
   if (result.cancelled) {
     return {
@@ -120,6 +136,10 @@ async function runReferenceListForProject(
   options: ReferenceCommandOptions,
   context: VbaDevProjectCommandContext
 ): Promise<ReferenceCommandResult> {
+  await options.projectManifestMutationCoordinator.reportReadOnlyDiskBasis({
+    command: 'Reference List',
+    target: context.target
+  });
   const result = await runResolvedVbaDevProjectCommand(
     options,
     context,

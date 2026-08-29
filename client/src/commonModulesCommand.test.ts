@@ -20,12 +20,14 @@ test('CommonModules add command preserves exact CP2 names through the CLI bounda
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const calls: Array<{ file: string; args: readonly string[] }> = [];
   const output: string[] = [];
+  const routeEvents: string[] = [];
 
   const result = await runCommonModulesAddCommand(
     createOptions({
       projectRoot,
       calls,
       output,
+      routeEvents,
       documentName: 'Book2',
       startStdout: (args) => {
         if (args[1] === 'list') {
@@ -58,17 +60,26 @@ test('CommonModules add command preserves exact CP2 names through the CLI bounda
   assert.match(output.join(''), /CommonModules for Book1/);
   assert.match(output.join(''), /Base \(dependency\)/);
   assert.match(output.join(''), /Feature \(requested\)/);
+  assert.deepEqual(routeEvents, [
+    'mutation:start:Common Module Add:BookProject:Book2',
+    'process:common-module add',
+    'mutation:complete:Common Module Add',
+    'basis:Common Module List:BookProject:Book2',
+    'process:common-module list'
+  ]);
 });
 
 test('CommonModules update command remains project-scoped without an implicit document list', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const calls: Array<{ file: string; args: readonly string[] }> = [];
   const output: string[] = [];
+  const routeEvents: string[] = [];
 
   await runCommonModulesUpdateCommand(createOptions({
     projectRoot,
     calls,
     output,
+    routeEvents,
     documentName: 'Book2',
     startStdout: (args) => args[1] === 'list'
       ? JSON.stringify({
@@ -85,6 +96,11 @@ test('CommonModules update command remains project-scoped without an implicit do
     ['common-module', 'update', '--project', projectRoot]
   ]);
   assert.doesNotMatch(output.join(''), /CommonModules for/);
+  assert.deepEqual(routeEvents, [
+    'mutation:start:Common Module Update:BookProject:(project)',
+    'process:common-module update',
+    'mutation:complete:Common Module Update'
+  ]);
 });
 
 test('CommonModules mutation success remains authoritative after cancellation without starting list', async () => {
@@ -174,15 +190,41 @@ test('CommonModules target selection cancellation starts no companion or mutatio
   assert.deepEqual(calls, []);
 });
 
+test('CommonModules mutation rejection launches no mutation or follow-up list', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const calls: Array<{ file: string; args: readonly string[] }> = [];
+  const routeEvents: string[] = [];
+
+  const result = await runCommonModulesAddCommand(createOptions({
+    projectRoot,
+    calls,
+    output: [],
+    startStdout: () => '',
+    rejectMutation: true,
+    routeEvents
+  }), ['Feature']);
+
+  assert.equal(result, undefined);
+  assert.deepEqual(calls.map((call) => call.args), [
+    ['capabilities', '--format', 'json']
+  ]);
+  assert.deepEqual(routeEvents, [
+    'mutation:start:Common Module Add:BookProject:Book2',
+    'mutation:rejected:Common Module Add'
+  ]);
+});
+
 test('CommonModules list command uses selected project arguments and output channel', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const calls: Array<{ file: string; args: readonly string[] }> = [];
   const output: string[] = [];
+  const routeEvents: string[] = [];
 
   await runCommonModulesListCommand(createOptions({
     projectRoot,
     calls,
     output,
+    routeEvents,
     documentName: 'Book2',
     startStdout: () => JSON.stringify({
       document: 'Book1',
@@ -196,6 +238,10 @@ test('CommonModules list command uses selected project arguments and output chan
   ]);
   assert.match(output.join(''), /CommonModules for Book1/);
   assert.match(output.join(''), /\(none\)/);
+  assert.deepEqual(routeEvents, [
+    'basis:Common Module List:BookProject:Book2',
+    'process:common-module list'
+  ]);
 });
 
 test('CommonModules command refreshes project diagnostics from failed command output', async () => {
@@ -265,6 +311,8 @@ function createOptions(
     documentName?: string;
     cancelTargetSelection?: boolean;
     targetScopes?: string[];
+    rejectMutation?: boolean;
+    routeEvents?: string[];
     cancellationToken?: CommonModulesCommandOptions['cancellationToken'];
     startProcess?: NonNullable<CommonModulesCommandOptions['startProcess']>;
   }
@@ -300,6 +348,31 @@ function createOptions(
       };
       return scope === 'document' ? { project, document } : { project };
     },
+    projectManifestMutationCoordinator: {
+      run: async ({ command, target, run }) => {
+        options.routeEvents?.push(
+          `mutation:start:${command}:${target.project.projectName}:${target.document?.name ?? '(project)'}`
+        );
+        if (options.rejectMutation === true) {
+          options.routeEvents?.push(`mutation:rejected:${command}`);
+          return { status: 'rejected', reason: 'preflight' };
+        }
+        const processResult = await run();
+        options.routeEvents?.push(`mutation:complete:${command}`);
+        return {
+          status: 'completed',
+          manifestOutcome: 'unchanged',
+          coherence: 'notRequired',
+          processResult
+        };
+      },
+      reportReadOnlyDiskBasis: async ({ command, target }) => {
+        options.routeEvents?.push(
+          `basis:${command}:${target.project.projectName}:${target.document?.name ?? '(project)'}`
+        );
+        return false;
+      }
+    },
     capabilitiesProcess: async (file, args) => {
       options.calls.push({ file, args });
       return {
@@ -325,6 +398,7 @@ function createOptions(
     },
     startProcess: options.startProcess ?? ((file, args) => {
       options.calls.push({ file, args });
+      options.routeEvents?.push(`process:${args[0]} ${args[1]}`);
       return {
         onStdout: (listener) => listener(options.startStdout(args)),
         onStderr: (listener) => listener(options.startStderr?.(args) ?? ''),

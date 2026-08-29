@@ -17,6 +17,10 @@ async function main(): Promise<void> {
     'vba-tools-extension-host-'
   ));
   const fixtureRoot = await createDebugConfigurationFixture();
+  const mutationFixtureRoot = await mkdtemp(path.join(
+    tmpdir(),
+    'vba-tools-manifest-mutation-fixture-'
+  ));
 
   try {
     await runTests({
@@ -27,12 +31,14 @@ async function main(): Promise<void> {
       launchArgs: createExtensionHostLaunchArgs(userDataPath, fixtureRoot),
       extensionTestsEnv: {
         VBA_TOOLS_EXTENSION_HOST_TEST: '1',
-        VBA_TOOLS_EXTENSION_HOST_FIXTURE_ROOT: fixtureRoot
+        VBA_TOOLS_EXTENSION_HOST_FIXTURE_ROOT: fixtureRoot,
+        VBA_TOOLS_EXTENSION_HOST_MUTATION_FIXTURE_ROOT: mutationFixtureRoot
       }
     });
   } finally {
     await rm(userDataPath, { recursive: true, force: true });
     await rm(fixtureRoot, { recursive: true, force: true });
+    await rm(mutationFixtureRoot, { recursive: true, force: true });
   }
 }
 

@@ -83,6 +83,11 @@ export interface CommandPaletteTargetResolutionOptions {
   showErrorMessage: (message: string) => PromiseLike<unknown> | Promise<unknown>;
 }
 
+export interface CommandPaletteProjectTargetLoadOptions {
+  readTextFile: (filePath: string) => Promise<string>;
+  resolvePathIdentity: (filePath: string) => Promise<CommandPalettePathIdentity>;
+}
+
 export function parseCommandPaletteManifestSelectionProjection(
   json: string
 ): CommandPaletteManifestSelectionProjection | undefined {
@@ -176,7 +181,7 @@ export async function resolveCommandPaletteTarget(
   if (nearestManifest !== undefined) {
     const decision = decideCommandPaletteProjectTarget({
       manifestPath: nearestManifest,
-      project: await loadProjectTarget(nearestManifest, options)
+      project: await loadCommandPaletteProjectTarget(nearestManifest, options)
     }, []);
     if (decision.kind !== 'selected') {
       await options.showErrorMessage(
@@ -191,7 +196,7 @@ export async function resolveCommandPaletteTarget(
     );
     const candidates = (
       await Promise.all(manifestPaths.map((manifestPath) =>
-        loadProjectTarget(manifestPath, options)))
+        loadCommandPaletteProjectTarget(manifestPath, options)))
     ).filter((candidate): candidate is CommandPaletteProjectTarget =>
       candidate !== undefined);
 
@@ -228,18 +233,29 @@ export async function resolveCommandPaletteTarget(
   return document === undefined ? undefined : { project, document };
 }
 
-async function loadProjectTarget(
+export async function loadCommandPaletteProjectTarget(
   manifestPath: string,
-  options: CommandPaletteTargetResolutionOptions
+  options: CommandPaletteProjectTargetLoadOptions
 ): Promise<CommandPaletteProjectTarget | undefined> {
-  let projection: CommandPaletteManifestSelectionProjection | undefined;
+  let manifestText: string;
   try {
-    projection = parseCommandPaletteManifestSelectionProjection(
-      await options.readTextFile(manifestPath)
-    );
+    manifestText = await options.readTextFile(manifestPath);
   } catch {
     return undefined;
   }
+  return resolveCommandPaletteProjectTargetFromManifestText(
+    manifestPath,
+    manifestText,
+    options.resolvePathIdentity
+  );
+}
+
+export async function resolveCommandPaletteProjectTargetFromManifestText(
+  manifestPath: string,
+  manifestText: string,
+  resolvePathIdentity: (filePath: string) => Promise<CommandPalettePathIdentity>
+): Promise<CommandPaletteProjectTarget | undefined> {
+  const projection = parseCommandPaletteManifestSelectionProjection(manifestText);
   if (projection === undefined) {
     return undefined;
   }
@@ -253,7 +269,7 @@ async function loadProjectTarget(
         ...document,
         sourceRoot,
         sourceRootIdentity: normalizeIdentity(
-          await options.resolvePathIdentity(sourceRoot)
+          await resolvePathIdentity(sourceRoot)
         )
       });
     }
@@ -279,6 +295,29 @@ async function loadProjectTarget(
     primaryDocument: projection.primaryDocument,
     documents
   };
+}
+
+export function retainExactCommandPaletteTarget(
+  selected: CommandPaletteTarget,
+  refreshedProject: CommandPaletteProjectTarget
+): CommandPaletteTarget | undefined {
+  if (!sameManifest(selected.project, refreshedProject) ||
+      selected.project.projectName !== refreshedProject.projectName) {
+    return undefined;
+  }
+  if (selected.document === undefined) {
+    return { project: refreshedProject };
+  }
+
+  const refreshedDocument = refreshedProject.documents.find((document) =>
+    document.name === selected.document!.name &&
+    sameCommandPalettePathIdentity(
+      document.sourceRootIdentity,
+      selected.document!.sourceRootIdentity
+    ));
+  return refreshedDocument === undefined
+    ? undefined
+    : { project: refreshedProject, document: refreshedDocument };
 }
 
 async function resolveDocumentTarget(
@@ -475,7 +514,7 @@ function sameOrDescendant(
   candidate: CommandPalettePathIdentity,
   directory: CommandPalettePathIdentity
 ): boolean {
-  if (sameIdentity(candidate, directory)) {
+  if (sameCommandPalettePathIdentity(candidate, directory)) {
     return true;
   }
 
@@ -487,7 +526,7 @@ function sameOrDescendant(
   return candidateKey.startsWith(ordinalIgnoreCaseKey(directoryPrefix));
 }
 
-function sameIdentity(
+export function sameCommandPalettePathIdentity(
   left: CommandPalettePathIdentity,
   right: CommandPalettePathIdentity
 ): boolean {

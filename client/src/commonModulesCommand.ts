@@ -10,8 +10,11 @@ import {
   CommonModulesList,
   parseCommonModulesListOutput
 } from './vbaDevOutputContract';
+import { ProjectManifestMutationCommandCoordinator } from './projectManifestMutation';
 
-export interface CommonModulesCommandOptions extends VbaDevCommandRuntimeOptions {}
+export interface CommonModulesCommandOptions extends VbaDevCommandRuntimeOptions {
+  projectManifestMutationCoordinator: ProjectManifestMutationCommandCoordinator;
+}
 
 export type CommonModulesToolCommand = 'add' | 'list' | 'update';
 
@@ -95,6 +98,10 @@ async function runCommonModulesListForProject(
   options: CommonModulesCommandOptions,
   context: VbaDevProjectCommandContext
 ): Promise<CommonModulesCommandResult> {
+  await options.projectManifestMutationCoordinator.reportReadOnlyDiskBasis({
+    command: 'Common Module List',
+    target: context.target
+  });
   const result = await runResolvedVbaDevProjectCommand(
     options,
     context,
@@ -139,8 +146,21 @@ async function runCommonModulesMutation(
   context: VbaDevProjectCommandContext,
   toolArgs: readonly string[],
   listSelectedDocumentAfterSuccess: boolean
-): Promise<CommonModulesCommandResult> {
-  const result = await runResolvedVbaDevProjectCommand(options, context, toolArgs);
+): Promise<CommonModulesCommandResult | undefined> {
+  const coordinated = await options.projectManifestMutationCoordinator.run({
+    command: toolArgs[1] === 'add' ? 'Common Module Add' : 'Common Module Update',
+    target: context.target,
+    run: () => runResolvedVbaDevProjectCommand(options, context, toolArgs)
+  });
+  if (coordinated.status === 'rejected') {
+    return undefined;
+  }
+  if (coordinated.processResult === undefined) {
+    throw coordinated.processError ?? new Error(
+      'CommonModules mutation completed without a process result.'
+    );
+  }
+  const result = coordinated.processResult;
 
   if (result.cancelled) {
     return {

@@ -15,11 +15,13 @@ test('Reference list command invokes CLI list with explicit project root and map
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const calls: Array<{ file: string; args: readonly string[] }> = [];
   const output: string[] = [];
+  const routeEvents: string[] = [];
 
   const result = await runReferenceListCommand(createOptions({
     projectRoot,
     calls,
     output,
+    routeEvents,
     documentName: 'Book2',
     startStdout: () => JSON.stringify({
       document: 'Book1',
@@ -37,18 +39,24 @@ test('Reference list command invokes CLI list with explicit project root and map
   assert.equal(result.referenceList?.document, 'Book1');
   assert.match(output.join(''), /References for Book1/);
   assert.match(output.join(''), /Microsoft Scripting Runtime/);
+  assert.deepEqual(routeEvents, [
+    'basis:Reference List:BookProject:Book2',
+    'process:reference list'
+  ]);
 });
 
 test('Reference add command uses a human-visible description name', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const calls: Array<{ file: string; args: readonly string[] }> = [];
   const output: string[] = [];
+  const routeEvents: string[] = [];
 
   await runReferenceAddCommand(
     createOptions({
       projectRoot,
       calls,
       output,
+      routeEvents,
       documentName: 'Book2',
       startStdout: (args) => args[1] === 'list'
         ? JSON.stringify({
@@ -69,6 +77,13 @@ test('Reference add command uses a human-visible description name', async () => 
   ]);
   assert.match(output.join(''), /Added Book1\/Microsoft Scripting Runtime/);
   assert.match(output.join(''), /References for Book1/);
+  assert.deepEqual(routeEvents, [
+    'mutation:start:Reference Add:BookProject:Book2',
+    'process:reference add',
+    'mutation:complete:Reference Add',
+    'basis:Reference List:BookProject:Book2',
+    'process:reference list'
+  ]);
 });
 
 test('Reference remove command targets manifest-defined reference entries', async () => {
@@ -185,6 +200,30 @@ test('Reference target selection cancellation starts no companion or mutation', 
   assert.deepEqual(calls, []);
 });
 
+test('Reference mutation rejection launches no mutation or follow-up list', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const calls: Array<{ file: string; args: readonly string[] }> = [];
+  const routeEvents: string[] = [];
+
+  const result = await runReferenceRemoveCommand(createOptions({
+    projectRoot,
+    calls,
+    output: [],
+    startStdout: () => '',
+    rejectMutation: true,
+    routeEvents
+  }), 'Microsoft Scripting Runtime');
+
+  assert.equal(result, undefined);
+  assert.deepEqual(calls.map((call) => call.args), [
+    ['capabilities', '--format', 'json']
+  ]);
+  assert.deepEqual(routeEvents, [
+    'mutation:start:Reference Remove:BookProject:Book2',
+    'mutation:rejected:Reference Remove'
+  ]);
+});
+
 test('Reference commands report a missing input name before invoking CLI', async () => {
   const errors: string[] = [];
   const result = await runReferenceAddCommand(
@@ -263,6 +302,8 @@ function createOptions(
     documentName?: string;
     cancelTargetSelection?: boolean;
     targetScopes?: string[];
+    rejectMutation?: boolean;
+    routeEvents?: string[];
     cancellationToken?: ReferenceCommandOptions['cancellationToken'];
     startProcess?: NonNullable<ReferenceCommandOptions['startProcess']>;
   },
@@ -299,6 +340,31 @@ function createOptions(
       };
       return scope === 'document' ? { project, document } : { project };
     },
+    projectManifestMutationCoordinator: {
+      run: async ({ command, target, run }) => {
+        options.routeEvents?.push(
+          `mutation:start:${command}:${target.project.projectName}:${target.document?.name ?? '(project)'}`
+        );
+        if (options.rejectMutation === true) {
+          options.routeEvents?.push(`mutation:rejected:${command}`);
+          return { status: 'rejected', reason: 'preflight' };
+        }
+        const processResult = await run();
+        options.routeEvents?.push(`mutation:complete:${command}`);
+        return {
+          status: 'completed',
+          manifestOutcome: 'unchanged',
+          coherence: 'notRequired',
+          processResult
+        };
+      },
+      reportReadOnlyDiskBasis: async ({ command, target }) => {
+        options.routeEvents?.push(
+          `basis:${command}:${target.project.projectName}:${target.document?.name ?? '(project)'}`
+        );
+        return false;
+      }
+    },
     capabilitiesProcess: async (file, args) => {
       options.calls.push({ file, args });
       return {
@@ -324,6 +390,7 @@ function createOptions(
     },
     startProcess: options.startProcess ?? ((file, args) => {
       options.calls.push({ file, args });
+      options.routeEvents?.push(`process:${args[0]} ${args[1]}`);
       return {
         onStdout: (listener) => listener(options.startStdout(args)),
         onStderr: (listener) => listener(options.startStderr?.(args) ?? ''),
