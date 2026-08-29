@@ -81,12 +81,15 @@ foundation:
      example_name/
    ```
 
-3. Press `Ctrl+Shift+P` and run `VBA Tools: Open vba-dev Terminal`.
-4. Run `vba-dev new excel -n example_book`.
+3. Press `Ctrl+Shift+P` and run `VBA Tools: Create Excel VBA Project`.
+4. After the command verifies Excel readiness, enter the project name and then
+   select its parent folder. The project folder and `.xlsm` basename use the
+   project name exactly as entered.
 
-   The project name should usually match the `.xlsm` basename. When
-   `common_modules_repo` is present next to the generated project folder,
-   `vba-dev new excel` copies the initial CommonModules into the project.
+   When `common_modules_repo` is present next to the generated project folder,
+   the guided command copies the initial CommonModules into the project. After
+   creation commits, choose the offered action if you want to open the manifest
+   or project folder; VBA Tools does not change the workspace automatically.
 
 5. Add any extra external references needed by the workbook:
 

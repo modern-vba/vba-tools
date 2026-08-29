@@ -295,6 +295,8 @@
   },
   "scripts": {
     "compile": "tsc -b",
+    "generate:ordinal-ignore-case-data": "dotnet run --file scripts/generateOrdinalIgnoreCaseData.cs",
+    "verify:ordinal-ignore-case-data": "dotnet run --file scripts/generateOrdinalIgnoreCaseData.cs -- --check",
     "test": "npm run test:extension && npm run test:devtool && npm run test:debug-adapter && npm run test:language-server && npm run test:packaging",
     "test:extension": "npm run compile && node client/out/testRunner.js",
     "test:extension-host": "npm run publish:devtool && npm run publish:debug-adapter && npm run publish:language-server && npm run compile && node client/out/extensionHost/runTests.js",

@@ -131,7 +131,7 @@ export function runCompanionCommand(
     childCancellationRequested = true;
     if (options.cancellationTransport === 'stdin-v1') {
       options.reportCancellationProgress?.(
-        'Cancellation requested; waiting for vba-dev to finish.'
+        'Cancellation requested; waiting for vba-dev to finish…'
       );
       scheduleForceKill();
       let deliverySettled = false;

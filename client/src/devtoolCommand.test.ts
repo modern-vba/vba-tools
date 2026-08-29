@@ -449,7 +449,7 @@ test('stdin-v1 cancellation reports that the extension is waiting for vba-dev', 
   cancelListener?.();
 
   assert.deepEqual(progress, [
-    'Cancellation requested; waiting for vba-dev to finish.'
+    'Cancellation requested; waiting for vba-dev to finish…'
   ]);
   closeListener?.(130, null);
   await running;
@@ -715,7 +715,7 @@ test('EPIPE detail updates progress while terminal success remains authoritative
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.match(output.join(''), /write EPIPE/);
   assert.deepEqual(progress, [
-    'Cancellation requested; waiting for vba-dev to finish.',
+    'Cancellation requested; waiting for vba-dev to finish…',
     'Cancellation request could not be delivered; waiting for vba-dev to finish.'
   ]);
 

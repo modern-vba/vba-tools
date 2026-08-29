@@ -39,3 +39,7 @@ import './hostClassProjectionStatus.test';
 import './hostClassProjectionRefreshCommand.test';
 import './hostClassProjectionSourceCollection.test';
 import './hostClassProjectionWatcherRegistry.test';
+import './newExcelProjectCommand.test';
+import './newExcelProjectReceipt.test';
+import './newExcelProjectCommandAdapter.test';
+import './ordinalIgnoreCase.test';

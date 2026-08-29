@@ -1,4 +1,5 @@
 import {
+  CompatibleVbaDev,
   CompanionExecutableResolver,
   ProcessRunner,
   RequiredVbaDevContract,
@@ -166,26 +167,34 @@ export async function runVbaDevCommandInvocation(
     return undefined;
   }
 
+  return runResolvedVbaDevCommandInvocation(options, devtool, args);
+}
+
+export async function runResolvedVbaDevCommandInvocation(
+  options: VbaDevInvocationRuntimeOptions,
+  resolution: CompatibleVbaDev,
+  args: readonly string[]
+): Promise<VbaDevCommandRunResult> {
   const result = await runVbaDevCommand({
-    executablePath: devtool.executablePath,
-    args: withStdinCancellationTransport(args, devtool.capabilities),
+    executablePath: resolution.executablePath,
+    args: withStdinCancellationTransport(args, resolution.capabilities),
     outputChannel: options.outputChannel,
     revealOutput: options.revealOutput,
     reportCancellationProgress: options.reportCancellationProgress,
     cancellationToken: options.cancellationToken,
     startProcess: options.startProcess,
-    cancellationTransport: supportsStdinCancellation(devtool.capabilities)
+    cancellationTransport: supportsStdinCancellation(resolution.capabilities)
       ? 'stdin-v1'
       : undefined,
     forceKillAfterCancellationMilliseconds: forceKillDelayForManagedCommand(
       args,
-      devtool.capabilities,
+      resolution.capabilities,
       options.forceKillAfterCancellationMilliseconds
     )
   });
 
   return {
-    executablePath: devtool.executablePath,
+    executablePath: resolution.executablePath,
     stdout: result.stdout,
     stderr: result.stderr,
     exitCode: result.exitCode,
@@ -274,9 +283,23 @@ function withStdinCancellationTransport(
   args: readonly string[],
   capabilities: VbaDevCapabilities
 ): readonly string[] {
-  return supportsStdinCancellation(capabilities)
-    ? [...args, '--cancellation-transport', 'stdin-v1']
-    : args;
+  if (!supportsStdinCancellation(capabilities)) {
+    return args;
+  }
+
+  const invocationArgs: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    if (
+      args[index] === '--cancellation-transport' &&
+      args[index + 1] === 'stdin-v1'
+    ) {
+      index += 1;
+      continue;
+    }
+    invocationArgs.push(args[index]!);
+  }
+
+  return [...invocationArgs, '--cancellation-transport', 'stdin-v1'];
 }
 
 async function resolveInvocationVbaDev(

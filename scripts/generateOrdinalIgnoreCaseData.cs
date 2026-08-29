@@ -1,0 +1,170 @@
+#:property TargetFramework=net10.0
+#:property RestoreIgnoreFailedSources=true
+#:property NuGetAudit=false
+#:property RestoreSources=.
+#:property PublishAot=false
+#:property UseSharedCompilation=false
+
+using System.Text;
+
+var check = args is ["--check"];
+if (!check && args.Length != 0)
+{
+    Console.Error.WriteLine("Usage: dotnet run --file scripts/generateOrdinalIgnoreCaseData.cs -- [--check]");
+    return 2;
+}
+
+var repositoryRoot = FindRepositoryRoot(Directory.GetCurrentDirectory());
+var outputPath = Path.Combine(
+    repositoryRoot,
+    "client",
+    "src",
+    "ordinalIgnoreCaseData.g.ts");
+var mappings = GenerateMappings();
+var generated = Render(mappings);
+var generatedBytes = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)
+    .GetBytes(generated);
+
+if (check)
+{
+    if (!File.Exists(outputPath)
+        || !File.ReadAllBytes(outputPath).SequenceEqual(generatedBytes))
+    {
+        Console.Error.WriteLine(
+            $"Generated OrdinalIgnoreCase data is stale: {outputPath}");
+        return 1;
+    }
+
+    Console.WriteLine(
+        $"Verified {outputPath} ({mappings.Count} canonical mappings).");
+    return 0;
+}
+
+File.WriteAllBytes(outputPath, generatedBytes);
+Console.WriteLine(
+    $"Generated {outputPath} ({mappings.Count} canonical mappings).");
+return 0;
+
+static string FindRepositoryRoot(string startPath)
+{
+    for (var directory = new DirectoryInfo(Path.GetFullPath(startPath));
+         directory is not null;
+         directory = directory.Parent)
+    {
+        if (File.Exists(Path.Combine(directory.FullName, "package.json"))
+            && Directory.Exists(Path.Combine(directory.FullName, "client", "src")))
+        {
+            return directory.FullName;
+        }
+    }
+
+    throw new InvalidOperationException(
+        $"Could not find the vba-tools repository root from {startPath}.");
+}
+
+static IReadOnlyList<(int Source, int Canonical)> GenerateMappings()
+{
+    var comparer = StringComparer.OrdinalIgnoreCase;
+    var mappings = new List<(int Source, int Canonical)>();
+
+    for (var codePoint = 0; codePoint <= 0x10ffff; codePoint++)
+    {
+        if (codePoint is >= 0xd800 and <= 0xdfff)
+        {
+            continue;
+        }
+
+        var source = new Rune(codePoint);
+        var uppercase = Rune.ToUpperInvariant(source);
+        if (uppercase.Value != source.Value
+            && comparer.Equals(source.ToString(), uppercase.ToString()))
+        {
+            mappings.Add((source.Value, uppercase.Value));
+        }
+    }
+
+    VerifyMappings(mappings, comparer);
+    return mappings;
+}
+
+static void VerifyMappings(
+    IReadOnlyList<(int Source, int Canonical)> mappings,
+    StringComparer comparer)
+{
+    var canonicalBySource = mappings.ToDictionary(
+        mapping => mapping.Source,
+        mapping => mapping.Canonical);
+    var candidates = new SortedSet<int>();
+
+    for (var codePoint = 0; codePoint <= 0x10ffff; codePoint++)
+    {
+        if (codePoint is >= 0xd800 and <= 0xdfff)
+        {
+            continue;
+        }
+
+        var source = new Rune(codePoint);
+        var uppercase = Rune.ToUpperInvariant(source);
+        var lowercase = Rune.ToLowerInvariant(source);
+        if (uppercase.Value == source.Value && lowercase.Value == source.Value)
+        {
+            continue;
+        }
+
+        candidates.Add(source.Value);
+        candidates.Add(uppercase.Value);
+        candidates.Add(lowercase.Value);
+    }
+
+    var strings = candidates.ToDictionary(
+        codePoint => codePoint,
+        codePoint => new Rune(codePoint).ToString());
+    foreach (var bucket in candidates.GroupBy(
+                 codePoint => comparer.GetHashCode(strings[codePoint])))
+    {
+        var values = bucket.ToArray();
+        for (var leftIndex = 0; leftIndex < values.Length; leftIndex++)
+        {
+            for (var rightIndex = leftIndex; rightIndex < values.Length; rightIndex++)
+            {
+                var left = values[leftIndex];
+                var right = values[rightIndex];
+                var comparerEqual = comparer.Equals(strings[left], strings[right]);
+                var generatedEqual = Canonicalize(left, canonicalBySource)
+                    == Canonicalize(right, canonicalBySource);
+                if (comparerEqual != generatedEqual)
+                {
+                    throw new InvalidOperationException(
+                        $"Generated mapping disagrees with OrdinalIgnoreCase for "
+                        + $"U+{left:X} and U+{right:X}.");
+                }
+            }
+        }
+    }
+}
+
+static int Canonicalize(int codePoint, IReadOnlyDictionary<int, int> mappings)
+    => mappings.TryGetValue(codePoint, out var canonical) ? canonical : codePoint;
+
+static string Render(IReadOnlyList<(int Source, int Canonical)> mappings)
+{
+    var output = new StringBuilder();
+    output.AppendLine("// <auto-generated />");
+    output.AppendLine("// Generated by dotnet run --file scripts/generateOrdinalIgnoreCaseData.cs.");
+    output.AppendLine("// Authority: .NET 10 StringComparer.OrdinalIgnoreCase and Rune simple casing.");
+    output.AppendLine("// Run the generator with --check to verify this file has not drifted.");
+    output.AppendLine();
+    output.AppendLine("export const ordinalIgnoreCaseCanonicalCodePoints: ReadonlyMap<number, number> =");
+    output.AppendLine("  new Map<number, number>([");
+    foreach (var (source, canonical) in mappings)
+    {
+        output.Append("    [0x")
+            .Append(source.ToString("x"))
+            .Append(", 0x")
+            .Append(canonical.ToString("x"))
+            .AppendLine("],");
+    }
+    output.AppendLine("  ]);");
+
+    return output.ToString().Replace("\r\n", "\n", StringComparison.Ordinal);
+}

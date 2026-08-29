@@ -142,7 +142,11 @@ import {
 import type { VbaDebugConfiguration } from './vscodeDebugConfiguration';
 import { decodeVbaSourceFileText } from './vbaSourceFileText';
 import { createLazyOutputChannel } from './lazyOutputChannel';
-import { runVbaDevCommandInvocation } from './devtoolRuntime';
+import {
+  runResolvedVbaDevCommandInvocation,
+  runVbaDevCommandInvocation
+} from './devtoolRuntime';
+import { NewExcelProjectCommand } from './newExcelProjectCommand';
 import {
   ManagedToolingCommandOperations,
   ManagedToolingWorkspaceTrustGate,
@@ -179,11 +183,91 @@ export async function activate(context: ExtensionContext): Promise<void> {
     configuredPathProvider: getConfiguredDevToolPath,
     reportLog: (log) => appendVbaDevResolutionLog(outputChannel, log)
   });
+  const newExcelProjectCommand = new NewExcelProjectCommand({
+    resolveCompanionExecutable: () => vbaDevResolver.resolve(),
+    runCommand: async (resolution, args) => {
+      const nameOptionIndex = args.indexOf('--name');
+      const title = args[0] === 'doctor'
+        ? 'VBA Tools: Checking Excel VBA project prerequisites'
+        : `VBA Tools: Creating Excel VBA project "${args[nameOptionIndex + 1]}"`;
+      return window.withProgress(
+        {
+          location: ProgressLocation.Notification,
+          title,
+          cancellable: true
+        },
+        (progress, token) => runResolvedVbaDevCommandInvocation({
+          extensionRoot: context.extensionPath,
+          outputChannel: extensionOutputChannel,
+          revealOutput: false,
+          cancellationToken: token,
+          reportCancellationProgress: (message) => progress.report({ message })
+        }, resolution, args)
+      );
+    },
+    showProjectNameInput: async (options) => window.showInputBox({
+      ...options,
+      valueSelection: options.valueSelection === undefined
+        ? undefined
+        : [...options.valueSelection]
+    }),
+    showParentFolder: async (options) => (await window.showOpenDialog({
+      title: options.title,
+      openLabel: options.openLabel,
+      defaultUri: options.defaultUri === undefined
+        ? undefined
+        : Uri.file(options.defaultUri.fsPath),
+      canSelectFiles: false,
+      canSelectFolders: true,
+      canSelectMany: false
+    }))?.[0],
+    getWorkspaceFolders: () => workspace.workspaceFolders?.map(
+      (folder) => folder.uri
+    ) ?? [],
+    getActiveResource: () => window.activeTextEditor?.document.uri,
+    showInformationMessage: async (message, ...actions) => (
+      window.showInformationMessage(message, ...actions)
+    ),
+    showWarningMessage: async (message, ...actions) => (
+      window.showWarningMessage(message, ...actions)
+    ),
+    showErrorMessage: async (message, options, ...actions) => (
+      options === undefined
+        ? window.showErrorMessage(message, ...actions)
+        : window.showErrorMessage(message, options, ...actions)
+    ),
+    showOutput: () => extensionOutputChannel.show(true),
+    appendOutput: (text) => extensionOutputChannel.appendLine(text),
+    openSetupInstructions: async () => {
+      const setupInstructions = Uri.file(
+        path.join(context.extensionPath, 'README.md')
+      ).with({ fragment: '2---prepare-excel' });
+      await commands.executeCommand('markdown.showPreview', setupInstructions);
+    },
+    openSettings: async () => {
+      await commands.executeCommand(
+        'workbench.action.openSettings',
+        'vbaTools.devtool.path'
+      );
+    },
+    openManifest: async (manifestPath) => {
+      const document = await workspace.openTextDocument(Uri.file(manifestPath));
+      await window.showTextDocument(document);
+    },
+    openFolderInNewWindow: async (projectRoot) => {
+      await commands.executeCommand(
+        'vscode.openFolder',
+        Uri.file(projectRoot),
+        true
+      );
+    }
+  });
   const workspaceTrustGate = new ManagedToolingWorkspaceTrustGate({
     isTrusted: () => workspace.isTrusted,
     invalidateManagedToolingState: () => {
       vbaDevResolver.invalidate();
       backgroundVbaDevResolver.invalidate();
+      newExcelProjectCommand.invalidatePreflight();
     },
     showWarningMessage: (message, ...actions) => (
       window.showWarningMessage(message, ...actions)
@@ -735,7 +819,9 @@ export async function activate(context: ExtensionContext): Promise<void> {
     'vbaTools.openVbaDevTerminal': async () => {
       await openVbaDevTerminalCommand(context, vbaDevResolver);
     },
-    'vbaTools.newExcel': () => undefined,
+    'vbaTools.newExcel': async () => {
+      await newExcelProjectCommand.run();
+    },
     'vbaTools.export': async (request?: unknown) => {
       await runExportCommandWithConsent(
         context,

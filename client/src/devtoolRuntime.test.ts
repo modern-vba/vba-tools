@@ -1,7 +1,138 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { runVbaDevCommandInvocation } from './devtoolRuntime';
+import type { CompanionExecutableResolution } from './devtool';
+import {
+  runResolvedVbaDevCommandInvocation,
+  runVbaDevCommandInvocation
+} from './devtoolRuntime';
+
+test('resolved managed invocation starts the already selected companion executable', async () => {
+  const invocations: Array<{ file: string; args: readonly string[] }> = [];
+  let resolutionRequests = 0;
+  const resolution = createResolution();
+
+  const result = await runResolvedVbaDevCommandInvocation({
+    extensionRoot: 'C:\\extensions\\vba-tools',
+    vbaDevResolver: {
+      resolve: async () => {
+        resolutionRequests += 1;
+        throw new Error('The already selected executable must not be resolved again.');
+      }
+    },
+    outputChannel: silentOutputChannel(),
+    startProcess: (file, args) => {
+      invocations.push({ file, args });
+      return {
+        onStdout: (listener) => listener('{"complete":true}\n'),
+        onStderr: () => undefined,
+        onExit: (listener) => listener(0, null),
+        kill: () => undefined
+      };
+    }
+  }, resolution, ['doctor', '--scope', 'environment', '--format', 'json']);
+
+  assert.equal(result.executablePath, resolution.executablePath);
+  assert.equal(result.exitCode, 0);
+  assert.equal(resolutionRequests, 0);
+  assert.deepEqual(invocations, [{
+    file: resolution.executablePath,
+    args: ['doctor', '--scope', 'environment', '--format', 'json']
+  }]);
+});
+
+test('resolved managed invocation adds stdin-v1 exactly once', async () => {
+  let processArgs: readonly string[] = [];
+  const resolution = createResolution({
+    'invocation.stdinCancellation': '1.0'
+  });
+
+  await runResolvedVbaDevCommandInvocation({
+    extensionRoot: 'C:\\extensions\\vba-tools',
+    outputChannel: silentOutputChannel(),
+    startProcess: (_file, args) => {
+      processArgs = args;
+      return {
+        onStdout: () => undefined,
+        onStderr: () => undefined,
+        onExit: (listener) => listener(0, null),
+        requestCancellation: async () => undefined,
+        kill: () => undefined
+      };
+    }
+  }, resolution, [
+    'doctor',
+    '--scope', 'environment',
+    '--format', 'json',
+    '--cancellation-transport', 'stdin-v1'
+  ]);
+
+  assert.equal(
+    processArgs.filter((argument) => argument === '--cancellation-transport').length,
+    1
+  );
+  assert.deepEqual(processArgs.slice(-2), ['--cancellation-transport', 'stdin-v1']);
+});
+
+test('resolved new excel invocation is never caller-force-killed after cancellation', async () => {
+  let cancelListener: (() => void) | undefined;
+  let closeListener: ((exitCode: number | null, signal: string | null) => void) | undefined;
+  let signalStarted: (() => void) | undefined;
+  const started = new Promise<void>((resolve) => {
+    signalStarted = resolve;
+  });
+  let cancellationRequests = 0;
+  let kills = 0;
+  const resolution = createResolution({
+    'invocation.stdinCancellation': '1.0'
+  });
+
+  const running = runResolvedVbaDevCommandInvocation({
+    extensionRoot: 'C:\\extensions\\vba-tools',
+    outputChannel: silentOutputChannel(),
+    forceKillAfterCancellationMilliseconds: 0,
+    cancellationToken: {
+      isCancellationRequested: false,
+      onCancellationRequested: (listener) => {
+        cancelListener = listener;
+        return { dispose: () => undefined };
+      }
+    },
+    startProcess: () => {
+      signalStarted?.();
+      return {
+        onStdout: () => undefined,
+        onStderr: () => undefined,
+        onExit: () => undefined,
+        onClose: (listener) => {
+          closeListener = listener;
+        },
+        requestCancellation: async () => {
+          cancellationRequests += 1;
+        },
+        kill: () => {
+          kills += 1;
+        }
+      };
+    }
+  }, resolution, [
+    'new', 'excel',
+    '--name', 'BookProject',
+    '--output', 'C:\\work\\BookProject',
+    '--format', 'json'
+  ]);
+
+  await started;
+  cancelListener?.();
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+
+  assert.equal(cancellationRequests, 1);
+  assert.equal(kills, 0);
+  closeListener?.(130, null);
+  const result = await running;
+  assert.equal(result.exitCode, 130);
+  assert.equal(result.cancelled, true);
+});
 
 test('managed background invocation preserves output without revealing it', async () => {
   let reveals = 0;
@@ -154,7 +285,7 @@ test('managed runtime retains failed cancellation delivery without replacing suc
   assert.equal(result.cancellationRequestDelivered, false);
   assert.equal(result.cancellationRequestError, 'write EPIPE');
   assert.deepEqual(progress, [
-    'Cancellation requested; waiting for vba-dev to finish.',
+    'Cancellation requested; waiting for vba-dev to finish…',
     'Cancellation request could not be delivered; waiting for vba-dev to finish.'
   ]);
 });
@@ -302,4 +433,28 @@ async function runProtectedCancellation(
   closeListener?.(130, null);
   const result = await running;
   return { kills, result };
+}
+
+function createResolution(
+  featureVersions: Record<string, string> = {}
+): CompanionExecutableResolution {
+  return {
+    executablePath: 'C:\\tools\\vba-dev.exe',
+    capabilities: {
+      toolVersion: '0.1.0',
+      contractVersion: '1.0',
+      featureVersions,
+      commands: {}
+    },
+    bundledPath: 'C:\\tools\\vba-dev.exe',
+    source: 'bundled'
+  };
+}
+
+function silentOutputChannel() {
+  return {
+    append: () => undefined,
+    appendLine: () => undefined,
+    show: () => undefined
+  };
 }

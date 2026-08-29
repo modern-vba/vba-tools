@@ -158,7 +158,7 @@ test('extension wires Workspace Trust into every non-palette managed launch surf
 
   assert.match(
     extensionSource,
-    /invalidateManagedToolingState: \(\) => \{\s*vbaDevResolver\.invalidate\(\);\s*backgroundVbaDevResolver\.invalidate\(\);\s*\}/
+    /invalidateManagedToolingState: \(\) => \{\s*vbaDevResolver\.invalidate\(\);\s*backgroundVbaDevResolver\.invalidate\(\);\s*newExcelProjectCommand\.invalidatePreflight\(\);\s*\}/
   );
   assert.match(
     extensionSource,
