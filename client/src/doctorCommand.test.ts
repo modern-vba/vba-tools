@@ -17,6 +17,7 @@ test('Doctor command validates the CLI and invokes doctor with an explicit proje
   const output: string[] = [];
   const notifications: string[] = [];
   const diagnosticRefreshes: Array<{ scopeKey: string; output: string }> = [];
+  const targetScopes: string[] = [];
 
   const result = await runDoctorCommand({
     extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
@@ -26,6 +27,18 @@ test('Doctor command validates the CLI and invokes doctor with an explicit proje
     fileExists: async (candidate) => candidate === path.join(projectRoot, 'vba-project.json'),
     findProjectManifests: async () => [],
     chooseProject: async () => undefined,
+    resolveCommandPaletteTarget: async (scope) => {
+      targetScopes.push(scope);
+      return {
+        project: {
+          projectRoot,
+          manifestPath: path.join(projectRoot, 'vba-project.json'),
+          projectName: 'BookProject',
+          primaryDocument: 'Book1',
+          documents: []
+        }
+      };
+    },
     capabilitiesProcess: async (file, args) => {
       calls.push({ file, args });
       return {
@@ -96,6 +109,7 @@ test('Doctor command validates the CLI and invokes doctor with an explicit proje
     ['capabilities', '--format', 'json'],
     ['doctor', '--format', 'json', '--project', projectRoot]
   ]);
+  assert.deepEqual(targetScopes, ['project']);
   assert.match(output.join(''), /\[FAIL\] project\.manifest: Project manifest is missing\./);
   assert.match(notifications[0], /Doctor found blocking issues/);
   assert.equal(diagnosticRefreshes.length, 1);
@@ -1357,6 +1371,18 @@ test('Doctor reports configured and effective vba-dev paths after bundled fallba
     fileExists: async (candidate) => candidate === path.join(projectRoot, 'vba-project.json'),
     findProjectManifests: async () => [],
     chooseProject: async () => undefined,
+    resolveCommandPaletteTarget: async (scope) => {
+      assert.equal(scope, 'project');
+      return {
+        project: {
+          projectRoot,
+          manifestPath: path.join(projectRoot, 'vba-project.json'),
+          projectName: 'BookProject',
+          primaryDocument: 'Book1',
+          documents: []
+        }
+      };
+    },
     startProcess: (file) => {
       assert.equal(file, effectivePath);
       return {
@@ -1396,6 +1422,15 @@ test('Doctor stops without another notification when companion resolution failur
     fileExists: async (candidate) => candidate === path.join(projectRoot, 'vba-project.json'),
     findProjectManifests: async () => [],
     chooseProject: async () => undefined,
+    resolveCommandPaletteTarget: async () => ({
+      project: {
+        projectRoot,
+        manifestPath: path.join(projectRoot, 'vba-project.json'),
+        projectName: 'BookProject',
+        primaryDocument: 'Book1',
+        documents: []
+      }
+    }),
     startProcess: () => {
       processStarts += 1;
       throw new Error('Doctor must not start');
@@ -1542,6 +1577,18 @@ function createAggregateDoctorFixture(
     fileExists: async (candidate) => candidate === path.join(projectRoot, 'vba-project.json'),
     findProjectManifests: async () => [],
     chooseProject: async () => undefined,
+    resolveCommandPaletteTarget: async (scope) => {
+      assert.equal(scope, 'project');
+      return {
+        project: {
+          projectRoot,
+          manifestPath: path.join(projectRoot, 'vba-project.json'),
+          projectName: 'BookProject',
+          primaryDocument: 'Book1',
+          documents: []
+        }
+      };
+    },
     startProcess: (_file, args) => {
       invocations.push(`project:${args.join(' ')}`);
       return {

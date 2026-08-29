@@ -22,6 +22,27 @@ for (const commandName of ['build', 'test', 'publish'] as const) {
       fileExists: async (candidate) => candidate === path.join(projectRoot, 'vba-project.json'),
       findProjectManifests: async () => [],
       chooseProject: async () => undefined,
+      resolveCommandPaletteTarget: async (scope) => {
+        assert.equal(scope, 'document');
+        const document = {
+          name: 'Book2',
+          sourcePath: 'src/Book2',
+          sourceRoot: path.join(projectRoot, 'src', 'Book2'),
+          sourceRootIdentity: {
+            canonicalPath: path.join(projectRoot, 'src', 'Book2')
+          }
+        };
+        return {
+          project: {
+            projectRoot,
+            manifestPath: path.join(projectRoot, 'vba-project.json'),
+            projectName: 'BookProject',
+            primaryDocument: 'Book1',
+            documents: [document]
+          },
+          document
+        };
+      },
       capabilitiesProcess: async (file, args) => {
         calls.push({ file, args });
         return {
@@ -74,7 +95,7 @@ for (const commandName of ['build', 'test', 'publish'] as const) {
     assert.equal(result.projectRoot, projectRoot);
     assert.deepEqual(calls.map((call) => call.args), [
       ['capabilities', '--format', 'json'],
-      [commandName, '--project', projectRoot]
+      [commandName, '--project', projectRoot, '--document', 'Book2']
     ]);
     assert.equal(calls.some((call) => call.args.includes('common-module') || call.args.includes('restore')), false);
     assert.match(output.join(''), new RegExp(`${commandName} output`));
@@ -118,6 +139,7 @@ test('managed build opts into the verified stdin cancellation transport', async 
     fileExists: async (candidate) => candidate === path.join(projectRoot, 'vba-project.json'),
     findProjectManifests: async () => [],
     chooseProject: async () => undefined,
+    resolveCommandPaletteTarget: createDocumentTargetResolver(projectRoot),
     startProcess: (_file, args) => {
       processArguments.push(args);
       return {
@@ -141,6 +163,8 @@ test('managed build opts into the verified stdin cancellation transport', async 
     'build',
     '--project',
     projectRoot,
+    '--document',
+    'Book2',
     '--cancellation-transport',
     'stdin-v1'
   ]]);
@@ -187,6 +211,7 @@ test('trusted successful build reports one cancellation delivery warning', async
     fileExists: async (candidate) => candidate === path.join(projectRoot, 'vba-project.json'),
     findProjectManifests: async () => [],
     chooseProject: async () => undefined,
+    resolveCommandPaletteTarget: createDocumentTargetResolver(projectRoot),
     cancellationToken: {
       isCancellationRequested: false,
       onCancellationRequested: (listener) => {
@@ -285,6 +310,7 @@ test('managed build escalates after its cooperative cancellation grace period', 
     fileExists: async (candidate) => candidate === path.join(projectRoot, 'vba-project.json'),
     findProjectManifests: async () => [],
     chooseProject: async () => undefined,
+    resolveCommandPaletteTarget: createDocumentTargetResolver(projectRoot),
     forceKillAfterCancellationMilliseconds: 0,
     cancellationToken: {
       isCancellationRequested: false,
@@ -352,6 +378,7 @@ test('WorkbookBackedProject command failure is surfaced to the user', async () =
     fileExists: async (candidate) => candidate === path.join(projectRoot, 'vba-project.json'),
     findProjectManifests: async () => [],
     chooseProject: async () => undefined,
+    resolveCommandPaletteTarget: createDocumentTargetResolver(projectRoot),
     capabilitiesProcess: async () => ({
       stdout: JSON.stringify({
         toolVersion: '0.1.0',
@@ -438,6 +465,7 @@ test('WorkbookBackedProject commands reuse one session-pinned vba-dev executable
     fileExists: async (candidate: string) => candidate === path.join(projectRoot, 'vba-project.json'),
     findProjectManifests: async () => [],
     chooseProject: async () => undefined,
+    resolveCommandPaletteTarget: createDocumentTargetResolver(projectRoot),
     startProcess: (file: string) => {
       commandCalls.push(file);
       return {
@@ -483,6 +511,7 @@ test('WorkbookBackedProject command stops without another notification after a r
     fileExists: async (candidate) => candidate === path.join(projectRoot, 'vba-project.json'),
     findProjectManifests: async () => [],
     chooseProject: async () => undefined,
+    resolveCommandPaletteTarget: createDocumentTargetResolver(projectRoot),
     startProcess: () => {
       processStarts += 1;
       throw new Error('Build must not start');
@@ -506,4 +535,27 @@ test('WorkbookBackedProject command stops without another notification after a r
 
 function toTitle(commandName: string): string {
   return commandName[0].toUpperCase() + commandName.slice(1);
+}
+
+function createDocumentTargetResolver(projectRoot: string) {
+  return async () => {
+    const document = {
+      name: 'Book2',
+      sourcePath: 'src/Book2',
+      sourceRoot: path.join(projectRoot, 'src', 'Book2'),
+      sourceRootIdentity: {
+        canonicalPath: path.join(projectRoot, 'src', 'Book2')
+      }
+    };
+    return {
+      project: {
+        projectRoot,
+        manifestPath: path.join(projectRoot, 'vba-project.json'),
+        projectName: 'BookProject',
+        primaryDocument: 'Book1',
+        documents: [document]
+      },
+      document
+    };
+  };
 }

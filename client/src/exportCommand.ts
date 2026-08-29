@@ -5,11 +5,10 @@ import {
   VbaDevCommandRunResult,
   VbaDevCommandRuntimeOptions,
   VbaDevProjectCommandRunResult,
+  reportCommandPaletteTargetSelection,
   runVbaDevCommandInvocation,
   runVbaDevProjectCommandInvocation
 } from './devtoolRuntime';
-import { discoverWorkbookBackedProject } from './projectDiscovery';
-import { parseProjectManifest } from './projectManifest';
 
 const ExportAction = 'Export';
 
@@ -69,41 +68,14 @@ export async function runExportCommand(
     return result;
   }
 
-  const project = await discoverWorkbookBackedProject(options);
-  if (!project) {
-    await options.showErrorMessage('VBA Tools could not find a workbook-backed vba-project.json.');
+  const selectedTarget = await options.resolveCommandPaletteTarget('document');
+  if (selectedTarget?.document === undefined) {
     return undefined;
   }
+  const project = selectedTarget.project;
+  const document = selectedTarget.document;
 
-  let manifestText: string;
-  try {
-    manifestText = await options.readTextFile(project.manifestPath);
-  } catch (error) {
-    await options.showErrorMessage(
-      `VBA Tools could not read ${project.manifestPath}: ${toErrorMessage(error)}`
-    );
-    return undefined;
-  }
-
-  const manifest = parseProjectManifest(manifestText);
-  if (!manifest) {
-    await options.showErrorMessage(
-      `VBA Tools could not resolve the primary document from ${project.manifestPath}.`
-    );
-    return undefined;
-  }
-
-  const document = manifest.documents.find(
-    (candidate) => candidate.name.toLowerCase() === manifest.primaryDocument.toLowerCase()
-  );
-  if (!document) {
-    await options.showErrorMessage(
-      `VBA Tools could not resolve the primary document from ${project.manifestPath}.`
-    );
-    return undefined;
-  }
-
-  const destinationPath = path.resolve(project.projectRoot, document.sourcePath);
+  const destinationPath = document.sourceRoot;
   if (!await obtainCleanupConsent(options, destinationPath)) {
     return undefined;
   }
@@ -111,19 +83,26 @@ export async function runExportCommand(
   const result = await options.runWithProgress((
     cancellationToken,
     reportCancellationProgress
-  ) =>
-    runVbaDevProjectCommandInvocation(
-      { ...options, cancellationToken, reportCancellationProgress },
+  ) => {
+    const invocationOptions = {
+      ...options,
+      cancellationToken,
+      reportCancellationProgress
+    };
+    reportCommandPaletteTargetSelection(invocationOptions, selectedTarget);
+    return runVbaDevProjectCommandInvocation(
+      invocationOptions,
       {
         projectRoot: project.projectRoot,
+        documentName: document.name,
         argsBeforeProject: ['export'],
         argsAfterProject: [
-          '--document', document.name,
           '--to', destinationPath
-        ]
+        ],
+        reportTarget: false
       }
-    )
-  );
+    );
+  });
 
   if (result && !result.cancelled && result.exitCode !== 0) {
     await options.showErrorMessage('Export failed. See the VBA Tools output for details.');
@@ -145,8 +124,4 @@ async function obtainCleanupConsent(
     ExportAction
   );
   return selectedAction === ExportAction;
-}
-
-function toErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

@@ -3,9 +3,117 @@ import assert from 'node:assert/strict';
 
 import type { CompanionExecutableResolution } from './devtool';
 import {
+  resolveVbaDevProjectCommandContext,
   runResolvedVbaDevCommandInvocation,
+  runResolvedVbaDevProjectCommandInvocation,
   runVbaDevCommandInvocation
 } from './devtoolRuntime';
+
+test('cancelled Command Palette target selection starts no companion resolution or child process', async () => {
+  let companionResolutions = 0;
+  let processStarts = 0;
+  let notifications = 0;
+
+  const context = await resolveVbaDevProjectCommandContext({
+    extensionRoot: 'C:\\extensions\\vba-tools',
+    workspaceRoots: ['C:\\work'],
+    fileExists: async () => false,
+    findProjectManifests: async () => [],
+    chooseProject: async () => undefined,
+    resolveCommandPaletteTarget: async (scope) => {
+      assert.equal(scope, 'document');
+      return undefined;
+    },
+    vbaDevResolver: {
+      resolve: async () => {
+        companionResolutions += 1;
+        throw new Error('Companion resolution must not start after target cancellation.');
+      }
+    },
+    outputChannel: silentOutputChannel(),
+    startProcess: () => {
+      processStarts += 1;
+      throw new Error('Child process must not start after target cancellation.');
+    },
+    showErrorMessage: async () => {
+      notifications += 1;
+    }
+  }, 'document');
+
+  assert.equal(context, undefined);
+  assert.equal(companionResolutions, 0);
+  assert.equal(processStarts, 0);
+  assert.equal(notifications, 0);
+});
+
+test('resolved Command Palette invocation appends exact document target and reports it before process start', async () => {
+  const events: string[] = [];
+  let processArgs: readonly string[] = [];
+  await runResolvedVbaDevProjectCommandInvocation({
+    extensionRoot: 'C:\\extensions\\vba-tools',
+    outputChannel: {
+      append: (value) => events.push(`output:${value}`),
+      appendLine: (value) => events.push(`output:${value}`),
+      show: () => undefined
+    },
+    reportCancellationProgress: (message) => events.push(`progress:${message}`),
+    startProcess: (_file, args) => {
+      events.push('process:start');
+      processArgs = args;
+      return {
+        onStdout: () => undefined,
+        onStderr: () => undefined,
+        onExit: (listener) => listener(0, null),
+        kill: () => undefined
+      };
+    }
+  }, 'C:\\tools\\vba-dev.exe', {
+    projectRoot: 'C:\\work\\Project',
+    documentName: 'Book2',
+    argsBeforeProject: ['build'],
+    reportTarget: true
+  }, createResolution().capabilities);
+
+  assert.deepEqual(processArgs, [
+    'build',
+    '--project', 'C:\\work\\Project',
+    '--document', 'Book2'
+  ]);
+  assert.deepEqual(events.slice(0, 4), [
+    'output:Command Palette target:',
+    'output:  Project: C:\\work\\Project',
+    'output:  Document: Book2',
+    'progress:Project: C:\\work\\Project; Document: Book2'
+  ]);
+  assert.equal(events[4], 'process:start');
+});
+
+test('project-scoped Command Palette invocation never invents a document target', async () => {
+  let processArgs: readonly string[] = [];
+  await runResolvedVbaDevProjectCommandInvocation({
+    extensionRoot: 'C:\\extensions\\vba-tools',
+    outputChannel: silentOutputChannel(),
+    startProcess: (_file, args) => {
+      processArgs = args;
+      return {
+        onStdout: () => undefined,
+        onStderr: () => undefined,
+        onExit: (listener) => listener(0, null),
+        kill: () => undefined
+      };
+    }
+  }, 'C:\\tools\\vba-dev.exe', {
+    projectRoot: 'C:\\work\\Project',
+    argsBeforeProject: ['doctor', '--format', 'json'],
+    reportTarget: true
+  }, createResolution().capabilities);
+
+  assert.deepEqual(processArgs, [
+    'doctor', '--format', 'json',
+    '--project', 'C:\\work\\Project'
+  ]);
+  assert.equal(processArgs.includes('--document'), false);
+});
 
 test('resolved managed invocation starts the already selected companion executable', async () => {
   const invocations: Array<{ file: string; args: readonly string[] }> = [];

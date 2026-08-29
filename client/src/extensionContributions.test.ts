@@ -178,6 +178,82 @@ test('extension wires Workspace Trust into every non-palette managed launch surf
   );
 });
 
+test('registered Command Palette workflows capture one invocation target before UI and pass its resolver', () => {
+  const extensionSource = fs.readFileSync(
+    path.join(process.cwd(), 'client', 'src', 'extension.ts'),
+    'utf8'
+  );
+  const managedOperations = extensionSource.slice(
+    extensionSource.indexOf('const managedToolingOperations = {'),
+    extensionSource.indexOf('} satisfies ManagedToolingCommandOperations;')
+  );
+  const registrations = [
+    ['vbaTools.doctor', 'runDoctorWithProgress'],
+    ['vbaTools.export', 'runExportCommandWithConsent'],
+    ['vbaTools.build', 'runWorkbookBackedProjectCommandWithProgress'],
+    ['vbaTools.test', 'runWorkbookBackedProjectCommandWithProgress'],
+    ['vbaTools.publish', 'runWorkbookBackedProjectCommandWithProgress'],
+    ['vbaTools.commonModules.add', 'runCommonModulesCommandWithProgress'],
+    ['vbaTools.commonModules.list', 'runCommonModulesCommandWithProgress'],
+    ['vbaTools.commonModules.update', 'runCommonModulesCommandWithProgress'],
+    ['vbaTools.references.list', 'runReferenceCommandWithProgress'],
+    ['vbaTools.references.add', 'runReferenceCommandWithProgress'],
+    ['vbaTools.references.remove', 'runReferenceCommandWithProgress']
+  ] as const;
+
+  for (const [commandId, wrapperName] of registrations) {
+    const escapedCommandId = commandId.replace(/[.]/gu, '\\.');
+    assert.match(
+      managedOperations,
+      new RegExp(`'${escapedCommandId}':[\\s\\S]*?${wrapperName}\\(`),
+      `${commandId} must route through ${wrapperName}`
+    );
+  }
+
+  const wrappers = [
+    extractFunctionSource(extensionSource, 'runDoctorWithProgress', 'openVbaDevTerminalCommand'),
+    extractFunctionSource(
+      extensionSource,
+      'runWorkbookBackedProjectCommandWithProgress',
+      'runExportCommandWithConsent'
+    ),
+    extractFunctionSource(
+      extensionSource,
+      'runExportCommandWithConsent',
+      'runCommonModulesCommandWithProgress'
+    ),
+    extractFunctionSource(
+      extensionSource,
+      'runCommonModulesCommandWithProgress',
+      'promptForCommonModuleNames'
+    ),
+    extractFunctionSource(
+      extensionSource,
+      'runReferenceCommandWithProgress',
+      'promptForReferenceName'
+    )
+  ];
+
+  for (const wrapper of wrappers) {
+    const capture = /const targetSnapshot = capture(?:Vscode)?CommandPaletteInvocationSnapshot\(\);/
+      .exec(wrapper);
+    const captureIndex = capture?.index ?? -1;
+    const firstAwaitIndex = wrapper.indexOf('await ');
+    assert.ok(captureIndex >= 0, 'palette wrapper must capture an invocation snapshot');
+    assert.ok(
+      firstAwaitIndex < 0 || captureIndex < firstAwaitIndex,
+      'palette wrapper must capture before its first asynchronous UI boundary'
+    );
+    assert.match(
+      wrapper,
+      /const resolveTarget = createCommandPaletteTargetResolver\(targetSnapshot\);/
+    );
+    assert.match(wrapper, /resolveCommandPaletteTarget: resolveTarget/);
+    assert.match(wrapper, /activeFilePath: targetSnapshot\.activeFilePath/);
+    assert.match(wrapper, /workspaceRoots: targetSnapshot\.workspaceRoots \?\? \[\]/);
+  }
+});
+
 test('extension watches selected Host Event paths through absolute RelativePattern bases', () => {
   const extensionSource = fs.readFileSync(
     path.join(process.cwd(), 'client', 'src', 'extension.ts'),
@@ -684,6 +760,14 @@ function readPackageJson<T>(): T {
   return JSON.parse(
     fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')
   ) as T;
+}
+
+function extractFunctionSource(source: string, name: string, nextName: string): string {
+  const start = source.indexOf(`async function ${name}(`);
+  const end = source.indexOf(`async function ${nextName}(`, start + 1);
+  assert.ok(start >= 0, `Expected extension function ${name}`);
+  assert.ok(end > start, `Expected extension function ${nextName} after ${name}`);
+  return source.slice(start, end);
 }
 
 function readGrammar(): TextMateGrammar {

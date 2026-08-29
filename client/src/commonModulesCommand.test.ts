@@ -26,6 +26,7 @@ test('CommonModules add command preserves exact CP2 names through the CLI bounda
       projectRoot,
       calls,
       output,
+      documentName: 'Book2',
       startStdout: (args) => {
         if (args[1] === 'list') {
           return JSON.stringify({
@@ -47,8 +48,8 @@ test('CommonModules add command preserves exact CP2 names through the CLI bounda
   assert.equal(result.projectRoot, projectRoot);
   assert.deepEqual(calls.map((call) => call.args), [
     ['capabilities', '--format', 'json'],
-    ['common-module', 'add', 'Feature', '\u00A0', '--project', projectRoot],
-    ['common-module', 'list', '--project', projectRoot, '--format', 'json']
+    ['common-module', 'add', 'Feature', '\u00A0', '--project', projectRoot, '--document', 'Book2'],
+    ['common-module', 'list', '--project', projectRoot, '--document', 'Book2', '--format', 'json']
   ]);
   assert.deepEqual(result.commonModulesList?.commonModules, [
     { name: 'Base', requested: false },
@@ -59,7 +60,7 @@ test('CommonModules add command preserves exact CP2 names through the CLI bounda
   assert.match(output.join(''), /Feature \(requested\)/);
 });
 
-test('CommonModules update command invokes CLI update and displays installed modules', async () => {
+test('CommonModules update command remains project-scoped without an implicit document list', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const calls: Array<{ file: string; args: readonly string[] }> = [];
   const output: string[] = [];
@@ -68,6 +69,7 @@ test('CommonModules update command invokes CLI update and displays installed mod
     projectRoot,
     calls,
     output,
+    documentName: 'Book2',
     startStdout: (args) => args[1] === 'list'
       ? JSON.stringify({
         document: 'Book1',
@@ -80,10 +82,9 @@ test('CommonModules update command invokes CLI update and displays installed mod
 
   assert.deepEqual(calls.map((call) => call.args), [
     ['capabilities', '--format', 'json'],
-    ['common-module', 'update', '--project', projectRoot],
-    ['common-module', 'list', '--project', projectRoot, '--format', 'json']
+    ['common-module', 'update', '--project', projectRoot]
   ]);
-  assert.match(output.join(''), /Feature \(requested\)/);
+  assert.doesNotMatch(output.join(''), /CommonModules for/);
 });
 
 test('CommonModules mutation success remains authoritative after cancellation without starting list', async () => {
@@ -144,10 +145,33 @@ test('CommonModules mutation success remains authoritative after cancellation wi
       'Feature',
       '--project',
       projectRoot,
+      '--document',
+      'Book2',
       '--cancellation-transport',
       'stdin-v1'
     ]
   ]);
+});
+
+test('CommonModules target selection cancellation starts no companion or mutation', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const calls: Array<{ file: string; args: readonly string[] }> = [];
+  const targetScopes: string[] = [];
+
+  const result = await runCommonModulesAddCommand(createOptions({
+    projectRoot,
+    calls,
+    output: [],
+    startStdout: () => {
+      throw new Error('cancelled target selection must not start a command');
+    },
+    cancelTargetSelection: true,
+    targetScopes
+  }), ['Feature']);
+
+  assert.equal(result, undefined);
+  assert.deepEqual(targetScopes, ['document']);
+  assert.deepEqual(calls, []);
 });
 
 test('CommonModules list command uses selected project arguments and output channel', async () => {
@@ -159,6 +183,7 @@ test('CommonModules list command uses selected project arguments and output chan
     projectRoot,
     calls,
     output,
+    documentName: 'Book2',
     startStdout: () => JSON.stringify({
       document: 'Book1',
       commonModules: []
@@ -167,7 +192,7 @@ test('CommonModules list command uses selected project arguments and output chan
 
   assert.deepEqual(calls.map((call) => call.args), [
     ['capabilities', '--format', 'json'],
-    ['common-module', 'list', '--project', projectRoot, '--format', 'json']
+    ['common-module', 'list', '--project', projectRoot, '--document', 'Book2', '--format', 'json']
   ]);
   assert.match(output.join(''), /CommonModules for Book1/);
   assert.match(output.join(''), /\(none\)/);
@@ -237,10 +262,14 @@ function createOptions(
     startExitCode?: (args: readonly string[]) => number;
     diagnosticRefreshes?: Array<{ scopeKey: string; output: string }>;
     advertiseStdinCancellation?: boolean;
+    documentName?: string;
+    cancelTargetSelection?: boolean;
+    targetScopes?: string[];
     cancellationToken?: CommonModulesCommandOptions['cancellationToken'];
     startProcess?: NonNullable<CommonModulesCommandOptions['startProcess']>;
   }
 ): CommonModulesCommandOptions {
+  const documentName = options.documentName ?? 'Book2';
   return {
     extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
     configuredDevToolPath: path.join('D:', 'tools', 'vba-dev.exe'),
@@ -249,6 +278,28 @@ function createOptions(
     fileExists: async (candidate) => candidate === path.join(options.projectRoot, 'vba-project.json'),
     findProjectManifests: async () => [],
     chooseProject: async () => undefined,
+    resolveCommandPaletteTarget: async (scope) => {
+      options.targetScopes?.push(scope);
+      if (options.cancelTargetSelection === true) {
+        return undefined;
+      }
+      const document = {
+        name: documentName,
+        sourcePath: `src/${documentName}`,
+        sourceRoot: path.join(options.projectRoot, 'src', documentName),
+        sourceRootIdentity: {
+          canonicalPath: path.join(options.projectRoot, 'src', documentName)
+        }
+      };
+      const project = {
+        projectRoot: options.projectRoot,
+        manifestPath: path.join(options.projectRoot, 'vba-project.json'),
+        projectName: 'BookProject',
+        primaryDocument: 'Book1',
+        documents: [document]
+      };
+      return scope === 'document' ? { project, document } : { project };
+    },
     capabilitiesProcess: async (file, args) => {
       options.calls.push({ file, args });
       return {

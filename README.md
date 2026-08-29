@@ -260,6 +260,35 @@ existing bin workbook.
 | `VBA Tools: Add Reference` | Add a manifest-defined VBA project reference. |
 | `VBA Tools: Remove Reference` | Remove a manifest-defined VBA project reference. |
 
+For each invocation, VBA Tools snapshots the active, visible, and open editor
+paths, then reads `vba-project.json` from disk through a narrow target-selection
+projection. Unsaved manifest edits do not affect this selection. The projection
+reads only the fields needed to identify a project and its document source roots;
+it is separate from, and does not replace, full `vba-dev` manifest validation.
+
+The nearest manifest containing the active path is authoritative. If that
+manifest is unusable, selection fails closed instead of falling back to another
+project. When no manifest contains the active path, selection fails with zero
+usable workspace projects, selects one automatically, and requires a Quick Pick
+for multiple projects. Cancelling a chooser starts no child process and makes no
+mutation.
+
+Within the selected project, an active `.bas`, `.cls`, or `.frm` source with one
+exact canonical owner selects that document. With no such source, a sole
+document is selected automatically, while multiple documents always require a
+Quick Pick. Its initial focus prefers active-source evidence, then unanimous
+visible-source evidence, unanimous open-source evidence, and finally
+`primaryDocument`. Focus never accepts a choice, inactive cursor positions are
+ignored, and no project or document choice is remembered between invocations.
+
+Build, Test, Publish, manifest Export, CommonModules Add/List, and reference
+Add/List/Remove pass the exact selection as `--project <root> --document <name>`.
+CommonModules Update and project Doctor pass only `--project <root>`; adapter
+Doctor remains environment-scoped and receives neither target. The cancellable
+progress notification and VBA Tools output channel report the resolved target
+before a child process starts. Direct `vba-dev` use is unchanged, including its
+`primaryDocument` fallback when `--document` is omitted.
+
 ---
 
 ## vba-dev Terminal

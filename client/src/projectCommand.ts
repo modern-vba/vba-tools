@@ -27,7 +27,12 @@ export interface WorkbookBackedProjectCommandResult {
 export async function runWorkbookBackedProjectCommand(
   options: WorkbookBackedProjectCommandOptions
 ): Promise<WorkbookBackedProjectCommandResult | undefined> {
-  const result = await runVbaDevProjectCommand(options, [options.toolCommandName]);
+  const result = await runVbaDevProjectCommand(
+    options,
+    [options.toolCommandName],
+    [],
+    'document'
+  );
   if (!result) {
     return undefined;
   }

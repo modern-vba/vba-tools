@@ -13,10 +13,12 @@ import {
   VbaToolsOutputChannel,
   runVbaDevCommand
 } from './devtoolCommand';
+import { WorkbookBackedProjectCandidate } from './projectDiscovery';
 import {
-  WorkbookBackedProjectCandidate,
-  discoverWorkbookBackedProject
-} from './projectDiscovery';
+  CommandPaletteDocumentTarget,
+  CommandPaletteTarget,
+  CommandPaletteTargetScope
+} from './commandPaletteTarget';
 import {
   VbaDevDiagnosticReporterLike,
   combineVbaDevDiagnosticOutput,
@@ -48,20 +50,27 @@ export interface VbaDevCommandRuntimeOptions extends VbaDevInvocationRuntimeOpti
   chooseProject: (
     candidates: readonly WorkbookBackedProjectCandidate[]
   ) => Promise<WorkbookBackedProjectCandidate | undefined>;
+  resolveCommandPaletteTarget: (
+    scope: CommandPaletteTargetScope
+  ) => Promise<CommandPaletteTarget | undefined>;
   showErrorMessage: (message: string) => Thenable<unknown> | Promise<unknown>;
 }
 
 export interface VbaDevProjectCommandContext {
   project: WorkbookBackedProjectCandidate;
+  document?: CommandPaletteDocumentTarget | undefined;
+  targetReported?: boolean | undefined;
   executablePath: string;
   capabilities: VbaDevCapabilities;
 }
 
 export interface VbaDevProjectCommandInvocation {
   projectRoot: string;
+  documentName?: string | undefined;
   argsBeforeProject: readonly string[];
   argsAfterProject?: readonly string[] | undefined;
   refreshDiagnostics?: boolean | undefined;
+  reportTarget?: boolean | undefined;
 }
 
 export interface VbaDevProjectCommandRunResult {
@@ -88,13 +97,15 @@ export interface VbaDevCommandRunResult {
 }
 
 export async function resolveVbaDevProjectCommandContext(
-  options: VbaDevCommandRuntimeOptions
+  options: VbaDevCommandRuntimeOptions,
+  targetScope: CommandPaletteTargetScope = 'project'
 ): Promise<VbaDevProjectCommandContext | undefined> {
-  const project = await discoverWorkbookBackedProject(options);
-  if (!project) {
-    await options.showErrorMessage('VBA Tools could not find a workbook-backed vba-project.json.');
+  const target = await options.resolveCommandPaletteTarget(targetScope);
+  if (target === undefined) {
     return undefined;
   }
+
+  reportCommandPaletteTargetSelection(options, target);
 
   const devtool = await resolveInvocationVbaDev(options);
   if (devtool === undefined) {
@@ -102,7 +113,9 @@ export async function resolveVbaDevProjectCommandContext(
   }
 
   return {
-    project,
+    project: target.project,
+    document: target.document,
+    targetReported: true,
     executablePath: devtool.executablePath,
     capabilities: devtool.capabilities
   };
@@ -111,9 +124,10 @@ export async function resolveVbaDevProjectCommandContext(
 export async function runVbaDevProjectCommand(
   options: VbaDevCommandRuntimeOptions,
   argsBeforeProject: readonly string[],
-  argsAfterProject: readonly string[] = []
+  argsAfterProject: readonly string[] = [],
+  targetScope: CommandPaletteTargetScope = 'project'
 ): Promise<VbaDevProjectCommandRunResult | undefined> {
-  const context = await resolveVbaDevProjectCommandContext(options);
+  const context = await resolveVbaDevProjectCommandContext(options, targetScope);
   if (!context) {
     return undefined;
   }
@@ -133,9 +147,11 @@ export async function runResolvedVbaDevProjectCommand(
     context.executablePath,
     {
       projectRoot: context.project.projectRoot,
+      documentName: context.document?.name,
       argsBeforeProject,
       argsAfterProject,
-      refreshDiagnostics
+      refreshDiagnostics,
+      reportTarget: context.targetReported !== true
     },
     context.capabilities
   );
@@ -215,8 +231,18 @@ export async function runResolvedVbaDevProjectCommandInvocation(
     ...invocation.argsBeforeProject,
     '--project',
     invocation.projectRoot,
+    ...(invocation.documentName === undefined
+      ? []
+      : ['--document', invocation.documentName]),
     ...(invocation.argsAfterProject ?? [])
   ];
+  if (invocation.reportTarget === true) {
+    reportTargetReceipt(
+      options,
+      invocation.projectRoot,
+      invocation.documentName
+    );
+  }
   const result = await runVbaDevCommand({
     executablePath,
     args: withStdinCancellationTransport(args, capabilities),
@@ -253,6 +279,34 @@ export async function runResolvedVbaDevProjectCommandInvocation(
     cancellationRequestDelivered: result.cancellationRequestDelivered,
     cancellationRequestError: result.cancellationRequestError
   };
+}
+
+export function reportCommandPaletteTargetSelection(
+  options: Pick<VbaDevInvocationRuntimeOptions, 'outputChannel' | 'reportCancellationProgress'>,
+  target: CommandPaletteTarget
+): void {
+  reportTargetReceipt(
+    options,
+    `${target.project.projectName} (${target.project.projectRoot})`,
+    target.document?.name
+  );
+}
+
+function reportTargetReceipt(
+  options: Pick<VbaDevInvocationRuntimeOptions, 'outputChannel' | 'reportCancellationProgress'>,
+  project: string,
+  documentName: string | undefined
+): void {
+  options.outputChannel.appendLine('Command Palette target:');
+  options.outputChannel.appendLine(`  Project: ${project}`);
+  if (documentName !== undefined) {
+    options.outputChannel.appendLine(`  Document: ${documentName}`);
+  }
+  options.reportCancellationProgress?.(
+    documentName === undefined
+      ? `Project: ${project}`
+      : `Project: ${project}; Document: ${documentName}`
+  );
 }
 
 function supportsStdinCancellation(capabilities: VbaDevCapabilities): boolean {

@@ -3,8 +3,10 @@ import { runGuardedEnterFeasibilityTests } from './guardedEnterFeasibility';
 import { runTestExplorerNavigationIntegrationTests } from './testExplorerNavigationIntegration';
 import { runDebugConfigurationIntegrationTests } from './debugConfigurationIntegration';
 import { runModuleRenameIntegrationTests } from './moduleRenameIntegration';
+import { runCommandPaletteTargetIntegrationTests } from './commandPaletteTargetIntegration';
 
 export async function run(): Promise<void> {
+  await runCommandPaletteTargetIntegrationTests();
   await runDebugConfigurationIntegrationTests();
   await runTestExplorerNavigationIntegrationTests();
   await runGuardedEnterFeasibilityTests();

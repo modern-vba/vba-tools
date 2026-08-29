@@ -144,9 +144,24 @@ import { decodeVbaSourceFileText } from './vbaSourceFileText';
 import { createLazyOutputChannel } from './lazyOutputChannel';
 import {
   runResolvedVbaDevCommandInvocation,
-  runVbaDevCommandInvocation
+  runVbaDevCommandInvocation,
+  VbaDevCommandRuntimeOptions
 } from './devtoolRuntime';
 import { NewExcelProjectCommand } from './newExcelProjectCommand';
+import {
+  CommandPaletteInvocationSnapshot,
+  CommandPaletteProjectTarget,
+  CommandPaletteTargetScope,
+  resolveCommandPaletteTarget
+} from './commandPaletteTarget';
+import {
+  captureCommandPaletteInvocationSnapshot
+} from './commandPaletteInvocationSnapshot';
+import {
+  CommandPaletteDocumentQuickPickItem,
+  chooseCommandPaletteDocumentWithQuickPick,
+  resolveCommandPalettePathIdentity
+} from './commandPaletteTargetAdapter';
 import {
   ManagedToolingCommandOperations,
   ManagedToolingWorkspaceTrustGate,
@@ -160,6 +175,10 @@ let toolDiagnosticReporter: VbaDevDiagnosticReporter | undefined;
 let activeVscodeDebugIntegration: VscodeDebugIntegration | undefined;
 let hostClassProjectionLifecycle: HostClassProjectionLifecycle | undefined;
 let hostClassProjectionWorkspace: HostClassProjectionWorkspace | undefined;
+
+type CommandPaletteTargetResolver = NonNullable<
+  VbaDevCommandRuntimeOptions['resolveCommandPaletteTarget']
+>;
 
 export async function activate(context: ExtensionContext): Promise<void> {
   const extensionOutputChannel = createLazyOutputChannel(
@@ -1030,6 +1049,8 @@ async function runDoctorWithProgress(
   context: ExtensionContext,
   vbaDevResolver: CompanionExecutableResolver
 ): Promise<void> {
+  const targetSnapshot = captureVscodeCommandPaletteInvocationSnapshot();
+  const resolveTarget = createCommandPaletteTargetResolver(targetSnapshot);
   const channel = outputChannel ?? window.createOutputChannel('VBA Tools');
   outputChannel = channel;
 
@@ -1044,11 +1065,12 @@ async function runDoctorWithProgress(
         extensionRoot: context.extensionPath,
         vbaDevResolver,
         configuredDebugAdapterPath: getConfiguredDebugAdapterPath(),
-        activeFilePath: getActiveFilePath(),
-        workspaceRoots: workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [],
+        activeFilePath: targetSnapshot.activeFilePath,
+        workspaceRoots: targetSnapshot.workspaceRoots ?? [],
         fileExists,
         findProjectManifests,
         chooseProject,
+        resolveCommandPaletteTarget: resolveTarget,
         outputChannel: channel,
         diagnosticReporter: toolDiagnosticReporter,
         showErrorMessage: (message) => window.showErrorMessage(message),
@@ -1080,6 +1102,8 @@ async function runWorkbookBackedProjectCommandWithProgress(
   toolCommandName: WorkbookBackedProjectToolCommand,
   title: string
 ): Promise<void> {
+  const targetSnapshot = captureVscodeCommandPaletteInvocationSnapshot();
+  const resolveTarget = createCommandPaletteTargetResolver(targetSnapshot);
   const channel = outputChannel ?? window.createOutputChannel('VBA Tools');
   outputChannel = channel;
 
@@ -1095,11 +1119,12 @@ async function runWorkbookBackedProjectCommandWithProgress(
         title,
         extensionRoot: context.extensionPath,
         vbaDevResolver,
-        activeFilePath: getActiveFilePath(),
-        workspaceRoots: workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [],
+        activeFilePath: targetSnapshot.activeFilePath,
+        workspaceRoots: targetSnapshot.workspaceRoots ?? [],
         fileExists,
         findProjectManifests,
         chooseProject,
+        resolveCommandPaletteTarget: resolveTarget,
         outputChannel: channel,
         diagnosticReporter: toolDiagnosticReporter,
         showWarningMessage: (message, ...items) =>
@@ -1117,17 +1142,20 @@ async function runExportCommandWithConsent(
   vbaDevResolver: CompanionExecutableResolver,
   request?: ExportCommandRequest
 ): Promise<void> {
+  const targetSnapshot = captureVscodeCommandPaletteInvocationSnapshot();
+  const resolveTarget = createCommandPaletteTargetResolver(targetSnapshot);
   const channel = outputChannel ?? window.createOutputChannel('VBA Tools');
   outputChannel = channel;
 
   await runExportCommand({
     extensionRoot: context.extensionPath,
     vbaDevResolver,
-    activeFilePath: getActiveFilePath(),
-    workspaceRoots: workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [],
+    activeFilePath: targetSnapshot.activeFilePath,
+    workspaceRoots: targetSnapshot.workspaceRoots ?? [],
     fileExists,
     findProjectManifests,
     chooseProject,
+    resolveCommandPaletteTarget: resolveTarget,
     readTextFile,
     showWarningMessage: (message, options, ...items) =>
       window.showWarningMessage(message, options, ...items),
@@ -1154,6 +1182,8 @@ async function runCommonModulesCommandWithProgress(
   toolCommandName: CommonModulesToolCommand,
   title: string
 ): Promise<void> {
+  const targetSnapshot = captureVscodeCommandPaletteInvocationSnapshot();
+  const resolveTarget = createCommandPaletteTargetResolver(targetSnapshot);
   const channel = outputChannel ?? window.createOutputChannel('VBA Tools');
   outputChannel = channel;
   const moduleNames = toolCommandName === 'add'
@@ -1173,11 +1203,12 @@ async function runCommonModulesCommandWithProgress(
       const options = {
         extensionRoot: context.extensionPath,
         vbaDevResolver,
-        activeFilePath: getActiveFilePath(),
-        workspaceRoots: workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [],
+        activeFilePath: targetSnapshot.activeFilePath,
+        workspaceRoots: targetSnapshot.workspaceRoots ?? [],
         fileExists,
         findProjectManifests,
         chooseProject,
+        resolveCommandPaletteTarget: resolveTarget,
         outputChannel: channel,
         diagnosticReporter: toolDiagnosticReporter,
         showErrorMessage: (message: string) => window.showErrorMessage(message),
@@ -1216,6 +1247,8 @@ async function runReferenceCommandWithProgress(
   toolCommandName: ReferenceToolCommand,
   title: string
 ): Promise<void> {
+  const targetSnapshot = captureVscodeCommandPaletteInvocationSnapshot();
+  const resolveTarget = createCommandPaletteTargetResolver(targetSnapshot);
   const channel = outputChannel ?? window.createOutputChannel('VBA Tools');
   outputChannel = channel;
   const referenceName = toolCommandName === 'list'
@@ -1235,11 +1268,12 @@ async function runReferenceCommandWithProgress(
       const options = {
         extensionRoot: context.extensionPath,
         vbaDevResolver,
-        activeFilePath: getActiveFilePath(),
-        workspaceRoots: workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [],
+        activeFilePath: targetSnapshot.activeFilePath,
+        workspaceRoots: targetSnapshot.workspaceRoots ?? [],
         fileExists,
         findProjectManifests,
         chooseProject,
+        resolveCommandPaletteTarget: resolveTarget,
         outputChannel: channel,
         diagnosticReporter: toolDiagnosticReporter,
         showErrorMessage: (message: string) => window.showErrorMessage(message),
@@ -1325,6 +1359,53 @@ function getConfiguredDebugAdapterPath(): string | undefined {
 function getActiveFilePath(): string | undefined {
   const editor = window.activeTextEditor;
   return editor?.document.uri.scheme === 'file' ? editor.document.uri.fsPath : undefined;
+}
+
+function captureVscodeCommandPaletteInvocationSnapshot(): CommandPaletteInvocationSnapshot {
+  return captureCommandPaletteInvocationSnapshot({
+    activeTextEditor: window.activeTextEditor,
+    visibleTextEditors: window.visibleTextEditors,
+    textDocuments: workspace.textDocuments,
+    workspaceFolders: workspace.workspaceFolders
+  });
+}
+
+function createCommandPaletteTargetResolver(
+  snapshot: CommandPaletteInvocationSnapshot
+): CommandPaletteTargetResolver {
+  return (scope: CommandPaletteTargetScope) => resolveCommandPaletteTarget({
+    scope,
+    snapshot,
+    workspaceRoots: snapshot.workspaceRoots ?? [],
+    fileExists,
+    findProjectManifests,
+    readTextFile,
+    resolvePathIdentity: resolveCommandPalettePathIdentity,
+    chooseProject: chooseCommandPaletteProject,
+    chooseDocument: (documents, initiallyFocused) =>
+      chooseCommandPaletteDocumentWithQuickPick(
+        () => window.createQuickPick<CommandPaletteDocumentQuickPickItem>(),
+        documents,
+        initiallyFocused,
+        'Select VBA document'
+      ),
+    showErrorMessage: (message) => window.showErrorMessage(message)
+  });
+}
+
+async function chooseCommandPaletteProject(
+  candidates: readonly CommandPaletteProjectTarget[]
+): Promise<CommandPaletteProjectTarget | undefined> {
+  const selected = await window.showQuickPick(
+    candidates.map((candidate) => ({
+      label: candidate.projectName,
+      description: candidate.projectRoot,
+      detail: candidate.manifestPath,
+      candidate
+    })),
+    { title: 'Select WorkbookBackedProject' }
+  );
+  return selected?.candidate;
 }
 
 function routeHostClassTextDocumentChange(

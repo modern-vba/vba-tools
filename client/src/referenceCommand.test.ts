@@ -20,6 +20,7 @@ test('Reference list command invokes CLI list with explicit project root and map
     projectRoot,
     calls,
     output,
+    documentName: 'Book2',
     startStdout: () => JSON.stringify({
       document: 'Book1',
       references: [
@@ -31,7 +32,7 @@ test('Reference list command invokes CLI list with explicit project root and map
   assert.ok(result);
   assert.deepEqual(calls.map((call) => call.args), [
     ['capabilities', '--format', 'json'],
-    ['reference', 'list', '--project', projectRoot, '--format', 'json']
+    ['reference', 'list', '--project', projectRoot, '--document', 'Book2', '--format', 'json']
   ]);
   assert.equal(result.referenceList?.document, 'Book1');
   assert.match(output.join(''), /References for Book1/);
@@ -48,6 +49,7 @@ test('Reference add command uses a human-visible description name', async () => 
       projectRoot,
       calls,
       output,
+      documentName: 'Book2',
       startStdout: (args) => args[1] === 'list'
         ? JSON.stringify({
           document: 'Book1',
@@ -62,8 +64,8 @@ test('Reference add command uses a human-visible description name', async () => 
 
   assert.deepEqual(calls.map((call) => call.args), [
     ['capabilities', '--format', 'json'],
-    ['reference', 'add', 'Microsoft Scripting Runtime', '--project', projectRoot],
-    ['reference', 'list', '--project', projectRoot, '--format', 'json']
+    ['reference', 'add', 'Microsoft Scripting Runtime', '--project', projectRoot, '--document', 'Book2'],
+    ['reference', 'list', '--project', projectRoot, '--document', 'Book2', '--format', 'json']
   ]);
   assert.match(output.join(''), /Added Book1\/Microsoft Scripting Runtime/);
   assert.match(output.join(''), /References for Book1/);
@@ -78,6 +80,7 @@ test('Reference remove command targets manifest-defined reference entries', asyn
       projectRoot,
       calls,
       output: [],
+      documentName: 'Book2',
       startStdout: (args) => args[1] === 'list'
         ? JSON.stringify({
           document: 'Book1',
@@ -90,8 +93,8 @@ test('Reference remove command targets manifest-defined reference entries', asyn
 
   assert.deepEqual(calls.map((call) => call.args), [
     ['capabilities', '--format', 'json'],
-    ['reference', 'remove', 'Microsoft Scripting Runtime', '--project', projectRoot],
-    ['reference', 'list', '--project', projectRoot, '--format', 'json']
+    ['reference', 'remove', 'Microsoft Scripting Runtime', '--project', projectRoot, '--document', 'Book2'],
+    ['reference', 'list', '--project', projectRoot, '--document', 'Book2', '--format', 'json']
   ]);
 });
 
@@ -153,10 +156,33 @@ test('Reference mutation success remains authoritative after cancellation withou
       'Microsoft Scripting Runtime',
       '--project',
       projectRoot,
+      '--document',
+      'Book2',
       '--cancellation-transport',
       'stdin-v1'
     ]
   ]);
+});
+
+test('Reference target selection cancellation starts no companion or mutation', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const calls: Array<{ file: string; args: readonly string[] }> = [];
+  const targetScopes: string[] = [];
+
+  const result = await runReferenceAddCommand(createOptions({
+    projectRoot,
+    calls,
+    output: [],
+    startStdout: () => {
+      throw new Error('cancelled target selection must not start a command');
+    },
+    cancelTargetSelection: true,
+    targetScopes
+  }), 'Microsoft Scripting Runtime');
+
+  assert.equal(result, undefined);
+  assert.deepEqual(targetScopes, ['document']);
+  assert.deepEqual(calls, []);
 });
 
 test('Reference commands report a missing input name before invoking CLI', async () => {
@@ -234,11 +260,15 @@ function createOptions(
     startExitCode?: (args: readonly string[]) => number;
     diagnosticRefreshes?: Array<{ scopeKey: string; output: string }>;
     advertiseStdinCancellation?: boolean;
+    documentName?: string;
+    cancelTargetSelection?: boolean;
+    targetScopes?: string[];
     cancellationToken?: ReferenceCommandOptions['cancellationToken'];
     startProcess?: NonNullable<ReferenceCommandOptions['startProcess']>;
   },
   errors: string[] = []
 ): ReferenceCommandOptions {
+  const documentName = options.documentName ?? 'Book2';
   return {
     extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
     configuredDevToolPath: path.join('D:', 'tools', 'vba-dev.exe'),
@@ -247,6 +277,28 @@ function createOptions(
     fileExists: async (candidate) => candidate === path.join(options.projectRoot, 'vba-project.json'),
     findProjectManifests: async () => [],
     chooseProject: async () => undefined,
+    resolveCommandPaletteTarget: async (scope) => {
+      options.targetScopes?.push(scope);
+      if (options.cancelTargetSelection === true) {
+        return undefined;
+      }
+      const document = {
+        name: documentName,
+        sourcePath: `src/${documentName}`,
+        sourceRoot: path.join(options.projectRoot, 'src', documentName),
+        sourceRootIdentity: {
+          canonicalPath: path.join(options.projectRoot, 'src', documentName)
+        }
+      };
+      const project = {
+        projectRoot: options.projectRoot,
+        manifestPath: path.join(options.projectRoot, 'vba-project.json'),
+        projectName: 'BookProject',
+        primaryDocument: 'Book1',
+        documents: [document]
+      };
+      return scope === 'document' ? { project, document } : { project };
+    },
     capabilitiesProcess: async (file, args) => {
       options.calls.push({ file, args });
       return {

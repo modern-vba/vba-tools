@@ -53,13 +53,18 @@ export async function runCommonModulesAddCommand(
 export async function runCommonModulesUpdateCommand(
   options: CommonModulesCommandOptions
 ): Promise<CommonModulesCommandResult | undefined> {
-  return runCommonModulesMutatingCommand(options, ['common-module', 'update']);
+  const context = await resolveVbaDevProjectCommandContext(options, 'project');
+  if (!context) {
+    return undefined;
+  }
+
+  return runCommonModulesMutation(options, context, ['common-module', 'update'], false);
 }
 
 export async function runCommonModulesListCommand(
   options: CommonModulesCommandOptions
 ): Promise<CommonModulesCommandResult | undefined> {
-  const context = await resolveVbaDevProjectCommandContext(options);
+  const context = await resolveVbaDevProjectCommandContext(options, 'document');
   if (!context) {
     return undefined;
   }
@@ -121,11 +126,20 @@ async function runCommonModulesMutatingCommand(
   options: CommonModulesCommandOptions,
   toolArgs: readonly string[]
 ): Promise<CommonModulesCommandResult | undefined> {
-  const context = await resolveVbaDevProjectCommandContext(options);
+  const context = await resolveVbaDevProjectCommandContext(options, 'document');
   if (!context) {
     return undefined;
   }
 
+  return runCommonModulesMutation(options, context, toolArgs, true);
+}
+
+async function runCommonModulesMutation(
+  options: CommonModulesCommandOptions,
+  context: VbaDevProjectCommandContext,
+  toolArgs: readonly string[],
+  listSelectedDocumentAfterSuccess: boolean
+): Promise<CommonModulesCommandResult> {
   const result = await runResolvedVbaDevProjectCommand(options, context, toolArgs);
 
   if (result.cancelled) {
@@ -153,5 +167,11 @@ async function runCommonModulesMutatingCommand(
     };
   }
 
-  return runCommonModulesListForProject(options, context);
+  return listSelectedDocumentAfterSuccess
+    ? runCommonModulesListForProject(options, context)
+    : {
+      projectRoot: result.projectRoot,
+      exitCode: result.exitCode,
+      cancelled: false
+    };
 }

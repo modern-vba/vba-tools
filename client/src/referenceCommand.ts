@@ -39,7 +39,7 @@ export async function runReferenceRemoveCommand(
 export async function runReferenceListCommand(
   options: ReferenceCommandOptions
 ): Promise<ReferenceCommandResult | undefined> {
-  const context = await resolveVbaDevProjectCommandContext(options);
+  const context = await resolveVbaDevProjectCommandContext(options, 'document');
   if (!context) {
     return undefined;
   }
@@ -77,7 +77,7 @@ async function runReferenceMutatingCommand(
     return undefined;
   }
 
-  const context = await resolveVbaDevProjectCommandContext(options);
+  const context = await resolveVbaDevProjectCommandContext(options, 'document');
   if (!context) {
     return undefined;
   }
