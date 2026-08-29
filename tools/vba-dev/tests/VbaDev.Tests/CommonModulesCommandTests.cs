@@ -340,7 +340,7 @@ public sealed class CommonModulesCommandTests
         var result = application.Run(["common-module", "add", "Feature"]);
 
         Assert.Equal(1, result.ExitCode);
-        Assert.Contains("flat ModuleFile", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("ordinary file", result.StandardError, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(manifestBefore, File.ReadAllBytes(manifestPath));
         var sourceSet = Path.Combine(projectRoot, "src", "Book1");
         Assert.False(File.Exists(Path.Combine(sourceSet, "Feature.bas")));
@@ -1164,7 +1164,7 @@ public sealed class CommonModulesCommandTests
     }
 
     [Fact]
-    public void AddUpgradesInstalledDependencyToRequestedWithoutRecopying()
+    public void AddUpgradesInstalledDependencyWithoutRepositoryMetadataRefreshOrRecopy()
     {
         using var temp = TempDirectory.Create();
         var projectRoot = CreateProjectWithCommonModules(temp, "Project");
@@ -1186,7 +1186,7 @@ public sealed class CommonModulesCommandTests
         Assert.Equal("base v1", ReadModuleBody(Path.Combine(sourceSet, "Base.bas")));
         var updatedManifest = store.Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
         Assert.Equal(
-            [Installed("Base", requested: true, testOnly: true)],
+            [Installed("base", requested: true, testOnly: false, moduleFile: "base.bas")],
             updatedManifest.Documents["Book1"].CommonModules);
     }
 
@@ -2019,8 +2019,8 @@ public sealed class CommonModulesCommandTests
         var result = application.Run(["common-module", "add", "Feature", "--force"]);
 
         Assert.Equal(1, result.ExitCode);
-        Assert.Contains("manifest was not saved", result.StandardError, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("source files may have been partially updated", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("before source mutation began", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(Directory.EnumerateFiles(projectRoot, "vba-project.failed-*.json"));
         var manifest = new JsonProjectManifestStore().Load(Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
         Assert.Empty(manifest.Documents["Book1"].CommonModules);
     }
@@ -2046,7 +2046,12 @@ public sealed class CommonModulesCommandTests
         Assert.Equal(1, result.ExitCode);
         Assert.True(atomicWriter.FileExistedDuringReplace);
         var recoveryFile = Assert.Single(Directory.EnumerateFiles(projectRoot, "vba-project.failed-*.json"));
-        Assert.Equal(recoveryFile, result.StandardError.Trim());
+        Assert.Contains(recoveryFile, result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("manual merge", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(
+            Path.Combine(projectRoot, "src", "Book1", "common-modules", "Feature.bas"),
+            result.StandardError,
+            StringComparison.Ordinal);
         var recoveryBytes = File.ReadAllBytes(recoveryFile);
         Assert.Equal(0xff, recoveryBytes[0]);
         Assert.Equal(0xfe, recoveryBytes[1]);

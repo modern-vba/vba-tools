@@ -2089,19 +2089,202 @@ public sealed class DoctorCommandTests
     }
 
     [Fact]
-    public void DoctorFailsForUnknownCommonModulesManifestEntries()
+    public void DoctorWarnsWhenNonOrphanedInstalledIdentityIsAbsentFromRepository()
     {
         using var temp = TempDirectory.Create();
         var (root, commonRepo) = CreateDoctorProject(temp);
         WriteManifest(commonRepo, ("Feature.bas", "optional", ""));
+        WriteModule(commonRepo, "Feature.bas", "canonical feature");
+        WriteModule(Path.Combine(root, "src", "Book1"), "Missing.bas", "retained source");
         AddInstalledCommonModules(root, new InstalledCommonModule("Missing", "Missing.bas", Requested: true, TestOnly: false));
         var application = CommandLineTestFactory.Create(root, new FakeEnvironmentDiagnosticPort());
 
         var result = application.Run(["doctor"]);
 
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("[WARN] CommonModules (Book1/Missing)", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("not marked orphaned", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void DoctorWarnsForValidRetainedOrphanWithoutTreatingItAsUnknown()
+    {
+        using var temp = TempDirectory.Create();
+        var (root, commonRepo) = CreateDoctorProject(temp);
+        WriteManifest(commonRepo, ("Other.bas", "optional", ""));
+        WriteModule(commonRepo, "Other.bas", "canonical other");
+        WriteModule(Path.Combine(root, "src", "Book1"), "Feature.bas", "retained orphan");
+        AddInstalledCommonModules(
+            root,
+            new InstalledCommonModule(
+                "Feature",
+                "Feature.bas",
+                Requested: true,
+                TestOnly: false,
+                Orphaned: true));
+        var application = CommandLineTestFactory.Create(root, new FakeEnvironmentDiagnosticPort());
+
+        var result = application.Run(["doctor"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("[WARN] CommonModules (Book1/Feature)", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("retained orphan", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("[FAIL] CommonModules (Book1/Feature)", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DoctorWarnsWhenOrphanMarkerIsStaleAfterIdentityReappears()
+    {
+        using var temp = TempDirectory.Create();
+        var (root, commonRepo) = CreateDoctorProject(temp);
+        WriteManifest(commonRepo, ("Feature.bas", "optional", ""));
+        WriteModule(commonRepo, "Feature.bas", "canonical feature");
+        WriteModule(Path.Combine(root, "src", "Book1"), "Feature.bas", "canonical feature");
+        AddInstalledCommonModules(
+            root,
+            new InstalledCommonModule(
+                "Feature",
+                "Feature.bas",
+                Requested: true,
+                TestOnly: false,
+                Orphaned: true));
+        var application = CommandLineTestFactory.Create(root, new FakeEnvironmentDiagnosticPort());
+
+        var result = application.Run(["doctor"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("[WARN] CommonModules (Book1/Feature)", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("marked orphaned", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("run common-module update", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void DoctorDoesNotApplyAReappearedOrphansUnrefreshedDependencyGraph()
+    {
+        using var temp = TempDirectory.Create();
+        var (root, commonRepo) = CreateDoctorProject(temp);
+        WriteManifest(
+            commonRepo,
+            ("Base.bas", "optional", ""),
+            ("Feature.bas", "optional", "Base.bas"));
+        WriteModule(commonRepo, "Base.bas", "canonical base");
+        WriteModule(commonRepo, "Feature.bas", "canonical feature");
+        WriteModule(Path.Combine(root, "src", "Book1"), "Feature.bas", "retained feature");
+        AddInstalledCommonModules(
+            root,
+            new InstalledCommonModule(
+                "Feature",
+                "Feature.bas",
+                Requested: true,
+                TestOnly: false,
+                Orphaned: true));
+        var application = CommandLineTestFactory.Create(root, new FakeEnvironmentDiagnosticPort());
+
+        var result = application.Run(["doctor"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("marked orphaned", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("requires missing dependency", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void DoctorDoesNotInferDependencyReachabilityWhenRequestedRootIsOrphaned()
+    {
+        using var temp = TempDirectory.Create();
+        var (root, commonRepo) = CreateDoctorProject(temp);
+        WriteManifest(commonRepo, ("Base.bas", "optional", ""));
+        WriteModule(commonRepo, "Base.bas", "canonical base");
+        WriteModule(Path.Combine(root, "src", "Book1"), "Feature.bas", "retained orphan");
+        WriteModule(Path.Combine(root, "src", "Book1"), "Base.bas", "canonical base");
+        AddInstalledCommonModules(
+            root,
+            new InstalledCommonModule(
+                "Feature",
+                "Feature.bas",
+                Requested: true,
+                TestOnly: false,
+                Orphaned: true),
+            new InstalledCommonModule(
+                "Base",
+                "Base.bas",
+                Requested: false,
+                TestOnly: false));
+        var application = CommandLineTestFactory.Create(root, new FakeEnvironmentDiagnosticPort());
+
+        var result = application.Run(["doctor"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("retained orphan", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("unreachable", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void DoctorDoesNotInferReachabilityUntilReappearedRequestedOrphanIsRefreshed()
+    {
+        using var temp = TempDirectory.Create();
+        var (root, commonRepo) = CreateDoctorProject(temp);
+        WriteManifest(
+            commonRepo,
+            ("Feature.bas", "optional", ""),
+            ("Base.bas", "optional", ""));
+        WriteModule(commonRepo, "Feature.bas", "canonical feature");
+        WriteModule(commonRepo, "Base.bas", "canonical base");
+        WriteModule(Path.Combine(root, "src", "Book1"), "Feature.bas", "canonical feature");
+        WriteModule(Path.Combine(root, "src", "Book1"), "Base.bas", "canonical base");
+        AddInstalledCommonModules(
+            root,
+            new InstalledCommonModule(
+                "Feature",
+                "Feature.bas",
+                Requested: true,
+                TestOnly: false,
+                Orphaned: true),
+            new InstalledCommonModule(
+                "Base",
+                "Base.bas",
+                Requested: false,
+                TestOnly: false));
+        var application = CommandLineTestFactory.Create(root, new FakeEnvironmentDiagnosticPort());
+
+        var result = application.Run(["doctor"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("marked orphaned", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("unreachable", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void DoctorFailsWhenConfiguredCommonModulesRepositoryIsMissing()
+    {
+        using var temp = TempDirectory.Create();
+        var (root, commonRepo) = CreateDoctorProject(temp);
+        Directory.Delete(commonRepo);
+        var application = CommandLineTestFactory.Create(root, new FakeEnvironmentDiagnosticPort());
+
+        var result = application.Run(["doctor"]);
+
         Assert.Equal(1, result.ExitCode);
-        Assert.Contains("[FAIL] CommonModules (Book1/Missing)", result.StandardOutput, StringComparison.Ordinal);
-        Assert.Contains("unknown", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("[FAIL] CommonModules repository", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("not found", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void DoctorFailsWhenConfiguredCommonModulesPackageSourceIsInvalid()
+    {
+        using var temp = TempDirectory.Create();
+        var (root, commonRepo) = CreateDoctorProject(temp);
+        WriteManifest(commonRepo, ("Feature.bas", "optional", ""));
+        File.WriteAllText(
+            Path.Combine(commonRepo, "Feature.bas"),
+            "not canonical module metadata\r\n",
+            new UTF8Encoding(false));
+        var application = CommandLineTestFactory.Create(root, new FakeEnvironmentDiagnosticPort());
+
+        var result = application.Run(["doctor"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("[FAIL] CommonModules repository", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("ModuleIdentity", result.StandardOutput, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -2110,6 +2293,7 @@ public sealed class DoctorCommandTests
         using var temp = TempDirectory.Create();
         var (root, commonRepo) = CreateDoctorProject(temp);
         WriteManifest(commonRepo, ("Feature.bas", "optional", ""));
+        WriteModule(commonRepo, "Feature.bas", "canonical feature");
         AddInstalledCommonModules(
             root,
             new InstalledCommonModule(
@@ -2176,6 +2360,7 @@ public sealed class DoctorCommandTests
             commonRepo,
             ("Base.bas", "optional", ""),
             ("Feature.bas", "optional", "Base.bas"));
+        WriteModule(commonRepo, "Base.bas", "base");
         WriteModule(commonRepo, "Feature.bas", "feature");
         WriteModule(Path.Combine(root, "src", "Book1"), "Feature.bas", "feature");
         AddInstalledCommonModules(root, new InstalledCommonModule("Feature", "Feature.bas", Requested: true, TestOnly: false));
@@ -2199,6 +2384,9 @@ public sealed class DoctorCommandTests
             ("Left.bas", "optional", "Base.bas"),
             ("Right.bas", "optional", "Base.bas"),
             ("Feature.bas", "optional", "Left.bas,Right.bas"));
+        WriteModule(commonRepo, "Base.bas", "base");
+        WriteModule(commonRepo, "Left.bas", "left");
+        WriteModule(commonRepo, "Right.bas", "right");
         WriteModule(commonRepo, "Feature.bas", "feature");
         WriteModule(Path.Combine(root, "src", "Book1"), "Feature.bas", "feature");
         AddInstalledCommonModules(
@@ -3081,7 +3269,16 @@ public sealed class DoctorCommandTests
     {
         var path = Path.Combine(directory, fileName);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        File.WriteAllText(path, content, new UTF8Encoding(false));
+        var extension = Path.GetExtension(fileName);
+        var moduleName = Path.GetFileNameWithoutExtension(fileName);
+        var header = extension.Equals(".bas", StringComparison.OrdinalIgnoreCase)
+            ? $"Attribute VB_Name = \"{moduleName}\"\r\n"
+            : extension.Equals(".cls", StringComparison.OrdinalIgnoreCase)
+                ? "VERSION 1.0 CLASS\r\nBEGIN\r\nEND\r\n"
+                    + $"Attribute VB_Name = \"{moduleName}\"\r\n"
+                : "VERSION 5.00\r\n"
+                    + $"Attribute VB_Name = \"{moduleName}\"\r\n";
+        File.WriteAllText(path, header + $"' {content}\r\n", new UTF8Encoding(false));
     }
 
     private static void WriteBytes(string path, byte[] content)

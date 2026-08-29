@@ -112,12 +112,18 @@ public sealed class CommonModulesService
             .ConfigureAwait(false);
 
     private static async Task<CommandResult> RunTransactionAsync(
-        Func<Task<string>> execute,
+        Func<Task<CommonModulesTransactionCompletion>> execute,
         CancellationToken cancellationToken)
     {
         try
         {
-            return CommandResult.Success(await execute().ConfigureAwait(false));
+            var completion = await execute().ConfigureAwait(false);
+            var warnings = string.Concat(completion.Warnings.Select(warning =>
+                $"[{warning.Code}] {warning.Message}{Environment.NewLine}"));
+            return new CommandResult(
+                ExitCode: 0,
+                StandardOutput: completion.Output,
+                StandardError: warnings);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

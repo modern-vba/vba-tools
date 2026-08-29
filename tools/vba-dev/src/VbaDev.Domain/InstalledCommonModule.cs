@@ -9,8 +9,10 @@ namespace VbaDev.Domain;
 /// <param name="ModuleFile">The flat exported source file name stored in the document source set.</param>
 /// <param name="Requested">Whether the module was explicitly requested rather than installed as a dependency.</param>
 /// <param name="TestOnly">Whether publish excludes the installed source while build imports it normally.</param>
+/// <param name="Orphaned">Whether the latest successful reconciliation conclusively found the module identity absent.</param>
 public sealed record InstalledCommonModule(
     [property: JsonRequired] string Name,
     [property: JsonRequired] string ModuleFile,
     [property: JsonRequired] bool Requested,
-    [property: JsonRequired] bool TestOnly);
+    [property: JsonRequired] bool TestOnly,
+    [property: JsonRequired] bool Orphaned = false);

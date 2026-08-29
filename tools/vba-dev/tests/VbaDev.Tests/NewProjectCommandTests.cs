@@ -568,6 +568,9 @@ public sealed class NewProjectCommandTests
                 new InstalledCommonModule("UnitTest", "UnitTest.bas", Requested: true, TestOnly: true)
             ],
             manifest.Documents["SampleProject"].CommonModules);
+        Assert.All(
+            manifest.Documents["SampleProject"].CommonModules,
+            module => Assert.False(module.Orphaned));
     }
 
     [Fact]

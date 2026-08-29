@@ -8,6 +8,13 @@ using VbaLanguageServer.Syntax;
 namespace VbaDev.App.CommonModules;
 
 /// <summary>
+/// Carries a trusted CommonModules text result and its ordered non-fatal warnings.
+/// </summary>
+public sealed record CommonModulesTransactionCompletion(
+    string Output,
+    IReadOnlyList<ProjectManifestMutationWarning> Warnings);
+
+/// <summary>
 /// Applies CommonModules source file copies and manifest updates as a recoverable project transaction.
 /// </summary>
 public sealed class CommonModulesInstallationTransaction
@@ -18,11 +25,12 @@ public sealed class CommonModulesInstallationTransaction
         "CommonModules required-reference planning changed while references were being resolved. "
         + "No source or manifest changes were made. Rerun the command.";
 
-    private readonly CommonModulesPackageReader packageReader;
     private readonly ProjectManifestEditor manifestEditor;
     private readonly VbaProjectReferencePlanner? referencePlanner;
     private readonly IProjectManifestMutationCoordinator? manifestMutationCoordinator;
     private readonly IFileSystemPathIdentityResolver pathIdentityResolver;
+    private readonly CommonModulesPackageSnapshotFactory packageSnapshotFactory;
+    private readonly CommonModulesSourceMutationWriter sourceMutationWriter;
 
     /// <summary>
     /// Creates a transaction coordinator for CommonModules installation operations.
@@ -53,12 +61,35 @@ public sealed class CommonModulesInstallationTransaction
         VbaProjectReferencePlanner? referencePlanner = null,
         IProjectManifestMutationCoordinator? manifestMutationCoordinator = null,
         IFileSystemPathIdentityResolver? pathIdentityResolver = null)
+        : this(
+            manifestReader,
+            manifestEditor,
+            referencePlanner,
+            manifestMutationCoordinator,
+            pathIdentityResolver,
+            packageSnapshotFactory: null,
+            sourceMutationWriter: null)
     {
-        packageReader = new CommonModulesPackageReader(manifestReader);
+    }
+
+    internal CommonModulesInstallationTransaction(
+        CommonModulesManifestReader manifestReader,
+        ProjectManifestEditor manifestEditor,
+        VbaProjectReferencePlanner? referencePlanner,
+        IProjectManifestMutationCoordinator? manifestMutationCoordinator,
+        IFileSystemPathIdentityResolver? pathIdentityResolver,
+        CommonModulesPackageSnapshotFactory? packageSnapshotFactory,
+        CommonModulesSourceMutationWriter? sourceMutationWriter)
+    {
+        var packageReader = new CommonModulesPackageReader(manifestReader);
         this.manifestEditor = manifestEditor;
         this.referencePlanner = referencePlanner;
         this.manifestMutationCoordinator = manifestMutationCoordinator;
         this.pathIdentityResolver = pathIdentityResolver ?? new FileSystemPathIdentityResolver();
+        this.packageSnapshotFactory = packageSnapshotFactory
+            ?? new CommonModulesPackageSnapshotFactory(packageReader);
+        this.sourceMutationWriter = sourceMutationWriter
+            ?? new CommonModulesSourceMutationWriter();
     }
 
     /// <summary>
@@ -71,12 +102,13 @@ public sealed class CommonModulesInstallationTransaction
     public string Add(ResolvedProjectContext context, IReadOnlyList<string> requestedModules, bool force)
         => AddAsync(context, requestedModules, force, CancellationToken.None)
             .GetAwaiter()
-            .GetResult();
+            .GetResult()
+            .Output;
 
     /// <summary>
     /// Adds requested CommonModules after resolving every missing required VBA reference.
     /// </summary>
-    public async Task<string> AddAsync(
+    public async Task<CommonModulesTransactionCompletion> AddAsync(
         ResolvedProjectContext context,
         IReadOnlyList<string> requestedModules,
         bool force,
@@ -91,46 +123,57 @@ public sealed class CommonModulesInstallationTransaction
             throw new CommonModulesManifestException("common-module add requires at least one CommonModules module name.");
         }
 
-        var repositoryPath = GetRepositoryPath(context);
-        var entries = packageReader.Load(repositoryPath).Entries;
-        var selectionPlan = CommonModulesDependencyResolver.ResolveRequestedPlan(
-            entries,
-            normalizedRequestedModules);
-        ValidateSelectedEntryIdentities(selectionPlan.Entries);
         var invocationDocument = ProjectManifestEditor.GetDocument(
             context.Manifest,
             context.DocumentName);
+        var repositoryBackedRequests = GetRepositoryBackedAddRequests(
+            invocationDocument,
+            normalizedRequestedModules);
+        IReadOnlyList<string> requiredReferences = [];
+        if (repositoryBackedRequests.Count > 0)
+        {
+            var repositoryPath = GetRepositoryPath(context);
+            var selectionPlan = CaptureProvisionalSelectionPlan(
+                repositoryPath,
+                repositoryBackedRequests,
+                cancellationToken);
+            ValidateSelectedEntryIdentities(selectionPlan.Entries);
+            requiredReferences = selectionPlan.RequiredReferences;
+        }
+
         var referenceEvidence = await ResolveRequiredReferenceEvidenceAsync(
                 context.DocumentName,
                 invocationDocument,
-                selectionPlan.RequiredReferences,
+                requiredReferences,
                 context.TemplateDocumentPath,
                 cancellationToken)
             .ConfigureAwait(false);
 
-        if (manifestMutationCoordinator is null)
-        {
-            var plan = RebaseAdd(
-                new ProjectManifestMutationSnapshot(
-                    context.ProjectRoot,
-                    context.ManifestPath,
-                    context.Manifest),
-                context.DocumentName,
-                normalizedRequestedModules,
-                force,
-                referenceEvidence,
-                cancellationToken);
-            if (plan.Manifest is not null)
-            {
-                SaveManifest(context.ProjectRoot, plan.Manifest);
-            }
-
-            return plan.Result;
-        }
-
-        ProjectManifest? recoveryManifest = null;
+        CommonModulesPackageSnapshot? transactionSnapshot = null;
         try
         {
+            if (manifestMutationCoordinator is null)
+            {
+                var plan = RebaseAdd(
+                    new ProjectManifestMutationSnapshot(
+                        context.ProjectRoot,
+                        context.ManifestPath,
+                        context.Manifest),
+                    context.DocumentName,
+                    normalizedRequestedModules,
+                    force,
+                    referenceEvidence,
+                    cancellationToken);
+                transactionSnapshot = plan.Result.PackageSnapshot;
+                if (plan.Manifest is not null)
+                {
+                    SaveManifest(context.ProjectRoot, plan.Manifest);
+                }
+
+                var cleanup = CleanupSnapshot(transactionSnapshot);
+                return CreateCompletion(plan.Result, [], cleanup);
+            }
+
             var outcome = await manifestMutationCoordinator.ExecuteAsync(
                     context.ProjectRoot,
                     ProjectManifestMutationCommand.CommonModuleAdd,
@@ -143,23 +186,86 @@ public sealed class CommonModulesInstallationTransaction
                             force,
                             referenceEvidence,
                             cancellationToken);
-                        recoveryManifest = plan.Manifest;
+                        transactionSnapshot = plan.Result.PackageSnapshot;
                         return plan;
                     },
                     cancellationToken)
                 .ConfigureAwait(false);
-            return outcome.Result;
+            var outcomeCleanup = CleanupSnapshot(transactionSnapshot);
+            return CreateCompletion(outcome.Result, outcome.Warnings, outcomeCleanup);
         }
-        catch (Exception ex) when (recoveryManifest is not null
-                                   && ex is IOException
-                                       or UnauthorizedAccessException
-                                       or ProjectManifestException)
+        catch (Exception ex)
         {
-            throw CreateManifestRecoveryException(
-                context.ProjectRoot,
-                recoveryManifest,
-                ex);
+            var cleanup = CleanupSnapshot(transactionSnapshot);
+            var contextualFailure = AddSnapshotFailureContext(ex, cleanup);
+            if (ReferenceEquals(contextualFailure, ex))
+            {
+                throw;
+            }
+
+            throw contextualFailure;
         }
+    }
+
+    private CommonModulesSelectionPlan CaptureProvisionalSelectionPlan(
+        string repositoryPath,
+        IReadOnlyList<string> requestedModules,
+        CancellationToken cancellationToken)
+    {
+        CommonModulesPackageSnapshot? snapshot = null;
+        try
+        {
+            snapshot = packageSnapshotFactory.Capture(repositoryPath, cancellationToken);
+            var plan = snapshot.ResolveRequestedPlan(requestedModules);
+            var cleanup = snapshot.Cleanup();
+            if (!cleanup.Deleted)
+            {
+                throw SnapshotCleanupFailure(cleanup.RetainedPath!);
+            }
+
+            return plan;
+        }
+        catch (Exception ex)
+        {
+            var cleanup = CleanupSnapshot(snapshot);
+            throw AddSnapshotFailureContext(ex, cleanup);
+        }
+    }
+
+    private IReadOnlyList<CommonModuleManifestEntry> CaptureProvisionalEntries(
+        string repositoryPath,
+        CancellationToken cancellationToken)
+    {
+        CommonModulesPackageSnapshot? snapshot = null;
+        try
+        {
+            snapshot = packageSnapshotFactory.Capture(repositoryPath, cancellationToken);
+            var entries = snapshot.Entries;
+            var cleanup = snapshot.Cleanup();
+            if (!cleanup.Deleted)
+            {
+                throw SnapshotCleanupFailure(cleanup.RetainedPath!);
+            }
+
+            return entries;
+        }
+        catch (Exception ex)
+        {
+            var cleanup = CleanupSnapshot(snapshot);
+            throw AddSnapshotFailureContext(ex, cleanup);
+        }
+    }
+
+    private static IReadOnlyList<string> GetRepositoryBackedAddRequests(
+        ProjectDocument document,
+        IReadOnlyList<string> normalizedRequestedModules)
+    {
+        var installedNames = document.CommonModules
+            .Select(module => module.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return normalizedRequestedModules
+            .Where(module => !installedNames.Contains(GetCommonModuleName(module)))
+            .ToArray();
     }
 
     private async Task<CommonModulesReferenceResolutionEvidence> ResolveRequiredReferenceEvidenceAsync(
@@ -219,7 +325,7 @@ public sealed class CommonModulesInstallationTransaction
         }
     }
 
-    private ProjectManifestMutationPlan<string> RebaseAdd(
+    private ProjectManifestMutationPlan<CommonModulesRebaseResult> RebaseAdd(
         ProjectManifestMutationSnapshot snapshot,
         string documentName,
         IReadOnlyList<string> normalizedRequestedModules,
@@ -233,52 +339,116 @@ public sealed class CommonModulesInstallationTransaction
             throw RequiredReferencePlanChanged();
         }
 
-        var repositoryPath = GetRepositoryPath(snapshot.ProjectRoot, snapshot.Manifest.CommonModulesRepository);
-        var entries = packageReader.Load(repositoryPath).Entries;
-        var selectionPlan = CommonModulesDependencyResolver.ResolveRequestedPlan(
-            entries,
-            normalizedRequestedModules);
-        var orderedEntries = selectionPlan.Entries;
-        ValidateSelectedEntryIdentities(orderedEntries);
-        var requestedNames = normalizedRequestedModules
-            .Select(GetCommonModuleName)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var plannedManifest = ProjectManifestEditor.Clone(snapshot.Manifest);
         var document = ProjectManifestEditor.GetDocument(plannedManifest, documentName);
-        var referencesChanged = AppendRequiredReferencesFromEvidence(
-            snapshot.ProjectRoot,
-            documentName,
-            document,
-            selectionPlan.RequiredReferences,
-            referenceEvidence);
         var installedByName = document.CommonModules.ToDictionary(
             module => module.Name,
             StringComparer.OrdinalIgnoreCase);
-        ValidateInstalledSourceIdentities(orderedEntries, installedByName);
-        var entriesToCopy = orderedEntries
-            .Where(entry => !installedByName.ContainsKey(entry.Name))
-            .ToArray();
-        var documentSourceSetPath = ResolveManifestPath(snapshot.ProjectRoot, document.SourcePath);
-        var copyPlan = PlanCopyEntries(
-            repositoryPath,
-            documentSourceSetPath,
-            entriesToCopy,
-            "Copied",
-            force,
-            documentName: null);
-        var changed = ApplyInstalledEntries(document, orderedEntries, requestedNames, installedByName)
-            || referencesChanged;
-        ValidatePlannedManifest(plannedManifest);
-        cancellationToken.ThrowIfCancellationRequested();
-        ExecuteCopyPlan(copyPlan);
+        var repositoryBackedRequests = GetRepositoryBackedAddRequests(
+            document,
+            normalizedRequestedModules);
+        CommonModulesPackageSnapshot? packageSnapshot = null;
+        CommonModulesPackageSnapshotCleanupResult? cleanup = null;
+        try
+        {
+            CommonModulesSelectionPlan selectionPlan;
+            if (repositoryBackedRequests.Count == 0)
+            {
+                selectionPlan = new CommonModulesSelectionPlan([], []);
+            }
+            else
+            {
+                var repositoryPath = GetRepositoryPath(
+                    snapshot.ProjectRoot,
+                    snapshot.Manifest.CommonModulesRepository);
+                packageSnapshot = packageSnapshotFactory.Capture(
+                    repositoryPath,
+                    cancellationToken);
+                selectionPlan = packageSnapshot.ResolveRequestedPlan(repositoryBackedRequests);
+            }
 
-        var copied = BuildCopyOutput(copyPlan);
-        var result = copied.Length == 0
-            ? "No CommonModules changes." + Environment.NewLine
-            : copied;
-        return changed
-            ? ProjectManifestMutationPlan<string>.Commit(plannedManifest, result)
-            : ProjectManifestMutationPlan<string>.NoOp(result);
+            var orderedEntries = selectionPlan.Entries;
+            ValidateSelectedEntryIdentities(orderedEntries);
+            var requestedNames = normalizedRequestedModules
+                .Select(GetCommonModuleName)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var referencesChanged = AppendRequiredReferencesFromEvidence(
+                snapshot.ProjectRoot,
+                documentName,
+                document,
+                selectionPlan.RequiredReferences,
+                referenceEvidence);
+            ValidateInstalledSourceIdentities(orderedEntries, installedByName);
+            var entriesToCopy = orderedEntries
+                .Where(entry => !installedByName.ContainsKey(entry.Name))
+                .ToArray();
+            var documentSourceSetPath = ResolveManifestPath(
+                snapshot.ProjectRoot,
+                document.SourcePath);
+            var copyPlan = packageSnapshot is null
+                ? []
+                : PlanCopyEntries(
+                    packageSnapshot,
+                    documentSourceSetPath,
+                    entriesToCopy,
+                    "Copied",
+                    force,
+                    documentName: null);
+            var changed = ApplyAddEntries(
+                    document,
+                    orderedEntries,
+                    requestedNames,
+                    installedByName)
+                || referencesChanged;
+            ValidatePlannedManifest(plannedManifest);
+            var sourceMutation = ExecuteCopyPlan(copyPlan, cancellationToken);
+
+            var copied = BuildCopyOutput(copyPlan);
+            var output = copied.Length == 0
+                ? "No CommonModules changes." + Environment.NewLine
+                : copied;
+            var affectedNames = requestedNames
+                .Concat(orderedEntries.Select(entry => entry.Name))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var result = new CommonModulesRebaseResult(
+                output,
+                packageSnapshot,
+                document.CommonModules.Count(module =>
+                    module.Orphaned && affectedNames.Contains(module.Name)),
+                document.CommonModules.Any(module =>
+                    module.Orphaned && affectedNames.Contains(module.Name)) ? 1 : 0);
+            var recovery = CreateCommitFailureRecovery(
+                snapshot.ProjectRoot,
+                snapshot.ManifestPath,
+                plannedManifest,
+                changed || sourceMutation.SourceMutationCommitted,
+                sourceMutation.SourceMutationCommitted,
+                GetManualVerificationPaths(copyPlan));
+            return changed
+                ? ProjectManifestMutationPlan<CommonModulesRebaseResult>.Commit(
+                    plannedManifest,
+                    result,
+                    sourceMutation.SourceMutationCommitted,
+                    recovery)
+                : ProjectManifestMutationPlan<CommonModulesRebaseResult>.NoOp(
+                    result,
+                    sourceMutation.SourceMutationCommitted,
+                    recovery);
+        }
+        catch (CommonModulesSourceMutationException ex)
+        {
+            var sourceFailure = CreateSourceMutationFailure(
+                snapshot.ProjectRoot,
+                plannedManifest,
+                ex);
+            cleanup ??= CleanupSnapshot(packageSnapshot);
+            throw AddSnapshotFailureContext(sourceFailure, cleanup);
+        }
+        catch (Exception ex)
+        {
+            cleanup ??= CleanupSnapshot(packageSnapshot);
+            throw AddSnapshotFailureContext(ex, cleanup);
+        }
     }
 
     private bool AppendRequiredReferencesFromEvidence(
@@ -355,61 +525,67 @@ public sealed class CommonModulesInstallationTransaction
     public string Update(ResolvedProject project)
         => UpdateAsync(project, CancellationToken.None)
             .GetAwaiter()
-            .GetResult();
+            .GetResult()
+            .Output;
 
     /// <summary>
     /// Refreshes installed CommonModules after resolving all document requirements.
     /// </summary>
-    public async Task<string> UpdateAsync(
+    public async Task<CommonModulesTransactionCompletion> UpdateAsync(
         ResolvedProject project,
         CancellationToken cancellationToken)
     {
-        var repositoryPath = GetRepositoryPath(project);
-        var entries = packageReader.Load(repositoryPath).Entries;
         var referenceEvidenceByDocument = new Dictionary<string, CommonModulesReferenceResolutionEvidence>(
             StringComparer.OrdinalIgnoreCase);
-        foreach (var (documentName, document) in project.Manifest.Documents.OrderBy(
-                     item => item.Key,
-                     StringComparer.OrdinalIgnoreCase))
+        if (project.Manifest.Documents.Values.Any(document => document.CommonModules.Count > 0))
         {
-            var updatePlan = CreateUpdatePlan(entries, document);
-            if (updatePlan is null)
+            var repositoryPath = GetRepositoryPath(project);
+            var entries = CaptureProvisionalEntries(repositoryPath, cancellationToken);
+            foreach (var (documentName, document) in project.Manifest.Documents.OrderBy(
+                         item => item.Key,
+                         StringComparer.OrdinalIgnoreCase))
             {
-                continue;
-            }
+                var updatePlan = CreateUpdatePlan(entries, document);
+                if (updatePlan is null)
+                {
+                    continue;
+                }
 
-            ValidateSelectedEntryIdentities(updatePlan.Entries);
-            referenceEvidenceByDocument.Add(
-                documentName,
-                await ResolveRequiredReferenceEvidenceAsync(
+                ValidateSelectedEntryIdentities(updatePlan.Entries);
+                referenceEvidenceByDocument.Add(
                     documentName,
-                    document,
-                    updatePlan.RequiredReferences,
-                    project.ResolvePath(document.TemplatePath),
-                    cancellationToken)
-                    .ConfigureAwait(false));
-        }
-
-        if (manifestMutationCoordinator is null)
-        {
-            var plan = RebaseUpdate(
-                new ProjectManifestMutationSnapshot(
-                    project.ProjectRoot,
-                    project.ManifestPath,
-                    project.Manifest),
-                referenceEvidenceByDocument,
-                cancellationToken);
-            if (plan.Manifest is not null)
-            {
-                SaveManifest(project.ProjectRoot, plan.Manifest);
+                    await ResolveRequiredReferenceEvidenceAsync(
+                        documentName,
+                        document,
+                        updatePlan.RequiredReferences,
+                        project.ResolvePath(document.TemplatePath),
+                        cancellationToken)
+                        .ConfigureAwait(false));
             }
-
-            return plan.Result;
         }
 
-        ProjectManifest? recoveryManifest = null;
+        CommonModulesPackageSnapshot? transactionSnapshot = null;
         try
         {
+            if (manifestMutationCoordinator is null)
+            {
+                var plan = RebaseUpdate(
+                    new ProjectManifestMutationSnapshot(
+                        project.ProjectRoot,
+                        project.ManifestPath,
+                        project.Manifest),
+                    referenceEvidenceByDocument,
+                    cancellationToken);
+                transactionSnapshot = plan.Result.PackageSnapshot;
+                if (plan.Manifest is not null)
+                {
+                    SaveManifest(project.ProjectRoot, plan.Manifest);
+                }
+
+                var cleanup = CleanupSnapshot(transactionSnapshot);
+                return CreateCompletion(plan.Result, [], cleanup);
+            }
+
             var outcome = await manifestMutationCoordinator.ExecuteAsync(
                     project.ProjectRoot,
                     ProjectManifestMutationCommand.CommonModuleUpdate,
@@ -419,111 +595,291 @@ public sealed class CommonModulesInstallationTransaction
                             snapshot,
                             referenceEvidenceByDocument,
                             cancellationToken);
-                        recoveryManifest = plan.Manifest;
+                        transactionSnapshot = plan.Result.PackageSnapshot;
                         return plan;
                     },
                     cancellationToken)
                 .ConfigureAwait(false);
-            return outcome.Result;
+            var outcomeCleanup = CleanupSnapshot(transactionSnapshot);
+            return CreateCompletion(outcome.Result, outcome.Warnings, outcomeCleanup);
         }
-        catch (Exception ex) when (recoveryManifest is not null
-                                   && ex is IOException
-                                       or UnauthorizedAccessException
-                                       or ProjectManifestException)
+        catch (Exception ex)
         {
-            throw CreateManifestRecoveryException(
-                project.ProjectRoot,
-                recoveryManifest,
-                ex);
+            var cleanup = CleanupSnapshot(transactionSnapshot);
+            var contextualFailure = AddSnapshotFailureContext(ex, cleanup);
+            if (ReferenceEquals(contextualFailure, ex))
+            {
+                throw;
+            }
+
+            throw contextualFailure;
         }
     }
 
+    private Func<Exception, Exception>? CreateCommitFailureRecovery(
+        string projectRoot,
+        string manifestPath,
+        ProjectManifest recoveryManifest,
+        bool recoveryRequired,
+        bool sourceMutationCommitted,
+        IReadOnlyList<string> sourceVerificationPaths)
+        => !recoveryRequired
+            ? null
+            : failure => CreateManifestRecoveryException(
+                projectRoot,
+                manifestPath,
+                recoveryManifest,
+                failure,
+                sourceMutationCommitted,
+                sourceVerificationPaths);
+
     private CommonModulesTransactionException CreateManifestRecoveryException(
         string projectRoot,
+        string manifestPath,
         ProjectManifest recoveryManifest,
-        Exception manifestSaveException)
-        => new(manifestEditor.CreateRecoveryAfterFailedSave(
+        Exception manifestSaveException,
+        bool sourceMutationCommitted,
+        IReadOnlyList<string> sourceVerificationPaths)
+    {
+        var recovery = manifestEditor.CreateRecoveryAfterFailedSave(
             projectRoot,
             recoveryManifest,
-            manifestSaveException));
+            manifestSaveException);
+        if (!sourceMutationCommitted)
+        {
+            return new CommonModulesTransactionException(recovery);
+        }
 
-    private ProjectManifestMutationPlan<string> RebaseUpdate(
+        var verificationPaths = sourceVerificationPaths
+            .Append(Path.GetFullPath(manifestPath))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        var renderedPaths = string.Join(
+            ", ",
+            verificationPaths.Select(path => $"\"{path}\""));
+        return new CommonModulesTransactionException(
+            $"{manifestSaveException.Message}{Environment.NewLine}"
+            + "CommonModules source files may already reflect the complete copy plan, while the "
+            + "project manifest was not committed. The current manifest was preserved. "
+            + $"Manually verify: {renderedPaths}.{Environment.NewLine}"
+            + $"Project manifest recovery: {recovery}{Environment.NewLine}"
+            + "Recovery requires a manual merge and was not applied automatically.");
+    }
+
+    private CommonModulesTransactionException CreateSourceMutationFailure(
+        string projectRoot,
+        ProjectManifest recoveryManifest,
+        CommonModulesSourceMutationException sourceFailure)
+    {
+        var message = sourceFailure.Message;
+        if (sourceFailure.SourceMutationCommitted)
+        {
+            var recovery = manifestEditor.CreateRecoveryAfterFailedSave(
+                projectRoot,
+                recoveryManifest,
+                sourceFailure);
+            message += Environment.NewLine + "Project manifest recovery: " + recovery;
+        }
+
+        return new CommonModulesTransactionException(message);
+    }
+
+    private static CommonModulesPackageSnapshotCleanupResult? CleanupSnapshot(
+        CommonModulesPackageSnapshot? snapshot)
+    {
+        if (snapshot is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            return snapshot.Cleanup();
+        }
+        catch (Exception ex) when (ex is IOException
+                                   or UnauthorizedAccessException
+                                   or InvalidOperationException)
+        {
+            return new CommonModulesPackageSnapshotCleanupResult(
+                Deleted: false,
+                RetainedPath: Path.GetFullPath(snapshot.StagingPath));
+        }
+    }
+
+    private static Exception AddSnapshotFailureContext(
+        Exception failure,
+        CommonModulesPackageSnapshotCleanupResult? cleanup)
+        => cleanup is { Deleted: false, RetainedPath: not null }
+            ? new CommonModulesTransactionException(
+                AddRetainedSnapshotContext(failure.Message, cleanup))
+            : failure;
+
+    private static string AddRetainedSnapshotContext(
+        string message,
+        CommonModulesPackageSnapshotCleanupResult? cleanup)
+        => cleanup is { Deleted: false, RetainedPath: not null }
+            ? message + Environment.NewLine
+                + $"CommonModules snapshot workspace was retained: \"{Path.GetFullPath(cleanup.RetainedPath)}\"."
+            : message;
+
+    private static CommonModulesTransactionException SnapshotCleanupFailure(string retainedPath)
+        => new(
+            $"The CommonModules package snapshot workspace could not be removed: "
+            + $"\"{Path.GetFullPath(retainedPath)}\".");
+
+    private static CommonModulesTransactionCompletion CreateCompletion(
+        CommonModulesRebaseResult result,
+        IReadOnlyList<ProjectManifestMutationWarning> coordinatorWarnings,
+        CommonModulesPackageSnapshotCleanupResult? snapshotCleanup)
+    {
+        var warnings = new List<ProjectManifestMutationWarning>();
+        if (result.OrphanedModuleCount > 0)
+        {
+            var moduleWord = result.OrphanedModuleCount == 1 ? "CommonModule" : "CommonModules";
+            var documentWord = result.OrphanedDocumentCount == 1 ? "document" : "documents";
+            warnings.Add(new ProjectManifestMutationWarning(
+                "orphanedCommonModulesRetained",
+                $"Retained {result.OrphanedModuleCount} orphaned {moduleWord} across "
+                + $"{result.OrphanedDocumentCount} {documentWord}; no source was removed."));
+        }
+
+        warnings.AddRange(coordinatorWarnings);
+        if (snapshotCleanup is { Deleted: false, RetainedPath: not null })
+        {
+            warnings.Add(new ProjectManifestMutationWarning(
+                "commonModulesSnapshotCleanupFailed",
+                "The CommonModules mutation completed, but its non-authoritative snapshot workspace "
+                + $"could not be removed: \"{Path.GetFullPath(snapshotCleanup.RetainedPath)}\"."));
+        }
+
+        var ordered = warnings
+            .GroupBy(warning => warning.Code, StringComparer.Ordinal)
+            .Select(group => group.First())
+            .OrderBy(warning => WarningRank(warning.Code))
+            .ThenBy(warning => warning.Code, StringComparer.Ordinal)
+            .ToArray();
+        return new CommonModulesTransactionCompletion(result.Output, ordered);
+    }
+
+    private static int WarningRank(string code)
+        => code switch
+        {
+            "orphanedCommonModulesRetained" => 0,
+            "cancellationDeferred" => 1,
+            "commonModulesSnapshotCleanupFailed" => 2,
+            "leaseMarkerCleanupFailed" => 3,
+            _ => 4
+        };
+
+    private ProjectManifestMutationPlan<CommonModulesRebaseResult> RebaseUpdate(
         ProjectManifestMutationSnapshot snapshot,
         IReadOnlyDictionary<string, CommonModulesReferenceResolutionEvidence> referenceEvidenceByDocument,
         CancellationToken cancellationToken)
     {
-        var repositoryPath = GetRepositoryPath(snapshot.ProjectRoot, snapshot.Manifest.CommonModulesRepository);
-        var entries = packageReader.Load(repositoryPath).Entries;
         var plannedManifest = ProjectManifestEditor.Clone(snapshot.Manifest);
-        var copyPlans = new List<CommonModuleCopyPlan>();
-        var manifestChanged = false;
-        var updatePlans = new List<(
-            string DocumentName,
-            ProjectDocument Document,
-            CommonModulesUpdatePlan Plan)>();
-
-        foreach (var (documentName, document) in plannedManifest.Documents.OrderBy(
-                     item => item.Key,
-                     StringComparer.OrdinalIgnoreCase))
-        {
-            var updatePlan = CreateUpdatePlan(entries, document);
-            if (updatePlan is null)
-            {
-                continue;
-            }
-
-            updatePlans.Add((documentName, document, updatePlan));
-        }
-
-        if (updatePlans.Count != referenceEvidenceByDocument.Count
-            || updatePlans.Any(updatePlan =>
-                !referenceEvidenceByDocument.ContainsKey(updatePlan.DocumentName)))
+        var targetDocuments = plannedManifest.Documents
+            .Where(item => item.Value.CommonModules.Count > 0)
+            .OrderBy(item => item.Key, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.Key, StringComparer.Ordinal)
+            .ToArray();
+        if (targetDocuments.Length != referenceEvidenceByDocument.Count
+            || targetDocuments.Any(item => !referenceEvidenceByDocument.ContainsKey(item.Key)))
         {
             throw RequiredReferencePlanChanged();
         }
 
-        foreach (var (documentName, document, updatePlan) in updatePlans)
+        CommonModulesPackageSnapshot? packageSnapshot = null;
+        CommonModulesPackageSnapshotCleanupResult? cleanup = null;
+        try
         {
-            ValidateSelectedEntryIdentities(updatePlan.Entries);
-            var referenceEvidence = referenceEvidenceByDocument[documentName];
-            manifestChanged |= AppendRequiredReferencesFromEvidence(
-                snapshot.ProjectRoot,
-                documentName,
-                document,
-                updatePlan.RequiredReferences,
-                referenceEvidence);
-            var installedByName = document.CommonModules.ToDictionary(
-                module => module.Name,
-                StringComparer.OrdinalIgnoreCase);
-            ValidateInstalledSourceIdentities(updatePlan.Entries, installedByName);
-            var documentSourceSetPath = ResolveManifestPath(snapshot.ProjectRoot, document.SourcePath);
-            copyPlans.AddRange(PlanCopyEntries(
-                repositoryPath,
-                documentSourceSetPath,
-                updatePlan.Entries,
-                "Updated",
-                overwrite: true,
-                documentName));
-            if (ApplyInstalledEntries(
-                    document,
-                    updatePlan.Entries,
-                    updatePlan.RequestedNames,
-                    installedByName))
+            IReadOnlyList<CommonModuleManifestEntry> entries = [];
+            if (targetDocuments.Length > 0)
             {
-                manifestChanged = true;
+                var repositoryPath = GetRepositoryPath(
+                    snapshot.ProjectRoot,
+                    snapshot.Manifest.CommonModulesRepository);
+                packageSnapshot = packageSnapshotFactory.Capture(
+                    repositoryPath,
+                    cancellationToken);
+                entries = packageSnapshot.Entries;
             }
-        }
 
-        ValidatePlannedManifest(plannedManifest);
-        cancellationToken.ThrowIfCancellationRequested();
-        ExecuteCopyPlan(copyPlans);
-        var output = BuildCopyOutput(copyPlans);
-        var result = output.Length == 0
-            ? "No installed CommonModules entries were found." + Environment.NewLine
-            : output;
-        return manifestChanged
-            ? ProjectManifestMutationPlan<string>.Commit(plannedManifest, result)
-            : ProjectManifestMutationPlan<string>.NoOp(result);
+            var copyPlans = new List<CommonModuleCopyPlan>();
+            var manifestChanged = false;
+            foreach (var (documentName, document) in targetDocuments)
+            {
+                var updatePlan = CreateUpdatePlan(entries, document)!;
+                ValidateSelectedEntryIdentities(updatePlan.Entries);
+                manifestChanged |= AppendRequiredReferencesFromEvidence(
+                    snapshot.ProjectRoot,
+                    documentName,
+                    document,
+                    updatePlan.RequiredReferences,
+                    referenceEvidenceByDocument[documentName]);
+                var installedByName = document.CommonModules.ToDictionary(
+                    module => module.Name,
+                    StringComparer.OrdinalIgnoreCase);
+                ValidateInstalledSourceIdentities(updatePlan.Entries, installedByName);
+                var documentSourceSetPath = ResolveManifestPath(
+                    snapshot.ProjectRoot,
+                    document.SourcePath);
+                copyPlans.AddRange(PlanCopyEntries(
+                    packageSnapshot!,
+                    documentSourceSetPath,
+                    updatePlan.Entries,
+                    "Updated",
+                    overwrite: true,
+                    documentName));
+                manifestChanged |= ApplyUpdateEntries(
+                    document,
+                    updatePlan,
+                    installedByName);
+            }
+
+            ValidatePlannedManifest(plannedManifest);
+            var sourceMutation = ExecuteCopyPlan(copyPlans, cancellationToken);
+            var output = BuildCopyOutput(copyPlans);
+            var result = new CommonModulesRebaseResult(
+                output.Length == 0
+                    ? targetDocuments.Length == 0
+                        ? "No installed CommonModules entries were found." + Environment.NewLine
+                        : "No CommonModules changes." + Environment.NewLine
+                    : output,
+                packageSnapshot,
+                targetDocuments.Sum(item => item.Value.CommonModules.Count(module => module.Orphaned)),
+                targetDocuments.Count(item => item.Value.CommonModules.Any(module => module.Orphaned)));
+            var recovery = CreateCommitFailureRecovery(
+                snapshot.ProjectRoot,
+                snapshot.ManifestPath,
+                plannedManifest,
+                manifestChanged || sourceMutation.SourceMutationCommitted,
+                sourceMutation.SourceMutationCommitted,
+                GetManualVerificationPaths(copyPlans));
+            return manifestChanged
+                ? ProjectManifestMutationPlan<CommonModulesRebaseResult>.Commit(
+                    plannedManifest,
+                    result,
+                    sourceMutation.SourceMutationCommitted,
+                    recovery)
+                : ProjectManifestMutationPlan<CommonModulesRebaseResult>.NoOp(
+                    result,
+                    sourceMutation.SourceMutationCommitted,
+                    recovery);
+        }
+        catch (CommonModulesSourceMutationException ex)
+        {
+            var sourceFailure = CreateSourceMutationFailure(
+                snapshot.ProjectRoot,
+                plannedManifest,
+                ex);
+            cleanup ??= CleanupSnapshot(packageSnapshot);
+            throw AddSnapshotFailureContext(sourceFailure, cleanup);
+        }
+        catch (Exception ex)
+        {
+            cleanup ??= CleanupSnapshot(packageSnapshot);
+            throw AddSnapshotFailureContext(ex, cleanup);
+        }
     }
 
     private static CommonModulesUpdatePlan? CreateUpdatePlan(
@@ -538,15 +894,24 @@ public sealed class CommonModulesInstallationTransaction
             return null;
         }
 
+        var entriesByName = entries.ToDictionary(
+            entry => entry.Name,
+            StringComparer.OrdinalIgnoreCase);
         var requestedModuleNames = document.CommonModules
             .Where(module => module.Requested)
             .Select(module => module.Name)
             .ToArray();
-        var dependencyClosureEntries = requestedModuleNames.Length == 0
+        var availableRequestedModuleNames = requestedModuleNames
+            .Where(entriesByName.ContainsKey)
+            .ToArray();
+        var dependencyClosureEntries = availableRequestedModuleNames.Length == 0
             ? []
-            : CommonModulesDependencyResolver.ResolveRequestedEntries(entries, requestedModuleNames);
+            : CommonModulesDependencyResolver.ResolveRequestedEntries(
+                entries,
+                availableRequestedModuleNames);
         var installedEntries = installedModuleNames
-            .Select(module => CommonModulesDependencyResolver.ResolveEntry(entries, module))
+            .Where(entriesByName.ContainsKey)
+            .Select(module => entriesByName[module])
             .ToArray();
         var orderedEntries = CommonModulesDependencyResolver.MergeEntries(
             dependencyClosureEntries,
@@ -555,11 +920,13 @@ public sealed class CommonModulesInstallationTransaction
         return new CommonModulesUpdatePlan(
             selectionPlan.Entries,
             selectionPlan.RequiredReferences,
-            requestedModuleNames.ToHashSet(StringComparer.OrdinalIgnoreCase));
+            installedModuleNames
+                .Where(module => !entriesByName.ContainsKey(module))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase));
     }
 
     private static IReadOnlyList<CommonModuleCopyPlan> PlanCopyEntries(
-        string repositoryPath,
+        CommonModulesPackageSnapshot packageSnapshot,
         string documentSourceSetPath,
         IReadOnlyList<CommonModuleManifestEntry> entries,
         string verb,
@@ -570,13 +937,13 @@ public sealed class CommonModulesInstallationTransaction
         var plannedTargets = new Dictionary<string, CommonModuleManifestEntry>(StringComparer.OrdinalIgnoreCase);
         foreach (var entry in entries)
         {
-            var sourcePath = Path.Combine(repositoryPath, entry.ModuleFile);
-            if (!File.Exists(sourcePath))
-            {
-                throw new CommonModulesManifestException($"CommonModules source file was not found: {sourcePath}");
-            }
-
-            var targetPath = ResolveTargetPath(documentSourceSetPath, entry.InstalledModuleFile, overwrite);
+            var observedTargetPath = ResolveTargetPath(
+                documentSourceSetPath,
+                entry.InstalledModuleFile,
+                overwrite);
+            var targetPath = Path.Combine(
+                Path.GetDirectoryName(observedTargetPath)!,
+                entry.InstalledModuleFile);
             var canonicalTargetPath = Path.GetFullPath(targetPath);
             if (plannedTargets.TryGetValue(canonicalTargetPath, out var conflictingEntry))
             {
@@ -585,28 +952,151 @@ public sealed class CommonModulesInstallationTransaction
             }
 
             plannedTargets.Add(canonicalTargetPath, entry);
-            var sidecarDeletePaths = DocumentSourceSetLayout.IsFormFile(entry.ModuleFile)
-                ? DocumentSourceSetLayout.FindFormSidecars(documentSourceSetPath, entry.ModuleFile)
-                : [];
-            var sourceSidecarPath = DocumentSourceSetLayout.IsFormFile(entry.ModuleFile)
-                ? DocumentSourceSetLayout.ResolveExistingSidecarPath(sourcePath)
-                : null;
-            var targetSidecarPath = sourceSidecarPath is null
-                ? null
-                : Path.ChangeExtension(targetPath, ".frx");
+            var mutations = new List<CommonModulesSourceFileMutation>();
+            AddWriteMutation(
+                mutations,
+                observedTargetPath,
+                targetPath,
+                packageSnapshot.ReadFileBytes(entry.ModuleFile));
+            if (DocumentSourceSetLayout.IsFormFile(entry.ModuleFile))
+            {
+                PlanFormSidecarMutations(
+                    packageSnapshot,
+                    documentSourceSetPath,
+                    entry,
+                    observedTargetPath,
+                    targetPath,
+                    mutations);
+            }
+
+            if (mutations.Count == 0)
+            {
+                continue;
+            }
+
             var relativeTargetPath = NormalizeDisplayPath(Path.GetRelativePath(documentSourceSetPath, targetPath));
             var outputPath = documentName is null ? relativeTargetPath : $"{documentName}/{relativeTargetPath}";
             plans.Add(new CommonModuleCopyPlan(
-                SourcePath: sourcePath,
-                TargetPath: targetPath,
-                SourceSidecarPath: sourceSidecarPath,
-                TargetSidecarPath: targetSidecarPath,
-                SidecarDeletePaths: sidecarDeletePaths,
+                Mutations: mutations,
                 Verb: verb,
                 OutputPath: outputPath));
         }
 
         return plans;
+    }
+
+    private static void PlanFormSidecarMutations(
+        CommonModulesPackageSnapshot packageSnapshot,
+        string documentSourceSetPath,
+        CommonModuleManifestEntry entry,
+        string observedFormPath,
+        string canonicalFormPath,
+        ICollection<CommonModulesSourceFileMutation> mutations)
+    {
+        var existingSidecars = DocumentSourceSetLayout.FindFormSidecars(
+            documentSourceSetPath,
+            entry.ModuleFile);
+        var observedTargetSidecar = DocumentSourceSetLayout.ResolveExistingSidecarPath(
+            observedFormPath);
+        foreach (var existingSidecar in existingSidecars)
+        {
+            if (observedTargetSidecar is not null
+                && Path.GetFullPath(existingSidecar).Equals(
+                    Path.GetFullPath(observedTargetSidecar),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            AddDeleteMutation(mutations, existingSidecar);
+        }
+
+        var packageSidecarName = Path.ChangeExtension(entry.ModuleFile, ".frx");
+        if (packageSnapshot.TryReadFileBytes(packageSidecarName, out var desiredSidecarBytes))
+        {
+            var canonicalTargetSidecar = Path.ChangeExtension(canonicalFormPath, ".frx");
+            AddWriteMutation(
+                mutations,
+                observedTargetSidecar ?? canonicalTargetSidecar,
+                canonicalTargetSidecar,
+                desiredSidecarBytes);
+        }
+        else if (observedTargetSidecar is not null)
+        {
+            AddDeleteMutation(mutations, observedTargetSidecar);
+        }
+        else
+        {
+            var canonicalTargetSidecar = Path.ChangeExtension(canonicalFormPath, ".frx");
+            mutations.Add(new CommonModulesSourceFileMutation(
+                canonicalTargetSidecar,
+                canonicalTargetSidecar,
+                CommonModulesExpectedFile.Absent,
+                DesiredBytes: null,
+                VerificationOnly: true));
+        }
+    }
+
+    private static void AddWriteMutation(
+        ICollection<CommonModulesSourceFileMutation> mutations,
+        string observedPath,
+        string targetPath,
+        byte[] desiredBytes)
+    {
+        if (!File.Exists(observedPath))
+        {
+            mutations.Add(new CommonModulesSourceFileMutation(
+                observedPath,
+                targetPath,
+                CommonModulesExpectedFile.Absent,
+                desiredBytes));
+            return;
+        }
+
+        var observedBytes = ReadTargetBytes(observedPath);
+        if (observedBytes.AsSpan().SequenceEqual(desiredBytes)
+            && Path.GetFullPath(observedPath).Equals(
+                Path.GetFullPath(targetPath),
+                StringComparison.Ordinal))
+        {
+            mutations.Add(new CommonModulesSourceFileMutation(
+                observedPath,
+                targetPath,
+                CommonModulesExpectedFile.Present(observedBytes),
+                desiredBytes,
+                VerificationOnly: true));
+            return;
+        }
+
+        mutations.Add(new CommonModulesSourceFileMutation(
+            observedPath,
+            targetPath,
+            CommonModulesExpectedFile.Present(observedBytes),
+            desiredBytes));
+    }
+
+    private static void AddDeleteMutation(
+        ICollection<CommonModulesSourceFileMutation> mutations,
+        string path)
+    {
+        mutations.Add(new CommonModulesSourceFileMutation(
+            path,
+            path,
+            CommonModulesExpectedFile.Present(ReadTargetBytes(path)),
+            DesiredBytes: null));
+    }
+
+    private static byte[] ReadTargetBytes(string path)
+    {
+        try
+        {
+            return File.ReadAllBytes(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw new CommonModulesManifestException(
+                $"CommonModules target source file could not be read before mutation: {path}. {ex.Message}");
+        }
     }
 
     private static string ResolveTargetPath(
@@ -631,37 +1121,31 @@ public sealed class CommonModulesInstallationTransaction
             : Path.Combine(documentSourceSetPath, CommonModulesDirectoryName, Path.GetFileName(moduleFile));
     }
 
-    private static void ExecuteCopyPlan(IReadOnlyList<CommonModuleCopyPlan> copyPlan)
-    {
-        try
-        {
-            foreach (var plan in copyPlan)
-            {
-                foreach (var sidecarPath in plan.SidecarDeletePaths.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
-                {
-                    if (File.Exists(sidecarPath))
-                    {
-                        File.Delete(sidecarPath);
-                    }
-                }
+    private CommonModulesSourceMutationResult ExecuteCopyPlan(
+        IReadOnlyList<CommonModuleCopyPlan> copyPlan,
+        CancellationToken cancellationToken)
+        => sourceMutationWriter.Execute(
+            copyPlan.SelectMany(plan => plan.Mutations).ToArray(),
+            cancellationToken);
 
-                Directory.CreateDirectory(Path.GetDirectoryName(plan.TargetPath)!);
-                File.Copy(plan.SourcePath, plan.TargetPath, overwrite: true);
-                if (plan.SourceSidecarPath is not null && plan.TargetSidecarPath is not null)
+    private static IReadOnlyList<string> GetManualVerificationPaths(
+        IReadOnlyList<CommonModuleCopyPlan> copyPlan)
+    {
+        var paths = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var mutation in copyPlan.SelectMany(plan => plan.Mutations))
+        {
+            foreach (var path in new[] { mutation.ObservedPath, mutation.TargetPath })
+            {
+                var fullPath = Path.GetFullPath(path);
+                if (seen.Add(fullPath))
                 {
-                    Directory.CreateDirectory(Path.GetDirectoryName(plan.TargetSidecarPath)!);
-                    File.Copy(plan.SourceSidecarPath, plan.TargetSidecarPath, overwrite: true);
+                    paths.Add(fullPath);
                 }
             }
         }
-        catch (IOException ex)
-        {
-            throw new CommonModulesTransactionException(FileOperationFailureMessage(ex));
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            throw new CommonModulesTransactionException(FileOperationFailureMessage(ex));
-        }
+
+        return paths;
     }
 
     private void SaveManifest(string projectRoot, ProjectManifest manifest)
@@ -676,21 +1160,23 @@ public sealed class CommonModulesInstallationTransaction
         }
     }
 
-    private static string FileOperationFailureMessage(Exception ex)
-        => $"CommonModules file operation failed before manifest save; manifest was not saved and source files may have been partially updated. {ex.Message}";
-
     private static string BuildCopyOutput(IReadOnlyList<CommonModuleCopyPlan> copyPlan)
     {
         var output = new StringBuilder();
         foreach (var plan in copyPlan)
         {
+            if (plan.Mutations.All(mutation => mutation.VerificationOnly))
+            {
+                continue;
+            }
+
             output.AppendLine($"{plan.Verb} {plan.OutputPath}");
         }
 
         return output.ToString();
     }
 
-    private static bool ApplyInstalledEntries(
+    private static bool ApplyAddEntries(
         ProjectDocument document,
         IReadOnlyList<CommonModuleManifestEntry> orderedEntries,
         IReadOnlySet<string> requestedNames,
@@ -703,21 +1189,15 @@ public sealed class CommonModulesInstallationTransaction
             var requested = requestedNames.Contains(name);
             if (installedByName.TryGetValue(name, out var installed))
             {
-                var refreshed = installed with
+                if (!requested || installed.Requested)
                 {
-                    Name = entry.Name,
-                    ModuleFile = entry.InstalledModuleFile,
-                    Requested = installed.Requested || requested,
-                    TestOnly = entry.TestOnly
-                };
-                if (refreshed != installed)
-                {
-                    var index = document.CommonModules.FindIndex(module => module.Name.Equals(installed.Name, StringComparison.OrdinalIgnoreCase));
-                    document.CommonModules[index] = refreshed;
-                    installedByName[name] = refreshed;
-                    changed = true;
+                    continue;
                 }
 
+                var promoted = installed with { Requested = true };
+                ReplaceInstalledEntry(document, installed, promoted);
+                installedByName[name] = promoted;
+                changed = true;
                 continue;
             }
 
@@ -725,13 +1205,94 @@ public sealed class CommonModulesInstallationTransaction
                 entry.Name,
                 entry.InstalledModuleFile,
                 requested,
-                entry.TestOnly);
+                entry.TestOnly,
+                Orphaned: false);
             document.CommonModules.Add(installedEntry);
             installedByName.Add(name, installedEntry);
             changed = true;
         }
 
+        foreach (var requestedName in requestedNames)
+        {
+            if (!installedByName.TryGetValue(requestedName, out var installed)
+                || installed.Requested)
+            {
+                continue;
+            }
+
+            var promoted = installed with { Requested = true };
+            ReplaceInstalledEntry(document, installed, promoted);
+            installedByName[requestedName] = promoted;
+            changed = true;
+        }
+
         return changed;
+    }
+
+    private static bool ApplyUpdateEntries(
+        ProjectDocument document,
+        CommonModulesUpdatePlan updatePlan,
+        IDictionary<string, InstalledCommonModule> installedByName)
+    {
+        var changed = false;
+        foreach (var entry in updatePlan.Entries)
+        {
+            if (installedByName.TryGetValue(entry.Name, out var installed))
+            {
+                var refreshed = installed with
+                {
+                    Name = entry.Name,
+                    ModuleFile = entry.InstalledModuleFile,
+                    TestOnly = entry.TestOnly,
+                    Orphaned = false
+                };
+                if (refreshed != installed)
+                {
+                    ReplaceInstalledEntry(document, installed, refreshed);
+                    installedByName[entry.Name] = refreshed;
+                    changed = true;
+                }
+
+                continue;
+            }
+
+            var dependency = new InstalledCommonModule(
+                entry.Name,
+                entry.InstalledModuleFile,
+                Requested: false,
+                entry.TestOnly,
+                Orphaned: false);
+            document.CommonModules.Add(dependency);
+            installedByName.Add(entry.Name, dependency);
+            changed = true;
+        }
+
+        foreach (var orphanedName in updatePlan.OrphanedNames)
+        {
+            var installed = installedByName[orphanedName];
+            if (installed.Orphaned)
+            {
+                continue;
+            }
+
+            var orphaned = installed with { Orphaned = true };
+            ReplaceInstalledEntry(document, installed, orphaned);
+            installedByName[orphanedName] = orphaned;
+            changed = true;
+        }
+
+        return changed;
+    }
+
+    private static void ReplaceInstalledEntry(
+        ProjectDocument document,
+        InstalledCommonModule prior,
+        InstalledCommonModule replacement)
+    {
+        var index = document.CommonModules.FindIndex(module => module.Name.Equals(
+            prior.Name,
+            StringComparison.OrdinalIgnoreCase));
+        document.CommonModules[index] = replacement;
     }
 
     private static void ValidateSelectedEntryIdentities(IReadOnlyList<CommonModuleManifestEntry> entries)
@@ -840,14 +1401,16 @@ public sealed class CommonModulesInstallationTransaction
     private sealed record CommonModulesUpdatePlan(
         IReadOnlyList<CommonModuleManifestEntry> Entries,
         IReadOnlyList<string> RequiredReferences,
-        IReadOnlySet<string> RequestedNames);
+        IReadOnlySet<string> OrphanedNames);
+
+    private sealed record CommonModulesRebaseResult(
+        string Output,
+        CommonModulesPackageSnapshot? PackageSnapshot,
+        int OrphanedModuleCount,
+        int OrphanedDocumentCount);
 
     private sealed record CommonModuleCopyPlan(
-        string SourcePath,
-        string TargetPath,
-        string? SourceSidecarPath,
-        string? TargetSidecarPath,
-        IReadOnlyList<string> SidecarDeletePaths,
+        IReadOnlyList<CommonModulesSourceFileMutation> Mutations,
         string Verb,
         string OutputPath);
 }

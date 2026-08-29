@@ -52,9 +52,9 @@ public sealed class PublishCommandTests
         var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, missingCommonModulesRepository);
         manifest.Documents["Book1"].CommonModules.AddRange(
         [
-            new InstalledCommonModule("Runtime", "Runtime.bas", Requested: true, TestOnly: false),
-            new InstalledCommonModule("Lib_UnitTest", "Lib_UnitTest.bas", Requested: true, TestOnly: true),
-            new InstalledCommonModule("WorkbookServiceTestDouble", "WorkbookServiceTestDouble.cls", Requested: false, TestOnly: true)
+            new InstalledCommonModule("Runtime", "Runtime.bas", Requested: true, TestOnly: false, Orphaned: true),
+            new InstalledCommonModule("Lib_UnitTest", "Lib_UnitTest.bas", Requested: true, TestOnly: true, Orphaned: true),
+            new InstalledCommonModule("WorkbookServiceTestDouble", "WorkbookServiceTestDouble.cls", Requested: false, TestOnly: true, Orphaned: true)
         ]);
         new JsonProjectManifestStore().Save(root, manifest);
         CreateWorkbookSource(

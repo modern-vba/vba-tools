@@ -41,23 +41,36 @@ public sealed record ProjectManifestMutationSnapshot(
 /// <typeparam name="TResult">The operation-specific result value.</typeparam>
 /// <param name="Result">The exhaustive result established at the success boundary.</param>
 /// <param name="Manifest">The complete replacement manifest, or null for a no-op.</param>
+/// <param name="SourceMutationCommitted">
+/// Whether a consistency-critical source mutation has crossed its commitment boundary.
+/// </param>
+/// <param name="CommitFailureRecovery">
+/// An optional recovery boundary that converts a commit failure while the lease is still owned.
+/// </param>
 public sealed record ProjectManifestMutationPlan<TResult>(
     TResult Result,
-    ProjectManifest? Manifest)
+    ProjectManifest? Manifest,
+    bool SourceMutationCommitted,
+    Func<Exception, Exception>? CommitFailureRecovery)
 {
     /// <summary>
     /// Creates a plan that commits a complete updated manifest.
     /// </summary>
     public static ProjectManifestMutationPlan<TResult> Commit(
         ProjectManifest manifest,
-        TResult result)
-        => new(result, manifest);
+        TResult result,
+        bool sourceMutationCommitted = false,
+        Func<Exception, Exception>? commitFailureRecovery = null)
+        => new(result, manifest, sourceMutationCommitted, commitFailureRecovery);
 
     /// <summary>
     /// Creates a plan whose complete result requires no manifest replacement.
     /// </summary>
-    public static ProjectManifestMutationPlan<TResult> NoOp(TResult result)
-        => new(result, Manifest: null);
+    public static ProjectManifestMutationPlan<TResult> NoOp(
+        TResult result,
+        bool sourceMutationCommitted = false,
+        Func<Exception, Exception>? commitFailureRecovery = null)
+        => new(result, Manifest: null, sourceMutationCommitted, commitFailureRecovery);
 }
 
 /// <summary>

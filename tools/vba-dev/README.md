@@ -329,7 +329,7 @@ Options:
   --document <name>, -d <name>   Document name from the project manifest.
 ```
 
-`publish` creates the publish workbook from the source template, normalizes manifest-defined VBA project references, recursively imports publishable source files, and writes the selected document's publish output. It uses the same flat file-name ordering and duplicate-source failure behavior as `build`. Publish excludes installed CommonModules whose project-manifest entries record `testOnly: true` and project-local source files whose first scanned lines contain `'#ExcludePublish`. Build and publish do not read the current CommonModules repository; `doctor` owns repository consistency checks.
+`publish` creates the publish workbook from the source template, normalizes manifest-defined VBA project references, recursively imports publishable source files, and writes the selected document's publish output. It uses the same flat file-name ordering and duplicate-source failure behavior as `build`. Publish excludes installed CommonModules whose project-manifest entries record `testOnly: true` and project-local source files whose first scanned lines contain `'#ExcludePublish`. Build and publish do not read the current CommonModules repository; they continue to trust retained manifest entries and sources when `orphaned` is `true`, while `doctor` owns repository consistency checks.
 
 Publish runs the same two-phase namespace preflight as build over only that publishable source profile. Identity defects confined to excluded `testOnly` or `'#ExcludePublish` source do not block publish, while duplicate flat file names and other structural profile-selection failures still do.
 
@@ -435,6 +435,8 @@ installed CommonModule has multiple matching source files. Project Doctor never
 invokes `vba-debug-adapter doctor` and does not claim compilation, import, save,
 or native-debug readiness.
 
+When `commonModulesRepository` is configured, project Doctor validates its complete closed package before comparing installed entries. A missing, unreadable, or invalid package is a failure. A retained `orphaned: true` entry that is still absent is advisory, while an absent non-orphaned identity or a reappeared orphan identity is a stale-reconciliation warning directing the user to `common-module update`. Doctor never changes the marker or removes retained source. If any requested root is orphaned, dependency reachability remains indeterminate instead of producing prune-candidate advice.
+
 For each document, project Doctor evaluates build and publish namespace profiles independently. It runs source preflight before Excel, then uses one disposable template copy to remove replaceable components, normalize references, and inspect actual final project, retained-component, protected-reference, and VBE-adopted identities. It imports no source, saves no workbook, deletes the copy, and reports each profile's conflicts in deterministic order.
 
 Environment scope rejects `--project`, performs no project discovery or
@@ -494,13 +496,15 @@ Example:
           "name": "Runtime",
           "moduleFile": "Runtime.bas",
           "requested": true,
-          "testOnly": false
+          "testOnly": false,
+          "orphaned": false
         },
         {
           "name": "CommonDependency",
           "moduleFile": "CommonDependency.cls",
           "requested": false,
-          "testOnly": true
+          "testOnly": true,
+          "orphaned": false
         }
       ],
       "references": [
@@ -540,6 +544,7 @@ Example:
 | `documents.<document>.commonModules[].moduleFile` | Flat extension-including source file identity recorded when the module is installed or updated. |
 | `documents.<document>.commonModules[].requested` | `true` when explicitly requested; `false` when installed as a dependency. |
 | `documents.<document>.commonModules[].testOnly` | `true` when publish excludes the source; build still imports it normally. |
+| `documents.<document>.commonModules[].orphaned` | `true` when the latest successful reconciliation conclusively retained an identity absent from the complete repository package. |
 | `documents.<document>.references[]` | Desired VBA project references for the document. |
 | `documents.<document>.references[].name` | Human-visible `Reference.Description`-style reference name. |
 | `documents.<document>.references[].requested` | `true` when selected directly; `false` when retained only as a CommonModules dependency. |

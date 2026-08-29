@@ -96,7 +96,8 @@
         "name",
         "moduleFile",
         "requested",
-        "testOnly"
+        "testOnly",
+        "orphaned"
       ],
       "additionalProperties": false,
       "properties": {
@@ -113,6 +114,9 @@
           "type": "boolean"
         },
         "testOnly": {
+          "type": "boolean"
+        },
+        "orphaned": {
           "type": "boolean"
         }
       }

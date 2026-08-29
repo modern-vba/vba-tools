@@ -15,6 +15,7 @@
           "moduleFile": "LibArray.bas",
           "requested": true,
           "testOnly": false,
+          "orphaned": false,
           "unexpected": true
         }
       ],

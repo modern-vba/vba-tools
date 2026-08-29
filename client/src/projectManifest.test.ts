@@ -146,6 +146,16 @@ test('ProjectManifest adapter rejects an invalid CommonModules entry', () => {
   assert.equal(parseProjectManifest(readProjectManifestFixture('invalid-unknown-common-module-property.json')), undefined);
 });
 
+test('ProjectManifest adapter rejects a CommonModules entry missing orphan state', () => {
+  const manifest = JSON.parse(
+    readProjectManifestFixture('document-source-set.json')) as {
+      documents: Record<string, { commonModules: Array<Record<string, unknown>> }>;
+    };
+  delete manifest.documents.Book1!.commonModules[0]!.orphaned;
+
+  assert.equal(parseProjectManifest(JSON.stringify(manifest)), undefined);
+});
+
 test('ProjectManifest adapter preserves an exact CP2 CommonModule identity', () => {
   const manifest = JSON.parse(
     readProjectManifestFixture('document-source-set.json')) as {
@@ -155,7 +165,8 @@ test('ProjectManifest adapter preserves an exact CP2 CommonModule identity', () 
     name: '\u00A0',
     moduleFile: '\u00A0.bas',
     requested: true,
-    testOnly: false
+    testOnly: false,
+    orphaned: false
   }];
 
   assert.notEqual(parseProjectManifest(JSON.stringify(manifest)), undefined);

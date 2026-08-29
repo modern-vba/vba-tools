@@ -10,7 +10,7 @@ namespace VbaDev.App.Diagnostics;
 /// </summary>
 public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticProvider
 {
-    private readonly CommonModulesManifestReader commonModulesManifestReader;
+    private readonly CommonModulesPackageReader commonModulesPackageReader;
 
     /// <summary>
     /// Creates a CommonModules diagnostic provider.
@@ -18,7 +18,9 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
     /// <param name="commonModulesManifestReader">The reader used to load the CommonModules manifest.</param>
     public CommonModulesDiagnosticProvider(CommonModulesManifestReader commonModulesManifestReader)
     {
-        this.commonModulesManifestReader = commonModulesManifestReader;
+        commonModulesPackageReader = new CommonModulesPackageReader(
+            commonModulesManifestReader
+            ?? throw new ArgumentNullException(nameof(commonModulesManifestReader)));
     }
 
     /// <inheritdoc />
@@ -33,7 +35,7 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
             }
         }
 
-        if (project.CommonModulesRepositoryPath is null || !Directory.Exists(project.CommonModulesRepositoryPath))
+        if (project.CommonModulesRepositoryPath is null)
         {
             return;
         }
@@ -41,14 +43,22 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
         IReadOnlyList<CommonModuleManifestEntry> entries;
         try
         {
-            entries = commonModulesManifestReader.Load(project.CommonModulesRepositoryPath);
+            entries = commonModulesPackageReader.Load(project.CommonModulesRepositoryPath).Entries;
         }
         catch (CommonModulesManifestException ex)
         {
             results.Add(DiagnosticResult.Fail(
-                "project.commonModules.manifest",
-                "CommonModules manifest",
+                "project.commonModules.repository",
+                "CommonModules repository",
                 ex.Message));
+            return;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            results.Add(DiagnosticResult.Fail(
+                "project.commonModules.repository",
+                "CommonModules repository",
+                $"CommonModulesRepository could not be read: {ex.Message}"));
             return;
         }
 
@@ -104,15 +114,27 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
             }
             catch (CommonModulesManifestException)
             {
-                results.Add(DiagnosticResult.Fail(
-                    CommonModulesCheckId(documentName, module.Name, "manifestEntry"),
-                    $"CommonModules ({documentName}/{module.Name})",
-                    $"Unknown CommonModuleName '{module.Name}' in vba-project.json."));
+                results.Add(module.Orphaned
+                    ? DiagnosticResult.Warn(
+                        CommonModulesCheckId(documentName, module.Name, "orphaned"),
+                        $"CommonModules ({documentName}/{module.Name})",
+                        $"Installed CommonModule '{module.Name}' is a retained orphan; "
+                        + "its identity is absent from the current CommonModulesRepository.")
+                    : DiagnosticResult.Warn(
+                        CommonModulesCheckId(documentName, module.Name, "orphanState"),
+                        $"CommonModules ({documentName}/{module.Name})",
+                        $"Installed CommonModule '{module.Name}' is absent from the current CommonModulesRepository "
+                        + "but is not marked orphaned; run common-module update."));
             }
         }
 
+        var allRequestedRootsResolve = document.CommonModules
+            .Where(module => module.Requested)
+            .All(module => !module.Orphaned && resolvedByName.ContainsKey(module.Name));
+
         var reachableDependencyNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var module in document.CommonModules.Where(module => module.Requested))
+        foreach (var module in document.CommonModules.Where(module =>
+                     module.Requested && !module.Orphaned))
         {
             if (!resolvedByName.TryGetValue(module.Name, out var entry))
             {
@@ -140,7 +162,18 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
                 continue;
             }
 
-            if (!module.Requested && !reachableDependencyNames.Contains(module.Name))
+            if (module.Orphaned)
+            {
+                results.Add(DiagnosticResult.Warn(
+                    CommonModulesCheckId(documentName, module.Name, "orphanState"),
+                    $"CommonModules ({documentName}/{module.Name})",
+                    $"Installed CommonModule '{module.Name}' is marked orphaned, but the same identity is present "
+                    + "in the current CommonModulesRepository; run common-module update."));
+            }
+
+            if (allRequestedRootsResolve
+                && !module.Requested
+                && !reachableDependencyNames.Contains(module.Name))
             {
                 results.Add(DiagnosticResult.Warn(
                     CommonModulesCheckId(documentName, module.Name, "reachability"),

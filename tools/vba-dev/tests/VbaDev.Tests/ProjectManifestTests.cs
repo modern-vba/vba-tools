@@ -61,10 +61,12 @@ public sealed class ProjectManifestTests
         Assert.Equal("Runtime.bas", commonModules[0].GetProperty("moduleFile").GetString());
         Assert.True(commonModules[0].GetProperty("requested").GetBoolean());
         Assert.False(commonModules[0].GetProperty("testOnly").GetBoolean());
+        Assert.False(commonModules[0].GetProperty("orphaned").GetBoolean());
         Assert.Equal("CommonDependency", commonModules[1].GetProperty("name").GetString());
         Assert.Equal("CommonDependency.cls", commonModules[1].GetProperty("moduleFile").GetString());
         Assert.False(commonModules[1].GetProperty("requested").GetBoolean());
         Assert.True(commonModules[1].GetProperty("testOnly").GetBoolean());
+        Assert.False(commonModules[1].GetProperty("orphaned").GetBoolean());
         Assert.Equal("Microsoft Scripting Runtime", book.GetProperty("references")[0].GetProperty("name").GetString());
     }
 
@@ -133,7 +135,7 @@ public sealed class ProjectManifestTests
         var projectRoot = temp.CreateDirectory("CanonicalProject");
         var manifestPath = Path.Combine(projectRoot, ProjectManifest.ManifestFileName);
         var nonCanonicalJson = """
-        {"commandDefaults":{"excelAutomation":{"workbookSaveTimeoutSeconds":180,"workbookOpenTimeoutSeconds":120},"test":{"executionTimeoutSeconds":240,"format":"ndjson"}},"commonModulesRepository":"../common_modules_repo","documents":{"Book1":{"references":[{"requested":true,"name":"Microsoft Scripting Runtime"}],"commonModules":[{"testOnly":false,"requested":true,"moduleFile":"Runtime.bas","name":"Runtime"}],"publishPath":"publish/Book1.xlsm","binPath":"bin/Book1.xlsm","templatePath":"src/Book1/Book1.xlsm","sourcePath":"src/Book1","kind":"excel"}},"primaryDocument":"Book1","projectName":"CanonicalProject","schemaVersion":1}
+        {"commandDefaults":{"excelAutomation":{"workbookSaveTimeoutSeconds":180,"workbookOpenTimeoutSeconds":120},"test":{"executionTimeoutSeconds":240,"format":"ndjson"}},"commonModulesRepository":"../common_modules_repo","documents":{"Book1":{"references":[{"requested":true,"name":"Microsoft Scripting Runtime"}],"commonModules":[{"orphaned":false,"testOnly":false,"requested":true,"moduleFile":"Runtime.bas","name":"Runtime"}],"publishPath":"publish/Book1.xlsm","binPath":"bin/Book1.xlsm","templatePath":"src/Book1/Book1.xlsm","sourcePath":"src/Book1","kind":"excel"}},"primaryDocument":"Book1","projectName":"CanonicalProject","schemaVersion":1}
         """;
         File.WriteAllText(manifestPath, nonCanonicalJson, new UTF8Encoding(false));
         var store = new JsonProjectManifestStore();
@@ -280,6 +282,7 @@ public sealed class ProjectManifestTests
     [InlineData("moduleFile")]
     [InlineData("requested")]
     [InlineData("testOnly")]
+    [InlineData("orphaned")]
     public void InstalledCommonModuleRequiresCompleteBaseMetadata(string propertyToRemove)
     {
         var json = $$"""
@@ -299,7 +302,8 @@ public sealed class ProjectManifestTests
                   "name": "Runtime",
                   "moduleFile": "Runtime.bas",
                   "requested": true,
-                  "testOnly": false
+                  "testOnly": false,
+                  "orphaned": false
                 }
               ],
               "references": []
@@ -782,7 +786,8 @@ internal static class ProjectManifestTestData
                   "name": "Runtime",
                   "moduleFile": "Runtime.bas",
                   "requested": true,
-                  "testOnly": false
+                  "testOnly": false,
+                  "orphaned": false
                 }
               ],
               "references": [

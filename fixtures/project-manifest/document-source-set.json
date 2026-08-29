@@ -14,13 +14,15 @@
           "name": "LibArray",
           "moduleFile": "LibArray.bas",
           "requested": true,
-          "testOnly": false
+          "testOnly": false,
+          "orphaned": false
         },
         {
           "name": "LibString",
           "moduleFile": "LibString.bas",
           "requested": false,
-          "testOnly": false
+          "testOnly": false,
+          "orphaned": false
         }
       ],
       "references": []

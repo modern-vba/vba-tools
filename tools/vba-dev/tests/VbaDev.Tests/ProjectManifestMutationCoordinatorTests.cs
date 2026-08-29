@@ -100,6 +100,116 @@ public sealed class ProjectManifestMutationCoordinatorTests
     }
 
     [Fact]
+    public async Task NoSourceCommitCancellationDoesNotInvokeRecovery()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp, new VbaProjectReference("Keep Me"));
+        var manifestPath = Path.Combine(root, ProjectManifest.ManifestFileName);
+        var initialBytes = File.ReadAllBytes(manifestPath);
+        using var cancellation = new CancellationTokenSource();
+        var recoveryInvoked = false;
+        var coordinator = new ProjectManifestMutationCoordinator(
+            new BoundaryCallbackAtomicWriter(beforeCommit: cancellation.Cancel),
+            new ProjectManifestMutationLeaseProvider());
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            coordinator.ExecuteAsync(
+                root,
+                ProjectManifestMutationCommand.CommonModuleAdd,
+                snapshot =>
+                {
+                    var planned = ProjectManifestEditor.Clone(snapshot.Manifest);
+                    planned.Documents["Book1"].References.Clear();
+                    return ProjectManifestMutationPlan<string>.Commit(
+                        planned,
+                        "promoted",
+                        sourceMutationCommitted: false,
+                        commitFailureRecovery: failure =>
+                        {
+                            recoveryInvoked = true;
+                            return failure;
+                        });
+                },
+                cancellation.Token));
+
+        Assert.False(recoveryInvoked);
+        Assert.Equal(initialBytes, File.ReadAllBytes(manifestPath));
+        Assert.Empty(Directory.EnumerateFiles(root, "vba-project.failed-*.json"));
+    }
+
+    [Fact]
+    public async Task CancellationAfterSourceMutationCommitmentIsDeferredThroughManifestCommit()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp, new VbaProjectReference("Remove Me"));
+        using var cancellation = new CancellationTokenSource();
+        var coordinator = new ProjectManifestMutationCoordinator();
+
+        var outcome = await coordinator.ExecuteAsync(
+            root,
+            ProjectManifestMutationCommand.CommonModuleUpdate,
+            snapshot =>
+            {
+                var planned = ProjectManifestEditor.Clone(snapshot.Manifest);
+                planned.Documents["Book1"].References.Clear();
+                cancellation.Cancel();
+                return ProjectManifestMutationPlan<string>.Commit(
+                    planned,
+                    "updated",
+                    sourceMutationCommitted: true);
+            },
+            cancellation.Token);
+
+        Assert.Equal("updated", outcome.Result);
+        var warning = Assert.Single(outcome.Warnings);
+        Assert.Equal("cancellationDeferred", warning.Code);
+        var manifest = new JsonProjectManifestStore().Load(
+            Path.Combine(root, ProjectManifest.ManifestFileName));
+        Assert.Empty(manifest.Documents["Book1"].References);
+    }
+
+    [Fact]
+    public async Task CommitFailureRecoveryRunsBeforeTheMutationLeaseIsReleased()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp, new VbaProjectReference("Remove Me"));
+        var manifestPath = Path.Combine(root, ProjectManifest.ManifestFileName);
+        var leaseMarkerPath = manifestPath + ".vba-dev.lock";
+        var recoveryObservedOwnedLease = false;
+        var coordinator = new ProjectManifestMutationCoordinator(
+            new BoundaryCallbackAtomicWriter(
+                beforeCommit: () => throw new IOException("commit failed")),
+            new ProjectManifestMutationLeaseProvider());
+
+        var error = await Assert.ThrowsAsync<ProjectManifestMutationException>(() =>
+            coordinator.ExecuteAsync(
+                root,
+                ProjectManifestMutationCommand.CommonModuleUpdate,
+                snapshot =>
+                {
+                    var planned = ProjectManifestEditor.Clone(snapshot.Manifest);
+                    planned.Documents["Book1"].References.Clear();
+                    return ProjectManifestMutationPlan<string>.Commit(
+                        planned,
+                        "updated",
+                        sourceMutationCommitted: true,
+                        commitFailureRecovery: failure =>
+                        {
+                            recoveryObservedOwnedLease = File.Exists(leaseMarkerPath);
+                            return new ProjectManifestMutationException(
+                                "recoveredCommitFailure",
+                                "Recovery was established while the lease was owned.",
+                                failure);
+                        });
+                },
+                CancellationToken.None));
+
+        Assert.Equal("recoveredCommitFailure", error.Code);
+        Assert.True(recoveryObservedOwnedLease);
+        Assert.False(File.Exists(leaseMarkerPath));
+    }
+
+    [Fact]
     public async Task CancellationAfterCommitCannotReplaceEstablishedSuccess()
     {
         using var temp = TempDirectory.Create();
@@ -1004,6 +1114,7 @@ public sealed class ProjectManifestMutationCoordinatorTests
     }
 
     private sealed class BoundaryCallbackAtomicWriter(
+        Action? beforeCommit = null,
         Action? afterCommit = null,
         Action? afterNoOp = null)
         : IProjectManifestAtomicWriter
@@ -1019,6 +1130,7 @@ public sealed class ProjectManifestMutationCoordinatorTests
             ProjectManifest manifest,
             CancellationToken cancellationToken)
         {
+            beforeCommit?.Invoke();
             inner.ReplaceExisting(
                 manifestPath,
                 expectedRawBytes,

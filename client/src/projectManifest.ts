@@ -188,12 +188,13 @@ function isVbaProjectReferenceSelection(value: unknown): boolean {
 
 function isInstalledCommonModule(value: unknown): boolean {
   if (!isRecord(value) ||
-      !hasOnlyProperties(value, ['name', 'moduleFile', 'requested', 'testOnly']) ||
+      !hasOnlyProperties(value, ['name', 'moduleFile', 'requested', 'testOnly', 'orphaned']) ||
       typeof value.name !== 'string' ||
       value.name.length === 0 ||
       typeof value.moduleFile !== 'string' ||
       typeof value.requested !== 'boolean' ||
-      typeof value.testOnly !== 'boolean') {
+      typeof value.testOnly !== 'boolean' ||
+      typeof value.orphaned !== 'boolean') {
     return false;
   }
 

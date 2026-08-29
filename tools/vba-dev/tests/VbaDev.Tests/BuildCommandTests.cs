@@ -902,8 +902,8 @@ public sealed class BuildCommandTests
         var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, commonModulesRepository);
         manifest.Documents["Book1"].CommonModules.AddRange(
         [
-            new InstalledCommonModule("Base", "Base.bas", Requested: false, TestOnly: false),
-            new InstalledCommonModule("Feature", "Feature.bas", Requested: true, TestOnly: true)
+            new InstalledCommonModule("Base", "Base.bas", Requested: false, TestOnly: false, Orphaned: true),
+            new InstalledCommonModule("Feature", "Feature.bas", Requested: true, TestOnly: true, Orphaned: true)
         ]);
         new JsonProjectManifestStore().Save(root, manifest);
         CreateWorkbookSource(

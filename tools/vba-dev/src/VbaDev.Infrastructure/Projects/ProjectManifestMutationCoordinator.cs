@@ -10,6 +10,10 @@ namespace VbaDev.Infrastructure.Projects;
 /// </summary>
 public sealed class ProjectManifestMutationCoordinator : IProjectManifestMutationCoordinator
 {
+    private const string CancellationDeferredMessage =
+        "Cancellation was requested after CommonModules source mutation began; "
+        + "the command completed and committed the mutation to preserve project consistency.";
+
     private readonly IProjectManifestAtomicWriter atomicWriter;
     private readonly IProjectManifestMutationLeaseProvider leaseProvider;
 
@@ -55,21 +59,34 @@ public sealed class ProjectManifestMutationCoordinator : IProjectManifestMutatio
                 lease.ProjectIdentity.OperationPath,
                 lease.ManifestPath,
                 latestManifest));
-            cancellationToken.ThrowIfCancellationRequested();
-            if (plan.Manifest is not null)
+            var commitCancellationToken = plan.SourceMutationCommitted
+                ? CancellationToken.None
+                : cancellationToken;
+            commitCancellationToken.ThrowIfCancellationRequested();
+            try
             {
-                atomicWriter.ReplaceExisting(
-                    lease.ManifestPath,
-                    snapshotBytes,
-                    plan.Manifest,
-                    cancellationToken);
+                if (plan.Manifest is not null)
+                {
+                    atomicWriter.ReplaceExisting(
+                        lease.ManifestPath,
+                        snapshotBytes,
+                        plan.Manifest,
+                        commitCancellationToken);
+                }
+                else
+                {
+                    atomicWriter.EstablishNoOp(
+                        lease.ManifestPath,
+                        snapshotBytes,
+                        commitCancellationToken);
+                }
             }
-            else
+            catch (Exception commitException) when (
+                plan.CommitFailureRecovery is not null
+                && (commitException is not OperationCanceledException
+                    || !commitCancellationToken.IsCancellationRequested))
             {
-                atomicWriter.EstablishNoOp(
-                    lease.ManifestPath,
-                    snapshotBytes,
-                    cancellationToken);
+                throw plan.CommitFailureRecovery(commitException);
             }
         }
         catch (Exception operationException)
@@ -93,9 +110,16 @@ public sealed class ProjectManifestMutationCoordinator : IProjectManifestMutatio
                 ex);
         }
 
-        return new ProjectManifestMutationOutcome<TResult>(
-            plan.Result,
-            release.Warnings);
+        var warnings = new List<ProjectManifestMutationWarning>();
+        if (plan.SourceMutationCommitted && cancellationToken.IsCancellationRequested)
+        {
+            warnings.Add(new ProjectManifestMutationWarning(
+                "cancellationDeferred",
+                CancellationDeferredMessage));
+        }
+
+        warnings.AddRange(release.Warnings);
+        return new ProjectManifestMutationOutcome<TResult>(plan.Result, warnings);
     }
 
     private static async ValueTask ReleaseAfterFailureAsync(
