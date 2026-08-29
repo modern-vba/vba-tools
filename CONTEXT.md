@@ -656,6 +656,84 @@ the lease serializes `VbaDev` writers without covering long read-only discovery
 or controlling independent editors.
 _Avoid_: whole-command project lock, manifest version, editor lock
 
+**ProjectManifestMutationPreflight**:
+The VS Code extension gate immediately before it invokes a `VbaDev` command
+that mutates the selected `ProjectManifest`. When the matching file-backed
+editor buffer is dirty, the user chooses `Save and Continue` or `Cancel`; only
+that manifest is saved. After a successful save, the extension rereads and
+validates its selection-critical projection and re-resolves the exact selected
+project and document before process launch. Cancellation, save failure, an
+unusable disk projection, or a missing selected target starts no CLI process.
+The extension does not overlay or structurally merge an unsaved manifest into
+CLI output, and `VbaDev` retains authority over complete manifest validation and
+writing during mutation. A clean open buffer that differs from disk offers
+immutable comparison, explicit reload, or cancellation and restarts preflight
+only after buffer-to-disk equality is proved.
+_Avoid_: save all, automatic dirty-buffer merge, CLI editor state, pre-save target reuse
+
+**ProjectManifestPostMutationCoherence**:
+The VS Code extension reconciliation applied whenever a launched
+manifest-mutating `VbaDev` invocation leaves a changed post-invocation manifest
+with a structurally usable selection projection on disk. The extension records
+the pre-launch buffer text, dirty-state
+observations, and every distinct content revision. The only passive-safe content
+transition is a clean direct transition from the pre-launch text to the exact
+post-invocation disk snapshot, with no other distinct content or dirty
+observation. Auto Save or a later clean state therefore does not erase evidence
+of an intermediate edit. When competing content was observed, the extension
+preserves its snapshot, performs no reload, save, or structural merge, and
+warns that the CLI outcome and editor state may have diverged. Recovery offers
+`Compare Changes` against the immutable post-invocation disk snapshot,
+confirmation-gated `Reload from Disk` after proving the disk state and editor
+revision are still the confirmed pair, and non-mutating `Keep Editing`; it
+offers no automatic merge. For a passive-safe buffer, the extension allows two
+seconds for VS Code's native external-file synchronization and proves that the
+buffer is clean and equals both current disk text and the immutable snapshot.
+If it does not converge, the extension neither moves editor focus nor rewrites
+the buffer; it reports incomplete coherence and offers explicit recovery,
+retaining the same-manifest mutation guard.
+_Avoid_: unconditional reload, last-writer-wins save, automatic JSON merge, silent divergence
+
+**ProjectManifestEditorDivergence**:
+The unresolved state after a launched CLI mutation in which an open
+`ProjectManifest` buffer has competing editor evidence or cannot be proved clean
+and equal to both current disk state and the immutable post-invocation disk
+snapshot. While this state persists, the extension blocks another
+manifest-mutating command for the same canonical manifest identity and reoffers
+the explicit coherence recovery actions. Passive synchronization clears it only
+without competing evidence; after competing evidence, resolution requires an
+explicit recovery action and a fresh equality proof. Read-only commands may
+continue against disk state when that basis is made visible to the user; this
+exception covers Reference List, CommonModules List, and project automation
+Doctor rather than workbook- or source-mutating workflows.
+_Avoid_: mutation retry, implicit overwrite, global command lock
+
+**ProjectManifestMutationBusyGuard**:
+The VS Code window-local single-flight guard for one canonical manifest
+identity. While one manifest-mutating command owns the guard, a later mutation
+for that manifest is rejected as busy rather than queued, and identifies the
+running command and selected target. The guard remains held through
+post-mutation coherence or divergence determination. Other manifests may run
+concurrently; cross-window and direct-CLI writers remain coordinated by
+`ProjectManifestMutationLease`.
+_Avoid_: global single flight, stale queued mutation, replacement command
+
+**ProjectManifestMutationOutcome**:
+The extension-side manifest-coherence classification that combines a launched
+mutation process's terminal result with the manifest bytes captured immediately
+before launch and read after child-process exit. Structurally usable
+byte-identical state proves only that the manifest is unchanged and needs no
+editor reconciliation;
+it does not prove that the whole operation was a no-op or that changes to other
+files were rolled back. Operation success and no-op status remain owned by the
+command's schema-valid result. Structurally usable changed bytes enter
+`ProjectManifestPostMutationCoherence`; after failure or cancellation they also
+produce an abnormal-change warning rather than a rollback claim. A missing,
+unreadable, or structurally unusable post-invocation manifest is untrusted and
+blocks another mutation for that identity until explicit recovery. Process
+status alone never proves that a launched writer did not commit.
+_Avoid_: manifest-bytes-as-operation-result, exit-code-only commit inference, cancelled-means-unchanged
+
 **LanguageServerManifestResolution**:
 The lightweight language-server process that reads `vba-project.json` directly and
 resolves `ProjectManifest`, `DocumentSourceSet`, and
@@ -690,6 +768,56 @@ _Avoid_: CLI-backed completion, command-line manifest resolution, synchronous to
 A `.bas`, `.cls`, or `.frm` text file exported from a VBA project and edited or
 analyzed outside the VBE.
 _Avoid_: workbook, code blob
+
+**CommandPaletteManifestSelectionProjection**:
+The narrow on-disk `ProjectManifest` view used only to choose a Command Palette
+project and applicable document. It proves the required project,
+primary-document, document-name, source-path, canonical source-root, and
+`DocumentSourceSetIsolation` evidence without consuming an unsaved manifest
+overlay or replacing the existing structural schema and complete `VbaDev`
+domain validation.
+_Avoid_: ProjectManifestSchema, complete manifest validator, dirty-buffer overlay
+
+**CommandPaletteProjectTarget**:
+The one `WorkbookBackedProject` selected from an on-disk, selection-capable
+`CommandPaletteManifestSelectionProjection` for a project-aware VS Code Command
+Palette invocation. The nearest manifest containing the active file identifies
+the candidate and must supply the required project, primary-document,
+document-name, source-path, and `DocumentSourceSetIsolation` evidence. An
+unusable nearest manifest fails closed rather than falling back to an ancestor
+or workspace candidate. Without a containing manifest, the sole
+selection-capable workspace project is automatic and multiple projects require
+explicit user choice. This projection does not replace `VbaDev` as the complete
+manifest validator. The selection is invocation-local and is never recovered
+from remembered state. Cancellation starts no CLI process.
+_Avoid_: arbitrary workspace project, last selected project
+
+**CommandPaletteDocumentTarget**:
+The one `DocumentSourceSet` selected from the same on-disk
+`CommandPaletteManifestSelectionProjection` within a
+`CommandPaletteProjectTarget` for a document-scoped invocation. A file-backed
+active `ExportedVbaSource` selects its uniquely owning source set; otherwise a
+project with exactly one manifest document selects that document automatically,
+while multiple documents require explicit user choice. `PrimaryOfficeDocument`
+does not break a multiple-document tie. The extension always passes the
+selected document name explicitly to `VbaDev`; this caller rule neither removes
+the primary document nor makes `--document` globally mandatory for direct CLI
+use. An unusable selection projection cannot supply a target. Before process
+launch, the extension shows the target in cancellable progress and command
+output without adding a generic target-only modal confirmation; command-specific
+consent remains in force.
+_Avoid_: active file's document, last selected document, primary-document fallback, omitted CLI document
+
+**CommandPaletteDocumentFocus**:
+The initially active QuickPick item when a `CommandPaletteDocumentTarget`
+requires explicit choice. The extension captures `activeTextEditor` before the
+chooser opens and prefers its owning document; if that cannot identify a
+document, a non-empty set of eligible visible sources that all identify one
+document, then a non-empty set of eligible open sources that all identify one
+document, receives focus. Mixed or absent evidence focuses the
+manifest's `PrimaryOfficeDocument`. Focus never accepts an item automatically,
+and inactive editors' retained cursor selections do not prove input focus.
+_Avoid_: automatic choice, remembered focus, any editor with a cursor
 
 **VbaFormSidecar**:
 An `.frx` binary sidecar that stores non-text designer data for a `.frm` form.
@@ -5028,3 +5156,33 @@ Domain Expert: "No. The server still advertises full-text synchronization. `VbaI
 
 Dev: "Should `BuildSourceSnapshot` bytes be passed unchanged to `VBComponents.Import`?"
 Domain Expert: "No. They remain the authoritative captured source, while `VbaDev` derives a separate `VbeImportSourceSet` that losslessly round-trips text through the operation ACP and preserves `.frx` bytes for the VBE boundary."
+
+Dev: "Should a document-scoped Command Palette action use the selected project's primary document when README is active?"
+Domain Expert: "Only when it is the project's sole manifest document. Multiple documents require explicit choice even when one is primary, and the extension passes the chosen name to `VbaDev` as `--document`."
+
+Dev: "Which document receives chooser focus when open VBA sources belong to several documents?"
+Domain Expert: "The eligible source that was `activeTextEditor` before the chooser opened wins. Without that evidence, mixed visible or open documents focus `PrimaryOfficeDocument`; focus never confirms the choice."
+
+Dev: "Can a manifest-mutating Command Palette action pass a dirty `vba-project.json` buffer to `VbaDev` and merge the result afterward?"
+Domain Expert: "No. `ProjectManifestMutationPreflight` either saves that manifest with explicit consent and re-resolves the target from disk or cancels before process launch; `VbaDev` never consumes VS Code editor state."
+
+Dev: "Should a successful manifest mutation reload an editor that became dirty while `VbaDev` was running?"
+Domain Expert: "No. `ProjectManifestPostMutationCoherence` automatically synchronizes only a safe buffer with no competing observed revision. A later edit is preserved and compared with the post-invocation disk snapshot through explicit recovery."
+
+Dev: "Can another Reference mutation run after the user keeps editing a diverged manifest?"
+Domain Expert: "No. `ProjectManifestEditorDivergence` blocks another mutation until passive synchronization proves clean snapshot equality without competing evidence, or an explicit recovery choice is followed by a fresh applicable equality proof. Manifest list and project-diagnostic commands may continue only when they identify disk as their source."
+
+Dev: "Should a second mutation for the same manifest wait behind one already running in this VS Code window?"
+Domain Expert: "No. `ProjectManifestMutationBusyGuard` rejects it as busy because queued inputs and editor revisions become stale; other manifests remain independent, and cross-process serialization belongs to `ProjectManifestMutationLease`."
+
+Dev: "Does a cancelled manifest mutation prove that `vba-project.json` stayed unchanged?"
+Domain Expert: "No. `ProjectManifestMutationOutcome` compares pre-launch and post-exit disk bytes. A changed manifest still enters coherence and recovery even when the child was cancelled or exited nonzero."
+
+Dev: "Does an unchanged `vba-project.json` prove that the whole CommonModules operation was a no-op?"
+Domain Expert: "No. It proves only that manifest editor reconciliation is unnecessary. Source-file effects and operation success remain described by the command's schema-valid result."
+
+Dev: "Can Auto Save make an edit during a manifest mutation safe to ignore because the buffer is clean at command exit?"
+Domain Expert: "No. `ProjectManifestPostMutationCoherence` retains distinct intermediate content revisions as competing evidence even after Auto Save; a terminal dirty flag alone cannot authorize reload."
+
+Dev: "Should the extension rewrite a clean manifest buffer when VS Code has not observed the post-invocation disk change yet?"
+Domain Expert: "No. It waits two seconds for native synchronization, proves buffer, current-disk, and snapshot equality, then offers explicit `Reload from Disk` if convergence is still unproved; it does not become a second manifest writer."
