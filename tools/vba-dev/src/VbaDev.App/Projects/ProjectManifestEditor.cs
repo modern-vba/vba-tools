@@ -105,6 +105,19 @@ public sealed class ProjectManifestEditor
         }
     }
 
+    /// <summary>
+    /// Writes the planned manifest as a manual recovery artifact after another commit boundary fails.
+    /// </summary>
+    /// <param name="projectRoot">The project root that receives the recovery artifact.</param>
+    /// <param name="manifest">The complete manifest that could not be committed.</param>
+    /// <param name="manifestSaveException">The commit failure reported by the owning boundary.</param>
+    /// <returns>The recovery path, or a combined recovery-failure diagnostic.</returns>
+    public string CreateRecoveryAfterFailedSave(
+        string projectRoot,
+        ProjectManifest manifest,
+        Exception manifestSaveException)
+        => WriteManifestRecovery(projectRoot, manifest, manifestSaveException);
+
     private string WriteManifestRecovery(
         string projectRoot,
         ProjectManifest manifest,

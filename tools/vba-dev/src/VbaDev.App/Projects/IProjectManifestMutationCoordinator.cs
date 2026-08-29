@@ -82,6 +82,12 @@ public sealed record ProjectManifestMutationWarning(string Code, string Message)
 /// </summary>
 public enum ProjectManifestMutationCommand
 {
+    /// <summary>One CommonModules add mutation.</summary>
+    CommonModuleAdd,
+
+    /// <summary>One CommonModules update mutation.</summary>
+    CommonModuleUpdate,
+
     /// <summary>One reference-add mutation.</summary>
     ReferenceAdd,
 

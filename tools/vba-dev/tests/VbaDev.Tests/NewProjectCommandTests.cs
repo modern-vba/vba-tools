@@ -578,11 +578,11 @@ public sealed class NewProjectCommandTests
         Directory.CreateDirectory(commonModulesRepository);
         WriteCommonModulesManifest(
             commonModulesRepository,
-            ("a/Foo.bas", "optional", ""),
-            ("b/FOO.bas", "optional", ""),
-            ("Root.bas", "runtime-baseline", "a/Foo.bas,b/FOO.bas"));
-        WriteModule(commonModulesRepository, Path.Combine("a", "Foo.bas"), "first foo");
-        WriteModule(commonModulesRepository, Path.Combine("b", "FOO.bas"), "second foo");
+            ("Foo.bas", "optional", ""),
+            ("FOO.cls", "optional", ""),
+            ("Root.bas", "runtime-baseline", "Foo.bas,FOO.cls"));
+        WriteModule(commonModulesRepository, "Foo.bas", "first foo");
+        WriteModule(commonModulesRepository, "FOO.cls", "second foo");
         WriteModule(commonModulesRepository, "Root.bas", "root");
         var application = CommandLineTestFactory.Create(
             temp.Path,
@@ -625,14 +625,17 @@ public sealed class NewProjectCommandTests
     private static void WriteCommonModulesManifest(string commonModulesRepository)
     {
         var text = string.Join(
-            "\n",
+            "\r\n",
             "# test manifest",
-            "ModuleFile\tCategories\tDependencies",
-            "Core.bas\toptional\t",
-            "Runtime.bas\truntime-baseline\tCore.bas",
-            "UnitTest.bas\ttest-foundation\tRuntime.bas",
-            "Optional.bas\toptional\t") + "\n";
-        File.WriteAllText(Path.Combine(commonModulesRepository, "common-modules-manifest.tsv"), text, new UTF8Encoding(false));
+            "ModuleFile\tCategories\tDependencies\tRequiredReferences",
+            "Core.bas\toptional\t\t[]",
+            "Runtime.bas\truntime-baseline\tCore.bas\t[]",
+            "UnitTest.bas\ttest-foundation\tRuntime.bas\t[]",
+            "Optional.bas\toptional\t\t[]") + "\r\n";
+        File.WriteAllText(
+            Path.Combine(commonModulesRepository, "common-modules-manifest.tsv"),
+            text,
+            new UnicodeEncoding(false, true, true));
     }
 
     private static void WriteCommonModulesManifest(
@@ -641,13 +644,14 @@ public sealed class NewProjectCommandTests
     {
         var lines = new List<string>
         {
-            "ModuleFile\tCategories\tDependencies"
+            "ModuleFile\tCategories\tDependencies\tRequiredReferences"
         };
-        lines.AddRange(rows.Select(row => $"{row.ModuleFile}\t{row.Categories}\t{row.Dependencies}"));
+        lines.AddRange(rows.Select(row =>
+            $"{row.ModuleFile}\t{row.Categories}\t{row.Dependencies}\t[]"));
         File.WriteAllText(
             Path.Combine(commonModulesRepository, "common-modules-manifest.tsv"),
-            string.Join("\n", lines) + "\n",
-            new UTF8Encoding(false));
+            string.Join("\r\n", lines) + "\r\n",
+            new UnicodeEncoding(false, true, true));
     }
 
     private static void WriteModule(string directory, string fileName, string content)

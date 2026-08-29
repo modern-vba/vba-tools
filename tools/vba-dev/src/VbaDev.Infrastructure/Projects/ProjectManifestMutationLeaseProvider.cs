@@ -364,6 +364,8 @@ public sealed class ProjectManifestMutationLeaseProvider : IProjectManifestMutat
     private static string StableCommandName(ProjectManifestMutationCommand command)
         => command switch
         {
+            ProjectManifestMutationCommand.CommonModuleAdd => "common-module add",
+            ProjectManifestMutationCommand.CommonModuleUpdate => "common-module update",
             ProjectManifestMutationCommand.ReferenceAdd => "reference add",
             ProjectManifestMutationCommand.ReferenceRemove => "reference remove",
             _ => throw new ArgumentOutOfRangeException(nameof(command), command, null)
@@ -440,7 +442,10 @@ public sealed class ProjectManifestMutationLeaseProvider : IProjectManifestMutat
                     System.Globalization.DateTimeStyles.AdjustToUniversal,
                     out _)
                 || !TryGetSafeString(root, "command", 32, out var command)
-                || command is not "reference add" and not "reference remove"
+                || command is not "common-module add"
+                    and not "common-module update"
+                    and not "reference add"
+                    and not "reference remove"
                 || !TryGetSafeString(root, "acquiredAtUtc", 64, out var acquiredText)
                 || !DateTimeOffset.TryParse(
                     acquiredText,

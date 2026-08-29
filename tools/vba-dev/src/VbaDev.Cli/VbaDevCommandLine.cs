@@ -119,16 +119,19 @@ public sealed class VbaDevCommandLine
         };
         commonModuleAddCommand.Add(commonModuleArguments);
         commonModuleAddCommand.Add(commonModuleForceOption);
-        commonModuleAddCommand.SetAction(parseResult => WriteCommandResult(
+        commonModuleAddCommand.SetAction(async (parseResult, cancellationToken) => WriteCommandResult(
             parseResult,
-            ResolveDocumentContext(
-                parseResult,
-                composition,
-                commonModuleAddOptions,
-                context => composition.CommonModulesService.Add(
-                    context,
-                    parseResult.GetValue(commonModuleArguments) ?? [],
-                    parseResult.GetValue(commonModuleForceOption)))));
+            await ResolveDocumentContextAsync(
+                    parseResult,
+                    composition,
+                    commonModuleAddOptions,
+                    (context, operationCancellationToken) => composition.CommonModulesService.AddAsync(
+                        context,
+                        parseResult.GetValue(commonModuleArguments) ?? [],
+                        parseResult.GetValue(commonModuleForceOption),
+                        operationCancellationToken),
+                    cancellationToken)
+                .ConfigureAwait(false)));
         var commonModuleListCommand = AddCapabilityCommand(
             commonModuleCommand,
             "list",
@@ -159,13 +162,15 @@ public sealed class VbaDevCommandLine
             "1.0",
             capabilityCommands);
         var commonModuleUpdateProjectOption = AddProjectOption(commonModuleUpdateCommand);
-        commonModuleUpdateCommand.SetAction(parseResult => WriteCommandResult(
+        commonModuleUpdateCommand.SetAction(async (parseResult, cancellationToken) => WriteCommandResult(
             parseResult,
-            ResolveProject(
-                parseResult,
-                composition,
-                commonModuleUpdateProjectOption,
-                composition.CommonModulesService.Update)));
+            await ResolveProjectAsync(
+                    parseResult,
+                    composition,
+                    commonModuleUpdateProjectOption,
+                    composition.CommonModulesService.UpdateAsync,
+                    cancellationToken)
+                .ConfigureAwait(false)));
 
         var completionsCommand = AddCommand(rootCommand, "completions", "Generate shell completion setup.");
         var completionsScriptCommand = AddCommand(
@@ -1001,6 +1006,27 @@ public sealed class VbaDevCommandLine
                 null,
                 composition.WorkingDirectory));
             return run(project);
+        }
+        catch (ProjectManifestException ex)
+        {
+            return CommandResult.UsageError(ex.Message);
+        }
+    }
+
+    private static async Task<CommandResult> ResolveProjectAsync(
+        ParseResult parseResult,
+        ToolingApplicationComposition composition,
+        Option<string> projectOption,
+        Func<ResolvedProject, CancellationToken, Task<CommandResult>> run,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var project = composition.ProjectContextResolver.ResolveProject(new ProjectResolutionRequest(
+                parseResult.GetValue(projectOption),
+                null,
+                composition.WorkingDirectory));
+            return await run(project, cancellationToken).ConfigureAwait(false);
         }
         catch (ProjectManifestException ex)
         {

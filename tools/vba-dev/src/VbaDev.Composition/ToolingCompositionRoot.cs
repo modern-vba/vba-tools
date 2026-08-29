@@ -69,9 +69,6 @@ public static class ToolingCompositionRoot
                                   ?? new ProjectManifestMutationCoordinator(
                                       atomicManifestWriter,
                                       new ProjectManifestMutationLeaseProvider());
-        var commonModulesManifestReader = new CommonModulesManifestReader();
-        var commonModulesInstallationTransaction = new CommonModulesInstallationTransaction(commonModulesManifestReader, manifestEditor);
-        var commonModulesService = new CommonModulesService(commonModulesInstallationTransaction);
         var referenceResolver = vbaProjectReferenceResolver ?? new RegistryVbaProjectReferenceResolver();
         var ambiguityProbe = vbaProjectReferenceAmbiguityProbe
                              ?? (vbaProjectReferenceResolver is null
@@ -81,6 +78,13 @@ public static class ToolingCompositionRoot
         var referencePlanner = new VbaProjectReferencePlanner(
             referenceResolver,
             ambiguityProbe);
+        var commonModulesManifestReader = new CommonModulesManifestReader();
+        var commonModulesInstallationTransaction = new CommonModulesInstallationTransaction(
+            commonModulesManifestReader,
+            manifestEditor,
+            referencePlanner,
+            mutationCoordinator);
+        var commonModulesService = new CommonModulesService(commonModulesInstallationTransaction);
         var referenceService = new VbaProjectReferenceService(
             referencePlanner,
             mutationCoordinator);

@@ -2325,12 +2325,12 @@ public sealed class DoctorCommandTests
     }
 
     [Fact]
-    public void DoctorComparesStoredSourceWithCanonicalRepositoryEntryResolvedByName()
+    public void DoctorComparesStoredSourceWithCanonicalFlatRepositoryEntryResolvedByName()
     {
         using var temp = TempDirectory.Create();
         var (root, commonRepo) = CreateDoctorProject(temp);
-        WriteManifest(commonRepo, ("runtime/Feature.cls", "optional", ""));
-        WriteModule(commonRepo, Path.Combine("runtime", "Feature.cls"), "canonical");
+        WriteManifest(commonRepo, ("Feature.cls", "optional", ""));
+        WriteModule(commonRepo, "Feature.cls", "canonical");
         WriteModule(Path.Combine(root, "src", "Book1"), "Feature.cls", "local edit");
         AddInstalledCommonModules(root, new InstalledCommonModule("Feature", "Feature.cls", Requested: true, TestOnly: false));
         var application = CommandLineTestFactory.Create(root, new FakeEnvironmentDiagnosticPort());
@@ -3067,10 +3067,14 @@ public sealed class DoctorCommandTests
         Directory.CreateDirectory(repo);
         var lines = new List<string>
         {
-            "ModuleFile\tCategories\tDependencies"
+            "ModuleFile\tCategories\tDependencies\tRequiredReferences"
         };
-        lines.AddRange(rows.Select(row => $"{row.ModuleFile}\t{row.Categories}\t{row.Dependencies}"));
-        File.WriteAllText(Path.Combine(repo, "common-modules-manifest.tsv"), string.Join("\n", lines) + "\n", new UTF8Encoding(false));
+        lines.AddRange(rows.Select(row =>
+            $"{row.ModuleFile}\t{row.Categories}\t{row.Dependencies}\t[]"));
+        File.WriteAllText(
+            Path.Combine(repo, "common-modules-manifest.tsv"),
+            string.Join("\r\n", lines) + "\r\n",
+            new UnicodeEncoding(false, true, true));
     }
 
     private static void WriteModule(string directory, string fileName, string content)

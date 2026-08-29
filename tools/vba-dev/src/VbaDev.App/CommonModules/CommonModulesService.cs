@@ -36,7 +36,26 @@ public sealed class CommonModulesService
     /// <param name="force">Whether existing target source files may be overwritten.</param>
     /// <returns>The command result to print and return from the CLI.</returns>
     public CommandResult Add(ResolvedProjectContext context, IReadOnlyList<string> requestedModules, bool force)
-        => RunTransaction(() => installationTransaction.Add(context, requestedModules, force));
+        => AddAsync(context, requestedModules, force, CancellationToken.None)
+            .GetAwaiter()
+            .GetResult();
+
+    /// <summary>
+    /// Adds requested CommonModules after completing required-reference preflight.
+    /// </summary>
+    public async Task<CommandResult> AddAsync(
+        ResolvedProjectContext context,
+        IReadOnlyList<string> requestedModules,
+        bool force,
+        CancellationToken cancellationToken)
+        => await RunTransactionAsync(
+                () => installationTransaction.AddAsync(
+                    context,
+                    requestedModules,
+                    force,
+                    cancellationToken),
+                cancellationToken)
+            .ConfigureAwait(false);
 
     /// <summary>
     /// Lists the CommonModules entries tracked for the current document.
@@ -77,13 +96,33 @@ public sealed class CommonModulesService
     /// <param name="project">The resolved project to update.</param>
     /// <returns>The command result to print and return from the CLI.</returns>
     public CommandResult Update(ResolvedProject project)
-        => RunTransaction(() => installationTransaction.Update(project));
+        => UpdateAsync(project, CancellationToken.None)
+            .GetAwaiter()
+            .GetResult();
 
-    private static CommandResult RunTransaction(Func<string> execute)
+    /// <summary>
+    /// Updates installed CommonModules after required-reference preflight.
+    /// </summary>
+    public async Task<CommandResult> UpdateAsync(
+        ResolvedProject project,
+        CancellationToken cancellationToken)
+        => await RunTransactionAsync(
+                () => installationTransaction.UpdateAsync(project, cancellationToken),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+    private static async Task<CommandResult> RunTransactionAsync(
+        Func<Task<string>> execute,
+        CancellationToken cancellationToken)
     {
         try
         {
-            return CommandResult.Success(execute());
+            return CommandResult.Success(await execute().ConfigureAwait(false));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return CommandResult.Cancelled(
+                "CommonModules operation was cancelled before project mutation.");
         }
         catch (CommonModulesManifestException ex)
         {
@@ -92,6 +131,10 @@ public sealed class CommonModulesService
         catch (CommonModulesTransactionException ex)
         {
             return CommandResult.UsageError(ex.Message);
+        }
+        catch (ProjectManifestMutationException ex)
+        {
+            return CommandResult.UsageError($"[{ex.Code}] {ex.Message}");
         }
     }
 
