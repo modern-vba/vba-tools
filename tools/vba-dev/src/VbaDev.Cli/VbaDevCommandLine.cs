@@ -90,15 +90,28 @@ public sealed class VbaDevCommandLine
             "Project root output directory.",
             "dir",
             aliases: "-o");
+        var newFormatOption = CreateStringOption(
+            "--format",
+            "Project creation receipt format.",
+            "text|json",
+            ["text", "json"],
+            "-f");
         newExcelCommand.Add(newNameOption);
         newExcelCommand.Add(newOutputOption);
-        newExcelCommand.SetAction(parseResult => WriteCommandResult(
+        newExcelCommand.Add(newFormatOption);
+        newExcelCommand.SetAction(async (parseResult, cancellationToken) => WriteCommandResult(
             parseResult,
-            composition.NewProjectCommand.Run(new NewProjectCommandRequest(
-                parseResult.GetValue(newNameOption),
-                null,
-                parseResult.GetValue(newOutputOption),
-                composition.WorkingDirectory))));
+            await composition.NewProjectCommand.RunAsync(
+                    new NewProjectCommandRequest(
+                        parseResult.GetValue(newNameOption),
+                        null,
+                        parseResult.GetValue(newOutputOption),
+                        composition.WorkingDirectory,
+                        ProjectNameSpecified: parseResult.GetResult(newNameOption) is not null,
+                        OutputDirectorySpecified: parseResult.GetResult(newOutputOption) is not null,
+                        Format: parseResult.GetValue(newFormatOption) ?? "text"),
+                    cancellationToken)
+                .ConfigureAwait(false)));
 
         var commonModuleCommand = AddCommand(rootCommand, "common-module", "Manage CommonModules entries.");
         var commonModuleAddCommand = AddCapabilityCommand(
@@ -576,6 +589,7 @@ public sealed class VbaDevCommandLine
                     ["test.sourceSnapshot"] = "1.0",
                     ["invocation.stdinCancellation"] = "1.0",
                     ["sourceSnapshot.activeWindowsCodePage"] = "1.0",
+                    ["projectCreation.pathValidation"] = "1.0",
                     ["hostClass.list"] = "1.0"
                 },
                 GetActiveWindowsCodePage(),

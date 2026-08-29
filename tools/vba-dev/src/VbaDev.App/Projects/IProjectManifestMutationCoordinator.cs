@@ -95,6 +95,9 @@ public sealed record ProjectManifestMutationWarning(string Code, string Message)
 /// </summary>
 public enum ProjectManifestMutationCommand
 {
+    /// <summary>One initial Excel project creation.</summary>
+    NewExcel,
+
     /// <summary>One CommonModules add mutation.</summary>
     CommonModuleAdd,
 

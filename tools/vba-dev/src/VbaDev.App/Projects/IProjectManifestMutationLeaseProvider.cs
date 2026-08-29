@@ -28,6 +28,12 @@ public interface IProjectManifestMutationLease
     string ManifestPath { get; }
 
     /// <summary>
+    /// Proves that the path-visible ownership marker still names the exact marker
+    /// acquired by this lease and still carries this lease's owner identity.
+    /// </summary>
+    void ProveOwnershipContinuity();
+
+    /// <summary>
     /// Releases the owner handle without observing later command cancellation and classifies marker cleanup.
     /// </summary>
     ValueTask<ProjectManifestLeaseRelease> ReleaseAsync();

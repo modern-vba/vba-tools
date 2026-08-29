@@ -116,7 +116,7 @@ internal sealed class NewProjectAncestorSourceSetIsolation
 
             foreach (var (documentName, document) in manifest.Documents)
             {
-                if (!FileSystemPathIdentityRelations.SameOrDescendant(
+                if (!FileSystemPathIdentityRelations.RootsOverlap(
                         projectIdentity,
                         sourceRoots[documentName]))
                 {

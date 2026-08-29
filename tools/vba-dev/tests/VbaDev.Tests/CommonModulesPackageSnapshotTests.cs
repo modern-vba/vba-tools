@@ -67,6 +67,49 @@ public sealed class CommonModulesPackageSnapshotTests
     }
 
     [Fact]
+    public void CapturePlansFromOriginalBytesWhenTheStagedManifestChangesBeforeLoad()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        var repository = temp.CreateDirectory("common_modules_repo");
+        WriteManifest(
+            repository,
+            ("Feature.bas", "optional", string.Empty),
+            ("Service.bas", "optional", string.Empty));
+        WriteSource(repository, "Feature.bas", "feature generation one");
+        WriteSource(repository, "Service.bas", "service generation one");
+        var expectedManifestBytes = File.ReadAllBytes(Path.Combine(
+            repository,
+            CommonModulesManifestReader.ManifestFileName));
+        var scratchRoot = temp.CreateDirectory("scratch");
+        var factory = new CommonModulesPackageSnapshotFactory(
+            new CommonModulesPackageReader(new CommonModulesManifestReader()),
+            scratchRoot,
+            beforePackageLoad: () =>
+            {
+                var stagingPath = Directory.EnumerateDirectories(scratchRoot).Single();
+                WriteManifest(
+                    stagingPath,
+                    ("Feature.bas", "optional", "Service.bas"),
+                    ("Service.bas", "optional", string.Empty));
+            },
+            beforeLiveStabilityProof: null,
+            NoOpSnapshotCleanupObserver.Instance);
+
+        var snapshot = factory.Capture(repository, CancellationToken.None);
+
+        var plan = snapshot.ResolveRequestedPlan(["Feature"]);
+        Assert.Equal(["Feature.bas"], plan.Entries.Select(entry => entry.ModuleFile));
+        Assert.Equal(
+            expectedManifestBytes,
+            snapshot.ReadFileBytes(CommonModulesManifestReader.ManifestFileName));
+    }
+
+    [Fact]
     public void CaptureRejectsARepositoryGenerationThatChangesBeforeStabilityProof()
     {
         using var temp = TempDirectory.Create();
@@ -145,6 +188,281 @@ public sealed class CommonModulesPackageSnapshotTests
         Assert.Empty(Directory.EnumerateDirectories(scratchRoot));
     }
 
+    [Fact]
+    public void CancellationPreservesForeignContentAddedToStagingAndReportsTheRetainedWorkspace()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        using var cancellation = new CancellationTokenSource();
+        var repository = temp.CreateDirectory("common_modules_repo");
+        WriteManifest(repository, ("Feature.bas", "optional", string.Empty));
+        WriteSource(repository, "Feature.bas", "feature generation one");
+        var scratchRoot = temp.CreateDirectory("scratch");
+        string? stagingPath = null;
+        var foreignBytes = Encoding.UTF8.GetBytes("foreign staging content");
+        var factory = new CommonModulesPackageSnapshotFactory(
+            new CommonModulesPackageReader(new CommonModulesManifestReader()),
+            scratchRoot,
+            () =>
+            {
+                stagingPath = Directory.EnumerateDirectories(scratchRoot).Single();
+                File.WriteAllBytes(Path.Combine(stagingPath, "foreign.txt"), foreignBytes);
+                cancellation.Cancel();
+            });
+
+        var error = Assert.Throws<CommonModulesPackageSnapshotRetainedException>(() =>
+            factory.Capture(repository, cancellation.Token));
+
+        Assert.NotNull(stagingPath);
+        Assert.Contains(stagingPath, error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(stagingPath, error.CleanupResult.RetainedPath);
+        Assert.True(error.CleanupResult.IsConclusive);
+        Assert.Contains(
+            Path.Combine(stagingPath, "foreign.txt"),
+            error.CleanupResult.RetainedEntryPaths);
+        Assert.True(Directory.Exists(stagingPath));
+        Assert.Equal(
+            foreignBytes,
+            File.ReadAllBytes(Path.Combine(stagingPath, "foreign.txt")));
+        Assert.False(File.Exists(Path.Combine(stagingPath, "Feature.bas")));
+        Assert.False(File.Exists(Path.Combine(
+            stagingPath,
+            CommonModulesManifestReader.ManifestFileName)));
+    }
+
+    [Fact]
+    public void CaptureFailureReportsInconclusiveCleanupWhenAnOwnedStagingFileIsLocked()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        var repository = temp.CreateDirectory("common_modules_repo");
+        WriteManifest(repository, ("Feature.bas", "optional", string.Empty));
+        WriteSource(repository, "Feature.bas", "feature generation one");
+        var scratchRoot = temp.CreateDirectory("scratch");
+        string? stagingPath = null;
+        FileStream? stagingLock = null;
+        var factory = new CommonModulesPackageSnapshotFactory(
+            new CommonModulesPackageReader(new CommonModulesManifestReader()),
+            scratchRoot,
+            () =>
+            {
+                stagingPath = Directory.EnumerateDirectories(scratchRoot).Single();
+                stagingLock = File.Open(
+                    Path.Combine(stagingPath, "Feature.bas"),
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.Read);
+                WriteSource(repository, "Feature.bas", "feature generation two");
+            });
+
+        try
+        {
+            var error = Assert.Throws<CommonModulesPackageSnapshotRetainedException>(() =>
+                factory.Capture(repository, CancellationToken.None));
+
+            Assert.NotNull(stagingPath);
+            Assert.Equal(stagingPath, error.CleanupResult.RetainedPath);
+            Assert.False(error.CleanupResult.IsConclusive);
+            Assert.Contains(
+                Path.Combine(stagingPath, "Feature.bas"),
+                error.CleanupResult.ObservationIncompletePaths);
+            Assert.True(File.Exists(Path.Combine(stagingPath, "Feature.bas")));
+            Assert.False(File.Exists(Path.Combine(
+                stagingPath,
+                CommonModulesManifestReader.ManifestFileName)));
+        }
+        finally
+        {
+            stagingLock?.Dispose();
+        }
+    }
+
+    [Fact]
+    public void CleanupFileProofHandleBlocksWritesAndRenamesUntilExactDisposition()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        var repository = temp.CreateDirectory("common_modules_repo");
+        WriteManifest(repository, ("Feature.bas", "optional", string.Empty));
+        WriteSource(repository, "Feature.bas", "feature generation one");
+        var scratchRoot = temp.CreateDirectory("scratch");
+        var observer = new FileMutationAttemptCleanupObserver("Feature.bas");
+        var snapshot = new CommonModulesPackageSnapshotFactory(
+            new CommonModulesPackageReader(new CommonModulesManifestReader()),
+            scratchRoot,
+            beforeLiveStabilityProof: null,
+            observer)
+            .Capture(repository, CancellationToken.None);
+
+        var cleanup = snapshot.Cleanup();
+
+        Assert.True(observer.WriteWasBlocked);
+        Assert.True(observer.RenameWasBlocked);
+        Assert.True(cleanup.Deleted);
+        Assert.False(Directory.Exists(snapshot.StagingPath));
+        Assert.False(File.Exists(observer.MovedPath));
+    }
+
+    [Fact]
+    public void CleanupDirectoryProofHandleBlocksDeleteAndRenameUntilExactDisposition()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        var repository = temp.CreateDirectory("common_modules_repo");
+        WriteManifest(repository, ("Feature.bas", "optional", string.Empty));
+        WriteSource(repository, "Feature.bas", "feature generation one");
+        var scratchRoot = temp.CreateDirectory("scratch");
+        var observer = new DirectoryMutationAttemptCleanupObserver();
+        var snapshot = new CommonModulesPackageSnapshotFactory(
+            new CommonModulesPackageReader(new CommonModulesManifestReader()),
+            scratchRoot,
+            beforeLiveStabilityProof: null,
+            observer)
+            .Capture(repository, CancellationToken.None);
+        observer.TargetPath = snapshot.StagingPath;
+
+        var cleanup = snapshot.Cleanup();
+
+        Assert.True(observer.DeleteWasBlocked);
+        Assert.True(observer.RenameWasBlocked);
+        Assert.True(cleanup.Deleted);
+        Assert.False(Directory.Exists(snapshot.StagingPath));
+        Assert.False(Directory.Exists(observer.MovedPath));
+    }
+
+    [Fact]
+    public void CleanupPreservesASameByteReplacementForAnOwnedStagingFile()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        var repository = temp.CreateDirectory("common_modules_repo");
+        WriteManifest(repository, ("Feature.bas", "optional", string.Empty));
+        WriteSource(repository, "Feature.bas", "feature generation one");
+        var scratchRoot = temp.CreateDirectory("scratch");
+        var snapshot = new CommonModulesPackageSnapshotFactory(
+            new CommonModulesPackageReader(new CommonModulesManifestReader()),
+            scratchRoot)
+            .Capture(repository, CancellationToken.None);
+        var featurePath = Path.Combine(snapshot.StagingPath, "Feature.bas");
+        var replacementBytes = File.ReadAllBytes(featurePath);
+        File.Delete(featurePath);
+        File.WriteAllBytes(featurePath, replacementBytes);
+
+        var cleanup = snapshot.Cleanup();
+
+        Assert.False(cleanup.Deleted);
+        Assert.True(cleanup.IsConclusive);
+        Assert.Equal(snapshot.StagingPath, cleanup.RetainedPath);
+        Assert.Contains(featurePath, cleanup.RetainedEntryPaths);
+        Assert.Equal(replacementBytes, File.ReadAllBytes(featurePath));
+        Assert.False(File.Exists(Path.Combine(
+            snapshot.StagingPath,
+            CommonModulesManifestReader.ManifestFileName)));
+    }
+
+    [Fact]
+    public void CleanupPreservesChangedBytesInAnOwnedStagingFile()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        var repository = temp.CreateDirectory("common_modules_repo");
+        WriteManifest(repository, ("Feature.bas", "optional", string.Empty));
+        WriteSource(repository, "Feature.bas", "feature generation one");
+        var scratchRoot = temp.CreateDirectory("scratch");
+        var snapshot = new CommonModulesPackageSnapshotFactory(
+            new CommonModulesPackageReader(new CommonModulesManifestReader()),
+            scratchRoot)
+            .Capture(repository, CancellationToken.None);
+        var featurePath = Path.Combine(snapshot.StagingPath, "Feature.bas");
+        var changedBytes = Encoding.UTF8.GetBytes("externally changed staging bytes");
+        File.WriteAllBytes(featurePath, changedBytes);
+
+        var cleanup = snapshot.Cleanup();
+
+        Assert.False(cleanup.Deleted);
+        Assert.True(cleanup.IsConclusive);
+        Assert.Contains(featurePath, cleanup.RetainedEntryPaths);
+        Assert.Equal(changedBytes, File.ReadAllBytes(featurePath));
+    }
+
+    [Fact]
+    public void CleanupTreatsAnExternallyMissingOwnedFileAsAlreadyRemoved()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        var repository = temp.CreateDirectory("common_modules_repo");
+        WriteManifest(repository, ("Feature.bas", "optional", string.Empty));
+        WriteSource(repository, "Feature.bas", "feature generation one");
+        var scratchRoot = temp.CreateDirectory("scratch");
+        var snapshot = new CommonModulesPackageSnapshotFactory(
+            new CommonModulesPackageReader(new CommonModulesManifestReader()),
+            scratchRoot)
+            .Capture(repository, CancellationToken.None);
+        File.Delete(Path.Combine(snapshot.StagingPath, "Feature.bas"));
+
+        var cleanup = snapshot.Cleanup();
+
+        Assert.True(cleanup.Deleted);
+        Assert.Null(cleanup.RetainedPath);
+        Assert.Empty(cleanup.RetainedEntryPaths);
+        Assert.False(Directory.Exists(snapshot.StagingPath));
+    }
+
+    [Fact]
+    public void CleanupTreatsAnExternallyMissingStagingDirectoryAsAlreadyRemoved()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        var repository = temp.CreateDirectory("common_modules_repo");
+        WriteManifest(repository, ("Feature.bas", "optional", string.Empty));
+        WriteSource(repository, "Feature.bas", "feature generation one");
+        var scratchRoot = temp.CreateDirectory("scratch");
+        var snapshot = new CommonModulesPackageSnapshotFactory(
+            new CommonModulesPackageReader(new CommonModulesManifestReader()),
+            scratchRoot)
+            .Capture(repository, CancellationToken.None);
+        Directory.Delete(snapshot.StagingPath, recursive: true);
+
+        var cleanup = snapshot.Cleanup();
+
+        Assert.True(cleanup.Deleted);
+        Assert.Null(cleanup.RetainedPath);
+        Assert.Empty(cleanup.RetainedEntryPaths);
+        Assert.True(cleanup.IsConclusive);
+    }
+
     private static void WriteManifest(
         string repository,
         params (string ModuleFile, string Categories, string Dependencies)[] rows)
@@ -177,5 +495,96 @@ public sealed class CommonModulesPackageSnapshotTests
             Path.Combine(repository, fileName),
             header + body + "\r\n",
             new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+    }
+
+    private sealed class FileMutationAttemptCleanupObserver(string fileName)
+        : ICommonModulesPackageSnapshotCleanupObserver
+    {
+        public bool WriteWasBlocked { get; private set; }
+
+        public bool RenameWasBlocked { get; private set; }
+
+        public string? MovedPath { get; private set; }
+
+        public void OnProofComplete(string path)
+        {
+            if (!Path.GetFileName(path).Equals(fileName, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            try
+            {
+                File.WriteAllText(path, "foreign replacement", new UTF8Encoding(false));
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException)
+            {
+                WriteWasBlocked = true;
+            }
+
+            MovedPath = path + ".moved";
+            try
+            {
+                File.Move(path, MovedPath);
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException)
+            {
+                RenameWasBlocked = true;
+            }
+        }
+    }
+
+    private sealed class DirectoryMutationAttemptCleanupObserver
+        : ICommonModulesPackageSnapshotCleanupObserver
+    {
+        public string? TargetPath { get; set; }
+
+        public string? MovedPath { get; private set; }
+
+        public bool DeleteWasBlocked { get; private set; }
+
+        public bool RenameWasBlocked { get; private set; }
+
+        public void OnProofComplete(string path)
+        {
+            if (TargetPath is null
+                || !path.Equals(TargetPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            try
+            {
+                Directory.Delete(path, recursive: false);
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException)
+            {
+                DeleteWasBlocked = true;
+            }
+
+            MovedPath = path + "-moved";
+            try
+            {
+                Directory.Move(path, MovedPath);
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException)
+            {
+                RenameWasBlocked = true;
+            }
+        }
+    }
+
+    private sealed class NoOpSnapshotCleanupObserver
+        : ICommonModulesPackageSnapshotCleanupObserver
+    {
+        public static NoOpSnapshotCleanupObserver Instance { get; } = new();
+
+        public void OnProofComplete(string path)
+        {
+        }
     }
 }

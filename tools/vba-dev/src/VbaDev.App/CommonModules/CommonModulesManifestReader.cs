@@ -38,7 +38,13 @@ public sealed class CommonModulesManifestReader
             throw new CommonModulesManifestException($"CommonModules manifest was not found: {manifestPath}");
         }
 
-        var text = ReadManifestText(manifestPath);
+        return LoadCaptured(File.ReadAllBytes(manifestPath));
+    }
+
+    internal IReadOnlyList<CommonModuleManifestEntry> LoadCaptured(byte[] manifestBytes)
+    {
+        ArgumentNullException.ThrowIfNull(manifestBytes);
+        var text = ReadManifestText(manifestBytes);
         var lines = text[..^2].Split("\r\n", StringSplitOptions.None);
         var entries = new List<CommonModuleManifestEntry>();
         var headerSeen = false;
@@ -101,9 +107,8 @@ public sealed class CommonModulesManifestReader
         }
     }
 
-    private static string ReadManifestText(string manifestPath)
+    private static string ReadManifestText(byte[] bytes)
     {
-        var bytes = File.ReadAllBytes(manifestPath);
         if (bytes.Length < 2 || bytes[0] != 0xff || bytes[1] != 0xfe)
         {
             throw new CommonModulesManifestException(

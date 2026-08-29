@@ -118,9 +118,100 @@ public sealed class CommonModulesPackageReader
         return new CommonModulesPackage(manifestEntries);
     }
 
+    internal CommonModulesPackage LoadCaptured(
+        string displayRootPath,
+        IReadOnlyDictionary<string, byte[]> capturedFiles)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(displayRootPath);
+        ArgumentNullException.ThrowIfNull(capturedFiles);
+        var actualNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var fileName in capturedFiles.Keys)
+        {
+            if (!actualNames.TryAdd(fileName, fileName))
+            {
+                throw new CommonModulesManifestException(
+                    $"CommonModules package contains case-insensitive duplicate entry '{fileName}'.");
+            }
+        }
+
+        var manifestName = RequireExactCapturedFile(
+            actualNames,
+            CommonModulesManifestReader.ManifestFileName,
+            displayRootPath);
+        var manifestEntries = manifestReader.LoadCaptured(capturedFiles[manifestName]);
+        var expectedNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            [CommonModulesManifestReader.ManifestFileName] = CommonModulesManifestReader.ManifestFileName
+        };
+        var commonNames = new Dictionary<string, CommonModuleManifestEntry>(StringComparer.OrdinalIgnoreCase);
+        foreach (var manifestEntry in manifestEntries)
+        {
+            if (!commonNames.TryAdd(manifestEntry.Name, manifestEntry))
+            {
+                var prior = commonNames[manifestEntry.Name];
+                throw new CommonModulesManifestException(
+                    $"CommonModules package contains duplicate CommonModuleName '{manifestEntry.Name}': "
+                    + $"'{prior.ModuleFile}' and '{manifestEntry.ModuleFile}'.");
+            }
+
+            expectedNames.Add(manifestEntry.ModuleFile, manifestEntry.ModuleFile);
+            if (manifestEntry.ModuleFile.EndsWith(".frm", StringComparison.Ordinal))
+            {
+                var sidecarName = Path.ChangeExtension(manifestEntry.ModuleFile, ".frx");
+                if (actualNames.ContainsKey(sidecarName))
+                {
+                    expectedNames.Add(sidecarName, sidecarName);
+                }
+            }
+        }
+
+        foreach (var expectedName in expectedNames.Values)
+        {
+            RequireExactCapturedFile(actualNames, expectedName, displayRootPath);
+        }
+
+        foreach (var manifestEntry in manifestEntries)
+        {
+            ValidateSourceMetadata(
+                manifestEntry,
+                capturedFiles[manifestEntry.ModuleFile],
+                Path.Combine(displayRootPath, manifestEntry.ModuleFile));
+        }
+
+        foreach (var actualName in actualNames.Values)
+        {
+            if (!expectedNames.ContainsKey(actualName))
+            {
+                throw new CommonModulesManifestException(
+                    $"CommonModules package contains unexpected package entry '{actualName}'.");
+            }
+        }
+
+        return new CommonModulesPackage(manifestEntries);
+    }
+
     private static void ValidateSourceMetadata(
         CommonModuleManifestEntry manifestEntry,
         FileInfo sourceFile)
+    {
+        byte[] sourceBytes;
+        try
+        {
+            sourceBytes = File.ReadAllBytes(sourceFile.FullName);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw new CommonModulesManifestException(
+                $"CommonModules source '{sourceFile.FullName}' must use strict Windows-932 text. {ex.Message}");
+        }
+
+        ValidateSourceMetadata(manifestEntry, sourceBytes, sourceFile.FullName);
+    }
+
+    private static void ValidateSourceMetadata(
+        CommonModuleManifestEntry manifestEntry,
+        byte[] sourceBytes,
+        string sourcePath)
     {
         if (!VbaIdentifier.IsIdentifier(manifestEntry.Name)
             || !CanonicalSourceIdentityPattern.IsMatch(manifestEntry.Name)
@@ -133,13 +224,12 @@ public sealed class CommonModulesPackageReader
         string sourceText;
         try
         {
-            var sourceBytes = File.ReadAllBytes(sourceFile.FullName);
             sourceText = CanonicalSourceEncoding.Value.GetString(sourceBytes);
             if (!sourceBytes.AsSpan().SequenceEqual(
                     CanonicalSourceEncoding.Value.GetBytes(sourceText)))
             {
                 throw new InvalidOperationException(
-                    $"CommonModules source '{sourceFile.FullName}' cannot reproduce its canonical Windows-932 bytes.");
+                    $"CommonModules source '{sourcePath}' cannot reproduce its canonical Windows-932 bytes.");
             }
         }
         catch (Exception ex) when (ex is IOException
@@ -149,7 +239,7 @@ public sealed class CommonModulesPackageReader
                                    or InvalidOperationException)
         {
             throw new CommonModulesManifestException(
-                $"CommonModules source '{sourceFile.FullName}' must use strict Windows-932 text. {ex.Message}");
+                $"CommonModules source '{sourcePath}' must use strict Windows-932 text. {ex.Message}");
         }
 
         var extension = Path.GetExtension(manifestEntry.ModuleFile);
@@ -285,6 +375,26 @@ public sealed class CommonModulesPackageReader
             throw new CommonModulesManifestException(
                 $"CommonModules package entry could not be read: {entry.FullName}");
         }
+    }
+
+    private static string RequireExactCapturedFile(
+        IReadOnlyDictionary<string, string> inventory,
+        string expectedName,
+        string displayRootPath)
+    {
+        if (!inventory.TryGetValue(expectedName, out var actualName))
+        {
+            throw new CommonModulesManifestException(
+                $"CommonModules package source file was not found: {Path.Combine(displayRootPath, expectedName)}");
+        }
+
+        if (!actualName.Equals(expectedName, StringComparison.Ordinal))
+        {
+            throw new CommonModulesManifestException(
+                $"CommonModules package entry '{actualName}' must use exact spelling '{expectedName}'.");
+        }
+
+        return actualName;
     }
 
     private enum CanonicalSourceKind

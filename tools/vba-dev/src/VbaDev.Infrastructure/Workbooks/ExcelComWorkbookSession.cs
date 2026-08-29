@@ -151,6 +151,26 @@ internal sealed class ExcelComWorkbookSession : IDisposable
     }
 
     /// <summary>
+    /// Creates a workbook from an explicit Excel template in an already owned hidden application.
+    /// </summary>
+    internal static ExcelComWorkbookSession CreateOwnedForGeneration(
+        ExcelComHostObjects host,
+        int workbookTemplate)
+    {
+        dynamic workbooks = host.WorkbooksObject;
+        var workbookObject = workbooks.Add(workbookTemplate);
+        var session = new ExcelComWorkbookSession(
+            host.ExcelObject,
+            workbookObject,
+            host.ExcelProcess,
+            host.StrongExcelProcess,
+            host.TerminationController,
+            host.CancellationRegistration);
+        ComObjectReleaser.Release(host.WorkbooksObject);
+        return session;
+    }
+
+    /// <summary>
     /// Releases an owned Excel application when workbook open did not complete.
     /// </summary>
     internal static void DisposeOwnedGenerationHost(

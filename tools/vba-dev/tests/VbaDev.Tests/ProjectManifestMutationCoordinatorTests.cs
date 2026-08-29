@@ -210,6 +210,46 @@ public sealed class ProjectManifestMutationCoordinatorTests
     }
 
     [Fact]
+    public async Task PostRebaseLeaseContinuityFailureRunsSourceMutationRecoveryBeforeRelease()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp, new VbaProjectReference("Remove Me"));
+        var leaseProvider = new SecondProofFailureLeaseProvider(root);
+        var recoveryInvoked = false;
+        var coordinator = new ProjectManifestMutationCoordinator(
+            new ProjectManifestAtomicWriter(),
+            leaseProvider);
+
+        var error = await Assert.ThrowsAsync<ProjectManifestMutationException>(() =>
+            coordinator.ExecuteAsync(
+                root,
+                ProjectManifestMutationCommand.CommonModuleUpdate,
+                snapshot =>
+                {
+                    var planned = ProjectManifestEditor.Clone(snapshot.Manifest);
+                    planned.Documents["Book1"].References.Clear();
+                    return ProjectManifestMutationPlan<string>.Commit(
+                        planned,
+                        "updated",
+                        sourceMutationCommitted: true,
+                        commitFailureRecovery: failure =>
+                        {
+                            recoveryInvoked = true;
+                            Assert.False(leaseProvider.Released);
+                            return new ProjectManifestMutationException(
+                                "recoveredContinuityFailure",
+                                "Recovery was established after ownership continuity failed.",
+                                failure);
+                        });
+                },
+                CancellationToken.None));
+
+        Assert.Equal("recoveredContinuityFailure", error.Code);
+        Assert.True(recoveryInvoked);
+        Assert.True(leaseProvider.Released);
+    }
+
+    [Fact]
     public async Task CancellationAfterCommitCannotReplaceEstablishedSuccess()
     {
         using var temp = TempDirectory.Create();
@@ -361,8 +401,12 @@ public sealed class ProjectManifestMutationCoordinatorTests
             manifest.Documents["Book1"].References.Select(reference => reference.Name));
     }
 
-    [Fact]
-    public async Task LeaseTimeoutReportsOnlySafeReadableOwnerMetadata()
+    [Theory]
+    [InlineData(ProjectManifestMutationCommand.ReferenceAdd, "reference add")]
+    [InlineData(ProjectManifestMutationCommand.NewExcel, "new excel")]
+    public async Task LeaseTimeoutReportsOnlySafeReadableOwnerMetadata(
+        ProjectManifestMutationCommand ownerCommand,
+        string stableOwnerCommand)
     {
         using var temp = TempDirectory.Create();
         var root = CreateProject(temp);
@@ -381,7 +425,7 @@ public sealed class ProjectManifestMutationCoordinatorTests
             "test-version");
         var owner = await ownerProvider.AcquireAsync(
             root,
-            ProjectManifestMutationCommand.ReferenceAdd,
+            ownerCommand,
             CancellationToken.None);
 
         try
@@ -393,7 +437,10 @@ public sealed class ProjectManifestMutationCoordinatorTests
                     CancellationToken.None));
 
             Assert.Equal("manifestMutationBusy", exception.Code);
-            Assert.Contains("command 'reference add'", exception.Message, StringComparison.Ordinal);
+            Assert.Contains(
+                $"command '{stableOwnerCommand}'",
+                exception.Message,
+                StringComparison.Ordinal);
             Assert.DoesNotContain(Environment.CommandLine, exception.Message, StringComparison.Ordinal);
         }
         finally
@@ -735,6 +782,168 @@ public sealed class ProjectManifestMutationCoordinatorTests
     }
 
     [Fact]
+    public async Task WindowsOwnerHandlePreventsMarkerRenameUntilRelease()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var markerPath = Path.Combine(
+            root,
+            ProjectManifest.ManifestFileName + ".vba-dev.lock");
+        var displacedPath = markerPath + ".displaced";
+        var provider = new ProjectManifestMutationLeaseProvider(
+            new FileSystemPathIdentityResolver(),
+            TimeProvider.System,
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromMilliseconds(10),
+            "test-version");
+        var lease = await provider.AcquireAsync(
+            root,
+            ProjectManifestMutationCommand.NewExcel,
+            CancellationToken.None);
+
+        try
+        {
+            Assert.Throws<IOException>(() => File.Move(markerPath, displacedPath));
+            Assert.Throws<IOException>(() => File.Delete(markerPath));
+            lease.ProveOwnershipContinuity();
+            Assert.True(File.Exists(markerPath));
+        }
+        finally
+        {
+            _ = await lease.ReleaseAsync();
+        }
+
+        Assert.False(File.Exists(markerPath));
+        Assert.False(File.Exists(displacedPath));
+    }
+
+    [Fact]
+    public async Task LeaseContinuityRejectsAPathVisibleReplacementMarker()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var markerPath = Path.Combine(
+            root,
+            ProjectManifest.ManifestFileName + ".vba-dev.lock");
+        var displacedPath = markerPath + ".displaced";
+        var provider = new ProjectManifestMutationLeaseProvider(
+            new FileSystemPathIdentityResolver(),
+            TimeProvider.System,
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromMilliseconds(10),
+            "test-version",
+            afterOwnerRelease: null,
+            useDeleteOnClose: false,
+            createOwnerStreamOverride: path => new FileStream(
+                path,
+                FileMode.CreateNew,
+                FileAccess.ReadWrite,
+                FileShare.Read | FileShare.Delete,
+                bufferSize: 4096,
+                FileOptions.WriteThrough));
+        var lease = await provider.AcquireAsync(
+            root,
+            ProjectManifestMutationCommand.NewExcel,
+            CancellationToken.None);
+
+        try
+        {
+            File.Move(markerPath, displacedPath);
+            File.WriteAllText(
+                markerPath,
+                "{\"leaseId\":\"00000000-0000-0000-0000-000000000001\"}",
+                new UTF8Encoding(false));
+
+            var error = Assert.Throws<ProjectManifestMutationException>(
+                lease.ProveOwnershipContinuity);
+
+            Assert.Equal("manifestMutationLeaseChanged", error.Code);
+            Assert.True(File.Exists(markerPath));
+        }
+        finally
+        {
+            _ = await lease.ReleaseAsync();
+            File.Delete(markerPath);
+            File.Delete(displacedPath);
+        }
+    }
+
+    [Fact]
+    public async Task LeaseContinuityRejectsAReplacementWithCopiedOwnerMetadata()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var markerPath = Path.Combine(
+            root,
+            ProjectManifest.ManifestFileName + ".vba-dev.lock");
+        var displacedPath = markerPath + ".displaced";
+        var provider = new ProjectManifestMutationLeaseProvider(
+            new FileSystemPathIdentityResolver(),
+            TimeProvider.System,
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromMilliseconds(10),
+            "test-version",
+            afterOwnerRelease: null,
+            useDeleteOnClose: false,
+            createOwnerStreamOverride: path => new FileStream(
+                path,
+                FileMode.CreateNew,
+                FileAccess.ReadWrite,
+                FileShare.Read | FileShare.Delete,
+                bufferSize: 4096,
+                FileOptions.WriteThrough));
+        var lease = await provider.AcquireAsync(
+            root,
+            ProjectManifestMutationCommand.NewExcel,
+            CancellationToken.None);
+
+        try
+        {
+            byte[] copiedMetadata;
+            using (var metadataStream = new FileStream(
+                       markerPath,
+                       FileMode.Open,
+                       FileAccess.Read,
+                       FileShare.ReadWrite | FileShare.Delete))
+            using (var buffer = new MemoryStream())
+            {
+                metadataStream.CopyTo(buffer);
+                copiedMetadata = buffer.ToArray();
+            }
+            File.Move(markerPath, displacedPath);
+            File.WriteAllBytes(markerPath, copiedMetadata);
+
+            var error = Assert.Throws<ProjectManifestMutationException>(
+                lease.ProveOwnershipContinuity);
+
+            Assert.Equal("manifestMutationLeaseChanged", error.Code);
+        }
+        finally
+        {
+            _ = await lease.ReleaseAsync();
+        }
+
+        Assert.True(File.Exists(markerPath));
+        File.Delete(markerPath);
+        File.Delete(displacedPath);
+    }
+
+    [Fact]
     public async Task IdentityRevalidationFailureReleasesTheOpenedOwnerHandle()
     {
         using var temp = TempDirectory.Create();
@@ -1001,6 +1210,67 @@ public sealed class ProjectManifestMutationCoordinatorTests
     }
 
     [Fact]
+    public async Task ReleasedOwnerPreservesAReplacementMarkerSymlinkWithoutFailingRelease()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var markerPath = Path.Combine(
+            root,
+            ProjectManifest.ManifestFileName + ".vba-dev.lock");
+        var sentinelPath = Path.Combine(temp.Path, "foreign-marker-target.txt");
+        var probePath = Path.Combine(temp.Path, "symlink-probe.txt");
+        var sentinelBytes = Encoding.UTF8.GetBytes("foreign marker target");
+        File.WriteAllBytes(sentinelPath, sentinelBytes);
+        try
+        {
+            File.CreateSymbolicLink(probePath, sentinelPath);
+            File.Delete(probePath);
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+        {
+            return;
+        }
+
+        var provider = new ProjectManifestMutationLeaseProvider(
+            new FileSystemPathIdentityResolver(),
+            TimeProvider.System,
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromMilliseconds(10),
+            "test-version",
+            releasedMarkerPath =>
+            {
+                File.Delete(releasedMarkerPath);
+                File.CreateSymbolicLink(releasedMarkerPath, sentinelPath);
+            },
+            useDeleteOnClose: false);
+        var lease = await provider.AcquireAsync(
+            root,
+            ProjectManifestMutationCommand.ReferenceAdd,
+            CancellationToken.None);
+
+        try
+        {
+            var release = await lease.ReleaseAsync();
+
+            Assert.Empty(release.Warnings);
+            Assert.True(File.Exists(markerPath));
+            Assert.Equal(sentinelBytes, File.ReadAllBytes(sentinelPath));
+        }
+        finally
+        {
+            File.Delete(markerPath);
+        }
+
+        Assert.Equal(sentinelBytes, File.ReadAllBytes(sentinelPath));
+    }
+
+    [Fact]
     public async Task MalformedReleasedOwnerMarkerIsClassifiedAsACleanupWarning()
     {
         using var temp = TempDirectory.Create();
@@ -1153,6 +1423,54 @@ public sealed class ProjectManifestMutationCoordinatorTests
 
         public string CreateRecovery(string projectRoot, ProjectManifest manifest)
             => inner.CreateRecovery(projectRoot, manifest);
+    }
+
+    private sealed class SecondProofFailureLeaseProvider(string projectRoot)
+        : IProjectManifestMutationLeaseProvider
+    {
+        public bool Released { get; private set; }
+
+        public ValueTask<IProjectManifestMutationLease> AcquireAsync(
+            string requestedProjectRoot,
+            ProjectManifestMutationCommand command,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult<IProjectManifestMutationLease>(
+                new SecondProofFailureLease(
+                    new FileSystemPathIdentityResolver().Resolve(projectRoot),
+                    Path.Combine(projectRoot, ProjectManifest.ManifestFileName),
+                    () => Released = true));
+        }
+    }
+
+    private sealed class SecondProofFailureLease(
+        FileSystemPathIdentity projectIdentity,
+        string manifestPath,
+        Action onRelease)
+        : IProjectManifestMutationLease
+    {
+        private int proofCount;
+
+        public FileSystemPathIdentity ProjectIdentity { get; } = projectIdentity;
+
+        public string ManifestPath { get; } = manifestPath;
+
+        public void ProveOwnershipContinuity()
+        {
+            if (Interlocked.Increment(ref proofCount) == 2)
+            {
+                throw new ProjectManifestMutationException(
+                    "manifestMutationLeaseChanged",
+                    "The project mutation lease changed after source mutation.");
+            }
+        }
+
+        public ValueTask<ProjectManifestLeaseRelease> ReleaseAsync()
+        {
+            onRelease();
+            return ValueTask.FromResult(new ProjectManifestLeaseRelease([]));
+        }
     }
 
     private sealed class ThrowOnSecondIdentityResolution(

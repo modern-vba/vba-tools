@@ -43,6 +43,7 @@ public static class ToolingCompositionRoot
     /// <param name="projectManifestStore">The optional project manifest persistence adapter.</param>
     /// <param name="exportDestinationFileOperations">The optional recoverable export filesystem adapter.</param>
     /// <param name="projectManifestMutationCoordinator">The optional rebased manifest mutation boundary.</param>
+    /// <param name="projectManifestMutationLeaseProvider">The optional shared project mutation lease provider.</param>
     /// <returns>The composed services consumed by a command-line host.</returns>
     public static ToolingApplicationComposition CreateApplicationComposition(
         string workingDirectory,
@@ -57,6 +58,7 @@ public static class ToolingCompositionRoot
         IExportDestinationFileOperations? exportDestinationFileOperations = null,
         IProjectMaterializationDiagnosticPort? projectMaterializationDiagnosticPort = null,
         IProjectManifestMutationCoordinator? projectManifestMutationCoordinator = null,
+        IProjectManifestMutationLeaseProvider? projectManifestMutationLeaseProvider = null,
         IHostClassInspectionAutomation? hostClassInspectionAutomation = null)
     {
         var atomicManifestWriter = new ProjectManifestAtomicWriter();
@@ -65,10 +67,12 @@ public static class ToolingCompositionRoot
         var manifestEditor = new ProjectManifestEditor(
             manifestStore,
             atomicManifestWriter);
+        var mutationLeaseProvider = projectManifestMutationLeaseProvider
+                                    ?? new ProjectManifestMutationLeaseProvider();
         var mutationCoordinator = projectManifestMutationCoordinator
                                   ?? new ProjectManifestMutationCoordinator(
                                       atomicManifestWriter,
-                                      new ProjectManifestMutationLeaseProvider());
+                                      mutationLeaseProvider);
         var referenceResolver = vbaProjectReferenceResolver ?? new RegistryVbaProjectReferenceResolver();
         var ambiguityProbe = vbaProjectReferenceAmbiguityProbe
                              ?? (vbaProjectReferenceResolver is null
@@ -115,7 +119,9 @@ public static class ToolingCompositionRoot
         var newProjectCommand = new NewProjectCommand(
             manifestStore,
             initialWorkbookCreator ?? new ExcelComInitialWorkbookCreator(),
-            commonModulesManifestReader);
+            commonModulesManifestReader,
+            referencePlanner,
+            mutationLeaseProvider);
         var sourcePlanner = new WorkbookSourcePlanner();
         var generationPipeline = CreateWorkbookGenerationPipeline(
             buildAutomation,

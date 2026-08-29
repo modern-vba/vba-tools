@@ -53,6 +53,7 @@ public sealed class ProjectManifestMutationCoordinator : IProjectManifestMutatio
         ProjectManifestMutationPlan<TResult> plan;
         try
         {
+            lease.ProveOwnershipContinuity();
             var snapshotBytes = ReadManifestBytes(lease.ManifestPath);
             var latestManifest = ParseManifest(snapshotBytes, lease.ManifestPath);
             plan = rebase(new ProjectManifestMutationSnapshot(
@@ -65,6 +66,7 @@ public sealed class ProjectManifestMutationCoordinator : IProjectManifestMutatio
             commitCancellationToken.ThrowIfCancellationRequested();
             try
             {
+                lease.ProveOwnershipContinuity();
                 if (plan.Manifest is not null)
                 {
                     atomicWriter.ReplaceExisting(

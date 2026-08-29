@@ -56,6 +56,7 @@ internal static class CommandLineTestFactory
         IExportDestinationFileOperations? exportDestinationFileOperations = null,
         IProjectMaterializationDiagnosticPort? projectMaterializationDiagnosticPort = null,
         IProjectManifestMutationCoordinator? projectManifestMutationCoordinator = null,
+        IProjectManifestMutationLeaseProvider? projectManifestMutationLeaseProvider = null,
         IHostClassInspectionAutomation? hostClassInspectionAutomation = null)
     {
         var composition = ToolingCompositionRoot.CreateApplicationComposition(
@@ -71,6 +72,7 @@ internal static class CommandLineTestFactory
             exportDestinationFileOperations,
             projectMaterializationDiagnosticPort,
             projectManifestMutationCoordinator,
+            projectManifestMutationLeaseProvider,
             hostClassInspectionAutomation);
         return generatingExecutablePath is null
             ? VbaDevCommandLine.Create(composition)

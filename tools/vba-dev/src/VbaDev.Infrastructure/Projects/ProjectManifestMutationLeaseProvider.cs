@@ -1,6 +1,9 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text.Json;
+using Microsoft.Win32.SafeHandles;
 using VbaDev.App.Projects;
 using VbaDev.Domain;
 
@@ -15,6 +18,19 @@ public sealed class ProjectManifestMutationLeaseProvider : IProjectManifestMutat
     private const int UnixErrorFileExists = 17;
     private const int WindowsErrorFileExists = 80;
     private const int WindowsErrorAlreadyExists = 183;
+    private const int WindowsErrorFileNotFound = 2;
+    private const int WindowsErrorPathNotFound = 3;
+    private const int WindowsErrorSharingViolation = 32;
+    private const int WindowsErrorLockViolation = 33;
+    private const uint GenericRead = 0x80000000;
+    private const uint DeleteAccess = 0x00010000;
+    private const uint FileShareRead = 0x00000001;
+    private const uint OpenExisting = 3;
+    private const uint FileAttributeNormal = 0x00000080;
+    private const uint FileAttributeDirectory = 0x00000010;
+    private const uint FileAttributeReparsePoint = 0x00000400;
+    private const uint FileFlagOpenReparsePoint = 0x00200000;
+    private const int FileDispositionInfoClass = 4;
 
     private static readonly JsonSerializerOptions MetadataJsonOptions = new()
     {
@@ -144,8 +160,7 @@ public sealed class ProjectManifestMutationLeaseProvider : IProjectManifestMutat
                             markerPath,
                             FileMode.CreateNew,
                             FileAccess.ReadWrite,
-                            FileShare.Read |
-                            (useDeleteOnClose ? FileShare.Delete : FileShare.None),
+                            FileShare.Read,
                             bufferSize: 4096,
                             FileOptions.WriteThrough |
                             (useDeleteOnClose
@@ -188,13 +203,17 @@ public sealed class ProjectManifestMutationLeaseProvider : IProjectManifestMutat
 
                 var leaseId = Guid.NewGuid();
                 WriteOwnerMetadata(ownerStream, leaseId, command);
+                var markerIdentity = pathIdentityResolver.Resolve(markerPath);
                 var lease = new Lease(
                     ownerStream,
                     projectIdentity,
                     manifestPath,
                     markerPath,
                     leaseId,
+                    markerIdentity,
+                    pathIdentityResolver,
                     afterOwnerRelease);
+                lease.ProveOwnershipContinuity();
                 ownerStream = null;
                 return lease;
             }
@@ -314,6 +333,53 @@ public sealed class ProjectManifestMutationLeaseProvider : IProjectManifestMutat
         string markerPath,
         string manifestPath)
     {
+        if (OperatingSystem.IsWindows())
+        {
+            try
+            {
+                using var staleMarker = OpenMarkerForDisposition(
+                    markerPath,
+                    manifestPath,
+                    out _,
+                    out var isOrdinary);
+                if (!isOrdinary)
+                {
+                    throw new ProjectManifestMutationException(
+                        "manifestMutationLeaseFailed",
+                        $"Project manifest mutation ownership marker is not an ordinary sibling file: {manifestPath}");
+                }
+
+                SetMarkerDisposition(staleMarker.SafeFileHandle, markerPath);
+                return MarkerReclaimResult.Removed;
+            }
+            catch (Win32Exception exception) when (
+                exception.NativeErrorCode is WindowsErrorFileNotFound
+                    or WindowsErrorPathNotFound)
+            {
+                return MarkerReclaimResult.Missing;
+            }
+            catch (Win32Exception exception) when (
+                exception.NativeErrorCode is WindowsErrorSharingViolation
+                    or WindowsErrorLockViolation)
+            {
+                return MarkerReclaimResult.Owned;
+            }
+            catch (ProjectManifestMutationException)
+            {
+                throw;
+            }
+            catch (Exception exception) when (
+                exception is IOException
+                    or UnauthorizedAccessException
+                    or Win32Exception)
+            {
+                throw new ProjectManifestMutationException(
+                    "manifestMutationLeaseFailed",
+                    $"Project manifest mutation ownership marker could not be reclaimed safely: {manifestPath}",
+                    exception);
+            }
+        }
+
         if (!RejectUnsafeMarkerEntry(markerPath, manifestPath))
         {
             return MarkerReclaimResult.Missing;
@@ -346,6 +412,74 @@ public sealed class ProjectManifestMutationLeaseProvider : IProjectManifestMutat
         }
     }
 
+    private static FileStream OpenMarkerForDisposition(
+        string markerPath,
+        string manifestPath,
+        out FileSystemObjectIdentity identity,
+        out bool isOrdinary)
+    {
+        var handle = CreateFile(
+            markerPath,
+            GenericRead | DeleteAccess,
+            FileShareRead,
+            IntPtr.Zero,
+            OpenExisting,
+            FileAttributeNormal | FileFlagOpenReparsePoint,
+            IntPtr.Zero);
+        if (handle.IsInvalid)
+        {
+            var error = Marshal.GetLastWin32Error();
+            handle.Dispose();
+            throw new Win32Exception(
+                error,
+                $"The project manifest mutation ownership marker could not be opened safely: {manifestPath}");
+        }
+
+        try
+        {
+            if (!GetFileInformationByHandle(handle, out var information))
+            {
+                throw new Win32Exception(
+                    Marshal.GetLastWin32Error(),
+                    $"The project manifest mutation ownership marker identity could not be read: {manifestPath}");
+            }
+
+            identity = new FileSystemObjectIdentity(
+                information.VolumeSerialNumber,
+                ((ulong)information.FileIndexHigh << 32) |
+                information.FileIndexLow);
+            isOrdinary = (information.FileAttributes
+                & (FileAttributeDirectory | FileAttributeReparsePoint)) == 0;
+            return new FileStream(
+                handle,
+                FileAccess.Read,
+                bufferSize: 4096,
+                isAsync: false);
+        }
+        catch
+        {
+            handle.Dispose();
+            throw;
+        }
+    }
+
+    private static void SetMarkerDisposition(
+        SafeFileHandle handle,
+        string markerPath)
+    {
+        var disposition = new FileDispositionInformation { DeleteFile = true };
+        if (!SetFileInformationByHandle(
+                handle,
+                FileDispositionInfoClass,
+                ref disposition,
+                (uint)Marshal.SizeOf<FileDispositionInformation>()))
+        {
+            throw new Win32Exception(
+                Marshal.GetLastWin32Error(),
+                $"The exact project manifest mutation ownership marker could not be removed: {markerPath}");
+        }
+    }
+
     private enum MarkerReclaimResult
     {
         Missing,
@@ -364,6 +498,7 @@ public sealed class ProjectManifestMutationLeaseProvider : IProjectManifestMutat
     private static string StableCommandName(ProjectManifestMutationCommand command)
         => command switch
         {
+            ProjectManifestMutationCommand.NewExcel => "new excel",
             ProjectManifestMutationCommand.CommonModuleAdd => "common-module add",
             ProjectManifestMutationCommand.CommonModuleUpdate => "common-module update",
             ProjectManifestMutationCommand.ReferenceAdd => "reference add",
@@ -442,7 +577,8 @@ public sealed class ProjectManifestMutationLeaseProvider : IProjectManifestMutat
                     System.Globalization.DateTimeStyles.AdjustToUniversal,
                     out _)
                 || !TryGetSafeString(root, "command", 32, out var command)
-                || command is not "common-module add"
+                || command is not "new excel"
+                    and not "common-module add"
                     and not "common-module update"
                     and not "reference add"
                     and not "reference remove"
@@ -506,6 +642,53 @@ public sealed class ProjectManifestMutationLeaseProvider : IProjectManifestMutat
                .ToString()
            ?? "unknown";
 
+    [DllImport("kernel32.dll", EntryPoint = "CreateFileW", SetLastError = true,
+        CharSet = CharSet.Unicode)]
+    private static extern SafeFileHandle CreateFile(
+        string fileName,
+        uint desiredAccess,
+        uint shareMode,
+        IntPtr securityAttributes,
+        uint creationDisposition,
+        uint flagsAndAttributes,
+        IntPtr templateFile);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetFileInformationByHandle(
+        SafeFileHandle file,
+        out ByHandleFileInformation fileInformation);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetFileInformationByHandle(
+        SafeFileHandle file,
+        int fileInformationClass,
+        ref FileDispositionInformation fileInformation,
+        uint bufferSize);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FileDispositionInformation
+    {
+        [MarshalAs(UnmanagedType.Bool)]
+        public bool DeleteFile;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ByHandleFileInformation
+    {
+        public uint FileAttributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
+    }
+
     private sealed record LeaseOwnerMetadata(
         string SchemaVersion,
         Guid LeaseId,
@@ -529,6 +712,8 @@ public sealed class ProjectManifestMutationLeaseProvider : IProjectManifestMutat
         string manifestPath,
         string markerPath,
         Guid leaseId,
+        FileSystemPathIdentity markerIdentity,
+        IFileSystemPathIdentityResolver pathIdentityResolver,
         Action<string>? afterOwnerRelease)
         : IProjectManifestMutationLease
     {
@@ -537,6 +722,51 @@ public sealed class ProjectManifestMutationLeaseProvider : IProjectManifestMutat
         public FileSystemPathIdentity ProjectIdentity { get; } = projectIdentity;
 
         public string ManifestPath { get; } = manifestPath;
+
+        public void ProveOwnershipContinuity()
+        {
+            if (ownerStream is null)
+            {
+                throw new ProjectManifestMutationException(
+                    "manifestMutationReleaseFailed",
+                    $"Project manifest mutation ownership was already released: {ManifestPath}");
+            }
+
+            try
+            {
+                var identityBeforeRead = pathIdentityResolver.Resolve(markerPath);
+                var currentLeaseId = TryReadLeaseId(markerPath);
+                var identityAfterRead = pathIdentityResolver.Resolve(markerPath);
+                if (currentLeaseId != leaseId
+                    || !SameExactMarkerObject(markerIdentity, identityBeforeRead)
+                    || !SameExactMarkerObject(markerIdentity, identityAfterRead))
+                {
+                    throw OwnershipChanged();
+                }
+            }
+            catch (ProjectManifestMutationException)
+            {
+                throw;
+            }
+            catch (Exception ex) when (ex is IOException
+                or UnauthorizedAccessException
+                or NotSupportedException
+                or InvalidOperationException
+                or ArgumentException
+                or System.Security.SecurityException)
+            {
+                throw OwnershipChanged(ex);
+            }
+        }
+
+        private static bool SameExactMarkerObject(
+            FileSystemPathIdentity expected,
+            FileSystemPathIdentity current)
+            => expected.ObjectIdentity is not null
+               && current.ObjectIdentity == expected.ObjectIdentity
+               && Path.TrimEndingDirectorySeparator(expected.CanonicalPath).Equals(
+                   Path.TrimEndingDirectorySeparator(current.CanonicalPath),
+                   StringComparison.OrdinalIgnoreCase);
 
         public ValueTask<ProjectManifestLeaseRelease> ReleaseAsync()
         {
@@ -561,23 +791,56 @@ public sealed class ProjectManifestMutationLeaseProvider : IProjectManifestMutat
             }
 
             afterOwnerRelease?.Invoke(markerPath);
-            var warning = TryRemoveOwnedMarker(markerPath, leaseId);
+            var warning = TryRemoveOwnedMarker(
+                markerPath,
+                leaseId,
+                markerIdentity,
+                ManifestPath);
             return ValueTask.FromResult(new ProjectManifestLeaseRelease(
                 warning is null ? [] : [warning]));
         }
 
         private static ProjectManifestMutationWarning? TryRemoveOwnedMarker(
             string markerPath,
-            Guid leaseId)
+            Guid leaseId,
+            FileSystemPathIdentity markerIdentity,
+            string manifestPath)
         {
             FileStream cleanupStream;
+            FileSystemObjectIdentity? cleanupIdentity = null;
+            var cleanupMarkerIsOrdinary = true;
             try
             {
-                cleanupStream = new FileStream(
-                    markerPath,
-                    FileMode.Open,
-                    FileAccess.ReadWrite,
-                    FileShare.Read | FileShare.Delete);
+                if (OperatingSystem.IsWindows())
+                {
+                    cleanupStream = OpenMarkerForDisposition(
+                        markerPath,
+                        manifestPath,
+                        out var openedIdentity,
+                        out cleanupMarkerIsOrdinary);
+                    cleanupIdentity = openedIdentity;
+                }
+                else
+                {
+                    cleanupStream = new FileStream(
+                        markerPath,
+                        FileMode.Open,
+                        FileAccess.ReadWrite,
+                        FileShare.Read);
+                }
+            }
+            catch (Win32Exception ex) when (
+                ex.NativeErrorCode is WindowsErrorFileNotFound
+                    or WindowsErrorPathNotFound)
+            {
+                return null;
+            }
+            catch (Win32Exception ex)
+            {
+                var retainedLeaseId = TryReadLeaseId(markerPath);
+                return retainedLeaseId is not null && retainedLeaseId != leaseId
+                    ? null
+                    : CleanupWarning(markerPath, ex);
             }
             catch (FileNotFoundException)
             {
@@ -593,6 +856,23 @@ public sealed class ProjectManifestMutationLeaseProvider : IProjectManifestMutat
             catch (UnauthorizedAccessException ex)
             {
                 return CleanupWarning(markerPath, ex);
+            }
+
+            if (OperatingSystem.IsWindows()
+                && (markerIdentity.ObjectIdentity is null
+                    || cleanupIdentity != markerIdentity.ObjectIdentity))
+            {
+                cleanupStream.Dispose();
+                return null;
+            }
+
+            if (!cleanupMarkerIsOrdinary)
+            {
+                cleanupStream.Dispose();
+                return CleanupWarning(
+                    markerPath,
+                    new IOException(
+                        $"The released lease marker is no longer an ordinary sibling file: {manifestPath}"));
             }
 
             using (cleanupStream)
@@ -615,6 +895,7 @@ public sealed class ProjectManifestMutationLeaseProvider : IProjectManifestMutat
                     {
                         return null;
                     }
+
                 }
                 catch (JsonException ex)
                 {
@@ -623,10 +904,20 @@ public sealed class ProjectManifestMutationLeaseProvider : IProjectManifestMutat
 
                 try
                 {
-                    File.Delete(markerPath);
+                    if (OperatingSystem.IsWindows())
+                    {
+                        SetMarkerDisposition(
+                            cleanupStream.SafeFileHandle,
+                            markerPath);
+                    }
+                    else
+                    {
+                        File.Delete(markerPath);
+                    }
                     return null;
                 }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                catch (Exception ex) when (
+                    ex is IOException or UnauthorizedAccessException or Win32Exception)
                 {
                     return CleanupWarning(markerPath, ex);
                 }
@@ -657,6 +948,17 @@ public sealed class ProjectManifestMutationLeaseProvider : IProjectManifestMutat
                 return null;
             }
         }
+
+        private ProjectManifestMutationException OwnershipChanged(
+            Exception? innerException = null)
+            => innerException is null
+                ? new ProjectManifestMutationException(
+                    "manifestMutationLeaseChanged",
+                    $"Project manifest mutation ownership marker changed while the lease was held: {ManifestPath}")
+                : new ProjectManifestMutationException(
+                    "manifestMutationLeaseChanged",
+                    $"Project manifest mutation ownership marker could not be proved while the lease was held: {ManifestPath}",
+                    innerException);
 
         private static ProjectManifestMutationWarning CleanupWarning(
             string markerPath,

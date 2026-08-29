@@ -108,13 +108,14 @@ Usage:
 Options:
   --name <name>, -n <name>       Project and document base name.
   --output <dir>, -o <dir>       Project root output directory.
+  --format <text|json>, -f <text|json> Creation receipt format.
 ```
 
-`--output` selects the project root directory. `--name` selects the generated project and document base name; when omitted, it is derived from the output directory.
+`--output` selects the project root directory. `--name` selects the generated project and document base name; when omitted, it is derived from the output directory. `--format json` emits the version `1.0` success receipt; failures never emit a partial success receipt.
 
-The initial manifest includes the references already present in the generated workbook plus `Microsoft Scripting Runtime` and `Microsoft VBScript Regular Expressions 5.5`, which support the standard CommonModules and unit-test foundation.
+The initial manifest records the generated workbook's actual non-standard baseline references plus references required by the selected CommonModules package. It does not add Scripting Runtime or VBScript Regular Expressions unless a selected package entry requires them.
 
-When a CommonModules repository is available, initial CommonModules are copied under the generated document source set's `common-modules` directory using each entry's file name.
+When a CommonModules repository is available, the command selects its `runtime-baseline` and `test-foundation` roots, resolves dependencies in deterministic component order, and copies the selected entries under the generated document source set's `common-modules` directory. A conclusively absent package produces a warning and a baseline without CommonModules; invalid or unstable package state fails creation.
 
 ### common-module add
 

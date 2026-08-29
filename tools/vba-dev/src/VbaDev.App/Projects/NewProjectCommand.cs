@@ -1,6 +1,9 @@
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using VbaDev.App.Cli;
 using VbaDev.App.CommonModules;
+using VbaDev.App.References;
 using VbaDev.App.Workbooks;
 using VbaDev.Domain;
 
@@ -11,16 +14,27 @@ namespace VbaDev.App.Projects;
 /// </summary>
 public sealed class NewProjectCommand
 {
-    private static readonly string[] StandardInitialReferenceNames =
-    [
-        "Microsoft Scripting Runtime",
-        "Microsoft VBScript Regular Expressions 5.5"
-    ];
+    private const string CommonModulesRepositoryNotFoundCode =
+        "commonModulesRepositoryNotFound";
+    private const string CommonModulesRepositoryNotFoundMessage =
+        "CommonModules repository was not found; the project was created without shared modules.";
+    private static readonly JsonSerializerOptions ReceiptJsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+    };
+    private static readonly StringComparer PathComparer = OperatingSystem.IsWindows()
+        ? StringComparer.OrdinalIgnoreCase
+        : StringComparer.Ordinal;
 
     private readonly IProjectManifestStore manifestStore;
     private readonly IInitialWorkbookCreator initialWorkbookCreator;
     private readonly CommonModulesManifestReader commonModulesManifestReader;
+    private readonly VbaProjectReferencePlanner referencePlanner;
+    private readonly IProjectManifestMutationLeaseProvider leaseProvider;
+    private readonly CommonModulesPackageSnapshotFactory packageSnapshotFactory;
     private readonly NewProjectAncestorSourceSetIsolation ancestorSourceSetIsolation;
+    private readonly IFileSystemPathIdentityResolver pathIdentityResolver;
 
     /// <summary>
     /// Creates the new-project command.
@@ -31,11 +45,15 @@ public sealed class NewProjectCommand
     public NewProjectCommand(
         IProjectManifestStore manifestStore,
         IInitialWorkbookCreator initialWorkbookCreator,
-        CommonModulesManifestReader commonModulesManifestReader)
+        CommonModulesManifestReader commonModulesManifestReader,
+        VbaProjectReferencePlanner referencePlanner,
+        IProjectManifestMutationLeaseProvider leaseProvider)
         : this(
             manifestStore,
             initialWorkbookCreator,
             commonModulesManifestReader,
+            referencePlanner,
+            leaseProvider,
             new FileSystemPathIdentityResolver())
     {
     }
@@ -44,11 +62,20 @@ public sealed class NewProjectCommand
         IProjectManifestStore manifestStore,
         IInitialWorkbookCreator initialWorkbookCreator,
         CommonModulesManifestReader commonModulesManifestReader,
-        IFileSystemPathIdentityResolver pathIdentityResolver)
+        VbaProjectReferencePlanner referencePlanner,
+        IProjectManifestMutationLeaseProvider leaseProvider,
+        IFileSystemPathIdentityResolver pathIdentityResolver,
+        CommonModulesPackageSnapshotFactory? packageSnapshotFactory = null)
     {
         this.manifestStore = manifestStore;
         this.initialWorkbookCreator = initialWorkbookCreator;
         this.commonModulesManifestReader = commonModulesManifestReader;
+        this.referencePlanner = referencePlanner;
+        this.leaseProvider = leaseProvider;
+        this.pathIdentityResolver = pathIdentityResolver;
+        this.packageSnapshotFactory = packageSnapshotFactory
+            ?? new CommonModulesPackageSnapshotFactory(
+                new CommonModulesPackageReader(commonModulesManifestReader));
         ancestorSourceSetIsolation = new NewProjectAncestorSourceSetIsolation(
             manifestStore,
             pathIdentityResolver);
@@ -60,143 +87,270 @@ public sealed class NewProjectCommand
     /// <param name="request">The new-project command input.</param>
     /// <returns>The command result describing created project state or validation errors.</returns>
     public CommandResult Run(NewProjectCommandRequest request)
+        => RunAsync(request, CancellationToken.None).GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Creates one project while honoring cooperative cancellation before the initial manifest commit.
+    /// </summary>
+    public async Task<CommandResult> RunAsync(
+        NewProjectCommandRequest request,
+        CancellationToken cancellationToken)
     {
-        var projectRoot = ResolveProjectRoot(request);
-        var projectName = ResolveProjectName(request, projectRoot);
-        var documentName = string.IsNullOrWhiteSpace(request.DocumentName) ? projectName : request.DocumentName;
-        var manifestPath = Path.Combine(projectRoot, ProjectManifest.ManifestFileName);
-
-        if (File.Exists(manifestPath))
-        {
-            return CommandResult.UsageError($"vba-project.json already exists: {manifestPath}");
-        }
-
-        if (Directory.Exists(projectRoot) && Directory.EnumerateFileSystemEntries(projectRoot).Any())
-        {
-            return CommandResult.UsageError($"Target project directory is not empty: {projectRoot}");
-        }
-
-        FileSystemPathIdentity initialProjectIdentity;
+        NewProjectPathPlan pathPlan;
         try
         {
-            initialProjectIdentity = ancestorSourceSetIsolation.ValidateInitial(projectRoot);
+            pathPlan = ResolvePathPlan(request);
         }
-        catch (ProjectManifestException ex)
+        catch (Exception ex) when (ex is ProjectManifestException
+            or ArgumentException
+            or IOException
+            or NotSupportedException
+            or PathTooLongException
+            or System.Security.SecurityException)
         {
             return CommandResult.UsageError(ex.Message);
         }
 
-        var warnings = new StringBuilder();
-        var sourceSetPath = Path.Combine(projectRoot, "src", documentName);
-        var binPath = Path.Combine(projectRoot, "bin");
-        var publishPath = Path.Combine(projectRoot, "publish");
+        var projectRoot = pathPlan.RequestedProjectRoot;
+        var projectName = pathPlan.ProjectName;
+        var documentName = pathPlan.DocumentName;
+        var warnings = new List<NewProjectWarning>();
         var artifacts = new NewProjectArtifactTracker();
+        IProjectManifestMutationLease? lease = null;
+        CommonModulesPackageSnapshot? packageSnapshot = null;
+        FileSystemPathIdentity? commonModulesRepositoryRouteIdentity = null;
+        ProjectManifest? committedManifest = null;
+        string? operationProjectRoot = null;
+        string? leaseMarkerPath = null;
+        string? workbookPath = null;
+        Exception? failure = null;
+        var manifestCommitted = false;
         try
         {
-            artifacts.EnsureDirectory(projectRoot);
+            cancellationToken.ThrowIfCancellationRequested();
+            var initialProjectIdentity =
+                ancestorSourceSetIsolation.ValidateInitial(projectRoot);
+            artifacts.EnsureDirectory(initialProjectIdentity.OperationPath);
+            cancellationToken.ThrowIfCancellationRequested();
+            lease = await leaseProvider.AcquireAsync(
+                    projectRoot,
+                ProjectManifestMutationCommand.NewExcel,
+                cancellationToken)
+                .ConfigureAwait(false);
+            operationProjectRoot = lease.ProjectIdentity.OperationPath;
+            leaseMarkerPath = lease.ManifestPath + ".vba-dev.lock";
+            artifacts.AllowLeaseMarker(
+                operationProjectRoot,
+                leaseMarkerPath);
+            lease.ProveOwnershipContinuity();
+            ValidateLeaseIdentityContinuity(
+                projectRoot,
+                initialProjectIdentity,
+                lease.ProjectIdentity);
+            ValidateMaterializationPaths(
+                operationProjectRoot,
+                documentName);
+            ancestorSourceSetIsolation.ValidateFinal(
+                projectRoot,
+                initialProjectIdentity);
+            EnsureCompleteTargetInventory(
+                artifacts,
+                operationProjectRoot,
+                leaseMarkerPath);
+
+            var commonModulesRepository = DiscoverCommonModulesRepository(
+                operationProjectRoot);
+            if (commonModulesRepository is null)
+            {
+                warnings.Add(new NewProjectWarning(
+                    CommonModulesRepositoryNotFoundCode,
+                    CommonModulesRepositoryNotFoundMessage));
+            }
+            else
+            {
+                commonModulesRepositoryRouteIdentity =
+                    EstablishDurableCommonModulesRepositoryRoute(
+                        projectRoot,
+                        commonModulesRepository);
+                packageSnapshot = packageSnapshotFactory.Capture(
+                    commonModulesRepository,
+                    cancellationToken);
+            }
+
+            var sourceSetPath = Path.Combine(
+                operationProjectRoot,
+                "src",
+                documentName);
+            var binPath = Path.Combine(operationProjectRoot, "bin");
+            var publishPath = Path.Combine(operationProjectRoot, "publish");
+            var commonModulesPlan = CreateInitialCommonModulesPlan(
+                packageSnapshot,
+                sourceSetPath);
+            cancellationToken.ThrowIfCancellationRequested();
+
             artifacts.EnsureDirectory(sourceSetPath);
             artifacts.EnsureDirectory(binPath);
             artifacts.EnsureDirectory(publishPath);
 
-            var commonModulesRepository = DiscoverCommonModulesRepository(projectRoot);
-            if (commonModulesRepository is null)
+            workbookPath = Path.Combine(sourceSetPath, $"{documentName}.xlsm");
+            var initialWorkbook = await initialWorkbookCreator
+                .CreateInitialWorkbookAsync(workbookPath, cancellationToken)
+                .ConfigureAwait(false);
+            if (!Path.GetFullPath(initialWorkbook.ArtifactEvidence.WorkbookPath)
+                    .Equals(Path.GetFullPath(workbookPath), PathComparison))
             {
-                warnings.AppendLine("CommonModulesRepository was not found; project creation continued without shared modules.");
+                throw new NewProjectTargetChangedException(
+                    [workbookPath],
+                    new InvalidOperationException(
+                        "The initial workbook creator returned evidence for a different path."));
             }
 
-            var workbookPath = Path.Combine(sourceSetPath, $"{documentName}.xlsm");
-            var referenceNames = initialWorkbookCreator.CreateInitialWorkbook(workbookPath)
-                .Concat(StandardInitialReferenceNames)
-                .ToArray();
-            artifacts.RecordCreatedFile(workbookPath);
-            var references = CreateReferenceEntries(referenceNames);
-            var commonModules = Array.Empty<InstalledCommonModule>();
-
-            if (commonModulesRepository is not null)
-            {
-                commonModules = CopyInitialCommonModules(
-                    commonModulesRepository,
-                    sourceSetPath,
-                    artifacts);
-            }
+            artifacts.RecordCreatedFile(initialWorkbook.ArtifactEvidence);
+            var references = await CreateReferenceEntriesAsync(
+                    workbookPath,
+                    initialWorkbook.ReferenceNames,
+                    commonModulesPlan.RequiredReferences,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            CopyInitialCommonModules(commonModulesPlan, artifacts);
 
             var manifest = ProjectManifest.CreateDefault(
                 projectName,
                 documentName,
-                projectRoot,
+                operationProjectRoot,
                 commonModulesRepository,
-                commonModules,
+                commonModulesPlan.InstalledModules,
                 references);
+            var manifestStage = NewProjectInitialManifestStager.Stage(
+                lease.ManifestPath,
+                manifest,
+                artifacts);
             ancestorSourceSetIsolation.ValidateFinal(
                 projectRoot,
-                initialProjectIdentity);
-            manifestStore.Save(projectRoot, manifest);
+                lease.ProjectIdentity);
+            cancellationToken.ThrowIfCancellationRequested();
+            EnsureCompleteTargetInventory(
+                artifacts,
+                operationProjectRoot,
+                leaseMarkerPath);
+            lease.ProveOwnershipContinuity();
+            if (commonModulesRepositoryRouteIdentity is not null)
+            {
+                ProveDurableCommonModulesRepositoryRoute(
+                    projectRoot,
+                    commonModulesRepositoryRouteIdentity);
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                manifestStage.CommitCreateOnly();
+            }
+            catch (IOException ex) when (
+                ObservePathEntry(lease.ManifestPath) == PathEntryObservation.Present)
+            {
+                throw new NewProjectTargetChangedException(
+                    [lease.ManifestPath],
+                    ex);
+            }
 
-            return new CommandResult(
-                0,
-                $"Created project '{projectName}' at {projectRoot}.{Environment.NewLine}",
-                warnings.ToString());
+            manifestCommitted = true;
+            committedManifest = manifest;
         }
-        catch (CommonModulesManifestException ex)
+        catch (Exception ex)
         {
-            artifacts.Rollback();
-            return CommandResult.UsageError(ex.Message);
+            failure = ex;
         }
-        catch (ProjectManifestException ex)
+
+        if (manifestCommitted)
         {
-            artifacts.Rollback();
-            return CommandResult.UsageError(ex.Message);
+            return await CompleteCommittedCreationAsync(
+                    request.Format,
+                    projectRoot,
+                    projectName,
+                    documentName,
+                    committedManifest!,
+                    lease!,
+                    packageSnapshot,
+                    warnings)
+                .ConfigureAwait(false);
         }
-        catch
+
+        return await CompleteFailedCreationAsync(
+                projectRoot,
+                operationProjectRoot,
+                workbookPath,
+                leaseMarkerPath,
+                failure ?? new InvalidOperationException(
+                    "Project creation did not reach a terminal state."),
+                artifacts,
+                lease,
+                packageSnapshot)
+            .ConfigureAwait(false);
+    }
+
+    private static void CopyInitialCommonModules(
+        NewProjectCommonModulesPlan plan,
+        NewProjectArtifactTracker artifacts)
+    {
+        foreach (var artifact in plan.Artifacts)
         {
-            artifacts.Rollback();
-            throw;
+            artifacts.EnsureDirectory(Path.GetDirectoryName(artifact.TargetPath)!);
+            artifacts.CreateFile(artifact.TargetPath, artifact.Contents);
         }
     }
 
-    private InstalledCommonModule[] CopyInitialCommonModules(
-        string commonModulesRepository,
-        string sourceSetPath,
-        NewProjectArtifactTracker artifacts)
+    private static NewProjectCommonModulesPlan CreateInitialCommonModulesPlan(
+        CommonModulesPackageSnapshot? snapshot,
+        string sourceSetPath)
     {
-        var entries = commonModulesManifestReader.Load(commonModulesRepository);
-        var requestedEntries = entries
-            .Where(entry => entry.HasCategory("runtime-baseline") || entry.HasCategory("test-foundation"))
-            .OrderBy(entry => entry.ModuleFile, StringComparer.OrdinalIgnoreCase);
-        var requestedModuleFiles = requestedEntries
-            .Select(entry => entry.ModuleFile)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var selectedEntries = CommonModulesDependencyResolver.ResolveRequestedEntries(entries, requestedModuleFiles.ToArray());
-        ValidateSelectedEntryIdentities(selectedEntries, sourceSetPath);
-        var copyPlan = selectedEntries
-            .Select(entry => new
-            {
-                SourcePath = Path.Combine(commonModulesRepository, entry.ModuleFile),
-                TargetPath = Path.Combine(sourceSetPath, "common-modules", entry.InstalledModuleFile)
-            })
-            .ToArray();
-        foreach (var plan in copyPlan)
+        if (snapshot is null)
         {
-            if (!File.Exists(plan.SourcePath))
+            return new NewProjectCommonModulesPlan([], [], []);
+        }
+
+        var requestedModuleFiles = snapshot.Entries
+            .Where(entry => entry.HasCategory("runtime-baseline")
+                || entry.HasCategory("test-foundation"))
+            .Select(entry => entry.ModuleFile)
+            .ToArray();
+        var requested = requestedModuleFiles.ToHashSet(
+            StringComparer.OrdinalIgnoreCase);
+        var selection = snapshot.ResolveRequestedPlan(requestedModuleFiles);
+        ValidateSelectedEntryIdentities(selection.Entries, sourceSetPath);
+        var commonModulesDirectory = Path.Combine(
+            sourceSetPath,
+            "common-modules");
+        var copyArtifacts = new List<NewProjectCopyArtifact>();
+        foreach (var entry in selection.Entries)
+        {
+            copyArtifacts.Add(new NewProjectCopyArtifact(
+                Path.Combine(commonModulesDirectory, entry.InstalledModuleFile),
+                snapshot.ReadFileBytes(entry.ModuleFile)));
+            if (!entry.ModuleFile.EndsWith(".frm", StringComparison.Ordinal))
             {
-                throw new CommonModulesManifestException($"CommonModules source file was not found: {plan.SourcePath}");
+                continue;
+            }
+
+            var sidecarName = Path.ChangeExtension(entry.ModuleFile, ".frx");
+            if (snapshot.TryReadFileBytes(sidecarName, out var sidecarBytes))
+            {
+                copyArtifacts.Add(new NewProjectCopyArtifact(
+                    Path.Combine(commonModulesDirectory, sidecarName),
+                    sidecarBytes));
             }
         }
 
-        foreach (var plan in copyPlan)
-        {
-            artifacts.EnsureDirectory(Path.GetDirectoryName(plan.TargetPath)!);
-            File.Copy(plan.SourcePath, plan.TargetPath, overwrite: false);
-            artifacts.RecordCreatedFile(plan.TargetPath);
-        }
-
-        return selectedEntries
+        var installedModules = selection.Entries
             .Select(entry => new InstalledCommonModule(
                 entry.Name,
                 entry.InstalledModuleFile,
-                requestedModuleFiles.Contains(entry.ModuleFile),
+                requested.Contains(entry.ModuleFile),
                 entry.TestOnly))
             .ToArray();
+        return new NewProjectCommonModulesPlan(
+            copyArtifacts,
+            installedModules,
+            selection.RequiredReferences);
     }
 
     private static void ValidateSelectedEntryIdentities(
@@ -236,52 +390,1035 @@ public sealed class NewProjectCommand
         }
     }
 
-    private static string ResolveProjectRoot(NewProjectCommandRequest request)
+    private async Task<VbaProjectReference[]> CreateReferenceEntriesAsync(
+        string workbookPath,
+        IReadOnlyList<string> baselineReferenceNames,
+        IReadOnlyList<string> requiredReferenceNames,
+        CancellationToken cancellationToken)
     {
-        if (!string.IsNullOrWhiteSpace(request.OutputDirectory))
+        var references = new List<VbaProjectReference>();
+        var selectedNames = new HashSet<string>(VbaProjectReferenceName.Comparer);
+        foreach (var rawName in baselineReferenceNames)
         {
-            return Path.GetFullPath(Path.IsPathRooted(request.OutputDirectory)
-                ? request.OutputDirectory
-                : Path.Combine(request.StartDirectory, request.OutputDirectory));
+            var referenceName = rawName.Trim();
+            if (referenceName.Length == 0
+                || VbaProjectReferenceName.IsStandardLibrary(referenceName)
+                || !selectedNames.Add(referenceName))
+            {
+                continue;
+            }
+
+            references.Add(new VbaProjectReference(
+                referenceName,
+                requested: true));
         }
 
-        if (!string.IsNullOrWhiteSpace(request.ProjectName))
+        var missingRequiredNames = new List<string>();
+        foreach (var rawName in requiredReferenceNames)
         {
-            return Path.GetFullPath(Path.Combine(request.StartDirectory, request.ProjectName));
+            var referenceName = rawName.Trim();
+            if (referenceName.Length == 0
+                || VbaProjectReferenceName.IsStandardLibrary(referenceName)
+                || !selectedNames.Add(referenceName))
+            {
+                continue;
+            }
+
+            missingRequiredNames.Add(referenceName);
         }
 
-        return Path.GetFullPath(request.StartDirectory);
+        if (missingRequiredNames.Count == 0)
+        {
+            return references.ToArray();
+        }
+
+        var resolution = await referencePlanner.ResolveReferencesAsync(
+                workbookPath,
+                missingRequiredNames,
+                cancellationToken)
+            .ConfigureAwait(false);
+        var resolvedReferences = referencePlanner.SelectManifestInputReferences(
+            resolution,
+            missingRequiredNames);
+        references.AddRange(resolvedReferences.Select(reference =>
+            new VbaProjectReference(reference.Name, requested: false)));
+        return references.ToArray();
     }
 
-    private static string ResolveProjectName(NewProjectCommandRequest request, string projectRoot)
+    private static void ValidateLeaseIdentityContinuity(
+        string requestedProjectRoot,
+        FileSystemPathIdentity initialIdentity,
+        FileSystemPathIdentity leasedIdentity)
     {
-        if (!string.IsNullOrWhiteSpace(request.ProjectName))
+        var sameCanonicalPath = Path.TrimEndingDirectorySeparator(
+                initialIdentity.CanonicalPath)
+            .Equals(
+                Path.TrimEndingDirectorySeparator(leasedIdentity.CanonicalPath),
+                StringComparison.OrdinalIgnoreCase);
+        var sameExistingObject = initialIdentity.ObjectIdentity is null
+            || leasedIdentity.ObjectIdentity is not null
+                && initialIdentity.ObjectIdentity == leasedIdentity.ObjectIdentity;
+        var existingIdentityEstablished = !OperatingSystem.IsWindows()
+            || leasedIdentity.ObjectIdentity is not null;
+        if (sameCanonicalPath && sameExistingObject && existingIdentityEstablished)
         {
-            return request.ProjectName.Trim();
+            return;
         }
 
-        var trimmedRoot = projectRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        return Path.GetFileName(trimmedRoot);
+        throw new NewProjectTargetChangedException(
+            [Path.GetFullPath(requestedProjectRoot)]);
     }
 
-    private static VbaProjectReference[] CreateReferenceEntries(IReadOnlyList<string> referenceNames)
-        => referenceNames
-            .Select(referenceName => referenceName.Trim())
-            .Where(referenceName => !string.IsNullOrWhiteSpace(referenceName))
-            .Where(referenceName => !VbaProjectReferenceName.IsStandardLibrary(referenceName))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Select(referenceName => new VbaProjectReference(referenceName))
+    private static void EnsureCompleteTargetInventory(
+        NewProjectArtifactTracker artifacts,
+        string targetRoot,
+        string leaseMarkerPath)
+    {
+        NewProjectTargetInventoryResult inventory;
+        try
+        {
+            inventory = artifacts.ProveCompleteTargetInventory(
+                targetRoot,
+                leaseMarkerPath);
+        }
+        catch (Exception ex) when (IsFileSystemFailure(ex))
+        {
+            throw new NewProjectTargetChangedException([targetRoot], ex);
+        }
+
+        if (!inventory.IsComplete)
+        {
+            throw new NewProjectTargetChangedException(
+                inventory.TargetChangedPaths);
+        }
+    }
+
+    private static async Task<CommandResult> CompleteCommittedCreationAsync(
+        string format,
+        string requestedProjectRoot,
+        string projectName,
+        string documentName,
+        ProjectManifest manifest,
+        IProjectManifestMutationLease lease,
+        CommonModulesPackageSnapshot? packageSnapshot,
+        List<NewProjectWarning> warnings)
+    {
+        var cleanupFailures = new List<Exception>();
+        var retainedPaths = new HashSet<string>(PathComparer);
+        var retainedSetConclusive = true;
+        if (packageSnapshot is not null)
+        {
+            try
+            {
+                var cleanup = packageSnapshot.Cleanup();
+                if (!cleanup.Deleted)
+                {
+                    retainedPaths.Add(cleanup.RetainedPath!);
+                    warnings.Add(new NewProjectWarning(
+                        "commonModulesSnapshotCleanupFailed",
+                        "The project was created, but its non-authoritative CommonModules "
+                        + $"snapshot workspace could not be removed: \"{cleanup.RetainedPath}\"."));
+                }
+            }
+            catch (Exception ex)
+            {
+                cleanupFailures.Add(new InvalidOperationException(
+                    "The project manifest was committed, but CommonModules snapshot "
+                    + "cleanup could not be proved.",
+                    ex));
+                retainedPaths.Add(Path.GetFullPath(packageSnapshot.StagingPath));
+            }
+        }
+
+        try
+        {
+            var release = await lease.ReleaseAsync().ConfigureAwait(false);
+            foreach (var warning in release.Warnings)
+            {
+                warnings.Add(warning.Code.Equals(
+                        "leaseMarkerCleanupFailed",
+                        StringComparison.Ordinal)
+                    ? new NewProjectWarning(
+                        "leaseMarkerCleanupFailed",
+                        "The project was created and its project lease was released, "
+                        + "but the lease marker could not be removed: "
+                        + $"\"{lease.ManifestPath}.vba-dev.lock\".")
+                    : new NewProjectWarning(warning.Code, warning.Message));
+            }
+        }
+        catch (Exception ex)
+        {
+            cleanupFailures.Add(new InvalidOperationException(
+                "The project manifest was committed, but its project lease release "
+                + "and marker cleanup could not be proved.",
+                ex));
+            retainedPaths.Add(lease.ManifestPath + ".vba-dev.lock");
+            retainedSetConclusive = false;
+        }
+
+        if (cleanupFailures.Count > 0)
+        {
+            return RenderFailure(
+                requestedProjectRoot,
+                lease.ProjectIdentity.OperationPath,
+                cleanupFailures[0],
+                [],
+                retainedPaths,
+                cleanupFailures.Skip(1).ToArray(),
+                retainedSetConclusive);
+        }
+
+        var requestedManifestPath = Path.Combine(
+            requestedProjectRoot,
+            ProjectManifest.ManifestFileName);
+        return RenderSuccess(
+            format,
+            requestedProjectRoot,
+            requestedManifestPath,
+            projectName,
+            documentName,
+            manifest,
+            warnings);
+    }
+
+    private static async Task<CommandResult> CompleteFailedCreationAsync(
+        string requestedProjectRoot,
+        string? operationProjectRoot,
+        string? workbookPath,
+        string? leaseMarkerPath,
+        Exception failure,
+        NewProjectArtifactTracker artifacts,
+        IProjectManifestMutationLease? lease,
+        CommonModulesPackageSnapshot? packageSnapshot)
+    {
+        var targetChangedPaths = new HashSet<string>(PathComparer);
+        var cleanupIncompletePaths = new HashSet<string>(PathComparer);
+        var supplementalFailures = new List<Exception>();
+        var retainedSetConclusive = true;
+        var failureTree = EnumerateExceptionTree(failure).ToArray();
+        var changedWorkbookPaths = failureTree
+            .OfType<InitialWorkbookArtifactRetainedException>()
+            .Where(exception => exception.TargetChanged)
+            .Select(exception => exception.WorkbookPath)
+            .ToHashSet(PathComparer);
+        var cleanupOnlyWorkbookPaths = failureTree
+            .OfType<InitialWorkbookArtifactRetainedException>()
+            .Where(exception => !exception.TargetChanged)
+            .Select(exception => exception.WorkbookPath)
+            .Where(path => !changedWorkbookPaths.Contains(path))
+            .ToHashSet(PathComparer);
+        targetChangedPaths.UnionWith(changedWorkbookPaths);
+        cleanupIncompletePaths.UnionWith(cleanupOnlyWorkbookPaths);
+        foreach (var retainedSnapshot in failureTree
+                     .OfType<CommonModulesPackageSnapshotRetainedException>())
+        {
+            var cleanup = retainedSnapshot.CleanupResult;
+            if (cleanup.RetainedPath is not null)
+            {
+                cleanupIncompletePaths.Add(cleanup.RetainedPath);
+            }
+
+            cleanupIncompletePaths.UnionWith(cleanup.RetainedEntryPaths);
+            cleanupIncompletePaths.UnionWith(cleanup.ObservationIncompletePaths);
+            retainedSetConclusive &= cleanup.IsConclusive;
+        }
+
+        if (failure is NewProjectTargetChangedException targetChanged)
+        {
+            targetChangedPaths.UnionWith(targetChanged.Paths);
+        }
+
+        if (failureTree.OfType<ProjectManifestMutationException>().Any(
+                exception => exception.Code.Equals(
+                    "manifestMutationLeaseChanged",
+                    StringComparison.Ordinal))
+            && leaseMarkerPath is not null)
+        {
+            targetChangedPaths.Add(leaseMarkerPath);
+        }
+
+        if (failureTree.OfType<WorkbookAutomationCleanupException>().Any())
+        {
+            retainedSetConclusive = false;
+            if (workbookPath is not null
+                && ObservePathEntry(workbookPath) == PathEntryObservation.Present)
+            {
+                cleanupIncompletePaths.Add(workbookPath);
+            }
+        }
+
+        if (packageSnapshot is not null)
+        {
+            try
+            {
+                var cleanup = packageSnapshot.Cleanup();
+                if (!cleanup.Deleted && cleanup.RetainedPath is not null)
+                {
+                    cleanupIncompletePaths.Add(cleanup.RetainedPath);
+                }
+            }
+            catch (Exception ex)
+            {
+                supplementalFailures.Add(ex);
+                cleanupIncompletePaths.Add(packageSnapshot.StagingPath);
+                retainedSetConclusive = false;
+            }
+        }
+
+        NewProjectRollbackResult? rollback = null;
+        try
+        {
+            rollback = lease is not null && operationProjectRoot is not null
+                ? artifacts.RollbackUnderLease(operationProjectRoot)
+                : artifacts.Rollback();
+            targetChangedPaths.UnionWith(rollback.TargetChangedPaths);
+        }
+        catch (Exception ex)
+        {
+            supplementalFailures.Add(ex);
+            retainedSetConclusive = false;
+        }
+
+        var releaseProved = lease is null;
+        if (lease is not null)
+        {
+            try
+            {
+                var release = await lease.ReleaseAsync().ConfigureAwait(false);
+                releaseProved = true;
+                if (release.Warnings.Count > 0 && leaseMarkerPath is not null)
+                {
+                    cleanupIncompletePaths.Add(leaseMarkerPath);
+                }
+            }
+            catch (Exception ex)
+            {
+                supplementalFailures.Add(ex);
+                retainedSetConclusive = false;
+                if (leaseMarkerPath is not null)
+                {
+                    cleanupIncompletePaths.Add(leaseMarkerPath);
+                }
+            }
+        }
+
+        if (releaseProved
+            && lease is not null
+            && operationProjectRoot is not null)
+        {
+            try
+            {
+                rollback = artifacts.RollbackAfterLeaseRelease(
+                    operationProjectRoot);
+                targetChangedPaths.UnionWith(rollback.TargetChangedPaths);
+            }
+            catch (Exception ex)
+            {
+                supplementalFailures.Add(ex);
+                retainedSetConclusive = false;
+            }
+        }
+
+        if (rollback is not null)
+        {
+            cleanupIncompletePaths.UnionWith(rollback.CleanupIncompletePaths);
+            foreach (var cleanupOnlyWorkbookPath in cleanupOnlyWorkbookPaths)
+            {
+                targetChangedPaths.Remove(cleanupOnlyWorkbookPath);
+            }
+
+            foreach (var retainedOwnedPath in rollback.RetainedOwnedPaths)
+            {
+                var retainedForForeignContent = targetChangedPaths.Any(
+                    changedPath => IsSameOrDescendant(
+                        changedPath,
+                        retainedOwnedPath));
+                if (!retainedForForeignContent || !releaseProved)
+                {
+                    cleanupIncompletePaths.Add(retainedOwnedPath);
+                }
+            }
+        }
+
+        if (failure is OperationCanceledException
+            && targetChangedPaths.Count == 0
+            && cleanupIncompletePaths.Count == 0
+            && supplementalFailures.Count == 0
+            && releaseProved
+            && retainedSetConclusive)
+        {
+            return CommandResult.Cancelled("Project creation was cancelled.");
+        }
+
+        return RenderFailure(
+            requestedProjectRoot,
+            operationProjectRoot,
+            failure,
+            targetChangedPaths,
+            cleanupIncompletePaths,
+            supplementalFailures,
+            retainedSetConclusive);
+    }
+
+    private static CommandResult RenderFailure(
+        string requestedProjectRoot,
+        string? operationProjectRoot,
+        Exception failure,
+        IReadOnlyCollection<string> targetChangedPaths,
+        IReadOnlyCollection<string> cleanupIncompletePaths,
+        IReadOnlyList<Exception> supplementalFailures,
+        bool retainedSetConclusive)
+    {
+        var error = new StringBuilder();
+        if (failure is not NewProjectTargetChangedException)
+        {
+            error.AppendLine(FormatException(failure));
+        }
+
+        foreach (var supplementalFailure in supplementalFailures)
+        {
+            error.AppendLine(FormatException(supplementalFailure));
+        }
+
+        if (targetChangedPaths.Count > 0)
+        {
+            error.AppendLine(
+                "newProjectTargetChanged: The project target changed during creation; "
+                + "foreign or changed content was preserved.");
+            foreach (var path in SortPaths(targetChangedPaths))
+            {
+                error.AppendLine($"  {path}");
+            }
+        }
+
+        if (cleanupIncompletePaths.Count > 0 || !retainedSetConclusive)
+        {
+            error.AppendLine(
+                "newProjectCleanupIncomplete: Project creation cleanup was incomplete.");
+            error.AppendLine(
+                $"Target: {operationProjectRoot ?? Path.GetFullPath(requestedProjectRoot)}");
+            foreach (var path in SortPaths(cleanupIncompletePaths))
+            {
+                error.AppendLine($"  {path}");
+            }
+
+            if (!retainedSetConclusive)
+            {
+                error.AppendLine(
+                    "Additional retained paths could not be determined conclusively. "
+                    + "Inspect the listed paths and the entire project target before retrying.");
+            }
+
+            error.AppendLine(
+                "Inspect the retained paths before retrying. Move or remove only "
+                + "content you have independently verified is safe; vba-dev will "
+                + "not change it automatically.");
+        }
+
+        return new CommandResult(
+            1,
+            string.Empty,
+            error.ToString());
+    }
+
+    private static string FormatException(Exception exception)
+        => exception switch
+        {
+            OperationCanceledException => "Project creation was cancelled.",
+            ProjectManifestMutationException mutation =>
+                $"{mutation.Code}: {mutation.Message}",
+            _ => exception.Message
+        };
+
+    private static IEnumerable<Exception> EnumerateExceptionTree(
+        Exception exception)
+    {
+        var visited = new HashSet<Exception>(ReferenceEqualityComparer.Instance);
+        return Enumerate(exception, visited);
+
+        static IEnumerable<Exception> Enumerate(
+            Exception current,
+            HashSet<Exception> visited)
+        {
+            if (!visited.Add(current))
+            {
+                yield break;
+            }
+
+            yield return current;
+            if (current is AggregateException aggregate)
+            {
+                foreach (var inner in aggregate.InnerExceptions)
+                {
+                    foreach (var descendant in Enumerate(inner, visited))
+                    {
+                        yield return descendant;
+                    }
+                }
+
+                yield break;
+            }
+
+            if (current.InnerException is not null)
+            {
+                foreach (var descendant in Enumerate(
+                    current.InnerException,
+                    visited))
+                {
+                    yield return descendant;
+                }
+            }
+        }
+    }
+
+    private static PathEntryObservation ObservePathEntry(string path)
+    {
+        try
+        {
+            _ = File.GetAttributes(path);
+            return PathEntryObservation.Present;
+        }
+        catch (Exception ex) when (ex is FileNotFoundException
+            or DirectoryNotFoundException)
+        {
+            return PathEntryObservation.Missing;
+        }
+        catch (Exception ex) when (IsFileSystemFailure(ex))
+        {
+            return PathEntryObservation.Inconclusive;
+        }
+    }
+
+    private static bool IsFileSystemFailure(Exception exception)
+        => exception is IOException
+            or UnauthorizedAccessException
+            or NotSupportedException
+            or InvalidOperationException
+            or ArgumentException
+            or System.Security.SecurityException;
+
+    private static bool IsSameOrDescendant(string candidate, string directory)
+    {
+        var fullCandidate = Path.GetFullPath(candidate);
+        var fullDirectory = Path.TrimEndingDirectorySeparator(
+            Path.GetFullPath(directory));
+        if (fullCandidate.Equals(fullDirectory, PathComparison))
+        {
+            return true;
+        }
+
+        var prefix = fullDirectory.EndsWith(Path.DirectorySeparatorChar)
+            ? fullDirectory
+            : fullDirectory + Path.DirectorySeparatorChar;
+        return fullCandidate.StartsWith(prefix, PathComparison);
+    }
+
+    private static IReadOnlyList<string> SortPaths(IEnumerable<string> paths)
+        => paths
+            .Select(Path.GetFullPath)
+            .Distinct(PathComparer)
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(path => path, StringComparer.Ordinal)
             .ToArray();
+
+    private static NewProjectPathPlan ResolvePathPlan(
+        NewProjectCommandRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentException.ThrowIfNullOrWhiteSpace(request.StartDirectory);
+
+        string? projectName = null;
+        if (request.HasProjectName)
+        {
+            projectName = request.ProjectName ?? string.Empty;
+            ValidateProjectName(projectName);
+        }
+
+        string projectRoot;
+        if (request.HasOutputDirectory)
+        {
+            var outputDirectory = request.OutputDirectory ?? string.Empty;
+            if (outputDirectory.Length == 0)
+            {
+                throw new ProjectManifestException(
+                    "projectOutputEmpty: Project output path cannot be empty.");
+            }
+
+            if (!IsSupportedOutputPathSyntax(outputDirectory))
+            {
+                throw new ProjectManifestException(
+                    "projectOutputNotWindowsFilesystemPath: Project output must be an invocation-relative, drive-qualified, or UNC Windows filesystem path.");
+            }
+
+            projectRoot = Path.GetFullPath(
+                outputDirectory,
+                request.StartDirectory);
+        }
+        else if (projectName is not null)
+        {
+            projectRoot = Path.GetFullPath(Path.Combine(
+                request.StartDirectory,
+                projectName));
+        }
+        else
+        {
+            projectRoot = Path.GetFullPath(request.StartDirectory);
+        }
+
+        projectName ??= Path.GetFileName(
+            Path.TrimEndingDirectorySeparator(projectRoot));
+        ValidateProjectName(projectName);
+        var documentName = request.DocumentName ?? projectName;
+        if (!documentName.Equals(projectName, StringComparison.Ordinal))
+        {
+            ValidateProjectName(documentName);
+        }
+
+        ValidateMaterializationPaths(projectRoot, documentName);
+        return new NewProjectPathPlan(
+            projectRoot,
+            projectName,
+            documentName);
+    }
+
+    private static void ValidateMaterializationPaths(
+        string projectRoot,
+        string documentName)
+    {
+        ValidateExcelPath(Path.Combine(
+            projectRoot,
+            "src",
+            documentName,
+            $"{documentName}.xlsm"));
+        ValidateExcelPath(Path.Combine(
+            projectRoot,
+            "bin",
+            $"{documentName}.xlsm"));
+        ValidateExcelPath(Path.Combine(
+            projectRoot,
+            "publish",
+            $"{documentName}.xlsm"));
+    }
+
+    private static void ValidateProjectName(string projectName)
+    {
+        var validation = ProjectNameLexicalContract.Validate(projectName);
+        if (!validation.IsValid)
+        {
+            throw new ProjectManifestException(
+                $"{validation.Reason}: {ProjectNameValidationMessage(validation.Reason!)}");
+        }
+    }
+
+    private static string ProjectNameValidationMessage(string reason)
+        => reason switch
+        {
+            ProjectCreationPathValidationReasons.ProjectNameEmpty =>
+                "Enter a project name.",
+            ProjectCreationPathValidationReasons.ProjectNameIllFormedUnicode =>
+                "Project name contains an invalid Unicode sequence.",
+            ProjectCreationPathValidationReasons.ProjectNameDotSegment =>
+                "Project name cannot be \".\" or \"..\".",
+            ProjectCreationPathValidationReasons.ProjectNameContainsPathSeparator =>
+                "Project name cannot contain \"/\" or \"\\\".",
+            ProjectCreationPathValidationReasons.ProjectNameContainsWindowsInvalidCharacter =>
+                "Project name contains a character that Windows does not allow in a file or folder name.",
+            ProjectCreationPathValidationReasons.ProjectNameContainsUnicodeControlCharacter =>
+                "Project name cannot contain control characters.",
+            ProjectCreationPathValidationReasons.ProjectNameHasLeadingOrTrailingWhitespace =>
+                "Project name cannot start or end with whitespace.",
+            ProjectCreationPathValidationReasons.ProjectNameEndsWithDot =>
+                "Project name cannot end with a dot.",
+            ProjectCreationPathValidationReasons.ProjectNameUsesReservedDeviceName =>
+                "Project name cannot use a reserved Windows device name, even with an extension.",
+            _ => throw new ArgumentOutOfRangeException(nameof(reason), reason, null)
+        };
+
+    private static void ValidateExcelPath(string path)
+    {
+        var validation = ExcelWorkbookPathContract.Validate(path);
+        if (validation.IsValid)
+        {
+            return;
+        }
+
+        var message = validation.Reason switch
+        {
+            ProjectCreationPathValidationReasons.ExcelPathContainsUnsupportedCharacter =>
+                $"Excel workbook path contains \"[\" or \"]\", which Excel does not reliably support: \"{path}\".",
+            ProjectCreationPathValidationReasons.ExcelPathTooLong =>
+                $"Excel workbook path exceeds the 218-character limit ({path.Length} UTF-16 code units): \"{path}\".",
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(validation),
+                validation.Reason,
+                null)
+        };
+        throw new ProjectManifestException($"{validation.Reason}: {message}");
+    }
+
+    private static bool IsSupportedOutputPathSyntax(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        if (path.StartsWith("\\\\?\\", StringComparison.Ordinal)
+            || path.StartsWith("\\\\.\\", StringComparison.Ordinal)
+            || path.StartsWith("\\??\\", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (path.Length >= 3
+            && char.IsAsciiLetter(path[0])
+            && path[1] == ':'
+            && path[2] is '\\' or '/')
+        {
+            return true;
+        }
+
+        if (path.StartsWith("\\\\", StringComparison.Ordinal))
+        {
+            var components = path[2..].Split(
+                '\\',
+                StringSplitOptions.RemoveEmptyEntries);
+            return components.Length >= 2
+                && components[0] is not "." and not "?"
+                && !components[0].Contains(':', StringComparison.Ordinal)
+                && !components[1].Contains(':', StringComparison.Ordinal);
+        }
+
+        if (path[0] is '\\' or '/'
+            || path.Contains(':', StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static CommandResult RenderSuccess(
+        string format,
+        string projectRoot,
+        string manifestPath,
+        string projectName,
+        string documentName,
+        ProjectManifest manifest,
+        IReadOnlyList<NewProjectWarning> warnings)
+    {
+        if (format.Equals("json", StringComparison.OrdinalIgnoreCase))
+        {
+            var receipt = new NewProjectReceipt(
+                "1.0",
+                "project",
+                projectRoot,
+                documentName,
+                "new",
+                "excel",
+                Complete: true,
+                warnings,
+                manifestPath,
+                manifest);
+            return CommandResult.Success(
+                JsonSerializer.Serialize(receipt, ReceiptJsonOptions)
+                + Environment.NewLine);
+        }
+
+        var document = manifest.Documents[documentName];
+        var output = new StringBuilder()
+            .AppendLine($"Created Excel VBA project \"{projectName}\".")
+            .AppendLine($"Project: {projectRoot}")
+            .AppendLine($"Manifest: {manifestPath}")
+            .AppendLine($"Document: {documentName}")
+            .AppendLine($"Source set: {document.SourcePath}")
+            .AppendLine($"Source template: {document.TemplatePath}")
+            .AppendLine($"Build target: {document.BinPath}")
+            .AppendLine($"Publish target: {document.PublishPath}");
+        AppendCommonModules(output, document.CommonModules);
+        AppendReferences(output, document.References);
+        AppendSummary(output, document.CommonModules, document.References);
+        var standardError = string.Concat(warnings.Select(warning =>
+            $"[WARN] {warning.Code}: {warning.Message}{Environment.NewLine}"));
+        return new CommandResult(0, output.ToString(), standardError);
+    }
+
+    private static void AppendCommonModules(
+        StringBuilder output,
+        IReadOnlyList<InstalledCommonModule> commonModules)
+    {
+        output.AppendLine("CommonModules:");
+        if (commonModules.Count == 0)
+        {
+            output.AppendLine("  (none)");
+            return;
+        }
+
+        foreach (var module in commonModules)
+        {
+            output.AppendLine(
+                $"  - {(module.Requested ? "requested" : "dependency")}: "
+                + $"{module.Name} ({module.ModuleFile})");
+        }
+    }
+
+    private static void AppendReferences(
+        StringBuilder output,
+        IReadOnlyList<VbaProjectReference> references)
+    {
+        output.AppendLine("References:");
+        if (references.Count == 0)
+        {
+            output.AppendLine("  (none)");
+            return;
+        }
+
+        foreach (var reference in references)
+        {
+            output.AppendLine(
+                $"  - {(reference.Requested ? "requested" : "CommonModules")}: "
+                + reference.Name);
+        }
+    }
+
+    private static void AppendSummary(
+        StringBuilder output,
+        IReadOnlyList<InstalledCommonModule> commonModules,
+        IReadOnlyList<VbaProjectReference> references)
+    {
+        var requestedModules = commonModules.Count(module => module.Requested);
+        var dependencyModules = commonModules.Count - requestedModules;
+        var requestedReferences = references.Count(reference => reference.Requested);
+        var commonModulesReferences = references.Count - requestedReferences;
+        output.AppendLine("Summary:")
+            .AppendLine(
+                $"  CommonModules: {FormatCount(commonModules.Count, "CommonModule", "CommonModules")} "
+                + $"({requestedModules} requested, "
+                + $"{FormatCount(dependencyModules, "dependency", "dependencies")})")
+            .AppendLine(
+                $"  References: {FormatCount(references.Count, "reference", "references")} "
+                + $"({requestedReferences} requested, "
+                + $"{commonModulesReferences} from CommonModules)");
+    }
+
+    private static string FormatCount(
+        int count,
+        string singular,
+        string plural)
+        => $"{count} {(count == 1 ? singular : plural)}";
+
+    private sealed record NewProjectWarning(string Code, string Message);
+
+    private enum PathEntryObservation
+    {
+        Missing,
+        Present,
+        Inconclusive
+    }
+
+    private sealed record NewProjectPathPlan(
+        string RequestedProjectRoot,
+        string ProjectName,
+        string DocumentName);
+
+    private sealed record NewProjectCopyArtifact(
+        string TargetPath,
+        ReadOnlyMemory<byte> Contents);
+
+    private sealed record NewProjectCommonModulesPlan(
+        IReadOnlyList<NewProjectCopyArtifact> Artifacts,
+        IReadOnlyList<InstalledCommonModule> InstalledModules,
+        IReadOnlyList<string> RequiredReferences);
+
+    private sealed record NewProjectReceipt(
+        string SchemaVersion,
+        string Scope,
+        string Project,
+        string Document,
+        string Operation,
+        string Template,
+        bool Complete,
+        IReadOnlyList<NewProjectWarning> Warnings,
+        string ManifestPath,
+        ProjectManifest Manifest);
 
     private static string? DiscoverCommonModulesRepository(string projectRoot)
     {
-        var parent = Directory.GetParent(projectRoot);
-        if (parent is null)
+        try
         {
-            return null;
+            var parent = Directory.GetParent(projectRoot);
+            if (parent is null)
+            {
+                return null;
+            }
+
+            var matches = parent.EnumerateFileSystemInfos(
+                    "*",
+                    new EnumerationOptions
+                    {
+                        AttributesToSkip = 0,
+                        IgnoreInaccessible = false,
+                        RecurseSubdirectories = false,
+                        ReturnSpecialDirectories = false
+                    })
+                .Where(entry => entry.Name.Equals(
+                    "common_modules_repo",
+                    StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            if (matches.Length == 0)
+            {
+                return null;
+            }
+
+            if (matches.Length != 1
+                || !matches[0].Name.Equals(
+                    "common_modules_repo",
+                    StringComparison.Ordinal)
+                || matches[0] is not DirectoryInfo repository
+                || repository.Attributes.HasFlag(FileAttributes.ReparsePoint))
+            {
+                throw new CommonModulesManifestException(
+                    "The canonical CommonModules repository sibling could not be "
+                    + $"identified safely below: {parent.FullName}");
+            }
+
+            return repository.FullName;
+        }
+        catch (CommonModulesManifestException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is IOException
+            or UnauthorizedAccessException
+            or NotSupportedException
+            or System.Security.SecurityException)
+        {
+            throw new CommonModulesManifestException(
+                $"The canonical CommonModules repository sibling could not be observed safely for: {projectRoot}");
+        }
+    }
+
+    private FileSystemPathIdentity EstablishDurableCommonModulesRepositoryRoute(
+        string requestedProjectRoot,
+        string discoveredRepositoryPath)
+    {
+        var durablePath = GetDurableCommonModulesRepositoryPath(
+            requestedProjectRoot);
+        try
+        {
+            var discoveredIdentity = pathIdentityResolver.Resolve(
+                discoveredRepositoryPath);
+            var durableIdentity = pathIdentityResolver.Resolve(durablePath);
+            if (!HasContinuousExistingDirectoryIdentity(
+                    discoveredIdentity,
+                    durableIdentity)
+                || !Directory.Exists(durableIdentity.OperationPath))
+            {
+                throw new CommonModulesManifestException(
+                    "The requested project route cannot persist a durable CommonModules "
+                    + $"repository route to the canonical sibling: {durablePath}");
+            }
+
+            return durableIdentity;
+        }
+        catch (CommonModulesManifestException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is ArgumentException
+            or IOException
+            or UnauthorizedAccessException
+            or NotSupportedException
+            or InvalidOperationException
+            or System.Security.SecurityException)
+        {
+            throw new CommonModulesManifestException(
+                "The requested project route cannot establish a durable CommonModules "
+                + $"repository route to the canonical sibling: {durablePath}");
+        }
+    }
+
+    private void ProveDurableCommonModulesRepositoryRoute(
+        string requestedProjectRoot,
+        FileSystemPathIdentity expectedIdentity)
+    {
+        var durablePath = GetDurableCommonModulesRepositoryPath(
+            requestedProjectRoot);
+        try
+        {
+            var currentIdentity = pathIdentityResolver.Resolve(durablePath);
+            if (!HasContinuousExistingDirectoryIdentity(
+                    expectedIdentity,
+                    currentIdentity)
+                || !Directory.Exists(currentIdentity.OperationPath))
+            {
+                throw new CommonModulesManifestException(
+                    "The durable CommonModules repository route changed before "
+                    + $"the initial manifest commit: {durablePath}");
+            }
+        }
+        catch (CommonModulesManifestException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is ArgumentException
+            or IOException
+            or UnauthorizedAccessException
+            or NotSupportedException
+            or InvalidOperationException
+            or System.Security.SecurityException)
+        {
+            throw new CommonModulesManifestException(
+                "The durable CommonModules repository route could not be proved "
+                + $"before the initial manifest commit: {durablePath}");
+        }
+    }
+
+    private static string GetDurableCommonModulesRepositoryPath(
+        string requestedProjectRoot)
+        => Path.GetFullPath(Path.Combine(
+            requestedProjectRoot,
+            "..",
+            "common_modules_repo"));
+
+    private static bool HasContinuousExistingDirectoryIdentity(
+        FileSystemPathIdentity expected,
+        FileSystemPathIdentity current)
+    {
+        if (!Path.TrimEndingDirectorySeparator(expected.CanonicalPath).Equals(
+                Path.TrimEndingDirectorySeparator(current.CanonicalPath),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
         }
 
-        var candidate = Path.Combine(parent.FullName, "common_modules_repo");
-        return Directory.Exists(candidate) ? candidate : null;
+        if (expected.ObjectIdentity is not null
+            || current.ObjectIdentity is not null)
+        {
+            return expected.ObjectIdentity is not null
+                && current.ObjectIdentity is not null
+                && expected.ObjectIdentity == current.ObjectIdentity;
+        }
+
+        return !OperatingSystem.IsWindows();
+    }
+
+    private static StringComparison PathComparison => OperatingSystem.IsWindows()
+        ? StringComparison.OrdinalIgnoreCase
+        : StringComparison.Ordinal;
+
+    private sealed class NewProjectTargetChangedException : Exception
+    {
+        public NewProjectTargetChangedException(
+            IReadOnlyList<string> paths,
+            Exception? innerException = null)
+            : base(
+                "The project target changed during creation.",
+                innerException)
+        {
+            Paths = SortPaths(paths);
+        }
+
+        public IReadOnlyList<string> Paths { get; }
     }
 }
