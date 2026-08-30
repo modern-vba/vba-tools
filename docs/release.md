@@ -20,10 +20,13 @@ VS Code Marketplace release, the matching GitHub Release, and the standalone
 - Publish the initial extension as a `win32-x64` platform-specific VSIX. Add a
   different Marketplace target only after its bundled runtimes have dedicated
   build and verification coverage.
-- Treat the merged release preparation PR as the source of truth for the
-  extension version and release notes. It must update both `package.json` and
-  `package-lock.json` before the release tag is created.
-- Prepare that PR with a repository-owned, secretless `npm run release:prepare`
+- Treat the release preparation change integrated into `main` as the source of
+  truth for the extension version and release notes. The normal path records
+  that change in a pull request. Explicitly authorized direct integration must
+  record the same preparation and verification evidence in the release issue
+  or another maintainer-designated review record. The change must update both
+  `package.json` and `package-lock.json` before the release tag is created.
+- Prepare that change with a repository-owned, secretless `npm run release:prepare`
   command rather than granting a release-notes bot write credentials. The
   command must accept the extension version and channel plus the bundled
   `vba-dev` version, enforce the version and tag policies in this document,
@@ -33,7 +36,7 @@ VS Code Marketplace release, the matching GitHub Release, and the standalone
   `tools/vba-dev/CHANGELOG.md` as the independently versioned CLI history.
   Generate later version sections from Conventional Commits since the previous
   tag in the matching namespace, then edit known limitations, requirements, and
-  other user-facing context in the release preparation PR.
+  other user-facing context in the release preparation review record.
 - Curate the initial `0.1.0` changelog sections as user-facing summaries because
   no prior namespace tags exist; do not dump the complete commit history.
 - Do not let `vsce publish` increment the version or create a release commit.
@@ -238,9 +241,9 @@ After generation:
    release identity changes.
 3. Update user-facing docs when commands, settings, requirements, or known
    limitations change.
-4. Open and review the release preparation PR through the normal repository
-   workflow.
-5. Commit the release preparation with an English Conventional Commit message.
+4. Commit the release preparation with an English Conventional Commit message.
+5. Run the branch-level local verification below. Do not integrate the release
+   preparation until those checks pass.
 
 ## Local Verification
 
@@ -262,6 +265,15 @@ core, packaging, and compatibility suites, then republishes all three bundled
 executables and verifies the planned VSIX. It intentionally does not opt in to
 real Excel automation.
 
+After branch-level `npm test` and `npm run verify:release` pass, integrate the
+release preparation through the workflow in `CONTRIBUTING.md`. Use the normal
+pull request path unless the maintainer explicitly authorizes both direct
+integration and use of that path for this release preparation. Fetch the
+resulting exact `origin/main` commit in a clean worktree and rerun
+`npm run verify:release` before the Windows Excel gate. A squash merge creates a
+new commit, so branch-level verification alone cannot authorize the release
+tag.
+
 On a configured Windows host with desktop Excel and trusted VBIDE access, run
 the complete release verification including the serialized real Excel suite:
 
@@ -276,8 +288,9 @@ wait for interactive modal prompts.
 
 Run this gate against the exact commit intended for the release tag. Record the
 commit SHA, command result, and clean Windows smoke result in the release
-preparation PR or its post-merge comment. If the tagged content changes, rerun
-the gate before creating the tag.
+preparation pull request or, for explicitly authorized direct integration, the
+release issue verification note or another maintainer-designated review record.
+If the tagged content changes, rerun the gate before creating the tag.
 
 Run package verification:
 
