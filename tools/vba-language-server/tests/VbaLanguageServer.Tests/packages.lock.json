@@ -98,6 +98,7 @@
         "dependencies": {
           "VbaDev.Domain": "[0.1.0, )",
           "VbaLanguageServer.Syntax": "[1.0.0, )",
+          "VbaTools.ContentLengthFraming": "[1.0.0, )",
           "VbaTools.TypeLibRegistry": "[0.1.0, )"
         }
       },
@@ -108,6 +109,9 @@
         }
       },
       "vbalanguageserver.syntax": {
+        "type": "Project"
+      },
+      "vbatools.contentlengthframing": {
         "type": "Project"
       },
       "vbatools.typelibregistry": {

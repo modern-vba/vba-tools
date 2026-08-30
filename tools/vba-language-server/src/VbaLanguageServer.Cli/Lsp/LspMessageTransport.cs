@@ -1,7 +1,6 @@
-using System.Buffers;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using VbaTools.ContentLengthFraming;
 
 namespace VbaLanguageServer.Lsp;
 
@@ -10,14 +9,14 @@ namespace VbaLanguageServer.Lsp;
 /// </summary>
 internal sealed class LspMessageTransport
 {
+    internal const int MaximumContentLength = 64 * 1024 * 1024;
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
 
-    private readonly Stream input;
-    private readonly Stream output;
-    private readonly SemaphoreSlim outputLock = new(1, 1);
+    private readonly ContentLengthFrameTransport framing;
 
     /// <summary>
     /// Creates a message transport over input and output streams.
@@ -25,44 +24,32 @@ internal sealed class LspMessageTransport
     /// <param name="input">The stream used to read LSP messages.</param>
     /// <param name="output">The stream used to write LSP messages.</param>
     public LspMessageTransport(Stream input, Stream output)
+        : this(input, output, MaximumContentLength)
     {
-        this.input = input;
-        this.output = output;
+    }
+
+    internal LspMessageTransport(
+        Stream input,
+        Stream output,
+        int maximumContentLength)
+    {
+        framing = new ContentLengthFrameTransport(
+            input,
+            output,
+            maximumContentLength);
     }
 
     /// <summary>
     /// Reads one JSON-RPC message from the input stream.
     /// </summary>
     /// <param name="cancellationToken">A cancellation token for the read.</param>
-    /// <returns>The parsed JSON object, or null on EOF or invalid framing.</returns>
+    /// <returns>The parsed JSON object, or null on clean EOF before a frame.</returns>
     public async Task<JsonObject?> ReadMessageAsync(CancellationToken cancellationToken)
     {
-        var headers = await ReadHeaderAsync(cancellationToken);
-        if (headers is null)
-        {
-            return null;
-        }
-
-        if (!headers.TryGetValue("Content-Length", out var lengthText)
-            || !int.TryParse(lengthText, out var contentLength))
-        {
-            return null;
-        }
-
-        var content = new byte[contentLength];
-        var offset = 0;
-        while (offset < content.Length)
-        {
-            var read = await input.ReadAsync(content.AsMemory(offset, content.Length - offset), cancellationToken);
-            if (read == 0)
-            {
-                return null;
-            }
-
-            offset += read;
-        }
-
-        return JsonNode.Parse(content)?.AsObject();
+        var content = await framing.ReadFrameAsync(cancellationToken);
+        return content is null
+            ? null
+            : JsonNode.Parse(content)?.AsObject();
     }
 
     /// <summary>
@@ -176,68 +163,8 @@ internal sealed class LspMessageTransport
             cancellationToken);
     }
 
-    private async Task<Dictionary<string, string>?> ReadHeaderAsync(CancellationToken cancellationToken)
-    {
-        var buffer = new ArrayBufferWriter<byte>();
-        var singleByte = new byte[1];
-        while (true)
-        {
-            var read = await input.ReadAsync(singleByte.AsMemory(0, 1), cancellationToken);
-            if (read == 0)
-            {
-                return null;
-            }
-
-            buffer.GetSpan(1)[0] = singleByte[0];
-            buffer.Advance(1);
-
-            var written = buffer.WrittenSpan;
-            if (written.Length >= 4
-                && written[^4] == '\r'
-                && written[^3] == '\n'
-                && written[^2] == '\r'
-                && written[^1] == '\n')
-            {
-                break;
-            }
-
-        }
-
-        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var headerText = Encoding.ASCII.GetString(buffer.WrittenSpan);
-        foreach (var line in headerText.Split("\r\n", StringSplitOptions.RemoveEmptyEntries))
-        {
-            var delimiter = line.IndexOf(':');
-            if (delimiter <= 0)
-            {
-                continue;
-            }
-
-            headers[line[..delimiter]] = line[(delimiter + 1)..].Trim();
-        }
-
-        return headers;
-    }
-
-    private async Task WriteMessageAsync(object message, CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        var content = JsonSerializer.SerializeToUtf8Bytes(message, JsonOptions);
-        var headerText = $"Content-Length: {content.Length}\r\n\r\n";
-        var headerLength = Encoding.ASCII.GetByteCount(headerText);
-        var frame = new byte[headerLength + content.Length];
-        Encoding.ASCII.GetBytes(headerText, frame);
-        content.CopyTo(frame.AsSpan(headerLength));
-        await outputLock.WaitAsync(cancellationToken);
-        try
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            await output.WriteAsync(frame, CancellationToken.None);
-            await output.FlushAsync(CancellationToken.None);
-        }
-        finally
-        {
-            outputLock.Release();
-        }
-    }
+    private Task WriteMessageAsync(object message, CancellationToken cancellationToken)
+        => framing.WriteFrameAsync(
+            () => JsonSerializer.SerializeToUtf8Bytes(message, JsonOptions),
+            cancellationToken);
 }

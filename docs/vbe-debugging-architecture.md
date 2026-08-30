@@ -476,10 +476,16 @@ Excel-process exit. It never scrapes VBE runtime state or VBA output.
 
 The separate `vba-debug-adapter.exe` exposes its DAP entry point through
 `--stdio`; `vba-dev` has no `debug-adapter` subcommand. DAP messages use the
-standard `Content-Length` framing. A frame write may be cancelled while waiting
-for the connection write gate. After the gate is acquired, its header and body
-are written as one serialized buffer and flushed without cancellation so a
-restart or disconnect cannot leave a partial frame on stdout.
+standard `Content-Length` framing. The DAP adapter and the C# LSP adapter share
+`VbaTools.ContentLengthFraming` for header and body bytes, EOF classification,
+limits, and serialized writes only. DAP and LSP JSON parsing and envelope
+validation remain protocol-local. Headers are limited to 1 KiB; LSP bodies are
+limited to 64 MiB and DAP bodies to 256 MiB. EOF is clean only before the first
+byte of the next frame. Malformed or truncated framing after that point is a
+typed transport failure. A frame write may be cancelled before output ownership
+or final write admission and then writes zero bytes. After admission, its header
+and body are written as one serialized buffer and flushed without cancellation
+so a restart or disconnect cannot leave a partial frame on stdout.
 
 The extension resolves the selected project from persistent manifest state and
 captures the selected document without saving it. The launch request carries one

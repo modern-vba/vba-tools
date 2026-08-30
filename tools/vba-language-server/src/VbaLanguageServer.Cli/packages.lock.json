@@ -17,6 +17,9 @@
       "vbalanguageserver.syntax": {
         "type": "Project"
       },
+      "vbatools.contentlengthframing": {
+        "type": "Project"
+      },
       "vbatools.typelibregistry": {
         "type": "Project"
       }

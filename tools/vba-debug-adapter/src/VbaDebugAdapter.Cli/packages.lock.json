@@ -16,6 +16,9 @@
       },
       "vbalanguageserver.syntax": {
         "type": "Project"
+      },
+      "vbatools.contentlengthframing": {
+        "type": "Project"
       }
     },
     "net10.0/win-x64": {}

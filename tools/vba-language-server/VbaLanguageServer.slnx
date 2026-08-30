@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="../vba-protocol-framing/src/VbaTools.ContentLengthFraming/VbaTools.ContentLengthFraming.csproj" />
     <Project Path="src/VbaLanguageServer.Cli/VbaLanguageServer.Cli.csproj" />
     <Project Path="src/VbaLanguageServer.Syntax/VbaLanguageServer.Syntax.csproj" />
   </Folder>

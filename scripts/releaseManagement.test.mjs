@@ -139,7 +139,8 @@ test('repository pins the release toolchain commands dependency updates and cura
     'tools/vba-language-server/src/VbaLanguageServer.Cli/VbaLanguageServer.Cli.csproj',
     'tools/vba-language-server/src/VbaLanguageServer.Syntax/VbaLanguageServer.Syntax.csproj',
     'tools/vba-language-server/tests/VbaLanguageServer.Syntax.Tests/VbaLanguageServer.Syntax.Tests.csproj',
-    'tools/vba-language-server/tests/VbaLanguageServer.Tests/VbaLanguageServer.Tests.csproj'
+    'tools/vba-language-server/tests/VbaLanguageServer.Tests/VbaLanguageServer.Tests.csproj',
+    'tools/vba-protocol-framing/src/VbaTools.ContentLengthFraming/VbaTools.ContentLengthFraming.csproj'
   ];
   for (const projectPath of dotnetProjects) {
     const lockPath = path.join(path.dirname(projectPath), 'packages.lock.json');
@@ -150,7 +151,8 @@ test('repository pins the release toolchain commands dependency updates and cura
   for (const propsPath of [
     'tools/vba-dev/Directory.Build.props',
     'tools/vba-debug-adapter/Directory.Build.props',
-    'tools/vba-language-server/Directory.Build.props'
+    'tools/vba-language-server/Directory.Build.props',
+    'tools/vba-protocol-framing/Directory.Build.props'
   ]) {
     const props = await fs.readFile(path.join(repositoryRoot, propsPath), 'utf8');
     assert.match(props, /<RestorePackagesWithLockFile>true<\/RestorePackagesWithLockFile>/);

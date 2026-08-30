@@ -41,9 +41,10 @@ and writes one terminal response. It converts observed explicit cancellation
 to LSP error `-32800`, releases cancellation ownership after choosing the
 terminal outcome, and writes with the separate transport-lifetime token.
 
-The existing `LspMessageTransport` serialized writer remains the single output
-path for responses and notifications. Its lock spans the complete header,
-payload, and flush operation, preventing frame interleaving.
+`LspMessageTransport` remains the single protocol-local output Adapter for
+responses and notifications. It delegates byte framing to the shared
+`VbaTools.ContentLengthFraming` writer, whose lock spans the complete header,
+payload, and flush operation and prevents frame interleaving.
 
 A valid `shutdown` request is ordinary sequenced work. A following `exit` is an
 ordered terminal barrier, so it observes the completed shutdown and exits with

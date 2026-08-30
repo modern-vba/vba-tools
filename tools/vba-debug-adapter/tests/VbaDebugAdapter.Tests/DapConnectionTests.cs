@@ -1,55 +1,77 @@
 using System.Text;
-using VbaLanguageServer.Lsp;
+using System.Text.Json;
+using VbaDebugAdapter.Protocol;
 using VbaTools.ContentLengthFraming;
 using Xunit;
 
-namespace VbaLanguageServer.Tests;
+namespace VbaDebugAdapter.Tests;
 
-public sealed class LspMessageTransportTests
+public sealed class DapConnectionTests
 {
     [Fact]
     public async Task Clean_EOF_before_a_frame_returns_null()
     {
-        var transport = new LspMessageTransport(Stream.Null, Stream.Null);
+        var connection = new DapConnection(Stream.Null, Stream.Null);
 
-        Assert.Null(await transport.ReadMessageAsync(CancellationToken.None));
+        Assert.Null(await connection.ReadRequestAsync(CancellationToken.None));
     }
 
     [Fact]
-    public async Task Byte_at_a_time_input_preserves_the_protocol_local_JSON_object()
+    public async Task Byte_at_a_time_input_preserves_the_protocol_local_DAP_request()
     {
-        var body = Encoding.UTF8.GetBytes("{\"jsonrpc\":\"2.0\",\"method\":\"ready\"}");
+        var body = CreateRequestBody();
         await using var input = new ByteAtATimeReadStream(CreateFrame(body));
-        var transport = new LspMessageTransport(input, Stream.Null);
+        var connection = new DapConnection(input, Stream.Null);
 
-        var message = Assert.IsType<System.Text.Json.Nodes.JsonObject>(
-            await transport.ReadMessageAsync(CancellationToken.None));
+        var request = Assert.IsType<DapRequest>(
+            await connection.ReadRequestAsync(CancellationToken.None));
 
-        Assert.Equal("2.0", message["jsonrpc"]!.GetValue<string>());
-        Assert.Equal("ready", message["method"]!.GetValue<string>());
+        Assert.Equal(1, request.Sequence);
+        Assert.Equal("initialize", request.Command);
+    }
+
+    [Fact]
+    public async Task Clean_EOF_after_two_adjacent_frames_returns_null_for_the_next_frame()
+    {
+        var firstFrame = CreateFrame(CreateRequestBody(1, "initialize"));
+        var secondFrame = CreateFrame(CreateRequestBody(2, "configurationDone"));
+        var inputBytes = new byte[firstFrame.Length + secondFrame.Length];
+        firstFrame.CopyTo(inputBytes, 0);
+        secondFrame.CopyTo(inputBytes, firstFrame.Length);
+        await using var input = new MemoryStream(inputBytes);
+        var connection = new DapConnection(input, Stream.Null);
+
+        var first = Assert.IsType<DapRequest>(
+            await connection.ReadRequestAsync(CancellationToken.None));
+        var second = Assert.IsType<DapRequest>(
+            await connection.ReadRequestAsync(CancellationToken.None));
+
+        Assert.Equal(1, first.Sequence);
+        Assert.Equal(2, second.Sequence);
+        Assert.Null(await connection.ReadRequestAsync(CancellationToken.None));
     }
 
     [Fact]
     public async Task A_header_of_exactly_one_KiB_is_accepted()
     {
-        var body = Encoding.UTF8.GetBytes("{}");
+        var body = CreateRequestBody();
         await using var input = new MemoryStream(
             CreateFrame(body, ContentLengthFrameTransport.MaximumHeaderSize));
-        var transport = new LspMessageTransport(input, Stream.Null);
+        var connection = new DapConnection(input, Stream.Null);
 
-        Assert.NotNull(await transport.ReadMessageAsync(CancellationToken.None));
+        Assert.NotNull(await connection.ReadRequestAsync(CancellationToken.None));
     }
 
     [Fact]
     public async Task A_header_larger_than_one_KiB_is_a_typed_failure()
     {
-        var body = Encoding.UTF8.GetBytes("{}");
+        var body = CreateRequestBody();
         await using var input = new MemoryStream(
             CreateFrame(body, ContentLengthFrameTransport.MaximumHeaderSize + 1));
-        var transport = new LspMessageTransport(input, Stream.Null);
+        var connection = new DapConnection(input, Stream.Null);
 
         var failure = await Assert.ThrowsAsync<ContentLengthFramingException>(
-            () => transport.ReadMessageAsync(CancellationToken.None));
+            () => connection.ReadRequestAsync(CancellationToken.None));
 
         Assert.Equal(ContentLengthFramingFailureKind.HeaderOverflow, failure.Kind);
     }
@@ -71,7 +93,7 @@ public sealed class LspMessageTransportTests
         "Content-Length: -1",
         ContentLengthFramingFailureKind.NegativeContentLength)]
     [InlineData(
-        "Content-Length: 67108865",
+        "Content-Length: 268435457",
         ContentLengthFramingFailureKind.OversizedContentLength)]
     [InlineData(
         "not-a-header",
@@ -82,12 +104,27 @@ public sealed class LspMessageTransportTests
     {
         await using var input = new MemoryStream(
             Encoding.ASCII.GetBytes($"{header}\r\n\r\n"));
-        var transport = new LspMessageTransport(input, Stream.Null);
+        var connection = new DapConnection(input, Stream.Null);
 
         var failure = await Assert.ThrowsAsync<ContentLengthFramingException>(
-            () => transport.ReadMessageAsync(CancellationToken.None));
+            () => connection.ReadRequestAsync(CancellationToken.None));
 
         Assert.Equal(expectedKind, failure.Kind);
+    }
+
+    [Fact]
+    public async Task Truncated_header_is_a_typed_framing_failure()
+    {
+        await using var input = new MemoryStream(
+            Encoding.ASCII.GetBytes("Content-Length: 2\r\n"));
+        var connection = new DapConnection(input, Stream.Null);
+
+        var failure = await Assert.ThrowsAsync<ContentLengthFramingException>(
+            () => connection.ReadRequestAsync(CancellationToken.None));
+
+        Assert.Equal(
+            ContentLengthFramingFailureKind.TruncatedHeader,
+            failure.Kind);
     }
 
     [Fact]
@@ -95,45 +132,45 @@ public sealed class LspMessageTransportTests
     {
         await using var input = new MemoryStream(
             Encoding.ASCII.GetBytes("Content-Length: 2\r\n\r\n{"));
-        var transport = new LspMessageTransport(input, Stream.Null);
+        var connection = new DapConnection(input, Stream.Null);
 
         var failure = await Assert.ThrowsAsync<ContentLengthFramingException>(
-            () => transport.ReadMessageAsync(CancellationToken.None));
+            () => connection.ReadRequestAsync(CancellationToken.None));
 
         Assert.Equal(ContentLengthFramingFailureKind.TruncatedBody, failure.Kind);
     }
 
     [Fact]
-    public void LSP_body_limit_is_64_MiB()
+    public void DAP_body_limit_is_256_MiB()
     {
-        Assert.Equal(64 * 1024 * 1024, LspMessageTransport.MaximumContentLength);
+        Assert.Equal(256 * 1024 * 1024, DapConnection.MaximumContentLength);
     }
 
     [Fact]
-    public async Task A_body_at_the_configured_LSP_limit_is_accepted()
+    public async Task A_body_at_the_configured_DAP_limit_is_accepted()
     {
-        var body = Encoding.UTF8.GetBytes("{}");
+        var body = CreateRequestBody();
         await using var input = new MemoryStream(CreateFrame(body));
-        var transport = new LspMessageTransport(
+        var connection = new DapConnection(
             input,
             Stream.Null,
             body.Length);
 
-        Assert.NotNull(await transport.ReadMessageAsync(CancellationToken.None));
+        Assert.NotNull(await connection.ReadRequestAsync(CancellationToken.None));
     }
 
     [Fact]
-    public async Task A_body_one_byte_over_the_configured_LSP_limit_is_rejected()
+    public async Task A_body_one_byte_over_the_configured_DAP_limit_is_rejected()
     {
-        var body = Encoding.UTF8.GetBytes("{}");
+        var body = CreateRequestBody();
         await using var input = new MemoryStream(CreateFrame(body));
-        var transport = new LspMessageTransport(
+        var connection = new DapConnection(
             input,
             Stream.Null,
             body.Length - 1);
 
         var failure = await Assert.ThrowsAsync<ContentLengthFramingException>(
-            () => transport.ReadMessageAsync(CancellationToken.None));
+            () => connection.ReadRequestAsync(CancellationToken.None));
 
         Assert.Equal(
             ContentLengthFramingFailureKind.OversizedContentLength,
@@ -141,15 +178,15 @@ public sealed class LspMessageTransportTests
     }
 
     [Fact]
-    public async Task An_outbound_body_over_the_configured_LSP_limit_writes_zero_bytes()
+    public async Task An_outbound_body_over_the_configured_DAP_limit_writes_zero_bytes()
     {
         await using var output = new MemoryStream();
-        var transport = new LspMessageTransport(Stream.Null, output, 1);
+        var connection = new DapConnection(Stream.Null, output, 1);
 
         var failure = await Assert.ThrowsAsync<ContentLengthFramingException>(
-            () => transport.WriteResponseAsync(
-                System.Text.Json.Nodes.JsonValue.Create(1),
-                result: null,
+            () => connection.WriteEventAsync(
+                "event",
+                body: null,
                 CancellationToken.None));
 
         Assert.Equal(
@@ -159,130 +196,74 @@ public sealed class LspMessageTransportTests
     }
 
     [Fact]
-    public async Task Truncated_header_is_a_typed_framing_failure()
-    {
-        await using var input = new MemoryStream(
-            Encoding.ASCII.GetBytes("Content-Length: 2\r\n"));
-        var transport = new LspMessageTransport(input, Stream.Null);
-
-        var failure = await Assert.ThrowsAsync<ContentLengthFramingException>(
-            () => transport.ReadMessageAsync(CancellationToken.None));
-
-        Assert.Equal(
-            ContentLengthFramingFailureKind.TruncatedHeader,
-            failure.Kind);
-    }
-
-    [Fact]
-    public async Task Header_read_honors_host_cancellation_while_waiting_for_input()
-    {
-        using var input = new CancellationGateStream();
-        var transport = new LspMessageTransport(input, Stream.Null);
-        using var cancellation = new CancellationTokenSource();
-        var read = Task.Run(
-            () => transport.ReadMessageAsync(cancellation.Token));
-        await input.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-
-        cancellation.Cancel();
-        try
-        {
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(
-                async () => await read.WaitAsync(TimeSpan.FromSeconds(1)));
-        }
-        finally
-        {
-            input.ReleaseSynchronousRead();
-            try
-            {
-                await read;
-            }
-            catch (OperationCanceledException)
-            {
-            }
-        }
-    }
-
-    [Fact]
-    public async Task Concurrent_outbound_messages_use_one_writer_and_preserve_complete_frames()
+    public async Task Concurrent_outbound_messages_preserve_complete_frames_and_wire_sequence()
     {
         await using var output = new YieldingCaptureStream();
-        var transport = new LspMessageTransport(Stream.Null, output);
+        var connection = new DapConnection(Stream.Null, output);
 
         var writes = Enumerable.Range(1, 32)
-            .Select(id => transport.WriteResponseAsync(
-                System.Text.Json.Nodes.JsonValue.Create(id),
-                new
-                {
-                    value = id
-                },
+            .Select(requestSequence => connection.WriteResponseAsync(
+                new DapRequest(requestSequence, "test", default),
+                success: true,
+                body: new { value = requestSequence },
+                message: null,
                 CancellationToken.None));
         await Task.WhenAll(writes);
 
         Assert.False(output.ConcurrentOperationObserved);
-        await using var input = new MemoryStream(output.ToArray());
-        var reader = new LspMessageTransport(input, Stream.Null);
-        var receivedIds = new List<int>();
-        for (var index = 0; index < 32; index++)
-        {
-            var message = Assert.IsType<System.Text.Json.Nodes.JsonObject>(
-                await reader.ReadMessageAsync(CancellationToken.None));
-            receivedIds.Add(message["id"]!.GetValue<int>());
-        }
-
+        var messages = ReadMessages(output.ToArray());
+        Assert.Equal(32, messages.Count);
         Assert.Equal(
             Enumerable.Range(1, 32),
-            receivedIds.Order());
-        Assert.Null(await reader.ReadMessageAsync(CancellationToken.None));
+            messages.Select(message => message.GetProperty("seq").GetInt32()));
+        Assert.Equal(
+            Enumerable.Range(1, 32),
+            messages
+                .Select(message => message.GetProperty("request_seq").GetInt32())
+                .Order());
     }
 
     [Fact]
-    public async Task Cancellation_after_an_outbound_frame_starts_preserves_it_and_the_following_frame()
+    public async Task Cancellation_after_an_outbound_frame_starts_completes_that_frame()
     {
         await using var output = new PausingCaptureStream();
-        var transport = new LspMessageTransport(Stream.Null, output);
+        var connection = new DapConnection(Stream.Null, output);
         using var cancellation = new CancellationTokenSource();
 
-        var firstWrite = transport.WriteResponseAsync(
-            System.Text.Json.Nodes.JsonValue.Create(1),
-            new { value = "first" },
+        var firstWrite = connection.WriteEventAsync(
+            "first",
+            new { value = 1 },
             cancellation.Token);
         await output.FirstWriteStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         cancellation.Cancel();
         output.ReleaseFirstWrite();
         await firstWrite.WaitAsync(TimeSpan.FromSeconds(5));
-        await transport.WriteResponseAsync(
-            System.Text.Json.Nodes.JsonValue.Create(2),
-            new { value = "second" },
+        await connection.WriteEventAsync(
+            "second",
+            new { value = 2 },
             CancellationToken.None);
 
-        await using var input = new MemoryStream(output.ToArray());
-        var reader = new LspMessageTransport(input, Stream.Null);
-        var first = Assert.IsType<System.Text.Json.Nodes.JsonObject>(
-            await reader.ReadMessageAsync(CancellationToken.None));
-        var second = Assert.IsType<System.Text.Json.Nodes.JsonObject>(
-            await reader.ReadMessageAsync(CancellationToken.None));
-
-        Assert.Equal(1, first["id"]!.GetValue<int>());
-        Assert.Equal(2, second["id"]!.GetValue<int>());
-        Assert.Null(await reader.ReadMessageAsync(CancellationToken.None));
+        var messages = ReadMessages(output.ToArray());
+        Assert.Equal(["first", "second"], messages
+            .Select(message => message.GetProperty("event").GetString()));
     }
 
     [Fact]
     public async Task Cancellation_while_waiting_for_output_ownership_starts_no_frame()
     {
         await using var output = new PausingCaptureStream();
-        var transport = new LspMessageTransport(Stream.Null, output);
+        var connection = new DapConnection(Stream.Null, output);
         using var cancellation = new CancellationTokenSource();
 
-        var firstWrite = transport.WriteResponseAsync(
-            System.Text.Json.Nodes.JsonValue.Create(1),
-            new { value = "first" },
+        var firstWrite = connection.WriteEventAsync(
+            "first",
+            body: null,
             CancellationToken.None);
         await output.FirstWriteStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var cancelledWrite = transport.WriteResponseAsync(
-            System.Text.Json.Nodes.JsonValue.Create(2),
-            new { value = "cancelled" },
+        var cancelledWrite = connection.WriteEventAsync(
+            "cancelled",
+            body: null,
             cancellation.Token);
 
         cancellation.Cancel();
@@ -291,30 +272,36 @@ public sealed class LspMessageTransportTests
         output.ReleaseFirstWrite();
         await firstWrite.WaitAsync(TimeSpan.FromSeconds(5));
 
-        await using var input = new MemoryStream(output.ToArray());
-        var reader = new LspMessageTransport(input, Stream.Null);
-        var first = Assert.IsType<System.Text.Json.Nodes.JsonObject>(
-            await reader.ReadMessageAsync(CancellationToken.None));
-
-        Assert.Equal(1, first["id"]!.GetValue<int>());
-        Assert.Null(await reader.ReadMessageAsync(CancellationToken.None));
+        var message = Assert.Single(ReadMessages(output.ToArray()));
+        Assert.Equal("first", message.GetProperty("event").GetString());
     }
 
     [Fact]
-    public async Task Cancellation_during_LSP_serialization_starts_no_frame()
+    public async Task Cancellation_during_DAP_serialization_starts_no_frame()
     {
         await using var output = new MemoryStream();
-        var transport = new LspMessageTransport(Stream.Null, output);
+        var connection = new DapConnection(Stream.Null, output);
         using var cancellation = new CancellationTokenSource();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => transport.WriteResponseAsync(
-                System.Text.Json.Nodes.JsonValue.Create(1),
+            () => connection.WriteEventAsync(
+                "event",
                 new CancellationDuringSerialization(cancellation),
                 cancellation.Token));
 
         Assert.Empty(output.ToArray());
     }
+
+    private static byte[] CreateRequestBody(
+        int sequence = 1,
+        string command = "initialize")
+        => JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            seq = sequence,
+            type = "request",
+            command,
+            arguments = new { }
+        });
 
     private static byte[] CreateFrame(byte[] body, int? totalHeaderSize = null)
     {
@@ -330,6 +317,37 @@ public sealed class LspMessageTransportTests
         header.CopyTo(frame, 0);
         body.CopyTo(frame, header.Length);
         return frame;
+    }
+
+    private static IReadOnlyList<JsonElement> ReadMessages(byte[] framedMessages)
+    {
+        var messages = new List<JsonElement>();
+        var offset = 0;
+        while (offset < framedMessages.Length)
+        {
+            var headerEnd = framedMessages.AsSpan(offset).IndexOf("\r\n\r\n"u8);
+            Assert.True(headerEnd >= 0);
+            var header = Encoding.ASCII.GetString(
+                framedMessages,
+                offset,
+                headerEnd);
+            var contentLengthLine = Assert.Single(
+                header.Split("\r\n", StringSplitOptions.None),
+                line => line.StartsWith(
+                    "Content-Length:",
+                    StringComparison.OrdinalIgnoreCase));
+            var contentLength = int.Parse(
+                contentLengthLine[(contentLengthLine.IndexOf(':') + 1)..].Trim(),
+                System.Globalization.CultureInfo.InvariantCulture);
+            offset += headerEnd + 4;
+            Assert.True(offset + contentLength <= framedMessages.Length);
+            using var document = JsonDocument.Parse(
+                framedMessages.AsMemory(offset, contentLength));
+            messages.Add(document.RootElement.Clone());
+            offset += contentLength;
+        }
+
+        return messages;
     }
 
     private sealed class ByteAtATimeReadStream : Stream
@@ -406,73 +424,6 @@ public sealed class LspMessageTransportTests
                 cancellation.Cancel();
                 return "cancelled";
             }
-        }
-    }
-
-    private sealed class CancellationGateStream : Stream
-    {
-        private readonly ManualResetEventSlim synchronousReadRelease = new();
-
-        public TaskCompletionSource Started { get; } =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        public override bool CanRead => true;
-
-        public override bool CanSeek => false;
-
-        public override bool CanWrite => false;
-
-        public override long Length => throw new NotSupportedException();
-
-        public override long Position
-        {
-            get => throw new NotSupportedException();
-            set => throw new NotSupportedException();
-        }
-
-        public void ReleaseSynchronousRead()
-            => synchronousReadRelease.Set();
-
-        public override int ReadByte()
-        {
-            Started.TrySetResult();
-            synchronousReadRelease.Wait();
-            return -1;
-        }
-
-        public override async ValueTask<int> ReadAsync(
-            Memory<byte> buffer,
-            CancellationToken cancellationToken = default)
-        {
-            Started.TrySetResult();
-            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
-            return 0;
-        }
-
-        public override int Read(byte[] buffer, int offset, int count)
-            => ReadByte();
-
-        public override void Flush()
-        {
-        }
-
-        public override long Seek(long offset, SeekOrigin origin)
-            => throw new NotSupportedException();
-
-        public override void SetLength(long value)
-            => throw new NotSupportedException();
-
-        public override void Write(byte[] buffer, int offset, int count)
-            => throw new NotSupportedException();
-
-        protected override void Dispose(bool disposing)
-        {
-            if (disposing)
-            {
-                synchronousReadRelease.Dispose();
-            }
-
-            base.Dispose(disposing);
         }
     }
 
