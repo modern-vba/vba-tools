@@ -334,7 +334,8 @@ internal sealed class VbaDiagnosticsPublisher
                     "The diagnostics scheduler must be attached before publication starts.");
         }
 
-        return mailbox.WaitForIdleAsync(uri);
+        return mailbox.WaitForIdleAsync(
+            VbaProjectIdentityModel.GetDocumentStableKey(uri));
     }
 
     /// <summary>
@@ -413,9 +414,13 @@ internal sealed class VbaDiagnosticsPublisher
 
     private bool IsLatestPublishRevision(string uri, long revision)
     {
+        var documentKey =
+            VbaProjectIdentityModel.GetDocumentStableKey(uri);
         lock (gate)
         {
-            return latestPublishRevisions.TryGetValue(uri, out var latest)
+            return latestPublishRevisions.TryGetValue(
+                    documentKey,
+                    out var latest)
                 && latest == revision;
         }
     }
@@ -451,13 +456,16 @@ internal sealed class VbaDiagnosticsPublisher
                         "The diagnostics scheduler must be attached before publication starts.");
                 foreach (var publication in publications)
                 {
+                    var documentKey = VbaProjectIdentityModel
+                        .GetDocumentStableKey(publication.Uri);
                     latestPublishRevisions.TryGetValue(
-                        publication.Uri,
+                        documentKey,
                         out var previous);
                     var revision = previous + 1;
-                    latestPublishRevisions[publication.Uri] = revision;
+                    latestPublishRevisions[documentKey] = revision;
                     reservations.Add(new DiagnosticsPublicationReservation(
                         publication,
+                        documentKey,
                         revision,
                         new TaskCompletionSource(
                             TaskCreationOptions.RunContinuationsAsynchronously)));
@@ -467,7 +475,7 @@ internal sealed class VbaDiagnosticsPublisher
             foreach (var reservation in reservations)
             {
                 mailbox.Post(
-                    reservation.Publication.Uri,
+                    reservation.DocumentKey,
                     async cancellationToken =>
                     {
                         await reservation.RevisionObserved.Task.ConfigureAwait(false);
@@ -492,7 +500,7 @@ internal sealed class VbaDiagnosticsPublisher
                         }
                     },
                     () => MarkPublishRevisionTerminal(
-                        reservation.Publication.Uri,
+                        reservation.DocumentKey,
                         reservation.Revision));
             }
         }
@@ -522,26 +530,27 @@ internal sealed class VbaDiagnosticsPublisher
 
     private sealed record DiagnosticsPublicationReservation(
         DiagnosticsPublication Publication,
+        string DocumentKey,
         long Revision,
         TaskCompletionSource RevisionObserved);
 
     private void MarkPublishRevisionTerminal(
-        string uri,
+        string documentKey,
         long revision)
     {
         lock (gate)
         {
             terminalPublishRevisions.TryGetValue(
-                uri,
+                documentKey,
                 out var previousTerminalRevision);
             if (revision > previousTerminalRevision)
             {
-                terminalPublishRevisions[uri] = revision;
+                terminalPublishRevisions[documentKey] = revision;
             }
         }
     }
 
-    private void CompleteTerminalRevisionState(string uri)
+    private void CompleteTerminalRevisionState(string documentKey)
     {
         VbaLatestOnlyBackgroundMailbox? mailbox;
         lock (gate)
@@ -549,27 +558,31 @@ internal sealed class VbaDiagnosticsPublisher
             mailbox = publicationMailbox;
         }
 
-        if (mailbox is null || !mailbox.IsIdle(uri))
+        if (mailbox is null || !mailbox.IsIdle(documentKey))
         {
             return;
         }
 
         lock (gate)
         {
-            if (!mailbox.IsIdle(uri))
+            if (!mailbox.IsIdle(documentKey))
             {
                 return;
             }
 
-            latestPublishRevisions.TryGetValue(uri, out var latestRevision);
-            terminalPublishRevisions.TryGetValue(uri, out var terminalRevision);
+            latestPublishRevisions.TryGetValue(
+                documentKey,
+                out var latestRevision);
+            terminalPublishRevisions.TryGetValue(
+                documentKey,
+                out var terminalRevision);
             if (terminalRevision < latestRevision)
             {
                 return;
             }
 
-            latestPublishRevisions.Remove(uri);
-            terminalPublishRevisions.Remove(uri);
+            latestPublishRevisions.Remove(documentKey);
+            terminalPublishRevisions.Remove(documentKey);
         }
     }
 }

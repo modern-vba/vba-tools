@@ -1586,6 +1586,8 @@ public sealed class VbaDiagnosticsPublisherTests
     public async Task Idle_wait_completes_only_after_the_latest_tombstone_is_terminal()
     {
         const string uri = "file:///C:/work/Worker.bas";
+        const string equivalentUri =
+            "file:///C:/work/Nested/../Worker.bas";
         await using var output = new BlockingWriteStream();
         await using var scheduler = new VbaInteractiveWorkScheduler();
         var workspace = new VbaLanguageWorkspace(
@@ -1600,7 +1602,7 @@ public sealed class VbaDiagnosticsPublisherTests
             uri,
             CancellationToken.None);
         await output.WriteStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var idle = publisher.WaitForIdleAsync(uri);
+        var idle = publisher.WaitForIdleAsync(equivalentUri);
 
         Assert.True(publish.IsCompletedSuccessfully);
         Assert.False(idle.IsCompleted);

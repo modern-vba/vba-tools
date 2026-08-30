@@ -1670,9 +1670,13 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                     resolution,
                     sourceUri,
                     manifestBarrierOverrides)
-                || SameDocumentIdentity(activeUri, sourceUri)
+                || VbaProjectIdentityModel.SameDocument(
+                    activeUri,
+                    sourceUri)
                 || sourceUris.Any(candidate =>
-                    SameDocumentIdentity(candidate, sourceUri)))
+                    VbaProjectIdentityModel.SameDocument(
+                        candidate,
+                        sourceUri)))
             {
                 var affectedPath =
                     VbaProjectResolver.TryGetLocalPath(sourceUri)
@@ -1838,7 +1842,7 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                             .Where(
                                 uri => ownedSourceUris.Any(
                                     ownedUri =>
-                                        SameDocumentIdentity(
+                                        VbaProjectIdentityModel.SameDocument(
                                             ownedUri,
                                             uri)))
                             .ToArray();
@@ -2070,7 +2074,10 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
             return uri;
         }
 
-        return documents.Keys.FirstOrDefault(candidate => SameDocumentIdentity(candidate, uri));
+        return documents.Keys.FirstOrDefault(
+            candidate => VbaProjectIdentityModel.SameDocument(
+                candidate,
+                uri));
     }
 
     private string? FindAcceptedRevisionKey(string uri)
@@ -2081,7 +2088,9 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         }
 
         return acceptedRevisions.Keys.FirstOrDefault(
-            candidate => SameDocumentIdentity(candidate, uri));
+            candidate => VbaProjectIdentityModel.SameDocument(
+                candidate,
+                uri));
     }
 
     private string? FindDiskSourceFailureKey(string uri)
@@ -2092,7 +2101,9 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         }
 
         return diskSourceFailures.Keys.FirstOrDefault(
-            candidate => SameDocumentIdentity(candidate, uri));
+            candidate => VbaProjectIdentityModel.SameDocument(
+                candidate,
+                uri));
     }
 
     private bool RecordDiskSourceFailure(
@@ -2189,7 +2200,10 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
 
     private bool AddExcludedSourceIdentity(string uri)
     {
-        if (excludedSourceUris.Any(candidate => SameDocumentIdentity(candidate, uri)))
+        if (excludedSourceUris.Any(
+            candidate => VbaProjectIdentityModel.SameDocument(
+                candidate,
+                uri)))
         {
             return false;
         }
@@ -2198,21 +2212,10 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
     }
 
     private bool RemoveExcludedSourceIdentity(string uri)
-        => excludedSourceUris.RemoveWhere(candidate => SameDocumentIdentity(candidate, uri)) > 0;
-
-    private static bool SameDocumentIdentity(string leftUri, string rightUri)
-    {
-        if (leftUri.Equals(rightUri, StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        var leftPath = VbaProjectResolver.TryGetLocalPath(leftUri);
-        var rightPath = VbaProjectResolver.TryGetLocalPath(rightUri);
-        return leftPath is not null
-            && rightPath is not null
-            && leftPath.Equals(rightPath, StringComparison.OrdinalIgnoreCase);
-    }
+        => excludedSourceUris.RemoveWhere(
+            candidate => VbaProjectIdentityModel.SameDocument(
+                candidate,
+                uri)) > 0;
 
     private static bool IsManifestRelevantToScope(
         string manifestPath,

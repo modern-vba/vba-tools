@@ -26,10 +26,12 @@ public sealed class VbaSemanticInventory
     private readonly IReadOnlyDictionary<string, string>
         authoritativeReferencedProjectNames;
     private readonly object semanticTokenCacheGate = new();
-    private readonly Dictionary<string, IReadOnlyList<VbaSemanticToken>> semanticTokenCache =
-        new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, IReadOnlyList<int>> semanticTokenDataCache =
-        new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<
+        VbaDocumentIdentity,
+        IReadOnlyList<VbaSemanticToken>> semanticTokenCache = [];
+    private readonly Dictionary<
+        VbaDocumentIdentity,
+        IReadOnlyList<int>> semanticTokenDataCache = [];
     private readonly VbaHostClassProjectionSnapshot? hostClassProjectionSnapshot;
 
     private VbaSemanticInventory(
@@ -180,9 +182,9 @@ public sealed class VbaSemanticInventory
 
         var diagnostics = new List<VbaProjectValidationDiagnostic>();
         foreach (var target in sourceDocuments
-            .Where(document => document.Uri.Equals(
-                uri,
-                StringComparison.OrdinalIgnoreCase))
+            .Where(document => VbaProjectIdentityModel.SameDocument(
+                document.Uri,
+                uri))
             .SelectMany(document => document.Definitions)
             .Where(IsModuleIdentity)
             .Where(IsExplicitModuleIdentityTarget))
@@ -412,9 +414,9 @@ public sealed class VbaSemanticInventory
                         occurrenceTarget.Identity,
                         out var dependentDeclarationDefinitions)
                     || !dependentDeclarationDefinitions.Any(definition =>
-                        definition.Uri.Equals(
-                            occurrence.Uri,
-                            StringComparison.OrdinalIgnoreCase)
+                        VbaProjectIdentityModel.SameDocument(
+                            definition.Uri,
+                            occurrence.Uri)
                         && definition.Range != occurrence.Range
                         && Contains(definition.Range, occurrence.Range.Start)
                         && Contains(definition.Range, occurrence.Range.End))))
@@ -423,7 +425,11 @@ public sealed class VbaSemanticInventory
                 .Where(definition => definition.Identity.Origin
                     == VbaDefinitionOrigin.Source)
                 .Select(definition => definition.Location))
-            .GroupBy(reference => $"{reference.Uri}:{GetRangeKey(reference.Range)}", StringComparer.OrdinalIgnoreCase)
+            .GroupBy(
+                reference => CreateOccurrenceKey(
+                    reference.Uri,
+                    reference.Range),
+                StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First())
             .OrderBy(reference => reference.Uri, StringComparer.OrdinalIgnoreCase)
             .ThenBy(reference => reference.Range.Start.Line)
@@ -566,7 +572,9 @@ public sealed class VbaSemanticInventory
         var callablePropertyTarget = target as VbaPropertyNameTarget;
         var isPropertyDeclarationIdentifier = callablePropertyTarget?.Property
             .PropertyDefinitions.Any(definition =>
-                definition.Uri.Equals(uri, StringComparison.OrdinalIgnoreCase)
+                VbaProjectIdentityModel.SameDocument(
+                    definition.Uri,
+                    uri)
                 && definition.Range.Start.Line == identifier.Range.Start.Line
                 && definition.Range.Start.Character == identifier.Range.Start.Character
                 && definition.Range.End.Line == identifier.Range.End.Line
@@ -1155,9 +1163,9 @@ public sealed class VbaSemanticInventory
             _ => target.PhysicalDefinitions
         };
         return candidates
-            .Where(candidate => candidate.Uri.Equals(
-                document.Uri,
-                StringComparison.OrdinalIgnoreCase))
+            .Where(candidate => VbaProjectIdentityModel.SameDocument(
+                candidate.Uri,
+                document.Uri))
             .Select(candidate => semanticResolution.AnalyzeIntrinsicHostHandler(
                 document,
                 candidate))
@@ -1836,9 +1844,9 @@ public sealed class VbaSemanticInventory
                          cancellationToken))
             {
                 var isDeclarationSegment = dependentDefinitions.Any(definition =>
-                    definition.Uri.Equals(
-                        occurrence.Uri,
-                        StringComparison.OrdinalIgnoreCase)
+                    VbaProjectIdentityModel.SameDocument(
+                        definition.Uri,
+                        occurrence.Uri)
                     && definition.Range.Start.Line == occurrence.Range.Start.Line
                     && definition.Range.Start.Character
                         <= occurrence.Range.Start.Character
@@ -2202,9 +2210,9 @@ public sealed class VbaSemanticInventory
         }
 
         var variableDocument = sourceDocuments.FirstOrDefault(document =>
-            document.Uri.Equals(
-                entry.Variable.Uri,
-                StringComparison.OrdinalIgnoreCase));
+            VbaProjectIdentityModel.SameDocument(
+                document.Uri,
+                entry.Variable.Uri));
         var eligibility = variableDocument is null
             ? null
             : semanticResolution.GetWithEventsTypeEligibility(
@@ -2294,9 +2302,9 @@ public sealed class VbaSemanticInventory
                          cancellationToken))
             {
                 var isDeclarationSegment = dependentDefinitions.Any(definition =>
-                    definition.Uri.Equals(
-                        occurrence.Uri,
-                        StringComparison.OrdinalIgnoreCase)
+                    VbaProjectIdentityModel.SameDocument(
+                        definition.Uri,
+                        occurrence.Uri)
                     && definition.Range.Start.Line
                         == occurrence.Range.Start.Line
                     && definition.Range.Start.Character
@@ -3056,10 +3064,9 @@ public sealed class VbaSemanticInventory
         => sourceDocuments
             .SelectMany(document => document.Definitions)
             .Where(candidate => candidate.Kind == VbaSourceDefinitionKind.Property)
-            .Where(candidate => string.Equals(
+            .Where(candidate => VbaProjectIdentityModel.SameDocument(
                 candidate.Uri,
-                target.Uri,
-                StringComparison.OrdinalIgnoreCase))
+                target.Uri))
             .Where(candidate => string.Equals(
                 candidate.ModuleName,
                 target.ModuleName,
@@ -3086,10 +3093,9 @@ public sealed class VbaSemanticInventory
             return true;
         }
 
-        if (!string.Equals(
+        if (!VbaProjectIdentityModel.SameDocument(
             target.Uri,
-            candidate.Uri,
-            StringComparison.OrdinalIgnoreCase))
+            candidate.Uri))
         {
             return false;
         }
@@ -4194,9 +4200,9 @@ public sealed class VbaSemanticInventory
                     + "correspondence.");
             }
 
-            if (!physicalBefore.Uri.Equals(
-                    physicalAfter.Uri,
-                    StringComparison.OrdinalIgnoreCase)
+            if (!VbaProjectIdentityModel.SameDocument(
+                    physicalBefore.Uri,
+                    physicalAfter.Uri)
                 || physicalBefore.Kind != physicalAfter.Kind
                 || physicalBefore.PropertyAccessorKind
                     != physicalAfter.PropertyAccessorKind
@@ -4558,14 +4564,14 @@ public sealed class VbaSemanticInventory
         => lineStarts[position.Line] + position.Character;
 
     private static string CreateOccurrenceKey(string uri, VbaRange range)
-        => $"{uri}\u001f{GetRangeKey(range)}";
+        => $"{VbaProjectIdentityModel.GetDocumentStableKey(uri)}"
+            + $"\u001f{GetRangeKey(range)}";
 
     private static bool IsDeclarationOccurrence(
         VbaResolvedIdentifierOccurrence occurrence)
-        => string.Equals(
+        => VbaProjectIdentityModel.SameDocument(
                 occurrence.Uri,
-                occurrence.Target.SelectedDefinition.Uri,
-                StringComparison.OrdinalIgnoreCase)
+                occurrence.Target.SelectedDefinition.Uri)
             && occurrence.Range == occurrence.Target.SelectedDefinition.Range;
 
     private static VbaRenameFailure ResolutionChanged(string message)
@@ -4600,11 +4606,20 @@ public sealed class VbaSemanticInventory
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        lock (semanticTokenCacheGate)
+        var hasDocumentIdentity =
+            VbaProjectIdentityModel.TryIdentifyDocument(
+                uri,
+                out var documentIdentity);
+        if (hasDocumentIdentity)
         {
-            if (semanticTokenDataCache.TryGetValue(uri, out var cachedData))
+            lock (semanticTokenCacheGate)
             {
-                return cachedData;
+                if (semanticTokenDataCache.TryGetValue(
+                        documentIdentity,
+                        out var cachedData))
+                {
+                    return cachedData;
+                }
             }
         }
 
@@ -4613,14 +4628,21 @@ public sealed class VbaSemanticInventory
                 GetSemanticTokens(uri, cancellationToken),
                 cancellationToken));
         cancellationToken.ThrowIfCancellationRequested();
+        if (!hasDocumentIdentity)
+        {
+            return data;
+        }
+
         lock (semanticTokenCacheGate)
         {
-            if (semanticTokenDataCache.TryGetValue(uri, out var cachedData))
+            if (semanticTokenDataCache.TryGetValue(
+                    documentIdentity,
+                    out var cachedData))
             {
                 return cachedData;
             }
 
-            semanticTokenDataCache[uri] = data;
+            semanticTokenDataCache[documentIdentity] = data;
             return data;
         }
     }
@@ -4630,11 +4652,20 @@ public sealed class VbaSemanticInventory
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        lock (semanticTokenCacheGate)
+        var hasDocumentIdentity =
+            VbaProjectIdentityModel.TryIdentifyDocument(
+                uri,
+                out var documentIdentity);
+        if (hasDocumentIdentity)
         {
-            if (semanticTokenCache.TryGetValue(uri, out var cachedTokens))
+            lock (semanticTokenCacheGate)
             {
-                return cachedTokens;
+                if (semanticTokenCache.TryGetValue(
+                        documentIdentity,
+                        out var cachedTokens))
+                {
+                    return cachedTokens;
+                }
             }
         }
 
@@ -4649,14 +4680,21 @@ public sealed class VbaSemanticInventory
                     TokenModifiers = FreezeList(token.TokenModifiers)
                 }));
         cancellationToken.ThrowIfCancellationRequested();
+        if (!hasDocumentIdentity)
+        {
+            return tokens;
+        }
+
         lock (semanticTokenCacheGate)
         {
-            if (semanticTokenCache.TryGetValue(uri, out var cachedTokens))
+            if (semanticTokenCache.TryGetValue(
+                    documentIdentity,
+                    out var cachedTokens))
             {
                 return cachedTokens;
             }
 
-            semanticTokenCache[uri] = tokens;
+            semanticTokenCache[documentIdentity] = tokens;
             return tokens;
         }
     }

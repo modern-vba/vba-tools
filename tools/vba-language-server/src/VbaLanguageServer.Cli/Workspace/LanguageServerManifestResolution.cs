@@ -128,16 +128,35 @@ internal static class LanguageServerManifestResolution
                     manifestPath,
                     uri);
                 var manifestIdentity = manifestPath;
-                selections = manifest.Documents
-                    .Select(document => new VbaProjectReferenceSelectionContext(
-                        CreateScopeKey(manifestIdentity, document.Key),
-                        CreateProjectPath(manifestIdentity),
-                        document.Key,
-                        document.Value.Kind,
-                        VbaProjectReferenceSelection.Create(
+                var projectPath = CreateProjectPath(manifestIdentity);
+                var resolvedSelections =
+                    new List<VbaProjectReferenceSelectionContext>();
+                foreach (var document in manifest.Documents)
+                {
+                    var authorityResolution = new VbaProjectResolution(
+                        VbaProjectResolutionKind.ManifestDocument,
+                        RootPath: projectPath,
+                        ManifestPath: manifestIdentity,
+                        DocumentName: document.Key);
+                    if (!VbaProjectIdentityModel.TryGetManifestScopeKey(
+                            authorityResolution,
+                            out var documentScopeKey))
+                    {
+                        return false;
+                    }
+
+                    resolvedSelections.Add(
+                        new VbaProjectReferenceSelectionContext(
+                            documentScopeKey,
+                            projectPath,
+                            document.Key,
                             document.Value.Kind,
-                            document.Value.References ?? [])))
-                    .ToArray();
+                            VbaProjectReferenceSelection.Create(
+                                document.Value.Kind,
+                                document.Value.References ?? [])));
+                }
+
+                selections = resolvedSelections;
                 return selections.Count > 0;
             }
             catch (VbaProjectManifestException)
@@ -163,12 +182,17 @@ internal static class LanguageServerManifestResolution
             return false;
         }
 
+        if (!VbaProjectIdentityModel.TryGetManifestScopeKey(
+                resolution,
+                out var resolutionScopeKey))
+        {
+            return false;
+        }
+
         selections =
         [
             new VbaProjectReferenceSelectionContext(
-                CreateScopeKey(
-                    resolution.ManifestPath ?? resolution.RootPath,
-                    resolution.DocumentName),
+                resolutionScopeKey,
                 CreateProjectPath(resolution.ManifestPath ?? resolution.RootPath),
                 resolution.DocumentName,
                 resolution.DocumentKind,
@@ -178,19 +202,6 @@ internal static class LanguageServerManifestResolution
         ];
         return true;
     }
-
-    private static string CreateScopeKey(string manifestIdentity, string documentName)
-        => string.Join(
-            "\u001f",
-            Path.GetFullPath(manifestIdentity),
-            documentName);
-
-    internal static string? CreateScopeKey(VbaProjectResolution resolution)
-        => resolution.Kind == VbaProjectResolutionKind.ManifestDocument
-            && !string.IsNullOrEmpty(resolution.DocumentName)
-            && !string.IsNullOrEmpty(resolution.ManifestPath)
-                ? CreateScopeKey(resolution.ManifestPath, resolution.DocumentName)
-                : null;
 
     internal static string? CreateSelectionFingerprint(
         VbaProjectResolution resolution)

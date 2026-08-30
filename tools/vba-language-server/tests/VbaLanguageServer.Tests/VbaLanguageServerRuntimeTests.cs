@@ -550,10 +550,13 @@ public sealed class VbaLanguageServerRuntimeTests
                 return false;
             }
 
+            var projectPath = Path.Combine(
+                Path.GetTempPath(),
+                "vba-language-server-runtime-project");
             var context = new VbaHostClassProjectionContext(
-                "C:\\work\\Project",
+                projectPath,
                 document,
-                "C:\\work\\Project\\Book1.xlsm");
+                Path.Combine(projectPath, "Book1.xlsm"));
             update = new VbaHostClassProjectionSnapshotUpdate(
                 context,
                 revision,

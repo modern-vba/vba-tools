@@ -325,6 +325,7 @@ public sealed class VbaInteractiveWorkSchedulerTests
         var blockerStarted = CreateSignal();
         var releaseBlocker = CreateSignal();
         var releaseBackground = CreateSignal();
+        var backgroundCapacityFilled = CreateSignal();
         var startedBackgroundCount = 0;
         await using var scheduler = new VbaInteractiveWorkScheduler();
         var blocker = scheduler.AdmitBarrier(
@@ -341,7 +342,11 @@ public sealed class VbaInteractiveWorkSchedulerTests
                 $"project:Book{index}",
                 async cancellationToken =>
                 {
-                    Interlocked.Increment(ref startedBackgroundCount);
+                    if (Interlocked.Increment(ref startedBackgroundCount) == 3)
+                    {
+                        backgroundCapacityFilled.TrySetResult();
+                    }
+
                     await releaseBackground.Task.WaitAsync(cancellationToken);
                 }))
             .ToArray();
@@ -355,7 +360,10 @@ public sealed class VbaInteractiveWorkSchedulerTests
         releaseBlocker.TrySetResult();
         try
         {
-            await interactive[^1].Completion.WaitAsync(TimeSpan.FromSeconds(1));
+            await Task.WhenAll(
+                    interactive[^1].Completion,
+                    backgroundCapacityFilled.Task)
+                .WaitAsync(TimeSpan.FromSeconds(1));
             Assert.Equal(3, Volatile.Read(ref startedBackgroundCount));
         }
         finally

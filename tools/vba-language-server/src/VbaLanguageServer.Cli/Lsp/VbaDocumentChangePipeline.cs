@@ -197,7 +197,7 @@ internal sealed class VbaDocumentChangePipeline
         {
             await diagnosticsPublisher.PublishEmptyDiagnosticsAsync(uri, cancellationToken);
             var remainingUri = affectedProjectUris.FirstOrDefault(candidate =>
-                !string.Equals(candidate, uri, StringComparison.OrdinalIgnoreCase)
+                !VbaProjectIdentityModel.SameDocument(candidate, uri)
                 && workspace.GetDocumentAnalysis(candidate, cancellationToken) is not null);
             if (remainingUri is not null)
             {
@@ -307,7 +307,7 @@ internal sealed class VbaDocumentChangePipeline
         {
             await diagnosticsPublisher.PublishEmptyDiagnosticsAsync(uri, cancellationToken);
             var remainingUri = affectedProjectUris.FirstOrDefault(candidate =>
-                !string.Equals(candidate, uri, StringComparison.OrdinalIgnoreCase)
+                !VbaProjectIdentityModel.SameDocument(candidate, uri)
                 && workspace.GetDocumentAnalysis(candidate, cancellationToken) is not null);
             if (remainingUri is not null)
             {
@@ -402,28 +402,45 @@ internal sealed class VbaDocumentChangePipeline
         IReadOnlyList<string> previouslyAffectedSourceUris,
         CancellationToken cancellationToken)
     {
-        var remainingUris = previouslyAffectedSourceUris
+        var remainingUris = new Dictionary<VbaDocumentIdentity, string>();
+        foreach (var uri in previouslyAffectedSourceUris
             .Concat(CaptureTrackedSourcesOwnedByManifest(
                 manifestUri,
                 cancellationToken))
-            .Where(IsVbaSourceUri)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            .Where(IsVbaSourceUri))
+        {
+            if (VbaProjectIdentityModel.TryIdentifyDocument(
+                    uri,
+                    out var identity))
+            {
+                remainingUris.TryAdd(identity, uri);
+            }
+        }
+
         while (remainingUris.Count > 0)
         {
-            var activeUri = remainingUris
-                .OrderBy(uri => uri, StringComparer.OrdinalIgnoreCase)
-                .ThenBy(uri => uri, StringComparer.Ordinal)
+            var active = remainingUris
+                .OrderBy(
+                    pair => pair.Value,
+                    StringComparer.OrdinalIgnoreCase)
+                .ThenBy(pair => pair.Value, StringComparer.Ordinal)
                 .First();
+            var activeUri = active.Value;
             var projectUris = workspace
                 .CreateProjectSnapshot(activeUri, cancellationToken)
                 .SourceDocuments
                 .Keys;
             foreach (var projectUri in projectUris)
             {
-                remainingUris.Remove(projectUri);
+                if (VbaProjectIdentityModel.TryIdentifyDocument(
+                        projectUri,
+                        out var projectIdentity))
+                {
+                    remainingUris.Remove(projectIdentity);
+                }
             }
 
-            remainingUris.Remove(activeUri);
+            remainingUris.Remove(active.Key);
             await diagnosticsPublisher.PublishProjectDiagnosticsAsync(
                 activeUri,
                 cancellationToken);
@@ -434,15 +451,17 @@ internal sealed class VbaDocumentChangePipeline
         string manifestUri,
         CancellationToken cancellationToken)
     {
-        var manifestPath = VbaProjectResolver.TryGetLocalPath(manifestUri);
-        return manifestPath is null
+        return !VbaProjectIdentityModel.TryGetManifestScopePrefix(
+                manifestUri,
+                out _)
             ? []
             : workspace.GetDocumentUris(cancellationToken)
-                .Where(sourceUri => HasManifestAuthority(
-                    manifestWorkspace
-                        .CaptureResolution(sourceUri)
-                        .Resolution,
-                    manifestPath))
+                .Where(sourceUri =>
+                    VbaProjectIdentityModel.UsesManifestUri(
+                        manifestWorkspace
+                            .CaptureResolution(sourceUri)
+                            .Resolution,
+                        manifestUri))
                 .OrderBy(uri => uri, StringComparer.OrdinalIgnoreCase)
                 .ThenBy(uri => uri, StringComparer.Ordinal)
                 .ToArray();
@@ -467,9 +486,9 @@ internal sealed class VbaDocumentChangePipeline
                 var resolution = manifestWorkspace
                     .CaptureResolution(sourceUri)
                     .Resolution;
-                if (HasManifestAuthority(
+                if (VbaProjectIdentityModel.UsesManifestUri(
                     resolution,
-                    manifestPath))
+                    manifestUri))
                 {
                     return true;
                 }
@@ -492,9 +511,9 @@ internal sealed class VbaDocumentChangePipeline
         IReadOnlyList<string> sourceUris,
         CancellationToken cancellationToken)
     {
-        var previousManifestPath =
-            VbaProjectResolver.TryGetLocalPath(previousManifestUri);
-        if (previousManifestPath is null)
+        if (!VbaProjectIdentityModel.TryGetManifestScopePrefix(
+                previousManifestUri,
+                out _))
         {
             return;
         }
@@ -509,33 +528,22 @@ internal sealed class VbaDocumentChangePipeline
                 .Resolution;
             if (resolution.Kind
                     != VbaProjectResolutionKind.ManifestDocument
-                || HasManifestAuthority(
+                || VbaProjectIdentityModel.UsesManifestUri(
                     resolution,
-                    previousManifestPath))
+                    previousManifestUri)
+                || !VbaProjectIdentityModel.TryGetManifestScopeKey(
+                    resolution,
+                    out var scopeKey))
             {
                 continue;
             }
 
-            var scopeKey = string.Join(
-                "|",
-                Path.GetFullPath(resolution.ManifestPath!),
-                resolution.DocumentName ?? "");
             if (activatedScopes.Add(scopeKey))
             {
                 catalogLifecycle.ActivateProject(sourceUri);
             }
         }
     }
-
-    private static bool HasManifestAuthority(
-        VbaProjectResolution resolution,
-        string manifestPath)
-        => resolution.Kind
-                == VbaProjectResolutionKind.ManifestDocument
-            && resolution.ManifestPath is not null
-            && Path.GetFullPath(resolution.ManifestPath).Equals(
-                Path.GetFullPath(manifestPath),
-                StringComparison.OrdinalIgnoreCase);
 
     private static bool IsVbaSourceUri(string uri)
     {

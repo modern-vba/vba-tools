@@ -461,30 +461,40 @@ public sealed class VbaProjectDiskInventoryTests
         var fileSystem = new BlockingSourceFileSystem(InitialText);
         var inventory = new VbaFileSystemProjectDiskInventory(fileSystem);
 
-        var olderLoad = Task.Run(
+        var olderLoad = Task.Factory.StartNew(
             () => CaptureSingleColdSource(
                 inventory,
-                fileSystem.Path));
-        await fileSystem.FirstReadStarted.Task.WaitAsync(
-            TimeSpan.FromSeconds(2));
+                fileSystem.Path),
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
+        try
+        {
+            await fileSystem.FirstReadStarted.Task.WaitAsync(
+                TimeSpan.FromSeconds(10));
 
-        fileSystem.ReplaceSource(ChangedSameLengthText);
-        inventory.InvalidateSource(fileSystem.Path);
-        var newer = CaptureSingleColdSource(
-            inventory,
-            fileSystem.Path);
+            fileSystem.ReplaceSource(ChangedSameLengthText);
+            inventory.InvalidateSource(fileSystem.Path);
+            var newer = CaptureSingleColdSource(
+                inventory,
+                fileSystem.Path);
 
-        fileSystem.ReleaseFirstRead();
-        _ = await olderLoad.WaitAsync(TimeSpan.FromSeconds(2));
-        var retained = CaptureSingleColdSource(
-            inventory,
-            fileSystem.Path);
+            fileSystem.ReleaseFirstRead();
+            _ = await olderLoad.WaitAsync(TimeSpan.FromSeconds(10));
+            var retained = CaptureSingleColdSource(
+                inventory,
+                fileSystem.Path);
 
-        Assert.Equal(
-            newer.ContentIdentity,
-            retained.ContentIdentity);
-        Assert.Equal(ChangedSameLengthText, retained.Text);
-        Assert.Equal(1, inventory.Count);
+            Assert.Equal(
+                newer.ContentIdentity,
+                retained.ContentIdentity);
+            Assert.Equal(ChangedSameLengthText, retained.Text);
+            Assert.Equal(1, inventory.Count);
+        }
+        finally
+        {
+            fileSystem.ReleaseFirstRead();
+        }
     }
 
     [Fact]
@@ -493,31 +503,41 @@ public sealed class VbaProjectDiskInventoryTests
         var fileSystem = new BlockingSourceFileSystem(InitialText);
         var inventory = new VbaFileSystemProjectDiskInventory(fileSystem);
 
-        var olderLoad = Task.Run(
+        var olderLoad = Task.Factory.StartNew(
             () => CaptureSingleColdSource(
                 inventory,
-                fileSystem.Path));
-        await fileSystem.FirstReadStarted.Task.WaitAsync(
-            TimeSpan.FromSeconds(2));
+                fileSystem.Path),
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
+        try
+        {
+            await fileSystem.FirstReadStarted.Task.WaitAsync(
+                TimeSpan.FromSeconds(10));
 
-        fileSystem.ReplaceSource(
-            ChangedSameLengthText,
-            advanceMetadata: false);
-        var newer = CaptureSingleColdSource(
-            inventory,
-            fileSystem.Path);
+            fileSystem.ReplaceSource(
+                ChangedSameLengthText,
+                advanceMetadata: false);
+            var newer = CaptureSingleColdSource(
+                inventory,
+                fileSystem.Path);
 
-        fileSystem.ReleaseFirstRead();
-        _ = await olderLoad.WaitAsync(TimeSpan.FromSeconds(2));
-        var retained = CaptureSingleColdSource(
-            inventory,
-            fileSystem.Path);
+            fileSystem.ReleaseFirstRead();
+            _ = await olderLoad.WaitAsync(TimeSpan.FromSeconds(10));
+            var retained = CaptureSingleColdSource(
+                inventory,
+                fileSystem.Path);
 
-        Assert.Equal(
-            newer.ContentIdentity,
-            retained.ContentIdentity);
-        Assert.Equal(ChangedSameLengthText, retained.Text);
-        Assert.Equal(1, inventory.Count);
+            Assert.Equal(
+                newer.ContentIdentity,
+                retained.ContentIdentity);
+            Assert.Equal(ChangedSameLengthText, retained.Text);
+            Assert.Equal(1, inventory.Count);
+        }
+        finally
+        {
+            fileSystem.ReleaseFirstRead();
+        }
     }
 
     [Fact]

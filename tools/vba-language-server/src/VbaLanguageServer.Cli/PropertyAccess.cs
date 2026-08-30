@@ -1,3 +1,5 @@
+using VbaLanguageServer.ProjectModel;
+
 namespace VbaLanguageServer.SourceModel;
 
 /// <summary>
@@ -107,7 +109,9 @@ internal static class VbaPropertyAccessorCoalescing
     {
         var owner = definition.Identity.Origin == VbaDefinitionOrigin.ProjectReference
             ? $"reference{KeySeparator}{definition.ModuleName}{KeySeparator}{definition.ParentTypeName ?? ""}"
-            : $"source{KeySeparator}{definition.Uri}{KeySeparator}{definition.ModuleName}";
+            : $"source{KeySeparator}"
+                + $"{VbaProjectIdentityModel.GetDocumentStableKey(definition.Uri)}"
+                + $"{KeySeparator}{definition.ModuleName}";
         return $"{owner}{KeySeparator}{definition.Name}";
     }
 }

@@ -2428,6 +2428,48 @@ public sealed class VbaLanguageWorkspaceTests
     }
 
     [Fact]
+    public void Non_file_document_identity_normalizes_equivalent_uris_without_merging_distinct_documents()
+    {
+        const string openedUri =
+            "untitled://WORKSPACE/Folder/../Module.bas";
+        const string equivalentUri =
+            "untitled://workspace/Module.bas";
+        const string distinctUri =
+            "untitled://workspace/Other.bas";
+        const string changedText =
+            "Public Sub ChangedBuffer()\nEnd Sub\n";
+        const string distinctText =
+            "Public Sub DistinctBuffer()\nEnd Sub\n";
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()));
+        workspace.OpenDocument(
+            openedUri,
+            version: 1,
+            "Public Sub InitialBuffer()\nEnd Sub\n");
+
+        var changed = workspace.ChangeDocument(
+            equivalentUri,
+            version: 2,
+            changedText);
+        workspace.OpenDocument(
+            distinctUri,
+            version: 1,
+            distinctText);
+
+        Assert.True(changed);
+        Assert.Equal(changedText, workspace.GetDocumentText(openedUri));
+        Assert.Equal(changedText, workspace.GetDocumentText(equivalentUri));
+        Assert.Equal(2, workspace.GetDocumentUris().Count);
+
+        Assert.True(workspace.CloseDocument(equivalentUri));
+        Assert.Null(workspace.GetDocumentText(openedUri));
+        Assert.Equal(
+            distinctText,
+            workspace.GetDocumentText(distinctUri));
+    }
+
+    [Fact]
     public void WatchedDeletePreservesOpenBufferUntilCloseAndReloadClearsExclusion()
     {
         var projectRoot = Directory.CreateTempSubdirectory("vba-ls-delete-authority-").FullName;

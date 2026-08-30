@@ -1,4 +1,5 @@
 using VbaLanguageServer.Diagnostics;
+using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.Syntax;
 
 namespace VbaLanguageServer.SourceModel;
@@ -69,7 +70,10 @@ internal static class VbaSemanticTokenBuilder
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var currentDocument = documents.FirstOrDefault(document => SameUri(document.Uri, uri));
+        var currentDocument = documents.FirstOrDefault(
+            document => VbaProjectIdentityModel.SameDocument(
+                document.Uri,
+                uri));
         if (currentDocument is null)
         {
             return [];
@@ -240,6 +244,4 @@ internal static class VbaSemanticTokenBuilder
     private static string GetRangeKey(VbaRange range)
         => $"{range.Start.Line}:{range.Start.Character}:{range.End.Line}:{range.End.Character}";
 
-    private static bool SameUri(string left, string right)
-        => string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
 }

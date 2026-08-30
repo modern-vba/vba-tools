@@ -1040,7 +1040,9 @@ _Avoid_: ProjectManifest.projectName, document name, workbook basename
 The opaque equality identity of one language-server source document, represented
 by a canonical local full path for a file URI or by the stable normalized URI
 for a non-file document. It remains separate from source revision and
-`DiskContentIdentity`.
+`DiskContentIdentity`. A syntactically valid file URI whose local path cannot be
+canonicalized retains an unresolved typed identity for conservative revision
+fencing, but cannot establish local ownership or project authority.
 _Avoid_: source text identity, project authority, display path
 
 **VbaProjectAuthorityIdentity**:
@@ -1049,6 +1051,16 @@ manifest and selected document for a manifest-backed project, or the canonical
 source root for an `AdHocVbaProject`. References, CommonModules selections, and
 source content do not change this identity.
 _Avoid_: project snapshot, source revision, document URI
+
+**VbaProjectAuthorityRelation**:
+The subject-document-aware comparison between previous and current project
+authority. It reports `Same`, `RetainPrevious`, `Replace`, `Unrelated`, or
+`Indeterminate` together with explicit ownership and source-boundary facts.
+Workspace admission, manifest transitions, watcher retention, and reconciliation
+consume this one relation; missing or unresolved identity evidence is
+`Indeterminate` and fails closed rather than silently merging or replacing
+authority.
+_Avoid_: path equality, replacement boolean, manifest-presence heuristic
 
 **VbaProjectSnapshotIdentity**:
 The immutable cache identity that combines one `VbaProjectAuthorityIdentity`

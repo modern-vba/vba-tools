@@ -390,7 +390,9 @@ public sealed class VbaNameResolutionService
         }
 
         foreach (var candidate in candidates.GetSourceCandidates(requestedName)
-            .Where(candidate => !SameUri(candidate.Uri, currentDocument.Uri))
+            .Where(candidate => !VbaProjectIdentityModel.SameDocument(
+                candidate.Uri,
+                currentDocument.Uri))
             .Where(candidate => resolutionPolicy.IsReferenceTarget(candidate.Definition))
             .Where(candidate => candidate.Definition.Kind
                 != VbaSourceDefinitionKind.TypeMember)
@@ -413,7 +415,9 @@ public sealed class VbaNameResolutionService
     {
         foreach (var candidate in candidates.GetSourceCandidatesByModule(qualifier))
         {
-            var allowPrivate = SameUri(currentDocument.Uri, candidate.Uri);
+            var allowPrivate = VbaProjectIdentityModel.SameDocument(
+                currentDocument.Uri,
+                candidate.Uri);
             if (resolutionPolicy.IsReferenceTarget(candidate.Definition)
                 && candidate.Definition.Kind != VbaSourceDefinitionKind.TypeMember
                 && (allowPrivate || candidate.Visibility.IsProjectVisible()))
@@ -458,7 +462,9 @@ public sealed class VbaNameResolutionService
         }
 
         return candidates.GetSourceCandidates(qualifier)
-            .Where(candidate => !SameUri(candidate.Uri, currentDocument.Uri))
+            .Where(candidate => !VbaProjectIdentityModel.SameDocument(
+                candidate.Uri,
+                currentDocument.Uri))
             .Where(candidate => resolutionPolicy.IsReferenceTarget(candidate.Definition))
             .Any(candidate => candidate.Visibility.IsProjectVisible());
     }
@@ -487,7 +493,9 @@ public sealed class VbaNameResolutionService
     {
         var definitions = candidates.GetSourceCandidatesByModule(qualifier)
             .Where(candidate => resolutionPolicy.IsReferenceTarget(candidate.Definition))
-            .Where(candidate => SameUri(currentDocument.Uri, candidate.Uri)
+            .Where(candidate => VbaProjectIdentityModel.SameDocument(
+                    currentDocument.Uri,
+                    candidate.Uri)
                 || candidate.Visibility.IsProjectVisible())
             .Select(candidate => candidate.Definition)
             .ToArray();
@@ -762,7 +770,9 @@ public sealed class VbaNameResolutionService
                     .Where(candidate => resolutionPolicy.IsTypeDefinition(candidate.Definition))
                     .Where(candidate => candidate.Definition.Kind is not (
                         VbaSourceDefinitionKind.Class or VbaSourceDefinitionKind.Form))
-                    .Where(candidate => SameUri(candidate.Uri, currentDocument.Uri)
+                    .Where(candidate => VbaProjectIdentityModel.SameDocument(
+                            candidate.Uri,
+                            currentDocument.Uri)
                         || candidate.Visibility.IsProjectVisible())
                     .Select(candidate => new VbaRankedDefinition(
                         candidate.Definition,
@@ -788,7 +798,9 @@ public sealed class VbaNameResolutionService
                 candidate.Definition,
                 VbaResolutionPolicy.CurrentModuleRank)));
         visibleDefinitions.AddRange(candidates.GetSourceCandidates(requestedName: null)
-            .Where(candidate => !SameUri(candidate.Uri, currentDocument.Uri))
+            .Where(candidate => !VbaProjectIdentityModel.SameDocument(
+                candidate.Uri,
+                currentDocument.Uri))
             .Where(candidate => resolutionPolicy.IsTypeDefinition(candidate.Definition))
             .Where(candidate => candidate.Visibility.IsProjectVisible())
             .Select(candidate => new VbaRankedDefinition(
@@ -835,7 +847,9 @@ public sealed class VbaNameResolutionService
                     ? candidates.GetSourceCandidatesByParentType(ownerVariant.Name)
                     : candidates.GetSourceCandidatesByModule(ownerVariant.Name);
                 return ownerCandidates.Where(candidate =>
-                    SameUri(candidate.Uri, ownerVariant.Uri));
+                    VbaProjectIdentityModel.SameDocument(
+                        candidate.Uri,
+                        ownerVariant.Uri));
             })
             .Select(candidate => candidate.Definition)
             .DistinctBy(definition => definition.Identity)
@@ -974,11 +988,15 @@ public sealed class VbaNameResolutionService
         var definitions = candidates.GetSourceCandidates(typeName)
             .Where(candidate => resolutionPolicy.IsTypeDefinition(candidate.Definition))
             .Where(candidate => qualifier is null || SameName(candidate.ModuleName, qualifier))
-            .Where(candidate => SameUri(candidate.Uri, currentDocument.Uri)
+            .Where(candidate => VbaProjectIdentityModel.SameDocument(
+                    candidate.Uri,
+                    currentDocument.Uri)
                 || candidate.Visibility.IsProjectVisible())
             .Select(candidate => new VbaRankedDefinition(
                 candidate.Definition,
-                SameUri(candidate.Uri, currentDocument.Uri)
+                VbaProjectIdentityModel.SameDocument(
+                    candidate.Uri,
+                    currentDocument.Uri)
                     ? VbaResolutionPolicy.CurrentModuleRank
                     : VbaResolutionPolicy.ProjectRank))
             .ToArray();
@@ -1054,12 +1072,16 @@ public sealed class VbaNameResolutionService
                     ? candidates.GetSourceCandidatesByParentType(ownerVariant.Name)
                     : candidates.GetSourceCandidatesByModule(ownerVariant.Name);
                 return ownerCandidates.Where(candidate =>
-                    SameUri(candidate.Uri, ownerVariant.Uri));
+                    VbaProjectIdentityModel.SameDocument(
+                        candidate.Uri,
+                        ownerVariant.Uri));
             })
             .DistinctBy(candidate => candidate.Definition.Identity)
             .Where(candidate => resolutionPolicy.IsReferenceTarget(
                 candidate.Definition))
-            .Where(candidate => SameUri(candidate.Uri, currentDocument.Uri)
+            .Where(candidate => VbaProjectIdentityModel.SameDocument(
+                    candidate.Uri,
+                    currentDocument.Uri)
                 || candidate.Visibility.IsProjectVisible());
     }
 
@@ -1074,7 +1096,9 @@ public sealed class VbaNameResolutionService
                 .Concat(candidates.GetSourceCandidatesByParentType(typeName))
                 .Where(candidate => resolutionPolicy.IsReferenceTarget(
                     candidate.Definition))
-                .Where(candidate => SameUri(candidate.Uri, currentDocument.Uri)
+                .Where(candidate => VbaProjectIdentityModel.SameDocument(
+                        candidate.Uri,
+                        currentDocument.Uri)
                     || candidate.Visibility.IsProjectVisible());
 
     private static bool MatchesRequestedName(VbaNameCandidate candidate, string? requestedName)
@@ -1090,9 +1114,6 @@ public sealed class VbaNameResolutionService
         return ComparePosition(definition.ParentProcedureRange.Start, position) <= 0
             && ComparePosition(position, definition.ParentProcedureRange.End) <= 0;
     }
-
-    private static bool SameUri(string left, string right)
-        => string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
 
     private static bool SameName(string left, string right)
         => string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
@@ -1115,8 +1136,10 @@ internal sealed class VbaNameCandidateInventory
     private readonly IReadOnlyList<(string ReferenceName, string Qualifier)> activeReferenceQualifiers;
     private readonly IReadOnlyList<VbaNameCandidate> sourceCandidates;
     private readonly IReadOnlyList<VbaNameCandidate> referenceCandidates;
-    private readonly ILookup<string, VbaSourceDocument> documentsByUri;
-    private readonly ILookup<string, VbaNameCandidate> sourceCandidatesByDocument;
+    private readonly ILookup<VbaDocumentIdentity, VbaSourceDocument>
+        documentsByIdentity;
+    private readonly ILookup<VbaDocumentIdentity, VbaNameCandidate>
+        sourceCandidatesByDocument;
     private readonly ILookup<string, VbaNameCandidate> sourceCandidatesByName;
     private readonly ILookup<string, VbaNameCandidate> sourceCandidatesByModule;
     private readonly ILookup<string, VbaNameCandidate> sourceCandidatesByParentType;
@@ -1141,18 +1164,20 @@ internal sealed class VbaNameCandidateInventory
             : new Dictionary<string, VbaProjectReferenceCatalogSource>(
                 referenceCatalogSources,
                 VbaProjectReferenceName.Comparer);
-        documentsByUri = documents.ToLookup(
-            document => document.Uri,
-            StringComparer.OrdinalIgnoreCase);
+        documentsByIdentity = IdentifyDocuments(documents).ToLookup(
+            entry => entry.Identity,
+            entry => entry.Document);
         sourceCandidates = documents
             .SelectMany(document => document.Definitions.Select(definition => new VbaNameCandidate(definition, document)))
             .ToArray();
         referenceCandidates = activeReferenceDefinitions
             .Select(definition => new VbaNameCandidate(definition, Document: null))
             .ToArray();
-        sourceCandidatesByDocument = sourceCandidates.ToLookup(
-            candidate => candidate.Uri,
-            StringComparer.OrdinalIgnoreCase);
+        sourceCandidatesByDocument = IdentifySourceCandidates(
+                sourceCandidates)
+            .ToLookup(
+                entry => entry.Identity,
+                entry => entry.Candidate);
         sourceCandidatesByName = sourceCandidates.ToLookup(candidate => candidate.Name, StringComparer.OrdinalIgnoreCase);
         sourceCandidatesByModule = sourceCandidates.ToLookup(candidate => candidate.ModuleName, StringComparer.OrdinalIgnoreCase);
         sourceCandidatesByParentType = sourceCandidates
@@ -1205,7 +1230,11 @@ internal sealed class VbaNameCandidateInventory
     }
 
     public VbaSourceDocument? FindDocument(string uri)
-        => documentsByUri[uri].FirstOrDefault();
+        => VbaProjectIdentityModel.TryIdentifyDocument(
+                uri,
+                out var identity)
+            ? documentsByIdentity[identity].FirstOrDefault()
+            : null;
 
     public IReadOnlyList<VbaSourceDefinition> GetDocumentDefinitions(string uri)
         => FindDocument(uri)?.Definitions
@@ -1215,7 +1244,43 @@ internal sealed class VbaNameCandidateInventory
         => workspaceSymbolDefinitions;
 
     public IEnumerable<VbaNameCandidate> GetSourceCandidates(VbaSourceDocument document)
-        => sourceCandidatesByDocument[document.Uri];
+        => VbaProjectIdentityModel.TryIdentifyDocument(
+                document.Uri,
+                out var identity)
+            ? sourceCandidatesByDocument[identity]
+            : [];
+
+    private static IEnumerable<(
+        VbaDocumentIdentity Identity,
+        VbaSourceDocument Document)> IdentifyDocuments(
+        IEnumerable<VbaSourceDocument> documents)
+    {
+        foreach (var document in documents)
+        {
+            if (VbaProjectIdentityModel.TryIdentifyDocument(
+                    document.Uri,
+                    out var identity))
+            {
+                yield return (identity, document);
+            }
+        }
+    }
+
+    private static IEnumerable<(
+        VbaDocumentIdentity Identity,
+        VbaNameCandidate Candidate)> IdentifySourceCandidates(
+        IEnumerable<VbaNameCandidate> candidates)
+    {
+        foreach (var candidate in candidates)
+        {
+            if (VbaProjectIdentityModel.TryIdentifyDocument(
+                    candidate.Uri,
+                    out var identity))
+            {
+                yield return (identity, candidate);
+            }
+        }
+    }
 
     public IEnumerable<VbaNameCandidate> GetSourceCandidates(string? requestedName)
         => requestedName is null ? sourceCandidates : sourceCandidatesByName[requestedName];

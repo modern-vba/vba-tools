@@ -191,6 +191,8 @@ public sealed class VbaSemanticTokenTests
     public void SemanticTokenDataIsCachedWithinSemanticInventorySnapshot()
     {
         const string uri = "file:///C:/work/Worker.bas";
+        const string equivalentUri =
+            "file:///C:/work/Nested/../Worker.bas";
         var text = string.Join('\n', [
             "Attribute VB_Name = \"Worker\"",
             "Option Explicit",
@@ -202,7 +204,7 @@ public sealed class VbaSemanticTokenTests
         var inventory = VbaSemanticInventoryFixture.Create(new Dictionary<string, string> { [uri] = text });
 
         var firstData = inventory.GetSemanticTokenData(uri);
-        var secondData = inventory.GetSemanticTokenData(uri);
+        var secondData = inventory.GetSemanticTokenData(equivalentUri);
 
         Assert.Same(firstData, secondData);
     }

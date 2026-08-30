@@ -15,17 +15,17 @@ internal static class VbaProjectSourceInventory
     {
         var documents = new Dictionary<string, VbaTrackedDocument>(
             StringComparer.OrdinalIgnoreCase);
-        var trackedDocumentsByPath =
-            CreateTrackedDocumentPathMap(trackedDocuments.Values);
+        var trackedDocumentsByIdentity =
+            CreateTrackedDocumentIdentityMap(trackedDocuments.Values);
         foreach (var source in diskCapture.Sources)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (trackedDocuments.TryGetValue(
+            if (VbaProjectIdentityModel.TryIdentifyDocument(
                     source.Uri,
-                    out var trackedDocument)
-                || trackedDocumentsByPath.TryGetValue(
-                    source.FullPath,
-                    out trackedDocument))
+                    out var sourceIdentity)
+                && trackedDocumentsByIdentity.TryGetValue(
+                    sourceIdentity,
+                    out var trackedDocument))
             {
                 documents[trackedDocument.Uri] = trackedDocument;
                 continue;
@@ -40,11 +40,12 @@ internal static class VbaProjectSourceInventory
         foreach (var trackedDocument in trackedDocuments.Values)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var localPath = VbaProjectResolver.TryGetLocalPath(
-                trackedDocument.Uri);
-            if (localPath is not null
+            if (VbaProjectIdentityModel.TryIdentifyDocument(
+                    trackedDocument.Uri,
+                    out var identity)
+                && identity.IsLocalFile
                 && diskCapture.OwnedCandidateSourcePaths.Contains(
-                    Path.GetFullPath(localPath)))
+                    identity.CanonicalValue))
             {
                 documents[trackedDocument.Uri] = trackedDocument;
             }
@@ -57,19 +58,20 @@ internal static class VbaProjectSourceInventory
             diskCapture.ExistingCandidateSourcePaths);
     }
 
-    private static Dictionary<string, VbaTrackedDocument>
-        CreateTrackedDocumentPathMap(
+    private static Dictionary<VbaDocumentIdentity, VbaTrackedDocument>
+        CreateTrackedDocumentIdentityMap(
             IEnumerable<VbaTrackedDocument> trackedDocuments)
     {
-        var map = new Dictionary<string, VbaTrackedDocument>(
-            StringComparer.OrdinalIgnoreCase);
+        var map = new Dictionary<
+            VbaDocumentIdentity,
+            VbaTrackedDocument>();
         foreach (var trackedDocument in trackedDocuments)
         {
-            var localPath = VbaProjectResolver.TryGetLocalPath(
-                trackedDocument.Uri);
-            if (localPath is not null)
+            if (VbaProjectIdentityModel.TryIdentifyDocument(
+                    trackedDocument.Uri,
+                    out var identity))
             {
-                map[Path.GetFullPath(localPath)] = trackedDocument;
+                map[identity] = trackedDocument;
             }
         }
 

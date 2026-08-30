@@ -826,6 +826,28 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Manifest_deactivation_with_an_unidentifiable_authority_fails_closed()
+    {
+        var catalogCache = new VbaProjectReferenceCatalogCache(
+            VbaProjectReferenceCatalogSet.Empty);
+        var refreshService = new VbaProjectReferenceCatalogRefreshService(
+            catalogCache,
+            new CountingDiscovery(),
+            persistentStore: null,
+            new InlineRefreshWorker());
+        await using var output = new MemoryStream();
+        var lifecycle = new ReferenceCatalogRefreshCoordinator(
+            catalogCache,
+            refreshService,
+            new VbaProjectManifestWorkspace(),
+            new LspMessageTransport(Stream.Null, output));
+
+        lifecycle.DeactivateManifest("\0");
+
+        await lifecycle.StopAsync();
+    }
+
+    [Fact]
     public async Task Manifest_change_supersedes_a_source_plan_already_taken_by_the_mailbox()
     {
         var projectRoot =

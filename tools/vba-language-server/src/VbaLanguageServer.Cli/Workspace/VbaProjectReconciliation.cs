@@ -21,7 +21,7 @@ internal sealed record VbaProjectReconciliationManifestCandidate(
 /// Represents an activated project scope captured before background disk work starts.
 /// </summary>
 internal sealed record VbaProjectReconciliationScope(
-    string AuthorityKey,
+    VbaProjectAuthorityIdentity AuthorityKey,
     string ActiveUri,
     VbaProjectResolution Resolution,
     long CapturedWorkspaceRevision,
@@ -75,7 +75,7 @@ internal sealed class VbaProjectReconciliationCapture : IDisposable
 /// Holds one captured authority fence and its ordered reconciliation mutations.
 /// </summary>
 internal sealed record VbaProjectReconciliationScopePlan(
-    string AuthorityKey,
+    VbaProjectAuthorityIdentity AuthorityKey,
     long CapturedManifestBarrierRevision,
     long CapturedAuthorityGeneration,
     IReadOnlyList<ReconciliationChange> OrderedMutations);
@@ -138,7 +138,7 @@ internal sealed record ReconciledProjectAuthorityTransferredEffect(
     : VbaProjectReconciliationEffect;
 
 internal abstract record ReconciliationChange(
-    string AuthorityKey,
+    VbaProjectAuthorityIdentity AuthorityKey,
     string Uri,
     long CapturedWorkspaceRevision,
     long CapturedManifestBarrierRevision,
@@ -154,7 +154,7 @@ internal abstract record ReconciliationChange(
 }
 
 internal sealed record ReloadChange(
-    string AuthorityKey,
+    VbaProjectAuthorityIdentity AuthorityKey,
     string Uri,
     string FullPath,
     string Text,
@@ -170,7 +170,7 @@ internal sealed record ReloadChange(
         CapturedAuthorityGeneration);
 
 internal sealed record DecodeFailureChange(
-    string AuthorityKey,
+    VbaProjectAuthorityIdentity AuthorityKey,
     VbaProjectDiskSourceFailure Failure,
     long CapturedWorkspaceRevision,
     long CapturedManifestBarrierRevision,
@@ -183,7 +183,7 @@ internal sealed record DecodeFailureChange(
         CapturedAuthorityGeneration);
 
 internal sealed record DeleteChange(
-    string AuthorityKey,
+    VbaProjectAuthorityIdentity AuthorityKey,
     string Uri,
     long CapturedWorkspaceRevision,
     long CapturedManifestBarrierRevision,
@@ -196,7 +196,7 @@ internal sealed record DeleteChange(
         CapturedAuthorityGeneration);
 
 internal sealed record ReleaseSourceOwnershipChange(
-    string AuthorityKey,
+    VbaProjectAuthorityIdentity AuthorityKey,
     string Uri,
     long CapturedWorkspaceRevision,
     long CapturedManifestBarrierRevision,
@@ -213,7 +213,7 @@ internal sealed record DeletedManifestCandidate(
     long CapturedRevision);
 
 internal sealed record ReplaceDeletedManifestAuthorityChange(
-    string AuthorityKey,
+    VbaProjectAuthorityIdentity AuthorityKey,
     string Uri,
     IReadOnlyList<DeletedManifestCandidate> DeletedManifests,
     string ActiveUri,
@@ -235,7 +235,7 @@ internal sealed record ReplaceDeletedManifestAuthorityChange(
         CapturedAuthorityGeneration);
 
 internal sealed record ReloadManifestChange(
-    string AuthorityKey,
+    VbaProjectAuthorityIdentity AuthorityKey,
     string Uri,
     string Text,
     long CapturedManifestRevision,
@@ -255,7 +255,7 @@ internal sealed record ReloadManifestChange(
         CapturedAuthorityGeneration);
 
 internal sealed record TransferInvalidManifestAuthorityChange(
-    string AuthorityKey,
+    VbaProjectAuthorityIdentity AuthorityKey,
     string Uri,
     long CapturedManifestRevision,
     string ActiveUri,
@@ -271,7 +271,7 @@ internal sealed record TransferInvalidManifestAuthorityChange(
         CapturedAuthorityGeneration);
 
 internal sealed record ObserveManifestBarrierChange(
-    string AuthorityKey,
+    VbaProjectAuthorityIdentity AuthorityKey,
     string Uri,
     string Text,
     long CapturedManifestRevision,
@@ -286,7 +286,7 @@ internal sealed record ObserveManifestBarrierChange(
         CapturedAuthorityGeneration);
 
 internal sealed record DeleteObservedManifestBarrierChange(
-    string AuthorityKey,
+    VbaProjectAuthorityIdentity AuthorityKey,
     string Uri,
     long CapturedManifestRevision,
     long CapturedManifestBarrierRevision,
@@ -335,8 +335,9 @@ public sealed partial class VbaLanguageWorkspace
         var projectDiagnosticsCandidates =
             new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var initialOpenAuthorities =
-            new Dictionary<string, VbaProjectResolution?>(
-                StringComparer.OrdinalIgnoreCase);
+            new Dictionary<
+                VbaDocumentIdentity,
+                CapturedOpenAuthority>();
         var requiresFollowUp = false;
         var committedMutation = false;
         var rejectedMutationTail = false;
@@ -854,7 +855,9 @@ public sealed partial class VbaLanguageWorkspace
         List<VbaProjectReconciliationEffect> effects)
     {
         var anchors = candidates
-            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .DistinctBy(
+                VbaProjectIdentityModel.GetDocumentStableKey,
+                StringComparer.OrdinalIgnoreCase)
             .Select(uri =>
             {
                 ManifestWorkspace.TryResolveKnownState(
@@ -886,64 +889,91 @@ public sealed partial class VbaLanguageWorkspace
 
     private void CaptureOpenAuthorities(
         ReconciliationChange change,
-        Dictionary<string, VbaProjectResolution?> initialOpenAuthorities,
+        Dictionary<VbaDocumentIdentity, CapturedOpenAuthority>
+            initialOpenAuthorities,
         CancellationToken cancellationToken)
     {
         var capturedOpenSources =
-            change.CapturedOpenSourceUris.ToHashSet(
-                StringComparer.OrdinalIgnoreCase);
+            change.CapturedOpenSourceUris
+                .Select(uri => VbaProjectIdentityModel.TryIdentifyDocument(
+                    uri,
+                    out var identity)
+                        ? identity
+                        : (VbaDocumentIdentity?)null)
+                .Where(identity => identity is not null)
+                .Select(identity => identity!.Value)
+                .ToHashSet();
         foreach (var sourceUri in GetOpenDocumentUris(cancellationToken)
             .OrderBy(uri => uri, StringComparer.OrdinalIgnoreCase))
         {
-            if (initialOpenAuthorities.ContainsKey(sourceUri)
+            if (!VbaProjectIdentityModel.TryIdentifyDocument(
+                    sourceUri,
+                    out var sourceIdentity)
+                || initialOpenAuthorities.ContainsKey(sourceIdentity)
                 || !IsPotentiallyAffectedSource(change, sourceUri))
             {
                 continue;
             }
 
             if (change.PreviousResolution is not null
-                && capturedOpenSources.Contains(sourceUri))
+                && capturedOpenSources.Contains(sourceIdentity))
             {
-                initialOpenAuthorities[sourceUri] = change.PreviousResolution;
+                initialOpenAuthorities[sourceIdentity] =
+                    new CapturedOpenAuthority(
+                        sourceUri,
+                        change.PreviousResolution);
             }
             else if (ManifestWorkspace.TryResolveKnownState(
                     sourceUri,
                     out var knownResolution))
             {
-                initialOpenAuthorities[sourceUri] = knownResolution;
+                initialOpenAuthorities[sourceIdentity] =
+                    new CapturedOpenAuthority(sourceUri, knownResolution);
             }
             else
             {
-                initialOpenAuthorities[sourceUri] = null;
+                initialOpenAuthorities[sourceIdentity] =
+                    new CapturedOpenAuthority(sourceUri, Resolution: null);
             }
         }
     }
 
     private void AddChangedOpenAuthorityEffects(
-        IReadOnlyDictionary<string, VbaProjectResolution?>
+        IReadOnlyDictionary<VbaDocumentIdentity, CapturedOpenAuthority>
             initialOpenAuthorities,
         List<VbaProjectReconciliationEffect> effects,
         CancellationToken cancellationToken)
     {
         var currentlyOpen = GetOpenDocumentUris(cancellationToken)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var (sourceUri, previousResolution) in
+            .Select(uri => VbaProjectIdentityModel.TryIdentifyDocument(
+                uri,
+                out var identity)
+                    ? identity
+                    : (VbaDocumentIdentity?)null)
+            .Where(identity => identity is not null)
+            .Select(identity => identity!.Value)
+            .ToHashSet();
+        foreach (var (sourceIdentity, capturedAuthority) in
             initialOpenAuthorities.OrderBy(
-                item => item.Key,
+                item => item.Value.Uri,
                 StringComparer.OrdinalIgnoreCase))
         {
-            if (!currentlyOpen.Contains(sourceUri))
+            if (!currentlyOpen.Contains(sourceIdentity))
             {
                 continue;
             }
 
+            var sourceUri = capturedAuthority.Uri;
+            var previousResolution = capturedAuthority.Resolution;
             if (previousResolution is null
                 || !ManifestWorkspace.TryResolveKnownState(
                     sourceUri,
                     out var currentResolution)
-                || !HasSameProjectAuthority(
-                    previousResolution,
-                    currentResolution))
+                || VbaProjectIdentityModel.Relate(
+                        sourceIdentity,
+                        previousResolution,
+                        currentResolution)
+                    .Kind != VbaProjectAuthorityRelationKind.Same)
             {
                 effects.Add(
                     new ReconciledProjectAuthorityTransferredEffect(
@@ -951,6 +981,10 @@ public sealed partial class VbaLanguageWorkspace
             }
         }
     }
+
+    private sealed record CapturedOpenAuthority(
+        string Uri,
+        VbaProjectResolution? Resolution);
 
     private static bool IsPotentiallyAffectedSource(
         ReconciliationChange change,
@@ -960,11 +994,15 @@ public sealed partial class VbaLanguageWorkspace
         if (sourcePath is null)
         {
             return change.CapturedOpenSourceUris.Any(
-                captured => SameDocumentIdentity(captured, sourceUri));
+                captured => VbaProjectIdentityModel.SameDocument(
+                    captured,
+                    sourceUri));
         }
 
         if (change.CapturedOpenSourceUris.Any(
-                captured => SameDocumentIdentity(captured, sourceUri)))
+                captured => VbaProjectIdentityModel.SameDocument(
+                    captured,
+                    sourceUri)))
         {
             return true;
         }
@@ -1009,33 +1047,11 @@ public sealed partial class VbaLanguageWorkspace
             or ObserveManifestBarrierChange
             or DeleteObservedManifestBarrierChange;
 
-    private static bool HasSameProjectAuthority(
-        VbaProjectResolution left,
-        VbaProjectResolution right)
-        => left.Kind == right.Kind
-            && string.Equals(
-                Path.GetFullPath(left.RootPath),
-                Path.GetFullPath(right.RootPath),
-                StringComparison.OrdinalIgnoreCase)
-            && string.Equals(
-                NormalizeOptionalPath(left.ManifestPath),
-                NormalizeOptionalPath(right.ManifestPath),
-                StringComparison.OrdinalIgnoreCase)
-            && string.Equals(
-                left.DocumentName,
-                right.DocumentName,
-                StringComparison.OrdinalIgnoreCase);
-
-    private static string? NormalizeOptionalPath(string? path)
-        => string.IsNullOrWhiteSpace(path)
-            ? null
-            : Path.GetFullPath(path);
-
     private static VbaProjectReconciliationProgress
         CreateManifestProgress(string uri)
         => new(
             VbaProjectReconciliationProgressKind.ManifestCommitted,
-            NormalizeDocumentIdentity(uri));
+            VbaProjectIdentityModel.GetDocumentStableKey(uri));
 
     private static VbaProjectReconciliationProgress CreateRejectedProgress(
         string reason,
@@ -1047,10 +1063,10 @@ public sealed partial class VbaLanguageWorkspace
                     ",",
                     replace.DeletedManifests.Select(
                         deleted =>
-                            $"{NormalizeDocumentIdentity(deleted.Uri)}@{deleted.CapturedRevision}"))
-                    + $"|fallback={NormalizeDocumentIdentity(replace.FallbackUri)}"
+                            $"{VbaProjectIdentityModel.GetDocumentStableKey(deleted.Uri)}@{deleted.CapturedRevision}"))
+                    + $"|fallback={VbaProjectIdentityModel.GetDocumentStableKey(replace.FallbackUri)}"
                     + $"@{replace.CapturedFallbackRevision}"
-                : $"{NormalizeDocumentIdentity(change.Uri)}"
+                : $"{VbaProjectIdentityModel.GetDocumentStableKey(change.Uri)}"
                     + $"@{change.CapturedWorkspaceRevision}";
         return new(
             VbaProjectReconciliationProgressKind.MutationRejected,
@@ -1061,16 +1077,4 @@ public sealed partial class VbaLanguageWorkspace
                 + $":{changeFingerprint}");
     }
 
-    private static string NormalizeDocumentIdentity(string uri)
-    {
-        if (string.IsNullOrWhiteSpace(uri))
-        {
-            return "";
-        }
-
-        var path = VbaProjectResolver.TryGetLocalPath(uri);
-        return path is null
-            ? uri
-            : Path.GetFullPath(path);
-    }
 }

@@ -13,27 +13,45 @@ internal sealed record VbaHostClassProjectionSnapshotUpdate(
     long Revision,
     VbaHostClassProjectionSnapshot? Snapshot)
 {
-    public string CoalescingKey
-        => $"{Context.Project}\u001e{Context.Document}";
+    public string? CoalescingKey
+        => TryGetAuthority(out var authority)
+            ? authority.StableKey
+            : null;
+
+    internal bool TryGetAuthority(
+        out VbaProjectAuthorityIdentity authority)
+        => VbaProjectIdentityModel.TryIdentifyAuthority(
+            new VbaProjectResolution(
+                VbaProjectResolutionKind.ManifestDocument,
+                RootPath: Context.Project,
+                ManifestPath: Path.Combine(
+                    Context.Project,
+                    "vba-project.json"),
+                DocumentName: Context.Document),
+            out authority);
 }
 
 internal sealed class VbaHostClassProjectionSnapshotStore
 {
     private readonly object gate = new();
-    private readonly Dictionary<string, VbaHostClassProjectionSelectionState> states =
-        new(StringComparer.Ordinal);
+    private readonly Dictionary<
+        VbaProjectAuthorityIdentity,
+        VbaHostClassProjectionSelectionState> states = new();
 
     public VbaHostClassProjectionSelectionState CaptureSelectionState(
         VbaProjectResolution resolution)
     {
-        if (!TryCreateContext(resolution, out var context))
+        if (!TryCreateContext(resolution, out var context)
+            || !VbaProjectIdentityModel.TryIdentifyAuthority(
+                resolution,
+                out var authority))
         {
             return new VbaHostClassProjectionSelectionState(0, null, null);
         }
 
         lock (gate)
         {
-            if (!states.TryGetValue(CreateKey(context), out var state))
+            if (!states.TryGetValue(authority, out var state))
             {
                 return new VbaHostClassProjectionSelectionState(0, null, null);
             }
@@ -47,16 +65,20 @@ internal sealed class VbaHostClassProjectionSnapshotStore
     public bool TryApply(VbaHostClassProjectionSnapshotUpdate update)
     {
         var captured = CaptureUpdate(update);
-        var key = CreateKey(captured.Context);
+        if (!captured.TryGetAuthority(out var authority))
+        {
+            return false;
+        }
+
         lock (gate)
         {
-            if (states.TryGetValue(key, out var current)
+            if (states.TryGetValue(authority, out var current)
                 && current.Revision >= captured.Revision)
             {
                 return false;
             }
 
-            states[key] = new VbaHostClassProjectionSelectionState(
+            states[authority] = new VbaHostClassProjectionSelectionState(
                 captured.Revision,
                 captured.Context,
                 captured.Snapshot);
@@ -72,10 +94,14 @@ internal sealed class VbaHostClassProjectionSnapshotStore
             return false;
         }
 
-        var key = CreateKey(update.Context);
+        if (!update.TryGetAuthority(out var authority))
+        {
+            return false;
+        }
+
         lock (gate)
         {
-            if (!states.TryGetValue(key, out var current)
+            if (!states.TryGetValue(authority, out var current)
                 || current.Context is null
                 || !ContextsEqual(current.Context, update.Context)
                 || current.Revision >= update.Revision)
@@ -83,7 +109,7 @@ internal sealed class VbaHostClassProjectionSnapshotStore
                 return false;
             }
 
-            states[key] = new VbaHostClassProjectionSelectionState(
+            states[authority] = new VbaHostClassProjectionSelectionState(
                 update.Revision,
                 update.Context,
                 Snapshot: null);
@@ -128,12 +154,6 @@ internal sealed class VbaHostClassProjectionSnapshotStore
             normalizedSourceTemplate);
         return true;
     }
-
-    private static string CreateKey(VbaHostClassProjectionContext context)
-        => string.Join(
-            "\u001e",
-            NormalizePath(context.Project).ToUpperInvariant(),
-            context.Document);
 
     private static bool ContextsEqual(
         VbaHostClassProjectionContext left,

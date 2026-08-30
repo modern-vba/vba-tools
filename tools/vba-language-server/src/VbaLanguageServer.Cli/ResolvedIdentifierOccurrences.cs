@@ -1,4 +1,5 @@
 using VbaLanguageServer.Diagnostics;
+using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.Syntax;
 
 namespace VbaLanguageServer.SourceModel;
@@ -19,7 +20,8 @@ internal sealed class VbaResolvedIdentifierOccurrenceIndex
 {
     private readonly Func<string, int, int, VbaResolvedNameTarget?> resolveSourceTarget;
     private readonly IReadOnlyList<VbaDocumentOccurrenceCache> documentOccurrenceCaches;
-    private readonly ILookup<string, VbaDocumentOccurrenceCache> documentOccurrenceCachesByUri;
+    private readonly IReadOnlyDictionary<VbaDocumentIdentity, VbaDocumentOccurrenceCache>
+        documentOccurrenceCachesByIdentity;
     private readonly VbaCancellationSafeMemo<
         IReadOnlyDictionary<VbaResolvedNameTargetIdentity, IReadOnlyList<VbaResolvedIdentifierOccurrence>>>
         occurrencesByIdentity;
@@ -35,9 +37,20 @@ internal sealed class VbaResolvedIdentifierOccurrenceIndex
                 document,
                 new VbaCancellationSafeMemo<VbaResolvedDocumentOccurrenceSet>()))
             .ToArray();
-        documentOccurrenceCachesByUri = documentOccurrenceCaches.ToLookup(
-            cache => cache.Uri,
-            StringComparer.OrdinalIgnoreCase);
+        var cachesByIdentity =
+            new Dictionary<VbaDocumentIdentity, VbaDocumentOccurrenceCache>();
+        foreach (var cache in documentOccurrenceCaches)
+        {
+            if (VbaProjectIdentityModel.TryIdentifyDocument(
+                    cache.Uri,
+                    out var identity)
+                && !cachesByIdentity.ContainsKey(identity))
+            {
+                cachesByIdentity.Add(identity, cache);
+            }
+        }
+
+        documentOccurrenceCachesByIdentity = cachesByIdentity;
         occurrencesByIdentity = new VbaCancellationSafeMemo<
             IReadOnlyDictionary<VbaResolvedNameTargetIdentity, IReadOnlyList<VbaResolvedIdentifierOccurrence>>>();
     }
@@ -93,8 +106,17 @@ internal sealed class VbaResolvedIdentifierOccurrenceIndex
         string uri,
         CancellationToken cancellationToken)
     {
-        var cache = documentOccurrenceCachesByUri[uri].FirstOrDefault();
-        return cache?.Occurrences.Get(
+        if (!VbaProjectIdentityModel.TryIdentifyDocument(
+                uri,
+                out var identity)
+            || !documentOccurrenceCachesByIdentity.TryGetValue(
+                identity,
+                out var cache))
+        {
+            return null;
+        }
+
+        return cache.Occurrences.Get(
             token => ResolveDocumentOccurrences(cache.Document, token),
             cancellationToken);
     }
@@ -305,9 +327,6 @@ internal sealed class VbaResolvedIdentifierOccurrenceIndex
             target));
     }
 
-    private static bool SameUri(string left, string right)
-        => string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
-
     private sealed class VbaResolvedIdentifierOccurrenceComparer : IEqualityComparer<VbaResolvedIdentifierOccurrence>
     {
         public static VbaResolvedIdentifierOccurrenceComparer Instance { get; } = new();
@@ -316,14 +335,27 @@ internal sealed class VbaResolvedIdentifierOccurrenceIndex
             => ReferenceEquals(left, right)
                 || (left is not null
                     && right is not null
-                    && SameUri(left.Uri, right.Uri)
+                    && VbaProjectIdentityModel.SameDocument(
+                        left.Uri,
+                        right.Uri)
                     && left.Range == right.Range
                     && left.Target.Identity == right.Target.Identity);
 
         public int GetHashCode(VbaResolvedIdentifierOccurrence occurrence)
         {
             var hash = new HashCode();
-            hash.Add(occurrence.Uri, StringComparer.OrdinalIgnoreCase);
+            if (VbaProjectIdentityModel.TryIdentifyDocument(
+                    occurrence.Uri,
+                    out var documentIdentity))
+            {
+                hash.Add(documentIdentity);
+            }
+            else
+            {
+                hash.Add(
+                    occurrence.Uri,
+                    StringComparer.OrdinalIgnoreCase);
+            }
             hash.Add(occurrence.Range);
             hash.Add(occurrence.Target.Identity);
             return hash.ToHashCode();

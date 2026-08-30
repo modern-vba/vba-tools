@@ -77,10 +77,25 @@ file encoding and ACP. VBE import is a separate `vba-dev` boundary with its own
 operation-fixed ACP staging and lossless verification; language-server disk
 decoding does not define `VBComponents.Import` behavior.
 
-Background reconciliation keeps a stable authority identity separate from a
-manifest's mutable content identity. A manifest-backed authority is keyed by
-manifest path and document name; an ad-hoc authority is keyed by its inferred
-root. Source changes are compared by `DiskContentIdentity`, not file metadata.
+`VbaProjectIdentityModel` is the only owner of source-document equality and
+project-authority comparison. `VbaDocumentIdentity` uses a canonical local full
+path for file documents and a normalized URI for non-file documents, independently
+of source revision, open-buffer authority, and `DiskContentIdentity`.
+`VbaProjectAuthorityIdentity` uses canonical manifest plus selected document for
+a manifest-backed project and canonical source root for an ad-hoc project. It
+excludes references, CommonModules, source content, and cache-forming inputs.
+Presentation paths and protocol URI spellings never substitute for either
+authority identity.
+
+Background reconciliation keeps that stable authority identity separate from a
+manifest's mutable content identity. Authority transitions use one
+subject-document-aware relation: `Same`, `RetainPrevious`, `Replace`,
+`Unrelated`, or `Indeterminate`, together with explicit ownership and source
+boundary facts. Workspace admission, manifest appearance and removal, nested
+manifest transfer, watcher retention, and reconciliation consume the same
+relation. Missing, malformed, rootless, or unresolved evidence is
+`Indeterminate` and fails closed; it cannot silently merge or replace authority.
+Source changes are compared by `DiskContentIdentity`, not file metadata.
 Filesystem scans run outside the ordered mutation lane with at most two
 scopes in flight. The deep `VbaProjectReconciler` Module converts each result
 into one ordered `VbaProjectReconciliationScopePlan`; plans commit in stable

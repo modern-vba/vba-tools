@@ -9,8 +9,8 @@ internal sealed class VbaSourceRevisionHistory
 {
     private readonly object gate = new();
     private readonly bool retainOnlyWhileCapturesActive;
-    private readonly Dictionary<string, SourceRevision> revisions =
-        new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<VbaDocumentIdentity, SourceRevision>
+        revisions = [];
     private readonly SortedDictionary<long, int> activeWatermarks = [];
 
     public VbaSourceRevisionHistory(
@@ -45,7 +45,13 @@ internal sealed class VbaSourceRevisionHistory
 
     public void Record(string uri, long revision)
     {
-        var key = CreateIdentityKey(uri);
+        if (!VbaProjectIdentityModel.TryIdentifyDocument(
+                uri,
+                out var identity))
+        {
+            return;
+        }
+
         lock (gate)
         {
             if (retainOnlyWhileCapturesActive
@@ -54,16 +60,22 @@ internal sealed class VbaSourceRevisionHistory
                 return;
             }
 
-            revisions[key] = new SourceRevision(uri, revision);
+            revisions[identity] = new SourceRevision(uri, revision);
         }
     }
 
     public long GetRevision(string uri)
     {
-        var key = CreateIdentityKey(uri);
+        if (!VbaProjectIdentityModel.TryIdentifyDocument(
+                uri,
+                out var identity))
+        {
+            return 0;
+        }
+
         lock (gate)
         {
-            return revisions.TryGetValue(key, out var revision)
+            return revisions.TryGetValue(identity, out var revision)
                 ? revision.Revision
                 : 0;
         }
@@ -121,27 +133,6 @@ internal sealed class VbaSourceRevisionHistory
             .ToArray())
         {
             revisions.Remove(key);
-        }
-    }
-
-    private static string CreateIdentityKey(string uri)
-    {
-        var localPath = VbaProjectResolver.TryGetLocalPath(uri);
-        if (localPath is null)
-        {
-            return $"uri:{uri}";
-        }
-
-        try
-        {
-            return $"path:{Path.GetFullPath(localPath)}";
-        }
-        catch (Exception ex) when (ex is ArgumentException
-            or NotSupportedException
-            or PathTooLongException
-            or System.Security.SecurityException)
-        {
-            return $"uri:{uri}";
         }
     }
 

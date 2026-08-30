@@ -507,7 +507,7 @@ internal sealed class VbaProjectReconciler
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 commitObserver.ScopeFenceValidated(
-                    plan.AuthorityKey,
+                    plan.AuthorityKey.StableKey,
                     plan.CapturedManifestBarrierRevision,
                     plan.CapturedAuthorityGeneration);
                 VbaProjectReconciliationCommitResult? result = null;
@@ -606,7 +606,7 @@ internal sealed class VbaProjectReconciler
     {
         var orderedScopes = scopes
             .OrderBy(
-                scope => scope.AuthorityKey,
+                scope => scope.AuthorityKey.StableKey,
                 StringComparer.OrdinalIgnoreCase)
             .ToArray();
         var scans = new ScopeScan[orderedScopes.Length];
@@ -671,7 +671,7 @@ internal sealed class VbaProjectReconciler
                 var capturedCandidate =
                     scan.Scope.ObservedManifestBarrierCandidates
                         .FirstOrDefault(
-                            candidate => SameDocumentIdentity(
+                            candidate => VbaProjectIdentityModel.SameDocument(
                                 candidate.Uri,
                                 observedManifest.Uri));
                 if (capturedCandidate?.Baseline.Exists == true
@@ -711,7 +711,7 @@ internal sealed class VbaProjectReconciler
                 var capturedCandidate =
                     scan.Scope.ObservedManifestBarrierCandidates
                         .FirstOrDefault(
-                            candidate => SameDocumentIdentity(
+                            candidate => VbaProjectIdentityModel.SameDocument(
                                 candidate.Uri,
                                 missingManifestUri));
                 if (capturedCandidate?.Baseline.Exists != true)
@@ -748,7 +748,9 @@ internal sealed class VbaProjectReconciler
                 {
                     var remainsOpenAndOwned =
                         scan.Scope.OpenSourceUris.Any(
-                            uri => SameDocumentIdentity(uri, known.Uri))
+                            uri => VbaProjectIdentityModel.SameDocument(
+                                uri,
+                                known.Uri))
                         && !scan.Disk.ExistingNonOwnedSourcePaths.Contains(
                             known.FullPath);
                     if (remainsOpenAndOwned)
@@ -835,19 +837,25 @@ internal sealed class VbaProjectReconciler
                             scan.Scope.KnownSources
                                 .Select(source => source.Uri)
                                 .Concat(scan.Scope.OpenSourceUris)
-                                .Distinct(StringComparer.OrdinalIgnoreCase)
+                                .DistinctBy(
+                                    VbaProjectIdentityModel
+                                        .GetDocumentStableKey,
+                                    StringComparer.OrdinalIgnoreCase)
                                 .OrderBy(
                                     uri => uri,
                                     StringComparer.OrdinalIgnoreCase)
                                 .ToArray(),
                         CapturedManifestSourceUris = scans
-                            .Where(candidate => HasManifestAuthority(
-                                candidate.Scope.Resolution,
-                                change.Uri))
+                            .Where(candidate =>
+                                VbaProjectIdentityModel.UsesManifestUri(
+                                    candidate.Scope.Resolution,
+                                    change.Uri))
                             .SelectMany(candidate => candidate.Scope.KnownSources
                                 .Select(source => source.Uri)
                                 .Concat(candidate.Scope.OpenSourceUris))
-                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .DistinctBy(
+                                VbaProjectIdentityModel.GetDocumentStableKey,
+                                StringComparer.OrdinalIgnoreCase)
                             .OrderBy(
                                 uri => uri,
                                 StringComparer.OrdinalIgnoreCase)
@@ -888,8 +896,9 @@ internal sealed class VbaProjectReconciler
             if (deletedCandidates.Length == 0
                 && (scan.Scope.Resolution.Kind
                     != VbaProjectResolutionKind.ManifestDocument
-                    || string.IsNullOrWhiteSpace(
-                        scan.Scope.Resolution.ManifestPath)))
+                    || !VbaProjectIdentityModel.TryIdentifyAuthority(
+                        scan.Scope.Resolution,
+                        out _)))
             {
                 return null;
             }
@@ -930,9 +939,10 @@ internal sealed class VbaProjectReconciler
                 FallbackHiddenByOpenOverlay:
                     effectiveMissingOverlay is not null,
                 AuthorityTransferred:
-                    !HasSameProjectAuthority(
+                    VbaProjectIdentityModel.Relate(
+                        scan.Scope.ActiveUri,
                         scan.Scope.Resolution,
-                        resolution),
+                        resolution).TransfersSubjectAuthority,
                 GetRetainedSourceUris(scan),
                 scan.Scope.ManifestBarriers.Revision,
                 scan.Scope.AuthorityGeneration);
@@ -940,7 +950,7 @@ internal sealed class VbaProjectReconciler
 
         var scannedCandidate = scan.Scope.ManifestCandidates
             .FirstOrDefault(
-                candidate => SameDocumentIdentity(
+                candidate => VbaProjectIdentityModel.SameDocument(
                     candidate.Uri,
                     scan.Disk.Manifest.Uri));
 
@@ -959,7 +969,7 @@ internal sealed class VbaProjectReconciler
         }
         var nearerCandidates = scan.Scope.ManifestCandidates
             .TakeWhile(
-                candidate => !SameDocumentIdentity(
+                candidate => !VbaProjectIdentityModel.SameDocument(
                     candidate.Uri,
                     scan.Disk.Manifest.Uri))
             .ToArray();
@@ -978,7 +988,7 @@ internal sealed class VbaProjectReconciler
             .ToArray();
         var fartherCandidates = scan.Scope.ManifestCandidates
             .SkipWhile(
-                candidate => !SameDocumentIdentity(
+                candidate => !VbaProjectIdentityModel.SameDocument(
                     candidate.Uri,
                     scan.Disk.Manifest.Uri))
             .Skip(1)
@@ -990,7 +1000,7 @@ internal sealed class VbaProjectReconciler
                 ?? TryResolveBaseline(
                     scan.Scope.ActiveUri,
                     scannedCandidate)
-                ?? (!HasManifestAuthority(
+                ?? (!VbaProjectIdentityModel.UsesManifestUri(
                         scan.Scope.Resolution,
                         scan.Disk.Manifest.Uri)
                     ? scan.Scope.Resolution
@@ -1042,9 +1052,10 @@ internal sealed class VbaProjectReconciler
                     scan.Disk.Manifest.Uri),
                 reloadFallbackManifest,
                 effectiveMissingOverlay is not null,
-                !HasSameProjectAuthority(
+                VbaProjectIdentityModel.Relate(
+                    scan.Scope.ActiveUri,
                     scan.Scope.Resolution,
-                    fallbackResolution),
+                    fallbackResolution).TransfersSubjectAuthority,
                 GetRetainedSourceUris(scan),
                 scan.Scope.ManifestBarriers.Revision,
                 scan.Scope.AuthorityGeneration);
@@ -1053,7 +1064,7 @@ internal sealed class VbaProjectReconciler
         var effectiveOpenAuthorityCandidate =
             GetOpenAuthorityCandidate(scan.Scope);
         if (effectiveOpenAuthorityCandidate is not null
-            && !SameDocumentIdentity(
+            && !VbaProjectIdentityModel.SameDocument(
                 effectiveOpenAuthorityCandidate.Uri,
                 scan.Disk.Manifest.Uri)
             && !effectiveOpenAuthorityCandidate.Baseline.Exists)
@@ -1070,13 +1081,14 @@ internal sealed class VbaProjectReconciler
         if (unchangedBaseline
             && scannedResolution is null
             && scannedCandidate?.EffectiveManifestText is null
-            && HasManifestAuthority(
+            && VbaProjectIdentityModel.UsesManifestUri(
                 scan.Scope.Resolution,
                 scan.Disk.Manifest.Uri)
             && invalidFallbackResolution is not null
-            && !HasSameProjectAuthority(
+            && VbaProjectIdentityModel.Relate(
+                scan.Scope.ActiveUri,
                 scan.Scope.Resolution,
-                invalidFallbackResolution))
+                invalidFallbackResolution).TransfersSubjectAuthority)
         {
             return new TransferInvalidManifestAuthorityChange(
                 scan.Scope.AuthorityKey,
@@ -1116,15 +1128,18 @@ internal sealed class VbaProjectReconciler
             scan.Scope.AuthorityGeneration,
             RetainPreviousAuthority:
                 scannedResolution is not null
-                && ShouldRetainPreviousAuthority(
+                && VbaProjectIdentityModel.Relate(
+                    scan.Scope.ActiveUri,
                     scan.Scope.Resolution,
-                    scannedResolution),
+                    scannedResolution).Kind
+                    == VbaProjectAuthorityRelationKind.RetainPrevious,
             AuthorityTransferred:
                 (scannedResolution ?? invalidFallbackResolution)
                     is { } effectiveResolution
-                && !HasSameProjectAuthority(
+                && VbaProjectIdentityModel.Relate(
+                    scan.Scope.ActiveUri,
                     scan.Scope.Resolution,
-                    effectiveResolution),
+                    effectiveResolution).TransfersSubjectAuthority,
             RetainedPreviousSourceUris:
                 GetRetainedSourceUris(scan));
     }
@@ -1141,27 +1156,19 @@ internal sealed class VbaProjectReconciler
                         && !scan.Disk.ExistingNonOwnedSourcePaths.Contains(
                             Path.GetFullPath(localPath));
                 }))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .DistinctBy(
+                VbaProjectIdentityModel.GetDocumentStableKey,
+                StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
     private static VbaProjectReconciliationManifestCandidate?
         GetOpenAuthorityCandidate(
             VbaProjectReconciliationScope scope)
-    {
-        if (string.IsNullOrWhiteSpace(
-                scope.Resolution.ManifestPath))
-        {
-            return null;
-        }
-
-        var authorityUri = new Uri(Path.GetFullPath(
-            scope.Resolution.ManifestPath)).AbsoluteUri;
-        return scope.ManifestCandidates.FirstOrDefault(
+        => scope.ManifestCandidates.FirstOrDefault(
             candidate => candidate.HasOpenOverlay
-                && SameDocumentIdentity(
-                    candidate.Uri,
-                    authorityUri));
-    }
+                && VbaProjectIdentityModel.UsesManifestUri(
+                    scope.Resolution,
+                    candidate.Uri));
 
     private static VbaProjectResolution? TryResolveBaseline(
         string activeUri,
@@ -1254,21 +1261,6 @@ internal sealed class VbaProjectReconciler
         }
 
         return null;
-    }
-
-    private static bool HasManifestAuthority(
-        VbaProjectResolution resolution,
-        string manifestUri)
-    {
-        if (string.IsNullOrWhiteSpace(resolution.ManifestPath))
-        {
-            return false;
-        }
-
-        return SameDocumentIdentity(
-            new Uri(Path.GetFullPath(
-                resolution.ManifestPath)).AbsoluteUri,
-            manifestUri);
     }
 
     private static bool IsKnownInvalidBarrier(
@@ -1391,50 +1383,6 @@ internal sealed class VbaProjectReconciler
                 VbaProjectSnapshotIdentity.Create(activeUri, right).Key,
                 StringComparison.OrdinalIgnoreCase);
 
-    private static bool HasSameProjectAuthority(
-        VbaProjectResolution left,
-        VbaProjectResolution right)
-        => left.Kind == right.Kind
-            && string.Equals(
-                Path.GetFullPath(left.RootPath),
-                Path.GetFullPath(right.RootPath),
-                StringComparison.OrdinalIgnoreCase)
-            && string.Equals(
-                NormalizeOptionalPath(left.ManifestPath),
-                NormalizeOptionalPath(right.ManifestPath),
-                StringComparison.OrdinalIgnoreCase)
-            && string.Equals(
-                left.DocumentName,
-                right.DocumentName,
-                StringComparison.OrdinalIgnoreCase);
-
-    private static string? NormalizeOptionalPath(string? path)
-        => string.IsNullOrWhiteSpace(path)
-            ? null
-            : Path.GetFullPath(path);
-
-    private static bool ShouldRetainPreviousAuthority(
-        VbaProjectResolution previous,
-        VbaProjectResolution current)
-    {
-        if (previous.Kind
-                != VbaProjectResolutionKind.ManifestDocument
-            || current.Kind
-                != VbaProjectResolutionKind.ManifestDocument
-            || string.IsNullOrWhiteSpace(previous.ManifestPath)
-            || string.IsNullOrWhiteSpace(current.ManifestPath)
-            || previous.ManifestPath.Equals(
-                current.ManifestPath,
-                StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        return VbaProjectResolver.IsPathUnder(
-            current.ManifestPath,
-            previous.RootPath);
-    }
-
     private static VbaProjectResolution CreateAdHocResolution(string activeUri)
     {
         var activePath = VbaProjectResolver.TryGetLocalPath(activeUri);
@@ -1451,27 +1399,11 @@ internal sealed class VbaProjectReconciler
         string manifestUri)
         => scope.ManifestCandidates
             .FirstOrDefault(
-                candidate => SameDocumentIdentity(
+                candidate => VbaProjectIdentityModel.SameDocument(
                     candidate.Uri,
                     manifestUri))
             ?.CapturedRevision
             ?? 0;
-
-    private static bool SameDocumentIdentity(string leftUri, string rightUri)
-    {
-        if (leftUri.Equals(rightUri, StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        var leftPath = VbaProjectResolver.TryGetLocalPath(leftUri);
-        var rightPath = VbaProjectResolver.TryGetLocalPath(rightUri);
-        return leftPath is not null
-            && rightPath is not null
-            && Path.GetFullPath(leftPath).Equals(
-                Path.GetFullPath(rightPath),
-                StringComparison.OrdinalIgnoreCase);
-    }
 
     private async Task RunCadenceAsync(CancellationToken cancellationToken)
     {

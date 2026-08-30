@@ -225,7 +225,13 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
     /// <param name="uri">The manifest URI.</param>
     public void DeactivateManifest(string uri)
     {
-        var scopePrefix = CreateManifestScopePrefix(uri);
+        if (!VbaProjectIdentityModel.TryGetManifestScopePrefix(
+                uri,
+                out var scopePrefix))
+        {
+            return;
+        }
+
         var removedWorkKeys = new HashSet<string>(StringComparer.Ordinal);
         lock (lifecyclePlanGate)
         {
@@ -1004,7 +1010,13 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
         var retainedScopes = selections
             .Select(selection => selection.ScopeKey)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var scopePrefix = CreateManifestScopePrefix(uri);
+        if (!VbaProjectIdentityModel.TryGetManifestScopePrefix(
+                uri,
+                out var scopePrefix))
+        {
+            return;
+        }
+
         var removedWorkKeys = new HashSet<string>(StringComparer.Ordinal);
         lock (lifecycleGate)
         {
@@ -1034,7 +1046,13 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
         var retainedScopes = selections
             .Select(selection => selection.ScopeKey)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var scopePrefix = CreateManifestScopePrefix(uri);
+        if (!VbaProjectIdentityModel.TryGetManifestScopePrefix(
+                uri,
+                out var scopePrefix))
+        {
+            return;
+        }
+
         foreach (var scopeKey in latestLifecycleScopeRevisions.Keys
             .Concat(lifecycleStates.Keys)
             .Where(key => key.StartsWith(scopePrefix, StringComparison.OrdinalIgnoreCase))
@@ -1058,12 +1076,6 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
         => refreshService.UsesContextSpecificDiscovery
             ? string.Join("\u001d", fingerprint, context.ScopeKey)
             : fingerprint;
-
-    private static string CreateManifestScopePrefix(string uri)
-    {
-        var manifestIdentity = VbaProjectResolver.TryGetLocalPath(uri) ?? uri;
-        return $"{Path.GetFullPath(manifestIdentity)}\u001f";
-    }
 
     private static ReferenceCatalogRefreshSessionMessage CreateDirectMessage(
         int type,

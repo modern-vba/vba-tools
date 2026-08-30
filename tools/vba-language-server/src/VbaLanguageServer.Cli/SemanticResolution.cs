@@ -1,4 +1,5 @@
 using VbaLanguageServer.Diagnostics;
+using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.Syntax;
 
 namespace VbaLanguageServer.SourceModel;
@@ -355,7 +356,9 @@ internal sealed class VbaSemanticResolution
             VbaCompletionExpectation.ImplementsType =>
                 CreateDefinitionCandidates(GetTypeCompletionDefinitions(currentDocument, typeQualifier)
                     .Where(candidate => candidate.Definition.Kind == VbaSourceDefinitionKind.Class)
-                    .Where(candidate => !SameUri(candidate.Definition.Uri, currentDocument.Uri))),
+                    .Where(candidate => !VbaProjectIdentityModel.SameDocument(
+                        candidate.Definition.Uri,
+                        currentDocument.Uri))),
             VbaCompletionExpectation.CallArgument =>
                 CreateCallArgumentCandidates(
                     currentDocument,
@@ -825,7 +828,7 @@ internal sealed class VbaSemanticResolution
             {
                 Target = accessorTarget,
                 Definitions = accessorTarget.PhysicalDefinitions
-                    .Where(definition => SameUri(
+                    .Where(definition => VbaProjectIdentityModel.SameDocument(
                             currentDocument.Uri,
                             definition.Uri)
                         || definition.Visibility.IsProjectVisible())
@@ -1568,7 +1571,9 @@ internal sealed class VbaSemanticResolution
         }
 
         return physicalDefinitions.Where(variant =>
-            SameUri(variant.Uri, currentDocument.Uri)
+            VbaProjectIdentityModel.SameDocument(
+                variant.Uri,
+                currentDocument.Uri)
             || variant.Visibility.IsProjectVisible());
     }
 
@@ -2614,9 +2619,9 @@ internal sealed class VbaSemanticResolution
         foreach (var variable in variableTarget.PhysicalDefinitions.Where(definition =>
             definition.Kind == VbaSourceDefinitionKind.Variable
             && definition.ParentProcedureName is null
-            && definition.Uri.Equals(
-                currentDocument.Uri,
-                StringComparison.OrdinalIgnoreCase)))
+            && VbaProjectIdentityModel.SameDocument(
+                definition.Uri,
+                currentDocument.Uri)))
         {
             if (variable.IsRecoveredWithEventsVariableDeclaration)
             {
@@ -3035,8 +3040,5 @@ internal sealed class VbaSemanticResolution
 
     private static VbaSyntaxTree GetSyntaxTree(VbaSourceDocument document)
         => document.SyntaxTree ?? VbaSyntaxTree.ParseModule(document.Uri, document.Text);
-
-    private static bool SameUri(string left, string right)
-        => string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
 
 }

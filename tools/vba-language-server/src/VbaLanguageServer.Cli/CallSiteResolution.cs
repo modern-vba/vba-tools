@@ -1,4 +1,5 @@
 using VbaLanguageServer.Diagnostics;
+using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.Syntax;
 
 namespace VbaLanguageServer.SourceModel;
@@ -2406,10 +2407,9 @@ internal sealed class VbaCallSiteResolution
         VbaSourceDocument currentDocument,
         VbaResolvedNameTarget target)
         => target.PhysicalDefinitions.Where(definition =>
-            string.Equals(
+            VbaProjectIdentityModel.SameDocument(
                 definition.Uri,
-                currentDocument.Uri,
-                StringComparison.OrdinalIgnoreCase)
+                currentDocument.Uri)
             || definition.Visibility.IsProjectVisible());
 
     private static IEnumerable<VbaSourceDefinition> GetCallableUseSiteDefinitions(
@@ -2419,10 +2419,9 @@ internal sealed class VbaCallSiteResolution
                 ? propertyTarget.Property.PropertyDefinitions
                 : target.PhysicalDefinitions)
             .Where(definition =>
-                string.Equals(
+                VbaProjectIdentityModel.SameDocument(
                     definition.Uri,
-                    currentDocument.Uri,
-                    StringComparison.OrdinalIgnoreCase)
+                    currentDocument.Uri)
                 || definition.Visibility.IsProjectVisible());
 
     private static IReadOnlyList<VbaCallArgumentSyntax> GetPriorArguments(

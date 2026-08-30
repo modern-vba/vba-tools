@@ -25968,7 +25968,8 @@ public sealed class LanguageServerProcessTests
                         name = module.Name,
                         moduleFile = module.ModuleFile,
                         requested = true,
-                        testOnly = false
+                        testOnly = false,
+                        orphaned = false
                     }),
                     references = Array.Empty<object>()
                 }

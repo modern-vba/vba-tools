@@ -1,4 +1,5 @@
 using VbaLanguageServer.Diagnostics;
+using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.Syntax;
 
 namespace VbaLanguageServer.SourceModel;
@@ -240,9 +241,10 @@ internal sealed class VbaConditionalDeclarationFamilyIndex
                 : VbaSourceDefinitionKind.Type;
             var parent = guardedTypes
                 .Where(candidate => candidate.Kind == parentKind)
-                .Where(candidate => candidate.Uri.Equals(
-                    member.Uri,
-                    StringComparison.OrdinalIgnoreCase))
+                .Where(candidate =>
+                    VbaProjectIdentityModel.SameDocument(
+                        candidate.Uri,
+                        member.Uri))
                 .Where(candidate => candidate.Name.Equals(
                     member.ParentTypeName,
                     StringComparison.OrdinalIgnoreCase))
@@ -401,7 +403,8 @@ internal sealed class VbaConditionalDeclarationFamilyIndex
             : string.Join(
                 separator,
                 "source",
-                definition.Uri,
+                VbaProjectIdentityModel.GetDocumentStableKey(
+                    definition.Uri),
                 definition.ModuleName);
         return string.Join(separator, owner, definition.Name);
     }
@@ -516,13 +519,15 @@ internal static class VbaDeclarationRelationshipPolicy
         IReadOnlyDictionary<VbaDefinitionIdentity, string>? logicalMemberScopes = null)
     {
         var first = variants[0];
+        var firstDocumentKey =
+            VbaProjectIdentityModel.GetDocumentStableKey(first.Uri);
         if (variants.All(definition =>
                 definition.Visibility == VbaSourceDefinitionVisibility.Local))
         {
             return string.Join(
                 KeySeparator,
                 "procedure",
-                first.Uri,
+                firstDocumentKey,
                 first.ParentProcedureName ?? string.Empty,
                 CreateRangeKey(first.ParentProcedureRange));
         }
@@ -547,12 +552,14 @@ internal static class VbaDeclarationRelationshipPolicy
             return string.Join(
                 KeySeparator,
                 "type",
-                first.Uri,
+                firstDocumentKey,
                 first.ParentTypeName ?? string.Empty);
         }
 
         if (variants.All(IsDeclaredType)
-            && (variants.Select(definition => definition.Uri)
+            && (variants.Select(definition =>
+                        VbaProjectIdentityModel.GetDocumentStableKey(
+                            definition.Uri))
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .Skip(1)
                     .Any()
@@ -561,7 +568,10 @@ internal static class VbaDeclarationRelationshipPolicy
             return "project-type";
         }
 
-        return string.Join(KeySeparator, "module", first.Uri);
+        return string.Join(
+            KeySeparator,
+            "module",
+            firstDocumentKey);
     }
 
     public static string CreateFamilyNamespace(
@@ -617,7 +627,9 @@ internal static class VbaDeclarationRelationshipPolicy
         {
             return left.Visibility == VbaSourceDefinitionVisibility.Local
                 && right.Visibility == VbaSourceDefinitionVisibility.Local
-                && SameUri(left, right)
+                && VbaProjectIdentityModel.SameDocument(
+                    left.Uri,
+                    right.Uri)
                 && left.ParentProcedureRange is not null
                 && left.ParentProcedureRange == right.ParentProcedureRange;
         }
@@ -632,7 +644,9 @@ internal static class VbaDeclarationRelationshipPolicy
             return true;
         }
 
-        if (!SameUri(left, right))
+        if (!VbaProjectIdentityModel.SameDocument(
+                left.Uri,
+                right.Uri))
         {
             return false;
         }
@@ -739,9 +753,9 @@ internal static class VbaDeclarationRelationshipPolicy
         VbaProspectiveDeclaration prospective,
         VbaSourceDefinition definition)
     {
-        if (!prospective.Uri.Equals(
-                definition.Uri,
-                StringComparison.OrdinalIgnoreCase)
+        if (!VbaProjectIdentityModel.SameDocument(
+                prospective.Uri,
+                definition.Uri)
             || definition.Visibility == VbaSourceDefinitionVisibility.Local
             || definition.Kind is VbaSourceDefinitionKind.TypeMember
                 or VbaSourceDefinitionKind.Event
@@ -796,11 +810,6 @@ internal static class VbaDeclarationRelationshipPolicy
             or VbaSourceDefinitionKind.Constant
             or VbaSourceDefinitionKind.Variable;
 
-    private static bool SameUri(
-        VbaSourceDefinition left,
-        VbaSourceDefinition right)
-        => left.Uri.Equals(right.Uri, StringComparison.OrdinalIgnoreCase);
-
     private static string CreateRangeKey(VbaRange? range)
         => range is null
             ? string.Empty
@@ -813,15 +822,17 @@ internal static class VbaDeclarationRelationshipPolicy
 /// </summary>
 internal sealed class VbaProjectValidationDiagnosticIndex
 {
-    private readonly IReadOnlyDictionary<string, IReadOnlyList<VbaProjectValidationDiagnostic>>
-        diagnosticsByUri;
+    private readonly IReadOnlyDictionary<
+        VbaDocumentIdentity,
+        IReadOnlyList<VbaProjectValidationDiagnostic>> diagnosticsByIdentity;
 
     public VbaProjectValidationDiagnosticIndex(
         IReadOnlyList<VbaSourceDocument> documents,
         VbaSemanticResolution semanticResolution)
     {
-        var diagnostics = new Dictionary<string, List<VbaProjectValidationDiagnostic>>(
-            StringComparer.OrdinalIgnoreCase);
+        var diagnostics = new Dictionary<
+            VbaDocumentIdentity,
+            List<VbaProjectValidationDiagnostic>>();
         var definitions = documents
             .SelectMany(document => document.Definitions)
             .Where(definition => definition.Identity.Origin == VbaDefinitionOrigin.Source)
@@ -857,17 +868,14 @@ internal sealed class VbaProjectValidationDiagnosticIndex
         foreach (var declaration in definitions.Where(definition =>
             declarationsWithPeers.Contains(definition.Identity)))
         {
-            if (!diagnostics.TryGetValue(declaration.Uri, out var documentDiagnostics))
-            {
-                documentDiagnostics = [];
-                diagnostics.Add(declaration.Uri, documentDiagnostics);
-            }
-
-            documentDiagnostics.Add(new VbaProjectValidationDiagnostic(
-                "validation.duplicateDeclaration",
-                $"Declaration '{declaration.Name}' conflicts with another "
-                    + "declaration in this scope.",
-                declaration.Range));
+            AddProjectDiagnostic(
+                diagnostics,
+                declaration.Uri,
+                new VbaProjectValidationDiagnostic(
+                    "validation.duplicateDeclaration",
+                    $"Declaration '{declaration.Name}' conflicts with another "
+                        + "declaration in this scope.",
+                    declaration.Range));
         }
 
         foreach (var document in documents)
@@ -1094,19 +1102,16 @@ internal sealed class VbaProjectValidationDiagnosticIndex
                     continue;
                 }
 
-                if (!diagnostics.TryGetValue(document.Uri, out var documentDiagnostics))
-                {
-                    documentDiagnostics = [];
-                    diagnostics.Add(document.Uri, documentDiagnostics);
-                }
-
-                documentDiagnostics.Add(new VbaProjectValidationDiagnostic(
-                    "validation.incompatibleCallArgumentList",
-                    "No available callable signature accepts this argument list.",
-                    ToRange(GetCallDiagnosticRange(syntaxTree, argumentList)),
-                    Details: CreateCallDiagnosticDetails(
-                        compatibility,
-                        argumentList)));
+                AddProjectDiagnostic(
+                    diagnostics,
+                    document.Uri,
+                    new VbaProjectValidationDiagnostic(
+                        "validation.incompatibleCallArgumentList",
+                        "No available callable signature accepts this argument list.",
+                        ToRange(GetCallDiagnosticRange(syntaxTree, argumentList)),
+                        Details: CreateCallDiagnosticDetails(
+                            compatibility,
+                            argumentList)));
             }
 
             foreach (var raiseEventKeyword in syntaxTree.TokenStream.Tokens.Where(token =>
@@ -1159,44 +1164,54 @@ internal sealed class VbaProjectValidationDiagnosticIndex
             }
         }
 
-        diagnosticsByUri = diagnostics.ToDictionary(
+        diagnosticsByIdentity = diagnostics.ToDictionary(
             pair => pair.Key,
             pair => (IReadOnlyList<VbaProjectValidationDiagnostic>)
-                Array.AsReadOnly(pair.Value.ToArray()),
-            StringComparer.OrdinalIgnoreCase);
+                Array.AsReadOnly(pair.Value.ToArray()));
     }
 
     public IReadOnlyList<VbaProjectValidationDiagnostic> GetDiagnostics(string uri)
-        => diagnosticsByUri.TryGetValue(uri, out var diagnostics)
+        => VbaProjectIdentityModel.TryIdentifyDocument(
+                uri,
+                out var identity)
+            && diagnosticsByIdentity.TryGetValue(identity, out var diagnostics)
             ? diagnostics
             : [];
 
     private static void AddRaiseEventTargetDiagnostic(
-        IDictionary<string, List<VbaProjectValidationDiagnostic>> diagnostics,
+        IDictionary<
+            VbaDocumentIdentity,
+            List<VbaProjectValidationDiagnostic>> diagnostics,
         string uri,
         VbaRange range)
     {
-        if (!diagnostics.TryGetValue(uri, out var documentDiagnostics))
-        {
-            documentDiagnostics = [];
-            diagnostics.Add(uri, documentDiagnostics);
-        }
-
-        documentDiagnostics.Add(new VbaProjectValidationDiagnostic(
-            "validation.raiseEventTargetNotDeclaredInEnclosingModule",
-            "RaiseEvent target must be an Event declared in the enclosing class module.",
-            range));
+        AddProjectDiagnostic(
+            diagnostics,
+            uri,
+            new VbaProjectValidationDiagnostic(
+                "validation.raiseEventTargetNotDeclaredInEnclosingModule",
+                "RaiseEvent target must be an Event declared in the enclosing class module.",
+                range));
     }
 
     private static void AddProjectDiagnostic(
-        IDictionary<string, List<VbaProjectValidationDiagnostic>> diagnostics,
+        IDictionary<
+            VbaDocumentIdentity,
+            List<VbaProjectValidationDiagnostic>> diagnostics,
         string uri,
         VbaProjectValidationDiagnostic diagnostic)
     {
-        if (!diagnostics.TryGetValue(uri, out var documentDiagnostics))
+        if (!VbaProjectIdentityModel.TryIdentifyDocument(
+                uri,
+                out var identity))
+        {
+            return;
+        }
+
+        if (!diagnostics.TryGetValue(identity, out var documentDiagnostics))
         {
             documentDiagnostics = [];
-            diagnostics.Add(uri, documentDiagnostics);
+            diagnostics.Add(identity, documentDiagnostics);
         }
 
         documentDiagnostics.Add(diagnostic);

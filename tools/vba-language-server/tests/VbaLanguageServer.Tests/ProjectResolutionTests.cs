@@ -50,6 +50,65 @@ public sealed class ProjectResolutionTests
         Assert.Equal("Book1", resolution.DocumentName);
         Assert.Equal(aliasRoot, resolution.RootPath, ignoreCase: true);
         Assert.True(resolution.ContainsUri(new Uri(sourcePath).AbsoluteUri));
+        var relation = VbaProjectIdentityModel.Relate(
+            new Uri(sourcePath).AbsoluteUri,
+            resolution,
+            resolution);
+        Assert.True(relation.Ownership.PreviousOwnsSubject);
+        Assert.True(relation.Ownership.CurrentOwnsSubject);
+
+        var physicalSpelling = resolution with
+        {
+            RootPath = sourceRoot
+        };
+        var sameBoundary = VbaProjectIdentityModel.Relate(
+            new Uri(sourcePath).AbsoluteUri,
+            resolution,
+            physicalSpelling);
+        Assert.True(sameBoundary.Ownership.SameSourceOwnershipBoundary);
+
+        var nestedProjectRoot = Directory.CreateDirectory(
+            Path.Combine(sourceRoot, "NestedProject")).FullName;
+        var nestedSourceRoot = Directory.CreateDirectory(
+            Path.Combine(nestedProjectRoot, "src")).FullName;
+        var nestedSourcePath = Path.Combine(
+            nestedSourceRoot,
+            "NestedModule.bas");
+        File.WriteAllText(
+            nestedSourcePath,
+            "Attribute VB_Name = \"NestedModule\"",
+            Encoding.UTF8);
+        var nestedManifestPath = Path.Combine(
+            nestedProjectRoot,
+            ProjectManifest.ManifestFileName);
+        File.WriteAllText(nestedManifestPath, "{}", Encoding.UTF8);
+        var nestedResolution = new VbaProjectResolution(
+            VbaProjectResolutionKind.ManifestDocument,
+            nestedSourceRoot,
+            nestedManifestPath,
+            "NestedBook")
+        {
+            RootIdentity = VbaProjectResolver.ResolvePathIdentity(
+                nestedSourceRoot)
+        };
+        var nestedRelation = VbaProjectIdentityModel.Relate(
+            new Uri(nestedSourcePath).AbsoluteUri,
+            resolution,
+            nestedResolution);
+        Assert.Equal(
+            VbaProjectAuthorityRelationKind.RetainPrevious,
+            nestedRelation.Kind);
+        var aliasNestedResolution = nestedResolution with
+        {
+            ManifestPath = Path.Combine(
+                aliasRoot,
+                "NestedProject",
+                ProjectManifest.ManifestFileName)
+        };
+        Assert.True(
+            VbaProjectIdentityModel.OwnsTransferredProjectDocument(
+                aliasNestedResolution,
+                new Uri(nestedSourcePath).AbsoluteUri));
     }
 
     private static void WriteManifest(string projectRoot, ProjectManifest manifest)

@@ -1,4 +1,5 @@
 using VbaLanguageServer.Diagnostics;
+using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.Syntax;
 
 namespace VbaLanguageServer.SourceModel;
@@ -245,10 +246,9 @@ internal sealed class VbaTypeResolution
         foreach (var definition in definitions)
         {
             var signature = definition.Signature;
-            if (!string.Equals(
+            if (!VbaProjectIdentityModel.SameDocument(
                     definition.Uri,
-                    currentDocument.Uri,
-                    StringComparison.OrdinalIgnoreCase)
+                    currentDocument.Uri)
                     && !definition.Visibility.IsProjectVisible()
                 || signature is null
                 || VbaCallArgumentMapper.MapCompleteZeroArgument(

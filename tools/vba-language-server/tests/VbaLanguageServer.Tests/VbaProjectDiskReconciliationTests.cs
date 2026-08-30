@@ -1079,7 +1079,7 @@ public sealed class VbaProjectDiskReconciliationTests
                                     firstRoot,
                                     "vba-project.json")),
                             StringComparison.OrdinalIgnoreCase))
-                    .AuthorityKey;
+                    .AuthorityKey.StableKey;
             }
 
             File.WriteAllText(
@@ -1138,7 +1138,7 @@ public sealed class VbaProjectDiskReconciliationTests
                 workspace.CaptureProjectReconciliation();
             var firstScope = Assert.Single(
                 committed.Scopes,
-                scope => scope.AuthorityKey.Equals(
+                scope => scope.AuthorityKey.StableKey.Equals(
                     firstAuthorityKey,
                     StringComparison.OrdinalIgnoreCase));
             Assert.Contains(
@@ -1149,7 +1149,7 @@ public sealed class VbaProjectDiskReconciliationTests
                         StringComparison.Ordinal));
             var secondScope = Assert.Single(
                 committed.Scopes,
-                scope => !scope.AuthorityKey.Equals(
+                scope => !scope.AuthorityKey.StableKey.Equals(
                     firstAuthorityKey,
                     StringComparison.OrdinalIgnoreCase));
             Assert.Contains(
@@ -1669,6 +1669,40 @@ public sealed class VbaProjectDiskReconciliationTests
 
         Assert.Equal(0, history.GetRevision(sourceUri));
         Assert.Equal(0, history.Count);
+    }
+
+    [Fact]
+    public void Source_revision_history_normalizes_identity_while_preserving_the_latest_presentation_uri()
+    {
+        const string initialUri =
+            "untitled://WORKSPACE/Folder/../Module.bas";
+        const string equivalentUri =
+            "untitled://workspace/Module.bas";
+        var history = new VbaSourceRevisionHistory();
+        using var capture = history.BeginCapture(0);
+
+        history.Record(initialUri, 1);
+        history.Record(equivalentUri, 2);
+
+        Assert.Equal(2, history.GetRevision(initialUri));
+        var entry = Assert.Single(history.CaptureEntries());
+        Assert.Equal(equivalentUri, entry.Uri);
+        Assert.Equal(2, entry.Revision);
+    }
+
+    [Fact]
+    public void Source_revision_history_retains_an_absolute_uri_when_its_local_path_is_unavailable()
+    {
+        const string sourceUri = "file:///C:/bad%00.bas";
+        var history = new VbaSourceRevisionHistory();
+        using var capture = history.BeginCapture(0);
+
+        history.Record(sourceUri, 1);
+
+        Assert.Equal(1, history.GetRevision(sourceUri));
+        var entry = Assert.Single(history.CaptureEntries());
+        Assert.Equal(sourceUri, entry.Uri);
+        Assert.Equal(1, entry.Revision);
     }
 
     [Fact]
@@ -2613,7 +2647,7 @@ public sealed class VbaProjectDiskReconciliationTests
             {
                 expectedTrackedUris = capture.Scopes
                     .OrderBy(
-                        scope => scope.AuthorityKey,
+                        scope => scope.AuthorityKey.StableKey,
                         StringComparer.OrdinalIgnoreCase)
                     .Select(scope => scope.KnownSources.Single().Uri)
                     .ToArray();
@@ -6872,7 +6906,8 @@ public sealed class VbaProjectDiskReconciliationTests
             string initialAuthorityKey;
             using (var initial = workspace.CaptureProjectReconciliation())
             {
-                initialAuthorityKey = Assert.Single(initial.Scopes).AuthorityKey;
+                initialAuthorityKey = Assert.Single(initial.Scopes)
+                    .AuthorityKey.StableKey;
             }
 
             File.WriteAllText(
@@ -6904,7 +6939,7 @@ public sealed class VbaProjectDiskReconciliationTests
             {
                 Assert.Equal(
                     initialAuthorityKey,
-                    Assert.Single(current.Scopes).AuthorityKey,
+                    Assert.Single(current.Scopes).AuthorityKey.StableKey,
                     ignoreCase: true);
             }
 
