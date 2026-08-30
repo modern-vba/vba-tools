@@ -2064,41 +2064,75 @@ public sealed class CommonModulesCommandTests
     }
 
     [Fact]
-    public void InstallationTransactionWritesRecoveryFileWhenManifestSaveFails()
+    public void InstallationTransactionRequiresManifestMutationCoordinator()
+    {
+        var atomicWriter = new ProjectManifestAtomicWriter();
+
+        Assert.Throws<ArgumentNullException>(() => new CommonModulesInstallationTransaction(
+            new CommonModulesManifestReader(),
+            new ProjectManifestEditor(atomicWriter),
+            referencePlanner: null,
+            manifestMutationCoordinator: null!));
+    }
+
+    [Fact]
+    public void AddCannotMutateWhenManifestMutationCoordinatorRejectsTheOperation()
     {
         using var temp = TempDirectory.Create();
         var projectRoot = CreateProjectWithCommonModules(temp, "Project");
         var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
         WriteManifest(commonRepo, ("Feature.bas", "optional", ""));
-        WriteModule(commonRepo, "Feature.bas", "repo feature");
-        var manifestPath = Path.Combine(projectRoot, ProjectManifest.ManifestFileName);
-        var manifest = new JsonProjectManifestStore().Load(manifestPath);
-        var document = manifest.Documents["Book1"];
-        var context = new ResolvedProjectContext(
+        WriteModule(commonRepo, "Feature.bas", "repository feature");
+        var coordinator = new RejectingCommonModulesMutationCoordinator();
+        var application = CommandLineTestFactory.Create(
             projectRoot,
-            manifestPath,
-            manifest,
+            projectManifestMutationCoordinator: coordinator);
+
+        var result = application.Run(["common-module", "add", "Feature"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Equal([ProjectManifestMutationCommand.CommonModuleAdd], coordinator.Commands);
+        Assert.Contains("coordinatorRejected", result.StandardError, StringComparison.Ordinal);
+        Assert.False(File.Exists(Path.Combine(
+            projectRoot,
+            "src",
             "Book1",
-            document,
-            Path.Combine(projectRoot, "src", "Book1"),
-            Path.Combine(projectRoot, "src", "Book1", "Book1.xlsm"),
-            Path.Combine(projectRoot, "bin", "Book1.xlsm"),
-            Path.Combine(projectRoot, "publish", "Book1.xlsm"),
-            commonRepo);
-        var manifestStore = new RecordingProjectManifestStore { ThrowOnSave = true };
-        var transaction = new CommonModulesInstallationTransaction(
-            new CommonModulesManifestReader(),
-            manifestStore,
-            new ProjectManifestAtomicWriter());
+            "common-modules",
+            "Feature.bas")));
+        var manifest = new JsonProjectManifestStore().Load(
+            Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
+        Assert.Empty(manifest.Documents["Book1"].CommonModules);
+    }
 
-        var error = Assert.Throws<CommonModulesTransactionException>(() => transaction.Add(context, ["Feature"], force: false));
+    [Fact]
+    public void UpdateCannotMutateWhenManifestMutationCoordinatorRejectsTheOperation()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = CreateProjectWithCommonModules(temp, "Project");
+        var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
+        WriteManifest(commonRepo, ("Feature.bas", "optional", ""));
+        WriteModule(commonRepo, "Feature.bas", "repository feature");
+        var projectSource = Path.Combine(projectRoot, "src", "Book1");
+        WriteModule(projectSource, "Feature.bas", "local feature");
+        var store = new JsonProjectManifestStore();
+        var manifestPath = Path.Combine(projectRoot, ProjectManifest.ManifestFileName);
+        var manifest = store.Load(manifestPath);
+        manifest.Documents["Book1"].CommonModules.Add(Installed("Feature", requested: true));
+        store.Save(projectRoot, manifest);
+        var coordinator = new RejectingCommonModulesMutationCoordinator();
+        var application = CommandLineTestFactory.Create(
+            projectRoot,
+            projectManifestMutationCoordinator: coordinator);
 
-        Assert.True(manifestStore.FileExistedDuringSave);
-        var recoveryFile = Assert.Single(Directory.EnumerateFiles(projectRoot, "vba-project.failed-*.json"));
-        Assert.Equal(recoveryFile, error.Message);
-        Assert.Contains("\"Feature\"", File.ReadAllText(recoveryFile, Encoding.Unicode), StringComparison.Ordinal);
-        var unchangedManifest = new JsonProjectManifestStore().Load(manifestPath);
-        Assert.Empty(unchangedManifest.Documents["Book1"].CommonModules);
+        var result = application.Run(["common-module", "update"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Equal([ProjectManifestMutationCommand.CommonModuleUpdate], coordinator.Commands);
+        Assert.Contains("coordinatorRejected", result.StandardError, StringComparison.Ordinal);
+        Assert.Equal("local feature", ReadModuleBody(Path.Combine(projectSource, "Feature.bas")));
+        Assert.Equal(
+            [Installed("Feature", requested: true)],
+            store.Load(manifestPath).Documents["Book1"].CommonModules);
     }
 
     [Fact]
@@ -2209,28 +2243,6 @@ public sealed class CommonModulesCommandTests
         File.WriteAllBytes(path, content);
     }
 
-    private sealed class RecordingProjectManifestStore : IProjectManifestStore
-    {
-        private readonly JsonProjectManifestStore inner = new();
-
-        public bool ThrowOnSave { get; init; }
-
-        public bool FileExistedDuringSave { get; private set; }
-
-        public ProjectManifest Load(string manifestPath) => inner.Load(manifestPath);
-
-        public void Save(string projectRoot, ProjectManifest manifest)
-        {
-            FileExistedDuringSave = File.Exists(Path.Combine(projectRoot, "src", "Book1", "common-modules", "Feature.bas"));
-            if (ThrowOnSave)
-            {
-                throw new IOException("manifest save failed");
-            }
-
-            inner.Save(projectRoot, manifest);
-        }
-    }
-
     private sealed class FailingCommitAtomicWriter(string projectRoot)
         : IProjectManifestAtomicWriter
     {
@@ -2262,6 +2274,24 @@ public sealed class CommonModulesCommandTests
 
         public string CreateRecovery(string root, ProjectManifest manifest)
             => throw new InvalidOperationException("Coordinator recovery was not expected.");
+    }
+
+    private sealed class RejectingCommonModulesMutationCoordinator
+        : IProjectManifestMutationCoordinator
+    {
+        public List<ProjectManifestMutationCommand> Commands { get; } = [];
+
+        public Task<ProjectManifestMutationOutcome<TResult>> ExecuteAsync<TResult>(
+            string projectRoot,
+            ProjectManifestMutationCommand command,
+            Func<ProjectManifestMutationSnapshot, ProjectManifestMutationPlan<TResult>> rebase,
+            CancellationToken cancellationToken)
+        {
+            Commands.Add(command);
+            throw new ProjectManifestMutationException(
+                "coordinatorRejected",
+                "The test coordinator rejected the mutation.");
+        }
     }
 
     private sealed class MutatingReferenceResolver(

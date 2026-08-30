@@ -64,9 +64,7 @@ public static class ToolingCompositionRoot
         var atomicManifestWriter = new ProjectManifestAtomicWriter();
         var manifestStore = projectManifestStore
                             ?? new JsonProjectManifestStore(atomicManifestWriter);
-        var manifestEditor = new ProjectManifestEditor(
-            manifestStore,
-            atomicManifestWriter);
+        var manifestEditor = new ProjectManifestEditor(atomicManifestWriter);
         var mutationLeaseProvider = projectManifestMutationLeaseProvider
                                     ?? new ProjectManifestMutationLeaseProvider();
         var mutationCoordinator = projectManifestMutationCoordinator

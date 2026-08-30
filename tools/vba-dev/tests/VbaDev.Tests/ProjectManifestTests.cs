@@ -350,19 +350,20 @@ public sealed class ProjectManifestTests
     }
 
     [Fact]
-    public void ProjectManifestEditorWritesRecoveryFileWhenSaveFails()
+    public void ProjectManifestEditorWritesRecoveryFileAfterCommitFailure()
     {
         using var temp = TempDirectory.Create();
         var root = temp.CreateDirectory("Project");
         var manifest = ProjectManifestTestData.FullManifest(root);
-        var editor = new ProjectManifestEditor(
-            new FailingProjectManifestStore(),
-            new ProjectManifestAtomicWriter());
+        var editor = new ProjectManifestEditor(new ProjectManifestAtomicWriter());
 
-        var error = Assert.Throws<ProjectManifestEditException>(() => editor.SaveWithRecovery(root, manifest));
+        var recoveryPath = editor.CreateRecoveryAfterFailedSave(
+            root,
+            manifest,
+            new IOException("manifest save failed"));
 
         var recoveryFile = Assert.Single(Directory.EnumerateFiles(root, "vba-project.failed-*.json"));
-        Assert.Equal(recoveryFile, error.Message);
+        Assert.Equal(recoveryFile, recoveryPath);
         Assert.Matches(
             @"^vba-project\.failed-\d{8}T\d{6}\.\d{3}Z-[0-9a-f]{32}\.json$",
             Path.GetFileName(recoveryFile));
@@ -375,26 +376,25 @@ public sealed class ProjectManifestTests
     }
 
     [Fact]
-    public void ProjectManifestEditorReportsOriginalAndRecoveryValidationFailures()
+    public void ProjectManifestEditorReportsCommitAndRecoveryValidationFailures()
     {
         using var temp = TempDirectory.Create();
         var root = temp.CreateDirectory("Project");
         var manifest = ProjectManifestTestData.FullManifest(root);
         manifest.Documents["Book1"].References.Add(
             new VbaProjectReference(VbaProjectReferenceName.StandardLibrary));
-        var editor = new ProjectManifestEditor(
-            new FailingProjectManifestStore(),
-            new ProjectManifestAtomicWriter());
+        var editor = new ProjectManifestEditor(new ProjectManifestAtomicWriter());
 
-        var error = Assert.Throws<ProjectManifestEditException>(
-            () => editor.SaveWithRecovery(root, manifest));
+        var error = editor.CreateRecoveryAfterFailedSave(
+            root,
+            manifest,
+            new IOException("manifest save failed"));
 
-        Assert.IsType<IOException>(error.InnerException);
-        Assert.Contains("manifest save failed", error.Message, StringComparison.Ordinal);
-        Assert.Contains("recovery file could not be written", error.Message, StringComparison.Ordinal);
+        Assert.Contains("manifest save failed", error, StringComparison.Ordinal);
+        Assert.Contains("recovery file could not be written", error, StringComparison.Ordinal);
         Assert.Contains(
             VbaProjectReferenceName.StandardLibrary,
-            error.Message,
+            error,
             StringComparison.Ordinal);
         Assert.Empty(Directory.EnumerateFiles(root, "vba-project.failed-*.json"));
     }
@@ -874,15 +874,6 @@ internal static class ProjectManifestTestData
                 ["SecondBook"] = ProjectDocument.CreateExcel("SecondBook")
             }
         };
-}
-
-internal sealed class FailingProjectManifestStore : IProjectManifestStore
-{
-    public ProjectManifest Load(string manifestPath)
-        => throw new NotSupportedException();
-
-    public void Save(string projectRoot, ProjectManifest manifest)
-        => throw new IOException("manifest save failed");
 }
 
 internal sealed class TempDirectory : IDisposable

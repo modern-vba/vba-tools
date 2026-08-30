@@ -401,7 +401,7 @@ public sealed class CommonModulesReconciliationTests
         var manifestReader = new CommonModulesManifestReader();
         var transaction = new CommonModulesInstallationTransaction(
             manifestReader,
-            new ProjectManifestEditor(new JsonProjectManifestStore(), observingWriter),
+            new ProjectManifestEditor(observingWriter),
             referencePlanner: null,
             manifestMutationCoordinator: new ProjectManifestMutationCoordinator(
                 observingWriter,
@@ -444,7 +444,7 @@ public sealed class CommonModulesReconciliationTests
         var snapshotScratch = temp.CreateDirectory("snapshot-scratch");
         var transaction = new CommonModulesInstallationTransaction(
             manifestReader,
-            new ProjectManifestEditor(new JsonProjectManifestStore(), conflictingWriter),
+            new ProjectManifestEditor(conflictingWriter),
             referencePlanner: null,
             manifestMutationCoordinator: new ProjectManifestMutationCoordinator(
                 conflictingWriter,
@@ -510,7 +510,7 @@ public sealed class CommonModulesReconciliationTests
         var atomicWriter = new ProjectManifestAtomicWriter();
         return new CommonModulesInstallationTransaction(
             manifestReader,
-            new ProjectManifestEditor(new JsonProjectManifestStore(), atomicWriter),
+            new ProjectManifestEditor(atomicWriter),
             referencePlanner: null,
             manifestMutationCoordinator: new ProjectManifestMutationCoordinator(
                 atomicWriter,

@@ -27,7 +27,7 @@ public sealed class CommonModulesInstallationTransaction
 
     private readonly ProjectManifestEditor manifestEditor;
     private readonly VbaProjectReferencePlanner? referencePlanner;
-    private readonly IProjectManifestMutationCoordinator? manifestMutationCoordinator;
+    private readonly IProjectManifestMutationCoordinator manifestMutationCoordinator;
     private readonly IFileSystemPathIdentityResolver pathIdentityResolver;
     private readonly CommonModulesPackageSnapshotFactory packageSnapshotFactory;
     private readonly CommonModulesSourceMutationWriter sourceMutationWriter;
@@ -36,30 +36,15 @@ public sealed class CommonModulesInstallationTransaction
     /// Creates a transaction coordinator for CommonModules installation operations.
     /// </summary>
     /// <param name="manifestReader">The manifest reader for the configured CommonModulesRepository.</param>
-    /// <param name="manifestStore">The project manifest store used to persist installed entries.</param>
-    public CommonModulesInstallationTransaction(
-        CommonModulesManifestReader manifestReader,
-        IProjectManifestStore manifestStore,
-        IProjectManifestAtomicWriter atomicWriter)
-        : this(
-            manifestReader,
-            new ProjectManifestEditor(manifestStore, atomicWriter),
-            referencePlanner: null,
-            manifestMutationCoordinator: null,
-            pathIdentityResolver: null)
-    {
-    }
-
-    /// <summary>
-    /// Creates a transaction coordinator for CommonModules installation operations.
-    /// </summary>
-    /// <param name="manifestReader">The manifest reader for the configured CommonModulesRepository.</param>
-    /// <param name="manifestEditor">The manifest editor used to clone and persist installed entries.</param>
+    /// <param name="manifestEditor">The helper used to clone manifests and persist recovery artifacts.</param>
+    /// <param name="referencePlanner">The optional required-reference planner.</param>
+    /// <param name="manifestMutationCoordinator">The mandatory leased manifest mutation boundary.</param>
+    /// <param name="pathIdentityResolver">The optional filesystem identity resolver.</param>
     public CommonModulesInstallationTransaction(
         CommonModulesManifestReader manifestReader,
         ProjectManifestEditor manifestEditor,
-        VbaProjectReferencePlanner? referencePlanner = null,
-        IProjectManifestMutationCoordinator? manifestMutationCoordinator = null,
+        VbaProjectReferencePlanner? referencePlanner,
+        IProjectManifestMutationCoordinator manifestMutationCoordinator,
         IFileSystemPathIdentityResolver? pathIdentityResolver = null)
         : this(
             manifestReader,
@@ -76,7 +61,7 @@ public sealed class CommonModulesInstallationTransaction
         CommonModulesManifestReader manifestReader,
         ProjectManifestEditor manifestEditor,
         VbaProjectReferencePlanner? referencePlanner,
-        IProjectManifestMutationCoordinator? manifestMutationCoordinator,
+        IProjectManifestMutationCoordinator manifestMutationCoordinator,
         IFileSystemPathIdentityResolver? pathIdentityResolver,
         CommonModulesPackageSnapshotFactory? packageSnapshotFactory,
         CommonModulesSourceMutationWriter? sourceMutationWriter)
@@ -84,7 +69,8 @@ public sealed class CommonModulesInstallationTransaction
         var packageReader = new CommonModulesPackageReader(manifestReader);
         this.manifestEditor = manifestEditor;
         this.referencePlanner = referencePlanner;
-        this.manifestMutationCoordinator = manifestMutationCoordinator;
+        this.manifestMutationCoordinator = manifestMutationCoordinator
+            ?? throw new ArgumentNullException(nameof(manifestMutationCoordinator));
         this.pathIdentityResolver = pathIdentityResolver ?? new FileSystemPathIdentityResolver();
         this.packageSnapshotFactory = packageSnapshotFactory
             ?? new CommonModulesPackageSnapshotFactory(packageReader);
@@ -152,28 +138,6 @@ public sealed class CommonModulesInstallationTransaction
         CommonModulesPackageSnapshot? transactionSnapshot = null;
         try
         {
-            if (manifestMutationCoordinator is null)
-            {
-                var plan = RebaseAdd(
-                    new ProjectManifestMutationSnapshot(
-                        context.ProjectRoot,
-                        context.ManifestPath,
-                        context.Manifest),
-                    context.DocumentName,
-                    normalizedRequestedModules,
-                    force,
-                    referenceEvidence,
-                    cancellationToken);
-                transactionSnapshot = plan.Result.PackageSnapshot;
-                if (plan.Manifest is not null)
-                {
-                    SaveManifest(context.ProjectRoot, plan.Manifest);
-                }
-
-                var cleanup = CleanupSnapshot(transactionSnapshot);
-                return CreateCompletion(plan.Result, [], cleanup);
-            }
-
             var outcome = await manifestMutationCoordinator.ExecuteAsync(
                     context.ProjectRoot,
                     ProjectManifestMutationCommand.CommonModuleAdd,
@@ -576,25 +540,6 @@ public sealed class CommonModulesInstallationTransaction
         CommonModulesPackageSnapshot? transactionSnapshot = null;
         try
         {
-            if (manifestMutationCoordinator is null)
-            {
-                var plan = RebaseUpdate(
-                    new ProjectManifestMutationSnapshot(
-                        project.ProjectRoot,
-                        project.ManifestPath,
-                        project.Manifest),
-                    referenceEvidenceByDocument,
-                    cancellationToken);
-                transactionSnapshot = plan.Result.PackageSnapshot;
-                if (plan.Manifest is not null)
-                {
-                    SaveManifest(project.ProjectRoot, plan.Manifest);
-                }
-
-                var cleanup = CleanupSnapshot(transactionSnapshot);
-                return CreateCompletion(plan.Result, [], cleanup);
-            }
-
             var outcome = await manifestMutationCoordinator.ExecuteAsync(
                     project.ProjectRoot,
                     ProjectManifestMutationCommand.CommonModuleUpdate,
@@ -1178,18 +1123,6 @@ public sealed class CommonModulesInstallationTransaction
         }
 
         return paths;
-    }
-
-    private void SaveManifest(string projectRoot, ProjectManifest manifest)
-    {
-        try
-        {
-            manifestEditor.SaveWithRecovery(projectRoot, manifest);
-        }
-        catch (ProjectManifestEditException ex)
-        {
-            throw new CommonModulesTransactionException(ex.Message);
-        }
     }
 
     private static CommonModulesMutationDocumentResult BuildMutationDocumentResult(

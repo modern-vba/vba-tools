@@ -3,22 +3,18 @@ using VbaDev.Domain;
 namespace VbaDev.App.Projects;
 
 /// <summary>
-/// Applies validated ProjectManifest edits and persistence policies.
+/// Supports validated ProjectManifest mutation planning and failure recovery.
 /// </summary>
 public sealed class ProjectManifestEditor
 {
-    private readonly IProjectManifestStore manifestStore;
     private readonly IProjectManifestAtomicWriter atomicWriter;
 
     /// <summary>
-    /// Creates a project manifest editor.
+    /// Creates a project manifest mutation helper.
     /// </summary>
-    /// <param name="manifestStore">The manifest store used to persist changes.</param>
-    public ProjectManifestEditor(
-        IProjectManifestStore manifestStore,
-        IProjectManifestAtomicWriter atomicWriter)
+    /// <param name="atomicWriter">The writer used to persist recovery artifacts.</param>
+    public ProjectManifestEditor(IProjectManifestAtomicWriter atomicWriter)
     {
-        this.manifestStore = manifestStore;
         this.atomicWriter = atomicWriter;
     }
 
@@ -73,39 +69,6 @@ public sealed class ProjectManifestEditor
     }
 
     /// <summary>
-    /// Saves a manifest through the configured manifest store.
-    /// </summary>
-    /// <param name="projectRoot">The project root containing vba-project.json.</param>
-    /// <param name="manifest">The manifest to save.</param>
-    public void Save(string projectRoot, ProjectManifest manifest)
-        => manifestStore.Save(projectRoot, manifest);
-
-    /// <summary>
-    /// Saves a manifest, writing a recovery file when the manifest store rejects the save.
-    /// </summary>
-    /// <param name="projectRoot">The project root containing vba-project.json.</param>
-    /// <param name="manifest">The manifest to save.</param>
-    public void SaveWithRecovery(string projectRoot, ProjectManifest manifest)
-    {
-        try
-        {
-            manifestStore.Save(projectRoot, manifest);
-        }
-        catch (IOException ex)
-        {
-            throw new ProjectManifestEditException(WriteManifestRecovery(projectRoot, manifest, ex), ex);
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            throw new ProjectManifestEditException(WriteManifestRecovery(projectRoot, manifest, ex), ex);
-        }
-        catch (ProjectManifestException ex)
-        {
-            throw new ProjectManifestEditException(WriteManifestRecovery(projectRoot, manifest, ex), ex);
-        }
-    }
-
-    /// <summary>
     /// Writes the planned manifest as a manual recovery artifact after another commit boundary fails.
     /// </summary>
     /// <param name="projectRoot">The project root that receives the recovery artifact.</param>
@@ -143,20 +106,4 @@ public sealed class ProjectManifestEditor
 
     private static string RecoveryFailureMessage(Exception manifestSaveException, Exception recoveryException)
         => $"Project manifest could not be saved ({manifestSaveException.Message}), and recovery file could not be written: {recoveryException.Message}";
-}
-
-/// <summary>
-/// Reports a failed manifest edit or recovery operation.
-/// </summary>
-public sealed class ProjectManifestEditException : Exception
-{
-    /// <summary>
-    /// Creates a project manifest edit exception.
-    /// </summary>
-    /// <param name="message">The user-facing edit failure message.</param>
-    /// <param name="innerException">The underlying edit failure.</param>
-    public ProjectManifestEditException(string message, Exception innerException)
-        : base(message, innerException)
-    {
-    }
 }
