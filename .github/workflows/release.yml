@@ -1,0 +1,569 @@
+name: Release VBA Tools
+
+on:
+  push:
+    tags:
+      - vba-tools-v*
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing protected annotated tag whose draft release should resume
+        required: true
+        type: string
+
+concurrency:
+  group: vba-tools-release
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate protected release tag
+    runs-on: windows-2025
+    permissions:
+      contents: read
+    outputs:
+      tag_name: ${{ steps.validate.outputs.tag_name }}
+      target_commit: ${{ steps.validate.outputs.target_commit }}
+      extension_version: ${{ steps.validate.outputs.extension_version }}
+      channel: ${{ steps.validate.outputs.channel }}
+      vba_dev_version: ${{ steps.validate.outputs.vba_dev_version }}
+      release_title: ${{ steps.validate.outputs.release_title }}
+      vsix_name: ${{ steps.validate.outputs.vsix_name }}
+      cli_archive_name: ${{ steps.validate.outputs.cli_archive_name }}
+    steps:
+      - name: Check out the trusted workflow source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify release protections remain active
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $summaries = @(gh api "repos/$env:GITHUB_REPOSITORY/rulesets" | ConvertFrom-Json)
+          if ($LASTEXITCODE -ne 0) { throw 'Release ruleset lookup failed.' }
+          $creationSummary = @($summaries | Where-Object {
+            $_.name -eq 'authorized vba-tools release tag creation' -and
+            $_.target -eq 'tag' -and $_.enforcement -eq 'active'
+          })
+          $immutableSummary = @($summaries | Where-Object {
+            $_.name -eq 'keep vba-tools release tags immutable' -and
+            $_.target -eq 'tag' -and $_.enforcement -eq 'active'
+          })
+          if ($creationSummary.Count -ne 1 -or $immutableSummary.Count -ne 1) {
+            throw 'Required active release tag rulesets are missing or ambiguous.'
+          }
+          $creation = gh api "repos/$env:GITHUB_REPOSITORY/rulesets/$($creationSummary[0].id)" | ConvertFrom-Json
+          $immutable = gh api "repos/$env:GITHUB_REPOSITORY/rulesets/$($immutableSummary[0].id)" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Release ruleset detail lookup failed.' }
+          if (@($creation.conditions.ref_name.include).Count -ne 1 -or
+            $creation.conditions.ref_name.include[0] -ne 'refs/tags/vba-tools-v*' -or
+            @($creation.rules).Count -ne 1 -or $creation.rules[0].type -ne 'creation' -or
+            @($creation.bypass_actors).Count -ne 1 -or
+            $creation.bypass_actors[0].actor_type -ne 'RepositoryRole' -or
+            $creation.bypass_actors[0].actor_id -ne 5) {
+            throw 'Release tag creation is not limited to repository administrators.'
+          }
+          $immutableRuleTypes = @($immutable.rules | ForEach-Object { $_.type } | Sort-Object)
+          if (@($immutable.conditions.ref_name.include).Count -ne 1 -or
+            $immutable.conditions.ref_name.include[0] -ne 'refs/tags/vba-tools-v*' -or
+            ($immutableRuleTypes -join ',') -ne 'deletion,update' -or
+            @($immutable.bypass_actors).Count -ne 0) {
+            throw 'Release tags are not protected against every update and deletion.'
+          }
+          $immutableReleases = gh api `
+            -H 'X-GitHub-Api-Version: 2026-03-10' `
+            "repos/$env:GITHUB_REPOSITORY/immutable-releases" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $immutableReleases.enabled -ne $true) {
+            throw 'GitHub immutable releases must remain enabled.'
+          }
+      - name: Resolve and validate the annotated tag
+        id: validate
+        shell: pwsh
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+          PUSH_TAG: ${{ github.ref_name }}
+          DISPATCH_TAG: ${{ inputs.release_tag }}
+        run: |
+          if ($env:EVENT_NAME -eq 'workflow_dispatch' -and
+            $env:EVENT_REF -cne "refs/tags/$env:DISPATCH_TAG") {
+            throw 'Manual resume must run from the exact release tag supplied as release_tag.'
+          }
+          $tag = if ($env:EVENT_NAME -eq 'push') { $env:PUSH_TAG } else { $env:DISPATCH_TAG }
+          node scripts/releaseWorkflow.mjs validate-tag `
+            --tag $tag `
+            --metadata release-metadata.json `
+            --github-output $env:GITHUB_OUTPUT
+
+  build:
+    name: Verify once and assemble approved artifacts
+    if: github.event_name == 'push'
+    needs: validate
+    runs-on: windows-2025
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the exact tag target
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.validate.outputs.target_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - name: Set up .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+      - name: Restore locked JavaScript dependencies
+        run: npm ci --ignore-scripts
+      - name: Run hosted verification and build the release set once
+        shell: pwsh
+        run: |
+          npm run release:artifacts -- `
+            --extension-version '${{ needs.validate.outputs.extension_version }}' `
+            --channel '${{ needs.validate.outputs.channel }}' `
+            --vba-dev-version '${{ needs.validate.outputs.vba_dev_version }}' `
+            --output release-set
+      - name: Preserve the exact release set
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-set
+          path: release-set
+          if-no-files-found: error
+          retention-days: 30
+
+  stage:
+    name: Stage the exact files on a draft release
+    if: github.event_name == 'push'
+    needs:
+      - validate
+      - build
+    runs-on: windows-2025
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the exact tag target
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.validate.outputs.target_commit }}
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - name: Restore locked validation dependencies
+        run: npm ci --ignore-scripts
+      - name: Download the build-once release set
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-set
+          path: release-set
+      - name: Validate the staged files before creating the draft
+        shell: pwsh
+        run: |
+          node scripts/releaseWorkflow.mjs validate-assets `
+            --directory release-set `
+            --extension-version '${{ needs.validate.outputs.extension_version }}' `
+            --channel '${{ needs.validate.outputs.channel }}' `
+            --vba-dev-version '${{ needs.validate.outputs.vba_dev_version }}'
+      - name: Create the artifact-preserving draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ needs.validate.outputs.tag_name }}
+          TARGET_COMMIT: ${{ needs.validate.outputs.target_commit }}
+          EXTENSION_VERSION: ${{ needs.validate.outputs.extension_version }}
+          CHANNEL: ${{ needs.validate.outputs.channel }}
+          VBA_DEV_VERSION: ${{ needs.validate.outputs.vba_dev_version }}
+          RELEASE_TITLE: ${{ needs.validate.outputs.release_title }}
+          VSIX_NAME: ${{ needs.validate.outputs.vsix_name }}
+          CLI_ARCHIVE_NAME: ${{ needs.validate.outputs.cli_archive_name }}
+        run: |
+          $changelog = Get-Content -Raw -LiteralPath 'CHANGELOG.md'
+          $escapedVersion = [regex]::Escape($env:EXTENSION_VERSION)
+          $changelogMatch = [regex]::Match(
+            $changelog,
+            "(?ms)^## \[$escapedVersion\] - [^\r\n]+\r?\n(?<body>.*?)(?=^## \[|\z)"
+          )
+          if (-not $changelogMatch.Success) {
+            throw "CHANGELOG.md does not contain the reviewed $env:EXTENSION_VERSION section."
+          }
+          $releaseBody = [regex]::Replace(
+            $changelogMatch.Groups['body'].Value.Trim(),
+            '(?m)^### ',
+            '## '
+          )
+
+          $vbaDevContract = Get-Content -Raw -LiteralPath 'vba-dev-contract.json' | ConvertFrom-Json
+          $debugAdapterContract = Get-Content -Raw -LiteralPath 'vba-debug-adapter-contract.json' | ConvertFrom-Json
+          $debugAdapterProps = Get-Content -Raw -LiteralPath 'tools/vba-debug-adapter/Directory.Build.props'
+          $debugAdapterVersionMatch = [regex]::Match(
+            $debugAdapterProps,
+            '<VbaDebugAdapterReleaseVersion>\s*(?<version>\d+\.\d+\.\d+)\s*</VbaDebugAdapterReleaseVersion>'
+          )
+          $languageServerSource = Get-Content -Raw -LiteralPath 'tools/vba-language-server/src/VbaLanguageServer.Cli/Program.cs'
+          $languageServerVersionMatch = [regex]::Match(
+            $languageServerSource,
+            'Console\.WriteLine\("vba-language-server (?<version>\d+\.\d+\.\d+)"\)'
+          )
+          if (-not $debugAdapterVersionMatch.Success -or -not $languageServerVersionMatch.Success) {
+            throw 'Bundled runtime version metadata is incomplete.'
+          }
+
+          $notes = @(
+            $releaseBody
+            ''
+            '## Release Metadata'
+            ''
+            "- Target commit: ``$env:TARGET_COMMIT``"
+            "- Marketplace channel: ``$env:CHANNEL``"
+            "- VS Code extension: ``$env:EXTENSION_VERSION`` for ``win32-x64``"
+            '- Windows verification evidence is recorded in the annotated tag.'
+            ''
+            '## Bundled Tools'
+            ''
+            "- vba-dev: ``$env:VBA_DEV_VERSION``"
+            "- vba-dev contract: ``$($vbaDevContract.contractVersion)``"
+            "- vba-debug-adapter: ``$($debugAdapterVersionMatch.Groups['version'].Value)``"
+            "- vba-debug-adapter contract: ``$($debugAdapterContract.contractVersion)``; protocol ``$($debugAdapterContract.protocolVersion)``"
+            "- vba-language-server: ``$($languageServerVersionMatch.Groups['version'].Value)``"
+            ''
+            '## Artifacts'
+            ''
+            "- VSIX: ``$env:VSIX_NAME``"
+            "- Standalone vba-dev: ``$env:CLI_ARCHIVE_NAME``"
+            '- Checksums: `SHA256SUMS`'
+          ) -join "`n"
+          [System.IO.File]::WriteAllText(
+            (Join-Path $PWD 'release-notes.md'),
+            "$notes`n",
+            [System.Text.UTF8Encoding]::new($false)
+          )
+          $arguments = @(
+            'release', 'create', $env:TAG_NAME,
+            (Join-Path 'release-set' $env:VSIX_NAME),
+            (Join-Path 'release-set' $env:CLI_ARCHIVE_NAME),
+            (Join-Path 'release-set' 'SHA256SUMS'),
+            '--verify-tag', '--draft', '--title', $env:RELEASE_TITLE,
+            '--notes-file', 'release-notes.md'
+          )
+          if ($env:CHANNEL -eq 'pre-release') {
+            $arguments += '--prerelease'
+          }
+          gh @arguments
+          if ($LASTEXITCODE -ne 0) { throw 'Draft release creation failed.' }
+          $releaseJson = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:TAG_NAME"
+          if ($LASTEXITCODE -ne 0) { throw 'Draft release lookup failed.' }
+          [System.IO.File]::WriteAllText(
+            (Join-Path $PWD 'draft-release.json'),
+            "$releaseJson`n",
+            [System.Text.UTF8Encoding]::new($false)
+          )
+          node scripts/releaseWorkflow.mjs validate-draft `
+            --release-json draft-release.json `
+            --directory release-set `
+            --tag $env:TAG_NAME `
+            --title $env:RELEASE_TITLE `
+            --extension-version $env:EXTENSION_VERSION `
+            --channel $env:CHANNEL `
+            --vba-dev-version $env:VBA_DEV_VERSION `
+            --vsix-name $env:VSIX_NAME `
+            --cli-archive-name $env:CLI_ARCHIVE_NAME
+
+  publish:
+    name: Publish through the protected secretless environment
+    if: >-
+      always() &&
+      needs.validate.result == 'success' &&
+      ((github.event_name == 'push' && needs.build.result == 'success' && needs.stage.result == 'success') ||
+      (github.event_name == 'workflow_dispatch' && needs.build.result == 'skipped' && needs.stage.result == 'skipped'))
+    needs:
+      - validate
+      - build
+      - stage
+    runs-on: windows-2025
+    environment: marketplace-release
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+    steps:
+      - name: Check out the exact tag target
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.validate.outputs.target_commit }}
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - name: Restore locked publishing dependencies
+        run: npm ci --ignore-scripts
+      - name: Download the immutable current-run release set
+        if: github.event_name == 'push'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-set
+          path: staged
+      - name: Download the existing draft release set
+        shell: pwsh
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ needs.validate.outputs.tag_name }}
+          VSIX_NAME: ${{ needs.validate.outputs.vsix_name }}
+          CLI_ARCHIVE_NAME: ${{ needs.validate.outputs.cli_archive_name }}
+        run: |
+          $draftDirectory = if ($env:EVENT_NAME -eq 'push') { 'draft-staged' } else { 'staged' }
+          New-Item -ItemType Directory -Path $draftDirectory | Out-Null
+          gh release download $env:TAG_NAME --dir $draftDirectory --pattern $env:VSIX_NAME
+          if ($LASTEXITCODE -ne 0) { throw 'Draft VSIX download failed.' }
+          gh release download $env:TAG_NAME --dir $draftDirectory --pattern $env:CLI_ARCHIVE_NAME
+          if ($LASTEXITCODE -ne 0) { throw 'Draft CLI archive download failed.' }
+          gh release download $env:TAG_NAME --dir $draftDirectory --pattern SHA256SUMS
+          if ($LASTEXITCODE -ne 0) { throw 'Draft checksum download failed.' }
+      - name: Bind the initial draft to the current-run artifact
+        if: github.event_name == 'push'
+        shell: pwsh
+        env:
+          VSIX_NAME: ${{ needs.validate.outputs.vsix_name }}
+          CLI_ARCHIVE_NAME: ${{ needs.validate.outputs.cli_archive_name }}
+        run: |
+          foreach ($name in @($env:VSIX_NAME, $env:CLI_ARCHIVE_NAME, 'SHA256SUMS')) {
+            $artifactPath = Join-Path staged $name
+            $draftPath = Join-Path draft-staged $name
+            if (-not (Test-Path -LiteralPath $artifactPath -PathType Leaf) -or
+              -not (Test-Path -LiteralPath $draftPath -PathType Leaf)) {
+              throw "Actions artifact or draft release is missing $name."
+            }
+            $artifactHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $artifactPath).Hash
+            $draftHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $draftPath).Hash
+            if ($artifactHash -cne $draftHash) {
+              throw "Actions artifact and draft release bytes differ for $name."
+            }
+          }
+      - name: Attest the current-run VSIX
+        if: github.event_name == 'push'
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
+        with:
+          subject-path: staged/${{ needs.validate.outputs.vsix_name }}
+      - name: Attest the current-run standalone CLI archive
+        if: github.event_name == 'push'
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
+        with:
+          subject-path: staged/${{ needs.validate.outputs.cli_archive_name }}
+      - name: Verify build provenance before inspecting executables
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ needs.validate.outputs.tag_name }}
+          TARGET_COMMIT: ${{ needs.validate.outputs.target_commit }}
+          VSIX_NAME: ${{ needs.validate.outputs.vsix_name }}
+          CLI_ARCHIVE_NAME: ${{ needs.validate.outputs.cli_archive_name }}
+        run: |
+          gh attestation verify (Join-Path staged $env:VSIX_NAME) `
+            --repo $env:GITHUB_REPOSITORY `
+            --signer-workflow modern-vba/vba-tools/.github/workflows/release.yml `
+            --source-ref "refs/tags/$env:TAG_NAME" `
+            --source-digest $env:TARGET_COMMIT `
+            --deny-self-hosted-runners
+          if ($LASTEXITCODE -ne 0) { throw 'Staged VSIX build provenance verification failed.' }
+          gh attestation verify (Join-Path staged $env:CLI_ARCHIVE_NAME) `
+            --repo $env:GITHUB_REPOSITORY `
+            --signer-workflow modern-vba/vba-tools/.github/workflows/release.yml `
+            --source-ref "refs/tags/$env:TAG_NAME" `
+            --source-digest $env:TARGET_COMMIT `
+            --deny-self-hosted-runners
+          if ($LASTEXITCODE -ne 0) { throw 'Staged CLI archive build provenance verification failed.' }
+      - name: Fail-closed validate the existing draft
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ needs.validate.outputs.tag_name }}
+          RELEASE_TITLE: ${{ needs.validate.outputs.release_title }}
+          EXTENSION_VERSION: ${{ needs.validate.outputs.extension_version }}
+          CHANNEL: ${{ needs.validate.outputs.channel }}
+          VBA_DEV_VERSION: ${{ needs.validate.outputs.vba_dev_version }}
+          VSIX_NAME: ${{ needs.validate.outputs.vsix_name }}
+          CLI_ARCHIVE_NAME: ${{ needs.validate.outputs.cli_archive_name }}
+        run: |
+          $releaseJson = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:TAG_NAME"
+          if ($LASTEXITCODE -ne 0) { throw 'Draft release lookup failed.' }
+          [System.IO.File]::WriteAllText(
+            (Join-Path $PWD 'draft-release.json'),
+            "$releaseJson`n",
+            [System.Text.UTF8Encoding]::new($false)
+          )
+          node scripts/releaseWorkflow.mjs validate-draft `
+            --release-json draft-release.json `
+            --directory staged `
+            --tag $env:TAG_NAME `
+            --title $env:RELEASE_TITLE `
+            --extension-version $env:EXTENSION_VERSION `
+            --channel $env:CHANNEL `
+            --vba-dev-version $env:VBA_DEV_VERSION `
+            --vsix-name $env:VSIX_NAME `
+            --cli-archive-name $env:CLI_ARCHIVE_NAME
+      - name: Authenticate with the publishing managed identity
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Verify identity scope and Marketplace read access
+        shell: pwsh
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          AZURE_MANAGED_IDENTITY_RESOURCE_ID: ${{ vars.AZURE_MANAGED_IDENTITY_RESOURCE_ID }}
+        run: |
+          $identity = az identity show --ids $env:AZURE_MANAGED_IDENTITY_RESOURCE_ID | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $identity.clientId -ne $env:AZURE_CLIENT_ID) {
+            throw 'OIDC principal does not match the configured managed identity resource.'
+          }
+          $resourceGroupScope = $env:AZURE_MANAGED_IDENTITY_RESOURCE_ID -replace '/providers/Microsoft.ManagedIdentity/userAssignedIdentities/[^/]+$', ''
+          $assignments = az role assignment list `
+            --assignee-object-id $identity.principalId `
+            --all | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or @($assignments).Count -ne 1 -or
+            $assignments[0].roleDefinitionName -ne 'Reader' -or
+            $assignments[0].scope -ne $resourceGroupScope) {
+            throw 'Managed identity must have only one Azure role: Reader at the release identity resource group.'
+          }
+          az rest `
+            --method get `
+            --url https://app.vssps.visualstudio.com/_apis/profile/profiles/me `
+            --resource 499b84ac-1321-427f-aa17-267ca6975798 `
+            --output json
+          if ($LASTEXITCODE -ne 0) { throw 'Marketplace identity profile probe failed.' }
+          npx --no-install vsce verify-pat modern-vba --azure-credential
+          if ($LASTEXITCODE -ne 0) { throw 'Marketplace Contributor probe failed.' }
+      - name: Check whether the exact Marketplace package is already visible
+        id: marketplace
+        shell: pwsh
+        env:
+          EXTENSION_VERSION: ${{ needs.validate.outputs.extension_version }}
+          CHANNEL: ${{ needs.validate.outputs.channel }}
+        run: |
+          $output = npx --no-install vsce show modern-vba.vba-tools --json 2>&1
+          if ($LASTEXITCODE -eq 0) {
+            [System.IO.File]::WriteAllText(
+              (Join-Path $PWD 'marketplace.json'),
+              "$output`n",
+              [System.Text.UTF8Encoding]::new($false)
+            )
+            node scripts/releaseWorkflow.mjs marketplace-state `
+              --marketplace-json marketplace.json `
+              --extension-version $env:EXTENSION_VERSION `
+              --channel $env:CHANNEL `
+              --github-output $env:GITHUB_OUTPUT
+          } elseif (($output -join "`n") -match '(?i)extension.+not found|not found.+extension') {
+            "marketplace_visible=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          } else {
+            throw "Marketplace lookup failed without a definitive not-found response: $output"
+          }
+      - name: Publish the staged pre-release package
+        if: steps.marketplace.outputs.marketplace_visible != 'true'
+        shell: pwsh
+        env:
+          CHANNEL: ${{ needs.validate.outputs.channel }}
+          VSIX_NAME: ${{ needs.validate.outputs.vsix_name }}
+        run: |
+          if ($env:CHANNEL -eq 'pre-release') {
+            npx --no-install vsce publish --azure-credential --pre-release --packagePath (Join-Path staged $env:VSIX_NAME)
+          } else {
+            npx --no-install vsce publish --azure-credential --packagePath (Join-Path staged $env:VSIX_NAME)
+          }
+          if ($LASTEXITCODE -ne 0) { throw 'Marketplace publication failed.' }
+      - name: Poll for the exact Marketplace version and channel
+        shell: pwsh
+        env:
+          EXTENSION_VERSION: ${{ needs.validate.outputs.extension_version }}
+          CHANNEL: ${{ needs.validate.outputs.channel }}
+        run: |
+          $verified = $false
+          for ($attempt = 1; $attempt -le 20; $attempt++) {
+            $output = npx --no-install vsce show modern-vba.vba-tools --json 2>&1
+            if ($LASTEXITCODE -eq 0) {
+              [System.IO.File]::WriteAllText(
+                (Join-Path $PWD 'marketplace.json'),
+                "$output`n",
+                [System.Text.UTF8Encoding]::new($false)
+              )
+              node scripts/releaseWorkflow.mjs verify-marketplace `
+                --marketplace-json marketplace.json `
+                --extension-version $env:EXTENSION_VERSION `
+                --channel $env:CHANNEL
+              if ($LASTEXITCODE -eq 0) {
+                $verified = $true
+                break
+              }
+            }
+            if ($attempt -lt 20) { Start-Sleep -Seconds 30 }
+          }
+          if (-not $verified) { throw 'Exact Marketplace version did not become visible within ten minutes.' }
+      - name: Publish and verify the immutable GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ needs.validate.outputs.tag_name }}
+          TARGET_COMMIT: ${{ needs.validate.outputs.target_commit }}
+          EXTENSION_VERSION: ${{ needs.validate.outputs.extension_version }}
+          CHANNEL: ${{ needs.validate.outputs.channel }}
+          VBA_DEV_VERSION: ${{ needs.validate.outputs.vba_dev_version }}
+          VSIX_NAME: ${{ needs.validate.outputs.vsix_name }}
+          CLI_ARCHIVE_NAME: ${{ needs.validate.outputs.cli_archive_name }}
+        run: |
+          $arguments = @('release', 'edit', $env:TAG_NAME, '--draft=false')
+          if ($env:CHANNEL -eq 'pre-release') { $arguments += '--prerelease' }
+          gh @arguments
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub Release publication failed.' }
+          $releaseVerified = $false
+          for ($attempt = 1; $attempt -le 20; $attempt++) {
+            gh release verify $env:TAG_NAME
+            if ($LASTEXITCODE -eq 0) {
+              $releaseVerified = $true
+              break
+            }
+            if ($attempt -lt 20) { Start-Sleep -Seconds 15 }
+          }
+          if (-not $releaseVerified) { throw 'Immutable GitHub Release attestation verification failed.' }
+          New-Item -ItemType Directory -Path published | Out-Null
+          gh release download $env:TAG_NAME --dir published
+          if ($LASTEXITCODE -ne 0) { throw 'Published release asset download failed.' }
+          node scripts/releaseWorkflow.mjs validate-assets `
+            --directory published `
+            --extension-version $env:EXTENSION_VERSION `
+            --channel $env:CHANNEL `
+            --vba-dev-version $env:VBA_DEV_VERSION
+          gh attestation verify (Join-Path published $env:VSIX_NAME) `
+            --repo $env:GITHUB_REPOSITORY `
+            --signer-workflow modern-vba/vba-tools/.github/workflows/release.yml `
+            --source-ref "refs/tags/$env:TAG_NAME" `
+            --source-digest $env:TARGET_COMMIT `
+            --deny-self-hosted-runners
+          if ($LASTEXITCODE -ne 0) { throw 'VSIX provenance verification failed.' }
+          gh attestation verify (Join-Path published $env:CLI_ARCHIVE_NAME) `
+            --repo $env:GITHUB_REPOSITORY `
+            --signer-workflow modern-vba/vba-tools/.github/workflows/release.yml `
+            --source-ref "refs/tags/$env:TAG_NAME" `
+            --source-digest $env:TARGET_COMMIT `
+            --deny-self-hosted-runners
+          if ($LASTEXITCODE -ne 0) { throw 'CLI archive provenance verification failed.' }
+          $extensionIdentifier = "modern-vba.vba-tools@$env:EXTENSION_VERSION"
+          $installArguments = @('--install-extension', $extensionIdentifier, '--force')
+          if ($env:CHANNEL -eq 'pre-release') {
+            $installArguments += '--pre-release'
+          }
+          code @installArguments
+          if ($LASTEXITCODE -ne 0) { throw 'Marketplace installation failed.' }
+          $installed = code --list-extensions --show-versions
+          if ($LASTEXITCODE -ne 0 -or $installed -notcontains $extensionIdentifier) {
+            throw 'Installed Marketplace extension version is not the released version.'
+          }

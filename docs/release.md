@@ -77,7 +77,9 @@ VS Code Marketplace release, the matching GitHub Release, and the standalone
   staged draft must make its release assets and associated tag immutable and
   produce GitHub's release attestation.
 - Generate GitHub build provenance attestations for the VSIX and standalone
-  `vba-dev` ZIP, and retain `SHA256SUMS` as the simple offline integrity check.
+  `vba-dev` ZIP inside the protected Marketplace environment after binding the
+  draft bytes to the immutable current-run Actions artifact. Retain `SHA256SUMS`
+  as the simple offline integrity check.
 - Do not require Authenticode signing for the initial release. Document that a
   directly downloaded standalone executable may display an unknown-publisher
   warning and show users how to verify its checksum and GitHub attestation.
@@ -96,8 +98,9 @@ VS Code Marketplace release, the matching GitHub Release, and the standalone
   an explicit product commitment.
 - Build the VSIX, standalone `vba-dev` ZIP, and `SHA256SUMS` once for each
   release tag, then stage those exact files on a draft GitHub Release. Treat
-  the draft release as the artifact source of truth for Marketplace publishing
-  and any retry; publishing jobs must not rebuild release artifacts.
+  the immutable current-run Actions artifact as the initial provenance anchor
+  and the matching draft as the durable source for attestation-verified retry;
+  publishing jobs must not rebuild release artifacts.
 - Serialize release workflows for the repository and do not cancel an active
   release when another run is requested. A protected tag starts a new release;
   manual dispatch may only resume an existing tagged draft release.
@@ -190,6 +193,20 @@ Create the release identity without client secrets or stored PATs:
 The maintainer may need to complete interactive Azure and Marketplace sign-in,
 MFA, consent, and the publisher-member assignment. Do not create a client secret
 as a workaround for an incomplete interactive setup.
+
+The environment variable names are fixed by `.github/workflows/release.yml`:
+
+- `AZURE_SUBSCRIPTION_ID`
+- `AZURE_TENANT_ID`
+- `AZURE_CLIENT_ID`
+- `AZURE_MANAGED_IDENTITY_RESOURCE_ID`
+
+All four are GitHub Environment variables, not secrets. The resource ID is the
+full resource ID of `vba-tools-marketplace-publisher`. The workflow resolves
+that identity, requires its only Azure role assignment to be `Reader` at the
+`modern-vba-release-identities` resource-group scope, performs the Marketplace
+profile probe, and runs `vsce verify-pat modern-vba --azure-credential` before
+it is allowed to publish.
 
 ## Prepare the Release Change
 
@@ -462,17 +479,21 @@ Build each release asset once, upload it to the draft, and verify every uploaded
 file against `SHA256SUMS`. Keep the release as a draft until Marketplace
 publishing succeeds.
 
-The Marketplace job must download the VSIX from the draft release and verify
-its checksum before calling `vsce publish`; it must not package another VSIX
-from the source checkout. A retry or explicitly resumed release must use the
-same draft asset and checksum. If the draft asset is missing or disagrees with
-`SHA256SUMS`, stop the release instead of rebuilding it in the publishing job.
+On the initial tag run, the Marketplace environment job must download the
+immutable release set uploaded by the current workflow run, compare every byte
+of the VSIX, standalone CLI ZIP, and `SHA256SUMS` with the draft release, and
+attest the current-run files before inspecting or publishing them. It must not
+package another VSIX from the source checkout. An explicitly resumed release
+may use the draft files only after their existing attestations are verified
+against this workflow, the exact release-tag ref, and the exact tag target
+commit. If an asset, checksum, digest binding, or attestation is missing, stop
+instead of rebuilding or creating a new attestation during a resume.
 
 Generate GitHub build provenance attestations for the VSIX and standalone CLI
-ZIP before publication. After Marketplace publication succeeds, publish the
-draft as an immutable GitHub Release and verify the resulting release
-attestation. The release workflow needs only the scoped `attestations: write`,
-`id-token: write`, and release-content permissions required by these steps.
+ZIP before publication. Keep both `attestations: write` and `id-token: write`
+confined to the protected Marketplace environment job. After Marketplace
+publication succeeds, publish the draft as an immutable GitHub Release and
+verify the resulting release attestation.
 
 ## Automated Release State Machine
 
@@ -481,13 +502,15 @@ The protected `vba-tools-v*` tag workflow performs these states in order:
 1. Validate the tag, extension version, channel, bundled CLI version, exact
    commit, manual Excel-gate evidence, and absence of a conflicting release.
 2. Run hosted verification and build the VSIX and standalone CLI ZIP once.
-3. Create or validate the draft GitHub Release, upload the assets and
-   `SHA256SUMS`, and create build provenance attestations.
-4. Download the staged VSIX, verify its checksum, authenticate through the
-   release environment, and publish it to the Marketplace.
-5. Poll the Marketplace until the expected publisher, extension version,
+3. Create the draft GitHub Release and upload the assets and `SHA256SUMS`.
+4. In the protected release environment, bind the draft bytes to the immutable
+   current-run artifact, create build provenance attestations, and verify them
+   against the release tag and target commit before inspecting executables.
+5. Authenticate through the release environment and publish the verified VSIX
+   to the Marketplace.
+6. Poll the Marketplace until the expected publisher, extension version,
    platform target, and pre-release/stable channel are visible.
-6. Publish the draft as an immutable GitHub Release and verify its release
+7. Publish the draft as an immutable GitHub Release and verify its release
    attestation.
 
 Use a repository-wide release concurrency group with `cancel-in-progress:
@@ -499,6 +522,21 @@ release tag. It must verify and reuse that tag's draft assets, skip Marketplace
 publication when the exact expected version is already visible, and continue
 post-publication verification and finalization. It must fail instead of
 building when an expected asset or checksum is absent.
+
+Resume only after inspecting the failed run and confirming that its tagged
+draft should continue:
+
+```powershell
+gh workflow run release.yml --ref vba-tools-vX.Y.Z -f release_tag=vba-tools-vX.Y.Z
+```
+
+The dispatch ref and `release_tag` input must name the same exact release tag.
+Dispatch does not create a release, rebuild an asset, move a tag, create a
+missing attestation, or authorize a different version. A missing or published
+draft, an asset-set difference, a checksum mismatch, an absent or mismatched
+attestation, or different tag metadata stops the resumed run. If the initial
+tag run failed before creating attestations, rerun that original tag workflow;
+do not use manual resume to bypass the missing trust anchor.
 
 Release title:
 
@@ -598,12 +636,21 @@ If Marketplace publish fails:
 
 ## Post-Release Checks
 
-- Install the Marketplace version into a normal VS Code profile.
+- Install the exact Marketplace version into a normal VS Code profile. Include
+  `--pre-release` only for the pre-release channel:
+
+  ```powershell
+  code --install-extension modern-vba.vba-tools@X.Y.Z --pre-release --force
+  code --list-extensions --show-versions
+  ```
+
 - Open an exported VBA file and confirm language features activate.
 - Open a workbook-backed sample and run Doctor.
 - Confirm the GitHub Release assets are downloadable.
 - Confirm the GitHub Release is marked immutable and its release attestation
   verifies.
 - Run `gh attestation verify` for the downloaded VSIX and standalone CLI ZIP.
+- Verify the downloaded files against `SHA256SUMS` and confirm the standalone
+  ZIP contains the exact `vba-dev.exe` bundled in the VSIX.
 - Confirm README `Version History` points to GitHub Releases.
 - Open an issue for any manual follow-up that was intentionally deferred.
