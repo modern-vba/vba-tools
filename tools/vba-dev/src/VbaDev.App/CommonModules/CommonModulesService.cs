@@ -36,7 +36,7 @@ public sealed class CommonModulesService
     /// <param name="force">Whether existing target source files may be overwritten.</param>
     /// <returns>The command result to print and return from the CLI.</returns>
     public CommandResult Add(ResolvedProjectContext context, IReadOnlyList<string> requestedModules, bool force)
-        => AddAsync(context, requestedModules, force, CancellationToken.None)
+        => AddAsync(context, requestedModules, force, "text", CancellationToken.None)
             .GetAwaiter()
             .GetResult();
 
@@ -48,12 +48,33 @@ public sealed class CommonModulesService
         IReadOnlyList<string> requestedModules,
         bool force,
         CancellationToken cancellationToken)
+        => await AddAsync(
+                context,
+                requestedModules,
+                force,
+                "text",
+                cancellationToken)
+            .ConfigureAwait(false);
+
+    /// <summary>
+    /// Adds requested CommonModules and renders the selected success format.
+    /// </summary>
+    public async Task<CommandResult> AddAsync(
+        ResolvedProjectContext context,
+        IReadOnlyList<string> requestedModules,
+        bool force,
+        string format,
+        CancellationToken cancellationToken)
         => await RunTransactionAsync(
                 () => installationTransaction.AddAsync(
                     context,
                     requestedModules,
                     force,
                     cancellationToken),
+                context.ProjectRoot,
+                context.DocumentName,
+                "add",
+                format,
                 cancellationToken)
             .ConfigureAwait(false);
 
@@ -96,7 +117,7 @@ public sealed class CommonModulesService
     /// <param name="project">The resolved project to update.</param>
     /// <returns>The command result to print and return from the CLI.</returns>
     public CommandResult Update(ResolvedProject project)
-        => UpdateAsync(project, CancellationToken.None)
+        => UpdateAsync(project, "text", CancellationToken.None)
             .GetAwaiter()
             .GetResult();
 
@@ -106,18 +127,57 @@ public sealed class CommonModulesService
     public async Task<CommandResult> UpdateAsync(
         ResolvedProject project,
         CancellationToken cancellationToken)
+        => await UpdateAsync(project, "text", cancellationToken).ConfigureAwait(false);
+
+    /// <summary>
+    /// Updates installed CommonModules and renders the selected success format.
+    /// </summary>
+    public async Task<CommandResult> UpdateAsync(
+        ResolvedProject project,
+        string format,
+        CancellationToken cancellationToken)
         => await RunTransactionAsync(
                 () => installationTransaction.UpdateAsync(project, cancellationToken),
+                project.ProjectRoot,
+                document: null,
+                "update",
+                format,
                 cancellationToken)
             .ConfigureAwait(false);
 
     private static async Task<CommandResult> RunTransactionAsync(
         Func<Task<CommonModulesTransactionCompletion>> execute,
+        string projectRoot,
+        string? document,
+        string operation,
+        string format,
         CancellationToken cancellationToken)
     {
         try
         {
+            if (!format.Equals("text", StringComparison.OrdinalIgnoreCase)
+                && !format.Equals("json", StringComparison.OrdinalIgnoreCase))
+            {
+                return CommandResult.UsageError(
+                    "CommonModules mutation format must be either text or json.");
+            }
+
             var completion = await execute().ConfigureAwait(false);
+            if (format.Equals("json", StringComparison.OrdinalIgnoreCase))
+            {
+                var output = new CommonModulesMutationOutput(
+                    SchemaVersion: "1.0",
+                    Scope: "project",
+                    Project: Path.GetFullPath(projectRoot),
+                    Document: document,
+                    Operation: operation,
+                    Complete: true,
+                    completion.Warnings,
+                    completion.Documents);
+                return CommandResult.Success(
+                    JsonSerializer.Serialize(output, JsonOptions) + Environment.NewLine);
+            }
+
             var warnings = string.Concat(completion.Warnings.Select(warning =>
                 $"[{warning.Code}] {warning.Message}{Environment.NewLine}"));
             return new CommandResult(
@@ -147,4 +207,14 @@ public sealed class CommonModulesService
     private sealed record CommonModuleListOutput(
         string Document,
         IReadOnlyList<InstalledCommonModule> CommonModules);
+
+    private sealed record CommonModulesMutationOutput(
+        string SchemaVersion,
+        string Scope,
+        string Project,
+        string? Document,
+        string Operation,
+        bool Complete,
+        IReadOnlyList<ProjectManifestMutationWarning> Warnings,
+        IReadOnlyList<CommonModulesMutationDocumentResult> Documents);
 }

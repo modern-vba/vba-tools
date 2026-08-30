@@ -131,6 +131,7 @@ Options:
   --project <path>               Project root containing vba-project.json.
   --document <name>, -d <name>   Document name from the project manifest.
   --force                        Overwrite conflicting source files.
+  --format <text|json>, -f <text|json> CommonModules mutation output format.
 ```
 
 CommonModuleName values are extensionless module base names resolved through the CommonModules manifest. Dependencies are copied with the requested entries and recorded in `vba-project.json`.
@@ -165,6 +166,7 @@ Usage:
 
 Options:
   --project <path>               Project root containing vba-project.json.
+  --format <text|json>, -f <text|json> CommonModules mutation output format.
 ```
 
 `common-module update` is project-scoped. It updates manifest-listed installed CommonModules entries and preserves the manifest `requested` intent.
@@ -176,6 +178,12 @@ For `.frm` CommonModules, add and update first remove every same-name `.frx` und
 Multi-entry add and update commands preflight the full file plan and planned manifest before deleting sidecars, copying files, or saving `vba-project.json`. The manifest is saved last. If file deletion or copy fails after file mutation begins, the command reports that the manifest was not saved and that source files may have been partially updated; no file rollback is attempted. If manifest saving fails after successful file operations, the planned manifest is written as UTF-16LE with BOM to `vba-project.failed-YYYYMMDD-HHMMSS-fff.json` beside `vba-project.json`, and the command prints only that recovery file path.
 
 Copy and update output reports the actual destination path relative to the document source set, such as `common-modules/Feature.bas` for a new placement or `nested/Feature.bas` for an in-place overwrite.
+
+Add and Update default to human-readable text. `--format json` emits exactly one complete schema `1.0` success object after a trusted commit or no-op. The project-scoped envelope contains the absolute `project`, Add's selected `document` or Update's `null`, `operation`, `complete: true`, `warnings`, and ordered `documents`. Failures and uncertain mutation, commit, or recovery states emit no partial success object.
+
+Each document result contains exhaustive `modules` and `referenceChanges`. Add reports its dependency-expanded affected closure; Update reports every targeted installed module in final manifest order, including unchanged and orphaned entries. Every module exposes final `name`, `moduleFile`, `requested`, `testOnly`, and `orphaned`, plus `status` and ordered `changes`. New modules use `installed`; existing modules may use `sourceUpdated`, `directRequestPromoted`, `testOnlyChanged`, and `orphanedChanged` in that order. `unchanged` means the change list is empty. Reference changes contain only newly appended CommonModules requirements as canonical `added` names with `requested: false`.
+
+Successful warnings use `orphanedCommonModulesRetained`, `cancellationDeferred`, `commonModulesSnapshotCleanupFailed`, and `leaseMarkerCleanupFailed` in fixed order. JSON keeps them inside the success object; text writes them to stderr. An ordinary no-op is not a warning.
 
 ### reference add
 

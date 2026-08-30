@@ -1282,6 +1282,10 @@ async function runCommonModulesCommandWithProgress(
         outputChannel: channel,
         diagnosticReporter: toolDiagnosticReporter,
         showErrorMessage: (message: string) => window.showErrorMessage(message),
+        showInformationMessage: (message: string) => window.showInformationMessage(message),
+        showWarningMessage: (message: string, action: string) =>
+          window.showWarningMessage(message, action),
+        showOutput: () => channel.show(),
         reportCancellationProgress: (message: string) => progress.report({ message }),
         cancellationToken: token
       };

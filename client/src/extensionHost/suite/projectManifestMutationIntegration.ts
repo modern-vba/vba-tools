@@ -33,7 +33,8 @@ interface ManifestFixture {
   target: CommandPaletteTarget;
 }
 
-interface HarnessOptions {
+export interface HarnessOptions {
+  decodeManifestBytes?: (bytes: Uint8Array) => string;
   choose?: (
     message: string,
     items: readonly string[]
@@ -47,9 +48,10 @@ interface HarnessOptions {
   ) => Promise<void>;
 }
 
-interface MutationHarness {
+export interface MutationHarness {
   coordinator: ProjectManifestMutationCoordinator;
   reports: string[];
+  outputShows: boolean[];
   prompts: string[];
   savedPaths: string[];
   focusCalls: number;
@@ -60,6 +62,63 @@ interface MutationHarness {
 let harnessSequence = 0;
 
 export async function runProjectManifestMutationIntegrationTests(): Promise<void> {
+  await runTest(
+    'log-only real coordinator reports never reveal Output or show warning prompts',
+    async () => {
+      const fixture = await createFixture();
+      const harness = createHarness({});
+      try {
+        const noOp = await harness.coordinator.run({
+          command: 'Common Module Add',
+          target: fixture.target,
+          reportPresentation: 'logOnly',
+          run: async () => ({ exitCode: 0, cancelled: false })
+        });
+        assert.equal(noOp.status, 'completed');
+        assert.equal(noOp.manifestOutcome, 'unchanged');
+
+        const changed = await harness.coordinator.run({
+          command: 'Common Module Update',
+          target: fixture.target,
+          reportPresentation: 'logOnly',
+          run: async () => {
+            await writeFile(
+              fixture.manifestPath,
+              manifestText('MutationFixture', 'changed'),
+              'utf8'
+            );
+            return { exitCode: 0, cancelled: false };
+          }
+        });
+        assert.equal(changed.status, 'completed');
+        assert.equal(changed.manifestOutcome, 'changed');
+        assert.equal(changed.coherence, 'coherent');
+
+        const untrusted = await harness.coordinator.run({
+          command: 'Common Module Update',
+          target: fixture.target,
+          reportPresentation: 'logOnly',
+          run: async () => {
+            await writeFile(fixture.manifestPath, '{ invalid json\n', 'utf8');
+            return { exitCode: 0, cancelled: false };
+          }
+        });
+        assert.equal(untrusted.status, 'completed');
+        assert.equal(untrusted.manifestOutcome, 'untrusted');
+        assert.ok(harness.reports.some((line) =>
+          line.includes('[manifest:manifestUnchanged]')));
+        assert.ok(harness.reports.some((line) =>
+          line.includes('[manifest:manifestChanged]')));
+        assert.ok(harness.reports.some((line) =>
+          line.includes('[manifest:manifestUntrusted]')));
+        assert.deepEqual(harness.outputShows, []);
+        assert.deepEqual(harness.prompts, []);
+      } finally {
+        await cleanupHarness(harness, fixture.root);
+      }
+    }
+  );
+
   await runTest(
     'manifest preflight saves only the selected real dirty VS Code document',
     async () => {
@@ -342,9 +401,10 @@ export async function runProjectManifestMutationIntegrationTests(): Promise<void
   );
 }
 
-function createHarness(options: HarnessOptions): MutationHarness {
+export function createHarness(options: HarnessOptions): MutationHarness {
   const harnessId = ++harnessSequence;
   const reports: string[] = [];
+  const outputShows: boolean[] = [];
   const prompts: string[] = [];
   const savedPaths: string[] = [];
   let focusCalls = 0;
@@ -357,8 +417,9 @@ function createHarness(options: HarnessOptions): MutationHarness {
       savedPaths.push(document.uri.fsPath);
     }
   });
-  const decodeManifestBytes = (bytes: Uint8Array): string =>
-    new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  const decodeManifestBytes = options.decodeManifestBytes
+    ?? ((bytes: Uint8Array): string =>
+      new TextDecoder('utf-8', { fatal: true }).decode(bytes));
   const adapter = createProjectManifestMutationVscodeAdapter({
     snapshotScheme: `vba-tools-manifest-mutation-test-${harnessId}`,
     resolvePathIdentity: resolveCommandPalettePathIdentity,
@@ -426,7 +487,10 @@ function createHarness(options: HarnessOptions): MutationHarness {
         reports.push(value);
         output.appendLine(value);
       },
-      show: (preserveFocus) => output.show(preserveFocus)
+      show: (preserveFocus) => {
+        outputShows.push(preserveFocus ?? false);
+        output.show(preserveFocus);
+      }
     }
   });
   const coordinator = new ProjectManifestMutationCoordinator(adapter);
@@ -434,6 +498,7 @@ function createHarness(options: HarnessOptions): MutationHarness {
   return {
     coordinator,
     reports,
+    outputShows,
     prompts,
     savedPaths,
     get focusCalls() {

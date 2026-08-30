@@ -44,11 +44,14 @@ export type ProjectManifestRecoveryChoice =
   | 'keepEditing'
   | undefined;
 
+export type ProjectManifestMutationReportPresentation = 'default' | 'logOnly';
+
 export interface ProjectManifestMutationContext {
   command: string;
   projectName: string;
   documentName?: string | undefined;
   manifestPath: string;
+  reportPresentation?: ProjectManifestMutationReportPresentation | undefined;
 }
 
 export interface ProjectManifestProcessSummary {
@@ -144,6 +147,7 @@ export interface ProjectManifestMutationRequest<
 > {
   command: string;
   target: CommandPaletteTarget;
+  reportPresentation?: ProjectManifestMutationReportPresentation | undefined;
   run(): Promise<TProcessResult>;
 }
 
@@ -244,7 +248,11 @@ implements ProjectManifestMutationCommandCoordinator {
     const manifestIdentity = normalizeIdentity(
       await this.ports.resolvePathIdentity(request.target.project.manifestPath)
     );
-    const context = mutationContext(request.command, request.target);
+    const context = mutationContext(
+      request.command,
+      request.target,
+      request.reportPresentation
+    );
     const running = this.findBusy(manifestIdentity);
     if (running !== undefined) {
       this.report(context, 'busy', {
@@ -1207,13 +1215,15 @@ class BufferRevisionRecorder {
 
 function mutationContext(
   command: string,
-  target: CommandPaletteTarget
+  target: CommandPaletteTarget,
+  reportPresentation?: ProjectManifestMutationReportPresentation
 ): ProjectManifestMutationContext {
   return {
     command,
     projectName: target.project.projectName,
     documentName: target.document?.name,
-    manifestPath: target.project.manifestPath
+    manifestPath: target.project.manifestPath,
+    ...(reportPresentation === undefined ? {} : { reportPresentation })
   };
 }
 

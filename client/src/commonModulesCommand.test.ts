@@ -16,11 +16,13 @@ test('CommonModules prompt parsing uses exact MS-VBAL whitespace and preserves C
   assert.deepEqual(parseCommonModuleNamesInput('\u00A0\u3000Feature'), ['\u00A0', 'Feature']);
 });
 
-test('CommonModules add command preserves exact CP2 names through the CLI boundary', async () => {
+test('CommonModules add preserves exact names and trusts one exhaustive result without List', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const calls: Array<{ file: string; args: readonly string[] }> = [];
   const output: string[] = [];
   const routeEvents: string[] = [];
+  const informationMessages: string[] = [];
+  const reportPresentations: Array<string | undefined> = [];
 
   const result = await runCommonModulesAddCommand(
     createOptions({
@@ -28,44 +30,57 @@ test('CommonModules add command preserves exact CP2 names through the CLI bounda
       calls,
       output,
       routeEvents,
+      reportPresentations,
+      informationMessages,
       documentName: 'Book2',
-      startStdout: (args) => {
-        if (args[1] === 'list') {
-          return JSON.stringify({
-            document: 'Book1',
-            commonModules: [
-              { name: 'Base', requested: false },
-              { name: 'Feature', requested: true }
-            ]
-          });
-        }
-
-        return 'Copied Feature.bas\n';
-      }
+      startStdout: () => mutationOutput(projectRoot, 'Book2', 'add', [{
+        document: 'Book2',
+        modules: [
+          changedModule('Feature', true, [{
+            kind: 'installed',
+            sourceSetRelativePath: 'common-modules/Feature.bas'
+          }]),
+          changedModule('Feature2', true, [{
+            kind: 'installed',
+            sourceSetRelativePath: 'common-modules/Feature2.bas'
+          }])
+        ],
+        referenceChanges: []
+      }])
     }),
-    ['Feature', '\u00A0']
+    ['Feature', 'Feature2']
   );
 
   assert.ok(result);
   assert.equal(result.projectRoot, projectRoot);
   assert.deepEqual(calls.map((call) => call.args), [
     ['capabilities', '--format', 'json'],
-    ['common-module', 'add', 'Feature', '\u00A0', '--project', projectRoot, '--document', 'Book2'],
-    ['common-module', 'list', '--project', projectRoot, '--document', 'Book2', '--format', 'json']
+    [
+      'common-module',
+      'add',
+      'Feature',
+      'Feature2',
+      '--project',
+      projectRoot,
+      '--document',
+      'Book2',
+      '--format',
+      'json'
+    ]
   ]);
-  assert.deepEqual(result.commonModulesList?.commonModules, [
-    { name: 'Base', requested: false },
-    { name: 'Feature', requested: true }
+  assert.deepEqual(result.commonModulesMutation?.documents[0]?.modules.map((module) => module.name), [
+    'Feature',
+    'Feature2'
   ]);
-  assert.match(output.join(''), /CommonModules for Book1/);
-  assert.match(output.join(''), /Base \(dependency\)/);
-  assert.match(output.join(''), /Feature \(requested\)/);
+  assert.deepEqual(informationMessages, [
+    'CommonModules for Book2: 2 changed, 0 unchanged, 0 references added.'
+  ]);
+  assert.deepEqual(reportPresentations, ['logOnly']);
+  assert.doesNotMatch(output.join(''), /CommonModules for Book1/);
   assert.deepEqual(routeEvents, [
     'mutation:start:Common Module Add:BookProject:Book2',
     'process:common-module add',
-    'mutation:complete:Common Module Add',
-    'basis:Common Module List:BookProject:Book2',
-    'process:common-module list'
+    'mutation:complete:Common Module Add'
   ]);
 });
 
@@ -74,28 +89,33 @@ test('CommonModules update command remains project-scoped without an implicit do
   const calls: Array<{ file: string; args: readonly string[] }> = [];
   const output: string[] = [];
   const routeEvents: string[] = [];
+  const informationMessages: string[] = [];
 
   await runCommonModulesUpdateCommand(createOptions({
     projectRoot,
     calls,
     output,
     routeEvents,
+    informationMessages,
     documentName: 'Book2',
-    startStdout: (args) => args[1] === 'list'
-      ? JSON.stringify({
-        document: 'Book1',
-        commonModules: [
-          { name: 'Feature', requested: true }
-        ]
-      })
-      : 'Updated Book1/Feature.bas\n'
+    startStdout: () => mutationOutput(projectRoot, null, 'update', [{
+      document: 'Book1',
+      modules: [changedModule('Feature', true, [{
+        kind: 'sourceUpdated',
+        sourceSetRelativePath: 'Feature.bas'
+      }])],
+      referenceChanges: []
+    }])
   }));
 
   assert.deepEqual(calls.map((call) => call.args), [
     ['capabilities', '--format', 'json'],
-    ['common-module', 'update', '--project', projectRoot]
+    ['common-module', 'update', '--project', projectRoot, '--format', 'json']
   ]);
   assert.doesNotMatch(output.join(''), /CommonModules for/);
+  assert.deepEqual(informationMessages, [
+    'CommonModules update for BookProject: 1 changed, 0 unchanged, 0 references added.'
+  ]);
   assert.deepEqual(routeEvents, [
     'mutation:start:Common Module Update:BookProject:(project)',
     'process:common-module update',
@@ -108,16 +128,19 @@ test('CommonModules mutation success remains authoritative after cancellation wi
   const calls: Array<{ file: string; args: readonly string[] }> = [];
   let cancellationRequested = false;
   let cancelListener: (() => void) | undefined;
+  let stdoutListener: ((value: string) => void) | undefined;
   let closeListener: ((exitCode: number | null, signal: string | null) => void) | undefined;
   let signalStarted: (() => void) | undefined;
   const started = new Promise<void>((resolve) => {
     signalStarted = resolve;
   });
+  const warningMessages: string[] = [];
   const running = runCommonModulesAddCommand(createOptions({
     projectRoot,
     calls,
     output: [],
     startStdout: () => '',
+    warningMessages,
     advertiseStdinCancellation: true,
     cancellationToken: {
       get isCancellationRequested() {
@@ -132,7 +155,9 @@ test('CommonModules mutation success remains authoritative after cancellation wi
       calls.push({ file, args });
       signalStarted?.();
       return {
-        onStdout: () => undefined,
+        onStdout: (listener) => {
+          stdoutListener = listener;
+        },
         onStderr: () => undefined,
         onExit: () => undefined,
         onClose: (listener) => {
@@ -147,6 +172,14 @@ test('CommonModules mutation success remains authoritative after cancellation wi
   await started;
   cancellationRequested = true;
   cancelListener?.();
+  stdoutListener?.(mutationOutput(projectRoot, 'Book2', 'add', [{
+    document: 'Book2',
+    modules: [changedModule('Feature', true, [{
+      kind: 'installed',
+      sourceSetRelativePath: 'common-modules/Feature.bas'
+    }])],
+    referenceChanges: []
+  }], [{ code: 'cancellationDeferred', message: 'Cancellation was deferred.' }]));
   closeListener?.(0, null);
   const result = await running;
 
@@ -163,9 +196,14 @@ test('CommonModules mutation success remains authoritative after cancellation wi
       projectRoot,
       '--document',
       'Book2',
+      '--format',
+      'json',
       '--cancellation-transport',
       'stdin-v1'
     ]
+  ]);
+  assert.deepEqual(warningMessages, [
+    'CommonModules for Book2: 1 changed, 0 unchanged, 0 references added. 1 warning.'
   ]);
 });
 
@@ -211,6 +249,157 @@ test('CommonModules mutation rejection launches no mutation or follow-up list', 
   assert.deepEqual(routeEvents, [
     'mutation:start:Common Module Add:BookProject:Book2',
     'mutation:rejected:Common Module Add'
+  ]);
+});
+
+test('CommonModules warnings produce one warning notification and Show Output only on request', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const calls: Array<{ file: string; args: readonly string[] }> = [];
+  const informationMessages: string[] = [];
+  const warningMessages: string[] = [];
+  const showOutputCalls: string[] = [];
+  const outputChannelShowCalls: string[] = [];
+
+  await runCommonModulesUpdateCommand(createOptions({
+    projectRoot,
+    calls,
+    output: [],
+    informationMessages,
+    warningMessages,
+    warningAction: 'Show Output',
+    showOutputCalls,
+    outputChannelShowCalls,
+    startStdout: () => mutationOutput(projectRoot, null, 'update', [{
+      document: 'Book1',
+      modules: [
+        changedModule('Feature', true, [{
+          kind: 'sourceUpdated',
+          sourceSetRelativePath: 'Feature.bas'
+        }]),
+        unchangedModule('Base', false)
+      ],
+      referenceChanges: [{
+        kind: 'added',
+        name: 'Microsoft Scripting Runtime',
+        requested: false
+      }]
+    }], [{
+      code: 'commonModulesSnapshotCleanupFailed',
+      message: 'Snapshot cleanup failed.'
+    }])
+  }));
+
+  assert.deepEqual(informationMessages, []);
+  assert.deepEqual(warningMessages, [
+    'CommonModules update for BookProject: 1 changed, 1 unchanged, 1 reference added. 1 warning.'
+  ]);
+  assert.deepEqual(showOutputCalls, ['show']);
+  assert.deepEqual(outputChannelShowCalls, []);
+  assert.equal(calls.filter((call) => call.args[1] === 'update').length, 1);
+  assert.equal(calls.some((call) => call.args[1] === 'list'), false);
+});
+
+test('CommonModules exit-zero untrusted output warns once without retry or reconstruction', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const calls: Array<{ file: string; args: readonly string[] }> = [];
+  const informationMessages: string[] = [];
+  const warningMessages: string[] = [];
+  const showOutputCalls: string[] = [];
+
+  const result = await runCommonModulesAddCommand(createOptions({
+    projectRoot,
+    calls,
+    output: [],
+    informationMessages,
+    warningMessages,
+    warningAction: 'Show Output',
+    showOutputCalls,
+    startStdout: () => '{"schemaVersion":"1.0","complete":false}'
+  }), ['Feature']);
+
+  assert.ok(result);
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.commonModulesMutation, undefined);
+  assert.deepEqual(informationMessages, []);
+  assert.deepEqual(warningMessages, [
+    'CommonModules Add completed with an untrusted result; Book2\'s manifest may already have committed. Inspect the manifest and VBA Tools Output before retrying.'
+  ]);
+  assert.deepEqual(showOutputCalls, ['show']);
+  assert.equal(calls.filter((call) => call.args[1] === 'add').length, 1);
+  assert.equal(calls.some((call) => call.args[1] === 'list'), false);
+});
+
+test('CommonModules coordinator uncertainty supersedes an otherwise valid exit-zero payload', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const warningMessages: string[] = [];
+
+  const result = await runCommonModulesAddCommand(createOptions({
+    projectRoot,
+    calls: [],
+    output: [],
+    warningMessages,
+    manifestUntrusted: true,
+    startStdout: () => mutationOutput(projectRoot, 'Book2', 'add', [{
+      document: 'Book2',
+      modules: [changedModule('Feature', true, [{
+        kind: 'installed',
+        sourceSetRelativePath: 'common-modules/Feature.bas'
+      }])],
+      referenceChanges: []
+    }])
+  }), ['Feature']);
+
+  assert.ok(result);
+  assert.equal(result.commonModulesMutation, undefined);
+  assert.equal(warningMessages.length, 1);
+  assert.match(warningMessages[0]!, /manifest may already have committed/u);
+});
+
+test('CommonModules process failures propagate instead of fabricating an exit-zero result', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const failure = new Error('process launch failed');
+
+  await assert.rejects(
+    runCommonModulesAddCommand(createOptions({
+      projectRoot,
+      calls: [],
+      output: [],
+      coordinatorProcessError: failure,
+      startStdout: () => ''
+    }), ['Feature']),
+    failure
+  );
+});
+
+test('CommonModules Update distinguishes no installed targets from an all-unchanged update', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const emptyMessages: string[] = [];
+  const unchangedMessages: string[] = [];
+
+  await runCommonModulesUpdateCommand(createOptions({
+    projectRoot,
+    calls: [],
+    output: [],
+    informationMessages: emptyMessages,
+    startStdout: () => mutationOutput(projectRoot, null, 'update', [])
+  }));
+  await runCommonModulesUpdateCommand(createOptions({
+    projectRoot,
+    calls: [],
+    output: [],
+    informationMessages: unchangedMessages,
+    startStdout: () => mutationOutput(projectRoot, null, 'update', [{
+      document: 'Book1',
+      modules: [unchangedModule('Feature', true)],
+      referenceChanges: []
+    }])
+  }));
+
+  assert.deepEqual(emptyMessages, [
+    'CommonModules update for BookProject: no installed targets.'
+  ]);
+  assert.deepEqual(unchangedMessages, [
+    'CommonModules update for BookProject: 0 changed, 1 unchanged, 0 references added.'
   ]);
 });
 
@@ -298,6 +487,53 @@ test('CommonModules display formats requested roots separately from dependencies
   assert.match(output.join(''), /Feature \(requested\)/);
 });
 
+function mutationOutput(
+  projectRoot: string,
+  document: string | null,
+  operation: 'add' | 'update',
+  documents: readonly Record<string, unknown>[],
+  warnings: readonly Record<string, unknown>[] = []
+): string {
+  return JSON.stringify({
+    schemaVersion: '1.0',
+    scope: 'project',
+    project: projectRoot,
+    document,
+    operation,
+    complete: true,
+    warnings,
+    documents
+  });
+}
+
+function changedModule(
+  name: string,
+  requested: boolean,
+  changes: readonly Record<string, unknown>[]
+): Record<string, unknown> {
+  return {
+    name,
+    moduleFile: `${name}.bas`,
+    requested,
+    testOnly: false,
+    orphaned: false,
+    status: 'changed',
+    changes
+  };
+}
+
+function unchangedModule(name: string, requested: boolean): Record<string, unknown> {
+  return {
+    name,
+    moduleFile: `${name}.bas`,
+    requested,
+    testOnly: false,
+    orphaned: false,
+    status: 'unchanged',
+    changes: []
+  };
+}
+
 function createOptions(
   options: {
     projectRoot: string;
@@ -312,7 +548,15 @@ function createOptions(
     cancelTargetSelection?: boolean;
     targetScopes?: string[];
     rejectMutation?: boolean;
+    manifestUntrusted?: boolean;
+    coordinatorProcessError?: Error;
     routeEvents?: string[];
+    reportPresentations?: Array<string | undefined>;
+    informationMessages?: string[];
+    warningMessages?: string[];
+    warningAction?: string;
+    showOutputCalls?: string[];
+    outputChannelShowCalls?: string[];
     cancellationToken?: CommonModulesCommandOptions['cancellationToken'];
     startProcess?: NonNullable<CommonModulesCommandOptions['startProcess']>;
   }
@@ -349,7 +593,8 @@ function createOptions(
       return scope === 'document' ? { project, document } : { project };
     },
     projectManifestMutationCoordinator: {
-      run: async ({ command, target, run }) => {
+      run: async ({ command, target, reportPresentation, run }) => {
+        options.reportPresentations?.push(reportPresentation);
         options.routeEvents?.push(
           `mutation:start:${command}:${target.project.projectName}:${target.document?.name ?? '(project)'}`
         );
@@ -357,11 +602,19 @@ function createOptions(
           options.routeEvents?.push(`mutation:rejected:${command}`);
           return { status: 'rejected', reason: 'preflight' };
         }
+        if (options.coordinatorProcessError !== undefined) {
+          return {
+            status: 'completed',
+            manifestOutcome: 'unchanged',
+            coherence: 'notRequired',
+            processError: options.coordinatorProcessError
+          };
+        }
         const processResult = await run();
         options.routeEvents?.push(`mutation:complete:${command}`);
         return {
           status: 'completed',
-          manifestOutcome: 'unchanged',
+          manifestOutcome: options.manifestUntrusted === true ? 'untrusted' : 'unchanged',
           coherence: 'notRequired',
           processResult
         };
@@ -409,7 +662,9 @@ function createOptions(
     outputChannel: {
       append: (value) => options.output.push(value),
       appendLine: (value) => options.output.push(`${value}\n`),
-      show: () => undefined
+      show: () => {
+        options.outputChannelShowCalls?.push('show');
+      }
     },
     diagnosticReporter: options.diagnosticRefreshes
       ? {
@@ -420,6 +675,16 @@ function createOptions(
       }
       : undefined,
     showErrorMessage: async () => undefined,
+    showInformationMessage: async (message) => {
+      options.informationMessages?.push(message);
+    },
+    showWarningMessage: async (message) => {
+      options.warningMessages?.push(message);
+      return options.warningAction;
+    },
+    showOutput: () => {
+      options.showOutputCalls?.push('show');
+    },
     cancellationToken: options.cancellationToken,
     requiredContract: {
       contractVersion: '1.0',

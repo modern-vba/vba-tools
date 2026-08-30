@@ -35,6 +35,34 @@ test('byte-identical manifest state requires no editor reconciliation', async ()
   assert.deepEqual(reports, ['manifestUnchanged']);
 });
 
+test('per-request report presentation is propagated to coordinator reports', async () => {
+  const bytes = Uint8Array.from([1, 2, 3]);
+  const target = createTarget('C:\\work\\one\\vba-project.json');
+  const reports: Array<{ kind: string; reportPresentation?: string }> = [];
+  const ports: ProjectManifestMutationPorts = {
+    ...createPorts(target.project, bytes, []),
+    report: (report) => reports.push(report)
+  };
+  const coordinator = new ProjectManifestMutationCoordinator(ports);
+
+  await coordinator.run({
+    command: 'Common Module Add',
+    target,
+    reportPresentation: 'logOnly',
+    run: async () => ({ exitCode: 0, cancelled: false })
+  });
+
+  assert.deepEqual(reports, [{
+    kind: 'manifestUnchanged',
+    reportPresentation: 'logOnly',
+    command: 'Common Module Add',
+    projectName: 'One',
+    documentName: 'Book1',
+    manifestPath: target.project.manifestPath,
+    process: { exitCode: 0, cancelled: false, threw: false }
+  }]);
+});
+
 test('canonical manifest aliases reject a same-window mutation as busy without queuing it', async () => {
   const harness = new MutationHarness();
   const firstTarget = createTarget('C:\\work\\one\\vba-project.json');

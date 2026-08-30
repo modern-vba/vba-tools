@@ -333,8 +333,13 @@ export function createProjectManifestMutationVscodeAdapter<
   const report = (event: ProjectManifestMutationReport): void => {
     const message = formatMutationReport(event);
     options.outputChannel.appendLine(message);
-    options.outputChannel.show(true);
-    if (WarningReportKinds.has(event.kind)) {
+    if (event.reportPresentation !== 'logOnly') {
+      options.outputChannel.show(true);
+    }
+    if (
+      event.reportPresentation !== 'logOnly'
+      && WarningReportKinds.has(event.kind)
+    ) {
       void Promise.resolve(options.showWarningMessage(
         message,
         { modal: false }

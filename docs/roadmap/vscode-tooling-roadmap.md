@@ -322,7 +322,14 @@ Expected capabilities:
 - run `common-module add`, `common-module update`, and a future
   `common-module restore` or equivalent explicit package-restore command from
   VS Code;
-- show what files and manifest entries changed after add/update;
+- consume one exhaustive schema `1.0` Add/Update result containing final module
+  metadata, ordered changes, required-reference additions, and stable warnings;
+- validate result context, closed shapes, uniqueness, ordering, and internal
+  consistency without re-reading or re-planning the package;
+- show exactly one count-based outcome notification and never run a follow-up
+  List, item list, retry, rollback, or filesystem reconstruction after success;
+- treat an exit-zero untrusted result as possibly committed and direct the user
+  to inspect the manifest and VBA Tools Output;
 - visualize missing dependencies and unreachable dependency entries reported by
   `doctor`.
 

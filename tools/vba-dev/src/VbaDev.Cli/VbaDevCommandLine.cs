@@ -130,8 +130,15 @@ public sealed class VbaDevCommandLine
         {
             Description = "Overwrite conflicting source files."
         };
+        var commonModuleAddFormatOption = CreateStringOption(
+            "--format",
+            "CommonModules mutation output format.",
+            "text|json",
+            ["text", "json"],
+            "-f");
         commonModuleAddCommand.Add(commonModuleArguments);
         commonModuleAddCommand.Add(commonModuleForceOption);
+        commonModuleAddCommand.Add(commonModuleAddFormatOption);
         commonModuleAddCommand.SetAction(async (parseResult, cancellationToken) => WriteCommandResult(
             parseResult,
             await ResolveDocumentContextAsync(
@@ -142,6 +149,7 @@ public sealed class VbaDevCommandLine
                         context,
                         parseResult.GetValue(commonModuleArguments) ?? [],
                         parseResult.GetValue(commonModuleForceOption),
+                        parseResult.GetValue(commonModuleAddFormatOption) ?? "text",
                         operationCancellationToken),
                     cancellationToken)
                 .ConfigureAwait(false)));
@@ -175,13 +183,23 @@ public sealed class VbaDevCommandLine
             "1.0",
             capabilityCommands);
         var commonModuleUpdateProjectOption = AddProjectOption(commonModuleUpdateCommand);
+        var commonModuleUpdateFormatOption = CreateStringOption(
+            "--format",
+            "CommonModules mutation output format.",
+            "text|json",
+            ["text", "json"],
+            "-f");
+        commonModuleUpdateCommand.Add(commonModuleUpdateFormatOption);
         commonModuleUpdateCommand.SetAction(async (parseResult, cancellationToken) => WriteCommandResult(
             parseResult,
             await ResolveProjectAsync(
                     parseResult,
                     composition,
                     commonModuleUpdateProjectOption,
-                    composition.CommonModulesService.UpdateAsync,
+                    (project, operationCancellationToken) => composition.CommonModulesService.UpdateAsync(
+                        project,
+                        parseResult.GetValue(commonModuleUpdateFormatOption) ?? "text",
+                        operationCancellationToken),
                     cancellationToken)
                 .ConfigureAwait(false)));
 

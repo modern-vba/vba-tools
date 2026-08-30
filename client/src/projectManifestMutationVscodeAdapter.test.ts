@@ -276,6 +276,26 @@ test('reports identify the disk basis without moving focus and clock wait is inj
   assert.equal(fixture.activeDocument, undefined);
 });
 
+test('log-only mutation reports append without revealing Output or warning', async () => {
+  const fixture = createFixture();
+
+  fixture.adapter.report({
+    kind: 'manifestUntrusted',
+    command: 'Common Module Add',
+    projectName: 'FixtureProject',
+    documentName: 'Book1',
+    manifestPath: CanonicalManifestPath,
+    reportPresentation: 'logOnly',
+    process: { exitCode: 0, cancelled: false, threw: false }
+  });
+  await Promise.resolve();
+
+  assert.equal(fixture.outputLines.length, 1);
+  assert.match(fixture.outputLines[0]!, /manifestUntrusted/u);
+  assert.deepEqual(fixture.outputShows, []);
+  assert.deepEqual(fixture.warningCalls, []);
+});
+
 interface FakeSnapshotUri {
   readonly value: string;
   toString(): string;

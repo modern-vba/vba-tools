@@ -1,4 +1,3 @@
-using System.Text;
 using VbaDev.App.Projects;
 using VbaDev.App.References;
 using VbaDev.App.Workbooks;
@@ -8,10 +7,11 @@ using VbaLanguageServer.Syntax;
 namespace VbaDev.App.CommonModules;
 
 /// <summary>
-/// Carries a trusted CommonModules text result and its ordered non-fatal warnings.
+/// Carries a trusted exhaustive CommonModules result and its ordered non-fatal warnings.
 /// </summary>
 public sealed record CommonModulesTransactionCompletion(
     string Output,
+    IReadOnlyList<CommonModulesMutationDocumentResult> Documents,
     IReadOnlyList<ProjectManifestMutationWarning> Warnings);
 
 /// <summary>
@@ -372,7 +372,7 @@ public sealed class CommonModulesInstallationTransaction
             var requestedNames = normalizedRequestedModules
                 .Select(GetCommonModuleName)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var referencesChanged = AppendRequiredReferencesFromEvidence(
+            var referenceChanges = AppendRequiredReferencesFromEvidence(
                 snapshot.ProjectRoot,
                 documentName,
                 document,
@@ -391,27 +391,31 @@ public sealed class CommonModulesInstallationTransaction
                     packageSnapshot,
                     documentSourceSetPath,
                     entriesToCopy,
-                    "Copied",
                     force,
-                    documentName: null);
+                    documentName);
+            var priorModules = document.CommonModules.ToArray();
             var changed = ApplyAddEntries(
                     document,
                     orderedEntries,
                     requestedNames,
                     installedByName)
-                || referencesChanged;
+                || referenceChanges.Count > 0;
             ValidatePlannedManifest(plannedManifest);
             var sourceMutation = ExecuteCopyPlan(copyPlan, cancellationToken);
 
-            var copied = BuildCopyOutput(copyPlan);
-            var output = copied.Length == 0
-                ? "No CommonModules changes." + Environment.NewLine
-                : copied;
             var affectedNames = requestedNames
                 .Concat(orderedEntries.Select(entry => entry.Name))
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var documentResult = BuildMutationDocumentResult(
+                documentName,
+                priorModules,
+                document.CommonModules.Where(module => affectedNames.Contains(module.Name)).ToArray(),
+                copyPlan,
+                referenceChanges,
+                "add");
             var result = new CommonModulesRebaseResult(
-                output,
+                "add",
+                [documentResult],
                 packageSnapshot,
                 document.CommonModules.Count(module =>
                     module.Orphaned && affectedNames.Contains(module.Name)),
@@ -451,7 +455,7 @@ public sealed class CommonModulesInstallationTransaction
         }
     }
 
-    private bool AppendRequiredReferencesFromEvidence(
+    private IReadOnlyList<CommonModulesReferenceChangeResult> AppendRequiredReferencesFromEvidence(
         string projectRoot,
         string documentName,
         ProjectDocument document,
@@ -473,7 +477,7 @@ public sealed class CommonModulesInstallationTransaction
 
         if (missingNames.Length == 0)
         {
-            return false;
+            return [];
         }
 
         if (evidence.TemplateIdentity is null
@@ -503,15 +507,20 @@ public sealed class CommonModulesInstallationTransaction
             throw RequiredReferencePlanChanged();
         }
 
+        var changes = new List<CommonModulesReferenceChangeResult>();
         foreach (var missingName in missingNames)
         {
             var resolvedReference = evidence.ResolvedByRequiredName[missingName];
             document.References.Add(new VbaProjectReference(
                 resolvedReference.Name,
                 requested: false));
+            changes.Add(new CommonModulesReferenceChangeResult(
+                "added",
+                resolvedReference.Name,
+                Requested: false));
         }
 
-        return true;
+        return changes;
     }
 
     private static ProjectManifestMutationException RequiredReferencePlanChanged()
@@ -752,13 +761,24 @@ public sealed class CommonModulesInstallationTransaction
                 + $"could not be removed: \"{Path.GetFullPath(snapshotCleanup.RetainedPath)}\"."));
         }
 
+        var unsupportedWarning = warnings.FirstOrDefault(warning =>
+            WarningRank(warning.Code) < 0);
+        if (unsupportedWarning is not null)
+        {
+            throw new CommonModulesTransactionException(
+                $"CommonModules mutation produced unsupported warning code '{unsupportedWarning.Code}'.");
+        }
+
         var ordered = warnings
             .GroupBy(warning => warning.Code, StringComparer.Ordinal)
             .Select(group => group.First())
             .OrderBy(warning => WarningRank(warning.Code))
             .ThenBy(warning => warning.Code, StringComparer.Ordinal)
             .ToArray();
-        return new CommonModulesTransactionCompletion(result.Output, ordered);
+        return new CommonModulesTransactionCompletion(
+            CommonModulesMutationTextFormatter.Format(result.Operation, result.Documents),
+            result.Documents,
+            ordered);
     }
 
     private static int WarningRank(string code)
@@ -768,7 +788,7 @@ public sealed class CommonModulesInstallationTransaction
             "cancellationDeferred" => 1,
             "commonModulesSnapshotCleanupFailed" => 2,
             "leaseMarkerCleanupFailed" => 3,
-            _ => 4
+            _ => -1
         };
 
     private ProjectManifestMutationPlan<CommonModulesRebaseResult> RebaseUpdate(
@@ -805,17 +825,25 @@ public sealed class CommonModulesInstallationTransaction
             }
 
             var copyPlans = new List<CommonModuleCopyPlan>();
+            var priorModulesByDocument = new Dictionary<string, IReadOnlyList<InstalledCommonModule>>(
+                StringComparer.OrdinalIgnoreCase);
+            var referenceChangesByDocument = new Dictionary<
+                string,
+                IReadOnlyList<CommonModulesReferenceChangeResult>>(StringComparer.OrdinalIgnoreCase);
             var manifestChanged = false;
             foreach (var (documentName, document) in targetDocuments)
             {
+                priorModulesByDocument.Add(documentName, document.CommonModules.ToArray());
                 var updatePlan = CreateUpdatePlan(entries, document)!;
                 ValidateSelectedEntryIdentities(updatePlan.Entries);
-                manifestChanged |= AppendRequiredReferencesFromEvidence(
+                var referenceChanges = AppendRequiredReferencesFromEvidence(
                     snapshot.ProjectRoot,
                     documentName,
                     document,
                     updatePlan.RequiredReferences,
                     referenceEvidenceByDocument[documentName]);
+                referenceChangesByDocument.Add(documentName, referenceChanges);
+                manifestChanged |= referenceChanges.Count > 0;
                 var installedByName = document.CommonModules.ToDictionary(
                     module => module.Name,
                     StringComparer.OrdinalIgnoreCase);
@@ -827,7 +855,6 @@ public sealed class CommonModulesInstallationTransaction
                     packageSnapshot!,
                     documentSourceSetPath,
                     updatePlan.Entries,
-                    "Updated",
                     overwrite: true,
                     documentName));
                 manifestChanged |= ApplyUpdateEntries(
@@ -838,13 +865,19 @@ public sealed class CommonModulesInstallationTransaction
 
             ValidatePlannedManifest(plannedManifest);
             var sourceMutation = ExecuteCopyPlan(copyPlans, cancellationToken);
-            var output = BuildCopyOutput(copyPlans);
+            var documentResults = targetDocuments.Select(item =>
+                BuildMutationDocumentResult(
+                    item.Key,
+                    priorModulesByDocument[item.Key],
+                    item.Value.CommonModules,
+                    copyPlans.Where(plan => plan.Document.Equals(
+                        item.Key,
+                        StringComparison.OrdinalIgnoreCase)).ToArray(),
+                    referenceChangesByDocument[item.Key],
+                    "update")).ToArray();
             var result = new CommonModulesRebaseResult(
-                output.Length == 0
-                    ? targetDocuments.Length == 0
-                        ? "No installed CommonModules entries were found." + Environment.NewLine
-                        : "No CommonModules changes." + Environment.NewLine
-                    : output,
+                "update",
+                documentResults,
                 packageSnapshot,
                 targetDocuments.Sum(item => item.Value.CommonModules.Count(module => module.Orphaned)),
                 targetDocuments.Count(item => item.Value.CommonModules.Any(module => module.Orphaned)));
@@ -929,9 +962,8 @@ public sealed class CommonModulesInstallationTransaction
         CommonModulesPackageSnapshot packageSnapshot,
         string documentSourceSetPath,
         IReadOnlyList<CommonModuleManifestEntry> entries,
-        string verb,
         bool overwrite,
-        string? documentName = null)
+        string documentName)
     {
         var plans = new List<CommonModuleCopyPlan>();
         var plannedTargets = new Dictionary<string, CommonModuleManifestEntry>(StringComparer.OrdinalIgnoreCase);
@@ -975,11 +1007,11 @@ public sealed class CommonModulesInstallationTransaction
             }
 
             var relativeTargetPath = NormalizeDisplayPath(Path.GetRelativePath(documentSourceSetPath, targetPath));
-            var outputPath = documentName is null ? relativeTargetPath : $"{documentName}/{relativeTargetPath}";
             plans.Add(new CommonModuleCopyPlan(
                 Mutations: mutations,
-                Verb: verb,
-                OutputPath: outputPath));
+                Document: documentName,
+                ModuleName: entry.Name,
+                SourceSetRelativePath: relativeTargetPath));
         }
 
         return plans;
@@ -1160,20 +1192,90 @@ public sealed class CommonModulesInstallationTransaction
         }
     }
 
-    private static string BuildCopyOutput(IReadOnlyList<CommonModuleCopyPlan> copyPlan)
+    private static CommonModulesMutationDocumentResult BuildMutationDocumentResult(
+        string documentName,
+        IReadOnlyList<InstalledCommonModule> priorModules,
+        IReadOnlyList<InstalledCommonModule> finalModules,
+        IReadOnlyList<CommonModuleCopyPlan> copyPlans,
+        IReadOnlyList<CommonModulesReferenceChangeResult> referenceChanges,
+        string operation)
     {
-        var output = new StringBuilder();
-        foreach (var plan in copyPlan)
+        var priorByName = priorModules.ToDictionary(
+            module => module.Name,
+            StringComparer.OrdinalIgnoreCase);
+        var copyByName = copyPlans.ToDictionary(
+            plan => plan.ModuleName,
+            StringComparer.OrdinalIgnoreCase);
+        var results = new List<CommonModulesMutationModuleResult>();
+        foreach (var module in finalModules)
         {
-            if (plan.Mutations.All(mutation => mutation.VerificationOnly))
+            var changes = new List<CommonModulesMutationChangeResult>();
+            if (!priorByName.TryGetValue(module.Name, out var prior))
             {
-                continue;
+                if (!copyByName.TryGetValue(module.Name, out var installationPlan))
+                {
+                    throw new InvalidOperationException(
+                        $"Installed CommonModule '{module.Name}' has no source mutation plan.");
+                }
+
+                changes.Add(new CommonModulesMutationChangeResult(
+                    "installed",
+                    SourceSetRelativePath: installationPlan.SourceSetRelativePath));
+            }
+            else
+            {
+                var canonicalIdentityRefreshed =
+                    !prior.Name.Equals(module.Name, StringComparison.Ordinal)
+                    || !prior.ModuleFile.Equals(module.ModuleFile, StringComparison.Ordinal);
+                if (copyByName.TryGetValue(module.Name, out var copyPlan)
+                    && (canonicalIdentityRefreshed
+                        || copyPlan.Mutations.Any(mutation => !mutation.VerificationOnly)))
+                {
+                    changes.Add(new CommonModulesMutationChangeResult(
+                        "sourceUpdated",
+                        SourceSetRelativePath: copyPlan.SourceSetRelativePath));
+                }
+
+                if (!prior.Requested && module.Requested)
+                {
+                    if (!operation.Equals("add", StringComparison.Ordinal))
+                    {
+                        throw new InvalidOperationException(
+                            "CommonModules Update cannot promote direct-request intent.");
+                    }
+
+                    changes.Add(new CommonModulesMutationChangeResult("directRequestPromoted"));
+                }
+
+                if (prior.TestOnly != module.TestOnly)
+                {
+                    changes.Add(new CommonModulesMutationChangeResult(
+                        "testOnlyChanged",
+                        TestOnly: module.TestOnly));
+                }
+
+                if (prior.Orphaned != module.Orphaned)
+                {
+                    changes.Add(new CommonModulesMutationChangeResult(
+                        "orphanedChanged",
+                        Orphaned: module.Orphaned));
+                }
             }
 
-            output.AppendLine($"{plan.Verb} {plan.OutputPath}");
+            results.Add(new CommonModulesMutationModuleResult(
+                module.Name,
+                module.ModuleFile,
+                module.Requested,
+                module.TestOnly,
+                module.Orphaned,
+                changes.Count == 0 ? "unchanged" : "changed",
+                changes));
         }
 
-        return output.ToString();
+        return new CommonModulesMutationDocumentResult(
+            documentName,
+            results,
+            referenceChanges);
     }
 
     private static bool ApplyAddEntries(
@@ -1404,13 +1506,15 @@ public sealed class CommonModulesInstallationTransaction
         IReadOnlySet<string> OrphanedNames);
 
     private sealed record CommonModulesRebaseResult(
-        string Output,
+        string Operation,
+        IReadOnlyList<CommonModulesMutationDocumentResult> Documents,
         CommonModulesPackageSnapshot? PackageSnapshot,
         int OrphanedModuleCount,
         int OrphanedDocumentCount);
 
     private sealed record CommonModuleCopyPlan(
         IReadOnlyList<CommonModulesSourceFileMutation> Mutations,
-        string Verb,
-        string OutputPath);
+        string Document,
+        string ModuleName,
+        string SourceSetRelativePath);
 }

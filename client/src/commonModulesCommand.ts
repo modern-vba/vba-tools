@@ -1,3 +1,5 @@
+import * as path from 'node:path';
+
 import { VbaToolsOutputChannel } from './devtoolCommand';
 import {
   VbaDevCommandRuntimeOptions,
@@ -11,9 +13,20 @@ import {
   parseCommonModulesListOutput
 } from './vbaDevOutputContract';
 import { ProjectManifestMutationCommandCoordinator } from './projectManifestMutation';
+import {
+  CommonModulesMutationOperation,
+  TrustedCommonModulesMutationOutput,
+  parseCommonModulesMutationOutput
+} from './commonModulesOutputContract';
 
 export interface CommonModulesCommandOptions extends VbaDevCommandRuntimeOptions {
   projectManifestMutationCoordinator: ProjectManifestMutationCommandCoordinator;
+  showInformationMessage(message: string): PromiseLike<unknown> | Promise<unknown>;
+  showWarningMessage(
+    message: string,
+    action: string
+  ): PromiseLike<string | undefined> | Promise<string | undefined>;
+  showOutput(): void;
 }
 
 export type CommonModulesToolCommand = 'add' | 'list' | 'update';
@@ -23,6 +36,7 @@ export interface CommonModulesCommandResult {
   exitCode: number;
   cancelled: boolean;
   commonModulesList?: CommonModulesList | undefined;
+  commonModulesMutation?: TrustedCommonModulesMutationOutput | undefined;
 }
 
 // MS-VBAL WSC, followed by the UI input protocol's line terminators. U+00A0 is
@@ -46,11 +60,7 @@ export async function runCommonModulesAddCommand(
     return undefined;
   }
 
-  return runCommonModulesMutatingCommand(options, [
-    'common-module',
-    'add',
-    ...exactModuleNames
-  ]);
+  return runCommonModulesMutatingCommand(options, 'add', exactModuleNames);
 }
 
 export async function runCommonModulesUpdateCommand(
@@ -61,7 +71,7 @@ export async function runCommonModulesUpdateCommand(
     return undefined;
   }
 
-  return runCommonModulesMutation(options, context, ['common-module', 'update'], false);
+  return runCommonModulesMutation(options, context, 'update', []);
 }
 
 export async function runCommonModulesListCommand(
@@ -131,26 +141,34 @@ async function runCommonModulesListForProject(
 
 async function runCommonModulesMutatingCommand(
   options: CommonModulesCommandOptions,
-  toolArgs: readonly string[]
+  operation: 'add',
+  moduleNames: readonly string[]
 ): Promise<CommonModulesCommandResult | undefined> {
   const context = await resolveVbaDevProjectCommandContext(options, 'document');
   if (!context) {
     return undefined;
   }
 
-  return runCommonModulesMutation(options, context, toolArgs, true);
+  return runCommonModulesMutation(options, context, operation, moduleNames);
 }
 
 async function runCommonModulesMutation(
   options: CommonModulesCommandOptions,
   context: VbaDevProjectCommandContext,
-  toolArgs: readonly string[],
-  listSelectedDocumentAfterSuccess: boolean
+  operation: CommonModulesMutationOperation,
+  submittedModuleNames: readonly string[]
 ): Promise<CommonModulesCommandResult | undefined> {
+  const commandName = operation === 'add' ? 'Common Module Add' : 'Common Module Update';
   const coordinated = await options.projectManifestMutationCoordinator.run({
-    command: toolArgs[1] === 'add' ? 'Common Module Add' : 'Common Module Update',
+    command: commandName,
     target: context.target,
-    run: () => runResolvedVbaDevProjectCommand(options, context, toolArgs)
+    reportPresentation: 'logOnly',
+    run: () => runResolvedVbaDevProjectCommand(
+      { ...options, revealOutput: false },
+      context,
+      ['common-module', operation, ...submittedModuleNames],
+      ['--format', 'json']
+    )
   });
   if (coordinated.status === 'rejected') {
     return undefined;
@@ -159,6 +177,15 @@ async function runCommonModulesMutation(
     throw coordinated.processError ?? new Error(
       'CommonModules mutation completed without a process result.'
     );
+  }
+  const fallbackResult: CommonModulesCommandResult = {
+    projectRoot: context.project.projectRoot,
+    exitCode: coordinated.processResult.exitCode,
+    cancelled: coordinated.processResult.cancelled
+  };
+  if (coordinated.manifestOutcome === 'untrusted' || coordinated.coherence === 'untrusted') {
+    await warnUntrustedMutation(options, context, operation);
+    return fallbackResult;
   }
   const result = coordinated.processResult;
 
@@ -179,7 +206,20 @@ async function runCommonModulesMutation(
     };
   }
 
-  if (result.cancellationRequested) {
+  const expectedDocument = operation === 'add'
+    ? context.document?.name ?? null
+    : null;
+  let trusted: TrustedCommonModulesMutationOutput;
+  try {
+    trusted = parseCommonModulesMutationOutput(
+      result.stdout,
+      context.project.projectRoot,
+      expectedDocument,
+      operation,
+      submittedModuleNames
+    );
+  } catch {
+    await warnUntrustedMutation(options, context, operation);
     return {
       projectRoot: result.projectRoot,
       exitCode: result.exitCode,
@@ -187,11 +227,75 @@ async function runCommonModulesMutation(
     };
   }
 
-  return listSelectedDocumentAfterSuccess
-    ? runCommonModulesListForProject(options, context)
-    : {
-      projectRoot: result.projectRoot,
-      exitCode: result.exitCode,
-      cancelled: false
-    };
+  await notifyTrustedMutation(options, trusted, {
+    cancellationRequested: result.cancellationRequested,
+    cancellationRequestDelivered: result.cancellationRequestDelivered
+  });
+  return {
+    projectRoot: result.projectRoot,
+    exitCode: result.exitCode,
+    cancelled: false,
+    commonModulesMutation: trusted
+  };
+}
+
+async function notifyTrustedMutation(
+  options: CommonModulesCommandOptions,
+  result: TrustedCommonModulesMutationOutput,
+  cancellation: {
+    readonly cancellationRequested: boolean;
+    readonly cancellationRequestDelivered: boolean | undefined;
+  }
+): Promise<void> {
+  const modules = result.documents.flatMap((document) => document.modules);
+  const changed = modules.filter((module) => module.status === 'changed').length;
+  const unchanged = modules.length - changed;
+  const referencesAdded = result.documents.reduce(
+    (count, document) => count + document.referenceChanges.length,
+    0
+  );
+  const subject = result.operation === 'add'
+    ? `CommonModules for ${result.document}`
+    : `CommonModules update for ${path.basename(result.project)}`;
+  const summary = result.operation === 'update' && result.documents.length === 0
+    ? `${subject}: no installed targets.`
+    : `${subject}: ${changed} changed, ${unchanged} unchanged, ` +
+      `${referencesAdded} reference${referencesAdded === 1 ? '' : 's'} added.`;
+  const cancellationDeliveryFailed = cancellation.cancellationRequested &&
+    cancellation.cancellationRequestDelivered === false;
+  if (result.warnings.length === 0 && !cancellationDeliveryFailed) {
+    await options.showInformationMessage(summary);
+    return;
+  }
+
+  let warning = summary;
+  if (result.warnings.length > 0) {
+    warning += ` ${result.warnings.length} warning${result.warnings.length === 1 ? '' : 's'}.`;
+  }
+  if (cancellationDeliveryFailed) {
+    warning += ' Cancellation request could not be delivered.';
+  }
+  const selected = await options.showWarningMessage(warning, 'Show Output');
+  if (selected === 'Show Output') {
+    options.showOutput();
+  }
+}
+
+async function warnUntrustedMutation(
+  options: CommonModulesCommandOptions,
+  context: VbaDevProjectCommandContext,
+  operation: CommonModulesMutationOperation
+): Promise<void> {
+  const command = operation === 'add' ? 'Add' : 'Update';
+  const subject = operation === 'add'
+    ? `${context.document?.name ?? 'the selected document'}'s manifest`
+    : 'the project manifest';
+  const selected = await options.showWarningMessage(
+    `CommonModules ${command} completed with an untrusted result; ${subject} may already have committed. ` +
+      'Inspect the manifest and VBA Tools Output before retrying.',
+    'Show Output'
+  );
+  if (selected === 'Show Output') {
+    options.showOutput();
+  }
 }

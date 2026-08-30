@@ -289,6 +289,17 @@ manifest remains blocked until coherence is proved. Reference/CommonModules
 List and project Doctor explicitly identify disk as their source while such a
 block remains; debug-adapter Doctor stays independent.
 
+CommonModules Add and Update request one schema `1.0` JSON result from
+`vba-dev`. The result exhaustively describes each affected or targeted module,
+its final installed metadata, ordered changes, newly added required references,
+and stable warnings. VBA Tools validates the closed schema, selected context,
+unique identities, canonical ordering, and internal consistency, then shows one
+information or warning notification derived from changed, unchanged, and added
+reference counts. It does not run a follow-up CommonModules List or reconstruct
+the result from package or filesystem state. An exit-zero untrusted result warns
+that the manifest may already have committed and offers Output for inspection
+without retry, rollback, or fallback execution.
+
 Reference Add and Remove open a disabled, busy multi-select Quick Pick while
 their inventory is loaded for the exact selected project and document. Add
 offers only resolved `reference list --available` entries; Remove uses the
