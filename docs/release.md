@@ -191,6 +191,20 @@ The maintainer may need to complete interactive Azure and Marketplace sign-in,
 MFA, consent, and the publisher-member assignment. Do not create a client secret
 as a workaround for an incomplete interactive setup.
 
+The environment variable names are fixed by `.github/workflows/release.yml`:
+
+- `AZURE_SUBSCRIPTION_ID`
+- `AZURE_TENANT_ID`
+- `AZURE_CLIENT_ID`
+- `AZURE_MANAGED_IDENTITY_RESOURCE_ID`
+
+All four are GitHub Environment variables, not secrets. The resource ID is the
+full resource ID of `vba-tools-marketplace-publisher`. The workflow resolves
+that identity, requires its only Azure role assignment to be `Reader` at the
+`modern-vba-release-identities` resource-group scope, performs the Marketplace
+profile probe, and runs `vsce verify-pat modern-vba --azure-credential` before
+it is allowed to publish.
+
 ## Prepare the Release Change
 
 Run the repository-owned release preparation generator with an explicit
@@ -484,6 +498,17 @@ publication when the exact expected version is already visible, and continue
 post-publication verification and finalization. It must fail instead of
 building when an expected asset or checksum is absent.
 
+Resume only after inspecting the failed run and confirming that its tagged
+draft should continue:
+
+```powershell
+gh workflow run release.yml --ref main -f release_tag=vba-tools-vX.Y.Z
+```
+
+Dispatch does not create a release, rebuild an asset, move a tag, or authorize
+a different version. A missing or published draft, an asset-set difference, a
+checksum mismatch, or different tag metadata stops the resumed run.
+
 Release title:
 
 ```text
@@ -576,12 +601,20 @@ If Marketplace publish fails:
 
 ## Post-Release Checks
 
-- Install the Marketplace version into a normal VS Code profile.
+- Install the Marketplace pre-release into a normal VS Code profile:
+
+  ```powershell
+  code --install-extension modern-vba.vba-tools --pre-release --force
+  code --list-extensions --show-versions
+  ```
+
 - Open an exported VBA file and confirm language features activate.
 - Open a workbook-backed sample and run Doctor.
 - Confirm the GitHub Release assets are downloadable.
 - Confirm the GitHub Release is marked immutable and its release attestation
   verifies.
 - Run `gh attestation verify` for the downloaded VSIX and standalone CLI ZIP.
+- Verify the downloaded files against `SHA256SUMS` and confirm the standalone
+  ZIP contains the exact `vba-dev.exe` bundled in the VSIX.
 - Confirm README `Version History` points to GitHub Releases.
 - Open an issue for any manual follow-up that was intentionally deferred.
