@@ -10,12 +10,6 @@ export interface VbaDebugActiveEditor {
   readonly character: number;
 }
 
-export interface VbaDebugSavableTextDocument {
-  readonly uriPath: string;
-  readonly isDirty: boolean;
-  save(): PromiseLike<boolean>;
-}
-
 export interface VbaDebugSourceBreakpoint {
   readonly uriPath: string;
   readonly line: number;
@@ -33,13 +27,10 @@ export interface VbaDebugCancellationToken {
 export interface VbaDebugConfigurationHost {
   readonly workspaceRoots: readonly string[];
   getActiveEditor(): VbaDebugActiveEditor | undefined;
-  getOpenTextDocuments(): readonly VbaDebugSavableTextDocument[];
   getSourceBreakpoints(): readonly VbaDebugSourceBreakpoint[];
   findProjectManifests(workspaceRoots: readonly string[]): Promise<readonly string[]>;
   readTextFile(filePath: string): Promise<string>;
-  readSourceText(filePath: string): Promise<string>;
-  findExportedSourceFiles(sourceSetPath: string): Promise<readonly string[]>;
-  captureSourceInventory?(
+  captureSourceInventory(
     sourceSetPath: string,
     cancellationToken?: VbaDebugCancellationToken
   ): Promise<SnapshotSourceInventory>;
@@ -119,69 +110,23 @@ export async function resolveVbaDebugConfiguration(
     explicitDocument,
     activeEditor,
     hasExplicitTarget);
-  if (host.captureSourceInventory !== undefined) {
-    const inventory = await host.captureSourceInventory(
-      selection.sourceSetPath,
-      cancellationToken
-    );
-    throwIfDebugCancellationRequested(cancellationToken);
-    return createTransportedSnapshotConfiguration(
-      host,
-      normalizedConfiguration,
-      selection,
-      inventory,
-      hasExplicitTarget ? undefined : activeEditor
-    );
-  }
-  await saveDirtyProjectSources(host, selection.project, cancellationToken);
-  throwIfDebugCancellationRequested(cancellationToken);
-  const postSaveActiveEditor = hasExplicitTarget ? undefined : host.getActiveEditor();
-  if (
-    !hasExplicitTarget
-    && (!postSaveActiveEditor || !isExportedVbaSource(postSaveActiveEditor.uriPath))
-  ) {
+  if (host.captureSourceInventory === undefined) {
     throw new VbaDebugSelectionError(
-      'The active exported VBA source was unavailable after save participants completed.'
+      'VBA debug source inventory capture is unavailable in this host.'
     );
   }
-
-  const postSaveSelection = resolveDocumentSelection(
-    await loadProjects(host),
-    selection.project.projectRoot,
-    selection.document.name,
-    postSaveActiveEditor,
-    hasExplicitTarget);
-  const sourcePaths = uniqueCanonicalPaths(
-    await host.findExportedSourceFiles(postSaveSelection.sourceSetPath)
+  const inventory = await host.captureSourceInventory(
+    selection.sourceSetPath,
+    cancellationToken
   );
-  const breakpoints = captureEnabledOrdinarySourceBreakpoints(host, sourcePaths);
-  const sources = [];
-  for (const sourcePath of sourcePaths) {
-    sources.push({
-      path: sourcePath,
-      text: await host.readSourceText(sourcePath)
-    });
-  }
-
-  return {
-    ...normalizedConfiguration,
-    project: postSaveSelection.project.projectRoot,
-    document: postSaveSelection.document.name,
-    sourceSnapshot: {
-      schemaVersion: 1,
-      sources,
-      ...(hasExplicitTarget
-        ? {}
-        : {
-            activeSource: {
-              path: postSaveActiveEditor!.uriPath,
-              line: postSaveActiveEditor!.line,
-              character: postSaveActiveEditor!.character
-            }
-          }),
-      breakpoints
-    }
-  };
+  throwIfDebugCancellationRequested(cancellationToken);
+  return createTransportedSnapshotConfiguration(
+    host,
+    normalizedConfiguration,
+    selection,
+    inventory,
+    hasExplicitTarget ? undefined : activeEditor
+  );
 }
 
 export async function recaptureBoundVbaDebugConfiguration(
@@ -197,12 +142,6 @@ export async function recaptureBoundVbaDebugConfiguration(
       'A bound VBA debug restart requires its original project and document.'
     );
   }
-  if (host.captureSourceInventory === undefined) {
-    throw new VbaDebugSelectionError(
-      'Bound VBA debug restart snapshot capture is unavailable in this host.'
-    );
-  }
-
   const projects = await loadProjects(host);
   throwIfDebugCancellationRequested(cancellationToken);
   const selection = resolveDocumentSelection(
@@ -430,62 +369,6 @@ function safeTransportRelativePath(relativePath: string): string {
   return portablePath;
 }
 
-function captureEnabledOrdinarySourceBreakpoints(
-  host: VbaDebugConfigurationHost,
-  sourcePaths: readonly string[]
-): readonly { readonly path: string; readonly line: number }[] {
-  const exportedSourcePaths = new Map(
-    sourcePaths
-      .map((sourcePath) => [canonicalPath(sourcePath), sourcePath])
-  );
-  const breakpoints = host.getSourceBreakpoints()
-    .filter((breakpoint) => breakpoint.enabled)
-    .flatMap((breakpoint) => {
-      const sourcePath = exportedSourcePaths.get(canonicalPath(breakpoint.uriPath));
-      if (sourcePath === undefined) {
-        return [];
-      }
-
-      if (breakpoint.condition !== undefined) {
-        throw new VbaDebugSelectionError(
-          `Conditional breakpoint at ${sourcePath}:${breakpoint.line + 1} is unsupported for VBA debug launch.`
-        );
-      }
-
-      if (breakpoint.hitCondition !== undefined) {
-        throw new VbaDebugSelectionError(
-          `Hit-count breakpoint at ${sourcePath}:${breakpoint.line + 1} is unsupported for VBA debug launch.`
-        );
-      }
-
-      if (breakpoint.logMessage !== undefined) {
-        throw new VbaDebugSelectionError(
-          `Logpoint at ${sourcePath}:${breakpoint.line + 1} is unsupported for VBA debug launch.`
-        );
-      }
-
-      return [{ path: sourcePath, line: breakpoint.line }];
-    });
-  breakpoints.sort((left, right) => (
-    compareOrdinal(canonicalPath(left.path), canonicalPath(right.path))
-    || left.line - right.line
-  ));
-  for (let index = 1; index < breakpoints.length; index += 1) {
-    const previous = breakpoints[index - 1];
-    const current = breakpoints[index];
-    if (
-      canonicalPath(previous.path) === canonicalPath(current.path)
-      && previous.line === current.line
-    ) {
-      throw new VbaDebugSelectionError(
-        `Duplicate enabled VBA breakpoint at ${current.path}:${current.line + 1}.`
-      );
-    }
-  }
-
-  return breakpoints;
-}
-
 function validateOptionalSelector(
   configuration: VbaDebugConfiguration,
   selectorName: 'project' | 'document'
@@ -634,89 +517,12 @@ function resolveDocumentSelection(
   return matchingDocuments[0];
 }
 
-async function saveDirtyProjectSources(
-  host: VbaDebugConfigurationHost,
-  project: {
-    readonly projectRoot: string;
-    readonly manifest: {
-      readonly documents: readonly { readonly sourcePath: string }[];
-    };
-  },
-  cancellationToken?: VbaDebugCancellationToken
-): Promise<void> {
-  const sourceSetPaths = project.manifest.documents.map((document) => (
-    path.resolve(project.projectRoot, document.sourcePath)
-  ));
-  const documents = host.getOpenTextDocuments()
-    .filter((document) => (
-      document.isDirty
-      && isExportedVbaSource(document.uriPath)
-      && sourceSetPaths.some((sourceSetPath) => isPathWithin(document.uriPath, sourceSetPath))
-    ))
-    .sort((left, right) => canonicalPath(left.uriPath).localeCompare(canonicalPath(right.uriPath)));
-  for (const document of documents) {
-    throwIfDebugCancellationRequested(cancellationToken);
-    let saved: boolean;
-    try {
-      saved = await waitForDebugCancellation(document.save(), cancellationToken);
-    } catch {
-      throwIfDebugCancellationRequested(cancellationToken);
-      throw new VbaDebugSelectionError(
-        `Could not save exported VBA source before the debug launch: ${document.uriPath}`
-      );
-    }
-
-    if (!saved) {
-      throw new VbaDebugSelectionError(
-        `Could not save exported VBA source before the debug launch: ${document.uriPath}`
-      );
-    }
-  }
-}
-
 function throwIfDebugCancellationRequested(
   cancellationToken: VbaDebugCancellationToken | undefined
 ): void {
   if (cancellationToken?.isCancellationRequested) {
     throw new VbaDebugCancellationError();
   }
-}
-
-function waitForDebugCancellation<T>(
-  operation: PromiseLike<T>,
-  cancellationToken: VbaDebugCancellationToken | undefined
-): Promise<T> {
-  if (cancellationToken === undefined) {
-    return Promise.resolve(operation);
-  }
-
-  throwIfDebugCancellationRequested(cancellationToken);
-  return new Promise<T>((resolve, reject) => {
-    let settled = false;
-    let cancellationSubscription: { dispose(): void } | undefined;
-    const settle = (complete: () => void) => {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-      cancellationSubscription?.dispose();
-      complete();
-    };
-    cancellationSubscription = cancellationToken.onCancellationRequested(() => {
-      settle(() => reject(new VbaDebugCancellationError()));
-    });
-    if (settled) {
-      cancellationSubscription.dispose();
-    } else if (cancellationToken.isCancellationRequested) {
-      settle(() => reject(new VbaDebugCancellationError()));
-    }
-
-    Promise.resolve(operation).then(
-      (value) => settle(() => resolve(value)),
-      (error: unknown) => settle(() => reject(error))
-    );
-  });
 }
 
 function optionalNonEmptyString(value: unknown): string | undefined {
@@ -765,20 +571,6 @@ function samePath(left: string, right: string): boolean {
 
 function canonicalPath(filePath: string): string {
   return path.normalize(path.resolve(filePath)).toLowerCase();
-}
-
-function uniqueCanonicalPaths(filePaths: readonly string[]): string[] {
-  const paths = new Map<string, string>();
-  for (const filePath of filePaths) {
-    const absolutePath = path.resolve(filePath);
-    if (isExportedVbaSource(absolutePath)) {
-      paths.set(path.normalize(absolutePath).toLowerCase(), absolutePath);
-    }
-  }
-
-  return [...paths.entries()]
-    .map(([, filePath]) => filePath)
-    .sort(compareOrdinal);
 }
 
 function compareOrdinal(left: string, right: string): number {

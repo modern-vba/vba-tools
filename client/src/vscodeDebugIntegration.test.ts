@@ -30,12 +30,13 @@ test('VBA debug provider normalizes an empty F5 configuration before variable su
         hostWasTouched = true;
         return undefined;
       },
-      getOpenTextDocuments: () => [],
       getSourceBreakpoints: () => [],
       findProjectManifests: async () => [],
       readTextFile: async () => '',
-      readSourceText: async () => '',
-      findExportedSourceFiles: async () => []
+      captureSourceInventory: async () => {
+        hostWasTouched = true;
+        throw new Error('Unexpected source capture.');
+      }
     }
   });
   const provider = createVbaDebugConfigurationProvider(integration, () => undefined);
@@ -66,6 +67,64 @@ test('VBA debug provider checks Workspace Trust before resolving substituted con
 
   assert.equal(configuration, undefined);
   assert.equal(configurationResolutions, 0);
+});
+
+test('VBA debug provider aborts before adapter startup when inventory capture fails', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const manifestPath = path.join(projectRoot, 'vba-project.json');
+  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'DebugModule.bas');
+  let adapterResolutionAttempts = 0;
+  const integration = new VscodeDebugIntegration({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    getConfiguredDevToolPath: () => undefined,
+    vbaDebugAdapterResolver: {
+      resolve: async () => {
+        adapterResolutionAttempts += 1;
+        throw new Error('Adapter must not start after capture failure.');
+      }
+    },
+    debugConfigurationHost: {
+      workspaceRoots: [path.join('C:', 'work')],
+      getActiveEditor: () => ({ uriPath: sourcePath, line: 0, character: 0 }),
+      getSourceBreakpoints: () => [],
+      findProjectManifests: async () => [manifestPath],
+      readTextFile: async () => JSON.stringify({
+        schemaVersion: 1,
+        projectName: 'BookProject',
+        primaryDocument: 'Book1',
+        documents: {
+          Book1: {
+            kind: 'excel',
+            sourcePath: 'src/Book1',
+            templatePath: 'src/Book1/Book1.xlsm',
+            binPath: 'bin/Book1.xlsm',
+            publishPath: 'publish/Book1.xlsm',
+            commonModules: [],
+            references: []
+          }
+        }
+      }),
+      captureSourceInventory: async () => {
+        throw new Error('Immutable inventory capture failed.');
+      }
+    }
+  });
+  const messages: string[] = [];
+  const provider = createVbaDebugConfigurationProvider(
+    integration,
+    (message) => messages.push(message),
+    async () => true
+  );
+
+  const result = await provider.resolveDebugConfigurationWithSubstitutedVariables({
+    type: 'vba',
+    request: 'launch',
+    name: 'VBA: Active Procedure'
+  });
+
+  assert.equal(result, undefined);
+  assert.equal(adapterResolutionAttempts, 0);
+  assert.deepEqual(messages, ['Immutable inventory capture failed.']);
 });
 
 test('VBA debug provider exposes the post-substitution result to tests and aborts before adapter startup', async () => {
@@ -618,12 +677,9 @@ test('only the owning VBA debug session release cancels its pending restart prep
     debugConfigurationHost: {
       workspaceRoots: [workspaceRoot],
       getActiveEditor: () => undefined,
-      getOpenTextDocuments: () => [],
       getSourceBreakpoints: () => [],
       findProjectManifests: async () => [manifestPath],
       readTextFile: async () => manifest,
-      readSourceText: async () => 'Public Sub RunTarget()\r\nEnd Sub\r\n',
-      findExportedSourceFiles: async () => [sourcePath],
       captureSourceInventory: async (sourceSetPath, cancellationToken) => {
         notifyCaptureStarted();
         return new Promise((_, reject) => {
@@ -877,7 +933,6 @@ test('VBA debug integration shutdown cancels bound restart capture before cleanu
     debugConfigurationHost: {
       workspaceRoots: [workspaceRoot],
       getActiveEditor: () => undefined,
-      getOpenTextDocuments: () => [],
       getSourceBreakpoints: () => [],
       findProjectManifests: async () => [manifestPath],
       readTextFile: async () => JSON.stringify({
@@ -896,8 +951,6 @@ test('VBA debug integration shutdown cancels bound restart capture before cleanu
           }
         }
       }),
-      readSourceText: async () => 'Public Sub RunTarget()\r\nEnd Sub\r\n',
-      findExportedSourceFiles: async () => [sourcePath],
       captureSourceInventory: async (_sourceSetPath, cancellationToken) => {
         notifyCaptureStarted();
         return new Promise((_, reject) => {

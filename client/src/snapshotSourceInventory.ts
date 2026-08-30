@@ -53,8 +53,10 @@ export interface MaterializedCallerOwnedSourceSnapshot {
   cleanup(): Promise<CallerOwnedSourceSnapshotCleanupResult>;
 }
 
-export type CallerOwnedSourceSnapshotCaptureHost = SnapshotSourceInventoryHost
-  & CallerOwnedSourceSnapshotHost;
+export type SnapshotSourceInventoryCapture = (
+  sourceSetPath: string,
+  cancellationToken?: SnapshotCaptureCancellationToken | undefined
+) => Promise<SnapshotSourceInventory>;
 
 export type CallerOwnedSourceSnapshotCapture = (
   sourceSetPath: string,
@@ -157,13 +159,14 @@ export async function captureSnapshotSourceInventory(
 }
 
 export function createCallerOwnedSourceSnapshotCapture(
-  host: CallerOwnedSourceSnapshotCaptureHost
+  captureSourceInventory: SnapshotSourceInventoryCapture,
+  host: CallerOwnedSourceSnapshotHost
 ): CallerOwnedSourceSnapshotCapture {
   return async (
     sourceSetPath,
     cancellationToken = uncancelledSnapshotCaptureToken
   ) => materializeSnapshotSourceInventory(
-    await captureSnapshotSourceInventory(sourceSetPath, host, cancellationToken),
+    await captureSourceInventory(sourceSetPath, cancellationToken),
     host,
     cancellationToken);
 }

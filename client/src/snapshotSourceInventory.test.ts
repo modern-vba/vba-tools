@@ -573,13 +573,20 @@ test('the snapshot capture port returns a materialized caller-owned lease', asyn
   const sourcePath = path.join(sourceSetPath, 'Module.bas');
   const snapshotPath = path.join('C:', 'temp', 'vba-tools-snapshot-port');
   const writes = new Map<string, Uint8Array>();
-  const capture = createCallerOwnedSourceSnapshotCapture({
-    getActiveWindowsCodePage: () => 65001,
-    getOpenTextDocuments: () => [],
-    findSourceFiles: async () => [sourcePath],
-    readFile: async () => Uint8Array.from([0x41]),
-    encodeText: async (text) => new TextEncoder().encode(text),
-    decodeText: async (bytes) => new TextDecoder('utf-8', { fatal: true }).decode(bytes),
+  const capturedSourceSets: string[] = [];
+  const capture = createCallerOwnedSourceSnapshotCapture(async (capturedSourceSetPath) => {
+    capturedSourceSets.push(capturedSourceSetPath);
+    return {
+      sourceSetPath: capturedSourceSetPath,
+      activeWindowsCodePage: 65001,
+      entries: [{
+        relativePath: 'Module.bas',
+        sourceUri: pathToFileURL(sourcePath).href,
+        encoding: 'utf8',
+        bytes: Uint8Array.from([0x41])
+      }]
+    };
+  }, {
     createTemporaryDirectory: async () => snapshotPath,
     createDirectory: async () => undefined,
     writeFile: async (filePath, bytes) => {
@@ -592,6 +599,7 @@ test('the snapshot capture port returns a materialized caller-owned lease', asyn
   const lease = await capture(sourceSetPath);
 
   assert.equal(lease.directoryPath, snapshotPath);
+  assert.deepEqual(capturedSourceSets, [sourceSetPath]);
   assert.deepEqual([...writes.get(path.join(snapshotPath, 'Module.bas'))!], [0x41]);
 });
 

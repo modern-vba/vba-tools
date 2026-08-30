@@ -8,9 +8,11 @@ import {
   handleVbaDebugLifecycleRequest
 } from './vscodeDebugIntegration';
 import {
+  recaptureBoundVbaDebugConfiguration,
   VbaDebugCancellationError,
   VbaDebugSelectionError,
   type VbaDebugCancellationToken,
+  type VbaDebugConfigurationHost,
   type VbaDebugSourceBreakpoint
 } from './vscodeDebugConfiguration';
 import { type SnapshotSourceInventory } from './snapshotSourceInventory';
@@ -41,10 +43,15 @@ test('F5 from one active exported VBA source resolves a zero-configuration sourc
     name: 'VBA: Active Procedure',
     project: projectRoot,
     document: 'Book1',
+    __vbaDebugWorkbookFileName: 'Book1.xlsm',
     sourceSnapshot: {
       schemaVersion: 1,
-      sources: [{ path: sourcePath, text: sourceText }],
-      activeSource: { path: sourcePath, line: 3, character: 12 },
+      sources: [transportedTextSource(path.dirname(sourcePath), sourcePath, sourceText)],
+      activeSource: {
+        sourceUri: pathToFileURL(sourcePath).href,
+        line: 3,
+        character: 12
+      },
       breakpoints: []
     }
   });
@@ -57,30 +64,15 @@ test('F5 transports an unsaved captured source as persistent base64 bytes', asyn
   const sourcePath = path.join(sourceSetPath, 'DebugModule.bas');
   const sourceUri = pathToFileURL(sourcePath).href;
   const bytes = new TextEncoder().encode('Public Sub RunTarget()\r\nEnd Sub\r\n');
-  let saveCalls = 0;
   const integration = new VscodeDebugIntegration({
     extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
     getConfiguredDevToolPath: () => undefined,
     debugConfigurationHost: {
       workspaceRoots: [path.join('C:', 'work')],
       getActiveEditor: () => ({ uriPath: sourcePath, line: 0, character: 11 }),
-      getOpenTextDocuments: () => [{
-        uriPath: sourcePath,
-        isDirty: true,
-        save: async () => {
-          saveCalls += 1;
-          return true;
-        }
-      }],
       getSourceBreakpoints: () => [],
       findProjectManifests: async () => [manifestPath],
       readTextFile: async () => manifestJson('BookProject', ['Book1']),
-      readSourceText: async () => {
-        throw new Error('Transported snapshot must not re-read source text.');
-      },
-      findExportedSourceFiles: async () => {
-        throw new Error('Transported snapshot must use its capture-start inventory.');
-      },
       captureSourceInventory: async () => ({
         sourceSetPath,
         activeWindowsCodePage: 65001,
@@ -96,7 +88,6 @@ test('F5 transports an unsaved captured source as persistent base64 bytes', asyn
 
   const configuration = await integration.resolveDebugConfiguration({});
 
-  assert.equal(saveCalls, 0);
   assert.deepEqual(configuration, {
     type: 'vba',
     request: 'launch',
@@ -118,6 +109,55 @@ test('F5 transports an unsaved captured source as persistent base64 bytes', asyn
   });
 });
 
+test('debug launch refuses a host without immutable source inventory capture', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const manifestPath = path.join(projectRoot, 'vba-project.json');
+  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'DebugModule.bas');
+  let sourceHostWasTouched = false;
+  const integration = new VscodeDebugIntegration({
+    extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
+    getConfiguredDevToolPath: () => undefined,
+    debugConfigurationHost: {
+      workspaceRoots: [path.join('C:', 'work')],
+      getActiveEditor: () => ({ uriPath: sourcePath, line: 0, character: 0 }),
+      getSourceBreakpoints: () => {
+        sourceHostWasTouched = true;
+        return [];
+      },
+      findProjectManifests: async () => [manifestPath],
+      readTextFile: async () => manifestJson('BookProject', ['Book1'])
+    } as unknown as VbaDebugConfigurationHost
+  });
+
+  await assert.rejects(
+    () => integration.resolveDebugConfiguration({}),
+    /source inventory capture is unavailable/i
+  );
+  assert.equal(sourceHostWasTouched, false);
+});
+
+test('debug launch fails closed when the active source is absent from the captured inventory', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const manifestPath = path.join(projectRoot, 'vba-project.json');
+  const sourceSetPath = path.join(projectRoot, 'src', 'Book1');
+  const sourcePath = path.join(sourceSetPath, 'DebugModule.bas');
+  const integration = createIntegration({
+    activeEditor: { uriPath: sourcePath, line: 0, character: 0 },
+    manifests: new Map([[manifestPath, manifestJson('BookProject', ['Book1'])]]),
+    sources: new Map([[sourcePath, 'Public Sub RunTarget()\r\nEnd Sub\r\n']]),
+    captureSourceInventory: async () => ({
+      sourceSetPath,
+      activeWindowsCodePage: 65001,
+      entries: []
+    })
+  });
+
+  await assert.rejects(
+    () => integration.resolveDebugConfiguration({}),
+    /active exported VBA source is missing from the captured inventory/i
+  );
+});
+
 test('transported snapshot paths use portable raw UTF-16 ordinal order', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const manifestPath = path.join(projectRoot, 'vba-project.json');
@@ -132,12 +172,9 @@ test('transported snapshot paths use portable raw UTF-16 ordinal order', async (
     debugConfigurationHost: {
       workspaceRoots: [path.join('C:', 'work')],
       getActiveEditor: () => ({ uriPath: digitSourcePath, line: 0, character: 0 }),
-      getOpenTextDocuments: () => [],
       getSourceBreakpoints: () => [],
       findProjectManifests: async () => [manifestPath],
       readTextFile: async () => manifestJson('BookProject', ['Book1']),
-      readSourceText: async () => '',
-      findExportedSourceFiles: async () => [],
       captureSourceInventory: async () => ({
         sourceSetPath,
         activeWindowsCodePage: 65001,
@@ -203,11 +240,27 @@ test('source snapshots use UTF-16 ordinal canonical path order across punctuatio
   assert.deepEqual(configuration.sourceSnapshot, {
     schemaVersion: 1,
     sources: [
-      { path: digitSource, text: 'Public Sub DigitTarget()\r\nEnd Sub\r\n' },
-      { path: underscoreSource, text: 'Public Sub UnderscoreTarget()\r\nEnd Sub\r\n' },
-      { path: lowerCaseSource, text: 'Public Sub LowerCaseTarget()\r\nEnd Sub\r\n' }
+      transportedTextSource(
+        path.dirname(digitSource),
+        digitSource,
+        'Public Sub DigitTarget()\r\nEnd Sub\r\n'
+      ),
+      transportedTextSource(
+        path.dirname(underscoreSource),
+        underscoreSource,
+        'Public Sub UnderscoreTarget()\r\nEnd Sub\r\n'
+      ),
+      transportedTextSource(
+        path.dirname(lowerCaseSource),
+        lowerCaseSource,
+        'Public Sub LowerCaseTarget()\r\nEnd Sub\r\n'
+      )
     ],
-    activeSource: { path: underscoreSource, line: 0, character: 0 },
+    activeSource: {
+      sourceUri: pathToFileURL(underscoreSource).href,
+      line: 0,
+      character: 0
+    },
     breakpoints: []
   });
 });
@@ -248,12 +301,14 @@ test('a saved launch narrows project and document and resolves an explicit proce
     document: 'Book2',
     module: 'DebugModule',
     procedure: 'RunTarget',
+    __vbaDebugWorkbookFileName: 'Book2.xlsm',
     sourceSnapshot: {
       schemaVersion: 1,
-      sources: [{
-        path: selectedSource,
-        text: 'Public Sub RunTarget()\r\nEnd Sub\r\n'
-      }],
+      sources: [transportedTextSource(
+        path.dirname(selectedSource),
+        selectedSource,
+        'Public Sub RunTarget()\r\nEnd Sub\r\n'
+      )],
       breakpoints: []
     }
   });
@@ -311,12 +366,13 @@ test('a saved launch rejects invalid project and document selectors instead of t
         hostWasTouched = true;
         return undefined;
       },
-      getOpenTextDocuments: () => [],
       getSourceBreakpoints: () => [],
       findProjectManifests: async () => [],
       readTextFile: async () => '',
-      readSourceText: async () => '',
-      findExportedSourceFiles: async () => []
+      captureSourceInventory: async () => {
+        hostWasTouched = true;
+        throw new Error('Unexpected source capture.');
+      }
     }
   });
 
@@ -332,7 +388,7 @@ test('a saved launch rejects invalid project and document selectors instead of t
   assert.equal(hostWasTouched, false);
 });
 
-test('debug launch saves every dirty exported source in the selected project and leaves other projects untouched', async () => {
+test('debug launch captures only the selected document source inventory', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const otherRoot = path.join('C:', 'work', 'OtherProject');
   const manifestPath = path.join(projectRoot, 'vba-project.json');
@@ -345,57 +401,45 @@ test('debug launch saves every dirty exported source in the selected project and
     [peerSource, 'Public Sub PeerBeforeSave()\r\nEnd Sub\r\n'],
     [outsideSource, 'Public Sub OutsideBeforeSave()\r\nEnd Sub\r\n']
   ]);
-  const saved: string[] = [];
-  const dirtyDocument = (uriPath: string, savedText: string) => ({
-    uriPath,
-    isDirty: true,
-    save: async () => {
-      saved.push(uriPath);
-      sources.set(uriPath, savedText);
-      return true;
-    }
-  });
   const integration = createIntegration({
     activeEditor: { uriPath: activeSource, line: 0, character: 11 },
     manifests: new Map([
       [manifestPath, manifestJson('BookProject', ['Book1', 'Book2'])],
       [otherManifestPath, manifestJson('OtherProject', ['OtherBook'])]
     ]),
-    sources,
-    openTextDocuments: () => [
-      dirtyDocument(outsideSource, 'Public Sub OutsideAfterSave()\r\nEnd Sub\r\n'),
-      dirtyDocument(peerSource, 'Public Sub PeerAfterSave()\r\nEnd Sub\r\n'),
-      dirtyDocument(activeSource, 'Public Sub AfterSave()\r\nEnd Sub\r\n')
-    ]
+    sources
   });
 
   const configuration = await integration.resolveDebugConfiguration({});
 
-  assert.deepEqual(saved, [activeSource, peerSource]);
   assert.deepEqual(configuration.sourceSnapshot, {
     schemaVersion: 1,
-    sources: [{
-      path: activeSource,
-      text: 'Public Sub AfterSave()\r\nEnd Sub\r\n'
-    }],
-    activeSource: { path: activeSource, line: 0, character: 11 },
+    sources: [transportedTextSource(
+      path.dirname(activeSource),
+      activeSource,
+      'Public Sub BeforeSave()\r\nEnd Sub\r\n'
+    )],
+    activeSource: {
+      sourceUri: pathToFileURL(activeSource).href,
+      line: 0,
+      character: 11
+    },
     breakpoints: []
   });
   assert.equal(sources.get(outsideSource), 'Public Sub OutsideBeforeSave()\r\nEnd Sub\r\n');
 });
 
-test('debug launch awaits save participants and re-resolves membership and source position before snapshot capture', async () => {
+test('debug launch captures one invocation-time selection and source position', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const manifestPath = path.join(projectRoot, 'vba-project.json');
   const sourcePath = path.join(projectRoot, 'src', 'Book1', 'DebugModule.bas');
   const sources = new Map([[sourcePath, 'Public Sub BeforeSave()\r\nEnd Sub\r\n']]);
   const events: string[] = [];
-  let activeEditor = { uriPath: sourcePath, line: 0, character: 11 };
   let manifestReads = 0;
   const integration = createIntegration({
     getActiveEditor: () => {
-      events.push(`active:${activeEditor.line}:${activeEditor.character}`);
-      return activeEditor;
+      events.push('active:0:11');
+      return { uriPath: sourcePath, line: 0, character: 11 };
     },
     manifests: new Map([[manifestPath, manifestJson('BookProject', ['Book1'])]]),
     sources,
@@ -406,85 +450,51 @@ test('debug launch awaits save participants and re-resolves membership and sourc
         return manifestJson('BookProject', ['Book1']);
       }
       return sources.get(filePath) ?? '';
-    },
-    readSourceText: async (filePath) => {
-      events.push('snapshot-source');
-      return sources.get(filePath) ?? '';
-    },
-    openTextDocuments: () => [{
-      uriPath: sourcePath,
-      isDirty: true,
-      save: async () => {
-        events.push('save-start');
-        await Promise.resolve();
-        sources.set(sourcePath, 'Public Sub AfterSave()\r\nEnd Sub\r\n');
-        activeEditor = { uriPath: sourcePath, line: 1, character: 7 };
-        events.push('save-participants-finished');
-        return true;
-      }
-    }]
+    }
   });
 
   const configuration = await integration.resolveDebugConfiguration({});
 
   assert.deepEqual(events, [
     'active:0:11',
-    'manifest:1',
-    'save-start',
-    'save-participants-finished',
-    'active:1:7',
-    'manifest:2',
-    'snapshot-source'
+    'manifest:1'
   ]);
   assert.deepEqual(configuration.sourceSnapshot, {
     schemaVersion: 1,
-    sources: [{
-      path: sourcePath,
-      text: 'Public Sub AfterSave()\r\nEnd Sub\r\n'
-    }],
-    activeSource: { path: sourcePath, line: 1, character: 7 },
+    sources: [transportedTextSource(
+      path.dirname(sourcePath),
+      sourcePath,
+      'Public Sub BeforeSave()\r\nEnd Sub\r\n'
+    )],
+    activeSource: {
+      sourceUri: pathToFileURL(sourcePath).href,
+      line: 0,
+      character: 11
+    },
     breakpoints: []
   });
 });
 
-test('debug launch cancellation stops waiting for a pending save and retains completed saves', async () => {
+test('debug launch cancellation stops a pending immutable inventory capture', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const manifestPath = path.join(projectRoot, 'vba-project.json');
-  const completedSource = path.join(projectRoot, 'src', 'Book1', 'A.bas');
-  const pendingSource = path.join(projectRoot, 'src', 'Book1', 'B.cls');
-  const sources = new Map([
-    [completedSource, 'Public Sub BeforeSave()\r\nEnd Sub\r\n'],
-    [pendingSource, 'Public Sub PendingSave()\r\nEnd Sub\r\n']
-  ]);
-  let finishPendingSave!: (saved: boolean) => void;
-  let notifyPendingSaveStarted!: () => void;
-  const pendingSaveStarted = new Promise<void>((resolve) => {
-    notifyPendingSaveStarted = resolve;
+  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'A.bas');
+  let notifyCaptureStarted!: () => void;
+  const captureStarted = new Promise<void>((resolve) => {
+    notifyCaptureStarted = resolve;
   });
-  let sourceWasRead = false;
   const integration = createIntegration({
-    activeEditor: { uriPath: completedSource, line: 0, character: 11 },
+    activeEditor: { uriPath: sourcePath, line: 0, character: 11 },
     manifests: new Map([[manifestPath, manifestJson('BookProject', ['Book1'])]]),
-    sources,
-    readSourceText: async () => {
-      sourceWasRead = true;
-      return '';
-    },
-    openTextDocuments: () => [{
-      uriPath: completedSource,
-      isDirty: true,
-      save: async () => {
-        sources.set(completedSource, 'Public Sub AfterSave()\r\nEnd Sub\r\n');
-        return true;
-      }
-    }, {
-      uriPath: pendingSource,
-      isDirty: true,
-      save: () => new Promise<boolean>((resolve) => {
-        finishPendingSave = resolve;
-        notifyPendingSaveStarted();
+    sources: new Map([[sourcePath, 'Public Sub RunTarget()\r\nEnd Sub\r\n']]),
+    captureSourceInventory: (_sourceSetPath, cancellationToken) => (
+      new Promise<SnapshotSourceInventory>((_resolve, reject) => {
+        notifyCaptureStarted();
+        cancellationToken?.onCancellationRequested(() => {
+          reject(new VbaDebugCancellationError());
+        });
       })
-    }]
+    )
   });
   let isCancellationRequested = false;
   const cancellationListeners = new Set<() => void>();
@@ -513,25 +523,15 @@ test('debug launch cancellation stops waiting for a pending save and retains com
     }
   );
 
-  await pendingSaveStarted;
+  await captureStarted;
   isCancellationRequested = true;
   for (const listener of cancellationListeners) {
     listener();
   }
-  try {
-    await new Promise<void>((resolve) => setImmediate(resolve));
+  await resolution.catch(() => undefined);
 
-    assert.equal(settled, true);
-    assert.ok(outcome instanceof VbaDebugCancellationError);
-    assert.equal(
-      sources.get(completedSource),
-      'Public Sub AfterSave()\r\nEnd Sub\r\n'
-    );
-    assert.equal(sourceWasRead, false);
-  } finally {
-    finishPendingSave(true);
-    await resolution.catch(() => undefined);
-  }
+  assert.equal(settled, true);
+  assert.ok(outcome instanceof VbaDebugCancellationError);
 });
 
 test('debug restart captures unsaved bytes from the bound document after the active editor changes', async () => {
@@ -602,6 +602,59 @@ test('debug restart captures unsaved bytes from the bound document after the act
   assert.equal(captured.document, 'Book1');
   assert.equal(captured.module, 'DebugModule');
   assert.equal(captured.procedure, 'RunTarget');
+});
+
+test('each bound debug recapture captures fresh bytes from its original document', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const manifestPath = path.join(projectRoot, 'vba-project.json');
+  const sourceSetPath = path.join(projectRoot, 'src', 'Book1');
+  const sourcePath = path.join(sourceSetPath, 'DebugModule.bas');
+  let capturedBytes = Buffer.from('first capture', 'utf8');
+  let captureCount = 0;
+  const host: VbaDebugConfigurationHost = {
+    workspaceRoots: [path.join('C:', 'work')],
+    getActiveEditor: () => undefined,
+    getSourceBreakpoints: () => [],
+    findProjectManifests: async () => [manifestPath],
+    readTextFile: async () => manifestJson('BookProject', ['Book1']),
+    captureSourceInventory: async () => {
+      captureCount += 1;
+      return {
+        sourceSetPath,
+        activeWindowsCodePage: 65001,
+        entries: [{
+          relativePath: 'DebugModule.bas',
+          sourceUri: pathToFileURL(sourcePath).href,
+          encoding: 'utf8',
+          bytes: capturedBytes
+        }]
+      };
+    }
+  };
+  const boundConfiguration = {
+    type: 'vba',
+    request: 'launch',
+    name: 'VBA: Active Procedure',
+    project: projectRoot,
+    document: 'Book1',
+    sourceSnapshot: { schemaVersion: 1, sources: [] }
+  };
+
+  const first = await recaptureBoundVbaDebugConfiguration(host, boundConfiguration);
+  capturedBytes = Buffer.from('later unsaved capture', 'utf8');
+  const later = await recaptureBoundVbaDebugConfiguration(host, boundConfiguration);
+
+  assert.equal(captureCount, 2);
+  assert.equal(
+    (first.sourceSnapshot as { sources: Array<{ contentBase64: string }> })
+      .sources[0].contentBase64,
+    Buffer.from('first capture', 'utf8').toString('base64')
+  );
+  assert.equal(
+    (later.sourceSnapshot as { sources: Array<{ contentBase64: string }> })
+      .sources[0].contentBase64,
+    Buffer.from('later unsaved capture', 'utf8').toString('base64')
+  );
 });
 
 test('debug restart preparation notifies the bound adapter session with the next generation', async () => {
@@ -882,27 +935,18 @@ test('debug restart preparation ignores fresh arguments and the active editor af
   assert.equal(snapshot.sources[0].contentBase64, oldBytes.toString('base64'));
 });
 
-test('debug restart preparation fails closed before adapter binding without saving dirty sources', async () => {
+test('debug restart preparation fails closed before adapter binding', async () => {
   const workspaceRoot = path.join('C:', 'work');
   const oldProjectRoot = path.join(workspaceRoot, 'OldProject');
   const oldManifestPath = path.join(oldProjectRoot, 'vba-project.json');
   const oldSource = path.join(oldProjectRoot, 'src', 'OldBook', 'OldModule.bas');
-  const saved: string[] = [];
   const integration = createIntegration({
     manifests: new Map([
       [oldManifestPath, manifestJson('OldProject', ['OldBook'])]
     ]),
     sources: new Map([
       [oldSource, 'Public Sub OldTarget()\r\nEnd Sub\r\n']
-    ]),
-    openTextDocuments: () => [{
-      uriPath: oldSource,
-      isDirty: true,
-      save: async () => {
-        saved.push(oldSource);
-        return true;
-      }
-    }]
+    ])
   });
   const oldConfiguration = integration.prepareDebugConfigurationForRestart({
     type: 'vba',
@@ -927,7 +971,6 @@ test('debug restart preparation fails closed before adapter binding without savi
   );
 
   assert.equal(preparation, undefined);
-  assert.deepEqual(saved, []);
   assert.deepEqual(notifications, []);
 });
 
@@ -944,7 +987,6 @@ test('debug restart preparation rejects a marker borrowed from another project',
     'MarkerModule.bas'
   );
   const freshSource = path.join(freshProjectRoot, 'src', 'FreshBook', 'FreshModule.bas');
-  const saved: string[] = [];
   const integration = createIntegration({
     manifests: new Map([
       [markerManifestPath, manifestJson('MarkerProject', ['MarkerBook'])],
@@ -953,15 +995,7 @@ test('debug restart preparation rejects a marker borrowed from another project',
     sources: new Map([
       [markerSource, 'Public Sub MarkerTarget()\r\nEnd Sub\r\n'],
       [freshSource, 'Public Sub FreshTarget()\r\nEnd Sub\r\n']
-    ]),
-    openTextDocuments: () => [markerSource, freshSource].map((uriPath) => ({
-      uriPath,
-      isDirty: true,
-      save: async () => {
-        saved.push(uriPath);
-        return true;
-      }
-    }))
+    ])
   });
   const markerConfiguration = integration.prepareDebugConfigurationForRestart({
     type: 'vba',
@@ -999,17 +1033,15 @@ test('debug restart preparation rejects a marker borrowed from another project',
     }
   );
   assert.equal(preparation, undefined);
-  assert.deepEqual(saved, []);
   assert.deepEqual(notifications, []);
 });
 
-test('debug disconnect cancels the bound snapshot capture without saving sources', async () => {
+test('debug disconnect cancels the bound snapshot capture', async () => {
   const workspaceRoot = path.join('C:', 'work');
   const projectRoot = path.join(workspaceRoot, 'BookProject');
   const manifestPath = path.join(projectRoot, 'vba-project.json');
   const source = path.join(projectRoot, 'src', 'Book1', 'DebugModule.bas');
   const adapterSessionId = '0123456789abcdef0123456789abcdef';
-  const saved: string[] = [];
   let notifyCaptureStarted!: () => void;
   const captureStarted = new Promise<void>((resolve) => {
     notifyCaptureStarted = resolve;
@@ -1018,14 +1050,6 @@ test('debug disconnect cancels the bound snapshot capture without saving sources
     adapterSessionId,
     manifests: new Map([[manifestPath, manifestJson('BookProject', ['Book1'])]]),
     sources: new Map([[source, 'Public Sub RunTarget()\r\nEnd Sub\r\n']]),
-    openTextDocuments: () => [{
-      uriPath: source,
-      isDirty: true,
-      save: async () => {
-        saved.push(source);
-        return true;
-      }
-    }],
     captureSourceInventory: (sourceSetPath, cancellationToken) => (
       new Promise<SnapshotSourceInventory>((_resolve, reject) => {
         assert.equal(path.normalize(sourceSetPath), path.normalize(path.dirname(source)));
@@ -1082,7 +1106,6 @@ test('debug disconnect cancels the bound snapshot capture without saving sources
   await preparation;
 
   assert.equal(settled, true);
-  assert.deepEqual(saved, []);
   assert.deepEqual(notifications, [{
     command: 'vba/restartPrepared',
     arguments: {
@@ -1273,19 +1296,10 @@ test('debug restart capture failure reports only restart failure with bound sess
   const manifestPath = path.join(projectRoot, 'vba-project.json');
   const source = path.join(projectRoot, 'src', 'Book1', 'DebugModule.bas');
   const adapterSessionId = '0123456789abcdef0123456789abcdef';
-  const saved: string[] = [];
   const integration = createIntegration({
     adapterSessionId,
     manifests: new Map([[manifestPath, manifestJson('BookProject', ['Book1'])]]),
     sources: new Map([[source, 'Public Sub RunTarget()\r\nEnd Sub\r\n']]),
-    openTextDocuments: () => [{
-      uriPath: source,
-      isDirty: true,
-      save: async () => {
-        saved.push(source);
-        return true;
-      }
-    }],
     captureSourceInventory: async () => {
       throw new VbaDebugSelectionError('The bound VBA debug document was removed.');
     }
@@ -1322,7 +1336,6 @@ test('debug restart capture failure reports only restart failure with bound sess
   assert.ok(preparation);
   await preparation;
 
-  assert.deepEqual(saved, []);
   assert.deepEqual(notifications, [{
     command: 'vba/restartPrepared',
     arguments: {
@@ -1336,15 +1349,16 @@ test('debug restart capture failure reports only restart failure with bound sess
   }]);
 });
 
-test('debug launch freezes one enabled ordinary BAS breakpoint after save participants finish', async () => {
+test('debug launch freezes one enabled ordinary BAS breakpoint from the captured inventory', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const manifestPath = path.join(projectRoot, 'vba-project.json');
   const sourcePath = path.join(projectRoot, 'src', 'Book1', 'DebugModule.bas');
-  const sources = new Map([[sourcePath, 'Public Sub BeforeSave()\r\nEnd Sub\r\n']]);
+  const sourceText = 'Public Sub RunTarget()\r\n  Debug.Print "hit"\r\nEnd Sub\r\n';
+  const sources = new Map([[sourcePath, sourceText]]);
   const events: string[] = [];
-  let sourceBreakpoints = [{
+  const sourceBreakpoints = [{
     uriPath: sourcePath,
-    line: 0,
+    line: 1,
     enabled: true
   }];
   const integration = createIntegration({
@@ -1360,42 +1374,24 @@ test('debug launch freezes one enabled ordinary BAS breakpoint after save partic
     getSourceBreakpoints: () => {
       events.push(`breakpoints:${sourceBreakpoints[0].line}`);
       return sourceBreakpoints;
-    },
-    openTextDocuments: () => [{
-      uriPath: sourcePath,
-      isDirty: true,
-      save: async () => {
-        events.push('save-start');
-        await Promise.resolve();
-        sources.set(sourcePath, 'Public Sub AfterSave()\r\n  Debug.Print "hit"\r\nEnd Sub\r\n');
-        sourceBreakpoints = [{
-          uriPath: sourcePath,
-          line: 1,
-          enabled: true
-        }];
-        events.push('save-participants-finished');
-        return true;
-      }
-    }]
+    }
   });
 
   const configuration = await integration.resolveDebugConfiguration({});
 
   assert.deepEqual(events, [
     'manifest',
-    'save-start',
-    'save-participants-finished',
-    'manifest',
     'breakpoints:1'
   ]);
   assert.deepEqual(configuration.sourceSnapshot, {
     schemaVersion: 1,
-    sources: [{
-      path: sourcePath,
-      text: 'Public Sub AfterSave()\r\n  Debug.Print "hit"\r\nEnd Sub\r\n'
-    }],
-    activeSource: { path: sourcePath, line: 0, character: 11 },
-    breakpoints: [{ path: sourcePath, line: 1 }]
+    sources: [transportedTextSource(path.dirname(sourcePath), sourcePath, sourceText)],
+    activeSource: {
+      sourceUri: pathToFileURL(sourcePath).href,
+      line: 0,
+      character: 11
+    },
+    breakpoints: [{ sourceUri: pathToFileURL(sourcePath).href, line: 1 }]
   });
 });
 
@@ -1417,7 +1413,7 @@ test('debug launch rejects an enabled in-scope conditional breakpoint instead of
 
   await assert.rejects(
     () => integration.resolveDebugConfiguration({}),
-    /conditional breakpoint.*unsupported/i
+    /only ordinary VBA line breakpoints are supported/i
   );
 });
 
@@ -1439,7 +1435,7 @@ test('debug launch rejects an enabled in-scope hit-count breakpoint instead of d
 
   await assert.rejects(
     () => integration.resolveDebugConfiguration({}),
-    /hit-count breakpoint.*unsupported/i
+    /only ordinary VBA line breakpoints are supported/i
   );
 });
 
@@ -1461,7 +1457,7 @@ test('debug launch rejects an enabled in-scope logpoint instead of downgrading i
 
   await assert.rejects(
     () => integration.resolveDebugConfiguration({}),
-    /logpoint.*unsupported/i
+    /only ordinary VBA line breakpoints are supported/i
   );
 });
 
@@ -1499,9 +1495,9 @@ test('debug launch serializes enabled ordinary exported-source breakpoints in ca
   assert.deepEqual(
     (configuration.sourceSnapshot as { breakpoints: unknown }).breakpoints,
     [
-      { path: moduleSource, line: 1 },
-      { path: classSource, line: 0 },
-      { path: formSource, line: 2 }
+      { sourceUri: pathToFileURL(moduleSource).href, line: 1 },
+      { sourceUri: pathToFileURL(classSource).href, line: 0 },
+      { sourceUri: pathToFileURL(formSource).href, line: 2 }
     ]
   );
 });
@@ -1575,16 +1571,16 @@ test('debug launch ignores disabled, out-of-scope, and non-source breakpoints be
 
   assert.deepEqual(
     (configuration.sourceSnapshot as { breakpoints: unknown }).breakpoints,
-    [{ path: sourcePath, line: 1 }]
+    [{ sourceUri: pathToFileURL(sourcePath).href, line: 1 }]
   );
 });
 
-test('debug launch aborts before re-resolution and snapshot capture when a selected source cannot be saved', async () => {
+test('debug launch aborts before transport projection when inventory capture fails', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const manifestPath = path.join(projectRoot, 'vba-project.json');
   const sourcePath = path.join(projectRoot, 'src', 'Book1', 'DebugModule.bas');
   let manifestReadCount = 0;
-  let sourceWasRead = false;
+  let breakpointsWereRead = false;
   const integration = createIntegration({
     activeEditor: { uriPath: sourcePath, line: 0, character: 11 },
     manifests: new Map([[manifestPath, manifestJson('BookProject', ['Book1'])]]),
@@ -1593,27 +1589,21 @@ test('debug launch aborts before re-resolution and snapshot capture when a selec
       manifestReadCount += 1;
       return manifestJson('BookProject', ['Book1']);
     },
-    readSourceText: async () => {
-      sourceWasRead = true;
-      return '';
+    getSourceBreakpoints: () => {
+      breakpointsWereRead = true;
+      return [];
     },
-    openTextDocuments: () => [{
-      uriPath: sourcePath,
-      isDirty: true,
-      save: async () => false
-    }]
+    captureSourceInventory: async () => {
+      throw new Error('Immutable inventory capture failed.');
+    }
   });
 
   await assert.rejects(
     () => integration.resolveDebugConfiguration({}),
-    (error: unknown) => (
-      error instanceof Error
-      && /could not save exported VBA source/i.test(error.message)
-      && error.message.includes(sourcePath)
-    )
+    /immutable inventory capture failed/i
   );
   assert.equal(manifestReadCount, 1);
-  assert.equal(sourceWasRead, false);
+  assert.equal(breakpointsWereRead, false);
 });
 
 test('an active source belonging to more than one workbook-backed project reports project ambiguity', async () => {
@@ -1710,28 +1700,42 @@ test('an explicit procedure pair uses active source membership to narrow omitted
   assert.equal(configuration.document, 'Book2');
   assert.deepEqual(configuration.sourceSnapshot, {
     schemaVersion: 1,
-    sources: [{
-      path: selectedSource,
-      text: 'Public Sub RunTarget()\r\nEnd Sub\r\n'
-    }],
+    sources: [transportedTextSource(
+      path.dirname(selectedSource),
+      selectedSource,
+      'Public Sub RunTarget()\r\nEnd Sub\r\n'
+    )],
     breakpoints: []
   });
 });
 
-test('source snapshots preserve decoded CP932 and UTF-16 text through the dedicated source-text host port', async () => {
+test('source snapshots transport exact CP932 and UTF-16 bytes with encoding metadata', async () => {
   const projectRoot = path.join('C:', 'work', 'EncodedProject');
   const manifestPath = path.join(projectRoot, 'vba-project.json');
+  const sourceSetPath = path.join(projectRoot, 'src', 'Book1');
   const cp932Source = path.join(projectRoot, 'src', 'Book1', 'Cp932.bas');
   const utf16Source = path.join(projectRoot, 'src', 'Book1', 'Utf16.cls');
-  const decodedSources = new Map([
-    [cp932Source, 'Public Sub 実行()\r\nEnd Sub\r\n'],
-    [utf16Source, 'Public Sub 検証()\r\nEnd Sub\r\n']
-  ]);
+  const cp932Bytes = Uint8Array.from([0x82, 0xa0, 0x0d, 0x0a]);
+  const utf16Bytes = Uint8Array.from([0xff, 0xfe, 0x42, 0x30, 0x0d, 0x00, 0x0a, 0x00]);
   const integration = createIntegration({
     activeEditor: { uriPath: cp932Source, line: 0, character: 11 },
     manifests: new Map([[manifestPath, manifestJson('EncodedProject', ['Book1'])]]),
-    sources: decodedSources,
-    readSourceText: async (sourcePath) => decodedSources.get(sourcePath) ?? ''
+    sources: new Map(),
+    captureSourceInventory: async () => ({
+      sourceSetPath,
+      activeWindowsCodePage: 932,
+      entries: [{
+        relativePath: 'Cp932.bas',
+        sourceUri: pathToFileURL(cp932Source).href,
+        encoding: 'windows-932',
+        bytes: cp932Bytes
+      }, {
+        relativePath: 'Utf16.cls',
+        sourceUri: pathToFileURL(utf16Source).href,
+        encoding: 'utf16le',
+        bytes: utf16Bytes
+      }]
+    })
   });
 
   const configuration = await integration.resolveDebugConfiguration({});
@@ -1739,15 +1743,29 @@ test('source snapshots preserve decoded CP932 and UTF-16 text through the dedica
   assert.deepEqual(configuration.sourceSnapshot, {
     schemaVersion: 1,
     sources: [
-      { path: cp932Source, text: 'Public Sub 実行()\r\nEnd Sub\r\n' },
-      { path: utf16Source, text: 'Public Sub 検証()\r\nEnd Sub\r\n' }
+      {
+        relativePath: 'Cp932.bas',
+        sourceUri: pathToFileURL(cp932Source).href,
+        encoding: 'windows-932',
+        contentBase64: Buffer.from(cp932Bytes).toString('base64')
+      },
+      {
+        relativePath: 'Utf16.cls',
+        sourceUri: pathToFileURL(utf16Source).href,
+        encoding: 'utf16le',
+        contentBase64: Buffer.from(utf16Bytes).toString('base64')
+      }
     ],
-    activeSource: { path: cp932Source, line: 0, character: 11 },
+    activeSource: {
+      sourceUri: pathToFileURL(cp932Source).href,
+      line: 0,
+      character: 11
+    },
     breakpoints: []
   });
 });
 
-test('unsupported launch fields and request modes fail closed before project discovery or save', async () => {
+test('unsupported launch fields and request modes fail closed before project discovery or capture', async () => {
   let hostTouched = false;
   const integration = new VscodeDebugIntegration({
     extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
@@ -1758,18 +1776,16 @@ test('unsupported launch fields and request modes fail closed before project dis
         hostTouched = true;
         return undefined;
       },
-      getOpenTextDocuments: () => {
-        hostTouched = true;
-        return [];
-      },
       getSourceBreakpoints: () => [],
       findProjectManifests: async () => {
         hostTouched = true;
         return [];
       },
       readTextFile: async () => '',
-      readSourceText: async () => '',
-      findExportedSourceFiles: async () => []
+      captureSourceInventory: async () => {
+        hostTouched = true;
+        throw new Error('Unexpected source capture.');
+      }
     }
   });
   const unsupportedConfigurations: Array<[Record<string, unknown>, RegExp]> = [
@@ -1825,13 +1841,7 @@ function createIntegration(options: {
   manifests: ReadonlyMap<string, string>;
   sources: ReadonlyMap<string, string>;
   readTextFile?: (filePath: string) => Promise<string>;
-  readSourceText?: (filePath: string) => Promise<string>;
   getSourceBreakpoints?: () => readonly VbaDebugSourceBreakpoint[];
-  openTextDocuments?: () => readonly {
-    uriPath: string;
-    isDirty: boolean;
-    save(): Promise<boolean>;
-  }[];
   captureSourceInventory?: (
     sourceSetPath: string,
     cancellationToken?: VbaDebugCancellationToken
@@ -1872,7 +1882,6 @@ function createIntegration(options: {
     debugConfigurationHost: {
       workspaceRoots: [path.join('C:', 'work')],
       getActiveEditor: options.getActiveEditor ?? (() => options.activeEditor),
-      getOpenTextDocuments: options.openTextDocuments ?? (() => []),
       getSourceBreakpoints: options.getSourceBreakpoints ?? (() => []),
       findProjectManifests: async () => [...options.manifests.keys()],
       readTextFile: options.readTextFile ?? (async (filePath) => {
@@ -1882,19 +1891,43 @@ function createIntegration(options: {
         }
         return text;
       }),
-      readSourceText: options.readSourceText ?? (async (filePath) => {
-        const text = options.sources.get(filePath);
-        if (text === undefined) {
-          throw new Error(`Missing fake source: ${filePath}`);
-        }
-        return text;
-      }),
-      findExportedSourceFiles: async (sourceSetPath) => (
-        [...options.sources.keys()].filter((sourcePath) => isWithin(sourcePath, sourceSetPath))
-      ),
-      captureSourceInventory: options.captureSourceInventory
+      captureSourceInventory: options.captureSourceInventory ?? (async (sourceSetPath) => ({
+        sourceSetPath,
+        activeWindowsCodePage: 65001,
+        entries: [...options.sources.entries()]
+          .filter(([sourcePath]) => isWithin(sourcePath, sourceSetPath))
+          .map(([sourcePath, text]) => ({
+            relativePath: path.relative(sourceSetPath, sourcePath).replaceAll('\\', '/'),
+            ...(path.extname(sourcePath).toLowerCase() === '.frx'
+              ? {}
+              : {
+                  sourceUri: pathToFileURL(sourcePath).href,
+                  encoding: 'utf8'
+                }),
+            bytes: new TextEncoder().encode(text)
+          }))
+      }))
     }
   });
+}
+
+function transportedTextSource(
+  sourceSetPath: string,
+  sourcePath: string,
+  text: string,
+  encoding = 'utf8'
+): {
+  readonly relativePath: string;
+  readonly sourceUri: string;
+  readonly encoding: string;
+  readonly contentBase64: string;
+} {
+  return {
+    relativePath: path.relative(sourceSetPath, sourcePath).replaceAll('\\', '/'),
+    sourceUri: pathToFileURL(sourcePath).href,
+    encoding,
+    contentBase64: Buffer.from(text, 'utf8').toString('base64')
+  };
 }
 
 function manifestJson(projectName: string, documentNames: readonly string[]): string {

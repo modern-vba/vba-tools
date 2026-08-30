@@ -313,7 +313,7 @@ test('extension contributes optional VBA debug selectors with an atomic procedur
   assert.ok(packageJson.activationEvents?.includes('onDebugResolve:vba'));
 });
 
-test('VBA debug activation delegates saving exclusively to the scoped dynamic configuration provider', () => {
+test('VBA debug activation disables VS Code save-before-start', () => {
   const packageJson = readPackageJson<{
     activationEvents?: string[];
     contributes?: {
@@ -329,7 +329,7 @@ test('VBA debug activation delegates saving exclusively to the scoped dynamic co
   );
 });
 
-test('VBA debug source discovery bypasses user file excludes', () => {
+test('VBA source inventory discovery includes FRX and bypasses user file excludes', () => {
   const extensionSource = fs.readFileSync(
     path.join(process.cwd(), 'client', 'src', 'extension.ts'),
     'utf8'
@@ -337,7 +337,7 @@ test('VBA debug source discovery bypasses user file excludes', () => {
 
   assert.match(
     extensionSource,
-    /workspace\.findFiles\(\s*new RelativePattern\(sourceSetPath, '\*\*\/\*\.\{bas,cls,frm\}'\),\s*null\s*\)/
+    /workspace\.findFiles\(\s*new RelativePattern\(sourceSetPath, '\*\*\/\*\.\{bas,cls,frm,frx\}'\),\s*null\s*\)/
   );
 });
 
@@ -407,7 +407,7 @@ test('extension activation wires the strict debug adapter path into VBA F5 start
   );
 });
 
-test('extension activation captures unsaved debug bytes including FRX sidecars', () => {
+test('extension activation shares one invocation-time source capture adapter across Debug and Test Explorer', () => {
   const extensionSource = fs.readFileSync(
     path.resolve(__dirname, '..', 'src', 'extension.ts'),
     'utf8'
@@ -415,11 +415,23 @@ test('extension activation captures unsaved debug bytes including FRX sidecars',
 
   assert.match(
     extensionSource,
-    /captureSourceInventory:\s*\(sourceSetPath, cancellationToken\)\s*=>\s*captureSnapshotSourceInventory\(/
+    /const captureSnapshotSourceInventoryFromVscode = createSnapshotSourceInventoryVscodeAdapter\(\{/
+  );
+  assert.match(
+    extensionSource,
+    /captureSourceInventory:\s*captureSnapshotSourceInventoryFromVscode/
+  );
+  assert.match(
+    extensionSource,
+    /createCallerOwnedSourceSnapshotCapture\(\s*captureSnapshotSourceInventoryFromVscode,/
   );
   assert.match(
     extensionSource,
     /new RelativePattern\(sourceSetPath, '\*\*\/\*\.\{bas,cls,frm,frx\}'\)/
+  );
+  assert.equal(
+    extensionSource.match(/getOpenTextDocuments:\s*\(\)\s*=>\s*workspace\.textDocuments\.map/g)?.length,
+    1
   );
 });
 
