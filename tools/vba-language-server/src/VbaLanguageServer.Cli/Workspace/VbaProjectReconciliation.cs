@@ -6,6 +6,7 @@ namespace VbaLanguageServer.Workspace;
 /// Represents one manifest authority candidate captured for reconciliation.
 /// </summary>
 internal sealed record VbaProjectReconciliationManifestCandidate(
+    VbaDocumentIdentity DocumentIdentity,
     string Uri,
     long CapturedRevision,
     VbaProjectDiskManifestBaseline Baseline)
@@ -22,20 +23,24 @@ internal sealed record VbaProjectReconciliationManifestCandidate(
 /// </summary>
 internal sealed record VbaProjectReconciliationScope(
     VbaProjectAuthorityIdentity AuthorityKey,
-    string ActiveUri,
+    VbaIdentifiedDocument ActiveDocument,
     VbaProjectResolution Resolution,
     long CapturedWorkspaceRevision,
     IReadOnlyList<VbaProjectReconciliationManifestCandidate> ManifestCandidates,
     IReadOnlyList<VbaProjectDiskKnownSource> KnownSources)
 {
+    public string ActiveUri => ActiveDocument.Uri;
+
+    public VbaDocumentIdentity ActiveDocumentIdentity
+        => ActiveDocument.Identity;
+
     /// <summary>
     /// Gets the manifest-barrier snapshot that owns this scan.
     /// </summary>
     public VbaProjectManifestBarrierSnapshot ManifestBarriers { get; init; } =
         new(
             Revision: 0,
-            new Dictionary<string, bool>(
-                StringComparer.OrdinalIgnoreCase));
+            new Dictionary<VbaDocumentIdentity, bool>());
 
     /// <summary>
     /// Gets the structural incarnation of the captured reconciliation authority.
@@ -43,11 +48,11 @@ internal sealed record VbaProjectReconciliationScope(
     public long AuthorityGeneration { get; init; }
 
     public IReadOnlyList<VbaProjectReconciliationManifestCandidate>
-        ObservedManifestBarrierCandidates { get; init; } = [];
+        ObservedManifestBarrierCandidates
+    { get; init; } = [];
 
-    public IReadOnlyList<string> OpenSourceUris { get; init; } = [];
-
-    public IReadOnlyList<string> OpenDocumentUris { get; init; } = [];
+    public IReadOnlyList<VbaIdentifiedDocument> OpenSources
+    { get; init; } = [];
 }
 
 /// <summary>
@@ -102,9 +107,129 @@ internal enum VbaProjectReconciliationProgressKind
     MutationRejected
 }
 
+internal enum VbaProjectReconciliationRejectionReason
+{
+    Scope,
+    Replace,
+    AuthorityLease,
+    Reload,
+    TransferInvalid,
+    Observe,
+    DeleteObserved
+}
+
+internal enum VbaProjectReconciliationMutationKind
+{
+    Reload,
+    DecodeFailure,
+    Delete,
+    ReleaseSourceOwnership,
+    ReplaceDeletedManifestAuthority,
+    ReloadManifest,
+    TransferInvalidManifestAuthority,
+    ObserveManifestBarrier,
+    DeleteObservedManifestBarrier
+}
+
+internal abstract class VbaProjectReconciliationProgressIdentity;
+
+internal sealed class VbaProjectReconciliationManifestProgressIdentity
+    : VbaProjectReconciliationProgressIdentity
+{
+    internal static VbaProjectReconciliationManifestProgressIdentity Instance
+    { get; } = new();
+
+    private VbaProjectReconciliationManifestProgressIdentity()
+    {
+    }
+}
+
+internal readonly record struct VbaProjectReconciliationDocumentRevisionIdentity(
+    VbaDocumentIdentity DocumentIdentity,
+    long Revision);
+
+internal sealed class VbaProjectReconciliationRejectedProgressIdentity
+    : VbaProjectReconciliationProgressIdentity,
+      IEquatable<VbaProjectReconciliationRejectedProgressIdentity>
+{
+    private readonly VbaProjectReconciliationDocumentRevisionIdentity[]
+        documentRevisions;
+
+    internal VbaProjectReconciliationRejectedProgressIdentity(
+        VbaProjectReconciliationRejectionReason reason,
+        VbaProjectReconciliationMutationKind mutationKind,
+        VbaProjectAuthorityIdentity authority,
+        long manifestBarrierRevision,
+        long authorityGeneration,
+        IReadOnlyList<VbaProjectReconciliationDocumentRevisionIdentity>
+            documentRevisions,
+        VbaDocumentIdentity? fallbackDocumentIdentity,
+        long fallbackRevision)
+    {
+        Reason = reason;
+        MutationKind = mutationKind;
+        Authority = authority;
+        ManifestBarrierRevision = manifestBarrierRevision;
+        AuthorityGeneration = authorityGeneration;
+        this.documentRevisions = documentRevisions.ToArray();
+        FallbackDocumentIdentity = fallbackDocumentIdentity;
+        FallbackRevision = fallbackRevision;
+    }
+
+    internal VbaProjectReconciliationRejectionReason Reason { get; }
+
+    internal VbaProjectReconciliationMutationKind MutationKind { get; }
+
+    internal VbaProjectAuthorityIdentity Authority { get; }
+
+    internal long ManifestBarrierRevision { get; }
+
+    internal long AuthorityGeneration { get; }
+
+    internal VbaDocumentIdentity? FallbackDocumentIdentity { get; }
+
+    internal long FallbackRevision { get; }
+
+    public bool Equals(
+        VbaProjectReconciliationRejectedProgressIdentity? other)
+        => other is not null
+            && Reason == other.Reason
+            && MutationKind == other.MutationKind
+            && Authority == other.Authority
+            && ManifestBarrierRevision == other.ManifestBarrierRevision
+            && AuthorityGeneration == other.AuthorityGeneration
+            && documentRevisions.SequenceEqual(other.documentRevisions)
+            && Nullable.Equals(
+                FallbackDocumentIdentity,
+                other.FallbackDocumentIdentity)
+            && FallbackRevision == other.FallbackRevision;
+
+    public override bool Equals(object? obj)
+        => obj is VbaProjectReconciliationRejectedProgressIdentity other
+            && Equals(other);
+
+    public override int GetHashCode()
+    {
+        var hash = new HashCode();
+        hash.Add(Reason);
+        hash.Add(MutationKind);
+        hash.Add(Authority);
+        hash.Add(ManifestBarrierRevision);
+        hash.Add(AuthorityGeneration);
+        foreach (var documentRevision in documentRevisions)
+        {
+            hash.Add(documentRevision);
+        }
+
+        hash.Add(FallbackDocumentIdentity);
+        hash.Add(FallbackRevision);
+        return hash.ToHashCode();
+    }
+}
+
 internal sealed record VbaProjectReconciliationProgress(
     VbaProjectReconciliationProgressKind Kind,
-    string Identity);
+    VbaProjectReconciliationProgressIdentity Identity);
 
 internal abstract record VbaProjectReconciliationEffect;
 
@@ -139,6 +264,7 @@ internal sealed record ReconciledProjectAuthorityTransferredEffect(
 
 internal abstract record ReconciliationChange(
     VbaProjectAuthorityIdentity AuthorityKey,
+    VbaDocumentIdentity DocumentIdentity,
     string Uri,
     long CapturedWorkspaceRevision,
     long CapturedManifestBarrierRevision,
@@ -146,7 +272,8 @@ internal abstract record ReconciliationChange(
 {
     public VbaProjectResolution? PreviousResolution { get; init; }
 
-    public IReadOnlyList<string> CapturedOpenSourceUris { get; init; } = [];
+    public IReadOnlyList<VbaDocumentIdentity> CapturedOpenSourceIdentities
+    { get; init; } = [];
 
     public IReadOnlyList<string> CapturedProjectSourceUris { get; init; } = [];
 
@@ -155,6 +282,7 @@ internal abstract record ReconciliationChange(
 
 internal sealed record ReloadChange(
     VbaProjectAuthorityIdentity AuthorityKey,
+    VbaDocumentIdentity DocumentIdentity,
     string Uri,
     string FullPath,
     string Text,
@@ -164,6 +292,7 @@ internal sealed record ReloadChange(
     long CapturedAuthorityGeneration)
     : ReconciliationChange(
         AuthorityKey,
+        DocumentIdentity,
         Uri,
         CapturedWorkspaceRevision,
         CapturedManifestBarrierRevision,
@@ -177,6 +306,7 @@ internal sealed record DecodeFailureChange(
     long CapturedAuthorityGeneration)
     : ReconciliationChange(
         AuthorityKey,
+        Failure.DocumentIdentity,
         Failure.Uri,
         CapturedWorkspaceRevision,
         CapturedManifestBarrierRevision,
@@ -184,12 +314,14 @@ internal sealed record DecodeFailureChange(
 
 internal sealed record DeleteChange(
     VbaProjectAuthorityIdentity AuthorityKey,
+    VbaDocumentIdentity DocumentIdentity,
     string Uri,
     long CapturedWorkspaceRevision,
     long CapturedManifestBarrierRevision,
     long CapturedAuthorityGeneration)
     : ReconciliationChange(
         AuthorityKey,
+        DocumentIdentity,
         Uri,
         CapturedWorkspaceRevision,
         CapturedManifestBarrierRevision,
@@ -197,18 +329,21 @@ internal sealed record DeleteChange(
 
 internal sealed record ReleaseSourceOwnershipChange(
     VbaProjectAuthorityIdentity AuthorityKey,
+    VbaDocumentIdentity DocumentIdentity,
     string Uri,
     long CapturedWorkspaceRevision,
     long CapturedManifestBarrierRevision,
     long CapturedAuthorityGeneration)
     : ReconciliationChange(
         AuthorityKey,
+        DocumentIdentity,
         Uri,
         CapturedWorkspaceRevision,
         CapturedManifestBarrierRevision,
         CapturedAuthorityGeneration);
 
 internal sealed record DeletedManifestCandidate(
+    VbaDocumentIdentity DocumentIdentity,
     string Uri,
     long CapturedRevision);
 
@@ -216,62 +351,78 @@ internal sealed record ReplaceDeletedManifestAuthorityChange(
     VbaProjectAuthorityIdentity AuthorityKey,
     string Uri,
     IReadOnlyList<DeletedManifestCandidate> DeletedManifests,
-    string ActiveUri,
+    VbaIdentifiedDocument ActiveDocument,
     VbaProjectResolution Resolution,
+    VbaDocumentIdentity? FallbackDocumentIdentity,
     string FallbackUri,
     string FallbackText,
     long CapturedFallbackRevision,
     bool ReloadFallbackManifest,
     bool FallbackHiddenByOpenOverlay,
     bool AuthorityTransferred,
-    IReadOnlyList<string> RetainedPreviousSourceUris,
+    IReadOnlyList<VbaDocumentIdentity> RetainedPreviousSourceIdentities,
     long CapturedManifestBarrierRevision,
     long CapturedAuthorityGeneration)
     : ReconciliationChange(
         AuthorityKey,
+        DeletedManifests[0].DocumentIdentity,
         Uri,
         DeletedManifests[0].CapturedRevision,
         CapturedManifestBarrierRevision,
-        CapturedAuthorityGeneration);
+        CapturedAuthorityGeneration)
+{
+    public string ActiveUri => ActiveDocument.Uri;
+}
 
 internal sealed record ReloadManifestChange(
     VbaProjectAuthorityIdentity AuthorityKey,
+    VbaDocumentIdentity DocumentIdentity,
     string Uri,
     string Text,
     long CapturedManifestRevision,
-    string ActiveUri,
+    VbaIdentifiedDocument ActiveDocument,
     VbaProjectResolution? Resolution,
     VbaProjectResolution? InvalidFallbackResolution,
     long CapturedManifestBarrierRevision,
     long CapturedAuthorityGeneration,
     bool RetainPreviousAuthority,
     bool AuthorityTransferred,
-    IReadOnlyList<string> RetainedPreviousSourceUris)
+    IReadOnlyList<VbaDocumentIdentity> RetainedPreviousSourceIdentities)
     : ReconciliationChange(
         AuthorityKey,
+        DocumentIdentity,
         Uri,
         CapturedManifestRevision,
         CapturedManifestBarrierRevision,
-        CapturedAuthorityGeneration);
+        CapturedAuthorityGeneration)
+{
+    public string ActiveUri => ActiveDocument.Uri;
+}
 
 internal sealed record TransferInvalidManifestAuthorityChange(
     VbaProjectAuthorityIdentity AuthorityKey,
+    VbaDocumentIdentity DocumentIdentity,
     string Uri,
     long CapturedManifestRevision,
-    string ActiveUri,
+    VbaIdentifiedDocument ActiveDocument,
     VbaProjectResolution Resolution,
     long CapturedManifestBarrierRevision,
     long CapturedAuthorityGeneration,
-    IReadOnlyList<string> RetainedPreviousSourceUris)
+    IReadOnlyList<VbaDocumentIdentity> RetainedPreviousSourceIdentities)
     : ReconciliationChange(
         AuthorityKey,
+        DocumentIdentity,
         Uri,
         CapturedManifestRevision,
         CapturedManifestBarrierRevision,
-        CapturedAuthorityGeneration);
+        CapturedAuthorityGeneration)
+{
+    public string ActiveUri => ActiveDocument.Uri;
+}
 
 internal sealed record ObserveManifestBarrierChange(
     VbaProjectAuthorityIdentity AuthorityKey,
+    VbaDocumentIdentity DocumentIdentity,
     string Uri,
     string Text,
     long CapturedManifestRevision,
@@ -280,6 +431,7 @@ internal sealed record ObserveManifestBarrierChange(
     bool HadValidationFailure)
     : ReconciliationChange(
         AuthorityKey,
+        DocumentIdentity,
         Uri,
         CapturedManifestRevision,
         CapturedManifestBarrierRevision,
@@ -287,6 +439,7 @@ internal sealed record ObserveManifestBarrierChange(
 
 internal sealed record DeleteObservedManifestBarrierChange(
     VbaProjectAuthorityIdentity AuthorityKey,
+    VbaDocumentIdentity DocumentIdentity,
     string Uri,
     long CapturedManifestRevision,
     long CapturedManifestBarrierRevision,
@@ -294,6 +447,7 @@ internal sealed record DeleteObservedManifestBarrierChange(
     bool HadValidationFailure)
     : ReconciliationChange(
         AuthorityKey,
+        DocumentIdentity,
         Uri,
         CapturedManifestRevision,
         CapturedManifestBarrierRevision,
@@ -310,10 +464,10 @@ public sealed partial class VbaLanguageWorkspace
             CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        IReadOnlyList<string> trackedUris;
+        IReadOnlyList<VbaIdentifiedDocument> trackedDocuments;
         lock (gate)
         {
-            trackedUris = CaptureTrackedDocumentUris();
+            trackedDocuments = CaptureTrackedDocuments();
         }
         if (!snapshotProvider.IsReconciliationScopeCurrent(
                 plan.AuthorityKey,
@@ -326,7 +480,9 @@ public sealed partial class VbaLanguageWorkspace
                 RequiresFollowUp: true,
                 rejectedMutation is null
                     ? []
-                    : [CreateRejectedProgress("scope", rejectedMutation)],
+                    : [CreateRejectedProgress(
+                        VbaProjectReconciliationRejectionReason.Scope,
+                        rejectedMutation)],
                 []);
         }
 
@@ -360,381 +516,393 @@ public sealed partial class VbaLanguageWorkspace
             switch (change)
             {
                 case ReplaceDeletedManifestAuthorityChange replace:
-                {
-                    if (!snapshotProvider.TryUseReconciliationAuthority(
-                            plan.AuthorityKey,
-                            plan.CapturedManifestBarrierRevision,
-                            plan.CapturedAuthorityGeneration,
-                            lease =>
-                            {
-                    var replacement = ManifestWorkspace
-                        .ReplaceDeletedReconciledManifestAuthority(
-                            replace.DeletedManifests
-                                .Select(deleted =>
-                                    new VbaProjectManifestReconciliationTarget(
-                                        deleted.Uri,
-                                        deleted.CapturedRevision))
-                                .ToArray(),
-                            replace.ReloadFallbackManifest
-                                ? new VbaProjectManifestReconciliationTarget(
-                                    replace.FallbackUri,
-                                    replace.CapturedFallbackRevision)
-                                : null,
-                            replace.ReloadFallbackManifest
-                                ? replace.FallbackText
-                                : null);
-                    if (!replacement.Accepted)
                     {
-                        progress.Add(
-                            CreateRejectedProgress("replace", replace));
-                        mutationRejected = true;
-                        return false;
-                    }
+                        if (!snapshotProvider.TryUseReconciliationAuthority(
+                                plan.AuthorityKey,
+                                plan.CapturedManifestBarrierRevision,
+                                plan.CapturedAuthorityGeneration,
+                                lease =>
+                                {
+                                    var replacement = ManifestWorkspace
+                                    .ReplaceDeletedReconciledManifestAuthority(
+                                        replace.DeletedManifests
+                                            .Select(deleted =>
+                                                new VbaProjectManifestReconciliationTarget(
+                                                    new VbaIdentifiedDocument(
+                                                        deleted.DocumentIdentity,
+                                                        deleted.Uri),
+                                                    deleted.CapturedRevision))
+                                            .ToArray(),
+                                        replace.ReloadFallbackManifest
+                                            ? new VbaProjectManifestReconciliationTarget(
+                                                new VbaIdentifiedDocument(
+                                                    replace.FallbackDocumentIdentity
+                                                        ?? throw new InvalidOperationException(
+                                                            "A reconciliation fallback manifest has no document identity."),
+                                                    replace.FallbackUri),
+                                                replace.CapturedFallbackRevision)
+                                            : null,
+                                        replace.ReloadFallbackManifest
+                                            ? replace.FallbackText
+                                            : null);
+                                    if (!replacement.Accepted)
+                                    {
+                                        progress.Add(
+                                        CreateRejectedProgress(
+                                            VbaProjectReconciliationRejectionReason.Replace,
+                                            replace));
+                                        mutationRejected = true;
+                                        return false;
+                                    }
 
-                    var mutationEffects =
-                        new List<VbaProjectReconciliationEffect>();
-                    foreach (var deleted in replacement.DeletedManifests)
-                    {
-                        if (deleted.Update.Status
-                            != VbaProjectManifestReconciliationStatus.Applied)
-                        {
-                            continue;
-                        }
+                                    var mutationEffects =
+                                    new List<VbaProjectReconciliationEffect>();
+                                    foreach (var deleted in replacement.DeletedManifests)
+                                    {
+                                        if (deleted.Update.Status
+                                        != VbaProjectManifestReconciliationStatus.Applied)
+                                        {
+                                            continue;
+                                        }
 
-                        progress.Add(
-                            CreateManifestProgress(deleted.Uri));
-                        mutationEffects.Add(
-                            new ReconciledManifestDeletedEffect(deleted.Uri));
-                    }
+                                        progress.Add(CreateManifestProgress());
+                                        mutationEffects.Add(
+                                        new ReconciledManifestDeletedEffect(deleted.Uri));
+                                    }
 
-                    var reloadUpdate = replacement.ReloadedManifest;
-                    if (!replace.FallbackHiddenByOpenOverlay
-                        && reloadUpdate?.Update.Status
-                            == VbaProjectManifestReconciliationStatus.Applied)
-                    {
-                        progress.Add(
-                            CreateManifestProgress(reloadUpdate.Uri));
-                        mutationEffects.Add(
-                            new ReconciledManifestSelectionChangedEffect(
-                                reloadUpdate.Uri,
-                                replace.FallbackText));
-                    }
-                    else if (!replace.FallbackHiddenByOpenOverlay
-                        && reloadUpdate?.Update.Status
-                            == VbaProjectManifestReconciliationStatus.Invalid
-                        && reloadUpdate.Update.Error is not null)
-                    {
-                        if (!reloadUpdate.Update.RetainedLastKnownGood)
+                                    var reloadUpdate = replacement.ReloadedManifest;
+                                    if (!replace.FallbackHiddenByOpenOverlay
+                                    && reloadUpdate?.Update.Status
+                                        == VbaProjectManifestReconciliationStatus.Applied)
+                                    {
+                                        progress.Add(CreateManifestProgress());
+                                        mutationEffects.Add(
+                                        new ReconciledManifestSelectionChangedEffect(
+                                            reloadUpdate.Uri,
+                                            replace.FallbackText));
+                                    }
+                                    else if (!replace.FallbackHiddenByOpenOverlay
+                                    && reloadUpdate?.Update.Status
+                                        == VbaProjectManifestReconciliationStatus.Invalid
+                                    && reloadUpdate.Update.Error is not null)
+                                    {
+                                        if (!reloadUpdate.Update.RetainedLastKnownGood)
+                                        {
+                                            progress.Add(CreateManifestProgress());
+                                        }
+
+                                        mutationEffects.Add(
+                                        new ReconciledManifestValidationFailedEffect(
+                                            reloadUpdate.Uri,
+                                            reloadUpdate.Update.Error));
+                                    }
+
+                                    lease.CommitManifestScope(
+                                        replace.ActiveDocument,
+                                        replace.Resolution,
+                                        retainPreviousAuthority: false,
+                                        replace.RetainedPreviousSourceIdentities,
+                                        trackedDocuments);
+
+                                    effects.AddRange(mutationEffects);
+                                    committedMutation = true;
+                                    manifestAuthorityMutated = true;
+                                    if (replace.AuthorityTransferred)
+                                    {
+                                        progress.Add(CreateManifestProgress());
+                                    }
+
+                                    return true;
+                                },
+                                out _))
                         {
                             progress.Add(
-                                CreateManifestProgress(reloadUpdate.Uri));
+                                CreateRejectedProgress(
+                                    VbaProjectReconciliationRejectionReason
+                                        .AuthorityLease,
+                                    replace));
+                            mutationRejected = true;
                         }
 
-                        mutationEffects.Add(
-                            new ReconciledManifestValidationFailedEffect(
-                                reloadUpdate.Uri,
-                                reloadUpdate.Update.Error));
+                        break;
                     }
-
-                    lease.CommitManifestScope(
-                            replace.ActiveUri,
-                            replace.Resolution,
-                            retainPreviousAuthority: false,
-                            replace.RetainedPreviousSourceUris,
-                            trackedUris);
-
-                    effects.AddRange(mutationEffects);
-                    committedMutation = true;
-                    manifestAuthorityMutated = true;
-                    if (replace.AuthorityTransferred)
-                    {
-                        progress.Add(
-                            CreateManifestProgress(replace.Uri));
-                    }
-
-                    return true;
-                            },
-                            out _))
-                    {
-                        progress.Add(
-                            CreateRejectedProgress(
-                                "authority-lease",
-                                replace));
-                        mutationRejected = true;
-                    }
-
-                    break;
-                }
                 case ReloadManifestChange reloadManifest:
-                {
-                    var resolution = reloadManifest.Resolution;
-                    if (resolution is null)
                     {
-                        try
+                        var resolution = reloadManifest.Resolution;
+                        if (resolution is null)
                         {
-                            resolution =
-                                VbaProjectManifestWorkspace.ResolveManifestText(
-                                    reloadManifest.ActiveUri,
-                                    reloadManifest.Uri,
-                                    reloadManifest.Text);
-                        }
-                        catch (VbaProjectManifestException)
-                        {
-                            // Invalid text is still committed as validation
-                            // state and may retain the last-known-good scope.
-                        }
-                    }
-
-                    if (!snapshotProvider.TryUseReconciliationAuthority(
-                            plan.AuthorityKey,
-                            plan.CapturedManifestBarrierRevision,
-                            plan.CapturedAuthorityGeneration,
-                            lease =>
+                            try
                             {
-                    var update = ManifestWorkspace.ReloadReconciledManifest(
-                        reloadManifest.Uri,
-                        reloadManifest.Text,
-                        reloadManifest.CapturedManifestRevision);
-                    if (update.Status
-                        == VbaProjectManifestReconciliationStatus.Rejected)
-                    {
-                        progress.Add(
-                            CreateRejectedProgress(
-                                "reload",
-                                reloadManifest));
-                        mutationRejected = true;
-                        return false;
-                    }
+                                resolution =
+                                    VbaProjectManifestWorkspace.ResolveManifestText(
+                                        reloadManifest.ActiveUri,
+                                        reloadManifest.Uri,
+                                        reloadManifest.Text);
+                            }
+                            catch (VbaProjectManifestException)
+                            {
+                                // Invalid text is still committed as validation
+                                // state and may retain the last-known-good scope.
+                            }
+                        }
 
-                    committedMutation = true;
-                    if (update.Status
-                        == VbaProjectManifestReconciliationStatus.Applied)
-                    {
-                        lease.CommitManifestScope(
-                            reloadManifest.ActiveUri,
-                            resolution!,
-                            reloadManifest.RetainPreviousAuthority,
-                            reloadManifest.RetainedPreviousSourceUris,
-                            trackedUris);
-                        progress.Add(
-                            CreateManifestProgress(reloadManifest.Uri));
-                        effects.Add(
-                            new ReconciledManifestSelectionChangedEffect(
-                                reloadManifest.Uri,
-                                reloadManifest.Text));
-                        manifestAuthorityMutated = true;
-                    }
-                    else if (update.Status
-                            == VbaProjectManifestReconciliationStatus.Invalid
-                        && update.Error is not null)
-                    {
-                        if (!update.RetainedLastKnownGood)
+                        if (!snapshotProvider.TryUseReconciliationAuthority(
+                                plan.AuthorityKey,
+                                plan.CapturedManifestBarrierRevision,
+                                plan.CapturedAuthorityGeneration,
+                                lease =>
+                                {
+                                    var update = ManifestWorkspace.ReloadReconciledManifest(
+                                    new VbaIdentifiedDocument(
+                                        reloadManifest.DocumentIdentity,
+                                        reloadManifest.Uri),
+                                    reloadManifest.Text,
+                                    reloadManifest.CapturedManifestRevision);
+                                    if (update.Status
+                                    == VbaProjectManifestReconciliationStatus.Rejected)
+                                    {
+                                        progress.Add(
+                                        CreateRejectedProgress(
+                                            VbaProjectReconciliationRejectionReason.Reload,
+                                            reloadManifest));
+                                        mutationRejected = true;
+                                        return false;
+                                    }
+
+                                    committedMutation = true;
+                                    if (update.Status
+                                    == VbaProjectManifestReconciliationStatus.Applied)
+                                    {
+                                        lease.CommitManifestScope(
+                                        reloadManifest.ActiveDocument,
+                                        resolution!,
+                                        reloadManifest.RetainPreviousAuthority,
+                                        reloadManifest.RetainedPreviousSourceIdentities,
+                                        trackedDocuments);
+                                        progress.Add(CreateManifestProgress());
+                                        effects.Add(
+                                        new ReconciledManifestSelectionChangedEffect(
+                                            reloadManifest.Uri,
+                                            reloadManifest.Text));
+                                        manifestAuthorityMutated = true;
+                                    }
+                                    else if (update.Status
+                                        == VbaProjectManifestReconciliationStatus.Invalid
+                                    && update.Error is not null)
+                                    {
+                                        if (!update.RetainedLastKnownGood)
+                                        {
+                                            progress.Add(CreateManifestProgress());
+                                        }
+
+                                        if (!update.RetainedLastKnownGood
+                                        && reloadManifest.AuthorityTransferred
+                                        && reloadManifest.InvalidFallbackResolution
+                                            is not null)
+                                        {
+                                            lease.CommitManifestScope(
+                                            reloadManifest.ActiveDocument,
+                                            reloadManifest.InvalidFallbackResolution,
+                                            retainPreviousAuthority: false,
+                                            reloadManifest.RetainedPreviousSourceIdentities,
+                                            trackedDocuments);
+                                            manifestAuthorityMutated = true;
+                                        }
+
+                                        effects.Add(
+                                        new ReconciledManifestValidationFailedEffect(
+                                            reloadManifest.Uri,
+                                            update.Error));
+                                    }
+                                    return true;
+                                },
+                                out _))
                         {
                             progress.Add(
-                                CreateManifestProgress(
-                                    reloadManifest.Uri));
+                                CreateRejectedProgress(
+                                    VbaProjectReconciliationRejectionReason
+                                        .AuthorityLease,
+                                    reloadManifest));
+                            mutationRejected = true;
                         }
 
-                        if (!update.RetainedLastKnownGood
-                            && reloadManifest.AuthorityTransferred
-                            && reloadManifest.InvalidFallbackResolution
-                                is not null)
-                        {
-                            lease.CommitManifestScope(
-                                reloadManifest.ActiveUri,
-                                reloadManifest.InvalidFallbackResolution,
-                                retainPreviousAuthority: false,
-                                reloadManifest.RetainedPreviousSourceUris,
-                                trackedUris);
-                            manifestAuthorityMutated = true;
-                        }
-
-                        effects.Add(
-                            new ReconciledManifestValidationFailedEffect(
-                                reloadManifest.Uri,
-                                update.Error));
+                        break;
                     }
-                    return true;
-                            },
-                            out _))
-                    {
-                        progress.Add(
-                            CreateRejectedProgress(
-                                "authority-lease",
-                                reloadManifest));
-                        mutationRejected = true;
-                    }
-
-                    break;
-                }
                 case TransferInvalidManifestAuthorityChange
                     transferInvalidManifest:
-                {
-                    if (!snapshotProvider.TryUseReconciliationAuthority(
-                            plan.AuthorityKey,
-                            plan.CapturedManifestBarrierRevision,
-                            plan.CapturedAuthorityGeneration,
-                            lease =>
-                            {
-                    if (ManifestWorkspace.GetReconciliationRevision(
-                                transferInvalidManifest.Uri)
-                            != transferInvalidManifest
-                                .CapturedManifestRevision)
                     {
-                        progress.Add(
-                            CreateRejectedProgress(
-                                "transfer-invalid",
-                                transferInvalidManifest));
-                        mutationRejected = true;
-                        return false;
-                    }
+                        if (!snapshotProvider.TryUseReconciliationAuthority(
+                                plan.AuthorityKey,
+                                plan.CapturedManifestBarrierRevision,
+                                plan.CapturedAuthorityGeneration,
+                                lease =>
+                                {
+                                    if (ManifestWorkspace.GetReconciliationRevision(
+                                            new VbaIdentifiedDocument(
+                                                transferInvalidManifest
+                                                    .DocumentIdentity,
+                                                transferInvalidManifest.Uri))
+                                        != transferInvalidManifest
+                                            .CapturedManifestRevision)
+                                    {
+                                        progress.Add(
+                                        CreateRejectedProgress(
+                                            VbaProjectReconciliationRejectionReason
+                                                .TransferInvalid,
+                                            transferInvalidManifest));
+                                        mutationRejected = true;
+                                        return false;
+                                    }
 
-                    lease.CommitManifestScope(
-                            transferInvalidManifest.ActiveUri,
-                            transferInvalidManifest.Resolution,
-                            retainPreviousAuthority: false,
-                            transferInvalidManifest.RetainedPreviousSourceUris,
-                            trackedUris);
+                                    lease.CommitManifestScope(
+                                        transferInvalidManifest.ActiveDocument,
+                                        transferInvalidManifest.Resolution,
+                                        retainPreviousAuthority: false,
+                                        transferInvalidManifest.RetainedPreviousSourceIdentities,
+                                        trackedDocuments);
 
-                    progress.Add(
-                        CreateManifestProgress(
-                            transferInvalidManifest.Uri));
-                    committedMutation = true;
-                    manifestAuthorityMutated = true;
-                    return true;
-                            },
-                            out _))
-                    {
-                        progress.Add(
-                            CreateRejectedProgress(
-                                "authority-lease",
-                                transferInvalidManifest));
-                        mutationRejected = true;
-                    }
-
-                    break;
-                }
-                case ObserveManifestBarrierChange observeManifestBarrier:
-                {
-                    if (!snapshotProvider.TryUseReconciliationAuthority(
-                            plan.AuthorityKey,
-                            plan.CapturedManifestBarrierRevision,
-                            plan.CapturedAuthorityGeneration,
-                            lease =>
-                            {
-                    var update = ManifestWorkspace.ReloadReconciledManifest(
-                        observeManifestBarrier.Uri,
-                        observeManifestBarrier.Text,
-                        observeManifestBarrier.CapturedManifestRevision);
-                    if (update.Status
-                        == VbaProjectManifestReconciliationStatus.Rejected)
-                    {
-                        progress.Add(
-                            CreateRejectedProgress(
-                                "observe",
-                                observeManifestBarrier));
-                        mutationRejected = true;
-                        return false;
-                    }
-
-                    committedMutation = true;
-                    if (update.Status
-                            == VbaProjectManifestReconciliationStatus.Invalid
-                        && update.Error is not null)
-                    {
-                        if (!update.RetainedLastKnownGood)
+                                    progress.Add(CreateManifestProgress());
+                                    committedMutation = true;
+                                    manifestAuthorityMutated = true;
+                                    return true;
+                                },
+                                out _))
                         {
                             progress.Add(
-                                CreateManifestProgress(
-                                    observeManifestBarrier.Uri));
+                                CreateRejectedProgress(
+                                    VbaProjectReconciliationRejectionReason
+                                        .AuthorityLease,
+                                    transferInvalidManifest));
+                            mutationRejected = true;
                         }
 
-                        effects.Add(
-                            new ReconciledManifestValidationFailedEffect(
-                                observeManifestBarrier.Uri,
-                                update.Error));
+                        break;
                     }
-                    else if (update.Status
-                        == VbaProjectManifestReconciliationStatus.Applied)
+                case ObserveManifestBarrierChange observeManifestBarrier:
                     {
-                        progress.Add(
-                            CreateManifestProgress(
-                                observeManifestBarrier.Uri));
-                        if (observeManifestBarrier.HadValidationFailure)
+                        if (!snapshotProvider.TryUseReconciliationAuthority(
+                                plan.AuthorityKey,
+                                plan.CapturedManifestBarrierRevision,
+                                plan.CapturedAuthorityGeneration,
+                                lease =>
+                                {
+                                    var update = ManifestWorkspace.ReloadReconciledManifest(
+                                    new VbaIdentifiedDocument(
+                                        observeManifestBarrier.DocumentIdentity,
+                                        observeManifestBarrier.Uri),
+                                    observeManifestBarrier.Text,
+                                    observeManifestBarrier.CapturedManifestRevision);
+                                    if (update.Status
+                                    == VbaProjectManifestReconciliationStatus.Rejected)
+                                    {
+                                        progress.Add(
+                                        CreateRejectedProgress(
+                                            VbaProjectReconciliationRejectionReason.Observe,
+                                            observeManifestBarrier));
+                                        mutationRejected = true;
+                                        return false;
+                                    }
+
+                                    committedMutation = true;
+                                    if (update.Status
+                                        == VbaProjectManifestReconciliationStatus.Invalid
+                                    && update.Error is not null)
+                                    {
+                                        if (!update.RetainedLastKnownGood)
+                                        {
+                                            progress.Add(CreateManifestProgress());
+                                        }
+
+                                        effects.Add(
+                                        new ReconciledManifestValidationFailedEffect(
+                                            observeManifestBarrier.Uri,
+                                            update.Error));
+                                    }
+                                    else if (update.Status
+                                    == VbaProjectManifestReconciliationStatus.Applied)
+                                    {
+                                        progress.Add(CreateManifestProgress());
+                                        if (observeManifestBarrier.HadValidationFailure)
+                                        {
+                                            effects.Add(
+                                            new ReconciledManifestValidationRecoveredEffect(
+                                                observeManifestBarrier.Uri));
+                                        }
+                                    }
+                                    return true;
+                                },
+                                out _))
                         {
-                            effects.Add(
-                                new ReconciledManifestValidationRecoveredEffect(
-                                    observeManifestBarrier.Uri));
+                            progress.Add(
+                                CreateRejectedProgress(
+                                    VbaProjectReconciliationRejectionReason
+                                        .AuthorityLease,
+                                    observeManifestBarrier));
+                            mutationRejected = true;
                         }
-                    }
-                    return true;
-                            },
-                            out _))
-                    {
-                        progress.Add(
-                            CreateRejectedProgress(
-                                "authority-lease",
-                                observeManifestBarrier));
-                        mutationRejected = true;
-                    }
 
-                    break;
-                }
+                        break;
+                    }
                 case DeleteObservedManifestBarrierChange
                     deleteObservedManifestBarrier:
-                {
-                    if (!snapshotProvider.TryUseReconciliationAuthority(
-                            plan.AuthorityKey,
-                            plan.CapturedManifestBarrierRevision,
-                            plan.CapturedAuthorityGeneration,
-                            lease =>
-                            {
-                    var update = ManifestWorkspace.DeleteReconciledManifest(
-                        deleteObservedManifestBarrier.Uri,
-                        deleteObservedManifestBarrier
-                            .CapturedManifestRevision);
-                    if (update.Status
-                        == VbaProjectManifestReconciliationStatus.Rejected)
                     {
-                        progress.Add(
-                            CreateRejectedProgress(
-                                "delete-observed",
-                                deleteObservedManifestBarrier));
-                        mutationRejected = true;
-                        return false;
-                    }
+                        if (!snapshotProvider.TryUseReconciliationAuthority(
+                                plan.AuthorityKey,
+                                plan.CapturedManifestBarrierRevision,
+                                plan.CapturedAuthorityGeneration,
+                                lease =>
+                                {
+                                    var update = ManifestWorkspace.DeleteReconciledManifest(
+                                    new VbaIdentifiedDocument(
+                                        deleteObservedManifestBarrier
+                                            .DocumentIdentity,
+                                        deleteObservedManifestBarrier.Uri),
+                                    deleteObservedManifestBarrier
+                                        .CapturedManifestRevision);
+                                    if (update.Status
+                                    == VbaProjectManifestReconciliationStatus.Rejected)
+                                    {
+                                        progress.Add(
+                                        CreateRejectedProgress(
+                                            VbaProjectReconciliationRejectionReason
+                                                .DeleteObserved,
+                                            deleteObservedManifestBarrier));
+                                        mutationRejected = true;
+                                        return false;
+                                    }
 
-                    committedMutation = true;
-                    if (update.Status
-                        == VbaProjectManifestReconciliationStatus.Applied)
-                    {
-                        progress.Add(
-                            CreateManifestProgress(
-                                deleteObservedManifestBarrier.Uri));
-                        if (deleteObservedManifestBarrier
-                            .HadValidationFailure)
+                                    committedMutation = true;
+                                    if (update.Status
+                                    == VbaProjectManifestReconciliationStatus.Applied)
+                                    {
+                                        progress.Add(CreateManifestProgress());
+                                        if (deleteObservedManifestBarrier
+                                        .HadValidationFailure)
+                                        {
+                                            effects.Add(
+                                            new ReconciledManifestValidationRecoveredEffect(
+                                                deleteObservedManifestBarrier.Uri));
+                                        }
+                                    }
+                                    return true;
+                                },
+                                out _))
                         {
-                            effects.Add(
-                                new ReconciledManifestValidationRecoveredEffect(
-                                    deleteObservedManifestBarrier.Uri));
+                            progress.Add(
+                                CreateRejectedProgress(
+                                    VbaProjectReconciliationRejectionReason
+                                        .AuthorityLease,
+                                    deleteObservedManifestBarrier));
+                            mutationRejected = true;
                         }
-                    }
-                    return true;
-                            },
-                            out _))
-                    {
-                        progress.Add(
-                            CreateRejectedProgress(
-                                "authority-lease",
-                                deleteObservedManifestBarrier));
-                        mutationRejected = true;
-                    }
 
-                    break;
-                }
+                        break;
+                    }
                 case ReloadChange reload:
                     if (ReloadReconciledSourceDocument(
-                            reload.Uri,
+                            new VbaIdentifiedDocument(
+                                reload.DocumentIdentity,
+                                reload.Uri),
                             reload.Text,
                             reload.CapturedWorkspaceRevision,
                             CancellationToken.None))
@@ -742,6 +910,7 @@ public sealed partial class VbaLanguageWorkspace
                         snapshotProvider.CommitReconciledSourceBaseline(
                             reload.AuthorityKey,
                             new VbaProjectDiskKnownSource(
+                                reload.DocumentIdentity,
                                 reload.Uri,
                                 Path.GetFullPath(reload.FullPath),
                                 reload.Text,
@@ -759,7 +928,7 @@ public sealed partial class VbaLanguageWorkspace
                         snapshotProvider
                             .CommitDeletedReconciledSourceBaseline(
                                 decodeFailure.AuthorityKey,
-                                decodeFailure.Failure.Uri);
+                                decodeFailure.Failure.DocumentIdentity);
                         effects.Add(
                             new ReconciledSourceDiagnosticsEffect(
                                 decodeFailure.Failure.Uri));
@@ -771,14 +940,16 @@ public sealed partial class VbaLanguageWorkspace
                     break;
                 case DeleteChange delete:
                     if (DeleteReconciledSourceDocument(
-                            delete.Uri,
+                            new VbaIdentifiedDocument(
+                                delete.DocumentIdentity,
+                                delete.Uri),
                             delete.CapturedWorkspaceRevision,
                             CancellationToken.None))
                     {
                         snapshotProvider
                             .CommitDeletedReconciledSourceBaseline(
                                 delete.AuthorityKey,
-                                delete.Uri);
+                                delete.DocumentIdentity);
                         effects.Add(
                             new ReconciledSourceDiagnosticsClearedEffect(
                                 delete.Uri));
@@ -791,7 +962,7 @@ public sealed partial class VbaLanguageWorkspace
                 case ReleaseSourceOwnershipChange release:
                     snapshotProvider.ReleaseReconciledSourceOwnership(
                         release.AuthorityKey,
-                        release.Uri);
+                        release.DocumentIdentity);
                     projectDiagnosticsCandidates.Add(release.Uri);
                     committedMutation = true;
                     break;
@@ -811,8 +982,12 @@ public sealed partial class VbaLanguageWorkspace
                 foreach (var affectedSourceUri in
                     change.CapturedManifestSourceUris
                         .Concat(change.CapturedProjectSourceUris)
-                        .Concat(trackedUris.Where(uri =>
-                            IsPotentiallyAffectedSource(change, uri))))
+                        .Concat(trackedDocuments.Where(document =>
+                            IsPotentiallyAffectedSource(
+                                change,
+                                document.Identity,
+                                document.Uri))
+                            .Select(document => document.Uri)))
                 {
                     projectDiagnosticsCandidates.Add(affectedSourceUri);
                 }
@@ -823,7 +998,7 @@ public sealed partial class VbaLanguageWorkspace
                             == VbaProjectReconciliationProgressKind
                                 .ManifestCommitted))
                 {
-                    progress.Add(CreateManifestProgress(change.Uri));
+                    progress.Add(CreateManifestProgress());
                 }
 
                 break;
@@ -854,10 +1029,8 @@ public sealed partial class VbaLanguageWorkspace
         IEnumerable<string> candidates,
         List<VbaProjectReconciliationEffect> effects)
     {
-        var anchors = candidates
-            .DistinctBy(
-                VbaProjectIdentityModel.GetDocumentStableKey,
-                StringComparer.OrdinalIgnoreCase)
+        var anchors = VbaProjectIdentityModel
+            .DistinctDocumentUris(candidates)
             .Select(uri =>
             {
                 ManifestWorkspace.TryResolveKnownState(
@@ -866,12 +1039,13 @@ public sealed partial class VbaLanguageWorkspace
                 return new
                 {
                     Uri = uri,
-                    ProjectKey = VbaProjectSnapshotIdentity
-                        .Create(uri, resolution)
-                        .Key
+                    ProjectIdentity = VbaProjectSnapshotIdentity
+                        .Create(
+                            RequireIdentifiedDocument(uri).Identity,
+                            resolution)
                 };
             })
-            .GroupBy(candidate => candidate.ProjectKey, StringComparer.Ordinal)
+            .GroupBy(candidate => candidate.ProjectIdentity)
             .Select(group => group
                 .OrderBy(
                     candidate => candidate.Uri,
@@ -887,6 +1061,13 @@ public sealed partial class VbaLanguageWorkspace
         }
     }
 
+    private static VbaIdentifiedDocument RequireIdentifiedDocument(
+        string uri)
+        => VbaProjectIdentityModel.TryIdentifyDocument(uri, out var identity)
+            ? new VbaIdentifiedDocument(identity, uri)
+            : throw new InvalidOperationException(
+                "A reconciliation scope has no active document identity.");
+
     private void CaptureOpenAuthorities(
         ReconciliationChange change,
         Dictionary<VbaDocumentIdentity, CapturedOpenAuthority>
@@ -894,23 +1075,19 @@ public sealed partial class VbaLanguageWorkspace
         CancellationToken cancellationToken)
     {
         var capturedOpenSources =
-            change.CapturedOpenSourceUris
-                .Select(uri => VbaProjectIdentityModel.TryIdentifyDocument(
-                    uri,
-                    out var identity)
-                        ? identity
-                        : (VbaDocumentIdentity?)null)
-                .Where(identity => identity is not null)
-                .Select(identity => identity!.Value)
-                .ToHashSet();
-        foreach (var sourceUri in GetOpenDocumentUris(cancellationToken)
-            .OrderBy(uri => uri, StringComparer.OrdinalIgnoreCase))
+            change.CapturedOpenSourceIdentities.ToHashSet();
+        foreach (var source in GetOpenDocuments(cancellationToken)
+            .OrderBy(
+                document => document.Uri,
+                StringComparer.OrdinalIgnoreCase))
         {
-            if (!VbaProjectIdentityModel.TryIdentifyDocument(
-                    sourceUri,
-                    out var sourceIdentity)
-                || initialOpenAuthorities.ContainsKey(sourceIdentity)
-                || !IsPotentiallyAffectedSource(change, sourceUri))
+            var sourceUri = source.Uri;
+            var sourceIdentity = source.Identity;
+            if (initialOpenAuthorities.ContainsKey(sourceIdentity)
+                || !IsPotentiallyAffectedSource(
+                    change,
+                    sourceIdentity,
+                    sourceUri))
             {
                 continue;
             }
@@ -944,14 +1121,8 @@ public sealed partial class VbaLanguageWorkspace
         List<VbaProjectReconciliationEffect> effects,
         CancellationToken cancellationToken)
     {
-        var currentlyOpen = GetOpenDocumentUris(cancellationToken)
-            .Select(uri => VbaProjectIdentityModel.TryIdentifyDocument(
-                uri,
-                out var identity)
-                    ? identity
-                    : (VbaDocumentIdentity?)null)
-            .Where(identity => identity is not null)
-            .Select(identity => identity!.Value)
+        var currentlyOpen = GetOpenDocuments(cancellationToken)
+            .Select(document => document.Identity)
             .ToHashSet();
         foreach (var (sourceIdentity, capturedAuthority) in
             initialOpenAuthorities.OrderBy(
@@ -988,23 +1159,18 @@ public sealed partial class VbaLanguageWorkspace
 
     private static bool IsPotentiallyAffectedSource(
         ReconciliationChange change,
+        VbaDocumentIdentity sourceIdentity,
         string sourceUri)
     {
+        if (change.CapturedOpenSourceIdentities.Contains(sourceIdentity))
+        {
+            return true;
+        }
+
         var sourcePath = VbaProjectResolver.TryGetLocalPath(sourceUri);
         if (sourcePath is null)
         {
-            return change.CapturedOpenSourceUris.Any(
-                captured => VbaProjectIdentityModel.SameDocument(
-                    captured,
-                    sourceUri));
-        }
-
-        if (change.CapturedOpenSourceUris.Any(
-                captured => VbaProjectIdentityModel.SameDocument(
-                    captured,
-                    sourceUri)))
-        {
-            return true;
+            return false;
         }
 
         return GetImpactManifestUris(change)
@@ -1048,33 +1214,66 @@ public sealed partial class VbaLanguageWorkspace
             or DeleteObservedManifestBarrierChange;
 
     private static VbaProjectReconciliationProgress
-        CreateManifestProgress(string uri)
+        CreateManifestProgress()
         => new(
             VbaProjectReconciliationProgressKind.ManifestCommitted,
-            VbaProjectIdentityModel.GetDocumentStableKey(uri));
+            VbaProjectReconciliationManifestProgressIdentity.Instance);
 
     private static VbaProjectReconciliationProgress CreateRejectedProgress(
-        string reason,
+        VbaProjectReconciliationRejectionReason reason,
         ReconciliationChange change)
     {
-        var changeFingerprint =
-            change is ReplaceDeletedManifestAuthorityChange replace
-                ? string.Join(
-                    ",",
-                    replace.DeletedManifests.Select(
-                        deleted =>
-                            $"{VbaProjectIdentityModel.GetDocumentStableKey(deleted.Uri)}@{deleted.CapturedRevision}"))
-                    + $"|fallback={VbaProjectIdentityModel.GetDocumentStableKey(replace.FallbackUri)}"
-                    + $"@{replace.CapturedFallbackRevision}"
-                : $"{VbaProjectIdentityModel.GetDocumentStableKey(change.Uri)}"
-                    + $"@{change.CapturedWorkspaceRevision}";
+        var replace = change as ReplaceDeletedManifestAuthorityChange;
+        var documentRevisions = replace is null
+            ?
+            [
+                new VbaProjectReconciliationDocumentRevisionIdentity(
+                    change.DocumentIdentity,
+                    change.CapturedWorkspaceRevision)
+            ]
+            : replace.DeletedManifests
+                .Select(deleted =>
+                    new VbaProjectReconciliationDocumentRevisionIdentity(
+                        deleted.DocumentIdentity,
+                        deleted.CapturedRevision))
+                .ToArray();
         return new(
             VbaProjectReconciliationProgressKind.MutationRejected,
-            $"{reason}:{change.GetType().Name}"
-                + $":{change.AuthorityKey}"
-                + $":barrier={change.CapturedManifestBarrierRevision}"
-                + $":generation={change.CapturedAuthorityGeneration}"
-                + $":{changeFingerprint}");
+            new VbaProjectReconciliationRejectedProgressIdentity(
+                reason,
+                GetMutationKind(change),
+                change.AuthorityKey,
+                change.CapturedManifestBarrierRevision,
+                change.CapturedAuthorityGeneration,
+                documentRevisions,
+                replace?.FallbackDocumentIdentity,
+                replace?.CapturedFallbackRevision ?? 0));
     }
+
+    private static VbaProjectReconciliationMutationKind GetMutationKind(
+        ReconciliationChange change)
+        => change switch
+        {
+            ReloadChange => VbaProjectReconciliationMutationKind.Reload,
+            DecodeFailureChange =>
+                VbaProjectReconciliationMutationKind.DecodeFailure,
+            DeleteChange => VbaProjectReconciliationMutationKind.Delete,
+            ReleaseSourceOwnershipChange =>
+                VbaProjectReconciliationMutationKind.ReleaseSourceOwnership,
+            ReplaceDeletedManifestAuthorityChange =>
+                VbaProjectReconciliationMutationKind
+                    .ReplaceDeletedManifestAuthority,
+            ReloadManifestChange =>
+                VbaProjectReconciliationMutationKind.ReloadManifest,
+            TransferInvalidManifestAuthorityChange =>
+                VbaProjectReconciliationMutationKind
+                    .TransferInvalidManifestAuthority,
+            ObserveManifestBarrierChange =>
+                VbaProjectReconciliationMutationKind.ObserveManifestBarrier,
+            DeleteObservedManifestBarrierChange =>
+                VbaProjectReconciliationMutationKind
+                    .DeleteObservedManifestBarrier,
+            _ => throw new ArgumentOutOfRangeException(nameof(change))
+        };
 
 }

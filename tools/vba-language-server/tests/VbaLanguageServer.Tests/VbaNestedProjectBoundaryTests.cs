@@ -198,12 +198,12 @@ public sealed class VbaNestedProjectBoundaryTests
                 .ObserveReconciliationAsync(
                     new VbaProjectDiskObservationRequest(
                         new VbaProjectDiskProjectScope(
+                            IdentifyAuthority(resolution),
                             resolution.Kind,
-                            resolution.RootPath,
-                            resolution.ManifestPath),
+                            resolution.RootPath),
                         manifestCandidates: [],
                         barrierOverrides: [],
-                        observedManifestBarrierUris: []),
+                        observedManifestBarrierIdentities: []),
                     CancellationToken.None);
 
             Assert.Contains(
@@ -222,6 +222,15 @@ public sealed class VbaNestedProjectBoundaryTests
             Directory.Delete(projectRoot, recursive: true);
         }
     }
+
+    private static VbaProjectAuthorityIdentity IdentifyAuthority(
+        VbaProjectResolution resolution)
+        => VbaProjectIdentityModel.TryIdentifyAuthority(
+            resolution,
+            out var identity)
+                ? identity
+                : throw new InvalidOperationException(
+                    "Expected a project authority identity.");
 
     private static void WriteManifest(
         string projectRoot,

@@ -273,7 +273,8 @@ internal sealed class VbaLanguageServerRuntime
                         continue;
                     }
 
-                    if (update.CoalescingKey is not { } coalescingKey)
+                    if (!update.TryGetAuthority(
+                            out var coalescingAuthority))
                     {
                         continue;
                     }
@@ -282,7 +283,7 @@ internal sealed class VbaLanguageServerRuntime
                     {
                         scheduler.AdmitCoalescibleAdvisoryMutation(
                             method,
-                            coalescingKey,
+                            coalescingAuthority,
                             update.Revision,
                             workCancellationToken =>
                             {

@@ -20,20 +20,23 @@ public sealed record VbaProjectSnapshot(
     VbaSemanticInventory SemanticInventory)
 {
     internal IReadOnlyList<VbaProjectDiskSourceFailure>
-        DiskSourceFailures { get; init; } = [];
+        DiskSourceFailures
+    { get; init; } = [];
 
     internal IReadOnlyList<VbaProjectDiskSource>
-        DiskSources { get; init; } = [];
+        DiskSources
+    { get; init; } = [];
 
-    internal IReadOnlySet<string> ExistingOpenSourcePaths { get; init; } =
-        new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    internal IReadOnlySet<VbaDocumentIdentity> ExistingOpenSourceIdentities
+    { get; init; } = new HashSet<VbaDocumentIdentity>();
 
-    internal IReadOnlyDictionary<string, bool> ManifestBarrierOverrides
-        { get; init; } = new Dictionary<string, bool>(
-            StringComparer.OrdinalIgnoreCase);
+    internal IReadOnlyDictionary<VbaDocumentIdentity, bool>
+        ManifestBarrierOverrides
+    { get; init; } = new Dictionary<VbaDocumentIdentity, bool>();
 
     internal VbaProjectSnapshotProvider.ProjectSnapshotOwnership?
-        DiagnosticsOwnership { get; init; }
+        DiagnosticsOwnership
+    { get; init; }
 }
 
 /// <summary>
@@ -42,12 +45,16 @@ public sealed record VbaProjectSnapshot(
 public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCapture
 {
     private readonly object gate = new();
-    private readonly Dictionary<string, WorkspaceDocumentState> documents = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, AcceptedDocumentRevisionState> acceptedRevisions =
-        new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, VbaProjectDiskSourceFailure>
-        diskSourceFailures = new(StringComparer.OrdinalIgnoreCase);
-    private readonly HashSet<string> excludedSourceUris = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<VbaDocumentIdentity, WorkspaceDocumentState>
+        documents = new();
+    private readonly Dictionary<
+        VbaDocumentIdentity,
+        AcceptedDocumentRevisionState> acceptedRevisions = new();
+    private readonly Dictionary<
+        VbaDocumentIdentity,
+        VbaProjectDiskSourceFailure> diskSourceFailures = new();
+    private readonly HashSet<VbaDocumentIdentity> excludedSourceIdentities =
+        new();
     private readonly VbaSourceRevisionHistory sourceRevisionHistory = new();
     private readonly VbaSourceRevisionHistory renameSourceRevisionHistory =
         new(retainOnlyWhileCapturesActive: true);
@@ -233,24 +240,25 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        var document = RequireIdentifiedDocument(uri);
         DocumentAnalysisReservation reservation;
         lock (gate)
         {
-            var existing = GetDocumentState(uri);
-            var accepted = GetAcceptedRevisionState(uri);
+            var existing = GetDocumentState(document.Identity);
+            var accepted = GetAcceptedRevisionState(document.Identity);
             var continuesOpenLifecycle =
                 accepted?.Authority == WorkspaceDocumentAuthority.OpenBuffer;
             var version = continuesOpenLifecycle
                 ? (accepted!.Version ?? existing?.Version ?? -1) + 1
                 : 0;
-            if (RemoveExcludedSourceIdentity(uri))
+            if (RemoveExcludedSourceIdentity(document.Identity))
             {
-                MarkWorkspaceChanged(uri);
+                MarkWorkspaceChanged(document);
             }
             reservation = ReserveDocumentAnalysis(
                 continuesOpenLifecycle
-                    ? accepted!.Uri
-                    : uri,
+                    ? accepted!.Document
+                    : document,
                 WorkspaceDocumentAuthority.OpenBuffer,
                 version,
                 continuesOpenLifecycle
@@ -277,16 +285,17 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        var document = RequireIdentifiedDocument(uri);
         DocumentAnalysisReservation reservation;
         lock (gate)
         {
-            if (RemoveExcludedSourceIdentity(uri))
+            if (RemoveExcludedSourceIdentity(document.Identity))
             {
-                MarkWorkspaceChanged(uri);
+                MarkWorkspaceChanged(document);
             }
-            var existing = GetDocumentState(uri);
+            var existing = GetDocumentState(document.Identity);
             reservation = ReserveDocumentAnalysis(
-                uri,
+                document,
                 WorkspaceDocumentAuthority.OpenBuffer,
                 version,
                 ++nextDocumentLifecycleEpoch,
@@ -314,11 +323,12 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        var document = RequireIdentifiedDocument(uri);
         DocumentAnalysisReservation reservation;
         lock (gate)
         {
-            var accepted = GetAcceptedRevisionState(uri);
-            var existing = GetDocumentState(uri);
+            var accepted = GetAcceptedRevisionState(document.Identity);
+            var existing = GetDocumentState(document.Identity);
             if (accepted?.Authority != WorkspaceDocumentAuthority.OpenBuffer
                 || version <= accepted.Version)
             {
@@ -326,7 +336,7 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
             }
 
             reservation = ReserveDocumentAnalysis(
-                accepted.Uri,
+                accepted.Document,
                 WorkspaceDocumentAuthority.OpenBuffer,
                 version,
                 accepted.LifecycleEpoch,
@@ -353,9 +363,10 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        InvalidateDiskDocument(uri);
+        var document = RequireIdentifiedDocument(uri);
+        InvalidateDiskDocument(document.Identity);
         return ReloadSourceDocumentCore(
-            uri,
+            document,
             text,
             cancellationToken);
     }
@@ -368,11 +379,19 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (!VbaProjectIdentityModel.TryIdentifyDocument(
+                uri,
+                out var documentIdentity))
+        {
+            return false;
+        }
+
+        var document = new VbaIdentifiedDocument(documentIdentity, uri);
         lock (gate)
         {
-            if (GetAcceptedRevisionState(uri)?.Authority
+            if (GetAcceptedRevisionState(documentIdentity)?.Authority
                     == WorkspaceDocumentAuthority.OpenBuffer
-                || GetDocumentState(uri)?.Authority
+                || GetDocumentState(documentIdentity)?.Authority
                     == WorkspaceDocumentAuthority.OpenBuffer)
             {
                 return false;
@@ -388,7 +407,7 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         var manifestCapture = ManifestWorkspace.CaptureResolution(uri);
         var source = diskInventory.CaptureWatchedSource(
             manifestCapture.Resolution,
-            uri,
+            documentIdentity,
             manifestCapture.Barriers.Overrides,
             out var failure,
             cancellationToken);
@@ -398,31 +417,32 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                 && RecordDiskSourceFailure(failure);
         }
 
-        ClearDiskSourceFailure(uri);
-        diskDocumentCache.Invalidate(localPath);
+        ClearDiskSourceFailure(documentIdentity);
+        diskDocumentCache.Invalidate(source.DocumentIdentity);
         return ReloadSourceDocumentCore(
-            uri,
+            document,
             source.Text,
             cancellationToken);
     }
 
     private bool ReloadSourceDocumentCore(
-        string uri,
+        VbaIdentifiedDocument document,
         string text,
         CancellationToken cancellationToken)
     {
         DocumentAnalysisReservation reservation;
         lock (gate)
         {
-            var exclusionRemoved = RemoveExcludedSourceIdentity(uri);
-            var accepted = GetAcceptedRevisionState(uri);
-            var existing = GetDocumentState(uri);
+            var exclusionRemoved = RemoveExcludedSourceIdentity(
+                document.Identity);
+            var accepted = GetAcceptedRevisionState(document.Identity);
+            var existing = GetDocumentState(document.Identity);
             if (accepted?.Authority == WorkspaceDocumentAuthority.OpenBuffer
                 || existing?.Authority == WorkspaceDocumentAuthority.OpenBuffer)
             {
                 if (exclusionRemoved)
                 {
-                    MarkWorkspaceChanged(uri);
+                    MarkWorkspaceChanged(document);
                 }
 
                 return false;
@@ -430,11 +450,11 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
 
             if (exclusionRemoved)
             {
-                MarkWorkspaceChanged(uri);
+                MarkWorkspaceChanged(document);
             }
 
             reservation = ReserveDocumentAnalysis(
-                uri,
+                document,
                 WorkspaceDocumentAuthority.DiskWatcher,
                 version: null,
                 accepted?.Authority == WorkspaceDocumentAuthority.DiskWatcher
@@ -450,7 +470,7 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
     }
 
     private bool ReloadReconciledSourceDocument(
-        string uri,
+        VbaIdentifiedDocument source,
         string text,
         long capturedWorkspaceRevision,
         CancellationToken cancellationToken = default)
@@ -459,22 +479,22 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         DocumentAnalysisReservation reservation;
         lock (gate)
         {
-            var accepted = GetAcceptedRevisionState(uri);
-            var existing = GetDocumentState(uri);
-            if (GetSourceRevision(uri) > capturedWorkspaceRevision
+            var accepted = GetAcceptedRevisionState(source.Identity);
+            var existing = GetDocumentState(source.Identity);
+            if (GetSourceRevision(source.Identity) > capturedWorkspaceRevision
                 || accepted?.Authority == WorkspaceDocumentAuthority.OpenBuffer
                 || existing?.Authority == WorkspaceDocumentAuthority.OpenBuffer)
             {
                 return false;
             }
 
-            if (RemoveExcludedSourceIdentity(uri))
+            if (RemoveExcludedSourceIdentity(source.Identity))
             {
-                MarkWorkspaceChanged(uri);
+                MarkWorkspaceChanged(source);
             }
 
             reservation = ReserveDocumentAnalysis(
-                uri,
+                source,
                 WorkspaceDocumentAuthority.DiskWatcher,
                 version: null,
                 accepted?.Authority == WorkspaceDocumentAuthority.DiskWatcher
@@ -483,8 +503,8 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                 existing?.Analysis);
         }
 
-        ClearDiskSourceFailure(uri);
-        InvalidateDiskDocument(uri);
+        ClearDiskSourceFailure(source.Identity);
+        InvalidateDiskDocument(source.Identity);
         return BuildAndCommitDocumentAnalysis(
             reservation,
             text,
@@ -497,9 +517,11 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
     {
         lock (gate)
         {
-            var accepted = GetAcceptedRevisionState(failure.Uri);
-            var existing = GetDocumentState(failure.Uri);
-            if (GetSourceRevision(failure.Uri) > capturedWorkspaceRevision
+            var accepted = GetAcceptedRevisionState(
+                failure.DocumentIdentity);
+            var existing = GetDocumentState(failure.DocumentIdentity);
+            if (GetSourceRevision(failure.DocumentIdentity)
+                    > capturedWorkspaceRevision
                 || accepted?.Authority == WorkspaceDocumentAuthority.OpenBuffer
                 || existing?.Authority == WorkspaceDocumentAuthority.OpenBuffer)
             {
@@ -512,7 +534,7 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
             }
         }
 
-        InvalidateDiskDocument(failure.Uri);
+        InvalidateDiskDocument(failure.DocumentIdentity);
         return true;
     }
 
@@ -525,17 +547,27 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
     public bool CloseDocument(string uri, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        InvalidateDiskDocument(uri);
-        IReadOnlyList<string>? remainingTrackedUris = null;
+        if (!VbaProjectIdentityModel.TryIdentifyDocument(
+                uri,
+                out var documentIdentity))
+        {
+            return false;
+        }
+
+        var document = new VbaIdentifiedDocument(documentIdentity, uri);
+        InvalidateDiskDocument(documentIdentity);
+        IReadOnlyList<VbaIdentifiedDocument>? remainingTrackedDocuments = null;
         lock (gate)
         {
-            var revisionKey = FindAcceptedRevisionKey(uri);
-            var documentKey = FindDocumentKey(uri);
-            var hasOpenRevision = revisionKey is not null
-                && acceptedRevisions[revisionKey].Authority
+            var hasOpenRevision = acceptedRevisions.TryGetValue(
+                    documentIdentity,
+                    out var accepted)
+                && accepted.Authority
                     == WorkspaceDocumentAuthority.OpenBuffer;
-            var hasOpenDocument = documentKey is not null
-                && documents[documentKey].Authority
+            var hasOpenDocument = documents.TryGetValue(
+                    documentIdentity,
+                    out var existing)
+                && existing.Authority
                     == WorkspaceDocumentAuthority.OpenBuffer;
             if (!hasOpenRevision && !hasOpenDocument)
             {
@@ -544,21 +576,21 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
 
             if (hasOpenRevision)
             {
-                acceptedRevisions.Remove(revisionKey!);
+                acceptedRevisions.Remove(documentIdentity);
                 Monitor.PulseAll(gate);
             }
 
             if (hasOpenDocument)
             {
-                documents.Remove(documentKey!);
-                MarkWorkspaceChanged(uri);
-                remainingTrackedUris = CaptureTrackedDocumentUris();
+                documents.Remove(documentIdentity);
+                MarkWorkspaceChanged(document);
+                remainingTrackedDocuments = CaptureTrackedDocuments();
             }
         }
 
-        if (remainingTrackedUris is not null)
+        if (remainingTrackedDocuments is not null)
         {
-            RetireInactiveProjectScopes(remainingTrackedUris);
+            RetireInactiveProjectScopes(remainingTrackedDocuments);
         }
 
         return true;
@@ -573,106 +605,114 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
     public bool DeleteSourceDocument(string uri, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        InvalidateDiskDocument(uri);
-        IReadOnlyList<string>? remainingTrackedUris = null;
+        if (!VbaProjectIdentityModel.TryIdentifyDocument(
+                uri,
+                out var documentIdentity))
+        {
+            return true;
+        }
+
+        var document = new VbaIdentifiedDocument(documentIdentity, uri);
+        InvalidateDiskDocument(documentIdentity);
+        IReadOnlyList<VbaIdentifiedDocument>? remainingTrackedDocuments = null;
         lock (gate)
         {
-            var exclusionAdded = AddExcludedSourceIdentity(uri);
-            var failureRemoved = ClearDiskSourceFailure(uri);
-            var revisionKey = FindAcceptedRevisionKey(uri);
-            var documentKey = FindDocumentKey(uri);
-            var hasOpenRevision = revisionKey is not null
-                && acceptedRevisions[revisionKey].Authority
+            var exclusionAdded = AddExcludedSourceIdentity(documentIdentity);
+            var failureRemoved = ClearDiskSourceFailure(documentIdentity);
+            var hasOpenRevision = acceptedRevisions.TryGetValue(
+                    documentIdentity,
+                    out var accepted)
+                && accepted.Authority
                     == WorkspaceDocumentAuthority.OpenBuffer;
-            var hasOpenDocument = documentKey is not null
-                && documents[documentKey].Authority
+            var hasOpenDocument = documents.TryGetValue(
+                    documentIdentity,
+                    out var existing)
+                && existing.Authority
                     == WorkspaceDocumentAuthority.OpenBuffer;
             if (hasOpenRevision || hasOpenDocument)
             {
                 if (exclusionAdded || failureRemoved)
                 {
-                    MarkWorkspaceChanged(uri);
+                    MarkWorkspaceChanged(document);
                 }
 
                 return false;
             }
 
-            if (revisionKey is not null)
+            if (acceptedRevisions.Remove(documentIdentity))
             {
-                acceptedRevisions.Remove(revisionKey);
                 Monitor.PulseAll(gate);
             }
 
-            var documentRemoved = documentKey is not null
-                && documents.Remove(documentKey);
+            var documentRemoved = documents.Remove(documentIdentity);
             if (exclusionAdded || documentRemoved || failureRemoved)
             {
-                MarkWorkspaceChanged(uri);
+                MarkWorkspaceChanged(document);
             }
 
             if (documentRemoved)
             {
-                remainingTrackedUris = CaptureTrackedDocumentUris();
+                remainingTrackedDocuments = CaptureTrackedDocuments();
             }
         }
 
-        if (remainingTrackedUris is not null)
+        if (remainingTrackedDocuments is not null)
         {
-            RetireInactiveProjectScopes(remainingTrackedUris);
+            RetireInactiveProjectScopes(remainingTrackedDocuments);
         }
 
         return true;
     }
 
     private bool DeleteReconciledSourceDocument(
-        string uri,
+        VbaIdentifiedDocument source,
         long capturedWorkspaceRevision,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        IReadOnlyList<string>? remainingTrackedUris = null;
+        IReadOnlyList<VbaIdentifiedDocument>? remainingTrackedDocuments = null;
         lock (gate)
         {
-            var revisionKey = FindAcceptedRevisionKey(uri);
-            var documentKey = FindDocumentKey(uri);
-            var hasOpenRevision = revisionKey is not null
-                && acceptedRevisions[revisionKey].Authority
+            var hasOpenRevision = acceptedRevisions.TryGetValue(
+                    source.Identity,
+                    out var accepted)
+                && accepted.Authority
                     == WorkspaceDocumentAuthority.OpenBuffer;
-            var hasOpenDocument = documentKey is not null
-                && documents[documentKey].Authority
+            var hasOpenDocument = documents.TryGetValue(
+                    source.Identity,
+                    out var existing)
+                && existing.Authority
                     == WorkspaceDocumentAuthority.OpenBuffer;
-            if (GetSourceRevision(uri) > capturedWorkspaceRevision
+            if (GetSourceRevision(source.Identity) > capturedWorkspaceRevision
                 || hasOpenRevision
                 || hasOpenDocument)
             {
                 return false;
             }
 
-            var failureRemoved = ClearDiskSourceFailure(uri);
-            var exclusionAdded = AddExcludedSourceIdentity(uri);
-            if (revisionKey is not null)
+            var failureRemoved = ClearDiskSourceFailure(source.Identity);
+            var exclusionAdded = AddExcludedSourceIdentity(source.Identity);
+            if (acceptedRevisions.Remove(source.Identity))
             {
-                acceptedRevisions.Remove(revisionKey);
                 Monitor.PulseAll(gate);
             }
 
-            var documentRemoved = documentKey is not null
-                && documents.Remove(documentKey);
+            var documentRemoved = documents.Remove(source.Identity);
             if (exclusionAdded || documentRemoved || failureRemoved)
             {
-                MarkWorkspaceChanged(uri);
+                MarkWorkspaceChanged(source);
             }
 
             if (documentRemoved)
             {
-                remainingTrackedUris = CaptureTrackedDocumentUris();
+                remainingTrackedDocuments = CaptureTrackedDocuments();
             }
         }
 
-        InvalidateDiskDocument(uri);
-        if (remainingTrackedUris is not null)
+        InvalidateDiskDocument(source.Identity);
+        if (remainingTrackedDocuments is not null)
         {
-            RetireInactiveProjectScopes(remainingTrackedUris);
+            RetireInactiveProjectScopes(remainingTrackedDocuments);
         }
 
         return true;
@@ -687,33 +727,37 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
     public bool RemoveDocument(string uri, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        IReadOnlyList<string>? remainingTrackedUris = null;
+        if (!VbaProjectIdentityModel.TryIdentifyDocument(
+                uri,
+                out var documentIdentity))
+        {
+            return false;
+        }
+
+        var document = new VbaIdentifiedDocument(documentIdentity, uri);
+        IReadOnlyList<VbaIdentifiedDocument>? remainingTrackedDocuments = null;
         bool removed;
         lock (gate)
         {
-            var revisionKey = FindAcceptedRevisionKey(uri);
-            var documentKey = FindDocumentKey(uri);
-            var revisionRemoved = revisionKey is not null
-                && acceptedRevisions.Remove(revisionKey);
+            var revisionRemoved = acceptedRevisions.Remove(documentIdentity);
             if (revisionRemoved)
             {
                 Monitor.PulseAll(gate);
             }
 
-            var documentRemoved = documentKey is not null
-                && documents.Remove(documentKey);
+            var documentRemoved = documents.Remove(documentIdentity);
             if (documentRemoved)
             {
-                MarkWorkspaceChanged(uri);
-                remainingTrackedUris = CaptureTrackedDocumentUris();
+                MarkWorkspaceChanged(document);
+                remainingTrackedDocuments = CaptureTrackedDocuments();
             }
 
             removed = revisionRemoved || documentRemoved;
         }
 
-        if (remainingTrackedUris is not null)
+        if (remainingTrackedDocuments is not null)
         {
-            RetireInactiveProjectScopes(remainingTrackedUris);
+            RetireInactiveProjectScopes(remainingTrackedDocuments);
         }
 
         return removed;
@@ -730,9 +774,16 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (!VbaProjectIdentityModel.TryIdentifyDocument(
+                uri,
+                out var documentIdentity))
+        {
+            return null;
+        }
+
         lock (gate)
         {
-            var document = GetDocumentState(uri)?.Document;
+            var document = GetDocumentState(documentIdentity)?.Document;
             return document is not null
                 ? document.SyntaxTree
                 : null;
@@ -748,9 +799,16 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
     public string? GetDocumentText(string uri, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (!VbaProjectIdentityModel.TryIdentifyDocument(
+                uri,
+                out var documentIdentity))
+        {
+            return null;
+        }
+
         lock (gate)
         {
-            return GetDocumentState(uri)?.Document.Text;
+            return GetDocumentState(documentIdentity)?.Document.Text;
         }
     }
 
@@ -765,9 +823,16 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (!VbaProjectIdentityModel.TryIdentifyDocument(
+                uri,
+                out var documentIdentity))
+        {
+            return null;
+        }
+
         lock (gate)
         {
-            return GetDocumentState(uri)?.Analysis;
+            return GetDocumentState(documentIdentity)?.Analysis;
         }
     }
 
@@ -782,10 +847,17 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (!VbaProjectIdentityModel.TryIdentifyDocument(
+                uri,
+                out var documentIdentity))
+        {
+            return null;
+        }
+
         lock (gate)
         {
-            var state = GetDocumentState(uri);
-            var accepted = GetAcceptedRevisionState(uri);
+            var state = GetDocumentState(documentIdentity);
+            var accepted = GetAcceptedRevisionState(documentIdentity);
             if (state is null
                 || accepted is null
                 || accepted.HasPendingBuild
@@ -832,13 +904,20 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                 AcceptedDocumentRevisionState Accepted)>();
             foreach (var (sourceUri, sourceText) in projectSnapshot.SourceDocuments)
             {
-                var state = GetDocumentState(sourceUri);
+                if (!VbaProjectIdentityModel.TryIdentifyDocument(
+                        sourceUri,
+                        out var sourceIdentity))
+                {
+                    continue;
+                }
+
+                var state = GetDocumentState(sourceIdentity);
                 if (state is null)
                 {
                     continue;
                 }
 
-                var accepted = GetAcceptedRevisionState(sourceUri);
+                var accepted = GetAcceptedRevisionState(sourceIdentity);
                 if (accepted is null
                     || accepted.HasPendingBuild
                     || accepted.Authority != state.Authority
@@ -914,18 +993,28 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (!VbaProjectIdentityModel.TryIdentifyDocument(
+                uri,
+                out var documentIdentity))
+        {
+            return null;
+        }
+
         lock (gate)
         {
-            if (GetAcceptedRevisionState(uri)?.Authority
+            if (GetAcceptedRevisionState(documentIdentity)?.Authority
                     == WorkspaceDocumentAuthority.OpenBuffer
-                || GetDocumentState(uri)?.Authority
+                || GetDocumentState(documentIdentity)?.Authority
                     == WorkspaceDocumentAuthority.OpenBuffer)
             {
                 return null;
             }
 
-            var key = FindDiskSourceFailureKey(uri);
-            return key is null ? null : diskSourceFailures[key];
+            return diskSourceFailures.TryGetValue(
+                    documentIdentity,
+                    out var failure)
+                    ? failure
+                    : null;
         }
     }
 
@@ -934,12 +1023,14 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
     {
         lock (gate)
         {
-            var key = FindDiskSourceFailureKey(failure.Uri);
-            return key is not null
-                && diskSourceFailures[key] == failure
-                && GetAcceptedRevisionState(failure.Uri)?.Authority
+            return diskSourceFailures.TryGetValue(
+                    failure.DocumentIdentity,
+                    out var current)
+                && current == failure
+                && GetAcceptedRevisionState(
+                    failure.DocumentIdentity)?.Authority
                     != WorkspaceDocumentAuthority.OpenBuffer
-                && GetDocumentState(failure.Uri)?.Authority
+                && GetDocumentState(failure.DocumentIdentity)?.Authority
                     != WorkspaceDocumentAuthority.OpenBuffer;
         }
     }
@@ -958,10 +1049,17 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         long lifecycleEpoch,
         long reservationToken)
     {
+        if (!VbaProjectIdentityModel.TryIdentifyDocument(
+                uri,
+                out var documentIdentity))
+        {
+            return false;
+        }
+
         lock (gate)
         {
-            var state = GetDocumentState(uri);
-            var accepted = GetAcceptedRevisionState(uri);
+            var state = GetDocumentState(documentIdentity);
+            var accepted = GetAcceptedRevisionState(documentIdentity);
             return state is not null
                 && accepted is not null
                 && !accepted.HasPendingBuild
@@ -993,8 +1091,15 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
             documentsAreCurrent = ownership.Count > 0
                 && ownership.All(item =>
                 {
-                    var state = GetDocumentState(item.Uri);
-                    var accepted = GetAcceptedRevisionState(item.Uri);
+                    if (!VbaProjectIdentityModel.TryIdentifyDocument(
+                            item.Uri,
+                            out var documentIdentity))
+                    {
+                        return false;
+                    }
+
+                    var state = GetDocumentState(documentIdentity);
+                    var accepted = GetAcceptedRevisionState(documentIdentity);
                     return state is not null
                         && accepted is not null
                         && !accepted.HasPendingBuild
@@ -1059,10 +1164,17 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (!VbaProjectIdentityModel.TryIdentifyDocument(
+                uri,
+                out var documentIdentity))
+        {
+            return null;
+        }
+
         lock (gate)
         {
-            var state = GetDocumentState(uri);
-            var accepted = GetAcceptedRevisionState(uri);
+            var state = GetDocumentState(documentIdentity);
+            var accepted = GetAcceptedRevisionState(documentIdentity);
             return state?.Authority == WorkspaceDocumentAuthority.OpenBuffer
                 && accepted?.Authority == WorkspaceDocumentAuthority.OpenBuffer
                 && !accepted.HasPendingBuild
@@ -1093,16 +1205,17 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
 
     internal IReadOnlyList<string> GetOpenDocumentUris(
         CancellationToken cancellationToken = default)
+        => GetOpenDocuments(cancellationToken)
+            .Select(document => document.Uri)
+            .ToArray();
+
+    internal IReadOnlyList<VbaIdentifiedDocument> GetOpenDocuments(
+        CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         lock (gate)
         {
-            return documents.Values
-                .Where(
-                    state => state.Authority
-                        == WorkspaceDocumentAuthority.OpenBuffer)
-                .Select(state => state.Document.Uri)
-                .ToArray();
+            return CaptureOpenDocuments();
         }
     }
 
@@ -1121,7 +1234,7 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
             includeActiveUris: false);
         using var revisionCapture = capture.RevisionCapture;
         var snapshot = snapshotProvider.CreateProjectSnapshot(
-            activeUri,
+            RequireIdentifiedDocument(activeUri),
             capture.WorkspaceState,
             cancellationToken);
         ApplyColdDiskSourceDiagnostics(snapshot);
@@ -1140,7 +1253,7 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
             includeActiveUris: true);
         using var revisionCapture = capture.RevisionCapture;
         var snapshots = snapshotProvider.CreateProjectSnapshots(
-            capture.ActiveUris,
+            capture.ActiveDocuments,
             capture.WorkspaceState,
             cancellationToken);
         foreach (var snapshot in snapshots)
@@ -1154,17 +1267,15 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
     internal bool TryApplyHostClassProjectionSnapshot(
         VbaHostClassProjectionSnapshotUpdate update)
     {
-        IReadOnlyList<string> activeUris;
+        IReadOnlyList<VbaIdentifiedDocument> activeDocuments;
         lock (gate)
         {
-            activeUris = documents.Values
-                .Select(state => state.Document.Uri)
-                .ToArray();
+            activeDocuments = CaptureTrackedDocuments();
         }
 
         return snapshotProvider.TryApplyHostClassProjectionSnapshot(
             update,
-            activeUris);
+            activeDocuments);
     }
 
     VbaSemanticInventory IVbaInteractiveWorkspaceCapture.CaptureProjectSemanticInventory(
@@ -1197,7 +1308,7 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
             using (capture.RevisionCapture)
             {
                 var snapshot = snapshotProvider.CreateProjectSnapshot(
-                    activeUri,
+                    RequireIdentifiedDocument(activeUri),
                     capture.WorkspaceState,
                     cancellationToken);
                 ApplyColdDiskSourceDiagnostics(snapshot);
@@ -1656,31 +1767,36 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         string activeUri,
         long capturedRenameSourceVersion,
         IReadOnlyList<string> sourceUris,
-        IReadOnlyDictionary<string, bool> manifestBarrierOverrides)
+        IReadOnlyDictionary<VbaDocumentIdentity, bool>
+            manifestBarrierOverrides)
     {
-        foreach (var (sourceUri, revision) in
+        var activeIdentity = VbaProjectIdentityModel.TryIdentifyDocument(
+            activeUri,
+            out var identifiedActive)
+                ? identifiedActive
+                : (VbaDocumentIdentity?)null;
+        var sourceIdentities =
+            VbaProjectDiskIdentityProjection.CaptureDocuments(sourceUris)
+                .ToHashSet();
+        foreach (var sourceRevision in
             renameSourceRevisionHistory.CaptureEntries())
         {
-            if (revision <= capturedRenameSourceVersion)
+            if (sourceRevision.Revision <= capturedRenameSourceVersion)
             {
                 continue;
             }
 
             if (diskInventory.ContainsSource(
                     resolution,
-                    sourceUri,
+                    sourceRevision.DocumentIdentity,
                     manifestBarrierOverrides)
-                || VbaProjectIdentityModel.SameDocument(
-                    activeUri,
-                    sourceUri)
-                || sourceUris.Any(candidate =>
-                    VbaProjectIdentityModel.SameDocument(
-                        candidate,
-                        sourceUri)))
+                || activeIdentity == sourceRevision.DocumentIdentity
+                || sourceIdentities.Contains(
+                    sourceRevision.DocumentIdentity))
             {
                 var affectedPath =
-                    VbaProjectResolver.TryGetLocalPath(sourceUri)
-                    ?? sourceUri;
+                    VbaProjectResolver.TryGetLocalPath(sourceRevision.Uri)
+                    ?? sourceRevision.Uri;
                 return new VbaRenameFailure(
                     "resourceOperationConflict",
                     "A participating source changed while Rename was being prepared.",
@@ -1702,14 +1818,13 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                 return workspaceSnapshotState;
             }
 
+            var documentsByIdentity = documents
+                .Where(pair => pair.Value.Authority
+                    == WorkspaceDocumentAuthority.OpenBuffer)
+                .ToDictionary(pair => pair.Key, pair => pair.Value.Document);
             workspaceSnapshotState = new VbaWorkspaceSnapshotState(
-                documents.Values
-                    .Where(state => state.Authority == WorkspaceDocumentAuthority.OpenBuffer)
-                    .ToDictionary(
-                        state => state.Document.Uri,
-                        state => state.Document,
-                        StringComparer.OrdinalIgnoreCase),
-                new HashSet<string>(excludedSourceUris, StringComparer.OrdinalIgnoreCase),
+                documentsByIdentity,
+                new HashSet<VbaDocumentIdentity>(excludedSourceIdentities),
                 workspaceVersion);
             return workspaceSnapshotState;
         }
@@ -1729,9 +1844,7 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                 return new WorkspaceProjectSnapshotCapture(
                     workspaceState,
                     includeActiveUris
-                        ? documents.Values
-                            .Select(state => state.Document.Uri)
-                            .ToArray()
+                        ? CaptureTrackedDocuments()
                         : [],
                     revisionCapture);
             }
@@ -1753,12 +1866,7 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                 capturedWorkspaceRevision);
             try
             {
-                var openDocumentUris = documents.Values
-                    .Where(
-                        state => state.Authority
-                            == WorkspaceDocumentAuthority.OpenBuffer)
-                    .Select(state => state.Document.Uri)
-                    .ToArray();
+                var openDocuments = CaptureOpenDocuments();
                 var scopes = snapshotProvider
                     .CaptureReconciliationScopes(
                         capturedWorkspaceRevision)
@@ -1770,7 +1878,10 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                             .Select(candidate =>
                             {
                                 var manifestCapture = ManifestWorkspace
-                                    .CaptureReconciliationState(candidate.Uri);
+                                    .CaptureReconciliationState(
+                                        new VbaIdentifiedDocument(
+                                            candidate.DocumentIdentity,
+                                            candidate.Uri));
                                 return candidate with
                                 {
                                     CapturedRevision =
@@ -1786,11 +1897,6 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                                 };
                             })
                             .ToArray();
-                        var authorityManifestPath =
-                            scope.Resolution.ManifestPath is null
-                                ? null
-                                : Path.GetFullPath(
-                                    scope.Resolution.ManifestPath);
                         var activePath =
                             VbaProjectResolver.TryGetLocalPath(
                                 scope.ActiveUri);
@@ -1799,52 +1905,58 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                                 .Concat(
                                     scope.ManifestBarriers
                                         .ReconciliationRevisions.Keys)
-                                .Distinct(
-                                    StringComparer.OrdinalIgnoreCase)
-                                .Where(path =>
+                                .Distinct()
+                                .Select(documentIdentity => new
+                                {
+                                    Path = documentIdentity.CanonicalValue,
+                                    DocumentIdentity = documentIdentity
+                                })
+                                .Where(candidate =>
                                     IsManifestRelevantToScope(
-                                        path,
+                                        candidate.Path,
                                         activePath,
                                         scope.Resolution)
-                                    && (authorityManifestPath is null
-                                        || !Path.GetFullPath(path).Equals(
-                                            authorityManifestPath,
-                                            StringComparison.OrdinalIgnoreCase)))
-                                .Select(path =>
+                                    && !scope.AuthorityKey.UsesManifest(
+                                        candidate.DocumentIdentity))
+                                .Select(candidate =>
                                 {
+                                    var path = candidate.Path;
                                     var uri =
                                         new Uri(Path.GetFullPath(path))
                                             .AbsoluteUri;
                                     var manifestCapture = ManifestWorkspace
-                                        .CaptureReconciliationState(uri);
+                                        .CaptureReconciliationState(
+                                            new VbaIdentifiedDocument(
+                                                candidate.DocumentIdentity,
+                                                uri));
                                     return new
                                         VbaProjectReconciliationManifestCandidate(
+                                            candidate.DocumentIdentity,
                                             uri,
                                             manifestCapture.Revision,
                                             manifestCapture.Baseline)
-                                        {
-                                            HasOpenOverlay =
+                                    {
+                                        HasOpenOverlay =
                                                 manifestCapture.HasOpenOverlay,
-                                            OpenOverlayText =
+                                        OpenOverlayText =
                                                 manifestCapture
                                                     .OpenOverlayText,
-                                            EffectiveManifestText =
+                                        EffectiveManifestText =
                                                 manifestCapture
                                                     .EffectiveManifestText
-                                        };
+                                    };
                                 })
                                 .ToArray();
-                        var ownedSourceUris = scope.KnownSources
-                            .Select(source => source.Uri)
-                            .Append(scope.ActiveUri)
-                            .ToArray();
-                        var openSourceUris = openDocumentUris
-                            .Where(
-                                uri => ownedSourceUris.Any(
-                                    ownedUri =>
-                                        VbaProjectIdentityModel.SameDocument(
-                                            ownedUri,
-                                            uri)))
+                        var ownedSourceIdentities = scope.KnownSources
+                            .Select(source => source.DocumentIdentity)
+                            .ToHashSet();
+                        ownedSourceIdentities.Add(
+                            scope.ActiveDocumentIdentity);
+
+                        var openSources = openDocuments
+                            .Where(document =>
+                                ownedSourceIdentities.Contains(
+                                    document.Identity))
                             .ToArray();
                         return scope with
                         {
@@ -1852,8 +1964,7 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                                 manifestCandidates,
                             ObservedManifestBarrierCandidates =
                                 observedManifestBarrierCandidates,
-                            OpenSourceUris = openSourceUris,
-                            OpenDocumentUris = openDocumentUris
+                            OpenSources = openSources
                         };
                     })
                 .ToArray();
@@ -1919,28 +2030,26 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
     }
 
     private DocumentAnalysisReservation ReserveDocumentAnalysis(
-        string uri,
+        VbaIdentifiedDocument document,
         WorkspaceDocumentAuthority authority,
         int? version,
         long lifecycleEpoch,
         VbaDocumentAnalysis? previousAnalysis)
     {
-        MarkRenameSourceChanged(uri);
-        var existingKey = FindAcceptedRevisionKey(uri);
-        if (existingKey is not null)
-        {
-            acceptedRevisions.Remove(existingKey);
-        }
+        MarkRenameSourceChanged(
+            document.Uri,
+            document.Identity);
+        acceptedRevisions.Remove(document.Identity);
 
         var reservation = new DocumentAnalysisReservation(
-            uri,
+            document,
             authority,
             version,
             lifecycleEpoch,
             ++nextDocumentReservationToken,
             previousAnalysis);
-        acceptedRevisions[uri] = new AcceptedDocumentRevisionState(
-            reservation.Uri,
+        acceptedRevisions[document.Identity] = new AcceptedDocumentRevisionState(
+            document,
             reservation.Authority,
             reservation.Version,
             reservation.LifecycleEpoch,
@@ -1954,13 +2063,13 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         DocumentAnalysisReservation reservation,
         VbaDocumentAnalysis analysis)
     {
-        var acceptedKey = FindAcceptedRevisionKey(reservation.Uri);
-        if (acceptedKey is null)
+        if (!acceptedRevisions.TryGetValue(
+                reservation.Document.Identity,
+                out var accepted))
         {
             return false;
         }
 
-        var accepted = acceptedRevisions[acceptedKey];
         if (accepted.Authority != reservation.Authority
             || accepted.Version != reservation.Version
             || accepted.LifecycleEpoch != reservation.LifecycleEpoch
@@ -1971,10 +2080,11 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         }
 
         StoreDocumentAnalysis(reservation, analysis);
-        acceptedRevisions.Remove(acceptedKey);
-        acceptedRevisions[analysis.Uri] = accepted with
+        acceptedRevisions[reservation.Document.Identity] = accepted with
         {
-            Uri = analysis.Uri,
+            Document = new VbaIdentifiedDocument(
+                reservation.Document.Identity,
+                analysis.Uri),
             HasPendingBuild = false
         };
         Monitor.PulseAll(gate);
@@ -1983,17 +2093,20 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
 
     private void AbandonDocumentAnalysis(DocumentAnalysisReservation reservation)
     {
-        var acceptedKey = FindAcceptedRevisionKey(reservation.Uri);
-        if (acceptedKey is null)
+        if (!acceptedRevisions.TryGetValue(
+                reservation.Document.Identity,
+                out var accepted))
         {
             return;
         }
 
-        var accepted = acceptedRevisions[acceptedKey];
         if (accepted.LifecycleEpoch == reservation.LifecycleEpoch
             && accepted.ReservationToken == reservation.ReservationToken)
         {
-            acceptedRevisions[acceptedKey] = accepted with { HasPendingBuild = false };
+            acceptedRevisions[reservation.Document.Identity] = accepted with
+            {
+                HasPendingBuild = false
+            };
             Monitor.PulseAll(gate);
         }
     }
@@ -2007,14 +2120,16 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var committed = GetDocumentState(reservation.Uri);
+                var committed = GetDocumentState(
+                    reservation.Document.Identity);
                 if (committed?.LifecycleEpoch == reservation.LifecycleEpoch
                     && committed.ReservationToken >= reservation.ReservationToken)
                 {
                     return;
                 }
 
-                var accepted = GetAcceptedRevisionState(reservation.Uri);
+                var accepted = GetAcceptedRevisionState(
+                    reservation.Document.Identity);
                 if (accepted is null
                     || accepted.LifecycleEpoch != reservation.LifecycleEpoch
                     || !accepted.HasPendingBuild)
@@ -2031,18 +2146,12 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         DocumentAnalysisReservation reservation,
         VbaDocumentAnalysis analysis)
     {
-        var existingKey = FindDocumentKey(analysis.Uri);
-        if (existingKey is not null)
-        {
-            documents.Remove(existingKey);
-        }
-
         var document = new VbaTrackedDocument(
             analysis.Uri,
             analysis.Text,
             analysis.SyntaxTree,
             analysis.SourceDocument);
-        documents[analysis.Uri] = new WorkspaceDocumentState(
+        documents[reservation.Document.Identity] = new WorkspaceDocumentState(
             document,
             analysis,
             reservation.Authority,
@@ -2052,59 +2161,23 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
             reservation.Version is null
                 ? null
                 : VbaVersionedDocumentSnapshot.Create(analysis));
-        MarkWorkspaceChanged(analysis.Uri);
+        MarkWorkspaceChanged(
+            new VbaIdentifiedDocument(
+                reservation.Document.Identity,
+                analysis.Uri));
     }
 
-    private WorkspaceDocumentState? GetDocumentState(string uri)
-    {
-        var key = FindDocumentKey(uri);
-        return key is null ? null : documents[key];
-    }
+    private WorkspaceDocumentState? GetDocumentState(
+        VbaDocumentIdentity documentIdentity)
+        => documents.TryGetValue(documentIdentity, out var state)
+            ? state
+            : null;
 
-    private AcceptedDocumentRevisionState? GetAcceptedRevisionState(string uri)
-    {
-        var key = FindAcceptedRevisionKey(uri);
-        return key is null ? null : acceptedRevisions[key];
-    }
-
-    private string? FindDocumentKey(string uri)
-    {
-        if (documents.ContainsKey(uri))
-        {
-            return uri;
-        }
-
-        return documents.Keys.FirstOrDefault(
-            candidate => VbaProjectIdentityModel.SameDocument(
-                candidate,
-                uri));
-    }
-
-    private string? FindAcceptedRevisionKey(string uri)
-    {
-        if (acceptedRevisions.ContainsKey(uri))
-        {
-            return uri;
-        }
-
-        return acceptedRevisions.Keys.FirstOrDefault(
-            candidate => VbaProjectIdentityModel.SameDocument(
-                candidate,
-                uri));
-    }
-
-    private string? FindDiskSourceFailureKey(string uri)
-    {
-        if (diskSourceFailures.ContainsKey(uri))
-        {
-            return uri;
-        }
-
-        return diskSourceFailures.Keys.FirstOrDefault(
-            candidate => VbaProjectIdentityModel.SameDocument(
-                candidate,
-                uri));
-    }
+    private AcceptedDocumentRevisionState? GetAcceptedRevisionState(
+        VbaDocumentIdentity documentIdentity)
+        => acceptedRevisions.TryGetValue(documentIdentity, out var state)
+            ? state
+            : null;
 
     private bool RecordDiskSourceFailure(
         VbaProjectDiskSourceFailure failure,
@@ -2112,60 +2185,47 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
     {
         lock (gate)
         {
-            var accepted = GetAcceptedRevisionState(failure.Uri);
-            var existing = GetDocumentState(failure.Uri);
+            var accepted = GetAcceptedRevisionState(
+                failure.DocumentIdentity);
+            var existing = GetDocumentState(failure.DocumentIdentity);
             if (accepted?.Authority == WorkspaceDocumentAuthority.OpenBuffer
                 || existing?.Authority == WorkspaceDocumentAuthority.OpenBuffer)
             {
                 return false;
             }
 
-            var failureKey = FindDiskSourceFailureKey(failure.Uri);
-            if (failureKey is not null
-                && diskSourceFailures[failureKey] == failure
+            if (diskSourceFailures.TryGetValue(
+                    failure.DocumentIdentity,
+                    out var currentFailure)
+                && currentFailure == failure
                 && accepted is null
                 && existing is null)
             {
                 return false;
             }
 
-            var acceptedKey = FindAcceptedRevisionKey(failure.Uri);
-            if (acceptedKey is not null)
+            if (acceptedRevisions.Remove(failure.DocumentIdentity))
             {
-                acceptedRevisions.Remove(acceptedKey);
                 Monitor.PulseAll(gate);
             }
 
-            var documentKey = FindDocumentKey(failure.Uri);
-            if (documentKey is not null)
-            {
-                documents.Remove(documentKey);
-            }
+            documents.Remove(failure.DocumentIdentity);
 
-            if (failureKey is not null)
-            {
-                diskSourceFailures.Remove(failureKey);
-            }
-
-            diskSourceFailures[failure.Uri] = failure;
+            diskSourceFailures[failure.DocumentIdentity] = failure;
             MarkWorkspaceChanged(
-                failure.Uri,
+                new VbaIdentifiedDocument(
+                    failure.DocumentIdentity,
+                    failure.Uri),
                 participatesInRenameFence);
             return true;
         }
     }
 
-    private bool ClearDiskSourceFailure(string uri)
+    private bool ClearDiskSourceFailure(VbaDocumentIdentity identity)
     {
         lock (gate)
         {
-            var key = FindDiskSourceFailureKey(uri);
-            if (key is null)
-            {
-                return false;
-            }
-
-            return diskSourceFailures.Remove(key);
+            return diskSourceFailures.Remove(identity);
         }
     }
 
@@ -2176,7 +2236,7 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
             StringComparer.OrdinalIgnoreCase);
         foreach (var source in snapshot.DiskSources)
         {
-            if (ClearDiskSourceFailure(source.Uri))
+            if (ClearDiskSourceFailure(source.DocumentIdentity))
             {
                 changedUris.Add(source.Uri);
             }
@@ -2198,24 +2258,11 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         }
     }
 
-    private bool AddExcludedSourceIdentity(string uri)
-    {
-        if (excludedSourceUris.Any(
-            candidate => VbaProjectIdentityModel.SameDocument(
-                candidate,
-                uri)))
-        {
-            return false;
-        }
+    private bool AddExcludedSourceIdentity(VbaDocumentIdentity identity)
+        => excludedSourceIdentities.Add(identity);
 
-        return excludedSourceUris.Add(uri);
-    }
-
-    private bool RemoveExcludedSourceIdentity(string uri)
-        => excludedSourceUris.RemoveWhere(
-            candidate => VbaProjectIdentityModel.SameDocument(
-                candidate,
-                uri)) > 0;
+    private bool RemoveExcludedSourceIdentity(VbaDocumentIdentity identity)
+        => excludedSourceIdentities.Remove(identity);
 
     private static bool IsManifestRelevantToScope(
         string manifestPath,
@@ -2237,72 +2284,95 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                         manifestDirectory));
     }
 
-    private void InvalidateDiskDocument(string uri)
+    private void InvalidateDiskDocument(
+        VbaDocumentIdentity documentIdentity)
     {
-        var localPath = VbaProjectResolver.TryGetLocalPath(uri);
-        if (localPath is not null)
+        if (!documentIdentity.IsLocalFile)
         {
-            diskInventory.InvalidateSource(localPath);
-            diskDocumentCache.Invalidate(localPath);
+            return;
         }
+
+        diskInventory.InvalidateSource(documentIdentity);
+        diskDocumentCache.Invalidate(documentIdentity);
     }
 
     private void MarkWorkspaceChanged(
-        string uri,
+        VbaIdentifiedDocument document,
         bool participatesInRenameFence = true)
     {
         workspaceVersion++;
         workspaceSnapshotState = null;
-        sourceRevisionHistory.Record(uri, workspaceVersion);
+        sourceRevisionHistory.Record(document, workspaceVersion);
+
         if (participatesInRenameFence)
         {
-            MarkRenameSourceChanged(uri);
+            MarkRenameSourceChanged(
+                document.Uri,
+                document.Identity);
         }
-        snapshotProvider.InvalidateSource(uri, workspaceVersion);
+
+        snapshotProvider.InvalidateSource(document, workspaceVersion);
     }
 
-    private void MarkRenameSourceChanged(string uri)
+    private void MarkRenameSourceChanged(
+        string uri,
+        VbaDocumentIdentity? documentIdentity)
     {
         renameSourceVersion++;
-        renameSourceRevisionHistory.Record(uri, renameSourceVersion);
+        if (documentIdentity is { } identity)
+        {
+            renameSourceRevisionHistory.Record(
+                new VbaIdentifiedDocument(identity, uri),
+                renameSourceVersion);
+        }
     }
 
-    private IReadOnlyList<string> CaptureTrackedDocumentUris()
-        => documents.Values
-            .Select(state => state.Document.Uri)
+    private IReadOnlyList<VbaIdentifiedDocument> CaptureTrackedDocuments()
+        => documents
+            .Select(pair => new VbaIdentifiedDocument(
+                pair.Key,
+                pair.Value.Document.Uri))
+            .ToArray();
+
+    private IReadOnlyList<VbaIdentifiedDocument> CaptureOpenDocuments()
+        => documents
+            .Where(
+                pair => pair.Value.Authority
+                    == WorkspaceDocumentAuthority.OpenBuffer)
+            .Select(pair => new VbaIdentifiedDocument(
+                pair.Key,
+                pair.Value.Document.Uri))
             .ToArray();
 
     private void RetireInactiveProjectScopes(
-        IReadOnlyList<string> remainingTrackedUris)
+        IReadOnlyList<VbaIdentifiedDocument> remainingTrackedDocuments)
     {
         snapshotProvider.RetireInactiveScopes(
-            remainingTrackedUris);
+            remainingTrackedDocuments);
         ManifestWorkspace.RetireInactiveState(
-            remainingTrackedUris,
+            remainingTrackedDocuments,
             snapshotProvider.CaptureManifestRetentionScopes());
     }
 
     internal void RetireInactiveManifestState()
     {
-        IReadOnlyList<string> trackedUris;
+        IReadOnlyList<VbaIdentifiedDocument> trackedDocuments;
         lock (gate)
         {
-            trackedUris = CaptureTrackedDocumentUris();
+            trackedDocuments = CaptureTrackedDocuments();
         }
 
         ManifestWorkspace.RetireInactiveState(
-            trackedUris,
+            trackedDocuments,
             snapshotProvider.CaptureManifestRetentionScopes());
     }
 
-    private long GetSourceRevision(string uri)
-    {
-        return sourceRevisionHistory.GetRevision(uri);
-    }
+    private long GetSourceRevision(VbaDocumentIdentity documentIdentity)
+        => sourceRevisionHistory.GetRevision(documentIdentity);
 
     private sealed record WorkspaceProjectSnapshotCapture(
         VbaWorkspaceSnapshotState WorkspaceState,
-        IReadOnlyList<string> ActiveUris,
+        IReadOnlyList<VbaIdentifiedDocument> ActiveDocuments,
         IDisposable RevisionCapture);
 
     private sealed class CombinedRevisionLease(
@@ -2335,19 +2405,25 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         VbaVersionedDocumentSnapshot? VersionedSnapshot);
 
     private sealed record AcceptedDocumentRevisionState(
-        string Uri,
+        VbaIdentifiedDocument Document,
         WorkspaceDocumentAuthority Authority,
         int? Version,
         long LifecycleEpoch,
         long ReservationToken,
-        bool HasPendingBuild);
+        bool HasPendingBuild)
+    {
+        public string Uri => Document.Uri;
+    }
 
     private sealed record DocumentAnalysisReservation(
-        string Uri,
+        VbaIdentifiedDocument Document,
         WorkspaceDocumentAuthority Authority,
         int? Version,
         long LifecycleEpoch,
         long ReservationToken,
-        VbaDocumentAnalysis? PreviousAnalysis);
+        VbaDocumentAnalysis? PreviousAnalysis)
+    {
+        public string Uri => Document.Uri;
+    }
 
 }

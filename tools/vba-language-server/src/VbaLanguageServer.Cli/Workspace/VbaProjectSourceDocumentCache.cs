@@ -1,4 +1,5 @@
 using VbaLanguageServer.SourceModel;
+using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.Syntax;
 
 namespace VbaLanguageServer.Workspace;
@@ -9,8 +10,8 @@ namespace VbaLanguageServer.Workspace;
 internal sealed class VbaProjectSourceDocumentCache
 {
     private readonly object gate = new();
-    private readonly Dictionary<string, SourceState> states =
-        new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<VbaDocumentIdentity, SourceState> states =
+        new();
 
     public int Count
     {
@@ -37,10 +38,10 @@ internal sealed class VbaProjectSourceDocumentCache
         long capturedGeneration;
         lock (gate)
         {
-            if (!states.TryGetValue(source.FullPath, out state!))
+            if (!states.TryGetValue(source.DocumentIdentity, out state!))
             {
                 state = new SourceState();
-                states.Add(source.FullPath, state);
+                states.Add(source.DocumentIdentity, state);
             }
 
             if (state.Document is { } cached
@@ -94,7 +95,7 @@ internal sealed class VbaProjectSourceDocumentCache
                 if (state.ActiveBuilds == 0
                     && state.Document is null)
                 {
-                    states.Remove(source.FullPath);
+                    states.Remove(source.DocumentIdentity);
                 }
             }
         }
@@ -103,12 +104,11 @@ internal sealed class VbaProjectSourceDocumentCache
     /// <summary>
     /// Releases the parsed projection retained for one disk source.
     /// </summary>
-    public void Invalidate(string localPath)
+    public void Invalidate(VbaDocumentIdentity documentIdentity)
     {
-        var fullPath = Path.GetFullPath(localPath);
         lock (gate)
         {
-            if (!states.TryGetValue(fullPath, out var state))
+            if (!states.TryGetValue(documentIdentity, out var state))
             {
                 return;
             }
@@ -117,7 +117,7 @@ internal sealed class VbaProjectSourceDocumentCache
             state.Document = null;
             if (state.ActiveBuilds == 0)
             {
-                states.Remove(fullPath);
+                states.Remove(documentIdentity);
             }
         }
     }

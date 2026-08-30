@@ -17,6 +17,94 @@ public sealed class VbaProjectDiskInventoryTests
         + "End Sub\n";
 
     [Fact]
+    public void Disk_source_cache_and_invalidation_use_document_identity()
+    {
+        var identityType = typeof(VbaDocumentIdentity);
+        var invalidateSource = typeof(IVbaProjectDiskInventory)
+            .GetMethod("InvalidateSource");
+        Assert.NotNull(invalidateSource);
+        Assert.Equal(
+            identityType,
+            Assert.Single(invalidateSource.GetParameters()).ParameterType);
+
+        foreach (var (ownerType, fieldName) in new[]
+        {
+            (typeof(VbaFileSystemProjectDiskInventory), "sourceCache"),
+            (typeof(VbaFileSystemProjectDiskInventory), "activeLoads"),
+            (typeof(VbaFileSystemProjectDiskInventory), "publicationGenerations"),
+            (typeof(VbaProjectSourceDocumentCache), "states")
+        })
+        {
+            var field = ownerType.GetField(
+                fieldName,
+                System.Reflection.BindingFlags.Instance
+                | System.Reflection.BindingFlags.NonPublic);
+            Assert.NotNull(field);
+            Assert.Equal(
+                identityType,
+                field.FieldType.GetGenericArguments()[0]);
+        }
+    }
+
+    [Fact]
+    public void Disk_reconciliation_source_facts_carry_document_identity()
+    {
+        foreach (var factType in new[]
+        {
+            typeof(VbaProjectDiskSource),
+            typeof(VbaProjectDiskSourceFailure),
+            typeof(VbaProjectDiskKnownSource),
+            typeof(VbaProjectDiskManifest)
+        })
+        {
+            Assert.Equal(
+                typeof(VbaDocumentIdentity),
+                factType.GetProperty("DocumentIdentity")?.PropertyType);
+        }
+    }
+
+    [Fact]
+    public void Disk_inventory_boundary_uses_typed_document_collections()
+    {
+        var identityType = typeof(VbaDocumentIdentity);
+        var inventoryType = typeof(IVbaProjectDiskInventory);
+        Assert.Equal(
+            identityType,
+            inventoryType.GetMethod("ContainsSource")!
+                .GetParameters()[1].ParameterType);
+        Assert.Equal(
+            typeof(IReadOnlyDictionary<VbaDocumentIdentity, bool>),
+            inventoryType.GetMethod("ContainsSource")!
+                .GetParameters()[2].ParameterType);
+
+        var captureColdSources = inventoryType.GetMethod(
+            "CaptureColdSources")!;
+        Assert.Equal(
+            typeof(IReadOnlyCollection<VbaDocumentIdentity>),
+            captureColdSources.GetParameters()[1].ParameterType);
+        Assert.Equal(
+            typeof(IReadOnlySet<VbaDocumentIdentity>),
+            captureColdSources.GetParameters()[2].ParameterType);
+        Assert.Equal(
+            typeof(IReadOnlyDictionary<VbaDocumentIdentity, bool>),
+            captureColdSources.GetParameters()[3].ParameterType);
+
+        var captureWatchedSource = inventoryType.GetMethod(
+            "CaptureWatchedSource")!;
+        Assert.Equal(
+            identityType,
+            captureWatchedSource.GetParameters()[1].ParameterType);
+        Assert.Equal(
+            typeof(IReadOnlyDictionary<VbaDocumentIdentity, bool>),
+            captureWatchedSource.GetParameters()[2].ParameterType);
+
+        Assert.Equal(
+            typeof(IReadOnlyList<VbaDocumentIdentity>),
+            typeof(VbaProjectDiskObservationRequest)
+                .GetProperty("OpenSourceIdentities")?.PropertyType);
+    }
+
+    [Fact]
     public void Cold_capture_reuses_decoded_text_when_metadata_is_unchanged()
     {
         var fileSystem = new MutableSourceFileSystem(InitialText);
@@ -141,22 +229,23 @@ public sealed class VbaProjectDiskInventoryTests
         var resolution = new VbaProjectResolution(
             VbaProjectResolutionKind.AdHoc,
             Path.GetDirectoryName(fileSystem.Path)!);
-        var sourceUri = new Uri(fileSystem.Path).AbsoluteUri;
+        var sourceIdentity = IdentifyLocalDocument(fileSystem.Path);
 
         var capture = inventory.CaptureColdSources(
             resolution,
-            candidateSourceUris: [sourceUri],
-            excludedSourceUris: new HashSet<string>(
-                StringComparer.OrdinalIgnoreCase),
+            candidateSourceIdentities: [sourceIdentity],
+            excludedSourceIdentities:
+                new HashSet<VbaDocumentIdentity>(),
             manifestBarrierOverrides:
-                new Dictionary<string, bool>(
-                    StringComparer.OrdinalIgnoreCase),
+                new Dictionary<VbaDocumentIdentity, bool>(),
             CancellationToken.None);
 
         Assert.Empty(capture.Sources);
         Assert.Empty(capture.Failures);
         Assert.Equal(0, fileSystem.SourceReadCount);
-        Assert.Contains(fileSystem.Path, capture.OwnedCandidateSourcePaths);
+        Assert.Contains(
+            IdentifyLocalDocument(fileSystem.Path),
+            capture.OwnedCandidateSourceIdentities);
     }
 
     [Fact]
@@ -301,7 +390,7 @@ public sealed class VbaProjectDiskInventoryTests
 
         fileSystem.ReplaceSource(
             [.. utf16.GetPreamble(), .. utf16.GetBytes(sourceText)]);
-        inventory.InvalidateSource(fileSystem.Path);
+        inventory.InvalidateSource(IdentifyLocalDocument(fileSystem.Path));
         var utf16Le = CaptureSingleColdSource(inventory, fileSystem.Path);
 
         Assert.Equal(utf8.ContentIdentity, utf16Le.ContentIdentity);
@@ -317,10 +406,11 @@ public sealed class VbaProjectDiskInventoryTests
         fileSystem.ReplaceSource(
             ChangedSameLengthText,
             advanceMetadata: false);
-        inventory.InvalidateSource(fileSystem.Path);
+        inventory.InvalidateSource(IdentifyLocalDocument(fileSystem.Path));
         var second = CaptureSingleColdSource(inventory, fileSystem.Path);
 
         Assert.Equal(2, fileSystem.SourceReadCount);
+        Assert.Equal(first.DocumentIdentity, second.DocumentIdentity);
         Assert.NotEqual(first.ContentIdentity, second.ContentIdentity);
         Assert.Equal(ChangedSameLengthText, second.Text);
     }
@@ -409,14 +499,16 @@ public sealed class VbaProjectDiskInventoryTests
                 activeCodePage: 65001));
         var request = new VbaProjectDiskObservationRequest(
             new VbaProjectDiskProjectScope(
+                IdentifyAuthority(new VbaProjectResolution(
+                    VbaProjectResolutionKind.AdHoc,
+                    Path.GetDirectoryName(fileSystem.Path)!)),
                 VbaProjectResolutionKind.AdHoc,
-                Path.GetDirectoryName(fileSystem.Path)!,
-                OwningManifestPath: null),
+                Path.GetDirectoryName(fileSystem.Path)!),
             manifestCandidates: [],
             barrierOverrides: [],
-            observedManifestBarrierUris: [])
+            observedManifestBarrierIdentities: [])
         {
-            OpenSourceUris = [new Uri(fileSystem.Path).AbsoluteUri]
+            OpenSourceIdentities = [IdentifyLocalDocument(fileSystem.Path)]
         };
 
         var scan = await inventory.ObserveReconciliationAsync(
@@ -435,14 +527,14 @@ public sealed class VbaProjectDiskInventoryTests
         var inventory = new VbaFileSystemProjectDiskInventory(fileSystem);
         var first = CaptureSingleColdSource(inventory, fileSystem.Path);
 
-        inventory.InvalidateSource(fileSystem.Path);
+        inventory.InvalidateSource(IdentifyLocalDocument(fileSystem.Path));
         var equalText = CaptureSingleColdSource(
             inventory,
             fileSystem.Path);
         fileSystem.ReplaceSource(
             ChangedSameLengthText,
             advanceMetadata: false);
-        inventory.InvalidateSource(fileSystem.Path);
+        inventory.InvalidateSource(IdentifyLocalDocument(fileSystem.Path));
         var changedText = CaptureSingleColdSource(
             inventory,
             fileSystem.Path);
@@ -474,7 +566,7 @@ public sealed class VbaProjectDiskInventoryTests
                 TimeSpan.FromSeconds(10));
 
             fileSystem.ReplaceSource(ChangedSameLengthText);
-            inventory.InvalidateSource(fileSystem.Path);
+            inventory.InvalidateSource(IdentifyLocalDocument(fileSystem.Path));
             var newer = CaptureSingleColdSource(
                 inventory,
                 fileSystem.Path);
@@ -562,7 +654,7 @@ public sealed class VbaProjectDiskInventoryTests
             fileSystem.ReplaceSource(
                 "OK",
                 advanceMetadata: false);
-            inventory.InvalidateSource(fileSystem.Path);
+            inventory.InvalidateSource(IdentifyLocalDocument(fileSystem.Path));
             var newer = CaptureSingleColdSource(
                 inventory,
                 fileSystem.Path);
@@ -613,9 +705,8 @@ public sealed class VbaProjectDiskInventoryTests
 
         var source = inventory.CaptureWatchedSource(
             resolution,
-            new Uri(fileSystem.Path).AbsoluteUri,
-            new Dictionary<string, bool>(
-                StringComparer.OrdinalIgnoreCase),
+            IdentifyLocalDocument(fileSystem.Path),
+            new Dictionary<VbaDocumentIdentity, bool>(),
             out var failure,
             CancellationToken.None);
 
@@ -641,15 +732,33 @@ public sealed class VbaProjectDiskInventoryTests
 
         var source = inventory.CaptureWatchedSource(
             resolution,
-            new Uri(fileSystem.Path).AbsoluteUri,
-            new Dictionary<string, bool>(
-                StringComparer.OrdinalIgnoreCase),
+            IdentifyLocalDocument(fileSystem.Path),
+            new Dictionary<VbaDocumentIdentity, bool>(),
             out var failure,
             CancellationToken.None);
 
         Assert.Null(source);
         Assert.NotNull(failure);
         Assert.Equal(new Uri(fileSystem.Path).AbsoluteUri, failure.Uri);
+    }
+
+    private static VbaDocumentIdentity IdentifyLocalDocument(string path)
+    {
+        Assert.True(
+            VbaProjectIdentityModel.TryIdentifyLocalDocumentPath(
+                path,
+                out var identity));
+        return identity;
+    }
+
+    private static VbaProjectAuthorityIdentity IdentifyAuthority(
+        VbaProjectResolution resolution)
+    {
+        Assert.True(
+            VbaProjectIdentityModel.TryIdentifyAuthority(
+                resolution,
+                out var identity));
+        return identity;
     }
 
     private static VbaProjectDiskSource CaptureSingleColdSource(
@@ -669,12 +778,11 @@ public sealed class VbaProjectDiskInventoryTests
             Path.GetDirectoryName(sourcePath)!);
         var capture = inventory.CaptureColdSources(
             resolution,
-            candidateSourceUris: [],
-            excludedSourceUris: new HashSet<string>(
-                StringComparer.OrdinalIgnoreCase),
+            candidateSourceIdentities: [],
+            excludedSourceIdentities:
+                new HashSet<VbaDocumentIdentity>(),
             manifestBarrierOverrides:
-                new Dictionary<string, bool>(
-                    StringComparer.OrdinalIgnoreCase),
+                new Dictionary<VbaDocumentIdentity, bool>(),
             CancellationToken.None);
         return capture;
     }
@@ -683,12 +791,14 @@ public sealed class VbaProjectDiskInventoryTests
         CreateObservationRequest(VbaProjectDiskSource source)
         => new(
             new VbaProjectDiskProjectScope(
+                IdentifyAuthority(new VbaProjectResolution(
+                    VbaProjectResolutionKind.AdHoc,
+                    Path.GetDirectoryName(source.FullPath)!)),
                 VbaProjectResolutionKind.AdHoc,
-                Path.GetDirectoryName(source.FullPath)!,
-                OwningManifestPath: null),
+                Path.GetDirectoryName(source.FullPath)!),
             manifestCandidates: [],
             barrierOverrides: [],
-            observedManifestBarrierUris: []);
+            observedManifestBarrierIdentities: []);
 
     private class MutableSourceFileSystem : IVbaProjectFileSystem
     {

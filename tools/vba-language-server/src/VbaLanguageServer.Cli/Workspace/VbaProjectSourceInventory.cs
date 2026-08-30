@@ -9,73 +9,54 @@ internal static class VbaProjectSourceInventory
 {
     public static VbaProjectSourceInventorySnapshot CreateInventorySnapshot(
         VbaProjectDiskColdSourceCapture diskCapture,
-        IReadOnlyDictionary<string, VbaTrackedDocument> trackedDocuments,
+        IReadOnlyDictionary<VbaDocumentIdentity, VbaTrackedDocument>
+            trackedDocumentsByIdentity,
         VbaProjectSourceDocumentCache diskDocumentCache,
         CancellationToken cancellationToken = default)
     {
         var documents = new Dictionary<string, VbaTrackedDocument>(
             StringComparer.OrdinalIgnoreCase);
-        var trackedDocumentsByIdentity =
-            CreateTrackedDocumentIdentityMap(trackedDocuments.Values);
+        var documentsByIdentity = new Dictionary<
+            VbaDocumentIdentity,
+            VbaTrackedDocument>();
         foreach (var source in diskCapture.Sources)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (VbaProjectIdentityModel.TryIdentifyDocument(
-                    source.Uri,
-                    out var sourceIdentity)
-                && trackedDocumentsByIdentity.TryGetValue(
-                    sourceIdentity,
+            if (trackedDocumentsByIdentity.TryGetValue(
+                    source.DocumentIdentity,
                     out var trackedDocument))
             {
                 documents[trackedDocument.Uri] = trackedDocument;
+                documentsByIdentity[source.DocumentIdentity] =
+                    trackedDocument;
                 continue;
             }
 
-            documents[source.Uri] =
-                diskDocumentCache.GetOrCreateDocument(
-                    source,
-                    cancellationToken);
+            var diskDocument = diskDocumentCache.GetOrCreateDocument(
+                source,
+                cancellationToken);
+            documents[source.Uri] = diskDocument;
+            documentsByIdentity[source.DocumentIdentity] = diskDocument;
         }
 
-        foreach (var trackedDocument in trackedDocuments.Values)
+        foreach (var (identity, trackedDocument) in
+            trackedDocumentsByIdentity)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (VbaProjectIdentityModel.TryIdentifyDocument(
-                    trackedDocument.Uri,
-                    out var identity)
-                && identity.IsLocalFile
-                && diskCapture.OwnedCandidateSourcePaths.Contains(
-                    identity.CanonicalValue))
+            if (diskCapture.OwnedCandidateSourceIdentities.Contains(
+                    identity))
             {
                 documents[trackedDocument.Uri] = trackedDocument;
+                documentsByIdentity[identity] = trackedDocument;
             }
         }
 
         return new VbaProjectSourceInventorySnapshot(
             documents,
+            documentsByIdentity,
             diskCapture.Sources,
             diskCapture.Failures,
-            diskCapture.ExistingCandidateSourcePaths);
-    }
-
-    private static Dictionary<VbaDocumentIdentity, VbaTrackedDocument>
-        CreateTrackedDocumentIdentityMap(
-            IEnumerable<VbaTrackedDocument> trackedDocuments)
-    {
-        var map = new Dictionary<
-            VbaDocumentIdentity,
-            VbaTrackedDocument>();
-        foreach (var trackedDocument in trackedDocuments)
-        {
-            if (VbaProjectIdentityModel.TryIdentifyDocument(
-                    trackedDocument.Uri,
-                    out var identity))
-            {
-                map[identity] = trackedDocument;
-            }
-        }
-
-        return map;
+            diskCapture.ExistingCandidateSourceIdentities);
     }
 }
 
@@ -84,6 +65,7 @@ internal static class VbaProjectSourceInventory
 /// </summary>
 internal sealed record VbaProjectSourceInventorySnapshot(
     Dictionary<string, VbaTrackedDocument> Documents,
+    Dictionary<VbaDocumentIdentity, VbaTrackedDocument> DocumentsByIdentity,
     IReadOnlyList<VbaProjectDiskSource> DiskSources,
     IReadOnlyList<VbaProjectDiskSourceFailure> Failures,
-    IReadOnlySet<string> ExistingOpenSourcePaths);
+    IReadOnlySet<VbaDocumentIdentity> ExistingOpenSourceIdentities);

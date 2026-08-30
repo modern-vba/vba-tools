@@ -27,6 +27,54 @@ public sealed class VbaProjectDiskReconciliationTests
     }
 
     [Fact]
+    public void Open_manifest_authority_candidate_uses_captured_document_identity_not_presentation_uri()
+    {
+        var manifestPath = Path.Combine(
+            Path.GetTempPath(),
+            "vba-ls-reconcile-typed-authority",
+            "vba-project.json");
+        var manifestIdentity = IdentifyLocalDocument(manifestPath);
+        var resolution = new VbaProjectResolution(
+            VbaProjectResolutionKind.ManifestDocument,
+            Path.GetDirectoryName(manifestPath)!,
+            manifestPath,
+            "Book1",
+            "excel");
+        Assert.True(
+            VbaProjectIdentityModel.TryIdentifyAuthority(
+                resolution,
+                out var authority));
+        var candidate = new VbaProjectReconciliationManifestCandidate(
+            manifestIdentity,
+            "file:///C:/presentation-only/vba-project.json",
+            CapturedRevision: 1,
+            new VbaProjectDiskManifestBaseline(Exists: true, Text: "{}"))
+        {
+            HasOpenOverlay = true,
+            OpenOverlayText = "{}"
+        };
+        const string activeUri = "untitled://workspace/Caller.bas";
+        var scope = new VbaProjectReconciliationScope(
+            authority,
+            new VbaIdentifiedDocument(
+                IdentifyDocument(activeUri),
+                activeUri),
+            resolution,
+            CapturedWorkspaceRevision: 1,
+            [candidate],
+            []);
+        var getOpenAuthorityCandidate = typeof(VbaProjectReconciler)
+            .GetMethod(
+                "GetOpenAuthorityCandidate",
+                System.Reflection.BindingFlags.NonPublic
+                    | System.Reflection.BindingFlags.Static);
+
+        var selected = getOpenAuthorityCandidate?.Invoke(null, [scope]);
+
+        Assert.Same(candidate, selected);
+    }
+
+    [Fact]
     public async Task Reconciliation_commits_decode_failure_without_reusing_previous_text()
     {
         var projectRoot = Directory.CreateTempSubdirectory(
@@ -308,9 +356,9 @@ public sealed class VbaProjectDiskReconciliationTests
             {
                 Assert.Equal(3, capture.Scopes.Count);
                 var firstScope = Assert.Single(capture.Scopes, scope =>
-                    scope.OpenSourceUris.Contains(
-                        firstUri,
-                        StringComparer.OrdinalIgnoreCase));
+                    scope.OpenSources.Any(source =>
+                        source.Identity
+                            == IdentifyDocument(firstUri)));
                 plan = CreateManifestReloadPlan(
                     firstScope,
                     CreateManifest(includeReference: true),
@@ -1064,7 +1112,7 @@ public sealed class VbaProjectDiskReconciliationTests
                 CreateModule("Caller", "RunSecond"));
             _ = workspace.CreateProjectSnapshot(firstCallerUri);
             _ = workspace.CreateProjectSnapshot(secondCallerUri);
-            string firstAuthorityKey;
+            VbaProjectAuthorityIdentity firstAuthorityKey;
             using (var capture =
                 workspace.CaptureProjectReconciliation())
             {
@@ -1079,7 +1127,7 @@ public sealed class VbaProjectDiskReconciliationTests
                                     firstRoot,
                                     "vba-project.json")),
                             StringComparison.OrdinalIgnoreCase))
-                    .AuthorityKey.StableKey;
+                    .AuthorityKey;
             }
 
             File.WriteAllText(
@@ -1096,9 +1144,7 @@ public sealed class VbaProjectDiskReconciliationTests
                 ScopeFenceValidatedAction = (authorityKey, _) =>
                 {
                     if (invalidated
-                        || !authorityKey.Equals(
-                            firstAuthorityKey,
-                            StringComparison.OrdinalIgnoreCase))
+                        || authorityKey != firstAuthorityKey)
                     {
                         return;
                     }
@@ -1138,9 +1184,7 @@ public sealed class VbaProjectDiskReconciliationTests
                 workspace.CaptureProjectReconciliation();
             var firstScope = Assert.Single(
                 committed.Scopes,
-                scope => scope.AuthorityKey.StableKey.Equals(
-                    firstAuthorityKey,
-                    StringComparison.OrdinalIgnoreCase));
+                scope => scope.AuthorityKey == firstAuthorityKey);
             Assert.Contains(
                 firstScope.KnownSources,
                 source => source.Uri == firstSourceUri
@@ -1149,9 +1193,7 @@ public sealed class VbaProjectDiskReconciliationTests
                         StringComparison.Ordinal));
             var secondScope = Assert.Single(
                 committed.Scopes,
-                scope => !scope.AuthorityKey.StableKey.Equals(
-                    firstAuthorityKey,
-                    StringComparison.OrdinalIgnoreCase));
+                scope => scope.AuthorityKey != firstAuthorityKey);
             Assert.Contains(
                 secondScope.KnownSources,
                 source => source.Uri == secondSourceUri
@@ -1284,7 +1326,12 @@ public sealed class VbaProjectDiskReconciliationTests
 
             Assert.Empty(interactive.ReconciliationRevisions);
             Assert.Contains(
-                Path.GetFullPath(manifestPath),
+                IdentifyLocalDocument(
+                    Path.Combine(
+                        projectRoot,
+                        "alias",
+                        "..",
+                        Path.GetFileName(manifestPath))),
                 reconciliation.ReconciliationRevisions.Keys);
         }
         finally
@@ -1539,9 +1586,13 @@ public sealed class VbaProjectDiskReconciliationTests
             await boundary.Started.Task.WaitAsync(
                 TimeSpan.FromSeconds(2));
             var staleScan = boundary.CapturedObservation;
+            Assert.True(
+                VbaProjectIdentityModel.TryIdentifyLocalDocumentPath(
+                    innerPath,
+                    out var innerIdentity));
             Assert.Contains(
-                innerPath,
-                staleScan.ExistingNonOwnedSourcePaths);
+                innerIdentity,
+                staleScan.ExistingNonOwnedSourceIdentities);
             Assert.True(
                 workspace.ManifestWorkspace.CloseManifest(
                     nestedManifestUri));
@@ -1654,20 +1705,23 @@ public sealed class VbaProjectDiskReconciliationTests
         var history = new VbaSourceRevisionHistory();
         var olderCapture = history.BeginCapture(1);
         var sourceUri = "file:///C:/workspace/Newer.bas";
-        history.Record(sourceUri, 2);
+        var sourceIdentity = IdentifyDocument(sourceUri);
+        history.Record(
+            new VbaIdentifiedDocument(sourceIdentity, sourceUri),
+            2);
 
         using (history.BeginCapture(2))
         {
-            Assert.Equal(2, history.GetRevision(sourceUri));
+            Assert.Equal(2, history.GetRevision(sourceIdentity));
             Assert.Equal(1, history.Count);
         }
 
-        Assert.Equal(2, history.GetRevision(sourceUri));
+        Assert.Equal(2, history.GetRevision(sourceIdentity));
         Assert.Equal(1, history.Count);
 
         olderCapture.Dispose();
 
-        Assert.Equal(0, history.GetRevision(sourceUri));
+        Assert.Equal(0, history.GetRevision(sourceIdentity));
         Assert.Equal(0, history.Count);
     }
 
@@ -1681,11 +1735,19 @@ public sealed class VbaProjectDiskReconciliationTests
         var history = new VbaSourceRevisionHistory();
         using var capture = history.BeginCapture(0);
 
-        history.Record(initialUri, 1);
-        history.Record(equivalentUri, 2);
+        var initialIdentity = IdentifyDocument(initialUri);
+        var equivalentIdentity = IdentifyDocument(equivalentUri);
+        history.Record(
+            new VbaIdentifiedDocument(initialIdentity, initialUri),
+            1);
+        history.Record(
+            new VbaIdentifiedDocument(equivalentIdentity, equivalentUri),
+            2);
 
-        Assert.Equal(2, history.GetRevision(initialUri));
+        Assert.Equal(initialIdentity, equivalentIdentity);
+        Assert.Equal(2, history.GetRevision(initialIdentity));
         var entry = Assert.Single(history.CaptureEntries());
+        Assert.Equal(initialIdentity, entry.DocumentIdentity);
         Assert.Equal(equivalentUri, entry.Uri);
         Assert.Equal(2, entry.Revision);
     }
@@ -1697,10 +1759,14 @@ public sealed class VbaProjectDiskReconciliationTests
         var history = new VbaSourceRevisionHistory();
         using var capture = history.BeginCapture(0);
 
-        history.Record(sourceUri, 1);
+        var sourceIdentity = IdentifyDocument(sourceUri);
+        history.Record(
+            new VbaIdentifiedDocument(sourceIdentity, sourceUri),
+            1);
 
-        Assert.Equal(1, history.GetRevision(sourceUri));
+        Assert.Equal(1, history.GetRevision(sourceIdentity));
         var entry = Assert.Single(history.CaptureEntries());
+        Assert.Equal(sourceIdentity, entry.DocumentIdentity);
         Assert.Equal(sourceUri, entry.Uri);
         Assert.Equal(1, entry.Revision);
     }
@@ -1730,19 +1796,22 @@ public sealed class VbaProjectDiskReconciliationTests
                 new VbaProjectManifestWorkspace(),
                 buildObserver: observer);
             var olderState = new VbaWorkspaceSnapshotState(
-                new Dictionary<string, VbaTrackedDocument>(),
-                new HashSet<string>(),
+                new Dictionary<VbaDocumentIdentity, VbaTrackedDocument>(),
+                new HashSet<VbaDocumentIdentity>(),
                 Version: 1);
             var newerState = olderState with
             {
-                ExcludedSourceUris = new HashSet<string>(
-                    [sourceUri],
-                    StringComparer.OrdinalIgnoreCase),
+                ExcludedSourceIdentities = new HashSet<VbaDocumentIdentity>(
+                    [IdentifyDocument(sourceUri)]),
                 Version = 2
             };
             using var pendingOlderCapture =
                 provider.BeginSourceRevisionCapture(olderState.Version);
-            provider.InvalidateSource(sourceUri, sourceRevision: 2);
+            provider.InvalidateSource(
+                new VbaIdentifiedDocument(
+                    IdentifyDocument(sourceUri),
+                    sourceUri),
+                sourceRevision: 2);
 
             var newerBuild = Task.Run(
                 () => provider.CreateProjectSnapshot(
@@ -3077,6 +3146,9 @@ public sealed class VbaProjectDiskReconciliationTests
             {
                 var reanchored = Assert.Single(current.Scopes);
                 Assert.Equal(secondUri, reanchored.ActiveUri);
+                Assert.Equal(
+                    IdentifyDocument(secondUri),
+                    reanchored.ActiveDocumentIdentity);
                 Assert.NotEqual(
                     capturedGeneration,
                     reanchored.AuthorityGeneration);
@@ -4855,7 +4927,7 @@ public sealed class VbaProjectDiskReconciliationTests
                 var outer = Assert.Single(capture.Scopes);
                 Assert.False(
                     outer.ManifestBarriers.Overrides[
-                        Path.GetFullPath(
+                        IdentifyLocalDocument(
                             VbaProjectResolver.TryGetLocalPath(
                                 secondManifestUri)!)]);
                 var finalScan =
@@ -5284,7 +5356,6 @@ public sealed class VbaProjectDiskReconciliationTests
             var manifestPath = Path.Combine(
                 projectRoot,
                 "vba-project.json");
-            var manifestUri = ToFileUri(manifestPath);
             var sourcePath = Path.Combine(
                 projectRoot,
                 "src",
@@ -5303,16 +5374,36 @@ public sealed class VbaProjectDiskReconciliationTests
                 manifestPath,
                 "{\"schemaVersion\":");
             var manifestEvents = new RecordingManifestEvents();
+            var boundary = new BlockingDiskObservationSource();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciliation =
                 new VbaProjectReconciler(
                     workspace,
                     manifestEvents: manifestEvents,
+                    diskObservationSource: boundary,
                     cadence: Timeout.InfiniteTimeSpan);
             reconciliation.AttachScheduler(scheduler);
 
-            await reconciliation.ReconcileAsync()
-                .WaitAsync(TimeSpan.FromSeconds(5));
+            var trigger = reconciliation.ReconcileAsync();
+            await boundary.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            var capturedManifest = Assert.IsType<VbaProjectDiskManifest>(
+                boundary.CapturedObservation.Manifest);
+            Assert.Equal(
+                IdentifyLocalDocument(manifestPath),
+                capturedManifest.DocumentIdentity);
+            var presentationManifestUri = ToFileUri(Path.Combine(
+                projectRoot,
+                "presentation-only",
+                "vba-project.json"));
+            boundary.Complete(
+                boundary.CapturedObservation with
+                {
+                    Manifest = capturedManifest with
+                    {
+                        Uri = presentationManifestUri
+                    }
+                });
+            await trigger.WaitAsync(TimeSpan.FromSeconds(5));
 
             using var capture =
                 workspace.CaptureProjectReconciliation();
@@ -5325,7 +5416,7 @@ public sealed class VbaProjectDiskReconciliationTests
                 adHoc.Resolution.Kind);
             Assert.Single(
                 manifestEvents.ValidationFailures,
-                failure => failure.Uri == manifestUri);
+                failure => failure.Uri == presentationManifestUri);
             Assert.Equal(
                 [sourceUri],
                 manifestEvents.AuthorityTransferredSourceUris);
@@ -5466,7 +5557,7 @@ public sealed class VbaProjectDiskReconciliationTests
                     invalid.Resolution);
             Assert.True(
                 invalidBarriers.Overrides.TryGetValue(
-                    Path.GetFullPath(nestedManifestPath),
+                    IdentifyLocalDocument(nestedManifestPath),
                     out var invalidBarrier));
             Assert.False(invalidBarrier);
 
@@ -5495,7 +5586,7 @@ public sealed class VbaProjectDiskReconciliationTests
                     valid.Resolution);
             Assert.True(
                 !validBarriers.Overrides.TryGetValue(
-                    Path.GetFullPath(nestedManifestPath),
+                    IdentifyLocalDocument(nestedManifestPath),
                     out var validBarrier)
                 || validBarrier);
         }
@@ -5576,7 +5667,7 @@ public sealed class VbaProjectDiskReconciliationTests
                     converged.Resolution);
             Assert.True(
                 barriers.Overrides.TryGetValue(
-                    Path.GetFullPath(nestedManifestPath),
+                    IdentifyLocalDocument(nestedManifestPath),
                     out var invalidBarrier));
             Assert.False(invalidBarrier);
             Assert.Single(
@@ -5607,7 +5698,7 @@ public sealed class VbaProjectDiskReconciliationTests
                     recovered.Resolution);
             Assert.True(
                 !recoveredBarriers.Overrides.TryGetValue(
-                    Path.GetFullPath(nestedManifestPath),
+                    IdentifyLocalDocument(nestedManifestPath),
                     out var recoveredBarrier)
                 || recoveredBarrier);
             Assert.Equal(
@@ -5890,9 +5981,6 @@ public sealed class VbaProjectDiskReconciliationTests
                 Assert.Contains(
                     invalid.KnownSources,
                     source => source.Uri == nestedUri);
-                Assert.DoesNotContain(
-                    nestedUri,
-                    invalid.OpenDocumentUris);
             }
 
             WriteProjectManifest(nestedRoot);
@@ -7559,10 +7647,11 @@ public sealed class VbaProjectDiskReconciliationTests
                 manifestText);
         var change = new ReloadManifestChange(
             scope.AuthorityKey,
+            candidate.DocumentIdentity,
             manifestUri,
             manifestText,
             candidate.CapturedRevision,
-            scope.ActiveUri,
+            scope.ActiveDocument,
             resolution,
             null,
             scope.ManifestBarriers.Revision,
@@ -7570,21 +7659,24 @@ public sealed class VbaProjectDiskReconciliationTests
             false,
             false,
             scope.KnownSources
-                .Select(source => source.Uri)
+                .Select(source => source.DocumentIdentity)
                 .ToArray())
         {
             PreviousResolution = scope.Resolution,
-            CapturedOpenSourceUris = scope.OpenSourceUris,
+            CapturedOpenSourceIdentities = scope.OpenSources
+                .Select(source => source.Identity)
+                .Distinct()
+                .ToArray(),
             CapturedProjectSourceUris = scope.KnownSources
                 .Select(source => source.Uri)
-                .Concat(scope.OpenSourceUris)
+                .Concat(scope.OpenSources.Select(source => source.Uri))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .OrderBy(uri => uri, StringComparer.OrdinalIgnoreCase)
                 .ToArray(),
             CapturedManifestSourceUris = capturedManifestSourceUris
                 ?? scope.KnownSources
                     .Select(source => source.Uri)
-                    .Concat(scope.OpenSourceUris)
+                    .Concat(scope.OpenSources.Select(source => source.Uri))
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .OrderBy(uri => uri, StringComparer.OrdinalIgnoreCase)
                     .ToArray()
@@ -7644,6 +7736,7 @@ public sealed class VbaProjectDiskReconciliationTests
                             ? replacement
                             : source.Text;
                     return new VbaProjectDiskSource(
+                        source.DocumentIdentity,
                         source.Uri,
                         source.FullPath,
                         text,
@@ -7670,12 +7763,12 @@ public sealed class VbaProjectDiskReconciliationTests
         VbaProjectReconciliationScope scope)
         => new(
             new VbaProjectDiskProjectScope(
+                scope.AuthorityKey,
                 scope.Resolution.Kind,
-                scope.Resolution.RootPath,
-                scope.Resolution.ManifestPath),
+                scope.Resolution.RootPath),
             scope.ManifestCandidates
                 .Select(candidate => new VbaProjectDiskManifestProbe(
-                    candidate.Uri,
+                    candidate.DocumentIdentity,
                     candidate.Baseline.Exists))
                 .ToArray(),
             scope.ManifestBarriers.Overrides
@@ -7685,11 +7778,25 @@ public sealed class VbaProjectDiskReconciliationTests
                         barrierOverride.Value))
                 .ToArray(),
             scope.ObservedManifestBarrierCandidates
-                .Select(candidate => candidate.Uri)
+                .Select(candidate => candidate.DocumentIdentity)
                 .ToArray());
 
     private static string ToFileUri(string path)
         => new Uri(Path.GetFullPath(path)).AbsoluteUri;
+
+    private static VbaDocumentIdentity IdentifyDocument(string uri)
+        => VbaProjectIdentityModel.TryIdentifyDocument(uri, out var identity)
+            ? identity
+            : throw new InvalidOperationException(
+                "The test document URI has no identity.");
+
+    private static VbaDocumentIdentity IdentifyLocalDocument(string path)
+        => VbaProjectIdentityModel.TryIdentifyLocalDocumentPath(
+            path,
+            out var identity)
+                ? identity
+                : throw new InvalidOperationException(
+                    $"Expected a local document identity for '{path}'.");
 
     private sealed class RecordingDiagnostics
         : IVbaProjectDiskReconciliationDiagnostics
@@ -7717,10 +7824,12 @@ public sealed class VbaProjectDiskReconciliationTests
         public TaskCompletionSource CancellationObserved { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public Action<string, int>? ScopeFenceValidatedAction { get; set; }
+        public Action<VbaProjectAuthorityIdentity, int>?
+            ScopeFenceValidatedAction
+        { get; set; }
 
         public void ScopeFenceValidated(
-            string authorityKey,
+            VbaProjectAuthorityIdentity authorityKey,
             long manifestBarrierRevision,
             long authorityGeneration)
         {
@@ -7740,7 +7849,7 @@ public sealed class VbaProjectDiskReconciliationTests
         public Action? AuthorityLeaseAcquiredAction { get; set; }
 
         public void AuthorityLeaseAcquired(
-            string authorityKey,
+            VbaProjectAuthorityIdentity authorityKey,
             long authorityGeneration)
         {
             var action = AuthorityLeaseAcquiredAction;
@@ -7785,7 +7894,8 @@ public sealed class VbaProjectDiskReconciliationTests
         public List<(string Uri, string Text)> SelectionChanges { get; } = [];
 
         public List<(string Uri, VbaProjectManifestException Error)>
-            ValidationFailures { get; } = [];
+            ValidationFailures
+        { get; } = [];
 
         public List<string> DeletedUris { get; } = [];
 
@@ -7875,7 +7985,7 @@ public sealed class VbaProjectDiskReconciliationTests
         private int effectObserved;
 
         public System.Collections.Concurrent.ConcurrentQueue<string> Events
-            { get; } = new();
+        { get; } = new();
 
         public bool EffectObserved
             => Volatile.Read(ref effectObserved) != 0;
@@ -8401,6 +8511,7 @@ public sealed class VbaProjectDiskReconciliationTests
                 new VbaProjectDiskObservation(
                     Sources: [],
                     new VbaProjectDiskManifest(
+                        IdentifyLocalDocument(manifestPath),
                         ToFileUri(manifestPath),
                         manifestPath,
                         $"{{\"schemaVersion\":,\"attempt\":{attempt}}}")));

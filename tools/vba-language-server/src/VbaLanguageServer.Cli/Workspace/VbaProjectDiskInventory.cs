@@ -37,6 +37,7 @@ internal sealed class VbaProjectDiskContentIdentity
 /// Represents one syntax-free disk source fact captured by the project inventory.
 /// </summary>
 internal sealed record VbaProjectDiskSource(
+    VbaDocumentIdentity DocumentIdentity,
     string Uri,
     string FullPath,
     string Text,
@@ -48,6 +49,7 @@ internal sealed record VbaProjectDiskSource(
 /// Represents one closed source that could not be decoded without substitution.
 /// </summary>
 internal sealed record VbaProjectDiskSourceFailure(
+    VbaDocumentIdentity DocumentIdentity,
     string Uri,
     string FullPath,
     VbaProjectSourceFileMetadata Metadata,
@@ -57,6 +59,7 @@ internal sealed record VbaProjectDiskSourceFailure(
 /// Represents one disk source from the immutable project snapshot used as a scan baseline.
 /// </summary>
 internal sealed record VbaProjectDiskKnownSource(
+    VbaDocumentIdentity DocumentIdentity,
     string Uri,
     string FullPath,
     string Text,
@@ -68,16 +71,17 @@ internal sealed record VbaProjectDiskKnownSource(
 internal sealed record VbaProjectDiskColdSourceCapture(
     IReadOnlyList<VbaProjectDiskSource> Sources,
     IReadOnlyList<VbaProjectDiskSourceFailure> Failures,
-    IReadOnlySet<string> OwnedCandidateSourcePaths)
+    IReadOnlySet<VbaDocumentIdentity> OwnedCandidateSourceIdentities)
 {
-    public IReadOnlySet<string> ExistingCandidateSourcePaths { get; init; } =
-        new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    public IReadOnlySet<VbaDocumentIdentity> ExistingCandidateSourceIdentities
+    { get; init; } = new HashSet<VbaDocumentIdentity>();
 }
 
 /// <summary>
 /// Represents the optional disk manifest captured with one project scan.
 /// </summary>
 internal sealed record VbaProjectDiskManifest(
+    VbaDocumentIdentity DocumentIdentity,
     string Uri,
     string FullPath,
     string Text);
@@ -102,36 +106,38 @@ internal sealed record VbaProjectDiskObservation(
     /// Gets source paths that still exist below the scanned root but are now
     /// owned by a descendant project manifest.
     /// </summary>
-    public IReadOnlySet<string> ExistingNonOwnedSourcePaths { get; init; } =
-        new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    public IReadOnlySet<VbaDocumentIdentity> ExistingNonOwnedSourceIdentities
+    { get; init; } = new HashSet<VbaDocumentIdentity>();
 
     public IReadOnlyList<VbaProjectDiskManifest>
-        ObservedManifestBarriers { get; init; } = [];
+        ObservedManifestBarriers
+    { get; init; } = [];
 
-    public IReadOnlyList<string>
-        MissingObservedManifestBarrierUris { get; init; } = [];
+    public IReadOnlyList<VbaDocumentIdentity>
+        MissingObservedManifestBarrierIdentities
+    { get; init; } = [];
 }
 
 /// <summary>
 /// Represents the project ownership facts needed for one disk observation.
 /// </summary>
 internal sealed record VbaProjectDiskProjectScope(
+    VbaProjectAuthorityIdentity? AuthorityIdentity,
     VbaProjectResolutionKind Kind,
-    string RootPath,
-    string? OwningManifestPath);
+    string RootPath);
 
 /// <summary>
 /// Represents one ordered manifest probe needed for a disk observation.
 /// </summary>
 internal sealed record VbaProjectDiskManifestProbe(
-    string Uri,
+    VbaDocumentIdentity DocumentIdentity,
     bool ExistedInBaseline);
 
 /// <summary>
 /// Represents one captured manifest-barrier override used during disk ownership checks.
 /// </summary>
 internal sealed record VbaProjectDiskManifestBarrierOverride(
-    string Path,
+    VbaDocumentIdentity DocumentIdentity,
     bool IsBarrier);
 
 /// <summary>
@@ -143,30 +149,33 @@ internal sealed class VbaProjectDiskObservationRequest
         VbaProjectDiskProjectScope project,
         IReadOnlyList<VbaProjectDiskManifestProbe> manifestCandidates,
         IReadOnlyList<VbaProjectDiskManifestBarrierOverride> barrierOverrides,
-        IReadOnlyList<string> observedManifestBarrierUris)
+        IReadOnlyList<VbaDocumentIdentity> observedManifestBarrierIdentities)
     {
         ArgumentNullException.ThrowIfNull(project);
         ArgumentNullException.ThrowIfNull(manifestCandidates);
         ArgumentNullException.ThrowIfNull(barrierOverrides);
-        ArgumentNullException.ThrowIfNull(observedManifestBarrierUris);
+        ArgumentNullException.ThrowIfNull(observedManifestBarrierIdentities);
         Project = project;
         ManifestCandidates = Array.AsReadOnly(manifestCandidates.ToArray());
         BarrierOverrides = Array.AsReadOnly(barrierOverrides.ToArray());
-        ObservedManifestBarrierUris = Array.AsReadOnly(
-            observedManifestBarrierUris.ToArray());
+        ObservedManifestBarrierIdentities = Array.AsReadOnly(
+            observedManifestBarrierIdentities.ToArray());
     }
 
     public VbaProjectDiskProjectScope Project { get; }
 
     public IReadOnlyList<VbaProjectDiskManifestProbe> ManifestCandidates
-        { get; }
+    { get; }
 
     public IReadOnlyList<VbaProjectDiskManifestBarrierOverride> BarrierOverrides
-        { get; }
+    { get; }
 
-    public IReadOnlyList<string> ObservedManifestBarrierUris { get; }
+    public IReadOnlyList<VbaDocumentIdentity>
+        ObservedManifestBarrierIdentities
+    { get; }
 
-    public IReadOnlyList<string> OpenSourceUris { get; init; } = [];
+    public IReadOnlyList<VbaDocumentIdentity> OpenSourceIdentities
+    { get; init; } = [];
 }
 
 /// <summary>
@@ -180,6 +189,32 @@ internal interface IVbaProjectDiskObservationSource
 }
 
 /// <summary>
+/// Projects protocol and manifest path facts onto the shared document identity
+/// model before they cross a disk-cache or reconciliation boundary.
+/// </summary>
+internal static class VbaProjectDiskIdentityProjection
+{
+    internal static VbaDocumentIdentity[] CaptureDocuments(
+        IEnumerable<string> uris)
+        => CaptureIdentifiedDocuments(uris)
+            .Select(document => document.Identity)
+            .ToArray();
+
+    internal static VbaIdentifiedDocument[] CaptureIdentifiedDocuments(
+        IEnumerable<string> uris)
+        => uris
+            .Select(uri =>
+                VbaProjectIdentityModel.TryIdentifyDocument(
+                    uri,
+                    out var identity)
+                        ? new VbaIdentifiedDocument(identity, uri)
+                        : null)
+            .OfType<VbaIdentifiedDocument>()
+            .DistinctBy(document => document.Identity)
+            .ToArray();
+}
+
+/// <summary>
 /// Owns project disk enumeration, source identity, stable reads, decoding,
 /// nested-manifest ownership, and manifest probes.
 /// </summary>
@@ -187,24 +222,27 @@ internal interface IVbaProjectDiskInventory : IVbaProjectDiskObservationSource
 {
     bool ContainsSource(
         VbaProjectResolution resolution,
-        string sourceUri,
-        IReadOnlyDictionary<string, bool> manifestBarrierOverrides);
+        VbaDocumentIdentity sourceIdentity,
+        IReadOnlyDictionary<VbaDocumentIdentity, bool>
+            manifestBarrierOverrides);
 
     VbaProjectDiskColdSourceCapture CaptureColdSources(
         VbaProjectResolution resolution,
-        IReadOnlyCollection<string> candidateSourceUris,
-        IReadOnlySet<string> excludedSourceUris,
-        IReadOnlyDictionary<string, bool> manifestBarrierOverrides,
+        IReadOnlyCollection<VbaDocumentIdentity> candidateSourceIdentities,
+        IReadOnlySet<VbaDocumentIdentity> excludedSourceIdentities,
+        IReadOnlyDictionary<VbaDocumentIdentity, bool>
+            manifestBarrierOverrides,
         CancellationToken cancellationToken);
 
     VbaProjectDiskSource? CaptureWatchedSource(
         VbaProjectResolution resolution,
-        string sourceUri,
-        IReadOnlyDictionary<string, bool> manifestBarrierOverrides,
+        VbaDocumentIdentity sourceIdentity,
+        IReadOnlyDictionary<VbaDocumentIdentity, bool>
+            manifestBarrierOverrides,
         out VbaProjectDiskSourceFailure? failure,
         CancellationToken cancellationToken);
 
-    void InvalidateSource(string localPath);
+    void InvalidateSource(VbaDocumentIdentity documentIdentity);
 }
 
 /// <summary>
@@ -218,12 +256,12 @@ internal sealed class VbaFileSystemProjectDiskInventory
     private readonly object gate = new();
     private readonly IVbaProjectFileSystem fileSystem;
     private readonly DiskSourceDecoding sourceDecoding;
-    private readonly Dictionary<string, CachedSource> sourceCache =
-        new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, int> activeLoads =
-        new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, long> publicationGenerations =
-        new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<VbaDocumentIdentity, CachedSource> sourceCache =
+        new();
+    private readonly Dictionary<VbaDocumentIdentity, int> activeLoads =
+        new();
+    private readonly Dictionary<VbaDocumentIdentity, long> publicationGenerations =
+        new();
 
     public VbaFileSystemProjectDiskInventory()
         : this(
@@ -250,15 +288,16 @@ internal sealed class VbaFileSystemProjectDiskInventory
 
     public bool ContainsSource(
         VbaProjectResolution resolution,
-        string sourceUri,
-        IReadOnlyDictionary<string, bool> manifestBarrierOverrides)
+        VbaDocumentIdentity sourceIdentity,
+        IReadOnlyDictionary<VbaDocumentIdentity, bool>
+            manifestBarrierOverrides)
     {
-        var sourcePath = VbaProjectResolver.TryGetLocalPath(sourceUri);
-        return sourcePath is not null
+        return sourceIdentity.IsLocalFile
             && new SourceOwnership(
                 resolution,
                 fileSystem,
-                manifestBarrierOverrides).ContainsSource(sourcePath);
+                manifestBarrierOverrides).ContainsSource(
+                    sourceIdentity.CanonicalValue);
     }
 
     internal int Count
@@ -274,21 +313,22 @@ internal sealed class VbaFileSystemProjectDiskInventory
 
     public VbaProjectDiskColdSourceCapture CaptureColdSources(
         VbaProjectResolution resolution,
-        IReadOnlyCollection<string> candidateSourceUris,
-        IReadOnlySet<string> excludedSourceUris,
-        IReadOnlyDictionary<string, bool> manifestBarrierOverrides,
+        IReadOnlyCollection<VbaDocumentIdentity> candidateSourceIdentities,
+        IReadOnlySet<VbaDocumentIdentity> excludedSourceIdentities,
+        IReadOnlyDictionary<VbaDocumentIdentity, bool>
+            manifestBarrierOverrides,
         CancellationToken cancellationToken)
     {
-        var excludedPaths = CreateLocalPathSet(excludedSourceUris);
-        var candidatePaths = CreateLocalPathSet(candidateSourceUris);
+        var excludedPaths = CreateLocalPathSet(excludedSourceIdentities);
+        var candidatePaths = CreateLocalPathSet(candidateSourceIdentities);
         var ownership = new SourceOwnership(
             resolution,
             fileSystem,
             manifestBarrierOverrides);
         var sources = new List<VbaProjectDiskSource>();
         var failures = new List<VbaProjectDiskSourceFailure>();
-        var existingCandidatePaths = new HashSet<string>(
-            StringComparer.OrdinalIgnoreCase);
+        var existingCandidateIdentities =
+            new HashSet<VbaDocumentIdentity>();
         foreach (var path in EnumerateSourcePaths(
             resolution,
             cancellationToken))
@@ -301,7 +341,8 @@ internal sealed class VbaFileSystemProjectDiskInventory
 
             if (candidatePaths.Contains(path))
             {
-                existingCandidatePaths.Add(path);
+                existingCandidateIdentities.Add(
+                    IdentifyLocalDocument(path));
                 continue;
             }
 
@@ -320,34 +361,36 @@ internal sealed class VbaFileSystemProjectDiskInventory
             }
         }
 
-        var ownedCandidatePaths = candidatePaths
+        var ownedCandidateIdentities = candidatePaths
             .Where(ownership.ContainsSource)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            .Select(IdentifyLocalDocument)
+            .ToHashSet();
         return new VbaProjectDiskColdSourceCapture(
             sources.ToArray(),
             failures.ToArray(),
-            ownedCandidatePaths)
+            ownedCandidateIdentities)
         {
-            ExistingCandidateSourcePaths = existingCandidatePaths
+            ExistingCandidateSourceIdentities =
+                existingCandidateIdentities
         };
     }
 
     public VbaProjectDiskSource? CaptureWatchedSource(
         VbaProjectResolution resolution,
-        string sourceUri,
-        IReadOnlyDictionary<string, bool> manifestBarrierOverrides,
+        VbaDocumentIdentity sourceIdentity,
+        IReadOnlyDictionary<VbaDocumentIdentity, bool>
+            manifestBarrierOverrides,
         out VbaProjectDiskSourceFailure? failure,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var localPath = VbaProjectResolver.TryGetLocalPath(sourceUri);
-        if (localPath is null)
+        if (!sourceIdentity.IsLocalFile)
         {
             failure = null;
             return null;
         }
 
-        var fullPath = Path.GetFullPath(localPath);
+        var fullPath = sourceIdentity.CanonicalValue;
         var ownership = new SourceOwnership(
             resolution,
             fileSystem,
@@ -358,7 +401,7 @@ internal sealed class VbaFileSystemProjectDiskInventory
             return null;
         }
 
-        InvalidateSource(fullPath);
+        InvalidateSource(sourceIdentity);
         return TryCaptureSource(
             fullPath,
             forceStableRead: true,
@@ -381,23 +424,22 @@ internal sealed class VbaFileSystemProjectDiskInventory
             cancellationToken);
     }
 
-    public void InvalidateSource(string localPath)
+    public void InvalidateSource(VbaDocumentIdentity documentIdentity)
     {
-        var fullPath = Path.GetFullPath(localPath);
         lock (gate)
         {
-            sourceCache.Remove(fullPath);
-            if (activeLoads.ContainsKey(fullPath))
+            sourceCache.Remove(documentIdentity);
+            if (activeLoads.ContainsKey(documentIdentity))
             {
                 publicationGenerations.TryGetValue(
-                    fullPath,
+                    documentIdentity,
                     out var previousGeneration);
-                publicationGenerations[fullPath] =
+                publicationGenerations[documentIdentity] =
                     previousGeneration + 1;
             }
             else
             {
-                publicationGenerations.Remove(fullPath);
+                publicationGenerations.Remove(documentIdentity);
             }
         }
     }
@@ -405,22 +447,20 @@ internal sealed class VbaFileSystemProjectDiskInventory
     private static PreparedDiskObservation PrepareObservation(
         VbaProjectDiskObservationRequest request)
     {
-        var manifestBarrierOverrides = new Dictionary<string, bool>(
-            StringComparer.OrdinalIgnoreCase);
+        var manifestBarrierOverrides =
+            new Dictionary<VbaDocumentIdentity, bool>();
         foreach (var barrierOverride in request.BarrierOverrides)
         {
-            var path = string.IsNullOrWhiteSpace(barrierOverride.Path)
-                ? barrierOverride.Path
-                : Path.GetFullPath(barrierOverride.Path);
-            manifestBarrierOverrides[path] = barrierOverride.IsBarrier;
+            manifestBarrierOverrides[barrierOverride.DocumentIdentity] =
+                barrierOverride.IsBarrier;
         }
 
         return new PreparedDiskObservation(
             request.Project,
             request.ManifestCandidates.ToArray(),
             manifestBarrierOverrides,
-            request.ObservedManifestBarrierUris.ToArray(),
-            CreateLocalPathSet(request.OpenSourceUris));
+            request.ObservedManifestBarrierIdentities.ToArray(),
+            CreateLocalPathSet(request.OpenSourceIdentities));
     }
 
     private VbaProjectDiskObservation ObserveReconciliation(
@@ -429,12 +469,12 @@ internal sealed class VbaFileSystemProjectDiskInventory
     {
         var sources = new List<VbaProjectDiskSource>();
         var failures = new List<VbaProjectDiskSourceFailure>();
-        var existingNonOwnedSourcePaths = new HashSet<string>(
-            StringComparer.OrdinalIgnoreCase);
+        var existingNonOwnedSourceIdentities =
+            new HashSet<VbaDocumentIdentity>();
         var observedManifestBarrierPaths = new HashSet<string>(
             StringComparer.OrdinalIgnoreCase);
-        var missingObservedManifestBarrierUris =
-            new List<string>();
+        var missingObservedManifestBarrierIdentities =
+            new List<VbaDocumentIdentity>();
         if (!string.IsNullOrWhiteSpace(observation.Project.RootPath)
             && fileSystem.DirectoryExists(observation.Project.RootPath))
         {
@@ -449,7 +489,8 @@ internal sealed class VbaFileSystemProjectDiskInventory
                 cancellationToken.ThrowIfCancellationRequested();
                 if (!ownership.ContainsSource(fullPath))
                 {
-                    existingNonOwnedSourcePaths.Add(fullPath);
+                    existingNonOwnedSourceIdentities.Add(
+                        IdentifyLocalDocument(fullPath));
                     continue;
                 }
 
@@ -477,21 +518,19 @@ internal sealed class VbaFileSystemProjectDiskInventory
                 ownership.ObservedManifestBarrierPaths);
         }
 
-        foreach (var uri in observation.ObservedManifestBarrierUris)
+        foreach (var identity in observation.ObservedManifestBarrierIdentities)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var path = VbaProjectResolver.TryGetLocalPath(uri);
-            if (path is not null)
+            if (identity.IsLocalFile)
             {
-                var fullPath = Path.GetFullPath(path);
+                var fullPath = identity.CanonicalValue;
                 if (fileSystem.FileExists(fullPath))
                 {
                     observedManifestBarrierPaths.Add(fullPath);
                 }
                 else
                 {
-                    missingObservedManifestBarrierUris.Add(
-                        uri);
+                    missingObservedManifestBarrierIdentities.Add(identity);
                 }
             }
         }
@@ -500,9 +539,13 @@ internal sealed class VbaFileSystemProjectDiskInventory
         foreach (var candidate in observation.ManifestCandidates)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var manifestPath = VbaProjectResolver.TryGetLocalPath(candidate.Uri);
-            if (manifestPath is null
-                || IsKnownInvalidBarrier(observation, manifestPath)
+            if (!candidate.DocumentIdentity.IsLocalFile)
+            {
+                continue;
+            }
+
+            var manifestPath = candidate.DocumentIdentity.CanonicalValue;
+            if (IsKnownInvalidBarrier(observation, candidate.DocumentIdentity)
                 || !fileSystem.FileExists(manifestPath))
             {
                 continue;
@@ -511,6 +554,7 @@ internal sealed class VbaFileSystemProjectDiskInventory
             var fullPath = Path.GetFullPath(manifestPath);
             cancellationToken.ThrowIfCancellationRequested();
             manifest = new VbaProjectDiskManifest(
+                IdentifyLocalDocument(fullPath),
                 new Uri(fullPath).AbsoluteUri,
                 fullPath,
                 fileSystem.ReadManifestText(fullPath));
@@ -532,6 +576,7 @@ internal sealed class VbaFileSystemProjectDiskInventory
             cancellationToken.ThrowIfCancellationRequested();
             observedManifestBarriers.Add(
                 new VbaProjectDiskManifest(
+                    IdentifyLocalDocument(path),
                     new Uri(path).AbsoluteUri,
                     path,
                     fileSystem.ReadManifestText(path)));
@@ -540,10 +585,11 @@ internal sealed class VbaFileSystemProjectDiskInventory
         return new VbaProjectDiskObservation(sources, manifest)
         {
             Failures = failures.ToArray(),
-            ExistingNonOwnedSourcePaths = existingNonOwnedSourcePaths,
+            ExistingNonOwnedSourceIdentities =
+                existingNonOwnedSourceIdentities,
             ObservedManifestBarriers = observedManifestBarriers.ToArray(),
-            MissingObservedManifestBarrierUris =
-                missingObservedManifestBarrierUris
+            MissingObservedManifestBarrierIdentities =
+                missingObservedManifestBarrierIdentities
         };
     }
 
@@ -552,9 +598,9 @@ internal sealed class VbaFileSystemProjectDiskInventory
         CancellationToken cancellationToken)
         => EnumerateSourcePaths(
             new VbaProjectDiskProjectScope(
+                IdentifyOptionalAuthority(resolution),
                 resolution.Kind,
-                resolution.RootPath,
-                resolution.ManifestPath),
+                resolution.RootPath),
             cancellationToken);
 
     private IEnumerable<string> EnumerateSourcePaths(
@@ -599,6 +645,7 @@ internal sealed class VbaFileSystemProjectDiskInventory
     {
         cancellationToken.ThrowIfCancellationRequested();
         var fullPath = Path.GetFullPath(localPath);
+        var documentIdentity = IdentifyLocalDocument(fullPath);
         if (!fileSystem.TryGetSourceMetadata(fullPath, out var metadata))
         {
             source = null!;
@@ -610,7 +657,7 @@ internal sealed class VbaFileSystemProjectDiskInventory
         lock (gate)
         {
             if (!forceStableRead
-                && sourceCache.TryGetValue(fullPath, out var cached)
+                && sourceCache.TryGetValue(documentIdentity, out var cached)
                 && cached.Metadata == metadata)
             {
                 source = CreateSource(fullPath, cached);
@@ -618,14 +665,14 @@ internal sealed class VbaFileSystemProjectDiskInventory
                 return true;
             }
 
-            activeLoads.TryGetValue(fullPath, out var activeLoadCount);
-            activeLoads[fullPath] = activeLoadCount + 1;
+            activeLoads.TryGetValue(documentIdentity, out var activeLoadCount);
+            activeLoads[documentIdentity] = activeLoadCount + 1;
             publicationGenerations.TryGetValue(
-                fullPath,
+                documentIdentity,
                 out var previousPublicationGeneration);
             capturedPublicationGeneration =
                 previousPublicationGeneration + 1;
-            publicationGenerations[fullPath] =
+            publicationGenerations[documentIdentity] =
                 capturedPublicationGeneration;
         }
 
@@ -641,7 +688,7 @@ internal sealed class VbaFileSystemProjectDiskInventory
                     lock (gate)
                     {
                         if (sourceCache.TryGetValue(
-                                fullPath,
+                                documentIdentity,
                                 out var retriedCached)
                             && retriedCached.Metadata == metadata)
                         {
@@ -698,17 +745,18 @@ internal sealed class VbaFileSystemProjectDiskInventory
                     lock (gate)
                     {
                         publicationGenerations.TryGetValue(
-                            fullPath,
+                            documentIdentity,
                             out var currentPublicationGeneration);
                         if (currentPublicationGeneration
                             == capturedPublicationGeneration)
                         {
-                            sourceCache.Remove(fullPath);
+                            sourceCache.Remove(documentIdentity);
                         }
                     }
 
                     source = null!;
                     failure = new VbaProjectDiskSourceFailure(
+                        documentIdentity,
                         new Uri(fullPath).AbsoluteUri,
                         fullPath,
                         loadedMetadata,
@@ -723,7 +771,7 @@ internal sealed class VbaFileSystemProjectDiskInventory
                 {
                     var identity =
                         sourceCache.TryGetValue(
-                            fullPath,
+                            documentIdentity,
                             out var existing)
                         && existing.Text.Equals(
                             text,
@@ -736,12 +784,12 @@ internal sealed class VbaFileSystemProjectDiskInventory
                         identity,
                         rawContentDigest);
                     publicationGenerations.TryGetValue(
-                        fullPath,
+                        documentIdentity,
                         out var currentPublicationGeneration);
                     if (currentPublicationGeneration
                         == capturedPublicationGeneration)
                     {
-                        sourceCache[fullPath] = loaded;
+                        sourceCache[documentIdentity] = loaded;
                     }
                 }
 
@@ -757,15 +805,15 @@ internal sealed class VbaFileSystemProjectDiskInventory
         {
             lock (gate)
             {
-                var remainingLoadCount = activeLoads[fullPath] - 1;
+                var remainingLoadCount = activeLoads[documentIdentity] - 1;
                 if (remainingLoadCount == 0)
                 {
-                    activeLoads.Remove(fullPath);
-                    publicationGenerations.Remove(fullPath);
+                    activeLoads.Remove(documentIdentity);
+                    publicationGenerations.Remove(documentIdentity);
                 }
                 else
                 {
-                    activeLoads[fullPath] = remainingLoadCount;
+                    activeLoads[documentIdentity] = remainingLoadCount;
                 }
             }
         }
@@ -775,6 +823,7 @@ internal sealed class VbaFileSystemProjectDiskInventory
         string fullPath,
         CachedSource cached)
         => new(
+            IdentifyLocalDocument(fullPath),
             new Uri(fullPath).AbsoluteUri,
             fullPath,
             cached.Text,
@@ -782,16 +831,31 @@ internal sealed class VbaFileSystemProjectDiskInventory
             cached.ContentIdentity,
             cached.RawContentDigest);
 
+    private static VbaDocumentIdentity IdentifyLocalDocument(string fullPath)
+        => VbaProjectIdentityModel.TryIdentifyLocalDocumentPath(
+            fullPath,
+            out var identity)
+                ? identity
+                : throw new InvalidOperationException(
+                    $"The disk source path has no document identity: {fullPath}");
+
+    private static VbaProjectAuthorityIdentity? IdentifyOptionalAuthority(
+        VbaProjectResolution resolution)
+        => VbaProjectIdentityModel.TryIdentifyAuthority(
+            resolution,
+            out var identity)
+                ? identity
+                : null;
+
     private static HashSet<string> CreateLocalPathSet(
-        IEnumerable<string> uris)
+        IEnumerable<VbaDocumentIdentity> identities)
     {
         var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var uri in uris)
+        foreach (var identity in identities)
         {
-            var localPath = VbaProjectResolver.TryGetLocalPath(uri);
-            if (localPath is not null)
+            if (identity.IsLocalFile)
             {
-                paths.Add(Path.GetFullPath(localPath));
+                paths.Add(identity.CanonicalValue);
             }
         }
 
@@ -800,19 +864,13 @@ internal sealed class VbaFileSystemProjectDiskInventory
 
     private static bool IsKnownInvalidBarrier(
         PreparedDiskObservation observation,
-        string manifestPath)
+        VbaDocumentIdentity manifestIdentity)
     {
-        var fullManifestPath = Path.GetFullPath(manifestPath);
         var candidate = observation.ManifestCandidates.FirstOrDefault(
-            candidate =>
-                VbaProjectResolver.TryGetLocalPath(candidate.Uri)
-                    is { } candidatePath
-                && Path.GetFullPath(candidatePath).Equals(
-                    fullManifestPath,
-                    StringComparison.OrdinalIgnoreCase));
+            candidate => candidate.DocumentIdentity == manifestIdentity);
         return candidate?.ExistedInBaseline == true
             && observation.ManifestBarrierOverrides.TryGetValue(
-                fullManifestPath,
+                manifestIdentity,
                 out var isBarrier)
             && !isBarrier;
     }
@@ -820,8 +878,9 @@ internal sealed class VbaFileSystemProjectDiskInventory
     private sealed record PreparedDiskObservation(
         VbaProjectDiskProjectScope Project,
         IReadOnlyList<VbaProjectDiskManifestProbe> ManifestCandidates,
-        IReadOnlyDictionary<string, bool> ManifestBarrierOverrides,
-        IReadOnlyList<string> ObservedManifestBarrierUris,
+        IReadOnlyDictionary<VbaDocumentIdentity, bool>
+            ManifestBarrierOverrides,
+        IReadOnlyList<VbaDocumentIdentity> ObservedManifestBarrierIdentities,
         IReadOnlySet<string> OpenSourcePaths);
 
     private sealed record CachedSource(
@@ -840,8 +899,8 @@ internal sealed class VbaFileSystemProjectDiskInventory
         private readonly VbaProjectResolutionKind kind;
         private readonly IVbaProjectFileSystem fileSystem;
         private readonly string rootPath;
-        private readonly string? authorityManifestPath;
-        private readonly IReadOnlyDictionary<string, bool>
+        private readonly VbaProjectAuthorityIdentity? authorityIdentity;
+        private readonly IReadOnlyDictionary<VbaDocumentIdentity, bool>
             manifestBarrierOverrides;
         private readonly Dictionary<string, bool> ownedDirectories =
             new(StringComparer.OrdinalIgnoreCase);
@@ -851,12 +910,13 @@ internal sealed class VbaFileSystemProjectDiskInventory
         public SourceOwnership(
             VbaProjectResolution resolution,
             IVbaProjectFileSystem fileSystem,
-            IReadOnlyDictionary<string, bool>? manifestBarrierOverrides = null)
+            IReadOnlyDictionary<VbaDocumentIdentity, bool>?
+                manifestBarrierOverrides = null)
             : this(
                 new VbaProjectDiskProjectScope(
+                    IdentifyOptionalAuthority(resolution),
                     resolution.Kind,
-                    resolution.RootPath,
-                    resolution.ManifestPath),
+                    resolution.RootPath),
                 fileSystem,
                 manifestBarrierOverrides)
         {
@@ -865,19 +925,16 @@ internal sealed class VbaFileSystemProjectDiskInventory
         public SourceOwnership(
             VbaProjectDiskProjectScope project,
             IVbaProjectFileSystem fileSystem,
-            IReadOnlyDictionary<string, bool>? manifestBarrierOverrides = null)
+            IReadOnlyDictionary<VbaDocumentIdentity, bool>?
+                manifestBarrierOverrides = null)
         {
             kind = project.Kind;
             this.fileSystem = fileSystem;
             rootPath = NormalizePath(project.RootPath);
-            authorityManifestPath = string.IsNullOrWhiteSpace(
-                    project.OwningManifestPath)
-                ? null
-                : NormalizePath(project.OwningManifestPath);
+            authorityIdentity = project.AuthorityIdentity;
             this.manifestBarrierOverrides =
                 manifestBarrierOverrides
-                ?? new Dictionary<string, bool>(
-                    StringComparer.OrdinalIgnoreCase);
+                ?? new Dictionary<VbaDocumentIdentity, bool>();
         }
 
         public IReadOnlyCollection<string> ObservedManifestBarrierPaths
@@ -939,25 +996,27 @@ internal sealed class VbaFileSystemProjectDiskInventory
             var candidateManifestPath = Path.Combine(
                 fullDirectoryPath,
                 ManifestFileName);
+            var candidateManifestIdentity =
+                IdentifyLocalDocument(candidateManifestPath);
             var hasOverride =
                 manifestBarrierOverrides.TryGetValue(
-                    candidateManifestPath,
+                    candidateManifestIdentity,
                     out var barrierOverride);
             var hasManifestBarrier = hasOverride
                     ? barrierOverride
                     : fileSystem.FileExists(candidateManifestPath);
+            var isAuthorityManifest = authorityIdentity?.UsesManifest(
+                candidateManifestIdentity) == true;
             if (!hasOverride
                 && hasManifestBarrier
-                && !SamePath(
-                    candidateManifestPath,
-                    authorityManifestPath))
+                && !isAuthorityManifest)
             {
                 observedManifestBarrierPaths.Add(
                     Path.GetFullPath(candidateManifestPath));
             }
 
             isOwned = parentOwned
-                && (SamePath(candidateManifestPath, authorityManifestPath)
+                && (isAuthorityManifest
                     || !hasManifestBarrier);
             ownedDirectories[fullDirectoryPath] = isOwned;
             return isOwned;

@@ -31,9 +31,10 @@ internal sealed class VbaDiagnosticsPublisher
 {
     private readonly object gate = new();
     private readonly object enqueueGate = new();
-    private readonly Dictionary<string, long> latestPublishRevisions = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, long> terminalPublishRevisions =
-        new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<VbaDocumentIdentity, long>
+        latestPublishRevisions = new();
+    private readonly Dictionary<VbaDocumentIdentity, long>
+        terminalPublishRevisions = new();
     private readonly LspMessageTransport transport;
     private readonly VbaLanguageWorkspace workspace;
     private readonly IVbaDiagnosticsPublicationObserver publicationObserver;
@@ -68,7 +69,7 @@ internal sealed class VbaDiagnosticsPublisher
             {
                 return latestPublishRevisions.Keys
                     .Concat(terminalPublishRevisions.Keys)
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Distinct()
                     .Count();
             }
         }
@@ -101,7 +102,9 @@ internal sealed class VbaDiagnosticsPublisher
                     interactiveScheduler,
                     VbaInteractiveBackgroundWorkType.DiagnosticsPublication,
                     StringComparer.OrdinalIgnoreCase,
-                    CompleteTerminalRevisionState);
+                    authorityStateChanged: null,
+                    documentAuthorityStateChanged:
+                        CompleteTerminalRevisionState);
                 diskSourceDiagnosticsAttached = true;
                 attachDiskSourceDiagnostics = true;
             }
@@ -335,7 +338,7 @@ internal sealed class VbaDiagnosticsPublisher
         }
 
         return mailbox.WaitForIdleAsync(
-            VbaProjectIdentityModel.GetDocumentStableKey(uri));
+            IdentifyDocument(uri));
     }
 
     /// <summary>
@@ -412,14 +415,14 @@ internal sealed class VbaDiagnosticsPublisher
             cancellationToken);
     }
 
-    private bool IsLatestPublishRevision(string uri, long revision)
+    private bool IsLatestPublishRevision(
+        VbaDocumentIdentity documentIdentity,
+        long revision)
     {
-        var documentKey =
-            VbaProjectIdentityModel.GetDocumentStableKey(uri);
         lock (gate)
         {
             return latestPublishRevisions.TryGetValue(
-                    documentKey,
+                    documentIdentity,
                     out var latest)
                 && latest == revision;
         }
@@ -456,16 +459,16 @@ internal sealed class VbaDiagnosticsPublisher
                         "The diagnostics scheduler must be attached before publication starts.");
                 foreach (var publication in publications)
                 {
-                    var documentKey = VbaProjectIdentityModel
-                        .GetDocumentStableKey(publication.Uri);
+                    var documentIdentity =
+                        IdentifyDocument(publication.Uri);
                     latestPublishRevisions.TryGetValue(
-                        documentKey,
+                        documentIdentity,
                         out var previous);
                     var revision = previous + 1;
-                    latestPublishRevisions[documentKey] = revision;
+                    latestPublishRevisions[documentIdentity] = revision;
                     reservations.Add(new DiagnosticsPublicationReservation(
                         publication,
-                        documentKey,
+                        documentIdentity,
                         revision,
                         new TaskCompletionSource(
                             TaskCreationOptions.RunContinuationsAsynchronously)));
@@ -475,12 +478,12 @@ internal sealed class VbaDiagnosticsPublisher
             foreach (var reservation in reservations)
             {
                 mailbox.Post(
-                    reservation.DocumentKey,
+                    reservation.DocumentIdentity,
                     async cancellationToken =>
                     {
                         await reservation.RevisionObserved.Task.ConfigureAwait(false);
                         if (!IsLatestPublishRevision(
-                                reservation.Publication.Uri,
+                                reservation.DocumentIdentity,
                                 reservation.Revision)
                             || !reservation.Publication.IsStillPublishable())
                         {
@@ -500,7 +503,7 @@ internal sealed class VbaDiagnosticsPublisher
                         }
                     },
                     () => MarkPublishRevisionTerminal(
-                        reservation.DocumentKey,
+                        reservation.DocumentIdentity,
                         reservation.Revision));
             }
         }
@@ -530,27 +533,28 @@ internal sealed class VbaDiagnosticsPublisher
 
     private sealed record DiagnosticsPublicationReservation(
         DiagnosticsPublication Publication,
-        string DocumentKey,
+        VbaDocumentIdentity DocumentIdentity,
         long Revision,
         TaskCompletionSource RevisionObserved);
 
     private void MarkPublishRevisionTerminal(
-        string documentKey,
+        VbaDocumentIdentity documentIdentity,
         long revision)
     {
         lock (gate)
         {
             terminalPublishRevisions.TryGetValue(
-                documentKey,
+                documentIdentity,
                 out var previousTerminalRevision);
             if (revision > previousTerminalRevision)
             {
-                terminalPublishRevisions[documentKey] = revision;
+                terminalPublishRevisions[documentIdentity] = revision;
             }
         }
     }
 
-    private void CompleteTerminalRevisionState(string documentKey)
+    private void CompleteTerminalRevisionState(
+        VbaDocumentIdentity documentIdentity)
     {
         VbaLatestOnlyBackgroundMailbox? mailbox;
         lock (gate)
@@ -558,31 +562,37 @@ internal sealed class VbaDiagnosticsPublisher
             mailbox = publicationMailbox;
         }
 
-        if (mailbox is null || !mailbox.IsIdle(documentKey))
+        if (mailbox is null || !mailbox.IsIdle(documentIdentity))
         {
             return;
         }
 
         lock (gate)
         {
-            if (!mailbox.IsIdle(documentKey))
+            if (!mailbox.IsIdle(documentIdentity))
             {
                 return;
             }
 
             latestPublishRevisions.TryGetValue(
-                documentKey,
+                documentIdentity,
                 out var latestRevision);
             terminalPublishRevisions.TryGetValue(
-                documentKey,
+                documentIdentity,
                 out var terminalRevision);
             if (terminalRevision < latestRevision)
             {
                 return;
             }
 
-            latestPublishRevisions.Remove(documentKey);
-            terminalPublishRevisions.Remove(documentKey);
+            latestPublishRevisions.Remove(documentIdentity);
+            terminalPublishRevisions.Remove(documentIdentity);
         }
     }
+
+    private static VbaDocumentIdentity IdentifyDocument(string uri)
+        => VbaProjectIdentityModel.TryIdentifyDocument(uri, out var identity)
+            ? identity
+            : throw new InvalidOperationException(
+                "A diagnostics publication has no document identity.");
 }

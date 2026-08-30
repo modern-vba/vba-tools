@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Channels;
+using VbaLanguageServer.ProjectModel;
 
 namespace VbaLanguageServer.Lsp;
 
@@ -320,7 +321,7 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
     private readonly long[] fairnessResetByClass = new long[4];
     private readonly Dictionary<
         string,
-        Dictionary<string, LinkedListNode<ScheduledWork>>>
+        Dictionary<CoalescingIdentity, LinkedListNode<ScheduledWork>>>
         pendingBackgroundByMethod = new(StringComparer.Ordinal);
     private readonly List<Action> capacityObservers = [];
     private readonly IVbaInteractiveWorkTimingSink timingSink;
@@ -521,7 +522,7 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
             VbaInteractiveWorkKind.Mutation,
             method,
             captureRead: null,
-            coalescingKey,
+            CoalescingIdentity.FromText(coalescingKey),
             requestId: null,
             (cancellationToken, _) => executeAsync(cancellationToken),
             advancesReadFence: true);
@@ -541,7 +542,7 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
             VbaInteractiveWorkKind.Mutation,
             method,
             captureRead: null,
-            coalescingKey,
+            CoalescingIdentity.FromText(coalescingKey),
             requestId: null,
             (cancellationToken, _) => executeAsync(cancellationToken),
             advancesReadFence: true,
@@ -554,16 +555,16 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
     /// </summary>
     public VbaInteractiveWorkAdmission AdmitCoalescibleAdvisoryMutation(
         string method,
-        string coalescingKey,
+        VbaProjectAuthorityIdentity coalescingAuthority,
         long rank,
         Func<CancellationToken, Task> executeAsync)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(coalescingKey);
         return Admit(
             VbaInteractiveWorkKind.Mutation,
             method,
             captureRead: null,
-            coalescingKey,
+            CoalescingIdentity.FromProjectAuthority(
+                coalescingAuthority),
             requestId: null,
             (cancellationToken, _) => executeAsync(cancellationToken),
             advancesReadFence: false,
@@ -642,11 +643,22 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
         Func<CancellationToken, Task> executeAsync)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(authorityKey);
+        return AdmitBackground(
+            workType,
+            CoalescingIdentity.FromText(authorityKey),
+            executeAsync);
+    }
+
+    private VbaInteractiveWorkAdmission AdmitBackground(
+        VbaInteractiveBackgroundWorkType workType,
+        CoalescingIdentity authority,
+        Func<CancellationToken, Task> executeAsync)
+    {
         ArgumentNullException.ThrowIfNull(executeAsync);
         var coalescingKey =
             workType == VbaInteractiveBackgroundWorkType.ReferenceCatalogPublication
                 ? null
-                : $"{workType}:{authorityKey}";
+                : (CoalescingIdentity?)authority;
         return Admit(
             VbaInteractiveWorkKind.Request,
             GetBackgroundMethod(workType),
@@ -676,6 +688,32 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
         try
         {
             admission = AdmitBackground(workType, authorityKey, executeAsync);
+            return true;
+        }
+        catch (VbaInteractiveWorkQueueFullException)
+        {
+            admission = default;
+            return false;
+        }
+        catch (ObjectDisposedException)
+        {
+            admission = default;
+            return false;
+        }
+    }
+
+    public bool TryAdmitBackground(
+        VbaInteractiveBackgroundWorkType workType,
+        VbaDocumentIdentity authority,
+        Func<CancellationToken, Task> executeAsync,
+        out VbaInteractiveWorkAdmission admission)
+    {
+        try
+        {
+            admission = AdmitBackground(
+                workType,
+                CoalescingIdentity.FromDocument(authority),
+                executeAsync);
             return true;
         }
         catch (VbaInteractiveWorkQueueFullException)
@@ -810,7 +848,7 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
         VbaInteractiveWorkKind kind,
         string method,
         Func<CancellationToken, VbaInteractiveCapturedRead>? captureRead,
-        string? coalescingKey,
+        CoalescingIdentity? coalescingKey,
         VbaLspRequestId? requestId,
         Func<CancellationToken, Action, Task> executeAsync,
         bool advancesReadFence,
@@ -1133,9 +1171,8 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
                 out var pendingByKey))
         {
             pendingByKey = new Dictionary<
-                string,
-                LinkedListNode<ScheduledWork>>(
-                StringComparer.OrdinalIgnoreCase);
+                CoalescingIdentity,
+                LinkedListNode<ScheduledWork>>();
             pendingBackgroundByMethod.Add(work.Method, pendingByKey);
         }
 
@@ -1464,8 +1501,7 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
 
         var survivors = new List<ScheduledWork>();
         foreach (var group in rankedRun.GroupBy(
-            work => work.CoalescingKey!,
-            StringComparer.OrdinalIgnoreCase))
+            work => work.CoalescingKey!.Value))
         {
             var winner = group
                 .OrderByDescending(work => work.CoalescingRank)
@@ -1577,7 +1613,7 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
             || !current.Method.Equals(next.Method, StringComparison.Ordinal)
             || current.CoalescingKey is not { } currentKey
             || next.CoalescingKey is not { } nextKey
-            || !currentKey.Equals(nextKey, StringComparison.OrdinalIgnoreCase))
+            || currentKey != nextKey)
         {
             return false;
         }
@@ -1830,7 +1866,7 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
         string Method,
         VbaInteractiveReadPolicy? ReadPolicy,
         Func<CancellationToken, VbaInteractiveCapturedRead>? CaptureRead,
-        string? CoalescingKey,
+        CoalescingIdentity? CoalescingKey,
         long? CoalescingRank,
         VbaLspRequestId? RequestId,
         long AdmittedAt,
@@ -1842,6 +1878,91 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
         public long FairnessClockAtAdmission { get; set; }
 
         public VbaInteractiveCapturedRead? CapturedRead { get; set; }
+    }
+
+    private readonly struct CoalescingIdentity
+        : IEquatable<CoalescingIdentity>
+    {
+        private readonly CoalescingIdentityKind kind;
+        private readonly string? text;
+        private readonly VbaDocumentIdentity document;
+        private readonly VbaProjectAuthorityIdentity projectAuthority;
+
+        private CoalescingIdentity(
+            CoalescingIdentityKind kind,
+            string? text,
+            VbaDocumentIdentity document,
+            VbaProjectAuthorityIdentity projectAuthority)
+        {
+            this.kind = kind;
+            this.text = text;
+            this.document = document;
+            this.projectAuthority = projectAuthority;
+        }
+
+        internal static CoalescingIdentity FromText(string text)
+            => new(
+                CoalescingIdentityKind.Text,
+                text,
+                default,
+                default);
+
+        internal static CoalescingIdentity FromDocument(
+            VbaDocumentIdentity document)
+            => new(
+                CoalescingIdentityKind.Document,
+                text: null,
+                document,
+                default);
+
+        internal static CoalescingIdentity FromProjectAuthority(
+            VbaProjectAuthorityIdentity projectAuthority)
+            => new(
+                CoalescingIdentityKind.ProjectAuthority,
+                text: null,
+                default,
+                projectAuthority);
+
+        public bool Equals(CoalescingIdentity other)
+            => kind == other.kind
+                && (kind == CoalescingIdentityKind.Text
+                    ? StringComparer.OrdinalIgnoreCase.Equals(
+                        text,
+                        other.text)
+                    : kind == CoalescingIdentityKind.Document
+                        ? document == other.document
+                        : projectAuthority == other.projectAuthority);
+
+        public override bool Equals(object? obj)
+            => obj is CoalescingIdentity other && Equals(other);
+
+        public override int GetHashCode()
+            => HashCode.Combine(
+                kind,
+                kind == CoalescingIdentityKind.Text
+                    ? text is null
+                        ? 0
+                        : StringComparer.OrdinalIgnoreCase.GetHashCode(text)
+                    : kind == CoalescingIdentityKind.Document
+                        ? document.GetHashCode()
+                        : projectAuthority.GetHashCode());
+
+        public static bool operator ==(
+            CoalescingIdentity left,
+            CoalescingIdentity right)
+            => left.Equals(right);
+
+        public static bool operator !=(
+            CoalescingIdentity left,
+            CoalescingIdentity right)
+            => !left.Equals(right);
+    }
+
+    private enum CoalescingIdentityKind
+    {
+        Text,
+        Document,
+        ProjectAuthority
     }
 
     private sealed record ActiveRead(

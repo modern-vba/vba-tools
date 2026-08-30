@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Reflection;
 using System.Text.Json.Nodes;
 using VbaLanguageServer.Lsp;
+using VbaLanguageServer.ProjectModel;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -10,6 +11,63 @@ namespace VbaLanguageServer.Tests;
 
 public sealed class VbaInteractiveWorkSchedulerTests
 {
+    [Fact]
+    public async Task Project_authority_coalescing_does_not_join_delimiter_collisions()
+    {
+        var executed = new List<string>();
+        var blockerStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseBlocker = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var blocker = scheduler.AdmitBarrier(
+            "test/block",
+            async cancellationToken =>
+            {
+                blockerStarted.TrySetResult();
+                await releaseBlocker.Task.WaitAsync(cancellationToken);
+            });
+        await blockerStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var firstAuthority = new VbaProjectAuthorityIdentity(
+            VbaProjectResolutionKind.ManifestDocument,
+            "/work/project\u001edocument",
+            "Book1");
+        var secondAuthority = new VbaProjectAuthorityIdentity(
+            VbaProjectResolutionKind.ManifestDocument,
+            "/work/project",
+            "document\u001eBook1");
+        Assert.NotEqual(firstAuthority, secondAuthority);
+        Assert.Equal(firstAuthority.StableKey, secondAuthority.StableKey);
+
+        var first = scheduler.AdmitCoalescibleAdvisoryMutation(
+            "vba/hostClassProjectionSnapshot",
+            firstAuthority,
+            rank: 1,
+            _ =>
+            {
+                executed.Add("first");
+                return Task.CompletedTask;
+            });
+        var second = scheduler.AdmitCoalescibleAdvisoryMutation(
+            "vba/hostClassProjectionSnapshot",
+            secondAuthority,
+            rank: 2,
+            _ =>
+            {
+                executed.Add("second");
+                return Task.CompletedTask;
+            });
+
+        releaseBlocker.TrySetResult();
+        await Task.WhenAll(
+            blocker.Completion,
+            first.Completion,
+            second.Completion).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(["first", "second"], executed);
+    }
+
     [Fact]
     public void Module_identity_metadata_batch_is_a_concurrent_bulk_read()
     {

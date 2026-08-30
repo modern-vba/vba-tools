@@ -647,11 +647,14 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
             await lifecycle.WaitForIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
 
             var manifestPath = Path.GetFullPath(@"C:\work\ReservationFence\vba-project.json");
-            var scopeKey = $"{manifestPath}\u001fBook1";
             var selection = CreateSelection("Library A", "Library B");
+            var supersededScope = CreateCatalogScope(
+                manifestPath,
+                "Book1",
+                selection);
             var supersededState = catalogCache.CaptureSelectionState(
                 selection.References,
-                scopeKey);
+                supersededScope);
             Assert.DoesNotContain(
                 supersededState.CatalogSet.GetActiveDefinitions(selection),
                 definition => definition.Name.StartsWith("Superseded", StringComparison.Ordinal));
@@ -660,7 +663,13 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
             await replacement.WaitAsync(TimeSpan.FromSeconds(5));
             await lifecycle.WaitForIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
 
-            var currentState = catalogCache.CaptureSelectionState(selection.References, scopeKey);
+            var currentScope = CreateCatalogScope(
+                manifestPath,
+                "Book1",
+                CreateSelection("Library B", "Library A"));
+            var currentState = catalogCache.CaptureSelectionState(
+                selection.References,
+                currentScope);
             Assert.Contains(
                 currentState.CatalogSet.GetActiveDefinitions(selection),
                 definition => definition.Name == "CurrentLibraryAType");
@@ -717,11 +726,14 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
 
             var manifestPath = Path.GetFullPath(
                 @"C:\work\RemovedReservationFence\vba-project.json");
-            var removedScopeKey = $"{manifestPath}\u001fBook1";
             var removedSelection = CreateSelection("Removed Library");
+            var removedScope = CreateCatalogScope(
+                manifestPath,
+                "Book1",
+                removedSelection);
             var removedState = catalogCache.CaptureSelectionState(
                 removedSelection.References,
-                removedScopeKey);
+                removedScope);
             Assert.DoesNotContain(
                 removedState.CatalogSet.GetActiveDefinitions(removedSelection),
                 definition => definition.Name == "SupersededRemovedLibraryType");
@@ -1194,7 +1206,9 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
         var mutationLane = new VbaInteractiveReferenceCatalogMutationLane(scheduler);
 
         var commit = mutationLane.CommitAsync(
-            "project:Book1",
+            VbaProjectReferenceCatalogRefreshAuthorityIdentity.Create(
+                scope: null,
+                "project:Book1"),
             () => commitCount++,
             CancellationToken.None);
 
@@ -1229,7 +1243,9 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
         var mutationLane = new VbaInteractiveReferenceCatalogMutationLane(scheduler);
         using var cancellation = new CancellationTokenSource();
         var commit = mutationLane.CommitAsync(
-            "project:Book1",
+            VbaProjectReferenceCatalogRefreshAuthorityIdentity.Create(
+                scope: null,
+                "project:Book1"),
             () => commitCount++,
             cancellation.Token);
 
@@ -1522,12 +1538,20 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
 
         var manifestPath = Path.GetFullPath(@"C:\work\ScopedProject\vba-project.json");
         var selection = CreateSelection("Ambiguous Library");
+        var book1Scope = CreateCatalogScope(
+            manifestPath,
+            "Book1",
+            selection);
+        var book2Scope = CreateCatalogScope(
+            manifestPath,
+            "Book2",
+            selection);
         var book1State = catalogCache.CaptureSelectionState(
             selection.References,
-            $"{manifestPath}\u001fBook1");
+            book1Scope);
         var book2State = catalogCache.CaptureSelectionState(
             selection.References,
-            $"{manifestPath}\u001fBook2");
+            book2Scope);
 
         Assert.Contains(
             book1State.CatalogSet.GetActiveDefinitions(selection),
@@ -1576,11 +1600,14 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
             CreateManifestText("Library A", "Library B"));
         await lifecycle.WaitForIdleAsync();
         var manifestPath = Path.GetFullPath(@"C:\work\Reordered\vba-project.json");
-        var scopeKey = $"{manifestPath}\u001fBook1";
         var selection = CreateSelection("Library A", "Library B");
+        var initialScope = CreateCatalogScope(
+            manifestPath,
+            "Book1",
+            selection);
         var initialState = catalogCache.CaptureSelectionState(
             selection.References,
-            scopeKey);
+            initialScope);
         Assert.Contains(
             initialState.CatalogSet.GetActiveDefinitions(selection),
             definition => definition.Name == "SupersededLibraryAType");
@@ -1593,9 +1620,14 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
             CreateManifestText("Library B", "Library A"));
         await lifecycle.WaitForIdleAsync();
 
+        var reorderedSelection = CreateSelection("Library B", "Library A");
+        var reorderedScope = CreateCatalogScope(
+            manifestPath,
+            "Book1",
+            reorderedSelection);
         var reorderedState = catalogCache.CaptureSelectionState(
             selection.References,
-            scopeKey);
+            reorderedScope);
         var reorderedDefinitions = reorderedState.CatalogSet.GetActiveDefinitions(selection);
         Assert.Contains(
             reorderedDefinitions,
@@ -2318,8 +2350,8 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
                 resolutionSource,
                 observer);
             var initialState = new VbaWorkspaceSnapshotState(
-                new Dictionary<string, VbaTrackedDocument>(),
-                new HashSet<string>(),
+                new Dictionary<VbaDocumentIdentity, VbaTrackedDocument>(),
+                new HashSet<VbaDocumentIdentity>(),
                 Version: 1);
             var changedState = initialState with { Version = 2 };
 
@@ -2372,6 +2404,21 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
 
             Assert.NotSame(beforeA, afterA);
             Assert.Same(beforeB, afterB);
+            Assert.Equal(
+                beforeA.DiagnosticsOwnership?.CacheIdentity,
+                afterA.DiagnosticsOwnership?.CacheIdentity);
+            Assert.Equal(
+                beforeA.DiagnosticsOwnership?.ActiveDocumentIdentity,
+                afterA.DiagnosticsOwnership?.ActiveDocumentIdentity);
+            Assert.True(
+                VbaProjectIdentityModel.TryIdentifyAuthority(
+                    beforeA.Resolution,
+                    out var beforeAuthority));
+            Assert.True(
+                VbaProjectIdentityModel.TryIdentifyAuthority(
+                    afterA.Resolution,
+                    out var afterAuthority));
+            Assert.Equal(beforeAuthority, afterAuthority);
             Assert.Equal(
                 1,
                 observer.Count(VbaProjectReferenceCatalogLifecycleOperation.Commit));
@@ -2513,6 +2560,25 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
             referenceNames
                 .Select(referenceName => new VbaProjectReference(referenceName))
                 .ToArray());
+
+    private static VbaProjectReferenceCatalogScopeIdentity CreateCatalogScope(
+        string manifestPath,
+        string documentName,
+        VbaProjectReferenceSelection selection)
+    {
+        var resolution = new VbaProjectResolution(
+            VbaProjectResolutionKind.ManifestDocument,
+            Path.GetDirectoryName(manifestPath)!,
+            manifestPath,
+            documentName,
+            ProjectDocument.ExcelKind,
+            selection.References);
+        Assert.True(
+            VbaProjectReferenceCatalogScopeIdentity.TryCreate(
+                resolution,
+                out var scope));
+        return scope;
+    }
 
     private sealed class BlockingFirstPlanReservationObserver
         : IReferenceCatalogRefreshPlanObserver
@@ -3132,7 +3198,7 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
 
         public int ResolveCount { get; private set; }
 
-        public long GetRevision(string authorityUri)
+        public long GetRevision(VbaIdentifiedDocument authorityDocument)
             => Version;
 
         public VbaProjectResolution Resolve(string activeUri)

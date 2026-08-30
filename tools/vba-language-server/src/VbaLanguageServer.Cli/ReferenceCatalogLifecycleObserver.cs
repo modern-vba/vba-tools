@@ -1,3 +1,5 @@
+using VbaLanguageServer.ProjectModel;
+
 namespace VbaLanguageServer.SourceModel;
 
 internal enum VbaProjectReferenceCatalogLifecycleOperation
@@ -13,7 +15,8 @@ internal enum VbaProjectReferenceCatalogLifecycleOperation
 
 internal sealed record VbaProjectReferenceCatalogLifecycleEvent(
     VbaProjectReferenceCatalogLifecycleOperation Operation,
-    string? ScopeKey = null,
+    VbaDocumentIdentity? DocumentIdentity = null,
+    VbaProjectAuthorityIdentity? AuthorityIdentity = null,
     string? ReferenceName = null);
 
 internal interface IVbaProjectReferenceCatalogLifecycleObserver

@@ -1,3 +1,5 @@
+using VbaLanguageServer.ProjectModel;
+
 namespace VbaLanguageServer.Lsp;
 
 /// <summary>
@@ -8,13 +10,19 @@ internal sealed class VbaLatestOnlyBackgroundMailbox
     private readonly object gate = new();
     private readonly VbaInteractiveWorkScheduler scheduler;
     private readonly VbaInteractiveBackgroundWorkType workType;
-    private readonly Dictionary<string, PendingWork> pending;
-    private readonly HashSet<string> active;
-    private readonly LinkedList<string> ready = new();
-    private readonly Dictionary<string, LinkedListNode<string>> readyNodes;
-    private readonly Dictionary<string, List<TaskCompletionSource>> authorityIdleWaiters;
+    private readonly Dictionary<AuthorityIdentity, PendingWork> pending;
+    private readonly HashSet<AuthorityIdentity> active;
+    private readonly LinkedList<AuthorityIdentity> ready = new();
+    private readonly Dictionary<
+        AuthorityIdentity,
+        LinkedListNode<AuthorityIdentity>> readyNodes;
+    private readonly Dictionary<
+        AuthorityIdentity,
+        List<TaskCompletionSource>> authorityIdleWaiters;
     private readonly List<TaskCompletionSource> idleWaiters = [];
     private readonly Action<string>? authorityStateChanged;
+    private readonly Action<VbaDocumentIdentity>?
+        documentAuthorityStateChanged;
     private bool stopped;
 
     /// <summary>
@@ -24,18 +32,29 @@ internal sealed class VbaLatestOnlyBackgroundMailbox
         VbaInteractiveWorkScheduler scheduler,
         VbaInteractiveBackgroundWorkType workType,
         IEqualityComparer<string>? authorityComparer = null,
-        Action<string>? authorityStateChanged = null)
+        Action<string>? authorityStateChanged = null,
+        Action<VbaDocumentIdentity>?
+            documentAuthorityStateChanged = null)
     {
         ArgumentNullException.ThrowIfNull(scheduler);
         var comparer = authorityComparer ?? StringComparer.OrdinalIgnoreCase;
         this.scheduler = scheduler;
         this.workType = workType;
         this.authorityStateChanged = authorityStateChanged;
-        pending = new Dictionary<string, PendingWork>(comparer);
-        active = new HashSet<string>(comparer);
-        readyNodes = new Dictionary<string, LinkedListNode<string>>(comparer);
+        this.documentAuthorityStateChanged =
+            documentAuthorityStateChanged;
+        var authorityIdentityComparer =
+            new AuthorityIdentityComparer(comparer);
+        pending = new Dictionary<AuthorityIdentity, PendingWork>(
+            authorityIdentityComparer);
+        active = new HashSet<AuthorityIdentity>(authorityIdentityComparer);
+        readyNodes = new Dictionary<
+            AuthorityIdentity,
+            LinkedListNode<AuthorityIdentity>>(authorityIdentityComparer);
         authorityIdleWaiters =
-            new Dictionary<string, List<TaskCompletionSource>>(comparer);
+            new Dictionary<
+                AuthorityIdentity,
+                List<TaskCompletionSource>>(authorityIdentityComparer);
         scheduler.RegisterCapacityObserver(TryDispatchOne);
     }
 
@@ -48,6 +67,26 @@ internal sealed class VbaLatestOnlyBackgroundMailbox
         Action? onTerminal = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(authorityKey);
+        Post(
+            AuthorityIdentity.FromText(authorityKey),
+            executeAsync,
+            onTerminal);
+    }
+
+    public void Post(
+        VbaDocumentIdentity authority,
+        Func<CancellationToken, Task> executeAsync,
+        Action? onTerminal = null)
+        => Post(
+            AuthorityIdentity.FromDocument(authority),
+            executeAsync,
+            onTerminal);
+
+    private void Post(
+        AuthorityIdentity authority,
+        Func<CancellationToken, Task> executeAsync,
+        Action? onTerminal)
+    {
         ArgumentNullException.ThrowIfNull(executeAsync);
         PendingWork? superseded = null;
         var reject = false;
@@ -59,9 +98,9 @@ internal sealed class VbaLatestOnlyBackgroundMailbox
             }
             else
             {
-                pending.Remove(authorityKey, out superseded);
-                pending[authorityKey] = new PendingWork(executeAsync, onTerminal);
-                EnqueueReadyLocked(authorityKey);
+                pending.Remove(authority, out superseded);
+                pending[authority] = new PendingWork(executeAsync, onTerminal);
+                EnqueueReadyLocked(authority);
             }
         }
 
@@ -69,7 +108,7 @@ internal sealed class VbaLatestOnlyBackgroundMailbox
         if (reject)
         {
             CompleteTerminal(new PendingWork(executeAsync, onTerminal));
-            NotifyAuthorityStateChanged(authorityKey);
+            NotifyAuthorityStateChanged(authority);
             return;
         }
 
@@ -82,13 +121,21 @@ internal sealed class VbaLatestOnlyBackgroundMailbox
     public void Discard(string authorityKey)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(authorityKey);
+        Discard(AuthorityIdentity.FromText(authorityKey));
+    }
+
+    public void Discard(VbaDocumentIdentity authority)
+        => Discard(AuthorityIdentity.FromDocument(authority));
+
+    private void Discard(AuthorityIdentity authority)
+    {
         PendingWork? discarded;
         IdleCompletions completions;
         lock (gate)
         {
-            pending.Remove(authorityKey, out discarded);
-            RemoveReadyLocked(authorityKey);
-            completions = CaptureIdleCompletionsLocked(authorityKey);
+            pending.Remove(authority, out discarded);
+            RemoveReadyLocked(authority);
+            completions = CaptureIdleCompletionsLocked(authority);
         }
 
         CompleteTerminal(discarded);
@@ -101,9 +148,17 @@ internal sealed class VbaLatestOnlyBackgroundMailbox
     public bool IsIdle(string authorityKey)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(authorityKey);
+        return IsIdle(AuthorityIdentity.FromText(authorityKey));
+    }
+
+    public bool IsIdle(VbaDocumentIdentity authority)
+        => IsIdle(AuthorityIdentity.FromDocument(authority));
+
+    private bool IsIdle(AuthorityIdentity authority)
+    {
         lock (gate)
         {
-            return IsIdleLocked(authorityKey);
+            return IsIdleLocked(authority);
         }
     }
 
@@ -113,19 +168,27 @@ internal sealed class VbaLatestOnlyBackgroundMailbox
     public Task WaitForIdleAsync(string authorityKey)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(authorityKey);
+        return WaitForIdleAsync(AuthorityIdentity.FromText(authorityKey));
+    }
+
+    public Task WaitForIdleAsync(VbaDocumentIdentity authority)
+        => WaitForIdleAsync(AuthorityIdentity.FromDocument(authority));
+
+    private Task WaitForIdleAsync(AuthorityIdentity authority)
+    {
         lock (gate)
         {
-            if (IsIdleLocked(authorityKey))
+            if (IsIdleLocked(authority))
             {
                 return Task.CompletedTask;
             }
 
             var waiter = new TaskCompletionSource(
                 TaskCreationOptions.RunContinuationsAsynchronously);
-            if (!authorityIdleWaiters.TryGetValue(authorityKey, out var waiters))
+            if (!authorityIdleWaiters.TryGetValue(authority, out var waiters))
             {
                 waiters = [];
-                authorityIdleWaiters.Add(authorityKey, waiters);
+                authorityIdleWaiters.Add(authority, waiters);
             }
 
             waiters.Add(waiter);
@@ -158,7 +221,7 @@ internal sealed class VbaLatestOnlyBackgroundMailbox
     public void Stop()
     {
         PendingWork[] discarded;
-        string[] affectedAuthorities;
+        AuthorityIdentity[] affectedAuthorities;
         IdleCompletions[] completions;
         lock (gate)
         {
@@ -207,28 +270,37 @@ internal sealed class VbaLatestOnlyBackgroundMailbox
 
     private void TryDispatchOne()
     {
-        string? authorityKey;
+        AuthorityIdentity? authority;
         lock (gate)
         {
-            authorityKey = TakeReadyLocked();
-            if (authorityKey is not null)
+            authority = TakeReadyLocked();
+            if (authority is { } readyAuthority)
             {
-                active.Add(authorityKey);
+                active.Add(readyAuthority);
             }
         }
 
-        if (authorityKey is null)
+        if (authority is not { } authorityKey)
         {
             return;
         }
 
-        if (!scheduler.TryAdmitBackground(
+        var admitted = authorityKey.TryGetDocument(out var documentAuthority)
+            ? scheduler.TryAdmitBackground(
                 workType,
-                authorityKey,
+                documentAuthority,
                 cancellationToken => ExecuteLatestAsync(
                     authorityKey,
                     cancellationToken),
-                out var admission))
+                out var admission)
+            : scheduler.TryAdmitBackground(
+                workType,
+                authorityKey.Text,
+                cancellationToken => ExecuteLatestAsync(
+                    authorityKey,
+                    cancellationToken),
+                out admission);
+        if (!admitted)
         {
             var schedulerAccepting = scheduler.IsAccepting;
             PendingWork? rejected = null;
@@ -258,7 +330,7 @@ internal sealed class VbaLatestOnlyBackgroundMailbox
     }
 
     private async Task ExecuteLatestAsync(
-        string authorityKey,
+        AuthorityIdentity authorityKey,
         CancellationToken cancellationToken)
     {
         PendingWork? work;
@@ -283,7 +355,7 @@ internal sealed class VbaLatestOnlyBackgroundMailbox
     }
 
     private async Task ObserveAdmissionAsync(
-        string authorityKey,
+        AuthorityIdentity authorityKey,
         Task completion)
     {
         try
@@ -321,7 +393,7 @@ internal sealed class VbaLatestOnlyBackgroundMailbox
     }
 
     private void EnqueueReadyLocked(
-        string authorityKey,
+        AuthorityIdentity authorityKey,
         bool retryFirst = false)
     {
         if (active.Contains(authorityKey)
@@ -338,7 +410,7 @@ internal sealed class VbaLatestOnlyBackgroundMailbox
                 : ready.AddLast(authorityKey));
     }
 
-    private string? TakeReadyLocked()
+    private AuthorityIdentity? TakeReadyLocked()
     {
         while (!stopped && ready.First is { } node)
         {
@@ -354,7 +426,7 @@ internal sealed class VbaLatestOnlyBackgroundMailbox
         return null;
     }
 
-    private void RemoveReadyLocked(string authorityKey)
+    private void RemoveReadyLocked(AuthorityIdentity authorityKey)
     {
         if (!readyNodes.Remove(authorityKey, out var node))
         {
@@ -364,12 +436,13 @@ internal sealed class VbaLatestOnlyBackgroundMailbox
         ready.Remove(node);
     }
 
-    private bool IsIdleLocked(string authorityKey)
+    private bool IsIdleLocked(AuthorityIdentity authorityKey)
         => !pending.ContainsKey(authorityKey)
             && !active.Contains(authorityKey)
             && !readyNodes.ContainsKey(authorityKey);
 
-    private IdleCompletions CaptureIdleCompletionsLocked(string authorityKey)
+    private IdleCompletions CaptureIdleCompletionsLocked(
+        AuthorityIdentity authorityKey)
     {
         TaskCompletionSource[]? authorityWaiters = null;
         TaskCompletionSource[]? allWaiters = null;
@@ -418,16 +491,26 @@ internal sealed class VbaLatestOnlyBackgroundMailbox
         }
     }
 
-    private void NotifyAuthorityStateChanged(string? authorityKey)
+    private void NotifyAuthorityStateChanged(
+        AuthorityIdentity? authority)
     {
-        if (authorityStateChanged is null || authorityKey is null)
+        if (authority is not { } authorityKey)
         {
             return;
         }
 
         try
         {
-            authorityStateChanged(authorityKey);
+            if (authorityKey.TryGetText(out var textAuthority))
+            {
+                authorityStateChanged?.Invoke(textAuthority);
+            }
+            else if (authorityKey.TryGetDocument(
+                out var documentAuthority))
+            {
+                documentAuthorityStateChanged?.Invoke(
+                    documentAuthority);
+            }
         }
         catch (Exception)
         {
@@ -455,7 +538,67 @@ internal sealed class VbaLatestOnlyBackgroundMailbox
         Action? OnTerminal);
 
     private sealed record IdleCompletions(
-        string? AuthorityKey,
+        AuthorityIdentity? AuthorityKey,
         TaskCompletionSource[]? AuthorityWaiters,
         TaskCompletionSource[]? AllWaiters);
+
+    private readonly struct AuthorityIdentity
+    {
+        private readonly string? text;
+        private readonly VbaDocumentIdentity document;
+
+        private AuthorityIdentity(
+            string? text,
+            VbaDocumentIdentity document)
+        {
+            this.text = text;
+            this.document = document;
+        }
+
+        internal string Text
+            => text
+                ?? throw new InvalidOperationException(
+                    "A document authority has no text key.");
+
+        internal static AuthorityIdentity FromText(string text)
+            => new(text, default);
+
+        internal static AuthorityIdentity FromDocument(
+            VbaDocumentIdentity document)
+            => new(text: null, document);
+
+        internal bool TryGetText(out string value)
+        {
+            value = text ?? "";
+            return text is not null;
+        }
+
+        internal bool TryGetDocument(
+            out VbaDocumentIdentity value)
+        {
+            value = document;
+            return text is null;
+        }
+    }
+
+    private sealed class AuthorityIdentityComparer(
+        IEqualityComparer<string> textComparer)
+        : IEqualityComparer<AuthorityIdentity>
+    {
+        public bool Equals(AuthorityIdentity left, AuthorityIdentity right)
+            => left.TryGetText(out var leftText)
+                ? right.TryGetText(out var rightText)
+                    && textComparer.Equals(leftText, rightText)
+                : !right.TryGetText(out _)
+                    && left.TryGetDocument(out var leftDocument)
+                    && right.TryGetDocument(out var rightDocument)
+                    && leftDocument == rightDocument;
+
+        public int GetHashCode(AuthorityIdentity identity)
+            => identity.TryGetText(out var text)
+                ? HashCode.Combine(0, textComparer.GetHashCode(text))
+                : identity.TryGetDocument(out var document)
+                    ? HashCode.Combine(1, document.GetHashCode())
+                    : 0;
+    }
 }

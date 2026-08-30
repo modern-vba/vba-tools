@@ -37,12 +37,13 @@ The deep `VbaProjectDiskInventory` Module provides one shared filesystem
 Implementation and cache for cold project-snapshot materialization, watched
 source reload, and background reconciliation. `VbaProjectReconciler` depends on
 it through a one-method observation Seam whose immutable disk-only request
-contains the resolved project disk scope, ordered manifest probes, barrier
-overrides, observed barrier URIs, and open-source URI exclusions. Open text,
-document versions, authority keys, authority generations, workspace and
-manifest revisions, and known-source baselines stay in the reconciler and
-workspace reconciliation scope; the inventory does not receive them or decide
-whether an observation may commit. Production
+contains the resolved project disk scope, ordered typed manifest probes, typed
+barrier overrides, typed observed-barrier document identities, and typed
+open-source exclusion identities. Open text, document versions, authority
+keys, authority generations, workspace and manifest revisions, and
+known-source baselines stay in the reconciler and workspace reconciliation
+scope; the inventory does not receive them or decide whether an observation
+may commit. Production
 and deterministic test Adapters use that same narrow observation Interface.
 The filesystem Adapter owns source extension enumeration,
 recursive versus top-directory scope, nested-manifest ownership, path/URI
@@ -57,6 +58,11 @@ stable-reads bytes, even when length and timestamp are unchanged. Deterministic
 tests count every operation at the inventory Seam and require a warm
 interactive capture to add no inventory call, manifest read, source
 enumeration, metadata query, source read, or project/semantic rebuild.
+Snapshot cache and reconciliation Interfaces receive structural project,
+authority, and document identities. Active, tracked, open, revision, and
+manifest-barrier documents are projected once to `VbaDocumentIdentity` or
+`VbaIdentifiedDocument`; presentation URIs remain adjacent protocol or
+filesystem data and are not delimiter-composed cache keys.
 Disk changes become visible through accepted watcher events, reconciliation,
 or an explicit reload; an unreported raw disk write may remain stale while the
 warm snapshot is valid.
@@ -86,6 +92,27 @@ a manifest-backed project and canonical source root for an ad-hoc project. It
 excludes references, CommonModules, source content, and cache-forming inputs.
 Presentation paths and protocol URI spellings never substitute for either
 authority identity.
+
+`VbaProjectSnapshotIdentity` composes that typed authority with the canonical
+source root, selected document kind, ordered semantic reference selection,
+source-template selection, and order-independent CommonModules module-file
+membership. Snapshot cache lookup, batch deduplication, supersession, scope
+invalidation, retirement, and reconciliation resolution comparison retain this
+opaque type end to end; they do not unwrap it into a caller-composed string.
+Equivalent active documents in one manifest document therefore share a warm
+snapshot, while a snapshot-forming manifest transition replaces only the
+snapshot identity. Source text and `DiskContentIdentity` remain outside it and
+continue to advance the existing revision and reconciliation fences.
+
+Reference-catalog work uses three adjacent typed identities rather than the full
+snapshot identity. `VbaProjectReferenceCatalogScopeIdentity` combines project
+authority and `ReferenceSelectionFingerprint` for cache lookup and persistence;
+its public `CreatePersistentKey` method is the opaque cross-process serialization
+boundary. `VbaProjectReferenceCatalogRefreshAuthorityIdentity` combines optional
+project authority with one reference name while excluding the selection, so a
+newer selection supersedes older commits for that catalog. Automatic work uses
+`VbaProjectReferenceCatalogAutomaticWorkIdentity`: the selection plus project
+authority only when discovery is context-specific.
 
 Background reconciliation keeps that stable authority identity separate from a
 manifest's mutable content identity. Authority transitions use one
@@ -122,9 +149,12 @@ authority state or blocking later effects or peer scopes.
 
 An accepted manifest mutation requests an immediate reconciliation follow-up
 so newly exposed ancestors and descendants converge without waiting for the
-next cadence. Rejected mutations retry only while their captured fingerprint
-makes new progress, and one trigger stops after 32 passes to bound filesystem
-churn; every pass remains cancellation-aware.
+next cadence. Rejected mutations retry only while their structural
+`VbaProjectReconciliationRejectedProgressIdentity` makes new progress. That
+typed identity contains project authority, rejection and mutation kinds,
+captured revision fences, and ordered typed document/revision facts rather than
+a delimiter-based path or URI fingerprint. One trigger stops after 32 passes to
+bound filesystem churn; every pass remains cancellation-aware.
 
 Effective disk and unsaved manifest overlays are project ownership barriers. An
 outer recursive inventory or reconciliation scan excludes sources below a
@@ -350,10 +380,11 @@ Reference-catalog preload and discovery are project-lifecycle background work,
 not source-edit work. Interactive requests read the best committed catalog and
 never await discovery. A catalog commit re-enters the ordered mutation lane and
 invalidates only scopes whose selected reference state changed.
-Refresh-start plans fence each selected `ScopeKey`, independently of the source
-or manifest URI used as the mailbox authority. Manifest replacement, document
-removal, and deactivation invalidate the affected scope revisions. Execution
-skips stale selections without discarding fresh peer scopes from the same plan.
+Refresh-start plans fence each selected `VbaProjectAuthorityIdentity`,
+independently of the typed manifest-document identity used as the mailbox
+authority. Manifest replacement, document removal, and deactivation invalidate
+the affected scope revisions. Execution skips stale selections without
+discarding fresh peer scopes from the same plan.
 
 ## Safety fallback matrix
 

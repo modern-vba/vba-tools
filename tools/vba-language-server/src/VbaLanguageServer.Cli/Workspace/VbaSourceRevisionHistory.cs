@@ -2,6 +2,11 @@ using VbaLanguageServer.ProjectModel;
 
 namespace VbaLanguageServer.Workspace;
 
+internal sealed record VbaSourceRevision(
+    VbaDocumentIdentity DocumentIdentity,
+    string Uri,
+    long Revision);
+
 /// <summary>
 /// Retains only source revisions that may invalidate an active or not-yet-started capture.
 /// </summary>
@@ -9,7 +14,7 @@ internal sealed class VbaSourceRevisionHistory
 {
     private readonly object gate = new();
     private readonly bool retainOnlyWhileCapturesActive;
-    private readonly Dictionary<VbaDocumentIdentity, SourceRevision>
+    private readonly Dictionary<VbaDocumentIdentity, VbaSourceRevision>
         revisions = [];
     private readonly SortedDictionary<long, int> activeWatermarks = [];
 
@@ -43,15 +48,10 @@ internal sealed class VbaSourceRevisionHistory
         return new CaptureLease(this, watermark);
     }
 
-    public void Record(string uri, long revision)
+    public void Record(
+        VbaIdentifiedDocument document,
+        long revision)
     {
-        if (!VbaProjectIdentityModel.TryIdentifyDocument(
-                uri,
-                out var identity))
-        {
-            return;
-        }
-
         lock (gate)
         {
             if (retainOnlyWhileCapturesActive
@@ -60,34 +60,29 @@ internal sealed class VbaSourceRevisionHistory
                 return;
             }
 
-            revisions[identity] = new SourceRevision(uri, revision);
+            revisions[document.Identity] =
+                new VbaSourceRevision(
+                    document.Identity,
+                    document.Uri,
+                    revision);
         }
     }
 
-    public long GetRevision(string uri)
+    public long GetRevision(VbaDocumentIdentity documentIdentity)
     {
-        if (!VbaProjectIdentityModel.TryIdentifyDocument(
-                uri,
-                out var identity))
-        {
-            return 0;
-        }
-
         lock (gate)
         {
-            return revisions.TryGetValue(identity, out var revision)
+            return revisions.TryGetValue(documentIdentity, out var revision)
                 ? revision.Revision
                 : 0;
         }
     }
 
-    public IReadOnlyList<(string Uri, long Revision)> CaptureEntries()
+    public IReadOnlyList<VbaSourceRevision> CaptureEntries()
     {
         lock (gate)
         {
-            return revisions.Values
-                .Select(revision => (revision.Uri, revision.Revision))
-                .ToArray();
+            return revisions.Values.ToArray();
         }
     }
 
@@ -135,8 +130,6 @@ internal sealed class VbaSourceRevisionHistory
             revisions.Remove(key);
         }
     }
-
-    private sealed record SourceRevision(string Uri, long Revision);
 
     private sealed class CaptureLease : IDisposable
     {

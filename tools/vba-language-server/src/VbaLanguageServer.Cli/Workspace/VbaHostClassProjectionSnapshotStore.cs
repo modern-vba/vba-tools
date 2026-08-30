@@ -13,11 +13,6 @@ internal sealed record VbaHostClassProjectionSnapshotUpdate(
     long Revision,
     VbaHostClassProjectionSnapshot? Snapshot)
 {
-    public string? CoalescingKey
-        => TryGetAuthority(out var authority)
-            ? authority.StableKey
-            : null;
-
     internal bool TryGetAuthority(
         out VbaProjectAuthorityIdentity authority)
         => VbaProjectIdentityModel.TryIdentifyAuthority(

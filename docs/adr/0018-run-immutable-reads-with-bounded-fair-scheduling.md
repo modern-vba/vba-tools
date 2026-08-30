@@ -129,7 +129,8 @@ catalog task cannot admit work after the scheduler closes.
 The reference-catalog mailbox owns only refresh-start replacement and
 admission. Trace and result publication remain non-latest, best-effort
 scheduler work. Each refresh plan carries coordinator-owned revisions for its
-selection `ScopeKey` values. Replacement reserves every selected scope, while
+selected `VbaProjectAuthorityIdentity` values. Replacement reserves every
+selected scope, while
 manifest deactivation or document removal invalidates every matching scope
 revision even after the mailbox has taken an older plan for execution. Plan
 execution skips only stale selections, preserving fresh peer scopes in the same

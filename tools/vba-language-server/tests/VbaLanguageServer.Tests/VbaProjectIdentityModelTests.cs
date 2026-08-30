@@ -1,3 +1,4 @@
+using VbaLanguageServer.Lsp;
 using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.SourceModel;
 using VbaLanguageServer.Workspace;
@@ -58,6 +59,21 @@ public sealed class VbaProjectIdentityModelTests
     }
 
     [Fact]
+    public void Distinct_document_uris_deduplicate_through_typed_document_identity()
+    {
+        const string canonicalUri =
+            "untitled://workspace/Module.bas";
+        const string equivalentUri =
+            "untitled://WORKSPACE/Folder/../Module.bas";
+        const string unidentified = "not a uri";
+
+        Assert.Equal(
+            [canonicalUri, unidentified],
+            VbaProjectIdentityModel.DistinctDocumentUris(
+                [canonicalUri, equivalentUri, unidentified, unidentified]));
+    }
+
+    [Fact]
     public void Raw_local_paths_cannot_enter_the_document_uri_identity_boundary()
     {
         Assert.False(
@@ -80,6 +96,250 @@ public sealed class VbaProjectIdentityModelTests
             VbaProjectIdentityModel.TryIdentifyDocument(
                 "\\\\server\\share\\Module.bas",
                 out _));
+    }
+
+    [Fact]
+    public void Project_identity_relations_do_not_accept_raw_uri_strings()
+    {
+        var identityMethods = typeof(VbaProjectIdentityModel).GetMethods(
+            System.Reflection.BindingFlags.Static
+                | System.Reflection.BindingFlags.Public
+                | System.Reflection.BindingFlags.NonPublic);
+
+        Assert.DoesNotContain(
+            identityMethods,
+            method => method.Name == "UsesManifestUri");
+        Assert.DoesNotContain(
+            identityMethods,
+            method => method.Name == "Relate"
+                && method.GetParameters()[0].ParameterType == typeof(string));
+    }
+
+    [Fact]
+    public void Workspace_document_state_and_snapshot_capture_use_typed_identity()
+    {
+        var workspaceType = typeof(VbaLanguageWorkspace);
+        foreach (var fieldName in new[] { "documents", "acceptedRevisions" })
+        {
+            var field = workspaceType.GetField(
+                fieldName,
+                System.Reflection.BindingFlags.Instance
+                    | System.Reflection.BindingFlags.NonPublic);
+            Assert.NotNull(field);
+            Assert.Equal(
+                typeof(VbaDocumentIdentity),
+                field.FieldType.GetGenericArguments()[0]);
+        }
+
+        Assert.Null(
+            workspaceType.GetMethod(
+                "FindDocumentKey",
+                System.Reflection.BindingFlags.Instance
+                    | System.Reflection.BindingFlags.NonPublic));
+        Assert.Null(
+            workspaceType.GetMethod(
+                "FindAcceptedRevisionKey",
+                System.Reflection.BindingFlags.Instance
+                    | System.Reflection.BindingFlags.NonPublic));
+        Assert.Null(typeof(VbaWorkspaceSnapshotState).GetProperty("Documents"));
+        Assert.DoesNotContain(
+            typeof(VbaProjectSnapshotBuilder)
+                .GetMethod("CreateInventorySnapshot")!
+                .GetParameters(),
+            parameter => parameter.ParameterType
+                == typeof(IReadOnlyDictionary<string, VbaTrackedDocument>));
+    }
+
+    [Fact]
+    public void Disk_project_scope_keeps_authority_typed_without_a_raw_manifest_identity()
+    {
+        var scopeType = typeof(VbaProjectDiskProjectScope);
+
+        Assert.Equal(
+            typeof(VbaProjectAuthorityIdentity?),
+            scopeType.GetProperty("AuthorityIdentity")?.PropertyType);
+        Assert.Null(scopeType.GetProperty("OwningManifestPath"));
+    }
+
+    [Fact]
+    public void Manifest_barrier_cache_uses_typed_document_identities()
+    {
+        var snapshotType = typeof(VbaProjectManifestBarrierSnapshot);
+
+        Assert.Equal(
+            typeof(IReadOnlyDictionary<VbaDocumentIdentity, bool>),
+            snapshotType.GetProperty("Overrides")?.PropertyType);
+        Assert.Equal(
+            typeof(IReadOnlyDictionary<VbaDocumentIdentity, long>),
+            snapshotType.GetProperty("ReconciliationRevisions")?.PropertyType);
+    }
+
+    [Fact]
+    public void Manifest_workspace_cache_and_revision_fences_use_typed_document_identity()
+    {
+        var workspaceType = typeof(VbaProjectManifestWorkspace);
+        foreach (var fieldName in new[]
+        {
+            "states",
+            "reconciliationRevisions",
+            "effectiveScopeRevisions",
+            "reconciliationBaselines",
+            "lastKnownGoodDiskManifests"
+        })
+        {
+            var field = workspaceType.GetField(
+                fieldName,
+                System.Reflection.BindingFlags.Instance
+                    | System.Reflection.BindingFlags.NonPublic);
+            Assert.NotNull(field);
+            Assert.Equal(
+                typeof(VbaDocumentIdentity),
+                field.FieldType.GetGenericArguments()[0]);
+        }
+
+        var getRevision = Assert.Single(
+            typeof(IVbaProjectManifestResolutionSource).GetMethods(),
+            method => method.Name == "GetRevision");
+        Assert.Equal(
+            typeof(VbaIdentifiedDocument),
+            getRevision.GetParameters()[0].ParameterType);
+    }
+
+    [Fact]
+    public void Reconciliation_scope_does_not_expose_open_source_uri_identities()
+    {
+        Assert.Null(
+            typeof(VbaProjectReconciliationScope)
+                .GetProperty("OpenSourceUris"));
+        Assert.Null(
+            typeof(VbaProjectReconciliationScope)
+                .GetProperty("OpenDocumentUris"));
+        Assert.Null(
+            typeof(ReconciliationChange)
+                .GetProperty("CapturedOpenSourceUris"));
+        Assert.Equal(
+            typeof(IReadOnlyList<VbaIdentifiedDocument>),
+            typeof(VbaProjectReconciliationScope)
+                .GetProperty("OpenSources")?.PropertyType);
+        Assert.Equal(
+            typeof(IReadOnlyList<VbaDocumentIdentity>),
+            typeof(ReconciliationChange)
+                .GetProperty("CapturedOpenSourceIdentities")?.PropertyType);
+    }
+
+    [Fact]
+    public void Source_revision_and_snapshot_invalidation_fences_accept_typed_identity()
+    {
+        var record = Assert.Single(
+            typeof(VbaSourceRevisionHistory).GetMethods(),
+            method => method.Name == "Record");
+        var getRevision = Assert.Single(
+            typeof(VbaSourceRevisionHistory).GetMethods(),
+            method => method.Name == "GetRevision");
+        var invalidateSource = Assert.Single(
+            typeof(VbaProjectSnapshotProvider).GetMethods(),
+            method => method.Name == "InvalidateSource");
+        var retireInactiveScopes = Assert.Single(
+            typeof(VbaProjectSnapshotProvider).GetMethods(),
+            method => method.Name == "RetireInactiveScopes");
+
+        Assert.Equal(
+            typeof(VbaIdentifiedDocument),
+            record.GetParameters()[0].ParameterType);
+        Assert.Equal(
+            typeof(VbaDocumentIdentity),
+            getRevision.GetParameters()[0].ParameterType);
+        Assert.Equal(
+            typeof(VbaIdentifiedDocument),
+            invalidateSource.GetParameters()[0].ParameterType);
+        Assert.Equal(
+            typeof(IReadOnlyList<VbaIdentifiedDocument>),
+            retireInactiveScopes.GetParameters()[0].ParameterType);
+    }
+
+    [Fact]
+    public void Manifest_reconciliation_interfaces_accept_typed_document_identity()
+    {
+        var targetConstructor = Assert.Single(
+            typeof(VbaProjectManifestReconciliationTarget)
+                .GetConstructors());
+        Assert.Equal(
+            typeof(VbaIdentifiedDocument),
+            targetConstructor.GetParameters()[0].ParameterType);
+
+        foreach (var methodName in new[]
+        {
+            "CaptureReconciliationState",
+            "GetReconciliationBaseline",
+            "GetReconciliationRevision",
+            "ReloadReconciledManifest",
+            "DeleteReconciledManifest"
+        })
+        {
+            var method = Assert.Single(
+                typeof(VbaProjectManifestWorkspace).GetMethods(),
+                candidate => candidate.Name == methodName);
+            Assert.Equal(
+                typeof(VbaIdentifiedDocument),
+                method.GetParameters()[0].ParameterType);
+        }
+    }
+
+    [Fact]
+    public void Snapshot_provider_cache_entrypoints_accept_typed_documents()
+    {
+        var providerType = typeof(VbaProjectSnapshotProvider);
+        var createOne = Assert.Single(
+            providerType.GetMethods(),
+            method => method.Name == "CreateProjectSnapshot");
+        var createMany = Assert.Single(
+            providerType.GetMethods(),
+            method => method.Name == "CreateProjectSnapshots");
+        var applyHostProjection = Assert.Single(
+            providerType.GetMethods(),
+            method => method.Name
+                == "TryApplyHostClassProjectionSnapshot");
+
+        Assert.Equal(
+            typeof(VbaIdentifiedDocument),
+            createOne.GetParameters()[0].ParameterType);
+        Assert.Equal(
+            typeof(IReadOnlyList<VbaIdentifiedDocument>),
+            createMany.GetParameters()[0].ParameterType);
+        Assert.Equal(
+            typeof(IReadOnlyList<VbaIdentifiedDocument>),
+            applyHostProjection.GetParameters()[1].ParameterType);
+        Assert.Equal(
+            typeof(IReadOnlyDictionary<
+                VbaDocumentIdentity,
+                VbaTrackedDocument>),
+            typeof(VbaWorkspaceSnapshotState)
+                .GetProperty("DocumentsByIdentity")?.PropertyType);
+        Assert.Equal(
+            typeof(Dictionary<
+                VbaDocumentIdentity,
+                VbaTrackedDocument>),
+            typeof(VbaProjectSourceInventorySnapshot)
+                .GetProperty("DocumentsByIdentity")?.PropertyType);
+    }
+
+    [Fact]
+    public void Transferred_project_ownership_accepts_typed_document_identity()
+    {
+        var root = CreateRoot("typed-transfer-ownership");
+        var resolution = ManifestResolution(
+            Path.Combine(root, "src"),
+            Path.Combine(root, "vba-project.json"),
+            "Book1");
+        Assert.True(
+            VbaProjectIdentityModel.TryIdentifyDocument(
+                new Uri(Path.Combine(root, "src", "Module.bas")).AbsoluteUri,
+                out var documentIdentity));
+
+        Assert.True(
+            VbaProjectIdentityModel.OwnsTransferredProjectDocument(
+                resolution,
+                documentIdentity));
     }
 
     [Fact]
@@ -138,6 +398,345 @@ public sealed class VbaProjectIdentityModelTests
     }
 
     [Fact]
+    public void Snapshot_identity_canonicalizes_equivalent_snapshot_forming_facts()
+    {
+        var root = CreateRoot("snapshot-canonicalization");
+        var manifestPath = Path.Combine(root, "vba-project.json");
+        var sourceRoot = Path.Combine(root, "src", "Book1");
+        var sourceTemplatePath = Path.Combine(root, "templates", "Book1.xlsm");
+        var first = ManifestResolution(
+            sourceRoot,
+            manifestPath,
+            "Book1") with
+        {
+            DocumentKind = " excel ",
+            References =
+            [
+                new VbaProjectReference(" Office "),
+                new VbaProjectReference("Scripting")
+            ],
+            SourceTemplatePath = sourceTemplatePath,
+            CommonModules =
+            [
+                new InstalledCommonModule(
+                    "Second",
+                    "Second.bas",
+                    Requested: true,
+                    TestOnly: false),
+                new InstalledCommonModule(
+                    "First",
+                    "First.bas",
+                    Requested: false,
+                    TestOnly: true)
+            ]
+        };
+        var equivalent = ManifestResolution(
+            Path.Combine(sourceRoot, "Nested", ".."),
+            Path.Combine(root, "Nested", "..", "vba-project.json"),
+            "book1") with
+        {
+            DocumentKind = "EXCEL",
+            References =
+            [
+                new VbaProjectReference("office", requested: false),
+                new VbaProjectReference(" scripting ", requested: false)
+            ],
+            SourceTemplatePath = Path.Combine(
+                root,
+                "templates",
+                "Nested",
+                "..",
+                "Book1.xlsm"),
+            CommonModules =
+            [
+                new InstalledCommonModule(
+                    "First renamed",
+                    "first.BAS",
+                    Requested: true,
+                    TestOnly: false,
+                    Orphaned: true),
+                new InstalledCommonModule(
+                    "Second renamed",
+                    "SECOND.bas",
+                    Requested: false,
+                    TestOnly: true,
+                    Orphaned: true)
+            ]
+        };
+
+        var firstIdentity = CreateSnapshotIdentity(
+            new Uri(Path.Combine(sourceRoot, "First.bas")).AbsoluteUri,
+            first);
+        var equivalentIdentity = CreateSnapshotIdentity(
+            new Uri(Path.Combine(sourceRoot, "Second.bas")).AbsoluteUri,
+            equivalent);
+
+        Assert.Equal(firstIdentity, equivalentIdentity);
+        Assert.Equal(
+            firstIdentity.GetHashCode(),
+            equivalentIdentity.GetHashCode());
+    }
+
+    [Fact]
+    public void Snapshot_forming_changes_replace_snapshot_identity_without_replacing_authority()
+    {
+        var root = CreateRoot("snapshot-replacement");
+        var manifestPath = Path.Combine(root, "vba-project.json");
+        var sourceRoot = Path.Combine(root, "src", "Book1");
+        var activeUri = new Uri(
+            Path.Combine(sourceRoot, "Main.bas"))
+            .AbsoluteUri;
+        var baseline = ManifestResolution(
+            sourceRoot,
+            manifestPath,
+            "Book1") with
+        {
+            DocumentKind = "excel",
+            References = [new VbaProjectReference("Office")],
+            SourceTemplatePath = Path.Combine(root, "templates", "Book1.xlsm"),
+            CommonModules =
+            [
+                new InstalledCommonModule(
+                    "Shared",
+                    "Shared.bas",
+                    Requested: true,
+                    TestOnly: false)
+            ]
+        };
+        VbaProjectResolution[] replacements =
+        [
+            baseline with
+            {
+                RootPath = Path.Combine(root, "src", "Moved")
+            },
+            baseline with { DocumentKind = "word" },
+            baseline with
+            {
+                References = [new VbaProjectReference("Scripting")]
+            },
+            baseline with
+            {
+                SourceTemplatePath = Path.Combine(
+                    root,
+                    "templates",
+                    "Other.xlsm")
+            },
+            baseline with
+            {
+                CommonModules =
+                [
+                    new InstalledCommonModule(
+                        "Other",
+                        "Other.bas",
+                        Requested: true,
+                        TestOnly: false)
+                ]
+            }
+        ];
+
+        Assert.True(
+            VbaProjectIdentityModel.TryIdentifyAuthority(
+                baseline,
+                out var baselineAuthority));
+        var baselineSnapshot = CreateSnapshotIdentity(
+            activeUri,
+            baseline);
+        foreach (var replacement in replacements)
+        {
+            Assert.True(
+                VbaProjectIdentityModel.TryIdentifyAuthority(
+                    replacement,
+                    out var replacementAuthority));
+            Assert.Equal(baselineAuthority, replacementAuthority);
+            Assert.NotEqual(
+                baselineSnapshot,
+                CreateSnapshotIdentity(
+                    activeUri,
+                    replacement));
+        }
+    }
+
+    [Fact]
+    public void Snapshot_identity_stays_separate_from_document_and_disk_content_identity()
+    {
+        var root = CreateRoot("snapshot-separation");
+        var sourceRoot = Path.Combine(root, "src", "Book1");
+        var resolution = ManifestResolution(
+            sourceRoot,
+            Path.Combine(root, "vba-project.json"),
+            "Book1") with
+        {
+            DocumentKind = "excel"
+        };
+        var firstUri = new Uri(
+            Path.Combine(sourceRoot, "First.bas"))
+            .AbsoluteUri;
+        var secondUri = new Uri(
+            Path.Combine(sourceRoot, "Second.bas"))
+            .AbsoluteUri;
+
+        Assert.True(
+            VbaProjectIdentityModel.TryIdentifyDocument(
+                firstUri,
+                out var firstDocument));
+        Assert.True(
+            VbaProjectIdentityModel.TryIdentifyDocument(
+                secondUri,
+                out var secondDocument));
+        Assert.NotEqual(firstDocument, secondDocument);
+        Assert.Equal(
+            CreateSnapshotIdentity(firstUri, resolution),
+            CreateSnapshotIdentity(secondUri, resolution));
+        Assert.NotEqual(
+            VbaProjectDiskContentIdentity.FromText("before"),
+            VbaProjectDiskContentIdentity.FromText("after"));
+    }
+
+    [Fact]
+    public void Snapshot_identity_is_opaque_and_is_the_cache_table_key()
+    {
+        var identityType = typeof(VbaProjectSnapshotIdentity);
+        Assert.Null(identityType.GetProperty("Key"));
+        Assert.All(
+            identityType.GetConstructors(
+                System.Reflection.BindingFlags.Instance
+                | System.Reflection.BindingFlags.Public
+                | System.Reflection.BindingFlags.NonPublic),
+            constructor => Assert.True(constructor.IsPrivate));
+        Assert.Equal(
+            typeof(VbaProjectAuthorityIdentity?),
+            identityType.GetField(
+                "authority",
+                System.Reflection.BindingFlags.Instance
+                | System.Reflection.BindingFlags.NonPublic)
+                ?.FieldType);
+        Assert.Equal(
+            typeof(VbaDocumentIdentity),
+            Assert.Single(
+                identityType.GetMethod("Create")!.GetParameters(),
+                parameter => parameter.Name == "activeDocumentIdentity")
+                .ParameterType);
+
+        var providerType = typeof(VbaProjectSnapshotProvider);
+        foreach (var fieldName in new[]
+        {
+            "cache",
+            "scopeInvalidationStates",
+            "scopeAuthoritySeeds"
+        })
+        {
+            var field = providerType.GetField(
+                fieldName,
+                System.Reflection.BindingFlags.Instance
+                | System.Reflection.BindingFlags.NonPublic);
+            Assert.NotNull(field);
+            Assert.Equal(
+                identityType,
+                field.FieldType.GetGenericArguments()[0]);
+        }
+
+        foreach (var nestedTypeName in new[]
+        {
+            "WarmProjectScopeSeed",
+            "PreferredRetirementScope"
+        })
+        {
+            var nestedType = providerType.GetNestedType(
+                nestedTypeName,
+                System.Reflection.BindingFlags.NonPublic);
+            Assert.NotNull(nestedType);
+            Assert.Equal(
+                identityType,
+                nestedType.GetProperty("CacheIdentity")?.PropertyType);
+        }
+    }
+
+    [Fact]
+    public void Reconciliation_fence_observers_receive_typed_authority_identity()
+    {
+        foreach (var observerMethod in new[]
+        {
+            typeof(IVbaProjectReconciliationAuthorityLeaseObserver)
+                .GetMethod("AuthorityLeaseAcquired"),
+            typeof(IVbaProjectDiskReconciliationCommitObserver)
+                .GetMethod("ScopeFenceValidated")
+        })
+        {
+            Assert.NotNull(observerMethod);
+            Assert.Equal(
+                typeof(VbaProjectAuthorityIdentity),
+                observerMethod.GetParameters()[0].ParameterType);
+        }
+    }
+
+    [Fact]
+    public void Reconciliation_progress_does_not_expose_a_composite_string_identity()
+    {
+        var identityProperty = typeof(VbaProjectReconciliationProgress)
+            .GetProperty("Identity");
+
+        Assert.NotNull(identityProperty);
+        Assert.NotEqual(typeof(string), identityProperty.PropertyType);
+    }
+
+    [Fact]
+    public void Rejected_reconciliation_progress_identity_is_structural()
+    {
+        var root = CreateRoot("reconciliation-progress-identity");
+        Assert.True(
+            VbaProjectIdentityModel.TryIdentifyAuthority(
+                ManifestResolution(
+                    Path.Combine(root, "src"),
+                    Path.Combine(root, "vba-project.json"),
+                    "Book1"),
+                out var authority));
+        Assert.True(
+            VbaProjectIdentityModel.TryIdentifyDocument(
+                "untitled://workspace/A@1,B",
+                out var singleDocument));
+        Assert.True(
+            VbaProjectIdentityModel.TryIdentifyDocument(
+                "untitled://workspace/A",
+                out var firstDocument));
+        Assert.True(
+            VbaProjectIdentityModel.TryIdentifyDocument(
+                "untitled://workspace/B",
+                out var secondDocument));
+
+        var single = new VbaProjectReconciliationRejectedProgressIdentity(
+            VbaProjectReconciliationRejectionReason.Scope,
+            VbaProjectReconciliationMutationKind.Reload,
+            authority,
+            manifestBarrierRevision: 1,
+            authorityGeneration: 2,
+            [
+                new VbaProjectReconciliationDocumentRevisionIdentity(
+                    singleDocument,
+                    Revision: 3)
+            ],
+            fallbackDocumentIdentity: null,
+            fallbackRevision: 0);
+        var split = new VbaProjectReconciliationRejectedProgressIdentity(
+            VbaProjectReconciliationRejectionReason.Scope,
+            VbaProjectReconciliationMutationKind.Reload,
+            authority,
+            manifestBarrierRevision: 1,
+            authorityGeneration: 2,
+            [
+                new VbaProjectReconciliationDocumentRevisionIdentity(
+                    firstDocument,
+                    Revision: 3),
+                new VbaProjectReconciliationDocumentRevisionIdentity(
+                    secondDocument,
+                    Revision: 3)
+            ],
+            fallbackDocumentIdentity: null,
+            fallbackRevision: 0);
+
+        Assert.NotEqual(single, split);
+    }
+
+    [Fact]
     public void Host_projection_coalescing_uses_canonical_project_authority()
     {
         var root = CreateRoot("host-projection-authority");
@@ -160,9 +759,11 @@ public sealed class VbaProjectIdentityModelTests
             Revision: 2,
             Snapshot: null);
 
-        Assert.NotNull(first.CoalescingKey);
-        Assert.Equal(first.CoalescingKey, equivalent.CoalescingKey);
-        Assert.Null(
+        Assert.True(first.TryGetAuthority(out var firstAuthority));
+        Assert.True(
+            equivalent.TryGetAuthority(out var equivalentAuthority));
+        Assert.Equal(firstAuthority, equivalentAuthority);
+        Assert.False(
             new VbaHostClassProjectionSnapshotUpdate(
                 new VbaHostClassProjectionContext(
                     "\0",
@@ -170,7 +771,10 @@ public sealed class VbaProjectIdentityModelTests
                     Path.Combine(root, "Book1.xlsm")),
                 Revision: 3,
                 Snapshot: null)
-                .CoalescingKey);
+                .TryGetAuthority(out _));
+        Assert.Null(
+            typeof(VbaHostClassProjectionSnapshotUpdate)
+                .GetProperty("CoalescingKey"));
     }
 
     [Theory]
@@ -445,24 +1049,13 @@ public sealed class VbaProjectIdentityModelTests
     [Theory]
     [InlineData("not a uri")]
     [InlineData("relative/Module.bas")]
-    public void Malformed_or_non_absolute_subject_is_indeterminate(
+    public void Malformed_or_non_absolute_subject_cannot_enter_typed_relations(
         string subjectUri)
     {
-        var root = CreateRoot("invalid-subject");
-        var authority = new VbaProjectResolution(
-            VbaProjectResolutionKind.AdHoc,
-            root);
-
-        var relation = VbaProjectIdentityModel.Relate(
-            subjectUri,
-            authority,
-            authority);
-
-        Assert.Equal(
-            VbaProjectAuthorityRelationKind.Indeterminate,
-            relation.Kind);
-        Assert.Null(relation.Ownership.PreviousOwnsSubject);
-        Assert.Null(relation.Ownership.CurrentOwnsSubject);
+        Assert.False(
+            VbaProjectIdentityModel.TryIdentifyDocument(
+                subjectUri,
+                out _));
     }
 
     [Fact]
@@ -477,11 +1070,12 @@ public sealed class VbaProjectIdentityModelTests
             RootPath: "");
 
         var rootlessRelation = VbaProjectIdentityModel.Relate(
-            new Uri(Path.Combine(root, "Module.bas")).AbsoluteUri,
+            IdentifyDocument(
+                new Uri(Path.Combine(root, "Module.bas")).AbsoluteUri),
             rootless,
             rooted);
         var nonFileRelation = VbaProjectIdentityModel.Relate(
-            "untitled://workspace/Module.bas",
+            IdentifyDocument("untitled://workspace/Module.bas"),
             rooted,
             rooted);
 
@@ -514,13 +1108,13 @@ public sealed class VbaProjectIdentityModelTests
             VbaProjectResolutionKind.AdHoc,
             RootPath: "");
 
-        var missingManifestKey = VbaProjectSnapshotIdentity.Create(
+        var missingManifestKey = CreateSnapshotIdentity(
             activeUri,
             missingManifest);
-        var otherDocumentKey = VbaProjectSnapshotIdentity.Create(
+        var otherDocumentKey = CreateSnapshotIdentity(
             activeUri,
             otherDocument);
-        var rootlessAdHocKey = VbaProjectSnapshotIdentity.Create(
+        var rootlessAdHocKey = CreateSnapshotIdentity(
             activeUri,
             rootlessAdHoc);
 
@@ -544,10 +1138,6 @@ public sealed class VbaProjectIdentityModelTests
                 unresolvedUri,
                 out var unresolved));
         Assert.False(unresolved.IsLocalFile);
-        Assert.Null(
-            VbaProjectIdentityModel.OwnsDocument(
-                authority,
-                unresolvedUri));
 
         var relation = VbaProjectIdentityModel.Relate(
             unresolved,
@@ -642,11 +1232,11 @@ public sealed class VbaProjectIdentityModelTests
             .AbsoluteUri;
 
         Assert.True(
-            VbaProjectIdentityModel.OwnsDocument(
-                resolution,
-                subjectUri));
+            VbaProjectIdentityModel.TryIdentifyDocument(
+                subjectUri,
+                out var subjectIdentity));
         var relation = VbaProjectIdentityModel.Relate(
-            subjectUri,
+            subjectIdentity,
             resolution,
             resolution);
         Assert.Equal(
@@ -665,6 +1255,24 @@ public sealed class VbaProjectIdentityModelTests
             sourceRoot,
             manifestPath,
             documentName);
+
+    private static VbaProjectSnapshotIdentity CreateSnapshotIdentity(
+        string activeUri,
+        VbaProjectResolution resolution)
+        => VbaProjectIdentityModel.TryIdentifyDocument(
+                activeUri,
+                out var activeDocumentIdentity)
+            ? VbaProjectSnapshotIdentity.Create(
+                activeDocumentIdentity,
+                resolution)
+            : throw new InvalidOperationException(
+                "The test active document must have a typed identity.");
+
+    private static VbaDocumentIdentity IdentifyDocument(string uri)
+        => VbaProjectIdentityModel.TryIdentifyDocument(uri, out var identity)
+            ? identity
+            : throw new InvalidOperationException(
+                "The test document must have a typed identity.");
 
     private static string CreateRoot(string name)
         => Path.Combine(

@@ -141,6 +141,21 @@ public sealed class VbaLanguageWorkspaceTests
         Assert.Same(firstSnapshot, reusedSnapshot);
         Assert.NotSame(firstSnapshot, refreshedSnapshot);
         Assert.Same(refreshedSnapshot, reusedRefreshedSnapshot);
+        Assert.Equal(
+            firstSnapshot.DiagnosticsOwnership?.CacheIdentity,
+            refreshedSnapshot.DiagnosticsOwnership?.CacheIdentity);
+        Assert.Equal(
+            firstSnapshot.DiagnosticsOwnership?.ActiveDocumentIdentity,
+            refreshedSnapshot.DiagnosticsOwnership?.ActiveDocumentIdentity);
+        Assert.True(
+            VbaProjectIdentityModel.TryIdentifyAuthority(
+                firstSnapshot.Resolution,
+                out var firstAuthority));
+        Assert.True(
+            VbaProjectIdentityModel.TryIdentifyAuthority(
+                refreshedSnapshot.Resolution,
+                out var refreshedAuthority));
+        Assert.Equal(firstAuthority, refreshedAuthority);
     }
 
     [Fact]
@@ -2043,24 +2058,30 @@ public sealed class VbaLanguageWorkspaceTests
         workspace.UpdateDocument(callerUri, callerText);
         workspace.UpdateDocument(helperUri, helperText);
 
-        var initialDefinition = workspace
-            .CreateProjectSnapshot(callerUri)
-            .SemanticInventory
+        var initialSnapshot = workspace.CreateProjectSnapshot(callerUri);
+        var initialDefinition = initialSnapshot.SemanticInventory
             .ResolveDefinition(callerUri, line: 2, character: "    ".Length);
         workspace.RemoveDocument(helperUri);
-        var removedDefinition = workspace
-            .CreateProjectSnapshot(callerUri)
-            .SemanticInventory
+        var removedSnapshot = workspace.CreateProjectSnapshot(callerUri);
+        var removedDefinition = removedSnapshot.SemanticInventory
             .ResolveDefinition(callerUri, line: 2, character: "    ".Length);
         workspace.UpdateDocument(renamedHelperUri, helperText);
-        var renamedDefinition = workspace
-            .CreateProjectSnapshot(callerUri)
-            .SemanticInventory
+        var renamedSnapshot = workspace.CreateProjectSnapshot(callerUri);
+        var renamedDefinition = renamedSnapshot.SemanticInventory
             .ResolveDefinition(callerUri, line: 2, character: "    ".Length);
 
         Assert.Equal(helperUri, initialDefinition?.Uri);
         Assert.Null(removedDefinition);
         Assert.Equal(renamedHelperUri, renamedDefinition?.Uri);
+        Assert.Equal(
+            initialSnapshot.DiagnosticsOwnership?.CacheIdentity,
+            removedSnapshot.DiagnosticsOwnership?.CacheIdentity);
+        Assert.Equal(
+            initialSnapshot.DiagnosticsOwnership?.CacheIdentity,
+            renamedSnapshot.DiagnosticsOwnership?.CacheIdentity);
+        Assert.Equal(
+            initialSnapshot.DiagnosticsOwnership?.ActiveDocumentIdentity,
+            renamedSnapshot.DiagnosticsOwnership?.ActiveDocumentIdentity);
     }
 
     [Fact]
@@ -2447,20 +2468,36 @@ public sealed class VbaLanguageWorkspaceTests
             openedUri,
             version: 1,
             "Public Sub InitialBuffer()\nEnd Sub\n");
+        var initialSnapshot = workspace.CreateProjectSnapshot(openedUri);
 
         var changed = workspace.ChangeDocument(
             equivalentUri,
             version: 2,
             changedText);
+        var changedSnapshot = workspace.CreateProjectSnapshot(equivalentUri);
         workspace.OpenDocument(
             distinctUri,
             version: 1,
             distinctText);
+        var distinctSnapshot = workspace.CreateProjectSnapshot(distinctUri);
 
         Assert.True(changed);
         Assert.Equal(changedText, workspace.GetDocumentText(openedUri));
         Assert.Equal(changedText, workspace.GetDocumentText(equivalentUri));
         Assert.Equal(2, workspace.GetDocumentUris().Count);
+        Assert.NotSame(initialSnapshot, changedSnapshot);
+        Assert.Equal(
+            initialSnapshot.DiagnosticsOwnership?.CacheIdentity,
+            changedSnapshot.DiagnosticsOwnership?.CacheIdentity);
+        Assert.Equal(
+            initialSnapshot.DiagnosticsOwnership?.ActiveDocumentIdentity,
+            changedSnapshot.DiagnosticsOwnership?.ActiveDocumentIdentity);
+        Assert.NotEqual(
+            changedSnapshot.DiagnosticsOwnership?.CacheIdentity,
+            distinctSnapshot.DiagnosticsOwnership?.CacheIdentity);
+        Assert.NotEqual(
+            changedSnapshot.DiagnosticsOwnership?.ActiveDocumentIdentity,
+            distinctSnapshot.DiagnosticsOwnership?.ActiveDocumentIdentity);
 
         Assert.True(workspace.CloseDocument(equivalentUri));
         Assert.Null(workspace.GetDocumentText(openedUri));
@@ -2502,6 +2539,15 @@ public sealed class VbaLanguageWorkspaceTests
                 definition => definition.Name == "OpenAfterDelete");
             Assert.Empty(deletedSnapshot.SourceDocuments);
             Assert.True(reloaded);
+            Assert.Equal(
+                openSnapshot.DiagnosticsOwnership?.CacheIdentity,
+                deletedSnapshot.DiagnosticsOwnership?.CacheIdentity);
+            Assert.Equal(
+                openSnapshot.DiagnosticsOwnership?.CacheIdentity,
+                recreatedSnapshot.DiagnosticsOwnership?.CacheIdentity);
+            Assert.Equal(
+                openSnapshot.DiagnosticsOwnership?.ActiveDocumentIdentity,
+                recreatedSnapshot.DiagnosticsOwnership?.ActiveDocumentIdentity);
             Assert.Contains(
                 recreatedSnapshot.SemanticInventory.GetWorkspaceSymbols("RecreatedDisk"),
                 symbol => string.Equals(

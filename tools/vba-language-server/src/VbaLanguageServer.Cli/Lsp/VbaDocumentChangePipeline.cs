@@ -451,17 +451,19 @@ internal sealed class VbaDocumentChangePipeline
         string manifestUri,
         CancellationToken cancellationToken)
     {
-        return !VbaProjectIdentityModel.TryGetManifestScopePrefix(
+        return !VbaProjectIdentityModel.TryIdentifyDocument(
                 manifestUri,
-                out _)
+                out var manifestDocument)
+                || !manifestDocument.IsLocalFile
             ? []
             : workspace.GetDocumentUris(cancellationToken)
                 .Where(sourceUri =>
-                    VbaProjectIdentityModel.UsesManifestUri(
+                    VbaProjectIdentityModel.TryIdentifyAuthority(
                         manifestWorkspace
                             .CaptureResolution(sourceUri)
                             .Resolution,
-                        manifestUri))
+                        out var authority)
+                    && authority.UsesManifest(manifestDocument))
                 .OrderBy(uri => uri, StringComparer.OrdinalIgnoreCase)
                 .ThenBy(uri => uri, StringComparer.Ordinal)
                 .ToArray();
@@ -471,6 +473,14 @@ internal sealed class VbaDocumentChangePipeline
         string manifestUri,
         CancellationToken cancellationToken)
     {
+        if (!VbaProjectIdentityModel.TryIdentifyDocument(
+                manifestUri,
+                out var manifestDocument)
+            || !manifestDocument.IsLocalFile)
+        {
+            return [];
+        }
+
         var manifestPath =
             VbaProjectResolver.TryGetLocalPath(manifestUri);
         if (manifestPath is null)
@@ -486,9 +496,10 @@ internal sealed class VbaDocumentChangePipeline
                 var resolution = manifestWorkspace
                     .CaptureResolution(sourceUri)
                     .Resolution;
-                if (VbaProjectIdentityModel.UsesManifestUri(
-                    resolution,
-                    manifestUri))
+                if (VbaProjectIdentityModel.TryIdentifyAuthority(
+                        resolution,
+                        out var authority)
+                    && authority.UsesManifest(manifestDocument))
                 {
                     return true;
                 }
@@ -511,15 +522,15 @@ internal sealed class VbaDocumentChangePipeline
         IReadOnlyList<string> sourceUris,
         CancellationToken cancellationToken)
     {
-        if (!VbaProjectIdentityModel.TryGetManifestScopePrefix(
+        if (!VbaProjectIdentityModel.TryIdentifyDocument(
                 previousManifestUri,
-                out _))
+                out var previousManifestDocument)
+            || !previousManifestDocument.IsLocalFile)
         {
             return;
         }
 
-        var activatedScopes = new HashSet<string>(
-            StringComparer.OrdinalIgnoreCase);
+        var activatedScopes = new HashSet<VbaProjectAuthorityIdentity>();
         foreach (var sourceUri in sourceUris)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -528,17 +539,15 @@ internal sealed class VbaDocumentChangePipeline
                 .Resolution;
             if (resolution.Kind
                     != VbaProjectResolutionKind.ManifestDocument
-                || VbaProjectIdentityModel.UsesManifestUri(
+                || !VbaProjectIdentityModel.TryIdentifyAuthority(
                     resolution,
-                    previousManifestUri)
-                || !VbaProjectIdentityModel.TryGetManifestScopeKey(
-                    resolution,
-                    out var scopeKey))
+                    out var authority)
+                || authority.UsesManifest(previousManifestDocument))
             {
                 continue;
             }
 
-            if (activatedScopes.Add(scopeKey))
+            if (activatedScopes.Add(authority))
             {
                 catalogLifecycle.ActivateProject(sourceUri);
             }

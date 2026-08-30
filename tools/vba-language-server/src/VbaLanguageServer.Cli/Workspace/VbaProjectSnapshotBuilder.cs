@@ -20,29 +20,37 @@ internal sealed class VbaProjectSnapshotBuilder
     }
 
     public VbaProjectSourceInventorySnapshot CreateInventorySnapshot(
-        string activeUri,
+        VbaIdentifiedDocument activeDocument,
         VbaProjectResolution resolution,
-        IReadOnlyDictionary<string, VbaTrackedDocument> workspaceDocuments,
-        IReadOnlySet<string> excludedSourceUris,
-        IReadOnlyDictionary<string, bool> manifestBarrierOverrides,
+        IReadOnlyDictionary<VbaDocumentIdentity, VbaTrackedDocument>
+            workspaceDocumentsByIdentity,
+        IReadOnlySet<VbaDocumentIdentity> excludedSourceIdentities,
+        IReadOnlyDictionary<VbaDocumentIdentity, bool>
+            manifestBarrierOverrides,
         CancellationToken cancellationToken)
     {
         var diskCapture = diskInventory.CaptureColdSources(
             resolution,
-            workspaceDocuments.Keys.ToArray(),
-            excludedSourceUris,
+            workspaceDocumentsByIdentity.Keys.ToArray(),
+            excludedSourceIdentities,
             manifestBarrierOverrides,
             cancellationToken);
         var inventorySnapshot =
             VbaProjectSourceInventory.CreateInventorySnapshot(
                 diskCapture,
-                workspaceDocuments,
+                workspaceDocumentsByIdentity,
                 diskDocumentCache,
                 cancellationToken);
-        if (!inventorySnapshot.Documents.ContainsKey(activeUri)
-            && workspaceDocuments.TryGetValue(activeUri, out var activeDocument))
+        if (!inventorySnapshot.DocumentsByIdentity.ContainsKey(
+                activeDocument.Identity)
+            && workspaceDocumentsByIdentity.TryGetValue(
+                activeDocument.Identity,
+                out var trackedActiveDocument))
         {
-            inventorySnapshot.Documents[activeUri] = activeDocument;
+            inventorySnapshot.Documents[activeDocument.Uri] =
+                trackedActiveDocument;
+            inventorySnapshot.DocumentsByIdentity[activeDocument.Identity] =
+                trackedActiveDocument;
         }
 
         return inventorySnapshot;
@@ -53,7 +61,7 @@ internal sealed class VbaProjectSnapshotBuilder
         IReadOnlyDictionary<string, VbaTrackedDocument> scopedTrackedDocuments,
         IReadOnlyList<VbaProjectDiskSource> diskSources,
         IReadOnlyList<VbaProjectDiskSourceFailure> diskSourceFailures,
-        IReadOnlySet<string> existingOpenSourcePaths,
+        IReadOnlySet<VbaDocumentIdentity> existingOpenSourceIdentities,
         VbaProjectReferenceCatalogSet referenceCatalogs,
         IReadOnlyDictionary<string, VbaProjectReferenceCatalogSource> referenceCatalogSources,
         VbaHostClassProjectionSnapshot? hostClassProjectionSnapshot,
@@ -90,7 +98,7 @@ internal sealed class VbaProjectSnapshotBuilder
         {
             DiskSources = diskSources,
             DiskSourceFailures = diskSourceFailures,
-            ExistingOpenSourcePaths = existingOpenSourcePaths
+            ExistingOpenSourceIdentities = existingOpenSourceIdentities
         };
     }
 }

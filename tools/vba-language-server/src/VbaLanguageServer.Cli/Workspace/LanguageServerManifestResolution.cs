@@ -13,13 +13,15 @@ internal sealed record VbaLanguageServerManifestMessage(int Type, string Text);
 /// <summary>
 /// Represents the reference selection resolved for one manifest document.
 /// </summary>
-/// <param name="ScopeKey">The stable manifest-document scope key.</param>
+/// <param name="Authority">The typed manifest-document project authority.</param>
+/// <param name="Fingerprint">The typed effective reference-selection identity.</param>
 /// <param name="ProjectPath">The canonical project root containing the manifest.</param>
 /// <param name="DocumentName">The manifest document name.</param>
 /// <param name="DocumentKind">The manifest document kind.</param>
 /// <param name="Selection">The reference selection for the document.</param>
 internal sealed record VbaProjectReferenceSelectionContext(
-    string ScopeKey,
+    VbaProjectAuthorityIdentity Authority,
+    ReferenceSelectionFingerprint Fingerprint,
     string ProjectPath,
     string DocumentName,
     string DocumentKind,
@@ -138,22 +140,27 @@ internal static class LanguageServerManifestResolution
                         RootPath: projectPath,
                         ManifestPath: manifestIdentity,
                         DocumentName: document.Key);
-                    if (!VbaProjectIdentityModel.TryGetManifestScopeKey(
+                    if (!VbaProjectIdentityModel.TryIdentifyAuthority(
                             authorityResolution,
-                            out var documentScopeKey))
+                            out var documentAuthority))
                     {
                         return false;
                     }
 
+                    var selection = VbaProjectReferenceSelection.Create(
+                        document.Value.Kind,
+                        document.Value.References ?? []);
+
                     resolvedSelections.Add(
                         new VbaProjectReferenceSelectionContext(
-                            documentScopeKey,
+                            documentAuthority,
+                            ReferenceSelectionFingerprint.Create(
+                                document.Value.Kind,
+                                selection),
                             projectPath,
                             document.Key,
                             document.Value.Kind,
-                            VbaProjectReferenceSelection.Create(
-                                document.Value.Kind,
-                                document.Value.References ?? [])));
+                            selection));
                 }
 
                 selections = resolvedSelections;
@@ -182,55 +189,31 @@ internal static class LanguageServerManifestResolution
             return false;
         }
 
-        if (!VbaProjectIdentityModel.TryGetManifestScopeKey(
+        if (!VbaProjectIdentityModel.TryIdentifyAuthority(
                 resolution,
-                out var resolutionScopeKey))
+                out var resolutionAuthority))
         {
             return false;
         }
 
+        var resolutionSelection = VbaProjectReferenceSelection.Create(
+            resolution.DocumentKind,
+            resolution.ReferenceEntries);
+
         selections =
         [
             new VbaProjectReferenceSelectionContext(
-                resolutionScopeKey,
+                resolutionAuthority,
+                ReferenceSelectionFingerprint.Create(
+                    resolution.DocumentKind,
+                    resolutionSelection),
                 CreateProjectPath(resolution.ManifestPath ?? resolution.RootPath),
                 resolution.DocumentName,
                 resolution.DocumentKind,
-                VbaProjectReferenceSelection.Create(
-                    resolution.DocumentKind,
-                    resolution.ReferenceEntries))
+                resolutionSelection)
         ];
         return true;
     }
-
-    internal static string? CreateSelectionFingerprint(
-        VbaProjectResolution resolution)
-    {
-        if (resolution.Kind != VbaProjectResolutionKind.ManifestDocument
-            || string.IsNullOrEmpty(resolution.DocumentKind))
-        {
-            return null;
-        }
-
-        return CreateSelectionFingerprint(
-            resolution.DocumentKind,
-            VbaProjectReferenceSelection.Create(
-                resolution.DocumentKind,
-                resolution.ReferenceEntries));
-    }
-
-    internal static string CreateSelectionFingerprint(
-        string documentKind,
-        VbaProjectReferenceSelection selection)
-        => string.Join(
-            "\u001f",
-            documentKind.Trim().ToUpperInvariant(),
-            selection.MainVbaProjectReference?.Name.Trim().ToUpperInvariant() ?? "",
-            selection.MissingExpectedMainReference?.Trim().ToUpperInvariant() ?? "",
-            string.Join(
-                "\u001e",
-                selection.References
-                    .Select(reference => reference.Name.Trim().ToUpperInvariant())));
 
     private static string CreateProjectPath(string manifestIdentity)
     {

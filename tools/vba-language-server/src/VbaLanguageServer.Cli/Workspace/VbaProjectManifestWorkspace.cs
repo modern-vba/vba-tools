@@ -24,8 +24,13 @@ internal sealed record VbaProjectManifestReconciliationUpdate(
     bool RetainedLastKnownGood = false);
 
 internal sealed record VbaProjectManifestReconciliationTarget(
-    string Uri,
-    long CapturedRevision);
+    VbaIdentifiedDocument Document,
+    long CapturedRevision)
+{
+    public VbaDocumentIdentity DocumentIdentity => Document.Identity;
+
+    public string Uri => Document.Uri;
+}
 
 internal sealed record VbaProjectManifestReconciliationItemUpdate(
     string Uri,
@@ -50,15 +55,15 @@ internal sealed record VbaProjectManifestReconciliationCapture(
 /// </summary>
 internal sealed record VbaProjectManifestBarrierSnapshot(
     long Revision,
-    IReadOnlyDictionary<string, bool> Overrides)
+    IReadOnlyDictionary<VbaDocumentIdentity, bool> Overrides)
 {
-    private static readonly IReadOnlyDictionary<string, long>
+    private static readonly IReadOnlyDictionary<VbaDocumentIdentity, long>
         EmptyReconciliationRevisions =
-            new Dictionary<string, long>(
-                StringComparer.OrdinalIgnoreCase);
+            new Dictionary<VbaDocumentIdentity, long>();
 
-    public IReadOnlyDictionary<string, long> ReconciliationRevisions
-        { get; init; } =
+    public IReadOnlyDictionary<VbaDocumentIdentity, long>
+        ReconciliationRevisions
+    { get; init; } =
         EmptyReconciliationRevisions;
 }
 
@@ -77,7 +82,7 @@ internal interface IVbaProjectManifestResolutionSource
 {
     long Version { get; }
 
-    long GetRevision(string authorityUri);
+    long GetRevision(VbaIdentifiedDocument authorityDocument);
 
     VbaProjectResolution Resolve(string activeUri);
 
@@ -98,7 +103,19 @@ internal interface IVbaProjectManifestResolutionSource
         {
             var capturedVersion = Version;
             var resolution = Resolve(activeUri);
-            var barriers = CaptureScopeBarriers(activeUri, resolution);
+            if (!VbaProjectIdentityModel.TryIdentifyDocument(
+                    activeUri,
+                    out var activeDocumentIdentity))
+            {
+                throw new InvalidOperationException(
+                    "A manifest resolution has no active document identity.");
+            }
+
+            var barriers = CaptureScopeBarriers(
+                new VbaIdentifiedDocument(
+                    activeDocumentIdentity,
+                    activeUri),
+                resolution);
             if (Version == capturedVersion)
             {
                 return new VbaProjectManifestResolutionCapture(
@@ -109,22 +126,21 @@ internal interface IVbaProjectManifestResolutionSource
     }
 
     VbaProjectManifestBarrierSnapshot CaptureScopeBarriers(
-        string activeUri,
+        VbaIdentifiedDocument activeDocument,
         VbaProjectResolution resolution)
         => new(
-            GetRevision(activeUri),
-            new Dictionary<string, bool>(
-                StringComparer.OrdinalIgnoreCase));
+            GetRevision(activeDocument),
+            new Dictionary<VbaDocumentIdentity, bool>());
 
     VbaProjectManifestBarrierSnapshot CaptureDiskReconciliationBarriers(
-        string activeUri,
+        VbaIdentifiedDocument activeDocument,
         VbaProjectResolution resolution)
-        => CaptureScopeBarriers(activeUri, resolution);
+        => CaptureScopeBarriers(activeDocument, resolution);
 
     long CaptureScopeBarrierRevision(
-        string activeUri,
+        VbaIdentifiedDocument activeDocument,
         VbaProjectResolution resolution)
-        => CaptureScopeBarriers(activeUri, resolution).Revision;
+        => CaptureScopeBarriers(activeDocument, resolution).Revision;
 }
 
 /// <summary>
@@ -135,15 +151,17 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
     private const string ManifestFileName = "vba-project.json";
     private readonly object gate = new();
     private readonly IVbaProjectFileSystem fileSystem;
-    private readonly Dictionary<string, ManifestState> states = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, long> reconciliationRevisions =
-        new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, long> effectiveScopeRevisions =
-        new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, VbaProjectDiskManifestBaseline>
-        reconciliationBaselines = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, EffectiveManifest>
-        lastKnownGoodDiskManifests = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<VbaDocumentIdentity, ManifestState> states =
+        new();
+    private readonly Dictionary<VbaDocumentIdentity, long>
+        reconciliationRevisions = new();
+    private readonly Dictionary<VbaDocumentIdentity, long>
+        effectiveScopeRevisions = new();
+    private readonly Dictionary<
+        VbaDocumentIdentity,
+        VbaProjectDiskManifestBaseline> reconciliationBaselines = new();
+    private readonly Dictionary<VbaDocumentIdentity, EffectiveManifest>
+        lastKnownGoodDiskManifests = new();
     private long version;
     private long retentionGeneration;
 
@@ -227,14 +245,13 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
     }
 
     internal void RetireInactiveState(
-        IReadOnlyList<string> activeUris,
+        IReadOnlyList<VbaIdentifiedDocument> activeDocuments,
         IReadOnlyList<VbaProjectManifestRetentionScope> activeScopes)
     {
-        var activePaths = activeUris
-            .Concat(activeScopes.Select(scope => scope.ActiveUri))
-            .Select(VbaProjectResolver.TryGetLocalPath)
-            .Where(path => path is not null)
-            .Select(path => Path.GetFullPath(path!))
+        var activePaths = activeDocuments
+            .Concat(activeScopes.Select(scope => scope.ActiveDocument))
+            .Where(document => document.Identity.IsLocalFile)
+            .Select(document => document.Identity.CanonicalValue)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
         var activeRoots = activeScopes
@@ -245,39 +262,39 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
             .ToArray();
         lock (gate)
         {
-            var retainedPaths = states
+            var retainedDocuments = states
                 .Where(pair => pair.Value.OpenManifest is not null)
                 .Select(pair => pair.Key)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            foreach (var manifestPath in states.Keys
+                .ToHashSet();
+            foreach (var manifestDocument in states.Keys
                 .Concat(effectiveScopeRevisions.Keys)
                 .Concat(reconciliationRevisions.Keys)
                 .Concat(reconciliationBaselines.Keys)
                 .Concat(lastKnownGoodDiskManifests.Keys)
-                .Distinct(StringComparer.OrdinalIgnoreCase))
+                .Distinct())
             {
                 if (IsRetainedManifestPath(
-                    manifestPath,
+                    manifestDocument.CanonicalValue,
                     activePaths,
                     activeRoots))
                 {
-                    retainedPaths.Add(manifestPath);
+                    retainedDocuments.Add(manifestDocument);
                 }
             }
 
-            var removed = RemoveInactive(states, retainedPaths);
+            var removed = RemoveInactive(states, retainedDocuments);
             removed |= RemoveInactive(
                 effectiveScopeRevisions,
-                retainedPaths);
+                retainedDocuments);
             removed |= RemoveInactive(
                 reconciliationRevisions,
-                retainedPaths);
+                retainedDocuments);
             removed |= RemoveInactive(
                 reconciliationBaselines,
-                retainedPaths);
+                retainedDocuments);
             removed |= RemoveInactive(
                 lastKnownGoodDiskManifests,
-                retainedPaths);
+                retainedDocuments);
             if (removed)
             {
                 version++;
@@ -286,13 +303,14 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
         }
     }
 
-    public long GetRevision(string authorityUri)
+    public long GetRevision(VbaIdentifiedDocument authorityDocument)
     {
-        var localPath = VbaProjectResolver.TryGetLocalPath(authorityUri);
-        if (localPath is null)
+        if (!authorityDocument.Identity.IsLocalFile)
         {
             return 0;
         }
+
+        var localPath = authorityDocument.Identity.CanonicalValue;
 
         lock (gate)
         {
@@ -301,7 +319,7 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
                     StringComparison.OrdinalIgnoreCase))
             {
                 return effectiveScopeRevisions.TryGetValue(
-                    Path.GetFullPath(localPath),
+                    IdentifyManifestDocument(localPath),
                     out var manifestRevision)
                         ? manifestRevision
                         : 0;
@@ -315,7 +333,10 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
                 directory = directory.Parent)
             {
                 if (effectiveScopeRevisions.TryGetValue(
-                        Path.Combine(directory.FullName, ManifestFileName),
+                        IdentifyManifestDocument(
+                            Path.Combine(
+                                directory.FullName,
+                                ManifestFileName)),
                         out var candidateRevision))
                 {
                     revision = Math.Max(revision, candidateRevision);
@@ -333,28 +354,30 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
         {
             long capturedVersion;
             long capturedRetentionGeneration;
-            Dictionary<string, ManifestState> stateSnapshot;
-            Dictionary<string, long> effectiveRevisionSnapshot;
-            Dictionary<string, long> reconciliationRevisionSnapshot;
-            Dictionary<string, EffectiveManifest> lastKnownGoodSnapshot;
+            Dictionary<VbaDocumentIdentity, ManifestState> stateSnapshot;
+            Dictionary<VbaDocumentIdentity, long>
+                effectiveRevisionSnapshot;
+            Dictionary<VbaDocumentIdentity, long>
+                reconciliationRevisionSnapshot;
+            Dictionary<VbaDocumentIdentity, EffectiveManifest>
+                lastKnownGoodSnapshot;
             lock (gate)
             {
                 capturedVersion = version;
                 capturedRetentionGeneration = retentionGeneration;
-                stateSnapshot = new Dictionary<string, ManifestState>(
-                    states,
-                    StringComparer.OrdinalIgnoreCase);
-                effectiveRevisionSnapshot = new Dictionary<string, long>(
-                    effectiveScopeRevisions,
-                    StringComparer.OrdinalIgnoreCase);
+                stateSnapshot = new Dictionary<
+                    VbaDocumentIdentity,
+                    ManifestState>(states);
+                effectiveRevisionSnapshot = new Dictionary<
+                    VbaDocumentIdentity,
+                    long>(effectiveScopeRevisions);
                 reconciliationRevisionSnapshot =
-                    new Dictionary<string, long>(
-                        reconciliationRevisions,
-                        StringComparer.OrdinalIgnoreCase);
+                    new Dictionary<VbaDocumentIdentity, long>(
+                        reconciliationRevisions);
                 lastKnownGoodSnapshot =
-                    new Dictionary<string, EffectiveManifest>(
-                        lastKnownGoodDiskManifests,
-                        StringComparer.OrdinalIgnoreCase);
+                    new Dictionary<
+                        VbaDocumentIdentity,
+                        EffectiveManifest>(lastKnownGoodDiskManifests);
             }
 
             var resolution = Resolve(
@@ -384,13 +407,13 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
     }
 
     public VbaProjectManifestBarrierSnapshot CaptureScopeBarriers(
-        string activeUri,
+        VbaIdentifiedDocument activeDocument,
         VbaProjectResolution resolution)
     {
         lock (gate)
         {
             return CreateBarrierSnapshot(
-                activeUri,
+                activeDocument.Uri,
                 resolution,
                 states,
                 effectiveScopeRevisions,
@@ -401,13 +424,13 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
 
     public VbaProjectManifestBarrierSnapshot
         CaptureDiskReconciliationBarriers(
-            string activeUri,
+            VbaIdentifiedDocument activeDocument,
             VbaProjectResolution resolution)
     {
         lock (gate)
         {
             return CreateBarrierSnapshot(
-                activeUri,
+                activeDocument.Uri,
                 resolution,
                 states,
                 effectiveScopeRevisions,
@@ -417,13 +440,13 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
     }
 
     public long CaptureScopeBarrierRevision(
-        string activeUri,
+        VbaIdentifiedDocument activeDocument,
         VbaProjectResolution resolution)
     {
         lock (gate)
         {
             return GetScopeBarrierRevision(
-                activeUri,
+                activeDocument.Uri,
                 resolution,
                 effectiveScopeRevisions);
         }
@@ -438,6 +461,7 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
         {
             return new VbaProjectManifestOverlayUpdate(false, false, null);
         }
+        var manifestIdentity = IdentifyManifestDocument(manifestPath);
 
         var overlayIsValid = TryCreateEffectiveManifest(
             manifestPath,
@@ -453,7 +477,7 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
             diskFallbackVersion = version;
             diskFallbackRetentionGeneration = retentionGeneration;
             reconciliationRevisions.TryGetValue(
-                manifestPath,
+                manifestIdentity,
                 out diskFallbackReconciliationRevision);
         }
 
@@ -466,9 +490,9 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
                 diskFallbackReconciliationRevision);
         lock (gate)
         {
-            states.TryGetValue(manifestPath, out var existing);
+            states.TryGetValue(manifestIdentity, out var existing);
             lastKnownGoodDiskManifests.TryGetValue(
-                manifestPath,
+                manifestIdentity,
                 out var lastKnownGood);
             var effectiveManifest =
                 overlayManifest
@@ -476,20 +500,20 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
                 ?? existing?.ReconciledDiskManifest
                 ?? lastKnownGood
                 ?? (version == diskFallbackVersion
-                    && GetReconciliationRevisionLocked(manifestPath)
+                    && GetReconciliationRevisionLocked(manifestIdentity)
                         == diskFallbackReconciliationRevision
                     ? diskFallback
                     : null);
 
-            states[manifestPath] = new ManifestState(
+            states[manifestIdentity] = new ManifestState(
                 new OpenManifestState(documentVersion, effectiveManifest),
                 existing?.DiskDeleted == true,
                 existing?.ReconciledDiskManifest,
                 existing?.DiskInvalid == true,
                 existing?.DiskValidationError);
             version++;
-            MarkEffectiveScopeChanged(manifestPath);
-            MarkReconciliationChanged(manifestPath);
+            MarkEffectiveScopeChanged(manifestIdentity);
+            MarkReconciliationChanged(manifestIdentity);
             return new VbaProjectManifestOverlayUpdate(
                 Accepted: true,
                 EffectiveChanged: overlayIsValid,
@@ -506,6 +530,7 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
         {
             return new VbaProjectManifestOverlayUpdate(false, false, null);
         }
+        var manifestIdentity = IdentifyManifestDocument(manifestPath);
 
         var overlayIsValid = TryCreateEffectiveManifest(
             manifestPath,
@@ -515,22 +540,22 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
             out var error);
         lock (gate)
         {
-            if (!states.TryGetValue(manifestPath, out var existing)
+            if (!states.TryGetValue(manifestIdentity, out var existing)
                 || existing.OpenManifest is null
                 || documentVersion <= existing.OpenManifest.Version)
             {
                 return new VbaProjectManifestOverlayUpdate(false, false, null);
             }
 
-            states[manifestPath] = existing with
+            states[manifestIdentity] = existing with
             {
                 OpenManifest = new OpenManifestState(
                     documentVersion,
                     overlayManifest ?? existing.OpenManifest.EffectiveManifest)
             };
             version++;
-            MarkEffectiveScopeChanged(manifestPath);
-            MarkReconciliationChanged(manifestPath);
+            MarkEffectiveScopeChanged(manifestIdentity);
+            MarkReconciliationChanged(manifestIdentity);
             return new VbaProjectManifestOverlayUpdate(
                 Accepted: true,
                 EffectiveChanged: overlayIsValid,
@@ -547,10 +572,11 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
         {
             return false;
         }
+        var manifestIdentity = IdentifyManifestDocument(manifestPath);
 
         lock (gate)
         {
-            if (!states.TryGetValue(manifestPath, out var existing)
+            if (!states.TryGetValue(manifestIdentity, out var existing)
                 || existing.OpenManifest is null)
             {
                 return false;
@@ -560,16 +586,19 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
                 || existing.DiskInvalid
                 || existing.ReconciledDiskManifest is not null)
             {
-                states[manifestPath] = existing with { OpenManifest = null };
+                states[manifestIdentity] = existing with
+                {
+                    OpenManifest = null
+                };
             }
             else
             {
-                states.Remove(manifestPath);
+                states.Remove(manifestIdentity);
             }
 
             version++;
-            MarkEffectiveScopeChanged(manifestPath);
-            MarkReconciliationChanged(manifestPath);
+            MarkEffectiveScopeChanged(manifestIdentity);
+            MarkReconciliationChanged(manifestIdentity);
             return true;
         }
     }
@@ -584,19 +613,20 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
         {
             return false;
         }
+        var manifestIdentity = IdentifyManifestDocument(manifestPath);
 
         lock (gate)
         {
-            MarkReconciliationChanged(manifestPath);
-            reconciliationBaselines.Remove(manifestPath);
-            if (states.TryGetValue(manifestPath, out var existing)
+            MarkReconciliationChanged(manifestIdentity);
+            reconciliationBaselines.Remove(manifestIdentity);
+            if (states.TryGetValue(manifestIdentity, out var existing)
                 && existing.OpenManifest is not null)
             {
                 if (existing.DiskDeleted
                     || existing.DiskInvalid
                     || existing.ReconciledDiskManifest is not null)
                 {
-                    states[manifestPath] = existing with
+                    states[manifestIdentity] = existing with
                     {
                         DiskDeleted = false,
                         ReconciledDiskManifest = null,
@@ -607,16 +637,16 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
                         || existing.DiskInvalid)
                     {
                         version++;
-                        MarkEffectiveScopeChanged(manifestPath);
+                        MarkEffectiveScopeChanged(manifestIdentity);
                     }
                 }
 
                 return false;
             }
 
-            states.Remove(manifestPath);
+            states.Remove(manifestIdentity);
             version++;
-            MarkEffectiveScopeChanged(manifestPath);
+            MarkEffectiveScopeChanged(manifestIdentity);
             return true;
         }
     }
@@ -631,41 +661,47 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
         {
             return false;
         }
+        var manifestIdentity = IdentifyManifestDocument(manifestPath);
 
         lock (gate)
         {
-            states.TryGetValue(manifestPath, out var existing);
+            states.TryGetValue(manifestIdentity, out var existing);
             if (existing?.DiskDeleted == true)
             {
                 return false;
             }
 
-            states[manifestPath] = new ManifestState(
+            states[manifestIdentity] = new ManifestState(
                 existing?.OpenManifest,
                 DiskDeleted: true,
                 ReconciledDiskManifest: null);
-            reconciliationBaselines[manifestPath] =
+            reconciliationBaselines[manifestIdentity] =
                 new VbaProjectDiskManifestBaseline(
                     Exists: false,
                     Text: null);
-            lastKnownGoodDiskManifests.Remove(manifestPath);
+            lastKnownGoodDiskManifests.Remove(manifestIdentity);
             version++;
-            MarkEffectiveScopeChanged(manifestPath);
-            MarkReconciliationChanged(manifestPath);
+            MarkEffectiveScopeChanged(manifestIdentity);
+            MarkReconciliationChanged(manifestIdentity);
             return existing?.OpenManifest is null;
         }
     }
 
-    public long GetReconciliationRevision(string uri)
-        => CaptureReconciliationState(uri).Revision;
+    public long GetReconciliationRevision(
+        VbaIdentifiedDocument manifestDocument)
+        => CaptureReconciliationState(manifestDocument).Revision;
 
-    public VbaProjectDiskManifestBaseline GetReconciliationBaseline(string uri)
-        => CaptureReconciliationState(uri).Baseline;
+    public VbaProjectDiskManifestBaseline GetReconciliationBaseline(
+        VbaIdentifiedDocument manifestDocument)
+        => CaptureReconciliationState(manifestDocument).Baseline;
 
     public VbaProjectManifestReconciliationCapture
-        CaptureReconciliationState(string uri)
+        CaptureReconciliationState(
+            VbaIdentifiedDocument manifestDocument)
     {
-        if (!TryGetManifestPath(uri, out var manifestPath))
+        if (!TryGetManifestPath(
+                manifestDocument,
+                out var manifestPath))
         {
             return new VbaProjectManifestReconciliationCapture(
                 Revision: 0,
@@ -677,20 +713,20 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
         lock (gate)
         {
             var revision = reconciliationRevisions.TryGetValue(
-                manifestPath,
+                manifestDocument.Identity,
                 out var capturedRevision)
                     ? capturedRevision
                     : 0;
             var baseline = reconciliationBaselines.TryGetValue(
-                manifestPath,
+                manifestDocument.Identity,
                 out var capturedBaseline)
                     ? capturedBaseline
                     : new VbaProjectDiskManifestBaseline(
                         Exists: false,
                         Text: null);
-            states.TryGetValue(manifestPath, out var state);
+            states.TryGetValue(manifestDocument.Identity, out var state);
             lastKnownGoodDiskManifests.TryGetValue(
-                manifestPath,
+                manifestDocument.Identity,
                 out var lastKnownGood);
             var effectiveManifest =
                 state?.OpenManifest?.EffectiveManifest
@@ -706,11 +742,13 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
     }
 
     public VbaProjectManifestReconciliationUpdate ReloadReconciledManifest(
-        string uri,
+        VbaIdentifiedDocument manifestDocument,
         string text,
         long capturedRevision)
     {
-        if (!TryGetManifestPath(uri, out var manifestPath))
+        if (!TryGetManifestPath(
+                manifestDocument,
+                out var manifestPath))
         {
             return new(
                 VbaProjectManifestReconciliationStatus.Rejected);
@@ -718,14 +756,14 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
 
         var isValid = TryCreateEffectiveManifest(
             manifestPath,
-            uri,
+            manifestDocument.Uri,
             text,
             out var effectiveManifest,
             out var error);
         lock (gate)
         {
             reconciliationRevisions.TryGetValue(
-                manifestPath,
+                manifestDocument.Identity,
                 out var currentRevision);
             if (currentRevision != capturedRevision)
             {
@@ -734,7 +772,7 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
             }
 
             return ReloadReconciledManifestLocked(
-                manifestPath,
+                manifestDocument.Identity,
                 text,
                 isValid ? effectiveManifest : null,
                 error);
@@ -742,10 +780,12 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
     }
 
     public VbaProjectManifestReconciliationUpdate DeleteReconciledManifest(
-        string uri,
+        VbaIdentifiedDocument manifestDocument,
         long capturedRevision)
     {
-        if (!TryGetManifestPath(uri, out var manifestPath))
+        if (!TryGetManifestPath(
+                manifestDocument,
+                out var manifestPath))
         {
             return new(
                 VbaProjectManifestReconciliationStatus.Rejected);
@@ -754,9 +794,9 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
         lock (gate)
         {
             reconciliationRevisions.TryGetValue(
-                manifestPath,
+                manifestDocument.Identity,
                 out var currentRevision);
-            states.TryGetValue(manifestPath, out var existing);
+            states.TryGetValue(manifestDocument.Identity, out var existing);
             if (currentRevision != capturedRevision)
             {
                 return new(
@@ -764,7 +804,7 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
             }
 
             return DeleteReconciledManifestLocked(
-                manifestPath,
+                manifestDocument.Identity,
                 existing);
         }
     }
@@ -778,25 +818,32 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
     {
         var deletedTargets = new List<(
             VbaProjectManifestReconciliationTarget Target,
+            VbaDocumentIdentity Identity,
             string Path)>(deletedManifests.Count);
         foreach (var target in deletedManifests)
         {
-            if (!TryGetManifestPath(target.Uri, out var manifestPath))
+            if (!TryGetManifestPath(
+                    target.Document,
+                    out var manifestPath))
             {
                 return RejectedAuthorityReplacement();
             }
 
-            deletedTargets.Add((target, manifestPath));
+            deletedTargets.Add((
+                target,
+                target.DocumentIdentity,
+                manifestPath));
         }
 
         string? reloadPath = null;
+        VbaDocumentIdentity? reloadIdentity = null;
         EffectiveManifest? reloadManifest = null;
         VbaProjectManifestException? reloadError = null;
         if (reloadedManifest is not null)
         {
             if (reloadedText is null
                 || !TryGetManifestPath(
-                    reloadedManifest.Uri,
+                    reloadedManifest.Document,
                     out reloadPath))
             {
                 return RejectedAuthorityReplacement();
@@ -808,16 +855,18 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
                 reloadedText,
                 out reloadManifest,
                 out reloadError);
+            reloadIdentity = reloadedManifest.DocumentIdentity;
         }
 
         lock (gate)
         {
             if (deletedTargets.Any(
                     target =>
-                        GetReconciliationRevisionLocked(target.Path)
+                        GetReconciliationRevisionLocked(target.Identity)
                         != target.Target.CapturedRevision)
                 || reloadedManifest is not null
-                    && GetReconciliationRevisionLocked(reloadPath!)
+                    && GetReconciliationRevisionLocked(
+                        reloadIdentity!.Value)
                         != reloadedManifest.CapturedRevision)
             {
                 return RejectedAuthorityReplacement();
@@ -826,12 +875,14 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
             var deletedUpdates =
                 new List<VbaProjectManifestReconciliationItemUpdate>(
                     deletedTargets.Count);
-            foreach (var (target, path) in deletedTargets)
+            foreach (var (target, identity, _) in deletedTargets)
             {
-                states.TryGetValue(path, out var existing);
+                states.TryGetValue(identity, out var existing);
                 deletedUpdates.Add(new(
                     target.Uri,
-                    DeleteReconciledManifestLocked(path, existing)));
+                    DeleteReconciledManifestLocked(
+                        identity,
+                        existing)));
             }
 
             VbaProjectManifestReconciliationItemUpdate? reloadUpdate =
@@ -841,7 +892,7 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
                 reloadUpdate = new(
                     reloadedManifest.Uri,
                     ReloadReconciledManifestLocked(
-                        reloadPath!,
+                        reloadIdentity!.Value,
                         reloadedText!,
                         reloadManifest,
                         reloadError));
@@ -856,25 +907,25 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
 
     private VbaProjectManifestReconciliationUpdate
         ReloadReconciledManifestLocked(
-            string manifestPath,
+            VbaDocumentIdentity manifestDocument,
             string text,
             EffectiveManifest? effectiveManifest,
             VbaProjectManifestException? error)
     {
-        states.TryGetValue(manifestPath, out var existing);
+        states.TryGetValue(manifestDocument, out var existing);
         if (effectiveManifest is null)
         {
             lastKnownGoodDiskManifests.TryGetValue(
-                manifestPath,
+                manifestDocument,
                 out var lastKnownGood);
-            reconciliationBaselines[manifestPath] =
+            reconciliationBaselines[manifestDocument] =
                 new VbaProjectDiskManifestBaseline(
                     Exists: true,
                     Text: text);
-            MarkReconciliationChanged(manifestPath);
+            MarkReconciliationChanged(manifestDocument);
             if (existing?.OpenManifest is not null)
             {
-                states[manifestPath] = existing with
+                states[manifestDocument] = existing with
                 {
                     DiskDeleted = false,
                     ReconciledDiskManifest = lastKnownGood,
@@ -886,7 +937,7 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
                     error);
             }
 
-            states[manifestPath] = new ManifestState(
+            states[manifestDocument] = new ManifestState(
                 OpenManifest: null,
                 DiskDeleted: false,
                 ReconciledDiskManifest: lastKnownGood,
@@ -895,7 +946,7 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
             if (lastKnownGood is null)
             {
                 version++;
-                MarkEffectiveScopeChanged(manifestPath);
+                MarkEffectiveScopeChanged(manifestDocument);
             }
 
             return new(
@@ -906,45 +957,45 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
 
         if (existing?.OpenManifest is not null)
         {
-            states[manifestPath] = existing with
+            states[manifestDocument] = existing with
             {
                 DiskDeleted = false,
                 ReconciledDiskManifest = effectiveManifest,
                 DiskInvalid = false,
                 DiskValidationError = null
             };
-            reconciliationBaselines[manifestPath] =
+            reconciliationBaselines[manifestDocument] =
                 new VbaProjectDiskManifestBaseline(
                     Exists: true,
                     Text: effectiveManifest.Text);
-            lastKnownGoodDiskManifests[manifestPath] =
+            lastKnownGoodDiskManifests[manifestDocument] =
                 effectiveManifest;
-            MarkReconciliationChanged(manifestPath);
+            MarkReconciliationChanged(manifestDocument);
             return new(
                 VbaProjectManifestReconciliationStatus.Observed);
         }
 
-        states[manifestPath] = new ManifestState(
+        states[manifestDocument] = new ManifestState(
             OpenManifest: null,
             DiskDeleted: false,
             ReconciledDiskManifest: effectiveManifest,
             DiskInvalid: false,
             DiskValidationError: null);
-        reconciliationBaselines[manifestPath] =
+        reconciliationBaselines[manifestDocument] =
             new VbaProjectDiskManifestBaseline(
                 Exists: true,
                 Text: effectiveManifest.Text);
-        lastKnownGoodDiskManifests[manifestPath] = effectiveManifest;
+        lastKnownGoodDiskManifests[manifestDocument] = effectiveManifest;
         version++;
-        MarkEffectiveScopeChanged(manifestPath);
-        MarkReconciliationChanged(manifestPath);
+        MarkEffectiveScopeChanged(manifestDocument);
+        MarkReconciliationChanged(manifestDocument);
         return new(
             VbaProjectManifestReconciliationStatus.Applied);
     }
 
     private VbaProjectManifestReconciliationUpdate
         DeleteReconciledManifestLocked(
-            string manifestPath,
+            VbaDocumentIdentity manifestDocument,
             ManifestState? existing)
     {
         if (existing?.OpenManifest is not null)
@@ -955,37 +1006,37 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
                     VbaProjectManifestReconciliationStatus.Observed);
             }
 
-            states[manifestPath] = existing with
+            states[manifestDocument] = existing with
             {
                 DiskDeleted = true,
                 ReconciledDiskManifest = null,
                 DiskInvalid = false,
                 DiskValidationError = null
             };
-            reconciliationBaselines[manifestPath] =
+            reconciliationBaselines[manifestDocument] =
                 new VbaProjectDiskManifestBaseline(
                     Exists: false,
                     Text: null);
-            lastKnownGoodDiskManifests.Remove(manifestPath);
-            MarkReconciliationChanged(manifestPath);
+            lastKnownGoodDiskManifests.Remove(manifestDocument);
+            MarkReconciliationChanged(manifestDocument);
             return new(
                 VbaProjectManifestReconciliationStatus.Observed);
         }
 
-        states[manifestPath] = new ManifestState(
+        states[manifestDocument] = new ManifestState(
             OpenManifest: null,
             DiskDeleted: true,
             ReconciledDiskManifest: null,
             DiskInvalid: false,
             DiskValidationError: null);
-        reconciliationBaselines[manifestPath] =
+        reconciliationBaselines[manifestDocument] =
             new VbaProjectDiskManifestBaseline(
                 Exists: false,
                 Text: null);
-        lastKnownGoodDiskManifests.Remove(manifestPath);
+        lastKnownGoodDiskManifests.Remove(manifestDocument);
         version++;
-        MarkEffectiveScopeChanged(manifestPath);
-        MarkReconciliationChanged(manifestPath);
+        MarkEffectiveScopeChanged(manifestDocument);
+        MarkReconciliationChanged(manifestDocument);
         return new(
             VbaProjectManifestReconciliationStatus.Applied);
     }
@@ -1066,6 +1117,7 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
             return false;
         }
 
+        var manifestIdentity = IdentifyManifestDocument(manifestPath);
         ManifestState? state;
         EffectiveManifest? lastKnownGood;
         long capturedVersion;
@@ -1076,11 +1128,11 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
             capturedVersion = version;
             capturedRetentionGeneration = retentionGeneration;
             reconciliationRevisions.TryGetValue(
-                manifestPath,
+                manifestIdentity,
                 out capturedReconciliationRevision);
-            states.TryGetValue(manifestPath, out state);
+            states.TryGetValue(manifestIdentity, out state);
             lastKnownGoodDiskManifests.TryGetValue(
-                manifestPath,
+                manifestIdentity,
                 out lastKnownGood);
         }
 
@@ -1113,24 +1165,24 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
                 if (version == capturedVersion
                     && retentionGeneration
                         == capturedRetentionGeneration
-                    && GetReconciliationRevisionLocked(manifestPath)
+                    && GetReconciliationRevisionLocked(manifestIdentity)
                         == capturedReconciliationRevision
                     && !lastKnownGoodDiskManifests.ContainsKey(
-                        manifestPath)
+                        manifestIdentity)
                     && (!states.TryGetValue(
-                            manifestPath,
+                            manifestIdentity,
                             out var currentState)
                         || currentState.OpenManifest is null))
                 {
-                    states[manifestPath] = new ManifestState(
+                    states[manifestIdentity] = new ManifestState(
                         OpenManifest: null,
                         DiskDeleted: false,
                         ReconciledDiskManifest: null,
                         DiskInvalid: true,
                         DiskValidationError: ex);
                     version++;
-                    MarkEffectiveScopeChanged(manifestPath);
-                    MarkReconciliationChanged(manifestPath);
+                    MarkEffectiveScopeChanged(manifestIdentity);
+                    MarkReconciliationChanged(manifestIdentity);
                 }
             }
 
@@ -1245,11 +1297,13 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
                 var manifestPath = Path.Combine(
                     directory.FullName,
                     ManifestFileName);
+                var manifestDocument =
+                    IdentifyManifestDocument(manifestPath);
                 states.TryGetValue(
-                    manifestPath,
+                    manifestDocument,
                     out var state);
                 lastKnownGoodDiskManifests.TryGetValue(
-                    manifestPath,
+                    manifestDocument,
                     out var lastKnownGood);
                 sawKnownManifestState |=
                     state is not null
@@ -1325,9 +1379,10 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
         string activeUri,
         long capturedVersion,
         long capturedRetentionGeneration,
-        IReadOnlyDictionary<string, ManifestState> stateSnapshot,
-        IReadOnlyDictionary<string, long> revisionSnapshot,
-        IReadOnlyDictionary<string, EffectiveManifest>
+        IReadOnlyDictionary<VbaDocumentIdentity, ManifestState>
+            stateSnapshot,
+        IReadOnlyDictionary<VbaDocumentIdentity, long> revisionSnapshot,
+        IReadOnlyDictionary<VbaDocumentIdentity, EffectiveManifest>
             lastKnownGoodSnapshot)
     {
         var activePath = VbaProjectResolver.TryGetLocalPath(activeUri);
@@ -1341,12 +1396,13 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
         for (var directory = new DirectoryInfo(activeDirectory); directory is not null; directory = directory.Parent)
         {
             var manifestPath = Path.Combine(directory.FullName, ManifestFileName);
-            stateSnapshot.TryGetValue(manifestPath, out var state);
+            var manifestDocument = IdentifyManifestDocument(manifestPath);
+            stateSnapshot.TryGetValue(manifestDocument, out var state);
             lastKnownGoodSnapshot.TryGetValue(
-                manifestPath,
+                manifestDocument,
                 out var lastKnownGood);
             revisionSnapshot.TryGetValue(
-                manifestPath,
+                manifestDocument,
                 out var capturedReconciliationRevision);
             if (!TryReadEffectiveManifest(
                     manifestPath,
@@ -1403,16 +1459,19 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
     private static VbaProjectManifestBarrierSnapshot CreateBarrierSnapshot(
         string activeUri,
         VbaProjectResolution resolution,
-        IReadOnlyDictionary<string, ManifestState> stateSnapshot,
-        IReadOnlyDictionary<string, long> effectiveRevisionSnapshot,
-        IReadOnlyDictionary<string, long> reconciliationRevisionSnapshot,
+        IReadOnlyDictionary<VbaDocumentIdentity, ManifestState>
+            stateSnapshot,
+        IReadOnlyDictionary<VbaDocumentIdentity, long>
+            effectiveRevisionSnapshot,
+        IReadOnlyDictionary<VbaDocumentIdentity, long>
+            reconciliationRevisionSnapshot,
         bool includeReconciliationRevisions)
     {
         var activePath = VbaProjectResolver.TryGetLocalPath(activeUri);
-        var overrides = new Dictionary<string, bool>(
-            StringComparer.OrdinalIgnoreCase);
-        foreach (var (manifestPath, state) in stateSnapshot)
+        var overrides = new Dictionary<VbaDocumentIdentity, bool>();
+        foreach (var (manifestDocument, state) in stateSnapshot)
         {
+            var manifestPath = manifestDocument.CanonicalValue;
             if (!IsManifestWithinScope(
                     manifestPath,
                     resolution.RootPath)
@@ -1425,7 +1484,7 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
                 continue;
             }
 
-            overrides[Path.GetFullPath(manifestPath)] =
+            overrides[manifestDocument] =
                 state.OpenManifest is not null
                     ? state.OpenManifest.EffectiveManifest is not null
                     : state.ReconciledDiskManifest is not null
@@ -1451,20 +1510,29 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
                 reconciliationRevisionSnapshot
                 .Where(
                     pair => IsManifestRelevantToScope(
-                        pair.Key,
+                        pair.Key.CanonicalValue,
                         activePath,
                         resolution.RootPath))
                 .ToDictionary(
-                    pair => Path.GetFullPath(pair.Key),
-                    pair => pair.Value,
-                    StringComparer.OrdinalIgnoreCase)
+                    pair => pair.Key,
+                    pair => pair.Value)
         };
     }
+
+    private static VbaDocumentIdentity IdentifyManifestDocument(
+        string manifestPath)
+        => VbaProjectIdentityModel.TryIdentifyLocalDocumentPath(
+            manifestPath,
+            out var identity)
+                ? identity
+                : throw new InvalidOperationException(
+                    "A manifest workspace path has no document identity.");
 
     private static long GetScopeBarrierRevision(
         string activeUri,
         VbaProjectResolution resolution,
-        IReadOnlyDictionary<string, long> effectiveRevisionSnapshot)
+        IReadOnlyDictionary<VbaDocumentIdentity, long>
+            effectiveRevisionSnapshot)
         => GetScopeBarrierRevision(
             VbaProjectResolver.TryGetLocalPath(activeUri),
             resolution.RootPath,
@@ -1473,15 +1541,16 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
     private static long GetScopeBarrierRevision(
         string? activePath,
         string rootPath,
-        IReadOnlyDictionary<string, long> effectiveRevisionSnapshot)
+        IReadOnlyDictionary<VbaDocumentIdentity, long>
+            effectiveRevisionSnapshot)
     {
         var revision = 0L;
-        foreach (var (manifestPath, candidateRevision) in
+        foreach (var (manifestDocument, candidateRevision) in
             effectiveRevisionSnapshot)
         {
             if (candidateRevision > revision
                 && IsManifestRelevantToScope(
-                    manifestPath,
+                    manifestDocument.CanonicalValue,
                     activePath,
                     rootPath))
             {
@@ -1547,15 +1616,15 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
     }
 
     private static bool RemoveInactive<TValue>(
-        Dictionary<string, TValue> values,
-        IReadOnlySet<string> retainedPaths)
+        Dictionary<VbaDocumentIdentity, TValue> values,
+        IReadOnlySet<VbaDocumentIdentity> retainedDocuments)
     {
         var removed = false;
-        foreach (var path in values.Keys
-            .Where(path => !retainedPaths.Contains(path))
+        foreach (var document in values.Keys
+            .Where(document => !retainedDocuments.Contains(document))
             .ToArray())
         {
-            removed |= values.Remove(path);
+            removed |= values.Remove(document);
         }
 
         return removed;
@@ -1704,13 +1773,14 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
         {
             return false;
         }
+        var manifestDocument = IdentifyManifestDocument(manifestPath);
 
         lock (gate)
         {
             if (version != capturedVersion
                 || retentionGeneration
                     != capturedRetentionGeneration
-                || GetReconciliationRevisionLocked(manifestPath)
+                || GetReconciliationRevisionLocked(manifestDocument)
                     != capturedReconciliationRevision)
             {
                 return false;
@@ -1718,7 +1788,7 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
 
             var baselineChanged =
                 !reconciliationBaselines.TryGetValue(
-                    manifestPath,
+                    manifestDocument,
                     out var baseline)
                 || !baseline.Exists
                 || !string.Equals(
@@ -1727,23 +1797,23 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
                     StringComparison.Ordinal);
             if (baselineChanged)
             {
-                reconciliationBaselines[manifestPath] =
+                reconciliationBaselines[manifestDocument] =
                     new VbaProjectDiskManifestBaseline(
                         Exists: true,
                         Text: text);
             }
 
-            states.TryGetValue(manifestPath, out var state);
+            states.TryGetValue(manifestDocument, out var state);
             var effectiveChanged = false;
             if (state?.OpenManifest is null)
             {
                 lastKnownGoodDiskManifests.TryGetValue(
-                    manifestPath,
+                    manifestDocument,
                     out var currentLastKnownGood);
                 if (hasLastKnownGood
                     && currentLastKnownGood is not null)
                 {
-                    states[manifestPath] = new ManifestState(
+                    states[manifestDocument] = new ManifestState(
                         OpenManifest: null,
                         DiskDeleted: false,
                         ReconciledDiskManifest: currentLastKnownGood,
@@ -1752,21 +1822,21 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
                 }
                 else
                 {
-                    states[manifestPath] = new ManifestState(
+                    states[manifestDocument] = new ManifestState(
                         OpenManifest: null,
                         DiskDeleted: false,
                         ReconciledDiskManifest: null,
                         DiskInvalid: true,
                         DiskValidationError: validationError);
                     version++;
-                    MarkEffectiveScopeChanged(manifestPath);
+                    MarkEffectiveScopeChanged(manifestDocument);
                     effectiveChanged = true;
                 }
             }
 
             if (baselineChanged || effectiveChanged)
             {
-                MarkReconciliationChanged(manifestPath);
+                MarkReconciliationChanged(manifestDocument);
             }
 
             return effectiveChanged;
@@ -1845,16 +1915,37 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
         return true;
     }
 
-    private void MarkReconciliationChanged(string manifestPath)
+    private static bool TryGetManifestPath(
+        VbaIdentifiedDocument manifestDocument,
+        out string manifestPath)
     {
-        reconciliationRevisions.TryGetValue(
-            manifestPath,
-            out var previous);
-        reconciliationRevisions[manifestPath] = previous + 1;
+        manifestPath = "";
+        if (!manifestDocument.Identity.IsLocalFile
+            || !Path.GetFileName(
+                    manifestDocument.Identity.CanonicalValue)
+                .Equals(
+                    ManifestFileName,
+                    StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        manifestPath = manifestDocument.Identity.CanonicalValue;
+        return true;
     }
 
-    private void MarkEffectiveScopeChanged(string manifestPath)
-        => effectiveScopeRevisions[manifestPath] = version;
+    private void MarkReconciliationChanged(
+        VbaDocumentIdentity manifestDocument)
+    {
+        reconciliationRevisions.TryGetValue(
+            manifestDocument,
+            out var previous);
+        reconciliationRevisions[manifestDocument] = previous + 1;
+    }
+
+    private void MarkEffectiveScopeChanged(
+        VbaDocumentIdentity manifestDocument)
+        => effectiveScopeRevisions[manifestDocument] = version;
 
     private void SeedReconciliationBaseline(
         string manifestPath,
@@ -1863,12 +1954,13 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
         long capturedRetentionGeneration,
         long capturedReconciliationRevision)
     {
+        var manifestDocument = IdentifyManifestDocument(manifestPath);
         lock (gate)
         {
             if (version != capturedVersion
                 || retentionGeneration
                     != capturedRetentionGeneration
-                || GetReconciliationRevisionLocked(manifestPath)
+                || GetReconciliationRevisionLocked(manifestDocument)
                     != capturedReconciliationRevision)
             {
                 return;
@@ -1876,29 +1968,30 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
 
             var baselineChanged =
                 !reconciliationBaselines.TryGetValue(
-                    manifestPath,
+                    manifestDocument,
                     out var baseline)
                 || !baseline.Exists
                 || !string.Equals(
                     baseline.Text,
                     effectiveManifest.Text,
                     StringComparison.Ordinal);
-            reconciliationBaselines[manifestPath] =
+            reconciliationBaselines[manifestDocument] =
                 new VbaProjectDiskManifestBaseline(
                     Exists: true,
                     Text: effectiveManifest.Text);
-            lastKnownGoodDiskManifests[manifestPath] =
+            lastKnownGoodDiskManifests[manifestDocument] =
                 effectiveManifest;
             if (baselineChanged)
             {
-                MarkReconciliationChanged(manifestPath);
+                MarkReconciliationChanged(manifestDocument);
             }
         }
     }
 
-    private long GetReconciliationRevisionLocked(string manifestPath)
+    private long GetReconciliationRevisionLocked(
+        VbaDocumentIdentity manifestDocument)
         => reconciliationRevisions.TryGetValue(
-            manifestPath,
+            manifestDocument,
             out var revision)
                 ? revision
                 : 0;

@@ -6,7 +6,8 @@ namespace VbaLanguageServer.ProjectModel;
 /// Opaque equality identity for one language-server source document.
 /// </summary>
 internal readonly struct VbaDocumentIdentity
-    : IEquatable<VbaDocumentIdentity>
+    : IEquatable<VbaDocumentIdentity>,
+      IComparable<VbaDocumentIdentity>
 {
     private readonly VbaDocumentIdentityKind kind;
     private readonly string? canonicalValue;
@@ -51,6 +52,16 @@ internal readonly struct VbaDocumentIdentity
                 : StringComparer.OrdinalIgnoreCase.GetHashCode(
                     canonicalValue));
 
+    public int CompareTo(VbaDocumentIdentity other)
+    {
+        var kindComparison = kind.CompareTo(other.kind);
+        return kindComparison != 0
+            ? kindComparison
+            : StringComparer.OrdinalIgnoreCase.Compare(
+                canonicalValue,
+                other.canonicalValue);
+    }
+
     public static bool operator ==(
         VbaDocumentIdentity left,
         VbaDocumentIdentity right)
@@ -72,10 +83,18 @@ internal enum VbaDocumentIdentityKind
 }
 
 /// <summary>
+/// Carries typed document identity together with its current presentation URI.
+/// </summary>
+internal sealed record VbaIdentifiedDocument(
+    VbaDocumentIdentity Identity,
+    string Uri);
+
+/// <summary>
 /// Opaque equality identity for one manifest-backed or ad-hoc project authority.
 /// </summary>
 internal readonly struct VbaProjectAuthorityIdentity
-    : IEquatable<VbaProjectAuthorityIdentity>
+    : IEquatable<VbaProjectAuthorityIdentity>,
+      IComparable<VbaProjectAuthorityIdentity>
 {
     private readonly VbaProjectResolutionKind kind;
     private readonly string? canonicalLocation;
@@ -106,22 +125,6 @@ internal readonly struct VbaProjectAuthorityIdentity
                     "ad-hoc",
                     canonicalLocation);
 
-    internal string? ManifestScopeKey
-        => kind == VbaProjectResolutionKind.ManifestDocument
-            && canonicalLocation is not null
-            && selectedDocument is not null
-                ? string.Join(
-                    "\u001f",
-                    canonicalLocation,
-                    selectedDocument)
-                : null;
-
-    internal string? ManifestScopePrefix
-        => kind == VbaProjectResolutionKind.ManifestDocument
-            && canonicalLocation is not null
-                ? $"{canonicalLocation}\u001f"
-                : null;
-
     internal bool UsesManifest(VbaDocumentIdentity manifestDocument)
         => kind == VbaProjectResolutionKind.ManifestDocument
             && manifestDocument.IsLocalFile
@@ -129,6 +132,24 @@ internal readonly struct VbaProjectAuthorityIdentity
             && canonicalLocation.Equals(
                 manifestDocument.CanonicalValue,
                 StringComparison.OrdinalIgnoreCase);
+
+    internal bool TryGetManifestPersistenceComponents(
+        out string manifestPath,
+        out string documentName)
+    {
+        manifestPath = "";
+        documentName = "";
+        if (kind != VbaProjectResolutionKind.ManifestDocument
+            || canonicalLocation is null
+            || selectedDocument is null)
+        {
+            return false;
+        }
+
+        manifestPath = canonicalLocation;
+        documentName = selectedDocument;
+        return true;
+    }
 
     public bool Equals(VbaProjectAuthorityIdentity other)
         => kind == other.kind
@@ -154,6 +175,24 @@ internal readonly struct VbaProjectAuthorityIdentity
                 : StringComparer.OrdinalIgnoreCase.GetHashCode(
                     selectedDocument));
 
+    public int CompareTo(VbaProjectAuthorityIdentity other)
+    {
+        var kindComparison = kind.CompareTo(other.kind);
+        if (kindComparison != 0)
+        {
+            return kindComparison;
+        }
+
+        var locationComparison = StringComparer.OrdinalIgnoreCase.Compare(
+            canonicalLocation,
+            other.canonicalLocation);
+        return locationComparison != 0
+            ? locationComparison
+            : StringComparer.OrdinalIgnoreCase.Compare(
+                selectedDocument,
+                other.selectedDocument);
+    }
+
     public static bool operator ==(
         VbaProjectAuthorityIdentity left,
         VbaProjectAuthorityIdentity right)
@@ -166,6 +205,212 @@ internal readonly struct VbaProjectAuthorityIdentity
 
     public override string ToString()
         => canonicalLocation is null ? "" : StableKey;
+}
+
+/// <summary>
+/// Opaque deterministic identity for one effective project-reference selection.
+/// </summary>
+internal readonly struct ReferenceSelectionFingerprint
+    : IEquatable<ReferenceSelectionFingerprint>,
+      IComparable<ReferenceSelectionFingerprint>
+{
+    private readonly string? documentKind;
+    private readonly string? mainReference;
+    private readonly string? missingExpectedMainReference;
+    private readonly string[]? referenceNames;
+
+    private ReferenceSelectionFingerprint(
+        string documentKind,
+        string mainReference,
+        string missingExpectedMainReference,
+        string[] referenceNames)
+    {
+        this.documentKind = documentKind;
+        this.mainReference = mainReference;
+        this.missingExpectedMainReference = missingExpectedMainReference;
+        this.referenceNames = referenceNames;
+    }
+
+    internal string CreatePersistenceHashMaterial()
+    {
+        if (documentKind is null
+            || mainReference is null
+            || missingExpectedMainReference is null
+            || referenceNames is null)
+        {
+            throw new InvalidOperationException(
+                "An uninitialized reference-selection fingerprint has no persistence material.");
+        }
+
+        var builder = new System.Text.StringBuilder();
+        AppendPersistenceToken(builder, documentKind);
+        AppendPersistenceToken(builder, mainReference);
+        AppendPersistenceToken(builder, missingExpectedMainReference);
+        AppendPersistenceToken(
+            builder,
+            referenceNames.Length.ToString(
+                System.Globalization.CultureInfo.InvariantCulture));
+        foreach (var referenceName in referenceNames)
+        {
+            AppendPersistenceToken(builder, referenceName);
+        }
+
+        return builder.ToString();
+    }
+
+    internal static ReferenceSelectionFingerprint Create(
+        string documentKind,
+        VbaProjectReferenceSelection selection)
+    {
+        ArgumentNullException.ThrowIfNull(documentKind);
+        ArgumentNullException.ThrowIfNull(selection);
+        return new ReferenceSelectionFingerprint(
+            NormalizeToken(documentKind),
+            NormalizeToken(selection.MainVbaProjectReference?.Name),
+            NormalizeToken(selection.MissingExpectedMainReference),
+            selection.References
+                .Select(reference => NormalizeToken(reference.Name))
+                .ToArray());
+    }
+
+    internal static bool TryCreate(
+        VbaProjectResolution resolution,
+        out ReferenceSelectionFingerprint fingerprint)
+    {
+        ArgumentNullException.ThrowIfNull(resolution);
+        fingerprint = default;
+        if (resolution.Kind != VbaProjectResolutionKind.ManifestDocument
+            || string.IsNullOrWhiteSpace(resolution.DocumentKind))
+        {
+            return false;
+        }
+
+        var documentKind = resolution.DocumentKind.Trim();
+        fingerprint = Create(
+            documentKind,
+            VbaProjectReferenceSelection.Create(
+                documentKind,
+                resolution.ReferenceEntries));
+        return true;
+    }
+
+    public bool Equals(ReferenceSelectionFingerprint other)
+        => string.Equals(
+                documentKind,
+                other.documentKind,
+                StringComparison.Ordinal)
+            && string.Equals(
+                mainReference,
+                other.mainReference,
+                StringComparison.Ordinal)
+            && string.Equals(
+                missingExpectedMainReference,
+                other.missingExpectedMainReference,
+                StringComparison.Ordinal)
+            && (referenceNames is null
+                ? other.referenceNames is null
+                : other.referenceNames is not null
+                    && referenceNames.SequenceEqual(
+                        other.referenceNames,
+                        StringComparer.Ordinal));
+
+    public override bool Equals(object? obj)
+        => obj is ReferenceSelectionFingerprint other
+            && Equals(other);
+
+    public override int GetHashCode()
+    {
+        var hash = new HashCode();
+        hash.Add(documentKind, StringComparer.Ordinal);
+        hash.Add(mainReference, StringComparer.Ordinal);
+        hash.Add(missingExpectedMainReference, StringComparer.Ordinal);
+        if (referenceNames is not null)
+        {
+            foreach (var referenceName in referenceNames)
+            {
+                hash.Add(referenceName, StringComparer.Ordinal);
+            }
+        }
+
+        return hash.ToHashCode();
+    }
+
+    public int CompareTo(ReferenceSelectionFingerprint other)
+    {
+        var comparison = StringComparer.Ordinal.Compare(
+            documentKind,
+            other.documentKind);
+        if (comparison != 0)
+        {
+            return comparison;
+        }
+
+        comparison = StringComparer.Ordinal.Compare(
+            mainReference,
+            other.mainReference);
+        if (comparison != 0)
+        {
+            return comparison;
+        }
+
+        comparison = StringComparer.Ordinal.Compare(
+            missingExpectedMainReference,
+            other.missingExpectedMainReference);
+        if (comparison != 0)
+        {
+            return comparison;
+        }
+
+        if (referenceNames is null || other.referenceNames is null)
+        {
+            return referenceNames is null
+                ? other.referenceNames is null ? 0 : -1
+                : 1;
+        }
+
+        var sharedLength = Math.Min(
+            referenceNames.Length,
+            other.referenceNames.Length);
+        for (var index = 0; index < sharedLength; index++)
+        {
+            comparison = StringComparer.Ordinal.Compare(
+                referenceNames[index],
+                other.referenceNames[index]);
+            if (comparison != 0)
+            {
+                return comparison;
+            }
+        }
+
+        return referenceNames.Length.CompareTo(other.referenceNames.Length);
+    }
+
+    public static bool operator ==(
+        ReferenceSelectionFingerprint left,
+        ReferenceSelectionFingerprint right)
+        => left.Equals(right);
+
+    public static bool operator !=(
+        ReferenceSelectionFingerprint left,
+        ReferenceSelectionFingerprint right)
+        => !left.Equals(right);
+
+    public override string ToString()
+        => documentKind is null ? "" : CreatePersistenceHashMaterial();
+
+    private static string NormalizeToken(string? value)
+        => value?.Trim().ToUpperInvariant() ?? "";
+
+    private static void AppendPersistenceToken(
+        System.Text.StringBuilder builder,
+        string value)
+    {
+        builder.Append(
+            value.Length.ToString(
+                System.Globalization.CultureInfo.InvariantCulture));
+        builder.Append(':');
+        builder.Append(value);
+    }
 }
 
 internal enum VbaProjectAuthorityRelationKind
@@ -348,28 +593,6 @@ internal static class VbaProjectIdentityModel
             ownership);
     }
 
-    internal static VbaProjectAuthorityRelation Relate(
-        string subjectUri,
-        VbaProjectResolution? previous,
-        VbaProjectResolution? current)
-    {
-        if (TryIdentifyDocument(subjectUri, out var subjectDocument))
-        {
-            return Relate(subjectDocument, previous, current);
-        }
-
-        return new VbaProjectAuthorityRelation(
-            VbaProjectAuthorityRelationKind.Indeterminate,
-            default,
-            TryIdentifyOptionalAuthority(previous),
-            TryIdentifyOptionalAuthority(current),
-            new VbaProjectAuthorityOwnershipFacts(
-                PreviousOwnsSubject: null,
-                CurrentOwnsSubject: null,
-                SameSourceOwnershipBoundary: null,
-                CurrentManifestWithinPreviousSourceRoot: null));
-    }
-
     internal static bool SameDocument(
         string leftUri,
         string rightUri)
@@ -377,10 +600,40 @@ internal static class VbaProjectIdentityModel
             && TryIdentifyDocument(rightUri, out var right)
             && left == right;
 
+    internal static IEnumerable<string> DistinctDocumentUris(
+        IEnumerable<string> uris)
+    {
+        var identified = new HashSet<VbaDocumentIdentity>();
+        var unidentified = new HashSet<string>(
+            StringComparer.OrdinalIgnoreCase);
+        foreach (var uri in uris)
+        {
+            if (TryIdentifyDocument(uri, out var identity)
+                    ? identified.Add(identity)
+                    : unidentified.Add(uri))
+            {
+                yield return uri;
+            }
+        }
+    }
+
     internal static string GetDocumentStableKey(string uri)
         => TryIdentifyDocument(uri, out var identity)
             ? identity.StableKey
             : string.Join("\u001e", "unidentified", uri);
+
+    internal static bool TryNormalizeSnapshotPath(
+        string? path,
+        out string canonicalPath)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            canonicalPath = "";
+            return true;
+        }
+
+        return TryNormalizeAuthorityPath(path, out canonicalPath);
+    }
 
     internal static bool TryIdentifyLocalDocumentPath(
         string path,
@@ -398,67 +651,11 @@ internal static class VbaProjectIdentityModel
         return true;
     }
 
-    internal static bool TryGetManifestScopeKey(
-        VbaProjectResolution resolution,
-        out string scopeKey)
-    {
-        scopeKey = "";
-        if (!TryIdentifyAuthority(resolution, out var authority)
-            || authority.ManifestScopeKey is not { } manifestScopeKey)
-        {
-            return false;
-        }
-
-        scopeKey = manifestScopeKey;
-        return true;
-    }
-
-    internal static bool TryGetManifestScopePrefix(
-        string manifestUri,
-        out string scopePrefix)
-    {
-        scopePrefix = "";
-        if (!TryIdentifyDocument(manifestUri, out var manifestDocument)
-            || !manifestDocument.IsLocalFile)
-        {
-            return false;
-        }
-
-        scopePrefix = $"{manifestDocument.CanonicalValue}\u001f";
-        return true;
-    }
-
-    internal static bool UsesManifestUri(
-        VbaProjectResolution resolution,
-        string manifestUri)
-        => TryIdentifyAuthority(resolution, out var authority)
-            && TryIdentifyDocument(
-                manifestUri,
-                out var manifestDocument)
-            && authority.UsesManifest(manifestDocument);
-
-    internal static bool UsesManifestPath(
-        VbaProjectResolution resolution,
-        string manifestPath)
-        => TryIdentifyAuthority(resolution, out var authority)
-            && TryIdentifyLocalDocumentPath(
-                manifestPath,
-                out var manifestDocument)
-            && authority.UsesManifest(manifestDocument);
-
-    internal static bool? OwnsDocument(
-        VbaProjectResolution? resolution,
-        string documentUri)
-        => TryIdentifyDocument(documentUri, out var document)
-            ? TryOwnsDocument(resolution, document)
-            : null;
-
     internal static bool? OwnsTransferredProjectDocument(
         VbaProjectResolution resolution,
-        string documentUri)
+        VbaDocumentIdentity document)
     {
-        if (!TryIdentifyDocument(documentUri, out var document)
-            || !document.IsLocalFile)
+        if (!document.IsLocalFile)
         {
             return null;
         }

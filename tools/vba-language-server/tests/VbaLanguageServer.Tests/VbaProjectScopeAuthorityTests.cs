@@ -240,16 +240,20 @@ public sealed class VbaProjectScopeAuthorityTests
             WriteManifest(projectRoot, "src/Book1");
             var firstPath = Path.Combine(sourceRoot, "First.bas");
             var secondPath = Path.Combine(sourceRoot, "Second.bas");
+            const string beforeText =
+                "Attribute VB_Name = \"Second\"\n"
+                + "Public Sub BeforeEdit()\n"
+                + "End Sub\n";
+            const string afterText =
+                "Attribute VB_Name = \"Second\"\n"
+                + "Public Sub AfterEdit()\n"
+                + "End Sub\n";
             File.WriteAllText(
                 firstPath,
                 "Attribute VB_Name = \"First\"\n"
                 + "Public Sub RunFirst()\n"
                 + "End Sub\n");
-            File.WriteAllText(
-                secondPath,
-                "Attribute VB_Name = \"Second\"\n"
-                + "Public Sub BeforeEdit()\n"
-                + "End Sub\n");
+            File.WriteAllText(secondPath, beforeText);
             var lifecycleObserver = new CountingLifecycleObserver();
             var buildObserver = new CountingSnapshotBuildObserver();
             var workspace = new VbaLanguageWorkspace(
@@ -266,12 +270,25 @@ public sealed class VbaProjectScopeAuthorityTests
             workspace.OpenDocument(
                 secondUri,
                 version: 1,
-                "Attribute VB_Name = \"Second\"\n"
-                + "Public Sub AfterEdit()\n"
-                + "End Sub\n");
+                afterText);
             var second = workspace.CreateProjectSnapshot(secondUri);
 
             Assert.NotSame(first, second);
+            Assert.Equal(
+                first.DiagnosticsOwnership?.CacheIdentity,
+                second.DiagnosticsOwnership?.CacheIdentity);
+            Assert.True(
+                VbaProjectIdentityModel.TryIdentifyAuthority(
+                    first.Resolution,
+                    out var firstAuthority));
+            Assert.True(
+                VbaProjectIdentityModel.TryIdentifyAuthority(
+                    second.Resolution,
+                    out var secondAuthority));
+            Assert.Equal(firstAuthority, secondAuthority);
+            Assert.NotEqual(
+                VbaProjectDiskContentIdentity.FromText(beforeText),
+                VbaProjectDiskContentIdentity.FromText(afterText));
             Assert.Equal(
                 manifestResolveCount,
                 lifecycleObserver.ManifestResolveCount);
@@ -279,6 +296,80 @@ public sealed class VbaProjectScopeAuthorityTests
             Assert.Contains(
                 second.SemanticInventory.GetDocumentDefinitions(secondUri),
                 definition => definition.Name == "AfterEdit");
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Common_modules_replace_snapshot_identity_without_replacing_authority()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-snapshot-input-transition-").FullName;
+        try
+        {
+            var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
+            Directory.CreateDirectory(sourceRoot);
+            WriteManifest(
+                projectRoot,
+                "src/Book1",
+                templatePath: "templates/Before.xlsm",
+                commonModuleFile: "CommonBefore.bas");
+            var activePath = Path.Combine(sourceRoot, "Main.bas");
+            File.WriteAllText(
+                activePath,
+                "Attribute VB_Name = \"Main\"\n"
+                + "Public Sub Run()\n"
+                + "End Sub\n");
+            var activeUri = new Uri(activePath).AbsoluteUri;
+            var manifestUri = new Uri(
+                Path.Combine(projectRoot, "vba-project.json"))
+                .AbsoluteUri;
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()));
+
+            var initial = workspace.CreateProjectSnapshot(activeUri);
+            WriteManifest(
+                projectRoot,
+                "src/Book1",
+                templatePath: "templates/Before.xlsm",
+                commonModuleFile: "CommonAfter.bas");
+            Assert.True(
+                workspace.ManifestWorkspace.ReloadManifest(manifestUri));
+
+            var changed = workspace.CreateProjectSnapshot(activeUri);
+            var warm = workspace.CreateProjectSnapshot(activeUri);
+
+            Assert.NotSame(initial, changed);
+            Assert.Same(changed, warm);
+            Assert.True(
+                VbaProjectIdentityModel.TryIdentifyAuthority(
+                    initial.Resolution,
+                    out var initialAuthority));
+            Assert.True(
+                VbaProjectIdentityModel.TryIdentifyAuthority(
+                    changed.Resolution,
+                    out var changedAuthority));
+            Assert.Equal(initialAuthority, changedAuthority);
+            Assert.NotEqual(
+                initial.DiagnosticsOwnership?.CacheIdentity,
+                changed.DiagnosticsOwnership?.CacheIdentity);
+            Assert.EndsWith(
+                Path.Combine("templates", "Before.xlsm"),
+                changed.Resolution.SourceTemplatePath,
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(
+                "CommonAfter.bas",
+                Assert.Single(
+                    changed.Resolution.InstalledCommonModuleEntries)
+                    .ModuleFile);
+            Assert.Equal(1, workspace.RetainedProjectSnapshotCount);
+            Assert.Equal(
+                1,
+                workspace.RetainedProjectScopeInvalidationStateCount);
         }
         finally
         {
@@ -311,9 +402,8 @@ public sealed class VbaProjectScopeAuthorityTests
         var snapshot = provider.CreateProjectSnapshot(
             activeUri,
             new VbaWorkspaceSnapshotState(
-                new Dictionary<string, VbaTrackedDocument>(
-                    StringComparer.OrdinalIgnoreCase),
-                new HashSet<string>(StringComparer.OrdinalIgnoreCase),
+                new Dictionary<VbaDocumentIdentity, VbaTrackedDocument>(),
+                new HashSet<VbaDocumentIdentity>(),
                 Version: 0),
             CancellationToken.None);
 
@@ -551,10 +641,12 @@ public sealed class VbaProjectScopeAuthorityTests
                 manifestWorkspace
                     .ReplaceDeletedReconciledManifestAuthority(
                     [
-                        new(
+                        VbaProjectManifestReconciliationTestExtensions
+                            .CreateReconciliationTarget(
                             innerManifestUri,
                             capturedInnerRevision),
-                        new(
+                        VbaProjectManifestReconciliationTestExtensions
+                            .CreateReconciliationTarget(
                             outerManifestUri,
                             capturedOuterRevision)
                     ],
@@ -688,8 +780,16 @@ public sealed class VbaProjectScopeAuthorityTests
 
     private static void WriteManifest(
         string projectRoot,
-        string sourcePath)
-        => File.WriteAllText(
+        string sourcePath,
+        string templatePath = "Book1.xlsm",
+        string? commonModuleFile = null)
+    {
+        var commonModules = commonModuleFile is null
+            ? "[]"
+            : $$"""
+              [{"name":"{{Path.GetFileNameWithoutExtension(commonModuleFile)}}","moduleFile":"{{commonModuleFile}}","requested":true,"testOnly":false,"orphaned":false}]
+              """;
+        File.WriteAllText(
             Path.Combine(projectRoot, "vba-project.json"),
             $$"""
             {
@@ -700,15 +800,16 @@ public sealed class VbaProjectScopeAuthorityTests
                 "Book1": {
                   "kind": "excel",
                   "sourcePath": "{{sourcePath}}",
-                  "templatePath": "Book1.xlsm",
+                  "templatePath": "{{templatePath}}",
                   "binPath": "bin/Book1.xlsm",
                   "publishPath": "publish/Book1.xlsm",
-                  "commonModules": [],
+                  "commonModules": {{commonModules}},
                   "references": []
                 }
               }
             }
             """);
+    }
 
     private static CaptureCounts ReadCounts(
         CountingProjectFileSystem fileSystem,
@@ -887,7 +988,7 @@ public sealed class VbaProjectScopeAuthorityTests
 
         public int ResolveCount => Volatile.Read(ref resolveCount);
 
-        public long GetRevision(string authorityUri)
+        public long GetRevision(VbaIdentifiedDocument authorityDocument)
         {
             if (Interlocked.Increment(ref revisionCaptureCount) == 1)
             {

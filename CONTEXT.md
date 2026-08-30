@@ -1064,9 +1064,16 @@ _Avoid_: path equality, replacement boolean, manifest-presence heuristic
 
 **VbaProjectSnapshotIdentity**:
 The immutable cache identity that combines one `VbaProjectAuthorityIdentity`
-with the selected document kind, reference set, CommonModules inputs, and other
-facts that determine a captured project snapshot. It may change while the
-authority and each source document identity remain stable.
+with the canonical source root, selected document kind, ordered semantic
+reference selection, source-template selection, and CommonModules module-file
+membership. Cache lookup, supersession, invalidation, retirement, and
+reconciliation retain this opaque type rather than a composite string. It may
+change while the authority and each source document identity remain stable;
+source text and `DiskContentIdentity` do not participate.
+Active, tracked, open, revision, and manifest-barrier documents cross snapshot
+cache and reconciliation boundaries as `VbaDocumentIdentity` or
+`VbaIdentifiedDocument`; a URI remains adjacent presentation or filesystem I/O
+data rather than the identity accepted by those Interfaces.
 _Avoid_: project authority, disk content identity, mutable cache key
 
 **VbaProjectDiskInventory**:
@@ -1080,11 +1087,12 @@ validation, invalidation, and one stable source read without enumerating the
 project. `ProjectReconciliation` always rereads source bytes even when metadata
 is unchanged. Its one-method reconciliation observation Seam accepts an
 immutable disk-only request containing the resolved project disk scope,
-ordered manifest probes, barrier overrides, and observed barrier URIs. The
-shared filesystem inventory instance and decoded-source cache remain the same
-ones used by cold and watched capture. The request does not contain an
-authority key, authority generation, workspace, source, or manifest revisions,
-known sources, or open-document state; those remain in
+ordered typed manifest probes, typed barrier overrides, typed observed-barrier
+document identities, and typed open-source exclusions. The shared filesystem
+inventory instance and decoded-source cache remain the same ones used by cold
+and watched capture. The request does not contain an authority key, authority
+generation, workspace, source, or manifest revisions, known sources, open
+text, or document versions; those remain in
 `VbaProjectReconciler` and the workspace reconciliation Seam. The inventory
 does not parse syntax, apply open-buffer priority, or decide whether a captured
 authority may commit.
@@ -1719,6 +1727,27 @@ The case-insensitive deterministic identity of one effective
 state, and normalized reference names. Repeated activation with the same
 project scope and fingerprint shares one automatic catalog lifecycle revision.
 _Avoid_: document version, manifest version, catalog identity, TypeLib identity
+
+**VbaProjectReferenceCatalogScopeIdentity**:
+The typed cache and persistence scope composed from one manifest-document
+`VbaProjectAuthorityIdentity` and one `ReferenceSelectionFingerprint`. Scoped
+persistent-store implementations receive this value directly and may use its
+opaque, versioned `CreatePersistentKey` result for a reference instead of
+constructing path, document, and selection strings.
+_Avoid_: project snapshot identity, refresh authority, caller-composed cache key
+
+**VbaProjectReferenceCatalogRefreshAuthorityIdentity**:
+The mutation-lane authority for one reference name under an optional project
+authority. It deliberately excludes `ReferenceSelectionFingerprint`, so a newer
+selection supersedes older commits for the same catalog authority.
+_Avoid_: catalog scope, automatic work identity, selection revision
+
+**VbaProjectReferenceCatalogAutomaticWorkIdentity**:
+The sharing identity for automatic preload and discovery work. It combines the
+`ReferenceSelectionFingerprint` with project authority only when discovery is
+context-specific, allowing context-free work to be shared without weakening
+context-specific commit fences.
+_Avoid_: refresh authority, catalog scope, background task ID
 
 **ReferenceCatalogLifecycleRevision**:
 One generation of automatic persisted preload and discovery for a project scope

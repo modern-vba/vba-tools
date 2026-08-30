@@ -431,10 +431,14 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
     public async Task SupersededContextCannotCommitAfterEnteringMutationLane()
     {
         const string referenceName = "Scoped Library";
-        const string scopeKey = "scope-a";
         var selection = VbaProjectReferenceSelection.Create(
             ProjectDocument.ExcelKind,
             [new VbaProjectReference(referenceName)]);
+        var projectPath = Path.GetFullPath(@"C:\work\Scoped");
+        var scope = CreateCatalogScope(
+            projectPath,
+            "Book1",
+            selection);
         var discoveryResult = VbaProjectReferenceCatalogDiscoveryResult.Success(
             new VbaProjectReferenceCatalogIdentity(
                 referenceName,
@@ -453,11 +457,10 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
         var current = 1;
         var refresh = service.RefreshAutomaticallyAsync(
             new VbaProjectReferenceCatalogRefreshContext(
-                Path.GetFullPath(@"C:\work\Scoped"),
+                projectPath,
                 "Book1",
                 selection,
-                scopeKey,
-                SelectionFingerprint: "fingerprint-a",
+                scope,
                 IsCurrent: () => Volatile.Read(ref current) == 1),
             CancellationToken.None);
         await mutationLane.CommitStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -466,21 +469,35 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
         mutationLane.Release();
         await refresh.WaitAsync(TimeSpan.FromSeconds(5));
 
-        var state = cache.CaptureSelectionState(selection.References, scopeKey);
+        var state = cache.CaptureSelectionState(
+            selection.References,
+            scope);
         Assert.DoesNotContain(
             state.CatalogSet.GetActiveDefinitions(selection),
             definition => definition.Name == "SupersededType");
     }
 
     [Fact]
-    public async Task ScopedReferencedProjectNameAuthorityRequiresTheExactActiveSelectionFingerprint()
+    public async Task ScopedCatalogRequiresTheExactActiveSelectionFingerprint()
     {
         const string referenceName = "Scoped Library";
-        const string scopeKey = "scope-a";
-        const string currentFingerprint = "fingerprint-a";
         var selection = VbaProjectReferenceSelection.Create(
             ProjectDocument.ExcelKind,
             [new VbaProjectReference(referenceName)]);
+        var projectPath = Path.GetFullPath(@"C:\work\Scoped");
+        var currentScope = CreateCatalogScope(
+            projectPath,
+            "Book1",
+            selection);
+        var supersededScope = CreateCatalogScope(
+            projectPath,
+            "Book1",
+            VbaProjectReferenceSelection.Create(
+                ProjectDocument.ExcelKind,
+                [
+                    new VbaProjectReference(referenceName),
+                    new VbaProjectReference("Superseding Library")
+                ]));
         var catalog = CreateReferenceCatalog(referenceName, "ScopedType") with
         {
             ReferencedVbaProjectName = "ScopedProject"
@@ -502,27 +519,24 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
 
         await service.RefreshAutomaticallyAsync(
             new VbaProjectReferenceCatalogRefreshContext(
-                Path.GetFullPath(@"C:\work\Scoped"),
+                projectPath,
                 "Book1",
                 selection,
-                scopeKey,
-                SelectionFingerprint: currentFingerprint),
+                currentScope),
             CancellationToken.None);
 
         var current = cache.CaptureSelectionState(
             selection.References,
-            scopeKey,
-            currentFingerprint);
+            currentScope);
         Assert.Equal(
             "ScopedProject",
             current.AuthoritativeProjectNames[referenceName]);
 
         var superseded = cache.CaptureSelectionState(
             selection.References,
-            scopeKey,
-            "fingerprint-b");
+            supersededScope);
         Assert.Empty(superseded.AuthoritativeProjectNames);
-        Assert.Contains(
+        Assert.DoesNotContain(
             superseded.CatalogSet.GetActiveDefinitions(selection),
             definition => definition.Name == "ScopedType");
     }
@@ -531,7 +545,6 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
     public async Task CompleteUnavailableCliEntryPreservesScopedLastKnownGood()
     {
         const string referenceName = "Unavailable Library";
-        const string scopeKey = "unavailable-scope";
         var projectPath = Path.GetFullPath(@"C:\work\Unavailable");
         var registryCatalog = new TypeLibRegistryCatalog(
             complete: true,
@@ -584,13 +597,19 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
                 }),
                 "unavailable")));
         var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
-        cache.StoreStaleCatalog(
-            CreateReferenceCatalog(referenceName, "ScopedLastKnownGoodType"),
-            scopeKey);
         var selection = VbaProjectReferenceSelection.Create(
             ProjectDocument.ExcelKind,
             [new VbaProjectReference(referenceName)]);
-        var revisionBefore = cache.CaptureSelectionState(selection.References, scopeKey).Revision;
+        var scope = CreateCatalogScope(
+            projectPath,
+            "Book1",
+            selection);
+        cache.StoreStaleCatalog(
+            CreateReferenceCatalog(referenceName, "ScopedLastKnownGoodType"),
+            scope);
+        var revisionBefore = cache.CaptureSelectionState(
+            selection.References,
+            scope).Revision;
         var service = new VbaProjectReferenceCatalogRefreshService(cache, discovery);
 
         var result = Assert.Single(await service.RefreshAutomaticallyAsync(
@@ -598,11 +617,13 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
                 projectPath,
                 "Book1",
                 selection,
-                scopeKey),
+                scope),
             CancellationToken.None));
 
         Assert.True(result.DiscoveryResult.IsFailure);
-        var state = cache.CaptureSelectionState(selection.References, scopeKey);
+        var state = cache.CaptureSelectionState(
+            selection.References,
+            scope);
         Assert.Equal(revisionBefore, state.Revision);
         Assert.Contains(
             state.CatalogSet.GetActiveDefinitions(selection),
@@ -613,7 +634,6 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
     public async Task ContextSpecificRefreshDoesNotAdoptNameOnlyPersistedCatalogAsScopedLastKnownGood()
     {
         const string referenceName = "Ambiguous Library";
-        const string scopeKey = "project-b-scope";
         var persistedEntry = new VbaProjectReferenceCatalogPersistentEntry(
             new VbaProjectReferenceCatalogIdentity(
                 referenceName,
@@ -632,19 +652,25 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
         var selection = VbaProjectReferenceSelection.Create(
             ProjectDocument.ExcelKind,
             [new VbaProjectReference(referenceName)]);
+        var projectPath = Path.GetFullPath(@"C:\work\ProjectB");
+        var scope = CreateCatalogScope(
+            projectPath,
+            "Book1",
+            selection);
 
         var results = await service.RefreshAutomaticallyAsync(
             new VbaProjectReferenceCatalogRefreshContext(
-                Path.GetFullPath(@"C:\work\ProjectB"),
+                projectPath,
                 "Book1",
                 selection,
-                scopeKey,
-                SelectionFingerprint: "project-b-fingerprint"),
+                scope),
             CancellationToken.None);
 
         Assert.Equal(0, persistentStore.LoadCount);
         Assert.Contains(results, result => result.DiscoveryResult.IsFailure);
-        var state = cache.CaptureSelectionState(selection.References, scopeKey);
+        var state = cache.CaptureSelectionState(
+            selection.References,
+            scope);
         Assert.DoesNotContain(
             state.CatalogSet.GetActiveDefinitions(selection),
             definition => definition.Name == "ProjectAType");
@@ -654,9 +680,6 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
     public async Task ScopedPersistentCatalogsRemainIsolatedAcrossLanguageServerSessions()
     {
         const string referenceName = "Ambiguous Library";
-        const string selectionFingerprint = "shared-fingerprint";
-        const string projectAScope = "project-a-scope";
-        const string projectBScope = "project-b-scope";
         var projectAPath = Path.GetFullPath(@"C:\work\ProjectA");
         var projectBPath = Path.GetFullPath(@"C:\work\ProjectB");
         var cacheRoot = Directory.CreateTempSubdirectory("vba-ls-scoped-catalog-store-").FullName;
@@ -666,6 +689,14 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
             var selection = VbaProjectReferenceSelection.Create(
                 ProjectDocument.ExcelKind,
                 [new VbaProjectReference(referenceName)]);
+            var projectAScope = CreateCatalogScope(
+                projectAPath,
+                "Book1",
+                selection);
+            var projectBScope = CreateCatalogScope(
+                projectBPath,
+                "Book1",
+                selection);
             var initialService = new VbaProjectReferenceCatalogRefreshService(
                 new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty),
                 new ProjectContextCatalogDiscoveryFactory(),
@@ -675,16 +706,14 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
                     projectAPath,
                     "Book1",
                     selection,
-                    projectAScope,
-                    selectionFingerprint),
+                    projectAScope),
                 CancellationToken.None);
             await initialService.RefreshAutomaticallyAsync(
                 new VbaProjectReferenceCatalogRefreshContext(
                     projectBPath,
                     "Book1",
                     selection,
-                    projectBScope,
-                    selectionFingerprint),
+                    projectBScope),
                 CancellationToken.None);
 
             var resumedCache = new VbaProjectReferenceCatalogCache(
@@ -699,16 +728,14 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
                     projectAPath,
                     "Book1",
                     selection,
-                    projectAScope,
-                    selectionFingerprint),
+                    projectAScope),
                 CancellationToken.None);
             var projectBResults = await resumedService.RefreshAutomaticallyAsync(
                 new VbaProjectReferenceCatalogRefreshContext(
                     projectBPath,
                     "Book1",
                     selection,
-                    projectBScope,
-                    selectionFingerprint),
+                    projectBScope),
                 CancellationToken.None);
 
             Assert.All(
@@ -1795,6 +1822,25 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
                     null)
             ]);
 
+    private static VbaProjectReferenceCatalogScopeIdentity CreateCatalogScope(
+        string projectPath,
+        string documentName,
+        VbaProjectReferenceSelection selection)
+    {
+        var resolution = new VbaProjectResolution(
+            VbaProjectResolutionKind.ManifestDocument,
+            projectPath,
+            Path.Combine(projectPath, "vba-project.json"),
+            documentName,
+            ProjectDocument.ExcelKind,
+            selection.References);
+        Assert.True(
+            VbaProjectReferenceCatalogScopeIdentity.TryCreate(
+                resolution,
+                out var scope));
+        return scope;
+    }
+
     private static TypeLibReferenceCatalogDiscovery CreateRegExpDiscovery()
         => new(
             new FakeTypeLibRegistryCatalogReader(CreateNeutralRegistryCatalog(
@@ -2001,7 +2047,7 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public async Task CommitAsync(
-            string authorityKey,
+            VbaProjectReferenceCatalogRefreshAuthorityIdentity authority,
             Action commit,
             CancellationToken cancellationToken)
         {

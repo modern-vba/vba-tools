@@ -51,7 +51,7 @@ public sealed class ProjectResolutionTests
         Assert.Equal(aliasRoot, resolution.RootPath, ignoreCase: true);
         Assert.True(resolution.ContainsUri(new Uri(sourcePath).AbsoluteUri));
         var relation = VbaProjectIdentityModel.Relate(
-            new Uri(sourcePath).AbsoluteUri,
+            IdentifyDocument(new Uri(sourcePath).AbsoluteUri),
             resolution,
             resolution);
         Assert.True(relation.Ownership.PreviousOwnsSubject);
@@ -62,7 +62,7 @@ public sealed class ProjectResolutionTests
             RootPath = sourceRoot
         };
         var sameBoundary = VbaProjectIdentityModel.Relate(
-            new Uri(sourcePath).AbsoluteUri,
+            IdentifyDocument(new Uri(sourcePath).AbsoluteUri),
             resolution,
             physicalSpelling);
         Assert.True(sameBoundary.Ownership.SameSourceOwnershipBoundary);
@@ -92,7 +92,7 @@ public sealed class ProjectResolutionTests
                 nestedSourceRoot)
         };
         var nestedRelation = VbaProjectIdentityModel.Relate(
-            new Uri(nestedSourcePath).AbsoluteUri,
+            IdentifyDocument(new Uri(nestedSourcePath).AbsoluteUri),
             resolution,
             nestedResolution);
         Assert.Equal(
@@ -106,15 +106,25 @@ public sealed class ProjectResolutionTests
                 ProjectManifest.ManifestFileName)
         };
         Assert.True(
+            VbaProjectIdentityModel.TryIdentifyDocument(
+                new Uri(nestedSourcePath).AbsoluteUri,
+                out var nestedSourceIdentity));
+        Assert.True(
             VbaProjectIdentityModel.OwnsTransferredProjectDocument(
                 aliasNestedResolution,
-                new Uri(nestedSourcePath).AbsoluteUri));
+                nestedSourceIdentity));
     }
 
     private static void WriteManifest(string projectRoot, ProjectManifest manifest)
         => File.WriteAllBytes(
             Path.Combine(projectRoot, ProjectManifest.ManifestFileName),
             ProjectManifestCanonicalSerializer.SerializeToUtf16LeBytes(manifest));
+
+    private static VbaDocumentIdentity IdentifyDocument(string uri)
+        => VbaProjectIdentityModel.TryIdentifyDocument(uri, out var identity)
+            ? identity
+            : throw new InvalidOperationException(
+                "The test document must have a typed identity.");
 
     private sealed class TestDirectory : IDisposable
     {

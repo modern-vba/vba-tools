@@ -167,6 +167,10 @@ public interface IVbaProjectReferenceCatalogPersistentStore
 /// Loads and saves generated catalogs whose selected identity is authoritative
 /// only for one manifest-document scope and reference-selection fingerprint.
 /// </summary>
+/// <remarks>
+/// Implementations can use <see cref="VbaProjectReferenceCatalogScopeIdentity.CreatePersistentKey"/>
+/// as the opaque cross-process storage key for a reference.
+/// </remarks>
 public interface IVbaProjectReferenceCatalogScopedPersistentStore
 {
     /// <summary>
@@ -174,8 +178,7 @@ public interface IVbaProjectReferenceCatalogScopedPersistentStore
     /// </summary>
     Task<VbaProjectReferenceCatalogPersistentLoadResult> LoadScopedAsync(
         string referenceName,
-        string scopeKey,
-        string selectionFingerprint,
+        VbaProjectReferenceCatalogScopeIdentity scope,
         CancellationToken cancellationToken);
 
     /// <summary>
@@ -183,8 +186,7 @@ public interface IVbaProjectReferenceCatalogScopedPersistentStore
     /// </summary>
     Task SaveScopedAsync(
         VbaProjectReferenceCatalogPersistentEntry entry,
-        string scopeKey,
-        string selectionFingerprint,
+        VbaProjectReferenceCatalogScopeIdentity scope,
         CancellationToken cancellationToken);
 }
 
@@ -307,15 +309,13 @@ public sealed class VbaProjectReferenceCatalogPersistentStore
     /// <inheritdoc />
     public Task<VbaProjectReferenceCatalogPersistentLoadResult> LoadScopedAsync(
         string referenceName,
-        string scopeKey,
-        string selectionFingerprint,
+        VbaProjectReferenceCatalogScopeIdentity scope,
         CancellationToken cancellationToken)
         => LoadCoreAsync(
             referenceName,
             GetScopedReferenceIndexPath(
                 referenceName,
-                scopeKey,
-                selectionFingerprint),
+                scope),
             cancellationToken);
 
     private async Task<VbaProjectReferenceCatalogPersistentLoadResult> LoadCoreAsync(
@@ -407,15 +407,13 @@ public sealed class VbaProjectReferenceCatalogPersistentStore
     /// <inheritdoc />
     public Task SaveScopedAsync(
         VbaProjectReferenceCatalogPersistentEntry entry,
-        string scopeKey,
-        string selectionFingerprint,
+        VbaProjectReferenceCatalogScopeIdentity scope,
         CancellationToken cancellationToken)
         => SaveCoreAsync(
             entry,
             GetScopedReferenceIndexPath(
                 entry.Identity.ReferenceName,
-                scopeKey,
-                selectionFingerprint),
+                scope),
             cancellationToken);
 
     private async Task SaveCoreAsync(
@@ -452,16 +450,11 @@ public sealed class VbaProjectReferenceCatalogPersistentStore
 
     private string GetScopedReferenceIndexPath(
         string referenceName,
-        string scopeKey,
-        string selectionFingerprint)
+        VbaProjectReferenceCatalogScopeIdentity scope)
         => Path.Combine(
             rootDirectory,
             ReferencesDirectoryName,
-            $"scope-{HashKey(string.Join(
-                "\u001f",
-                scopeKey,
-                selectionFingerprint,
-                NormalizeReferenceName(referenceName)))}.json");
+            $"scope-{scope.CreatePersistentKey(referenceName)}.json");
 
     private static async Task<T> ReadJsonAsync<T>(
         string path,
