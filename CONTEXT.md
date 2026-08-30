@@ -350,6 +350,16 @@ procedure, restart generation, and DAP request sequence; any mismatch or
 missing target retains the current session.
 _Avoid_: new launch target, active-editor retargeting, project-only restart token
 
+**PreparedDebugLaunchPlan**:
+The adapter-internal immutable one-shot launch capability produced after one
+initial or restart source snapshot, target procedure, mapped breakpoints,
+conditional-compilation participation, generation, and any restart binding have
+been validated together. Restart may build that generation while the current
+`VbeDebugSession` remains active, but it rechecks the binding and ends the old
+session only after the build succeeds and immediately before starting the
+replacement.
+_Avoid_: raw launch request, reusable launch cache, early restart teardown
+
 **DebugWorkspaceLease**:
 The adapter-owned record atomically created under the canonical directory named
 by one `DebugSessionId`, containing the owner PID, process start time, and a
@@ -357,6 +367,14 @@ separate random lease ID. An existing directory is never reused or deleted
 during claim. The lease prevents a cleanup process or later adapter start from
 confusing a live or PID-reused session with stale temporary state.
 _Avoid_: project lock, manifest lock, arbitrary cleanup path
+
+**DebugGenerationWorkspace**:
+The create-new generation workspace issued only by a live
+`DebugWorkspaceLease`; it owns the exact source snapshot and generated workbook
+paths for one build attempt and transfers that same ownership to the resulting
+`VbeDebugSession`. Cleanup consumes this capability or its owning session, never
+an arbitrary path or an optional ownership flag.
+_Avoid_: session workspace path, caller-constructed generation path, borrowed artifact
 
 **DebugSessionReaper**:
 The internal `vba-debug-adapter cleanup --session <session-id>` operation and
@@ -1017,6 +1035,27 @@ _Avoid_: workspace, repository, package
 **VbaProjectName**:
 The actual VBA project name represented by `VBProject.Name`, which participates in VBA's module, project, and object-library name uniqueness rule. A manifest-backed `VbaProject` binds its authority to the exact request-start source-template content and may reuse an observation only for the same content fingerprint; `ProjectManifest.projectName`, a document name, a workbook filename, and a value from older template content are not substitutes, while an `AdHocVbaProject` has no containing-project-name authority by design.
 _Avoid_: ProjectManifest.projectName, document name, workbook basename
+
+**VbaDocumentIdentity**:
+The opaque equality identity of one language-server source document, represented
+by a canonical local full path for a file URI or by the stable normalized URI
+for a non-file document. It remains separate from source revision and
+`DiskContentIdentity`.
+_Avoid_: source text identity, project authority, display path
+
+**VbaProjectAuthorityIdentity**:
+The stable identity of the authority that owns one `VbaProject`: the canonical
+manifest and selected document for a manifest-backed project, or the canonical
+source root for an `AdHocVbaProject`. References, CommonModules selections, and
+source content do not change this identity.
+_Avoid_: project snapshot, source revision, document URI
+
+**VbaProjectSnapshotIdentity**:
+The immutable cache identity that combines one `VbaProjectAuthorityIdentity`
+with the selected document kind, reference set, CommonModules inputs, and other
+facts that determine a captured project snapshot. It may change while the
+authority and each source document identity remain stable.
+_Avoid_: project authority, disk content identity, mutable cache key
 
 **VbaProjectDiskInventory**:
 The syntax-free disk capture for one resolved `VbaProject`. It owns `.bas`,
@@ -2439,6 +2478,16 @@ to be `currentHostProjected`. Any advisory authority or incomplete target
 evidence suppresses it.
 _Avoid_: Event signature availability, stale host validation, selected target authority
 
+**VbaCallableContractComparison**:
+The ordered declaration-to-declaration exact-comparison facts shared by
+`EventHandlerCompatibility` and `InterfaceContractFulfillment`, retaining every
+conclusive mismatch and every indeterminate dimension without formatting a
+diagnostic. Comparison order is parameter count; then each parameter's canonical
+type, array shape, passing mechanism, role, and default; then Property value and
+result contracts when the caller's policy enables them; parameter names and
+call-site coercion never participate.
+_Avoid_: CallArgumentMapping, assignment compatibility, diagnostic string
+
 **EventHandlerCompatibility**:
 The family-aware, declaration-to-declaration analysis between one syntactically
 complete `WithEventsHandlerDeclaration` or
@@ -2451,9 +2500,9 @@ nonconditional source Event, a singleton resolved TypeLib or projected host
 Event, and a multi-variant conditional Event family. For a conditional handler family, it
 runs independently for every physical handler variant against the same complete
 Event-signature set; one handler variant's match never selects a branch or
-changes another variant's result. It shares lower-level parameter-type, array,
-parameter-mechanism, and Optional or `ParamArray` shape comparison primitives,
-but it is not `CallArgumentMapping`: a handler declaration has no call-site
+changes another variant's result. It uses `VbaCallableContractComparison` with
+Property value and result contracts marked not compared, but it is not
+`CallArgumentMapping`: a handler declaration has no call-site
 expressions, named arguments, omitted arguments, or active parameter. Parameter
 names are not compatibility elements; ordered parameter position is. Parameter
 types match only when normalization and Type Resolution establish the same
@@ -3764,6 +3813,9 @@ Domain Expert: "No. Any session termination force-terminates its `DebugExcelProc
 Dev: "Can an adapter crash leave its Excel process, `vba-dev` child, and workspace indefinitely?"
 Domain Expert: "The extension generates a random `DebugSessionId` before adapter launch and retains it even if initialization fails. The kill-on-close Job terminates the process tree; the extension then reaps that ID, or the next adapter start removes the stale lease. Neither cleanup path accepts an arbitrary directory."
 
+Dev: "Can a builder construct a generation directory from `DebugSessionId` and pass the path to cleanup?"
+Domain Expert: "No. Only a live `DebugWorkspaceLease` can issue a create-new `DebugGenerationWorkspace`, and that capability owns its exact source and workbook artifacts through build and the resulting `VbeDebugSession`. Cleanup accepts owned state or the session ID, never a caller-composed path or ancestry proof."
+
 Dev: "Should failure to remove a stale debug workspace change the result of the debug session that just ended?"
 Domain Expert: "No. After five seconds of bounded deletion retries, retain and report the absolute path as a housekeeping warning. Invalid IDs, live or unverifiable leases, and deletion failure return nonzero without widening deletion scope, while a missing or never-claimed workspace is a silent successful no-op."
 
@@ -3774,7 +3826,7 @@ Dev: "Can one VS Code window run two `VbeDebugSession`s at the same time?"
 Domain Expert: "No. The initial product permits one active session per window and never ends or reuses that session implicitly for another launch."
 
 Dev: "Does Restart Debugging reuse the existing Excel process?"
-Domain Expert: "No. `DebugRestartPreparation` first captures a new `DebugSourceSnapshot` without saving project files while the current session remains active. Only a matching preparation for the same document, module, and procedure force-terminates that process and performs a complete new `VbeDebugLaunch`; changing the active editor does not retarget Restart."
+Domain Expert: "No. `DebugRestartPreparation` first captures a new `DebugSourceSnapshot` without saving project files, and its one-shot `PreparedDebugLaunchPlan` builds a fresh generation while the current session remains active. After a successful build it rechecks the same session, document, module, and procedure binding; only then does it force-terminate the old process immediately before starting the replacement. Preparation failure, build failure, cancellation before the swap, or changing the active editor retains the current session."
 
 Dev: "Does closing only the `DebugWorkbook` leave an empty debug Excel session running?"
 Domain Expert: "No. Once that workbook actually closes, its dedicated Excel process is force-terminated and the `VbeDebugSession` ends. Cancelling workbook close leaves both active."
@@ -3899,6 +3951,9 @@ Domain Expert: "No. `QualifierCompletionCandidate`s follow the active `Completio
 Dev: "Is the VS Code workspace folder always the `WorkbookBackedProject`?"
 Domain Expert: "No. The `ProjectManifest` identifies the `WorkbookBackedProject`; a workspace can contain none, one, or several workbook-backed projects."
 
+Dev: "Are `VbaDocumentIdentity`, `VbaProjectAuthorityIdentity`, and `VbaProjectSnapshotIdentity` interchangeable cache keys?"
+Domain Expert: "No. Document identity says which source document is being discussed and survives text edits; authority identity says which manifest document or ad-hoc root owns the project; snapshot identity additionally captures selected kind, references, CommonModules inputs, and other snapshot-forming facts. Keep content revision and `DiskContentIdentity` separate from all three."
+
 Dev: "What happens when I edit a loose `.bas` file outside any `vba-project.json`?"
 Domain Expert: "It is an `AdHocVbaProject`: source definitions, `LanguageVocabulary`, and definitions from the always-active `VbaStandardLibraryReference` work, but no manifest-controlled external references are active. Create a `WorkbookBackedProject` when other reference-aware completions are needed."
 
@@ -3994,6 +4049,9 @@ Domain Expert: "No. Admit `RaiseEvent` only inside a procedure in a class-module
 
 Dev: "Must a `WithEvents` handler use the Event declaration's parameter names?"
 Domain Expert: "No. Event and handler parameters correspond by ordinal position. `EventHandlerCompatibility` ignores their names but compares their count, canonical types, array shape, effective passing mechanism, and Optional or `ParamArray` shape."
+
+Dev: "Should Event handlers and interface implementations build separate signature mismatch lists?"
+Domain Expert: "No. Both consume `VbaCallableContractComparison`, which preserves the same ordered exact mismatch and uncertainty facts. Each caller selects which contract dimensions participate—Event handlers mark Property value and result contracts not compared—then applies its own authority, diagnostic range, and presentation policy. `CallArgumentMapping` remains a separate call-site operation."
 
 Dev: "Can an Event parameter declared `As Long` match a handler parameter declared `As Integer` because VBA can convert the value?"
 Domain Expert: "No. Event-to-handler comparison is declaration compatibility, not call-site conversion. Normalize spelling and resolve both types, then require the same canonical type identity. `Workbook` and `Excel.Workbook` can match when they resolve to the same TypeLib definition; `Object` and `Excel.Workbook`, a class and one of its interfaces, `Variant` and a concrete type, or distinct numeric types do not. If catalog, host, or resolution evidence cannot establish either identity, retain an indeterminate result rather than guessing."
