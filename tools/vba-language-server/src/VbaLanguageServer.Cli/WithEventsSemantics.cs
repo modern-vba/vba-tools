@@ -216,18 +216,16 @@ internal sealed record VbaConditionalDependentRenameCoverage(
     IReadOnlyList<VbaSourceDefinition> PhysicalDefinitions,
     IReadOnlyList<VbaHandlerEventRenameConvergence> Associations);
 
-internal enum VbaEventHandlerCompatibilityState
-{
-    Compatible,
-    Incompatible,
-    Indeterminate
-}
-
 internal sealed record VbaEventHandlerSignatureCompatibility(
     VbaResolvedEventContract EventContract,
-    VbaEventHandlerCompatibilityState State,
-    IReadOnlyList<string> MismatchReasons,
-    bool IsConditionalContract);
+    VbaCallableContractComparisonResult Comparison,
+    bool IsConditionalContract)
+{
+    public VbaCallableContractComparisonState State => Comparison.State;
+
+    public IReadOnlyList<string> MismatchReasons
+        => VbaCallableContractComparisonFormatter.FormatMismatchReasons(Comparison);
+}
 
 internal sealed record VbaEventHandlerCompatibility(
     IReadOnlyList<VbaEventHandlerSignatureCompatibility> Signatures,
@@ -237,12 +235,12 @@ internal sealed record VbaEventHandlerCompatibility(
         => !HasRecoveredEventEvidence
             && Signatures.Count > 0
             && Signatures.All(signature =>
-                signature.State == VbaEventHandlerCompatibilityState.Incompatible);
+                signature.State == VbaCallableContractComparisonState.Incompatible);
 
     public IReadOnlyList<VbaDiagnosticDetail> CreateDiagnosticDetails()
         => Signatures
             .Where(signature =>
-                signature.State == VbaEventHandlerCompatibilityState.Incompatible)
+                signature.State == VbaCallableContractComparisonState.Incompatible)
             .Select(signature =>
             {
                 var conditionalMarker = signature.IsConditionalContract
@@ -667,104 +665,105 @@ internal sealed class VbaWithEventsSemanticModel
         {
             return new VbaEventHandlerSignatureCompatibility(
                 eventContract,
-                VbaEventHandlerCompatibilityState.Indeterminate,
-                [],
+                VbaCallableContractComparisonResult
+                    .UnavailableContractEvidence(),
                 eventContract.IsConditionalContract);
         }
 
-        var mismatches = new List<string>();
-        var hasIndeterminateEvidence = false;
-        if (eventSignature.Parameters.Count != handlerSignature.Parameters.Count)
-        {
-            mismatches.Add(
-                $"parameter count: expected {eventSignature.Parameters.Count}, "
-                    + $"found {handlerSignature.Parameters.Count}");
-        }
-
-        var commonParameterCount = Math.Min(
-            eventSignature.Parameters.Count,
-            handlerSignature.Parameters.Count);
-        for (var index = 0; index < commonParameterCount; index++)
-        {
-            var expected = eventSignature.Parameters[index];
-            var found = handlerSignature.Parameters[index];
-            var position = index + 1;
-            if (TryGetEventContractParameterType(
+        var expected = new VbaCallableContract(
+            eventSignature.Parameters
+                .Select((parameter, index) => CreateEventContractParameter(
                     eventContract,
                     index,
-                    expected,
-                    out var expectedType)
-                && TryGetCanonicalParameterType(
+                    parameter))
+                .ToArray());
+        var found = new VbaCallableContract(
+            handlerSignature.Parameters
+                .Select(parameter => CreateHandlerContractParameter(
                     handler,
-                    found,
-                    out var foundType))
-            {
-                if (!Equals(expectedType.Identity, foundType.Identity)
-                    && HasIncompletePortableTypeComparison(
-                        expectedType.Identity,
-                        foundType.Identity))
-                {
-                    hasIndeterminateEvidence = true;
-                }
-                else if (!Equals(expectedType.Identity, foundType.Identity))
-                {
-                    var diagnosticTypeNames = GetDiagnosticTypeNames(
-                        expectedType,
-                        foundType);
-                    mismatches.Add(
-                        $"parameter {position} type: expected "
-                            + $"{diagnosticTypeNames.Expected}, "
-                            + $"found {diagnosticTypeNames.Found}");
-                }
-            }
-            else
-            {
-                hasIndeterminateEvidence = true;
-            }
-
-            if (expected.IsArray != found.IsArray)
-            {
-                mismatches.Add(
-                    $"parameter {position} array shape: expected "
-                        + $"{GetArrayShape(expected.IsArray)}, found {GetArrayShape(found.IsArray)}");
-            }
-
-            if (expected.IsByRef is bool expectedByRef
-                && found.IsByRef is bool foundByRef)
-            {
-                if (expectedByRef != foundByRef)
-                {
-                    mismatches.Add(
-                        $"parameter {position} passing: expected "
-                            + $"{GetPassingMechanism(expectedByRef)}, "
-                            + $"found {GetPassingMechanism(foundByRef)}");
-                }
-            }
-            else
-            {
-                hasIndeterminateEvidence = true;
-            }
-
-            var expectedRole = GetParameterRole(expected);
-            var foundRole = GetParameterRole(found);
-            if (!expectedRole.Equals(foundRole, StringComparison.Ordinal))
-            {
-                mismatches.Add(
-                    $"parameter {position} role: expected {expectedRole}, "
-                        + $"found {foundRole}");
-            }
-        }
+                    parameter))
+                .ToArray());
+        var comparison = VbaCallableContractComparison.Compare(
+            expected,
+            found,
+            VbaCallableContractComparisonPolicy.EventHandler);
 
         return new VbaEventHandlerSignatureCompatibility(
             eventContract,
-            mismatches.Count > 0
-                ? VbaEventHandlerCompatibilityState.Incompatible
-                : hasIndeterminateEvidence
-                    ? VbaEventHandlerCompatibilityState.Indeterminate
-                    : VbaEventHandlerCompatibilityState.Compatible,
-            mismatches,
+            comparison,
             eventContract.IsConditionalContract);
     }
+
+    private VbaCallableContractParameter CreateEventContractParameter(
+        VbaResolvedEventContract eventContract,
+        int parameterIndex,
+        VbaCallableParameter parameter)
+    {
+        var type = TryGetEventContractParameterType(
+                eventContract,
+                parameterIndex,
+                parameter,
+                out var evidence)
+            ? CreateCallableContractType(evidence)
+            : null;
+        var hasAuthoritativeDefaultAbsence =
+            eventContract.ValidationAuthority
+                == VbaEventHandlerValidationAuthority.SourceDeclared;
+        return CreateCallableContractParameter(
+            parameter,
+            type,
+            hasAuthoritativeDefaultAbsence);
+    }
+
+    private VbaCallableContractParameter CreateHandlerContractParameter(
+        VbaSourceDefinition handler,
+        VbaCallableParameter parameter)
+        => CreateCallableContractParameter(
+            parameter,
+            TryGetCanonicalParameterType(handler, parameter, out var evidence)
+                ? CreateCallableContractType(evidence)
+                : null,
+            hasAuthoritativeDefaultAbsence: true);
+
+    private static VbaCallableContractParameter CreateCallableContractParameter(
+        VbaCallableParameter parameter,
+        VbaCallableContractType? type,
+        bool hasAuthoritativeDefaultAbsence)
+        => new(
+            type,
+            parameter.IsArray,
+            parameter.IsByRef,
+            parameter.IsParamArray
+                ? VbaCallableContractParameterRole.ParamArray
+                : parameter.IsOptional
+                    ? VbaCallableContractParameterRole.Optional
+                    : VbaCallableContractParameterRole.Required,
+            CreateCallableContractDefault(
+                parameter,
+                hasAuthoritativeDefaultAbsence));
+
+    private static VbaCallableContractDefault CreateCallableContractDefault(
+        VbaCallableParameter parameter,
+        bool hasAuthoritativeDefaultAbsence)
+    {
+        if (parameter.DefaultExpression is { } expression)
+        {
+            return VbaCallableContractDefault.FromExpression(expression);
+        }
+
+        return !parameter.IsOptional || hasAuthoritativeDefaultAbsence
+            ? VbaCallableContractDefault.Absent
+            : VbaCallableContractDefault.Indeterminate;
+    }
+
+    private static VbaCallableContractType CreateCallableContractType(
+        VbaResolvedEventParameterTypeEvidence evidence)
+        => new(
+            evidence.DisplayName,
+            evidence.Identity,
+            evidence.ReferenceQualifiedDisplayName,
+            evidence.Identity is VbaTypeLibraryParameterTypeIdentity,
+            IsUnmappedProjectReferenceIdentity(evidence.Identity));
 
     public IReadOnlyList<VbaResolvedEventParameterTypeEvidence?>
         GetParameterTypeEvidence(VbaSourceDefinition eventDefinition)
@@ -934,48 +933,10 @@ internal sealed class VbaWithEventsSemanticModel
         return true;
     }
 
-    private static bool HasIncompletePortableTypeComparison(
-        object expectedIdentity,
-        object foundIdentity)
-        => expectedIdentity is VbaTypeLibraryParameterTypeIdentity
-                && IsUnmappedProjectReferenceIdentity(foundIdentity)
-            || foundIdentity is VbaTypeLibraryParameterTypeIdentity
-                && IsUnmappedProjectReferenceIdentity(expectedIdentity);
-
     private static bool IsUnmappedProjectReferenceIdentity(object identity)
         => identity is VbaDefinitionNameTargetIdentity
         {
             DefinitionIdentity.Origin: VbaDefinitionOrigin.ProjectReference
         };
-
-    private static (string Expected, string Found) GetDiagnosticTypeNames(
-        VbaResolvedEventParameterTypeEvidence expected,
-        VbaResolvedEventParameterTypeEvidence found)
-    {
-        if (!expected.DisplayName.Equals(
-                found.DisplayName,
-                StringComparison.OrdinalIgnoreCase)
-            || Equals(expected.Identity, found.Identity))
-        {
-            return (expected.DisplayName, found.DisplayName);
-        }
-
-        return (
-            expected.ReferenceQualifiedDisplayName ?? expected.DisplayName,
-            found.ReferenceQualifiedDisplayName ?? found.DisplayName);
-    }
-
-    private static string GetArrayShape(bool isArray)
-        => isArray ? "array" : "scalar";
-
-    private static string GetPassingMechanism(bool isByRef)
-        => isByRef ? "ByRef" : "ByVal";
-
-    private static string GetParameterRole(VbaCallableParameter parameter)
-        => parameter.IsParamArray
-            ? "ParamArray"
-            : parameter.IsOptional
-                ? "Optional"
-                : "required";
 
 }

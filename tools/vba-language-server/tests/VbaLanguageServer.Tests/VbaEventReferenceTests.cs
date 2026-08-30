@@ -2388,7 +2388,7 @@ public sealed class VbaEventReferenceTests
             contract);
 
         Assert.Equal(
-            VbaEventHandlerCompatibilityState.Compatible,
+            VbaCallableContractComparisonState.Compatible,
             Assert.Single(compatibility.Signatures).State);
         Assert.False(contract.IsAuthoringAvailable);
     }
@@ -2420,8 +2420,53 @@ public sealed class VbaEventReferenceTests
             contract);
 
         Assert.Equal(
-            VbaEventHandlerCompatibilityState.Indeterminate,
+            VbaCallableContractComparisonState.Indeterminate,
             Assert.Single(compatibility.Signatures).State);
+        Assert.False(compatibility.ShouldReportDiagnostic);
+    }
+
+    [Fact]
+    public void Projected_optional_event_contract_without_default_evidence_is_indeterminate()
+    {
+        var contract = new VbaResolvedEventContract(
+            new VbaProjectedEventContractIdentity(
+                "host",
+                "Worker.publisher.Changed"),
+            "Changed",
+            new VbaCallableSignature(
+                "Event Changed(Optional ByRef Value As Long)",
+                [
+                    new VbaCallableParameter(
+                        "Value",
+                        IsOptional: true,
+                        TypeReference: new VbaTypeReference("Long"),
+                        IsByRef: true)
+                ],
+                CallableKind: VbaCallableKind.Event),
+            Documentation: null,
+            VbaEventHandlerValidationAuthority.CurrentHostProjected,
+            IsConditionalContract: false,
+            ParameterTypeEvidence:
+            [
+                new VbaResolvedEventParameterTypeEvidence(
+                    "Long",
+                    ReferenceQualifiedDisplayName: null,
+                    new VbaIntrinsicParameterTypeIdentity("Long"))
+            ]);
+
+        var compatibility = AnalyzeProjectedEventContract(
+            "Private Sub publisher_Changed(Optional ByRef Value As Long)",
+            contract);
+        var signature = Assert.Single(compatibility.Signatures);
+        var fact = Assert.Single(signature.Comparison.Facts);
+
+        Assert.Equal(VbaCallableContractComparisonState.Indeterminate, signature.State);
+        Assert.Equal(
+            VbaCallableContractComparisonFactOutcome.Indeterminate,
+            fact.Outcome);
+        Assert.Equal(
+            VbaCallableContractComparisonDimension.Default,
+            fact.Dimension);
         Assert.False(compatibility.ShouldReportDiagnostic);
     }
 
@@ -2459,7 +2504,7 @@ public sealed class VbaEventReferenceTests
             contract);
         var signature = Assert.Single(compatibility.Signatures);
 
-        Assert.Equal(VbaEventHandlerCompatibilityState.Incompatible, signature.State);
+        Assert.Equal(VbaCallableContractComparisonState.Incompatible, signature.State);
         Assert.Equal(
             ["parameter 1 role: expected ParamArray, found required"],
             signature.MismatchReasons);

@@ -314,8 +314,12 @@ public sealed class SourceInterfaceCallableContractLanguageServerProcessTests
         }
     }
 
-    [Fact]
-    public async Task TypeLib_interface_parameter_keeps_its_reference_type_owner()
+    [Theory]
+    [InlineData("Payload", true)]
+    [InlineData("Generated.Payload", false)]
+    public async Task TypeLib_interface_callable_types_keep_their_reference_type_owner(
+        string implementationType,
+        bool expectsMismatch)
     {
         var projectRoot = Directory.CreateTempSubdirectory(
             "vba-ls-interface-typelib-type-owner-").FullName;
@@ -325,22 +329,26 @@ public sealed class SourceInterfaceCallableContractLanguageServerProcessTests
         {
             const string referenceName = "Generated Interfaces";
             WriteReferenceCatalogProjectManifest(projectRoot, referenceName);
-            var runMember = new TypeLibCatalogMember(
-                "Run",
+            var transformMember = new TypeLibCatalogMember(
+                "Transform",
                 VbaSourceDefinitionKind.Procedure,
                 Documentation: null,
                 new VbaCallableSignature(
-                    "Sub Run(ByVal value As Payload)",
+                    "Function Transform(ByVal value As Payload) As Payload",
                     [
                         new VbaCallableParameter(
                             "value",
                             TypeReference: new VbaTypeReference("Payload"),
                             IsByRef: false)
                     ],
-                    CallableKind: VbaCallableKind.Sub),
+                    CallableKind: VbaCallableKind.Function),
+                TypeReference: new VbaTypeReference("Payload"),
                 Metadata: new TypeLibCatalogCallableMetadata(
                     MemberId: 1,
-                    FunctionFlags: 0));
+                    FunctionFlags: 0)
+                {
+                    IsReturnArray = false
+                });
             var catalog = TypeLibReferenceCatalogBuilder.Build(
                 referenceName,
                 new TypeLibCatalogMetadata(
@@ -360,7 +368,7 @@ public sealed class SourceInterfaceCallableContractLanguageServerProcessTests
                             "IRunner",
                             VbaSourceDefinitionKind.Class,
                             Documentation: null,
-                            Members: [runMember],
+                            Members: [transformMember],
                             IsCreatable: false,
                             Metadata: new TypeLibCatalogTypeMetadata(
                                 TypeLibCatalogRawTypeKind.Dispatch,
@@ -403,12 +411,12 @@ public sealed class SourceInterfaceCallableContractLanguageServerProcessTests
                 "Book1",
                 "Worker.cls");
             var workerUri = new Uri(workerPath).AbsoluteUri;
-            const string workerText = """
+            var workerText = $$"""
                 VERSION 1.0 CLASS
                 Attribute VB_Name = "Worker"
                 Implements IRunner
-                Private Sub IRunner_Run(ByVal value As Payload)
-                End Sub
+                Private Function IRunner_Transform(ByVal value As {{implementationType}}) As {{implementationType}}
+                End Function
                 """;
             File.WriteAllText(workerPath, workerText);
             await process.SendNotificationAsync(
@@ -430,12 +438,44 @@ public sealed class SourceInterfaceCallableContractLanguageServerProcessTests
                     && method.GetString() == "textDocument/publishDiagnostics"
                     && message.GetProperty("params").GetProperty("uri").GetString()
                         == workerUri);
-            Assert.Contains(
-                notification.GetProperty("params")
-                    .GetProperty("diagnostics")
-                    .EnumerateArray(),
-                diagnostic => diagnostic.GetProperty("code").GetString()
-                    == "validation.incompatibleInterfaceMemberSignature");
+            var diagnostics = notification.GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray()
+                .ToArray();
+            if (!expectsMismatch)
+            {
+                Assert.DoesNotContain(
+                    diagnostics,
+                    IsInterfaceFulfillmentDiagnostic);
+            }
+            else
+            {
+                var diagnostic = Assert.Single(
+                    diagnostics,
+                    candidate => candidate.GetProperty("code").GetString()
+                        == "validation.incompatibleInterfaceMemberSignature");
+                var detailMessages = new List<string>
+                {
+                    diagnostic.GetProperty("message").GetString() ?? ""
+                };
+                if (diagnostic.TryGetProperty(
+                        "relatedInformation",
+                        out var relatedInformation))
+                {
+                    detailMessages.AddRange(relatedInformation
+                        .EnumerateArray()
+                        .Select(item => item.GetProperty("message").GetString() ?? ""));
+                }
+
+                Assert.Contains(
+                    "parameter 1 type: expected Generated.Payload, found Payload",
+                    string.Join('\n', detailMessages),
+                    StringComparison.Ordinal);
+                Assert.Contains(
+                    "return type: expected Generated.Payload, found Payload",
+                    string.Join('\n', detailMessages),
+                    StringComparison.Ordinal);
+            }
 
             await process.ShutdownAsync(2);
         }
@@ -2138,6 +2178,67 @@ public sealed class SourceInterfaceCallableContractLanguageServerProcessTests
         Assert.Equal(1, result.GetProperty("activeParameter").GetInt32());
 
         await process.ShutdownAsync(4);
+    }
+
+    [Fact]
+    public async Task Interface_and_Event_diagnostics_share_ordered_callable_mismatch_wording()
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync(new
+        {
+            textDocument = new
+            {
+                publishDiagnostics = new
+                {
+                    relatedInformation = true
+                }
+            }
+        });
+
+        const string interfaceUri = "file:///C:/work/IWorker.cls";
+        const string interfaceText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "IWorker"
+            Public Sub Changed(ByRef Values() As Long)
+            End Sub
+            """;
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(interfaceUri, interfaceText));
+        await process.WaitForDiagnosticsAsync(interfaceUri);
+
+        const string implementationUri = "file:///C:/work/Worker.cls";
+        const string implementationText = """
+            VERSION 1.0 CLASS
+            Attribute VB_Name = "Worker"
+            Implements IWorker
+            Private Sub IWorker_Changed(Optional ByVal Renamed As String = "")
+            End Sub
+            """;
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(implementationUri, implementationText));
+
+        var notification = await process.WaitForDiagnosticsAsync(implementationUri);
+        var diagnostic = Assert.Single(
+            notification
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray(),
+            candidate => candidate.GetProperty("code").GetString()
+                == "validation.incompatibleInterfaceMemberSignature");
+        var related = Assert.Single(
+            diagnostic.GetProperty("relatedInformation").EnumerateArray());
+        Assert.Equal(
+            "Required contract: Sub IWorker_Changed(ByRef Values() As Long). "
+                + "Mismatches: parameter 1 type: expected Long, found String; "
+                + "parameter 1 array shape: expected array, found scalar; "
+                + "parameter 1 passing: expected ByRef, found ByVal; "
+                + "parameter 1 role: expected required, found Optional; "
+                + "parameter 1 default: expected no default, found \"\".",
+            related.GetProperty("message").GetString());
+
+        await process.ShutdownAsync(2);
     }
 
     [Fact]

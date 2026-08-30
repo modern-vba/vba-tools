@@ -2479,13 +2479,23 @@ evidence suppresses it.
 _Avoid_: Event signature availability, stale host validation, selected target authority
 
 **VbaCallableContractComparison**:
-The ordered declaration-to-declaration exact-comparison facts shared by
-`EventHandlerCompatibility` and `InterfaceContractFulfillment`, retaining every
-conclusive mismatch and every indeterminate dimension without formatting a
-diagnostic. Comparison order is parameter count; then each parameter's canonical
-type, array shape, passing mechanism, role, and default; then Property value and
-result contracts when the caller's policy enables them; parameter names and
-call-site coercion never participate.
+The shared declaration-to-declaration exact comparison consumed by
+`EventHandlerCompatibility` and `InterfaceContractFulfillment`. It returns
+ordered structured facts for every conclusive mismatch and every indeterminate
+comparison dimension without formatting diagnostic text. Order is parameter
+count; then, for each parameter in ordinal order, canonical type, array shape,
+effective passing mechanism, role, and default presence or evaluated constant
+value; then the Property value contract and result contract when enabled by the
+caller's policy. A one-sided Property value or result contract is a conclusive
+presence mismatch; unavailable dimensions within a present contract remain
+indeterminate. Unmapped parameter slots do not acquire speculative mismatch
+facts, but each real slot retains its own independently unavailable dimension as
+an indeterminate fact. Parameter names, call-site coercion, assignment compatibility,
+implemented-interface compatibility, and numeric conversion never participate.
+One shared formatter projects mismatch facts into the accepted grammar; each
+consumer retains authority, contract-set aggregation, diagnostic range, related
+information, and fallback presentation. `CallArgumentMapping` remains a distinct
+call-site operation and shares no declaration-comparison result type.
 _Avoid_: CallArgumentMapping, assignment compatibility, diagnostic string
 
 **EventHandlerCompatibility**:
@@ -2513,10 +2523,15 @@ participate: `Object` and a concrete class, a class and an implemented
 interface, `Variant` and a concrete type, and distinct numeric types remain
 different. Missing, unresolved, ambiguous, catalog-dependent, or host-dependent
 type evidence is indeterminate when it cannot establish a canonical identity;
-it is never guessed compatible or incompatible. Array shape, effective
-parameter mechanism, and Optional or `ParamArray` shape remain independent
-comparison dimensions. Definition, References, Rename, and the handler's
-Event-target binding do not change with the compatibility results. A TypeLib or
+it is never guessed compatible or incompatible. Array shape, effective parameter
+mechanism, required, Optional, or `ParamArray` role, and default presence or
+evaluated constant value remain independent comparison dimensions. Unavailable
+or unevaluable default evidence remains indeterminate and is never presented as
+a mismatch. A valid source Event cannot declare an Optional parameter, so its
+default absence is conclusive; missing Optional-default metadata from a TypeLib
+or host projection remains indeterminate. Definition, References, Rename, and
+the handler's Event-target binding do not change with the compatibility results.
+A TypeLib or
 last-known-good host comparison remains available for Hover, Signature Help,
 and other advisory guidance, but `EventHandlerValidationAuthority` prevents it
 from causing a compile-style error diagnostic.
@@ -4048,7 +4063,7 @@ Dev: "Can `RaiseEvent` run from a standard module or fire a TypeLib or built-in 
 Domain Expert: "No. Admit `RaiseEvent` only inside a procedure in a class-module code section; otherwise publish `syntax.raiseEventStatementNotAllowedHere` on the keyword and do not resolve a target or map arguments. In valid placement, resolve only an Event declared in the enclosing class module. A same-named Sub, another class's Event, TypeLib Event, or intrinsic form or host Event is not a fallback and produces `validation.raiseEventTargetNotDeclaredInEnclosingModule` on the identifier. Keep an eligible local `RecoveredEventDeclaration` bound for navigation and repairing Rename, but treat its call compatibility as indeterminate."
 
 Dev: "Must a `WithEvents` handler use the Event declaration's parameter names?"
-Domain Expert: "No. Event and handler parameters correspond by ordinal position. `EventHandlerCompatibility` ignores their names but compares their count, canonical types, array shape, effective passing mechanism, and Optional or `ParamArray` shape."
+Domain Expert: "No. Event and handler parameters correspond by ordinal position. `EventHandlerCompatibility` ignores their names but compares their count, canonical types, array shape, effective passing mechanism, required, Optional, or `ParamArray` role, and Optional default presence or evaluated constant value when that evidence is available. Unavailable or unevaluable default evidence remains indeterminate."
 
 Dev: "Should Event handlers and interface implementations build separate signature mismatch lists?"
 Domain Expert: "No. Both consume `VbaCallableContractComparison`, which preserves the same ordered exact mismatch and uncertainty facts. Each caller selects which contract dimensions participate—Event handlers mark Property value and result contracts not compared—then applies its own authority, diagnostic range, and presentation policy. `CallArgumentMapping` remains a separate call-site operation."
@@ -4357,7 +4372,7 @@ Dev: "Where does a same-kind interface signature mismatch point, and what does i
 Domain Expert: "Select the complete signature source span from the implemented member identifier through its parameter list and any written return type, including a return type-declaration character. Exclude visibility, `Static`, the already-correct kind keyword, and the procedure body. Use the self-contained message `Interface member '<implemented-name>' signature does not match any required <kind> contract.` This wider range is required because Function and Property Get return types can be the mismatching component."
 
 Dev: "How does that mismatch explain why none of the required signatures match?"
-Domain Expert: "Add one related-information item for every conclusively incompatible physical contract variant, pointing to the source interface member name or to the Public variable name for a derived accessor. Use `Required contract: <kind-specific-signature> [#If]. Mismatches: <reasons>.`, omitting the marker and its preceding space only when the projected contract's `ConditionalContractProvenance` is unconditional. Each `ContractMismatchReason` uses `<subject> <dimension>: expected <contract-value>, found <source-value>`; multiple reasons join with `; ` and one final period. List every independently conclusive reason in stable order: parameter-list structure first; then each parameter by ordinal with type, array shape, passing, role, and default; then the Property value parameter; and finally the return. Use `parameter 1`, `value parameter`, and `return`, render roles as `required`, `Optional`, or `ParamArray`, shapes as `scalar` or `array`, missing defaults as `no default`, and passing by effective `ByVal` or `ByRef`. Compare Optional defaults by evaluated constant value rather than source spelling and ignore parameter names. If a structural mismatch prevents a later comparison, do not invent that secondary reason."
+Domain Expert: "Add one related-information item for every conclusively incompatible physical contract variant, pointing to the source interface member name or to the Public variable name for a derived accessor. Use `Required contract: <kind-specific-signature> [#If]. Mismatches: <reasons>.`, omitting the marker and its preceding space only when the projected contract's `ConditionalContractProvenance` is unconditional. Each `ContractMismatchReason` uses `<subject> <dimension>: expected <contract-value>, found <source-value>`; multiple reasons join with `; ` and one final period. List every independently conclusive reason in stable order: parameter-list structure first; then each parameter by ordinal with type, array shape, passing, role, and default; then the Property value parameter; and finally the return. A one-sided Property value or result contract reports `presence` with `present` or `absent`; dimensions within a category are compared only when both contracts are present. Use `parameter 1`, `value parameter`, and `return`, render roles as `required`, `Optional`, or `ParamArray`, shapes as `scalar` or `array`, missing defaults as `no default`, and passing by effective `ByVal` or `ByRef`. Compare Optional defaults by evaluated constant value rather than source spelling and ignore parameter names. If a structural mismatch prevents a later mapped comparison, do not invent that secondary mismatch; independently unavailable evidence on each real unmapped slot remains an indeterminate fact."
 
 Dev: "What if an authoritative Event or interface contract has no definition location for related information?"
 Domain Expert: "Do not hide it or point a misleading related item back to the error. Append `Expected signature: <signature> [#If].` and `Mismatches: <reasons>.` as two lines after the primary diagnostic, omitting the marker only when the projected contract's `ConditionalContractProvenance` is unconditional. When the client supports related information, include only unlocated contracts there and keep navigable contracts in related information. Coalesce an exactly repeated unlocated presentation, retain every distinct presentation in deterministic contract order without truncation, and do not create a virtual catalog document solely for this fallback."

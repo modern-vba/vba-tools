@@ -1287,7 +1287,20 @@ public sealed class WithEventsLanguageServerProcessTests
                     textDocument = new { uri = workerUri, version = 2 },
                     contentChanges = new[] { new { text = workerText } }
                 });
-            await process.WaitForDiagnosticsAsync(workerUri);
+            var workerDiagnostics = await process.WaitForDiagnosticsAsync(workerUri);
+            var diagnostics = workerDiagnostics
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray()
+                .ToArray();
+            Assert.DoesNotContain(
+                diagnostics,
+                diagnostic => diagnostic.GetProperty("code").GetString()
+                    == "validation.incompatibleEventHandlerSignature");
+            Assert.Contains(
+                diagnostics,
+                diagnostic => diagnostic.GetProperty("code").GetString()
+                    == "validation.incompatibleInterfaceMemberSignature");
 
             var signatureHelp = await SendPositionRequestAsync(
                 process,
@@ -3984,7 +3997,7 @@ public sealed class WithEventsLanguageServerProcessTests
     }
 
     [Fact]
-    public async Task Source_Event_handler_reports_type_array_passing_and_role_mismatches()
+    public async Task Source_Event_handler_reports_type_array_passing_role_and_default_mismatches()
     {
         await using var process = await LanguageServerProcessHarness.StartAsync();
         await process.InitializeAsync();
@@ -4024,7 +4037,8 @@ public sealed class WithEventsLanguageServerProcessTests
                 + "Mismatches: parameter 1 type: expected Long, found String; "
                 + "parameter 1 array shape: expected array, found scalar; "
                 + "parameter 1 passing: expected ByRef, found ByVal; "
-                + "parameter 1 role: expected required, found Optional.",
+                + "parameter 1 role: expected required, found Optional; "
+                + "parameter 1 default: expected no default, found \"\".",
             diagnostic.GetProperty("message").GetString());
 
         await process.ShutdownAsync(2);

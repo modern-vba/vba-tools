@@ -718,9 +718,10 @@ diagnostic. A current authoritative host projection instead carries
 `currentHostProjected` and may participate in the same diagnostics as
 `sourceDeclared`.
 Parameter names are excluded from compatibility; ordered parameter count,
-canonical types, array shape, effective passing mechanism, and Optional or
-`ParamArray` shape participate. Parameter-type comparison requires the same
-canonical type identity after spelling normalization and Type Resolution. A
+canonical types, array shape, effective passing mechanism, and required,
+Optional, or `ParamArray` role participate, followed by Optional default
+presence or its evaluated constant value. Parameter-type comparison requires
+the same canonical type identity after spelling normalization and Type Resolution. A
 type-declaration character and an `As` type, or qualified and unqualified names,
 may match only when they resolve to that same identity. Call-site Let coercion
 and assignment compatibility are not used: `Object` and a concrete class, a
@@ -768,14 +769,25 @@ and its preceding space are omitted when that projected Event contract has
 unconditional contract provenance, and the
 signature includes its `Event` kind. It contains every independently conclusive
 mismatch reason in this stable order:
-parameter count; ordinal parameter position; canonical type; array shape;
-effective `ByVal` or `ByRef`; and Optional or `ParamArray` shape. Parameter names
-are excluded. Conditional Event contract provenance uses only the generic
-`[#If]` marker and never exposes a condition expression or branch path.
+parameter count; then, for each parameter in ordinal order, canonical type;
+array shape; effective `ByVal` or `ByRef`; required, Optional, or `ParamArray`
+role; and default. Parameter position labels the slot and is not a separate
+mismatch reason. Parameter names are excluded. Conditional Event contract
+provenance uses only the generic `[#If]` marker and never exposes a condition
+expression or branch path.
 Navigable items use
 stable project declaration order and are never ranked by mismatch count,
 mismatch category, conditionality, or current edit state. Identically rendered
 physical Event variants remain separate because their locations are distinct.
+
+`EventHandlerCompatibility` and interface contract fulfillment obtain these
+ordered facts from the same `VbaCallableContractComparison`. The comparison
+returns structured mismatch and indeterminate facts rather than diagnostic
+strings. One shared `VbaCallableContractComparisonFormatter` applies the grammar
+below. Event and interface consumers retain their own authority, contract-set
+aggregation, diagnostic ranges, related-information and fallback decisions.
+`CallArgumentMapping` remains a separate call-site operation and does not share
+this declaration-comparison result.
 
 Event-handler and interface-member signature diagnostics share one exact
 mismatch-reason grammar. `expected` always describes the Event or interface
@@ -788,18 +800,23 @@ available templates are:
 - `parameter <ordinal> passing: expected <ByVal-or-ByRef>, found <ByVal-or-ByRef>`
 - `parameter <ordinal> role: expected <parameter-role>, found <parameter-role>`
 - `parameter <ordinal> default: expected <default>, found <default>`
+- `value parameter presence: expected <present-or-absent>, found <present-or-absent>`
 - `value parameter type: expected <type>, found <type>`
 - `value parameter array shape: expected <scalar-or-array>, found <scalar-or-array>`
 - `value parameter passing: expected <ByVal-or-ByRef>, found <ByVal-or-ByRef>`
+- `value parameter role: expected <parameter-role>, found <parameter-role>`
+- `value parameter default: expected <default>, found <default>`
+- `return contract presence: expected <present-or-absent>, found <present-or-absent>`
 - `return type: expected <type>, found <type>`
 - `return array shape: expected <scalar-or-array>, found <scalar-or-array>`
 
 The exact role labels are `required`, `Optional`, and `ParamArray`; shape labels
-are `scalar` and `array`; a missing Optional default is `no default`; and
-passing always uses the effective `ByVal` or `ByRef` rather than saying that the
-mechanism was omitted. Multiple reasons are joined by `; ` and receive one
-final period. A conditional marker follows the complete signature label with
-one preceding space and before the signature sentence's period, as in
+are `scalar` and `array`; an absent default is `no default`; unavailable or
+unevaluable default evidence remains indeterminate and produces no mismatch
+reason; and passing always uses the effective `ByVal` or `ByRef` rather than
+saying that the mechanism was omitted. Multiple reasons are joined by `; ` and
+receive one final period. A conditional marker follows the complete signature
+label with one preceding space and before the signature sentence's period, as in
 `Required contract: Function IFoo_Parse(...) As String [#If]. Mismatches: parameter 1 passing: expected ByRef, found ByVal; return type: expected String, found Variant.`
 
 An authoritative, conclusively incompatible contract variant without a
@@ -1152,22 +1169,23 @@ expose their condition expression or branch path.
 Each item reports every
 independently conclusive reason rather than stopping after the first.
 
-Reasons first report parameter-list structure and count. They then proceed by
-parameter ordinal, reporting each mapped slot's canonical declared type, array
-shape, effective `ByVal` or `ByRef`, required, Optional, or `ParamArray` role,
-and Optional default presence or evaluated constant value in that order.
-Function or Property Get result type and result array shape follow all
-parameters. Parameter position labels a slot rather than constituting a
-separate mismatch reason. Parameter names and source spelling of equivalent
-defaults are not mismatch reasons.
-The final Property Let or Set value slot is labeled `value parameter`, follows
-the indexed parameters, and compares its type, array shape, and effective
-passing mechanism before result categories. Written `ByVal`, `ByRef`, and an
+Reasons first report parameter-list count. They then proceed by ordinary
+parameter ordinal, reporting canonical type, array shape, effective passing
+mechanism, role, and default in that order. The final Property Let or Set value
+slot follows the indexed parameters and first compares presence, then the same
+dimensions under its effective-ByVal normalization when both slots are present.
+Function or Property Get result presence, type, and array shape follow the
+parameter and Property-value categories. Parameter
+position labels a slot rather than constituting a separate mismatch reason.
+Parameter names and source spelling of equivalent defaults are not mismatch
+reasons. Written `ByVal`, `ByRef`, and an
 omitted mechanism are equivalent only for that final value parameter because
 all three have effective `ByVal` semantics there; other parameters use their
 ordinary effective mechanism. A structural difference that prevents a sound
-slot mapping does not cause speculative secondary reasons, and an unevaluable
-default or unresolved type remains indeterminate rather than becoming a
+slot mapping does not cause speculative secondary reasons. Each real unmapped
+slot nevertheless retains its own unavailable type, shape, passing, role, or
+default dimension as an indeterminate fact. Unavailable or unevaluable default
+evidence or an unresolved type remains indeterminate rather than becoming a
 displayed mismatch.
 
 Validation collectors should consume structured syntax nodes instead of

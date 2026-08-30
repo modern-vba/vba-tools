@@ -1019,7 +1019,7 @@ public sealed class VbaSemanticInventory
         string MemberTarget,
         VbaInterfaceAccessorContractKind ContractKind,
         bool IsDerivedVariableAccessor,
-        VbaInterfaceContractCompatibilityState CompatibilityState,
+        VbaCallableContractComparisonState CompatibilityState,
         string Implementation,
         string ImplementationTarget,
         string InterfacePrefix,
