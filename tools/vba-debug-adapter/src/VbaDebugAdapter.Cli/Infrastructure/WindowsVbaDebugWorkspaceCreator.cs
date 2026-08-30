@@ -1,36 +1,48 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using Microsoft.Win32.SafeHandles;
 
 namespace VbaDebugAdapter.Infrastructure;
 
-internal interface IVbaDebugOwnedWorkspaceCreationScope : IDisposable
-{
-    void DeleteOwnedTree();
-}
-
 internal interface IVbaDebugSessionWorkspaceCreationScope
-    : IVbaDebugOwnedWorkspaceCreationScope
+    : IDisposable
 {
     string SessionWorkspacePath { get; }
 
     FileStream CreateLeaseStream();
+
+    void DeleteOwnedTree();
+
+    IVbaDebugGenerationWorkspace CreateGenerationWorkspace(
+        DebugGenerationId generationId,
+        string workbookFileName);
 }
 
-internal interface IVbaDebugGenerationWorkspaceCreationScope
-    : IVbaDebugOwnedWorkspaceCreationScope
+public interface IVbaDebugGenerationWorkspace : IAsyncDisposable
 {
-    string GenerationPath { get; }
+    DebugGenerationId GenerationId { get; }
 
-    string SourcePath { get; }
+    string GenerationWorkspacePath { get; }
 
-    string OutputPath { get; }
+    string SourceSnapshotPath { get; }
+
+    string WorkbookPath { get; }
 
     FileStream CreateSourceFile(string relativePath);
+
+    void SealSourceSnapshot();
+
+    void VerifySourceSnapshot();
+
+    void PinGeneratedWorkbook();
+
+    void VerifyGeneratedWorkbook();
 }
 
 internal sealed class WindowsVbaDebugWorkspaceCreator
 {
+    private const uint GenericRead = 0x80000000;
     private const uint GenericWrite = 0x40000000;
     private const uint DeleteAccess = 0x00010000;
     private const uint FileWriteAttributes = 0x00000100;
@@ -56,13 +68,15 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
     private readonly Action<string>? beforeDeleteOwnedTree;
     private readonly Action<string>? beforeCreateLeaseFile;
     private readonly Action<string>? beforeCreateSourceFile;
+    private readonly Action<string>? afterCreateSourceFileBeforeOwnershipTransfer;
 
     public WindowsVbaDebugWorkspaceCreator(
         string workspaceRoot,
         Action<string>? afterCreateDirectoryBeforeOpen = null,
         Action<string>? beforeDeleteOwnedTree = null,
         Action<string>? beforeCreateLeaseFile = null,
-        Action<string>? beforeCreateSourceFile = null)
+        Action<string>? beforeCreateSourceFile = null,
+        Action<string>? afterCreateSourceFileBeforeOwnershipTransfer = null)
     {
         this.workspaceRoot = WindowsVbaDebugWorkspacePath.CanonicalizeOrCreate(
             workspaceRoot);
@@ -71,18 +85,16 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
         this.beforeDeleteOwnedTree = beforeDeleteOwnedTree;
         this.beforeCreateLeaseFile = beforeCreateLeaseFile;
         this.beforeCreateSourceFile = beforeCreateSourceFile;
+        this.afterCreateSourceFileBeforeOwnershipTransfer =
+            afterCreateSourceFileBeforeOwnershipTransfer;
     }
 
     public string WorkspaceRoot => workspaceRoot;
 
-    public IVbaDebugSessionWorkspaceCreationScope ClaimSession(string sessionId)
+    public IVbaDebugSessionWorkspaceCreationScope ClaimSession(
+        DebugSessionId sessionId)
     {
-        if (!IsCanonicalSessionId(sessionId))
-        {
-            throw new ArgumentException(
-                "The adapter session ID must contain 32 lowercase hexadecimal characters.",
-                nameof(sessionId));
-        }
+        ArgumentNullException.ThrowIfNull(sessionId);
 
         var handles = new List<SafeFileHandle>();
         try
@@ -94,10 +106,10 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
                 "workspaces",
                 workspacesPath);
             handles.Add(workspacesHandle);
-            var sessionPath = Path.Combine(workspacesPath, sessionId);
+            var sessionPath = Path.Combine(workspacesPath, sessionId.Value);
             var sessionHandle = CreatePhysicalDirectoryExclusive(
                 workspacesHandle,
-                sessionId,
+                sessionId.Value,
                 sessionPath,
                 "session workspace");
             handles.Add(sessionHandle);
@@ -107,7 +119,10 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
                 handles,
                 sessionHandle,
                 beforeDeleteOwnedTree,
-                beforeCreateLeaseFile);
+                beforeCreateLeaseFile,
+                afterCreateDirectoryBeforeOpen,
+                beforeCreateSourceFile,
+                afterCreateSourceFileBeforeOwnershipTransfer);
         }
         catch
         {
@@ -116,44 +131,51 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
         }
     }
 
-    public IVbaDebugGenerationWorkspaceCreationScope ClaimGeneration(
-        string sessionId,
-        int generation)
+    private static IVbaDebugGenerationWorkspace CreateGenerationWorkspace(
+        string sessionWorkspacePath,
+        SafeFileHandle sessionHandle,
+        DebugGenerationId generationId,
+        string workbookFileName,
+        Action<string>? afterCreateDirectoryBeforeOpen,
+        Action<string>? beforeDeleteOwnedTree,
+        Action<string>? beforeCreateSourceFile,
+        Action<string>? afterCreateSourceFileBeforeOwnershipTransfer)
     {
-        if (!IsCanonicalSessionId(sessionId))
+        ArgumentNullException.ThrowIfNull(generationId);
+        if (
+            !WindowsVbaDebugWorkspacePath.IsUnambiguousEntryName(
+                workbookFileName) ||
+            !string.Equals(
+                Path.GetFileName(workbookFileName),
+                workbookFileName,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                Path.GetExtension(workbookFileName),
+                ".xlsm",
+                StringComparison.OrdinalIgnoreCase))
         {
             throw new ArgumentException(
-                "The adapter session ID must contain 32 lowercase hexadecimal characters.",
-                nameof(sessionId));
+                "The debug workbook file name must be a path-free .xlsm file name.",
+                nameof(workbookFileName));
         }
-        ArgumentOutOfRangeException.ThrowIfNegative(generation);
 
         var handles = new List<SafeFileHandle>();
+        SafeFileHandle? generationHandle = null;
+        string? generationPath = null;
         try
         {
-            var rootHandle = OpenPhysicalDirectory(workspaceRoot);
-            handles.Add(rootHandle);
-            var workspacesHandle = OpenOrCreatePhysicalDirectory(
-                rootHandle,
-                "workspaces",
-                workspacesPath);
-            handles.Add(workspacesHandle);
-            var sessionPath = Path.Combine(workspacesPath, sessionId);
-            var sessionHandle = OpenOrCreatePhysicalDirectory(
-                workspacesHandle,
-                sessionId,
-                sessionPath);
-            handles.Add(sessionHandle);
-            var generationsPath = Path.Combine(sessionPath, "generations");
+            var generationsPath = Path.Combine(
+                sessionWorkspacePath,
+                "generations");
             var generationsHandle = OpenOrCreatePhysicalDirectory(
                 sessionHandle,
                 "generations",
                 generationsPath);
             handles.Add(generationsHandle);
-            var generationPath = Path.Combine(
+            generationPath = Path.Combine(
                 generationsPath,
-                $"generation-{generation:D10}");
-            var generationHandle = CreatePhysicalDirectoryExclusive(
+                generationId.WorkspaceDirectoryName);
+            generationHandle = CreatePhysicalDirectoryExclusive(
                 generationsHandle,
                 Path.GetFileName(generationPath),
                 generationPath,
@@ -161,7 +183,7 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
             handles.Add(generationHandle);
             afterCreateDirectoryBeforeOpen?.Invoke(generationPath);
             var sourcePath = Path.Combine(generationPath, "source");
-            var sourceHandle = CreatePhysicalDirectoryExclusive(
+            var sourceHandle = CreatePhysicalDescendantDirectoryExclusive(
                 generationHandle,
                 "source",
                 sourcePath,
@@ -169,7 +191,7 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
             handles.Add(sourceHandle);
             afterCreateDirectoryBeforeOpen?.Invoke(sourcePath);
             var outputPath = Path.Combine(generationPath, "output");
-            var outputHandle = CreatePhysicalDirectoryExclusive(
+            var outputHandle = CreatePhysicalDescendantDirectoryExclusive(
                 generationHandle,
                 "output",
                 outputPath,
@@ -177,20 +199,59 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
             handles.Add(outputHandle);
             afterCreateDirectoryBeforeOpen?.Invoke(outputPath);
             return new GenerationCreationScope(
+                generationId,
                 generationPath,
                 sourcePath,
-                outputPath,
+                Path.Combine(outputPath, workbookFileName),
                 handles,
                 generationHandle,
                 sourceHandle,
+                outputHandle,
                 [sourceHandle, outputHandle],
                 beforeDeleteOwnedTree,
-                beforeCreateSourceFile);
+                beforeCreateSourceFile,
+                afterCreateSourceFileBeforeOwnershipTransfer);
         }
         catch
         {
-            DisposeHandles(handles);
+            if (generationHandle is null || generationPath is null)
+            {
+                DisposeHandles(handles);
+            }
+            else
+            {
+                for (var index = handles.Count - 1; index >= 0; index--)
+                {
+                    if (!ReferenceEquals(handles[index], generationHandle))
+                    {
+                        handles[index].Dispose();
+                    }
+                }
+                try
+                {
+                    DeletePinnedWorkspaceDirectoryIfPresent(
+                        generationPath,
+                        generationHandle);
+                }
+                catch
+                {
+                    // The generation-claim failure remains authoritative.
+                }
+                generationHandle.Dispose();
+            }
             throw;
+        }
+    }
+
+    private static void DeletePinnedWorkspaceDirectoryIfPresent(
+        string generationPath,
+        SafeFileHandle generationHandle)
+    {
+        if (WindowsVbaDebugWorkspacePath.EntryExistsNoFollow(generationPath))
+        {
+            WindowsVbaDebugWorkspaceTreeDeleter.DeletePinnedWorkspaceDirectory(
+                generationPath,
+                generationHandle);
         }
     }
 
@@ -241,6 +302,65 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
             NtFileOpenReparsePoint,
             path,
             description);
+        try
+        {
+            ValidatePhysicalDirectory(handle, path);
+            return handle;
+        }
+        catch
+        {
+            handle.Dispose();
+            throw;
+        }
+    }
+
+    private static SafeFileHandle CreatePhysicalDescendantDirectoryExclusive(
+        SafeFileHandle parentHandle,
+        string name,
+        string path,
+        string description)
+    {
+        var handle = CreateRelativeHandle(
+            parentHandle,
+            name,
+            FileReadAttributes | Synchronize,
+            FileShare.Read | FileShare.Write,
+            FileAttributeNormal,
+            NtFileCreate,
+            NtFileDirectoryFile |
+            NtFileSynchronousIoNonalert |
+            NtFileOpenReparsePoint,
+            path,
+            description);
+        try
+        {
+            ValidatePhysicalDirectory(handle, path);
+            return handle;
+        }
+        catch
+        {
+            handle.Dispose();
+            throw;
+        }
+    }
+
+    private static SafeFileHandle OpenExistingPhysicalDirectoryReadSeal(
+        SafeFileHandle parentHandle,
+        string name,
+        string path)
+    {
+        var handle = CreateRelativeHandle(
+            parentHandle,
+            name,
+            FileReadAttributes | Synchronize,
+            FileShare.Read,
+            FileAttributeNormal,
+            NtFileOpen,
+            NtFileDirectoryFile |
+            NtFileSynchronousIoNonalert |
+            NtFileOpenReparsePoint,
+            path,
+            existingDescription: null);
         try
         {
             ValidatePhysicalDirectory(handle, path);
@@ -334,6 +454,70 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
         }
     }
 
+    private static (FileStream Stream, SafeFileHandle IdentityPin)
+        CreateNewPhysicalFileWithIdentityPin(
+            SafeFileHandle parentHandle,
+            string name,
+            string path)
+    {
+        var stream = CreateNewPhysicalFile(
+            parentHandle,
+            name,
+            path,
+            asynchronous: false);
+        try
+        {
+            return (
+                stream,
+                OpenExistingPhysicalFile(
+                    parentHandle,
+                    name,
+                    path,
+                    requireSingleLink: true));
+        }
+        catch
+        {
+            stream.Dispose();
+            throw;
+        }
+    }
+
+    private static SafeFileHandle OpenExistingPhysicalFile(
+        SafeFileHandle parentHandle,
+        string name,
+        string path,
+        bool requireSingleLink,
+        bool verificationOnly = false,
+        bool allowWriteSharing = true)
+    {
+        var handle = CreateRelativeHandle(
+            parentHandle,
+            name,
+            (verificationOnly ? 0u : GenericRead) |
+            FileReadAttributes |
+            Synchronize,
+            FileShare.Read |
+            (allowWriteSharing ? FileShare.Write : 0) |
+            (verificationOnly ? FileShare.Delete : 0),
+            FileAttributeNormal,
+            NtFileOpen,
+            NtFileNonDirectoryFile |
+            NtFileSynchronousIoNonalert |
+            NtFileOpenReparsePoint,
+            path,
+            existingDescription: null);
+        try
+        {
+            ValidatePhysicalFile(handle, path, requireSingleLink);
+            return handle;
+        }
+        catch
+        {
+            handle.Dispose();
+            throw;
+        }
+    }
+
     private static SafeFileHandle CreateRelativeHandle(
         SafeFileHandle parentHandle,
         string name,
@@ -345,11 +529,11 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
         string path,
         string? existingDescription)
     {
-        if (string.IsNullOrWhiteSpace(name) ||
+        if (!WindowsVbaDebugWorkspacePath.IsUnambiguousEntryName(name) ||
             name.IndexOfAny([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar]) >= 0)
         {
             throw new InvalidOperationException(
-                "A VBA debug workspace entry name must contain exactly one path component.");
+                "A VBA debug workspace entry name must be one unambiguous Windows path component.");
         }
 
         var nameBuffer = Marshal.StringToHGlobalUni(name);
@@ -435,6 +619,92 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
         }
     }
 
+    private static void ValidatePhysicalFile(
+        SafeFileHandle handle,
+        string path,
+        bool requireSingleLink)
+    {
+        if (!GetFileInformationByHandleEx(
+                handle,
+                FileInfoByHandleClass.FileAttributeTagInfo,
+                out FileAttributeTagInfo information,
+                (uint)Marshal.SizeOf<FileAttributeTagInfo>()) ||
+            ((FileAttributes)information.FileAttributes &
+             (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0)
+        {
+            throw new IOException(
+                $"The VBA debug workspace file is not a physical file: {path}",
+                new Win32Exception(Marshal.GetLastWin32Error()));
+        }
+
+        if (!requireSingleLink)
+        {
+            return;
+        }
+        if (!GetFileInformationByHandleEx(
+                handle,
+                FileInfoByHandleClass.FileStandardInfo,
+                out FileStandardInfo standardInformation,
+                (uint)Marshal.SizeOf<FileStandardInfo>()))
+        {
+            throw new IOException(
+                $"The VBA debug workspace file link count could not be verified: {path}",
+                new Win32Exception(Marshal.GetLastWin32Error()));
+        }
+        if (standardInformation.NumberOfLinks != 1)
+        {
+            throw new IOException(
+                $"The generated VBA debug workbook must have exactly one physical file link: {path}");
+        }
+    }
+
+    private static WindowsPhysicalFileIdentity ReadPhysicalFileIdentity(
+        SafeFileHandle handle,
+        string path)
+    {
+        if (!GetFileInformationByHandle(
+                handle,
+                out ByHandleFileInformation information))
+        {
+            throw new IOException(
+                $"The VBA debug workspace file identity could not be read: {path}",
+                new Win32Exception(Marshal.GetLastWin32Error()));
+        }
+        return new WindowsPhysicalFileIdentity(
+            information.VolumeSerialNumber,
+            ((ulong)information.FileIndexHigh << 32) |
+            information.FileIndexLow);
+    }
+
+    private static byte[] ComputeSha256(
+        SafeFileHandle handle,
+        string path)
+    {
+        try
+        {
+            using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            var buffer = new byte[81920];
+            long offset = 0;
+            while (true)
+            {
+                var read = RandomAccess.Read(handle, buffer, offset);
+                if (read == 0)
+                {
+                    return hash.GetHashAndReset();
+                }
+                hash.AppendData(buffer, 0, read);
+                offset += read;
+            }
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+            throw new IOException(
+                $"The VBA debug workspace file content could not be verified: {path}",
+                exception);
+        }
+    }
+
     private static void DisposeHandles(IReadOnlyList<SafeFileHandle> handles)
     {
         for (var index = handles.Count - 1; index >= 0; index--)
@@ -443,16 +713,15 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
         }
     }
 
-    private static bool IsCanonicalSessionId(string value)
-        => value.Length == 32 && value.All(character =>
-            character is >= '0' and <= '9' or >= 'a' and <= 'f');
-
     private sealed class SessionCreationScope(
         string sessionWorkspacePath,
         IReadOnlyList<SafeFileHandle> handles,
         SafeFileHandle sessionHandle,
         Action<string>? beforeDeleteOwnedTree,
-        Action<string>? beforeCreateLeaseFile)
+        Action<string>? beforeCreateLeaseFile,
+        Action<string>? afterCreateDirectoryBeforeOpen,
+        Action<string>? beforeCreateSourceFile,
+        Action<string>? afterCreateSourceFileBeforeOwnershipTransfer)
         : IVbaDebugSessionWorkspaceCreationScope
     {
         private int disposed;
@@ -470,6 +739,22 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
                 "lease.json",
                 leasePath,
                 asynchronous: true);
+        }
+
+        public IVbaDebugGenerationWorkspace CreateGenerationWorkspace(
+            DebugGenerationId generationId,
+            string workbookFileName)
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
+            return WindowsVbaDebugWorkspaceCreator.CreateGenerationWorkspace(
+                SessionWorkspacePath,
+                sessionHandle,
+                generationId,
+                workbookFileName,
+                afterCreateDirectoryBeforeOpen,
+                beforeDeleteOwnedTree,
+                beforeCreateSourceFile,
+                afterCreateSourceFileBeforeOwnershipTransfer);
         }
 
         public void DeleteOwnedTree()
@@ -496,84 +781,392 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
     }
 
     private sealed class GenerationCreationScope(
+        DebugGenerationId generationId,
         string generationPath,
         string sourcePath,
-        string outputPath,
+        string workbookPath,
         IReadOnlyList<SafeFileHandle> handles,
         SafeFileHandle generationHandle,
         SafeFileHandle sourceHandle,
+        SafeFileHandle outputHandle,
         IReadOnlyList<SafeFileHandle> descendantHandles,
         Action<string>? beforeDeleteOwnedTree,
-        Action<string>? beforeCreateSourceFile)
-        : IVbaDebugGenerationWorkspaceCreationScope
+        Action<string>? beforeCreateSourceFile,
+        Action<string>? afterCreateSourceFileBeforeOwnershipTransfer)
+        : IVbaDebugGenerationWorkspace
     {
+        private readonly object gate = new();
         private readonly List<SafeFileHandle> nestedHandles = [];
+        private readonly Dictionary<string, NestedDirectoryPin> nestedDirectories =
+            new(StringComparer.OrdinalIgnoreCase);
+        private readonly List<SafeFileHandle> sourceDirectorySeals = [];
+        private readonly List<SourceFileIdentityPin> sourceFileIdentityPins = [];
+        private SafeFileHandle? workbookIdentityPin;
+        private WindowsPhysicalFileIdentity? workbookIdentity;
+        private byte[]? workbookSha256;
         private int disposed;
-        private bool deleted;
         private bool descendantsReleased;
+        private bool sourceSnapshotSealed;
 
-        public string GenerationPath { get; } = generationPath;
+        public DebugGenerationId GenerationId { get; } = generationId;
 
-        public string SourcePath { get; } = sourcePath;
+        public string GenerationWorkspacePath { get; } = generationPath;
 
-        public string OutputPath { get; } = outputPath;
+        public string SourceSnapshotPath { get; } = sourcePath;
+
+        public string WorkbookPath { get; } = workbookPath;
 
         public FileStream CreateSourceFile(string relativePath)
         {
-            ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
-            var components = relativePath
-                .Replace('\\', '/')
-                .Split('/', StringSplitOptions.RemoveEmptyEntries);
-            if (components.Length == 0 ||
-                components.Any(component => component is "." or ".."))
+            lock (gate)
             {
-                throw new InvalidOperationException(
-                    "The transported source path is not a strict relative path.");
-            }
+                ObjectDisposedException.ThrowIf(disposed != 0, this);
+                if (sourceSnapshotSealed)
+                {
+                    throw new InvalidOperationException(
+                        "The VBA debug source snapshot has already been sealed.");
+                }
+                var components = relativePath
+                    .Replace('\\', '/')
+                    .Split('/', StringSplitOptions.RemoveEmptyEntries);
+                if (components.Length == 0 ||
+                    components.Any(component => component is "." or ".."))
+                {
+                    throw new InvalidOperationException(
+                        "The transported source path is not a strict relative path.");
+                }
 
-            var parentPath = SourcePath;
-            var parentHandle = sourceHandle;
-            for (var index = 0; index < components.Length - 1; index++)
-            {
-                parentPath = Path.Combine(parentPath, components[index]);
-                parentHandle = OpenOrCreatePhysicalDirectory(
+                var parentHandle = sourceHandle;
+                var relativeDirectoryPath = string.Empty;
+                for (var index = 0; index < components.Length - 1; index++)
+                {
+                    relativeDirectoryPath = Path.Combine(
+                        relativeDirectoryPath,
+                        components[index]);
+                    if (!nestedDirectories.TryGetValue(
+                            relativeDirectoryPath,
+                            out var directory))
+                    {
+                        var directoryPath = Path.Combine(
+                            SourceSnapshotPath,
+                            relativeDirectoryPath);
+                        var directoryHandle =
+                            CreatePhysicalDescendantDirectoryExclusive(
+                                parentHandle,
+                                components[index],
+                                directoryPath,
+                                "source snapshot directory");
+                        nestedHandles.Add(directoryHandle);
+                        directory = new NestedDirectoryPin(
+                            components[index],
+                            relativeDirectoryPath,
+                            directoryPath,
+                            parentHandle,
+                            directoryHandle);
+                        nestedDirectories.Add(relativeDirectoryPath, directory);
+                    }
+                    parentHandle = directory.Handle;
+                }
+                var parentPath = components.Length == 1
+                    ? SourceSnapshotPath
+                    : nestedDirectories[relativeDirectoryPath].Path;
+                var filePath = Path.Combine(parentPath, components[^1]);
+                beforeCreateSourceFile?.Invoke(filePath);
+                var createdFile = CreateNewPhysicalFileWithIdentityPin(
                     parentHandle,
-                    components[index],
-                    parentPath);
-                nestedHandles.Add(parentHandle);
+                    components[^1],
+                    filePath);
+                try
+                {
+                    afterCreateSourceFileBeforeOwnershipTransfer?.Invoke(filePath);
+                    var identity = ReadPhysicalFileIdentity(
+                        createdFile.IdentityPin,
+                        filePath);
+                    sourceFileIdentityPins.Add(new SourceFileIdentityPin(
+                        components[^1],
+                        string.Join(Path.DirectorySeparatorChar, components),
+                        filePath,
+                        parentHandle,
+                        createdFile.IdentityPin,
+                        identity));
+                    return createdFile.Stream;
+                }
+                catch
+                {
+                    createdFile.Stream.Dispose();
+                    createdFile.IdentityPin.Dispose();
+                    throw;
+                }
             }
-            var filePath = Path.Combine(parentPath, components[^1]);
-            beforeCreateSourceFile?.Invoke(filePath);
-            return CreateNewPhysicalFile(
-                parentHandle,
-                components[^1],
-                filePath,
-                asynchronous: false);
         }
 
-        public void DeleteOwnedTree()
+        public void SealSourceSnapshot()
         {
-            ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
-            if (deleted)
+            lock (gate)
             {
-                return;
+                ObjectDisposedException.ThrowIf(disposed != 0, this);
+                if (sourceSnapshotSealed)
+                {
+                    throw new InvalidOperationException(
+                        "The VBA debug source snapshot has already been sealed.");
+                }
+
+                var pendingDirectorySeals = new List<SafeFileHandle>();
+                var pendingFileSeals = new List<SealedSourceFile>();
+                var transferred = false;
+                try
+                {
+                    pendingDirectorySeals.Add(
+                        OpenExistingPhysicalDirectoryReadSeal(
+                            generationHandle,
+                            "source",
+                            SourceSnapshotPath));
+                    foreach (var directory in nestedDirectories.Values)
+                    {
+                        pendingDirectorySeals.Add(
+                            OpenExistingPhysicalDirectoryReadSeal(
+                                directory.ParentHandle,
+                                directory.Name,
+                                directory.Path));
+                    }
+                    ValidateSourceInventory();
+
+                    foreach (var sourceFile in sourceFileIdentityPins)
+                    {
+                        var sealedHandle = OpenExistingPhysicalFile(
+                            sourceFile.ParentHandle,
+                            sourceFile.Name,
+                            sourceFile.Path,
+                            requireSingleLink: true,
+                            allowWriteSharing: false);
+                        try
+                        {
+                            if (ReadPhysicalFileIdentity(
+                                    sealedHandle,
+                                    sourceFile.Path) != sourceFile.Identity)
+                            {
+                                throw new IOException(
+                                    $"The materialized VBA debug source file identity changed before the snapshot was sealed: {sourceFile.Path}");
+                            }
+                            pendingFileSeals.Add(new SealedSourceFile(
+                                sourceFile,
+                                sealedHandle,
+                                ComputeSha256(sealedHandle, sourceFile.Path)));
+                        }
+                        catch
+                        {
+                            sealedHandle.Dispose();
+                            throw;
+                        }
+                    }
+                    ValidateSourceInventory();
+
+                    foreach (var sealedSource in pendingFileSeals)
+                    {
+                        sealedSource.Source.IdentityPin.Dispose();
+                        sealedSource.Source.IdentityPin = sealedSource.Handle;
+                        sealedSource.Source.SealedSha256 = sealedSource.Sha256;
+                    }
+                    sourceDirectorySeals.AddRange(pendingDirectorySeals);
+                    sourceSnapshotSealed = true;
+                    transferred = true;
+                }
+                finally
+                {
+                    if (!transferred)
+                    {
+                        DisposeHandles(pendingFileSeals
+                            .Select(source => source.Handle)
+                            .ToArray());
+                        DisposeHandles(pendingDirectorySeals);
+                    }
+                }
             }
-            ReleaseDescendantHandles();
-            beforeDeleteOwnedTree?.Invoke(GenerationPath);
-            WindowsVbaDebugWorkspaceTreeDeleter.DeletePinnedWorkspaceDirectory(
-                GenerationPath,
-                generationHandle);
-            deleted = true;
         }
 
-        public void Dispose()
+        public void VerifySourceSnapshot()
         {
-            if (Interlocked.Exchange(ref disposed, 1) != 0)
+            lock (gate)
             {
-                return;
+                ObjectDisposedException.ThrowIf(disposed != 0, this);
+                if (!sourceSnapshotSealed)
+                {
+                    throw new InvalidOperationException(
+                        "The VBA debug source snapshot has not been sealed.");
+                }
+                ValidateSourceInventory();
+                foreach (var sourceFile in sourceFileIdentityPins)
+                {
+                    using var currentHandle = OpenExistingPhysicalFile(
+                        sourceFile.ParentHandle,
+                        sourceFile.Name,
+                        sourceFile.Path,
+                        requireSingleLink: true,
+                        verificationOnly: true);
+                    var currentIdentity = ReadPhysicalFileIdentity(
+                        currentHandle,
+                        sourceFile.Path);
+                    if (currentIdentity != sourceFile.Identity)
+                    {
+                        throw new IOException(
+                            $"The materialized VBA debug source file identity changed during the build: {sourceFile.Path}");
+                    }
+                    var currentSha256 = ComputeSha256(
+                        sourceFile.IdentityPin,
+                        sourceFile.Path);
+                    if (!CryptographicOperations.FixedTimeEquals(
+                            currentSha256,
+                            sourceFile.SealedSha256!))
+                    {
+                        throw new IOException(
+                            $"The materialized VBA debug source file content changed during the build: {sourceFile.Path}");
+                    }
+                }
+                ValidateSourceInventory();
             }
-            ReleaseDescendantHandles();
-            DisposeHandles(handles);
+        }
+
+        private void ValidateSourceInventory()
+        {
+            var expectedEntries = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var directory in nestedDirectories.Values)
+            {
+                expectedEntries.Add(
+                    $"D:{NormalizeRelativePath(directory.RelativePath)}");
+            }
+            foreach (var sourceFile in sourceFileIdentityPins)
+            {
+                expectedEntries.Add(
+                    $"F:{NormalizeRelativePath(sourceFile.RelativePath)}");
+            }
+
+            var actualEntries = new HashSet<string>(StringComparer.Ordinal);
+            var pendingDirectories = new Stack<string>();
+            pendingDirectories.Push(SourceSnapshotPath);
+            while (pendingDirectories.Count != 0)
+            {
+                var directoryPath = pendingDirectories.Pop();
+                foreach (var entryPath in Directory.EnumerateFileSystemEntries(
+                             directoryPath))
+                {
+                    var attributes = File.GetAttributes(entryPath);
+                    if ((attributes & FileAttributes.ReparsePoint) != 0)
+                    {
+                        throw new IOException(
+                            $"The sealed VBA debug source inventory contains a reparse point: {entryPath}");
+                    }
+                    var relativePath = NormalizeRelativePath(
+                        Path.GetRelativePath(SourceSnapshotPath, entryPath));
+                    if ((attributes & FileAttributes.Directory) != 0)
+                    {
+                        actualEntries.Add($"D:{relativePath}");
+                        pendingDirectories.Push(entryPath);
+                    }
+                    else
+                    {
+                        actualEntries.Add($"F:{relativePath}");
+                    }
+                }
+            }
+
+            if (!actualEntries.SetEquals(expectedEntries))
+            {
+                throw new IOException(
+                    "The materialized VBA debug source inventory changed after it was created.");
+            }
+        }
+
+        private static string NormalizeRelativePath(string relativePath)
+            => relativePath.Replace('\\', '/');
+
+        public void PinGeneratedWorkbook()
+        {
+            lock (gate)
+            {
+                ObjectDisposedException.ThrowIf(disposed != 0, this);
+                if (workbookIdentityPin is not null)
+                {
+                    throw new InvalidOperationException(
+                        "The generated VBA debug workbook identity has already been pinned.");
+                }
+                workbookIdentityPin = OpenExistingPhysicalFile(
+                    outputHandle,
+                    Path.GetFileName(WorkbookPath),
+                    WorkbookPath,
+                    requireSingleLink: true,
+                    allowWriteSharing: false);
+                workbookIdentity = ReadPhysicalFileIdentity(
+                    workbookIdentityPin,
+                    WorkbookPath);
+                workbookSha256 = ComputeSha256(
+                    workbookIdentityPin,
+                    WorkbookPath);
+            }
+        }
+
+        public void VerifyGeneratedWorkbook()
+        {
+            lock (gate)
+            {
+                ObjectDisposedException.ThrowIf(disposed != 0, this);
+                if (workbookIdentityPin is null ||
+                    workbookIdentity is null ||
+                    workbookSha256 is null)
+                {
+                    throw new InvalidOperationException(
+                        "The generated VBA debug workbook identity has not been pinned.");
+                }
+                using var currentHandle = OpenExistingPhysicalFile(
+                    outputHandle,
+                    Path.GetFileName(WorkbookPath),
+                    WorkbookPath,
+                    requireSingleLink: true,
+                    verificationOnly: true);
+                var currentIdentity = ReadPhysicalFileIdentity(
+                    currentHandle,
+                    WorkbookPath);
+                if (currentIdentity != workbookIdentity.Value)
+                {
+                    throw new IOException(
+                        "The generated VBA debug workbook identity changed after the build completed.");
+                }
+                var currentSha256 = ComputeSha256(
+                    workbookIdentityPin,
+                    WorkbookPath);
+                if (!CryptographicOperations.FixedTimeEquals(
+                        currentSha256,
+                        workbookSha256))
+                {
+                    throw new IOException(
+                        "The generated VBA debug workbook content changed after the build completed.");
+                }
+            }
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            lock (gate)
+            {
+                if (disposed != 0)
+                {
+                    return ValueTask.CompletedTask;
+                }
+                disposed = 1;
+            }
+
+            try
+            {
+                ReleaseDescendantHandles();
+                beforeDeleteOwnedTree?.Invoke(GenerationWorkspacePath);
+                WindowsVbaDebugWorkspaceTreeDeleter.DeletePinnedWorkspaceDirectory(
+                    GenerationWorkspacePath,
+                    generationHandle);
+            }
+            finally
+            {
+                DisposeHandles(handles);
+            }
+            return ValueTask.CompletedTask;
         }
 
         private void ReleaseDescendantHandles()
@@ -583,13 +1176,61 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
                 return;
             }
             descendantsReleased = true;
+            workbookIdentityPin?.Dispose();
+            workbookIdentityPin = null;
+            workbookIdentity = null;
+            workbookSha256 = null;
+            DisposeHandles(sourceFileIdentityPins
+                .Select(sourceFile => sourceFile.IdentityPin)
+                .ToArray());
+            DisposeHandles(sourceDirectorySeals);
             DisposeHandles(nestedHandles);
             DisposeHandles(descendantHandles);
         }
+
+        private sealed class SourceFileIdentityPin(
+            string name,
+            string relativePath,
+            string path,
+            SafeFileHandle parentHandle,
+            SafeFileHandle identityPin,
+            WindowsPhysicalFileIdentity identity)
+        {
+            public string Name { get; } = name;
+
+            public string RelativePath { get; } = relativePath;
+
+            public string Path { get; } = path;
+
+            public SafeFileHandle ParentHandle { get; } = parentHandle;
+
+            public SafeFileHandle IdentityPin { get; set; } = identityPin;
+
+            public WindowsPhysicalFileIdentity Identity { get; } = identity;
+
+            public byte[]? SealedSha256 { get; set; }
+        }
+
+        private sealed record NestedDirectoryPin(
+            string Name,
+            string RelativePath,
+            string Path,
+            SafeFileHandle ParentHandle,
+            SafeFileHandle Handle);
+
+        private sealed record SealedSourceFile(
+            SourceFileIdentityPin Source,
+            SafeFileHandle Handle,
+            byte[] Sha256);
     }
+
+    private readonly record struct WindowsPhysicalFileIdentity(
+        uint VolumeSerialNumber,
+        ulong FileIndex);
 
     private enum FileInfoByHandleClass
     {
+        FileStandardInfo = 1,
         FileAttributeTagInfo = 9
     }
 
@@ -598,6 +1239,42 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
     {
         public uint FileAttributes;
         public uint ReparseTag;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FileStandardInfo
+    {
+        public long AllocationSize;
+        public long EndOfFile;
+        public uint NumberOfLinks;
+
+        [MarshalAs(UnmanagedType.U1)]
+        public bool DeletePending;
+
+        [MarshalAs(UnmanagedType.U1)]
+        public bool Directory;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ByHandleFileInformation
+    {
+        public uint FileAttributes;
+        public FileTime CreationTime;
+        public FileTime LastAccessTime;
+        public FileTime LastWriteTime;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FileTime
+    {
+        public uint LowDateTime;
+        public uint HighDateTime;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -647,6 +1324,20 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
         FileInfoByHandleClass fileInformationClass,
         out FileAttributeTagInfo fileInformation,
         uint bufferSize);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetFileInformationByHandleEx(
+        SafeFileHandle fileHandle,
+        FileInfoByHandleClass fileInformationClass,
+        out FileStandardInfo fileInformation,
+        uint bufferSize);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetFileInformationByHandle(
+        SafeFileHandle fileHandle,
+        out ByHandleFileInformation fileInformation);
 
     [DllImport("ntdll.dll")]
     private static extern int NtCreateFile(

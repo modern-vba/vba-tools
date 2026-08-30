@@ -62,7 +62,7 @@ internal sealed class VbeDebugEnvironmentProbe(
 
     private IVbaDebugSessionWorkspaceLease? workspaceLease;
     private IVbeDebugSession? debugSession;
-    private string? sessionId;
+    private DebugSessionId? sessionId;
     private string? fixtureWorkbookPath;
     private string? fixtureSourcePath;
     private VbeBreakpoint? breakpoint;
@@ -500,13 +500,15 @@ internal sealed class VbeDebugEnvironmentProbe(
                 "The Doctor workspace session has already been claimed.");
         }
 
-        sessionId = Convert.ToHexString(RandomNumberGenerator.GetBytes(16))
-            .ToLowerInvariant();
+        var newSessionId = DebugSessionId.Parse(
+            Convert.ToHexString(RandomNumberGenerator.GetBytes(16))
+                .ToLowerInvariant());
+        sessionId = newSessionId;
         var retained = await workspaceManager.ReapStaleAsync(
-            sessionId,
+            newSessionId,
             cancellationToken).ConfigureAwait(false);
         workspaceLease = await workspaceManager.ClaimAsync(
-            sessionId,
+            newSessionId,
             cancellationToken).ConfigureAwait(false);
         return new DebugEnvironmentProbeCheckResult(
             retained.Count == 0
@@ -519,7 +521,7 @@ internal sealed class VbeDebugEnvironmentProbe(
         {
             Details = new Dictionary<string, object?>
             {
-                ["sessionId"] = sessionId,
+                ["sessionId"] = newSessionId.Value,
                 ["workspacePath"] = workspaceLease.SessionWorkspacePath,
                 ["retainedWorkspaceCount"] = retained.Count
             }
@@ -558,7 +560,7 @@ internal sealed class VbeDebugEnvironmentProbe(
                     {
                         ["retainedPath"] = workspaceLease?.SessionWorkspacePath,
                         ["processId"] = session.ProcessId,
-                        ["sessionId"] = sessionId
+                        ["sessionId"] = sessionId?.Value
                     }
                 };
             }
@@ -574,7 +576,7 @@ internal sealed class VbeDebugEnvironmentProbe(
                 Details = new Dictionary<string, object?>
                 {
                     ["retainedPath"] = workspaceLease?.SessionWorkspacePath,
-                    ["sessionId"] = sessionId
+                    ["sessionId"] = sessionId?.Value
                 }
             };
         }

@@ -148,7 +148,7 @@ internal sealed class ExcelComDebugWorkbookOpener : IExcelDebugWorkbookOpener
         Exception? openError = null;
         try
         {
-            return workbooks.Open(expectedWorkbookPath);
+            return workbooks.Open(expectedWorkbookPath, ReadOnly: true);
         }
         catch (Exception ex)
         {

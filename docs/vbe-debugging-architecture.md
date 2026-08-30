@@ -22,18 +22,39 @@ scratch cleanup for the duration of each build invocation. It returns a
 successful snapshot-specific workbook to the caller and does not own that
 workbook's later debug-session lifecycle.
 
-The debug component creates its session workspace, materializes a complete
-selected-document source directory there, and invokes `vba-dev build
---source-snapshot <snapshot-directory> --output <workbook-path>`. The two
-options are inseparable. Before Excel starts, the CLI verifies through
+The extension supplies a typed `DebugSessionId`, which remains an opaque 32
+lowercase hexadecimal character value throughout the adapter. It is neither a
+generation identity nor a restart-preparation identity. The debug component
+atomically claims a `DebugWorkspaceLease` for that session. Only that live
+lease can issue a create-new `DebugGenerationWorkspace` for a typed
+`DebugGenerationId`; an existing generation is never reopened or reused. The
+generation capability fixes the exact selected-document source snapshot and
+workbook paths, materializes the complete source directory, and supplies those
+paths to `vba-dev build --source-snapshot <snapshot-directory> --output
+<workbook-path>`. The two options are inseparable. Each staged source is opened
+relative to a pinned physical parent without following reparse points. Before
+the child starts, the capability reopens each source without write sharing and
+seals the exact directory inventory, physical file identity, and SHA-256.
+After the child exits successfully, it rejects any inventory, identity, or
+content change.
+The generated workbook is likewise opened relative to the pinned output
+directory without following reparse points, must have one physical link, and is
+pinned without write sharing by file identity and SHA-256. VBE opens it
+explicitly read-only, and the capability verifies it immediately before and
+after that open. Denied rename or delete access is defense in depth rather than
+the integrity proof: any observable mismatch fails closed. These controls bind
+the adapter-owned lifecycle; they are not a kernel isolation boundary against a
+hostile process running under the same Windows access token that already holds
+an independently authorized handle. Before Excel starts, the CLI verifies through
 case-insensitive, filesystem-canonical path identities that the output is
 outside the snapshot directory and every manifest document's
 `DocumentSourceSet`, and differs from the resolved `vba-project.json` and every
 document's source template, bin workbook, and publish workbook. Reparse-point
 aliases are included, and inability to establish safety is a validation
-failure. Any other caller-owned target may be atomically replaced. Consequently, the component
-already knows the artifact path it must open and later remove; `VbaDev` does not
-allocate or publish an implicit temporary path.
+failure. Any other caller-owned target may be atomically replaced. The
+`DebugGenerationWorkspace`, rather than a path string, ancestry check, or
+ownership flag, is the authority that opens and later removes those artifacts;
+`VbaDev` does not allocate or publish an implicit temporary path.
 
 The adapter consumes only the public CLI process contract: arguments, stdout,
 stderr, exit status, and cancellation. It does not load `VbaDev.App` or
@@ -287,10 +308,14 @@ unsupported.
 Every launch follows these phases:
 
 1. Capture the selected document's immutable `DebugSourceSnapshot`.
-2. Supply its build-neutral source inventory to `vba-dev build`, which generates
-   a snapshot-specific workbook in a dedicated hidden Excel process and exits.
-3. Close the build process and open the temporary workbook in a new dedicated
-   visible `DebugExcelProcess`.
+2. Ask the live `DebugWorkspaceLease` to issue a create-new
+   `DebugGenerationWorkspace`, materialize the snapshot at its exact source
+   path, and supply that inventory to `vba-dev build`, which generates the
+   workbook at the capability's exact workbook path in a dedicated hidden Excel
+   process and exits.
+3. Close the build process, transfer the same generation capability to the new
+   `VbeDebugSession`, and open its workbook in a new dedicated visible
+   `DebugExcelProcess`.
 4. Verify and transfer participating breakpoints.
 5. Select and run the `DebugTargetProcedure` in the VBE.
 6. Keep the session active until its Excel process exits or the session is
@@ -300,14 +325,19 @@ The build and debug Excel processes are never reused or attached to an existing
 user Excel session. Reusing the build process after programmatic VBIDE edits can
 prevent entry into break mode.
 
-The debug workbook is a disposable session artifact rather than the
+The debug workbook is a disposable generation artifact rather than the
 manifest-defined bin workbook. Snapshot staging and workbook generation do not
 rewrite the `DocumentSourceSet`, `vba-project.json`, or completed bin output.
-It is created at a snapshot-specific destination with the configured bin
-workbook's file name. This preserves `ThisWorkbook.Name`, while
-`ThisWorkbook.Path` identifies the temporary location. The debug component owns
-the successful workbook after `vba-dev build` exits and discards it with the
-session; `VbaDev` owns only scratch needed during its invocation.
+It is created at the exact destination owned by the
+`DebugGenerationWorkspace`, with the configured bin workbook's file name. This
+preserves `ThisWorkbook.Name`, while `ThisWorkbook.Path` identifies the
+temporary location for diagnostics. The capability retains handle-backed
+cleanup authority and the sealed source/workbook identity evidence across build
+failure, cancellation, and successful build. On success the builder transfers
+that exact capability, without reconstructing it from path naming or ancestry,
+to the `VbeDebugSession`, which verifies the workbook around open and discards
+the capability at session end. `VbaDev` owns only scratch needed during its
+invocation.
 
 Excel events are disabled while the debug workbook opens and re-enabled after
 breakpoint setup, immediately before procedure execution. Open-time events do
@@ -317,8 +347,8 @@ required.
 
 The Excel application is visible before opening the workbook. Open-time modal
 prompts remain interactive and have no timeout. The adapter reports that Excel
-input is required. Cancelling a prompt that prevents open is a
-`DebugSetupError`; a read-only open may continue.
+input is required. The generated workbook is deliberately opened read-only;
+cancelling a prompt that prevents open is a `DebugSetupError`.
 
 ## Breakpoint transfer
 
@@ -411,13 +441,17 @@ establishes Job membership before it accepts process-dependent session state.
 
 Session files exist only under
 `Path.GetTempPath()/vba-debug-adapter/workspaces/<session-id>`. The extension
-generates and retains the path-safe session ID before launch. The adapter accepts
-only 32 lowercase hexadecimal characters and atomically claims the directory
-and lease with create-new semantics before materializing source. An existing ID
-fails launch without reuse or deletion. The lease contains the adapter PID,
-process start time, and a separate random lease ID. Normal cleanup ends owned
-processes, then removes the session directory. It never treats project source,
-manifest output, or another temporary root as session-owned.
+generates and retains the path-safe `DebugSessionId` before launch. The adapter
+accepts only 32 lowercase hexadecimal characters and atomically claims the
+directory and `DebugWorkspaceLease` with create-new semantics before
+materializing source. An existing ID fails launch without reuse or deletion.
+The lease contains the adapter PID, process start time, and a separate random
+lease ID. While live, it is the sole factory for create-new generation
+capabilities; a caller cannot compose a generation path from the session ID or
+recover ownership by proving that a path is beneath the session directory.
+Normal cleanup ends owned processes, consumes the session's generation
+capabilities, then removes the session directory. It never treats project
+source, manifest output, or another temporary root as session-owned.
 
 If the debug workbook actually closes, the adapter force-terminates the
 dedicated Excel process and ends the session. Cancelling workbook close leaves
@@ -427,8 +461,8 @@ Stop is valid in every launch phase:
 
 - during build, cancellation is sent to `vba-dev build`; `VbaDev` terminates its
   hidden build Excel process and removes only invocation-internal scratch;
-- after the build invocation exits, the debug component removes its caller-owned
-  source snapshot and successful or incomplete session workbook;
+- after the build invocation exits, the active `DebugGenerationWorkspace`
+  removes its exact source snapshot and successful or incomplete workbook;
 - persistent project source, manifest state, and completed bin output remain
   unchanged; and
 - after visible Excel starts, that process is force-terminated.
@@ -438,23 +472,25 @@ Debugging first completes the fresh-snapshot preparation transaction described
 below while retaining the current session. Only a matching successful
 preparation force-terminates the current process and performs the complete
 temporary build, open, transfer, and run sequence again within the same session
-ID, replacing only that session's artifacts. Preparation failure leaves the
-current session active.
+ID, using a new `DebugGenerationId` and a new lease-issued generation
+capability. Preparation failure leaves the current session active.
 
 If the adapter exits unexpectedly, the extension runs
 `vba-debug-adapter cleanup --session <session-id>` after observing process exit.
-The operation accepts no path and validates the lowercase-hex-32 ID before any
-filesystem access. An invalid ID is a nonzero usage error. A missing workspace,
-an ID that was never claimed, or a stale workspace removed successfully exits
-zero without structured output.
+The public cleanup and stale-reaping boundaries accept only `DebugSessionId`,
+never a generation ID or directory path, and validate the lowercase-hex-32
+value before any filesystem access. An invalid ID is a nonzero usage error. A
+missing workspace, an ID that was never claimed, or a stale workspace removed
+successfully exits zero without structured output.
 
 Cleanup resolves only beneath the adapter-owned workspace root. It refuses
 deletion and exits nonzero when the lease still identifies a live owner or its
 state cannot prove staleness. Once staleness is proved, deletion receives
 bounded retries for five seconds. A remaining workspace is retained and
 reported by reason and absolute path on stderr rather than broadening deletion
-scope. The extension treats such failure as a housekeeping warning and does not
-rewrite the debug outcome that preceded cleanup.
+scope. That retained absolute path is diagnostic information only and never
+becomes deletion authority. The extension treats such failure as a housekeeping
+warning and does not rewrite the debug outcome that preceded cleanup.
 
 The next adapter startup applies the same checks independently to stale sessions
 when the extension could not run cleanup. A retained unrelated workspace does
@@ -506,11 +542,13 @@ Protocol 1.1 makes native VS Code Restart a two-party transaction:
    `__vbaRestartPreparation: { protocolVersion: 1, id }`. The identifier is bound
    in extension-owned state to the adapter session ID, canonical selected
    project root, manifest document name, and originally resolved target module
-   and procedure. It is opaque on the wire; the adapter retains the same launch
+   and procedure. It is opaque on the wire and is represented internally as a
+   typed `DebugRestartPreparationId`; it is not interchangeable with
+   `DebugSessionId` or `DebugGenerationId`. The adapter retains the same launch
    identities independently.
 2. On a DAP `restart` request containing that marker, the adapter keeps serving
-   requests, increments a session-local restart generation, parks the restart,
-   and retains the old session.
+   requests, advances a typed session-local `DebugRestartGeneration`, parks the
+   restart, and retains the old session.
 3. The extension resolves the marker only against that original binding and
    captures a fresh immutable source snapshot for the bound document without
    saving project files. The active editor cannot select another document or
@@ -518,7 +556,9 @@ Protocol 1.1 makes native VS Code Restart a two-party transaction:
 4. The extension sends `vba/restartPrepared` with the original
    `restartRequestSequence`, matching `preparationId`, adapter-issued
    `restartGeneration`, the fresh snapshot, `success`, and an optional failure
-   message.
+   message. The numeric generation on the wire is parsed back into
+   `DebugRestartGeneration`, which launch preparation explicitly maps to a
+   `DebugGenerationId`; neither identity is used directly as cleanup authority.
 5. Before commit, the adapter validates all bound identities, snapshot
    structure and encoding, and the continued existence of the same target
    module and procedure in the fresh source.
@@ -590,7 +630,12 @@ absence of project-file saves.
 The debug component isolates its `vba-dev build` client,
 `IVbeDebugSessionFactory`, `IVbeDebugSession`, and debug lifecycle sinks.
 Deterministic fakes control every snapshot/build/open/modal, breakpoint, run,
-process-exit, restart, and caller-owned artifact cleanup boundary. `VbaDev`
+process-exit, restart, and generation-capability transfer boundary. Workspace
+tests prove lease loss refusal, duplicate create-new generation claims,
+handle-backed cleanup after build failure and cancellation, transfer to and
+cleanup by the `VbeDebugSession`, adapter-crash cleanup, stale reaping, and the
+diagnostic-only treatment of retained paths. Malicious paths and
+symlink/reparse substitutions never become ownership evidence. `VbaDev`
 tests separately pin snapshot validation, protected-path and snapshot-subtree
 rejection, reparse-point alias handling, build-process ownership, output
 atomicity, and the rule that successful caller-owned output is not deleted.
@@ -616,7 +661,10 @@ entry points.
   adding that capability back to `vba-dev`.
 - Keep restart preparation project-bound and sequence-bound. New restart fields
   require deterministic tests for stale, malformed, cancelled, process-exit,
-  and transport-failure ordering before Windows coverage.
+  and transport-failure ordering before Windows coverage. Preserve typed,
+  non-interchangeable `DebugRestartPreparationId`, `DebugRestartGeneration`,
+  and `DebugGenerationId` internally even where the wire representation is
+  string or numeric.
 - Resolve VBE commands by stable built-in ID only after establishing
   `VbeCommandContext`. A command-ID or context change requires Doctor,
   deterministic automation, and real Excel integration updates; never add a
@@ -627,10 +675,13 @@ entry points.
 - Establish PID and kill-on-close Job ownership before workbook open, prompts,
   breakpoint transfer, or target execution. Every new terminal path needs a
   test proving Job disposal and launch-guard release.
-- Restrict workspace deletion to a canonical session ID beneath the
-  adapter-owned root. Test live-lease refusal, PID-reuse protection through
-  process start time, adapter-exit cleanup, next-start reaping, locked-file
-  retention, and path-traversal rejection.
+- Restrict public workspace cleanup and reaping to a canonical `DebugSessionId`.
+  Within a live session, cleanup authority belongs to the lease-issued
+  `DebugGenerationWorkspace`, never to an absolute path, ancestry proof, or
+  ownership boolean. Test live-lease refusal, PID-reuse protection through
+  process start time, duplicate generation claims, adapter-exit cleanup,
+  next-start reaping, locked-file retention, path-traversal rejection, and
+  symlink/reparse substitution.
 - Keep README limited to user actions, prerequisites, supported behavior,
   interactive waits, and data-loss warnings. Put protocol, command identity,
   seam, and maintainer details here or in an ADR.

@@ -16,7 +16,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
     {
         using var standardOutput = new MemoryStream();
         using var standardError = new MemoryStream();
-        var commandLine = VbaDebugAdapterCommandLine.Create();
+        var commandLine = CreateCommandLine();
 
         var exitCode = await commandLine.InvokeAsync(
             ["capabilities", "--format", "json"],
@@ -63,7 +63,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 $"{id} passed.",
                 DurationMilliseconds: 0)).ToArray());
         var doctor = new RecordingDebugEnvironmentDoctor(report);
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new RecordingStdioRunner(),
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(0, string.Empty, string.Empty)),
@@ -124,7 +124,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 status,
                 "Synthetic Doctor result.",
                 DurationMilliseconds: 0)]);
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new RecordingStdioRunner(),
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(0, string.Empty, string.Empty)),
@@ -152,7 +152,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
     [Fact]
     public async Task DoctorInfrastructureLossStillWritesOneIncompleteJsonReport()
     {
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new RecordingStdioRunner(),
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(0, string.Empty, string.Empty)),
@@ -194,7 +194,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
     public async Task DoctorAcceptsAnExactStdinCancellationFrame()
     {
         var doctor = new AwaitingCancellationDebugEnvironmentDoctor();
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new RecordingStdioRunner(),
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(0, string.Empty, string.Empty)),
@@ -270,7 +270,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
     public async Task DoctorDiscardsAnInvalidFrameBeforeAcceptingCancellation()
     {
         var doctor = new AwaitingCancellationDebugEnvironmentDoctor();
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new RecordingStdioRunner(),
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(0, string.Empty, string.Empty)),
@@ -372,7 +372,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var stdio = new RecordingStdioRunner();
         var capabilitiesProbe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(0, string.Empty, string.Empty));
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             stdio,
             capabilitiesProbe,
             new RecordingSessionWorkspaceManager(),
@@ -462,13 +462,17 @@ public sealed class VbaDebugAdapterCliSurfaceTests
     [Fact]
     public async Task StdioPinsTheSuppliedCliAndCanonicalSession()
     {
+        using var temp = TempDirectory.Create();
         var runner = new RecordingStdioRunner();
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
                 "{\"contractVersion\":\"1.0\",\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
                 string.Empty));
-        var commandLine = VbaDebugAdapterCommandLine.Create(runner, probe);
+        var commandLine = CreateCommandLine(
+            runner,
+            probe,
+            new VbaDebugSessionWorkspaceManager(temp.Path));
         var vbaDevPath = Path.GetFullPath("vba-dev.exe");
         const string sessionId = "0123456789abcdef0123456789abcdef";
         using var standardInput = new MemoryStream();
@@ -484,7 +488,9 @@ public sealed class VbaDebugAdapterCliSurfaceTests
 
         Assert.Equal(0, exitCode);
         Assert.Equal([vbaDevPath], probe.Invocations);
-        Assert.Equal([(vbaDevPath, sessionId)], runner.Invocations);
+        var invocation = Assert.Single(runner.Invocations);
+        Assert.Equal(vbaDevPath, invocation.VbaDevPath);
+        Assert.Equal(sessionId, invocation.WorkspaceLease.SessionId.Value);
         Assert.Empty(ReadUtf8(standardOutput));
         Assert.Empty(ReadUtf8(standardError));
     }
@@ -500,11 +506,14 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var sessionWorkspacePath = Path.Combine(root, "workspaces", sessionId);
         var leasePath = Path.Combine(sessionWorkspacePath, "lease.json");
         var observedLease = false;
+        var workspaceManager = new RecordingClaimSessionWorkspaceManager(
+            new VbaDebugSessionWorkspaceManager(root));
         var runner = new RecordingStdioRunner
         {
-            OnRun = observedSessionId =>
+            OnRun = workspaceLease =>
             {
-                Assert.Equal(sessionId, observedSessionId);
+                Assert.Same(workspaceManager.ClaimedLease, workspaceLease);
+                Assert.Equal(sessionId, workspaceLease.SessionId.Value);
                 Assert.True(File.Exists(leasePath));
                 using var leaseStream = new FileStream(
                     leasePath,
@@ -537,10 +546,10 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 0,
                 "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
                 string.Empty));
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             runner,
             probe,
-            new VbaDebugSessionWorkspaceManager(root));
+            workspaceManager);
 
         try
         {
@@ -557,6 +566,9 @@ public sealed class VbaDebugAdapterCliSurfaceTests
 
             Assert.Equal(0, exitCode);
             Assert.True(observedLease);
+            Assert.Same(
+                workspaceManager.ClaimedLease,
+                Assert.Single(runner.Invocations).WorkspaceLease);
             Assert.False(Directory.Exists(sessionWorkspacePath));
         }
         finally
@@ -573,7 +585,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
     {
         const string sessionId = "0123456789abcdef0123456789abcdef";
         var retainedPath = Path.GetFullPath(Path.Combine("retained", sessionId));
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new RecordingStdioRunner(),
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
@@ -603,7 +615,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
     {
         const string sessionId = "0123456789abcdef0123456789abcdef";
         var workspaceManager = new RecordingSessionWorkspaceManager();
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new RecordingStdioRunner(),
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(0, string.Empty, string.Empty)),
@@ -618,7 +630,9 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             CancellationToken.None);
 
         Assert.Equal(0, exitCode);
-        Assert.Equal([sessionId], workspaceManager.CleanupInvocations);
+        Assert.Equal(
+            sessionId,
+            Assert.Single(workspaceManager.CleanupInvocations).Value);
         Assert.Empty(ReadUtf8(standardOutput));
         Assert.Empty(ReadUtf8(standardError));
     }
@@ -627,7 +641,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
     public async Task CleanupRejectsPathsAndNoncanonicalSessionIdentities()
     {
         var workspaceManager = new RecordingSessionWorkspaceManager();
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new RecordingStdioRunner(),
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(0, string.Empty, string.Empty)),
@@ -695,7 +709,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             }
         };
         var manager = new VbaDebugSessionWorkspaceManager(root);
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             runner,
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
@@ -748,7 +762,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             {"schemaVersion":1,"sessionId":"0123456789abcdef0123456789abcdef","leaseId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","processId":2147483647,"processStartTimeUtc":"2020-01-02T03:04:05.0000000Z"}
             """);
         var runner = new RecordingStdioRunner();
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             runner,
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
@@ -794,7 +808,10 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 0,
                 "{\"contractVersion\":\"1.0\",\"featureVersions\":{\"build.sourceSnapshot\":\"0.9\"}}",
                 string.Empty));
-        var commandLine = VbaDebugAdapterCommandLine.Create(runner, probe);
+        var commandLine = CreateCommandLine(
+            runner,
+            probe,
+            new RecordingSessionWorkspaceManager());
         var vbaDevPath = Path.GetFullPath("vba-dev.exe");
         const string sessionId = "0123456789abcdef0123456789abcdef";
         using var standardInput = new MemoryStream();
@@ -823,7 +840,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 0,
                 "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
                 string.Empty));
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(),
             probe);
         var vbaDevPath = Path.GetFullPath("vba-dev.exe");
@@ -872,7 +889,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 0,
                 "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
                 string.Empty));
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(),
             probe);
         var content = JsonSerializer.SerializeToUtf8Bytes(
@@ -915,7 +932,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService();
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(launchService),
             probe);
         var vbaDevPath = Path.GetFullPath("vba-dev.exe");
@@ -982,7 +999,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         Assert.Equal(0, exitCode);
         var invocation = Assert.Single(launchService.Invocations);
         Assert.Equal(vbaDevPath, invocation.VbaDevPath);
-        Assert.Equal(sessionId, invocation.SessionId);
+        Assert.Equal(sessionId, invocation.WorkspaceLease.SessionId.Value);
         Assert.Equal(projectRoot, invocation.Request.ProjectRoot);
         Assert.Equal("Book1", invocation.Request.DocumentName);
         Assert.Equal("Book1.xlsm", invocation.Request.WorkbookFileName);
@@ -1016,7 +1033,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService();
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(launchService),
             probe);
         var launchArguments = CreateValidLaunchArguments();
@@ -1066,7 +1083,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService();
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(launchService),
             probe);
         var launchArguments = CreateValidLaunchArguments();
@@ -1094,7 +1111,13 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             CancellationToken.None);
 
         Assert.Equal(0, exitCode);
-        Assert.Single(launchService.Invocations);
+        var invocation = Assert.Single(launchService.Invocations);
+        var restartPreparation = Assert.IsType<RestartPreparationDescriptor>(
+            invocation.Request.RestartPreparation);
+        Assert.Equal(
+            "fedcba9876543210fedcba9876543210",
+            restartPreparation.Id.Value);
+        Assert.Equal(0, restartPreparation.Generation.Value);
         var launchResponse = Assert.Single(
             ReadDapMessages(standardOutput),
             message => message.TryGetProperty("request_seq", out var sequence) &&
@@ -1114,7 +1137,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 string.Empty));
         var runningSession = new RecordingRunningSession();
         var launchService = new RecordingDebugLaunchService(runningSession);
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(launchService),
             probe);
         var launchArguments = CreateValidLaunchArguments();
@@ -1193,7 +1216,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         const string sessionId = "0123456789abcdef0123456789abcdef";
         const string preparationId = "fedcba9876543210fedcba9876543210";
         var runningSession = new RecordingRunningSession();
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(
                 new RecordingDebugLaunchService(runningSession)),
             new RecordingVbaDevCapabilitiesProbe(
@@ -1300,7 +1323,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var launchService = new SequencedDebugLaunchService(
             [oldSession, freshSession],
             events);
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(launchService),
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
@@ -1363,7 +1386,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         Assert.Equal(0, exitCode);
         Assert.Equal(2, launchService.Invocations.Count);
         Assert.All(launchService.Invocations, invocation =>
-            Assert.Equal(sessionId, invocation.SessionId));
+            Assert.Equal(sessionId, invocation.WorkspaceLease.SessionId.Value));
         Assert.Equal(
             [oldContent, freshContent],
             launchService.Invocations.Select(invocation =>
@@ -1396,7 +1419,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var launchService = new SequencedDebugLaunchService(
             [oldSession, freshSession],
             []);
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(launchService),
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
@@ -1477,7 +1500,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             [runningSession],
             [],
             request => validator.Validate(request.SourceSnapshot));
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(launchService),
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
@@ -1578,7 +1601,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var launchService = new SequencedDebugLaunchService(
             [oldSession, freshSession],
             []);
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(launchService),
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
@@ -1651,7 +1674,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         const string preparationId = "fedcba9876543210fedcba9876543210";
         var runningSession = new RecordingRunningSession();
         var launchService = new RecordingDebugLaunchService(runningSession);
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(launchService),
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
@@ -1723,7 +1746,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             processId: 2718,
             completion: completion.Task);
         var launchService = new RecordingDebugLaunchService(runningSession);
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(launchService),
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
@@ -1807,12 +1830,12 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             [],
             request =>
             {
-                if (request.RestartPreparation?.Generation == 1)
+                if (request.RestartPreparation?.Generation.Value == 1)
                 {
                     completion.TrySetResult(23);
                 }
             });
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(launchService),
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
@@ -1907,7 +1930,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var launchService = new SequencedDebugLaunchService(
             [oldSession, freshSession],
             []);
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(launchService),
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
@@ -2004,7 +2027,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService();
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(launchService),
             probe);
         using var standardInput = CreateDapInput(
@@ -2072,7 +2095,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService();
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(launchService),
             probe);
         var formSidecarBase64 = Convert.ToBase64String(new byte[3_200_000]);
@@ -2242,7 +2265,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
                 string.Empty));
         var runningSession = new RecordingRunningSession();
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(
                 new RecordingDebugLaunchService(runningSession)),
             probe);
@@ -2316,7 +2339,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 string.Empty));
         var runningSession = new RecordingRunningSession();
         var launchService = new RecordingDebugLaunchService(runningSession);
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(launchService),
             probe);
         var contentBase64 = Convert.ToBase64String(
@@ -2388,7 +2411,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
                 string.Empty));
         var launchService = new CancellationAwareDebugLaunchService();
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(launchService),
             probe);
         var contentBase64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(
@@ -2477,7 +2500,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var runningSession = new RecordingRunningSession(
             processId: 2718,
             completion: Task.FromResult(7));
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(
                 new RecordingDebugLaunchService(runningSession)),
             probe);
@@ -2578,7 +2601,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 DebugInputWaitKind.Excel,
                 DebugInputWaitPhase.WorkbookOpen,
                 2720));
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(launchService),
             probe);
         using var standardInput = CreateDapInput(
@@ -2624,7 +2647,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 0,
                 "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
                 string.Empty));
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(
                 new FailingDebugLaunchService(
                     new DebugSetupException("Synthetic workbook setup failure."))),
@@ -2683,7 +2706,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 0,
                 "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
                 string.Empty));
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(new RecordingDebugLaunchService()),
             probe);
         var sourcePath = Path.GetFullPath("persistent/Module1.bas");
@@ -2732,7 +2755,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 0,
                 "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
                 string.Empty));
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(new RecordingDebugLaunchService()),
             probe);
         using var standardInput = CreateDapInput(
@@ -2788,7 +2811,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 0,
                 "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
                 string.Empty));
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(new RecordingDebugLaunchService()),
             probe);
         using var standardInput = CreateDapInput(new
@@ -2830,7 +2853,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService();
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(launchService),
             probe);
         using var standardInput = CreateDapInput(
@@ -2901,7 +2924,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService();
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(launchService),
             probe);
         using var standardInput = CreateDapInput(
@@ -2998,7 +3021,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService();
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(launchService),
             probe);
         var launchArguments = CreateValidLaunchArguments();
@@ -3065,7 +3088,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 0,
                 "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
                 string.Empty));
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(new RecordingDebugLaunchService()),
             probe);
         using var standardInput = CreateDapInput(
@@ -3123,7 +3146,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService();
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(launchService),
             probe);
         using var standardInput = CreateDapInput(
@@ -3193,7 +3216,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 string.Empty));
         var launchService = new RecordingDebugLaunchService(
             new RecordingRunningSession([mappedBreakpoint]));
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(launchService),
             probe);
         var contentBase64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(
@@ -3282,20 +3305,22 @@ public sealed class VbaDebugAdapterCliSurfaceTests
 
     private sealed class RecordingStdioRunner : IVbaDebugAdapterStdioRunner
     {
-        public List<(string VbaDevPath, string SessionId)> Invocations { get; } = [];
+        public List<(
+            string VbaDevPath,
+            IVbaDebugSessionWorkspaceLease WorkspaceLease)> Invocations { get; } = [];
 
-        public Action<string>? OnRun { get; init; }
+        public Action<IVbaDebugSessionWorkspaceLease>? OnRun { get; init; }
 
         public Task<int> RunAsync(
             string vbaDevPath,
-            string sessionId,
+            IVbaDebugSessionWorkspaceLease workspaceLease,
             Stream standardInput,
             Stream standardOutput,
             Stream standardError,
             CancellationToken cancellationToken)
         {
-            Invocations.Add((vbaDevPath, sessionId));
-            OnRun?.Invoke(sessionId);
+            Invocations.Add((vbaDevPath, workspaceLease));
+            OnRun?.Invoke(workspaceLease);
             return Task.FromResult(0);
         }
     }
@@ -3370,9 +3395,43 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         }
     }
 
+    private static VbaDebugAdapterCommandLine CreateCommandLine()
+        => VbaDebugAdapterCommandLine.Create();
+
+    private static VbaDebugAdapterCommandLine CreateCommandLine(
+        IVbaDebugAdapterStdioRunner stdioRunner,
+        IVbaDevCapabilitiesProbe vbaDevCapabilitiesProbe)
+        => CreateCommandLine(
+            stdioRunner,
+            vbaDevCapabilitiesProbe,
+            new VbaDebugSessionWorkspaceManager(Path.Combine(
+                Path.GetTempPath(),
+                "vba-debug-adapter-cli-surface-tests",
+                Guid.NewGuid().ToString("N"))));
+
+    private static VbaDebugAdapterCommandLine CreateCommandLine(
+        IVbaDebugAdapterStdioRunner stdioRunner,
+        IVbaDevCapabilitiesProbe vbaDevCapabilitiesProbe,
+        IVbaDebugSessionWorkspaceManager sessionWorkspaceManager)
+        => VbaDebugAdapterCommandLine.Create(
+            stdioRunner,
+            vbaDevCapabilitiesProbe,
+            sessionWorkspaceManager);
+
+    private static VbaDebugAdapterCommandLine CreateCommandLine(
+        IVbaDebugAdapterStdioRunner stdioRunner,
+        IVbaDevCapabilitiesProbe vbaDevCapabilitiesProbe,
+        IVbaDebugSessionWorkspaceManager sessionWorkspaceManager,
+        IDebugEnvironmentDoctor debugEnvironmentDoctor)
+        => VbaDebugAdapterCommandLine.Create(
+            stdioRunner,
+            vbaDevCapabilitiesProbe,
+            sessionWorkspaceManager,
+            debugEnvironmentDoctor);
+
     private static VbaDebugAdapterCommandLine CreateCommandLine(
         IDebugEnvironmentDoctor doctor)
-        => VbaDebugAdapterCommandLine.Create(
+        => CreateCommandLine(
             new RecordingStdioRunner(),
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(0, string.Empty, string.Empty)),
@@ -3398,15 +3457,15 @@ public sealed class VbaDebugAdapterCliSurfaceTests
     private sealed class RecordingSessionWorkspaceManager
         : IVbaDebugSessionWorkspaceManager
     {
-        public List<string> CleanupInvocations { get; } = [];
+        public List<DebugSessionId> CleanupInvocations { get; } = [];
 
         public ValueTask<IVbaDebugSessionWorkspaceLease> ClaimAsync(
-            string sessionId,
+            DebugSessionId sessionId,
             CancellationToken cancellationToken)
             => throw new InvalidOperationException("A cleanup test must not claim a session.");
 
         public ValueTask<VbaDebugSessionCleanupResult> CleanupAsync(
-            string sessionId,
+            DebugSessionId sessionId,
             CancellationToken cancellationToken)
         {
             CleanupInvocations.Add(sessionId);
@@ -3417,35 +3476,73 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         }
 
         public ValueTask<IReadOnlyList<VbaDebugSessionCleanupResult>> ReapStaleAsync(
-            string excludedSessionId,
+            DebugSessionId excludedSessionId,
             CancellationToken cancellationToken)
             => ValueTask.FromResult<IReadOnlyList<VbaDebugSessionCleanupResult>>([]);
+    }
+
+    private sealed class RecordingClaimSessionWorkspaceManager(
+        IVbaDebugSessionWorkspaceManager inner) : IVbaDebugSessionWorkspaceManager
+    {
+        public IVbaDebugSessionWorkspaceLease? ClaimedLease { get; private set; }
+
+        public async ValueTask<IVbaDebugSessionWorkspaceLease> ClaimAsync(
+            DebugSessionId sessionId,
+            CancellationToken cancellationToken)
+        {
+            ClaimedLease = await inner
+                .ClaimAsync(sessionId, cancellationToken)
+                .ConfigureAwait(false);
+            return ClaimedLease;
+        }
+
+        public ValueTask<VbaDebugSessionCleanupResult> CleanupAsync(
+            DebugSessionId sessionId,
+            CancellationToken cancellationToken)
+            => inner.CleanupAsync(sessionId, cancellationToken);
+
+        public ValueTask<IReadOnlyList<VbaDebugSessionCleanupResult>> ReapStaleAsync(
+            DebugSessionId excludedSessionId,
+            CancellationToken cancellationToken)
+            => inner.ReapStaleAsync(excludedSessionId, cancellationToken);
     }
 
     private sealed class FailingDisposeSessionWorkspaceManager(string retainedPath)
         : IVbaDebugSessionWorkspaceManager
     {
         public ValueTask<IVbaDebugSessionWorkspaceLease> ClaimAsync(
-            string sessionId,
+            DebugSessionId sessionId,
             CancellationToken cancellationToken)
             => ValueTask.FromResult<IVbaDebugSessionWorkspaceLease>(
-                new FailingDisposeSessionWorkspaceLease(retainedPath));
+                new FailingDisposeSessionWorkspaceLease(
+                    sessionId,
+                    retainedPath));
 
         public ValueTask<VbaDebugSessionCleanupResult> CleanupAsync(
-            string sessionId,
+            DebugSessionId sessionId,
             CancellationToken cancellationToken)
             => throw new InvalidOperationException("The stdio test must not invoke cleanup.");
 
         public ValueTask<IReadOnlyList<VbaDebugSessionCleanupResult>> ReapStaleAsync(
-            string excludedSessionId,
+            DebugSessionId excludedSessionId,
             CancellationToken cancellationToken)
             => ValueTask.FromResult<IReadOnlyList<VbaDebugSessionCleanupResult>>([]);
     }
 
-    private sealed class FailingDisposeSessionWorkspaceLease(string retainedPath)
+    private sealed class FailingDisposeSessionWorkspaceLease(
+        DebugSessionId sessionId,
+        string retainedPath)
         : IVbaDebugSessionWorkspaceLease
     {
+        public DebugSessionId SessionId { get; } = sessionId;
+
         public string SessionWorkspacePath { get; } = retainedPath;
+
+        public IVbaDebugGenerationWorkspace CreateGenerationWorkspace(
+            DebugGenerationId generationId,
+            string workbookFileName)
+            => throw new InvalidOperationException(
+                "The cleanup-failure lease cannot create generation workspaces.");
 
         public ValueTask DisposeAsync()
             => ValueTask.FromException(new IOException("Synthetic lease cleanup failure."));
@@ -3559,7 +3656,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService();
-        var commandLine = VbaDebugAdapterCommandLine.Create(
+        var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(launchService),
             probe);
         using var standardInput = CreateDapInput(
@@ -3624,17 +3721,17 @@ public sealed class VbaDebugAdapterCliSurfaceTests
     {
         public List<(
             string VbaDevPath,
-            string SessionId,
+            IVbaDebugSessionWorkspaceLease WorkspaceLease,
             StandaloneVbaDebugLaunchRequest Request)> Invocations { get; } = [];
 
         public async Task<IStandaloneVbaDebugRunningSession> LaunchAsync(
             string vbaDevPath,
-            string sessionId,
+            IVbaDebugSessionWorkspaceLease workspaceLease,
             StandaloneVbaDebugLaunchRequest request,
             CancellationToken cancellationToken,
             IDebugLifecycleSink? lifecycleSink = null)
         {
-            Invocations.Add((vbaDevPath, sessionId, request));
+            Invocations.Add((vbaDevPath, workspaceLease, request));
             if (inputWait is not null && lifecycleSink is not null)
             {
                 await lifecycleSink.InputRequiredAsync(inputWait, cancellationToken);
@@ -3653,17 +3750,17 @@ public sealed class VbaDebugAdapterCliSurfaceTests
 
         public List<(
             string VbaDevPath,
-            string SessionId,
+            IVbaDebugSessionWorkspaceLease WorkspaceLease,
             StandaloneVbaDebugLaunchRequest Request)> Invocations { get; } = [];
 
         public Task<IStandaloneVbaDebugRunningSession> LaunchAsync(
             string vbaDevPath,
-            string sessionId,
+            IVbaDebugSessionWorkspaceLease workspaceLease,
             StandaloneVbaDebugLaunchRequest request,
             CancellationToken cancellationToken,
             IDebugLifecycleSink? lifecycleSink = null)
         {
-            Invocations.Add((vbaDevPath, sessionId, request));
+            Invocations.Add((vbaDevPath, workspaceLease, request));
             events.Add($"launch:{Invocations.Count}");
             return Task.FromResult(sessions.Dequeue());
         }
@@ -3679,7 +3776,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
 
         public async Task<IStandaloneVbaDebugRunningSession> LaunchAsync(
             string vbaDevPath,
-            string sessionId,
+            IVbaDebugSessionWorkspaceLease workspaceLease,
             StandaloneVbaDebugLaunchRequest request,
             CancellationToken cancellationToken,
             IDebugLifecycleSink? lifecycleSink = null)
@@ -3702,7 +3799,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
     {
         public Task<IStandaloneVbaDebugRunningSession> LaunchAsync(
             string vbaDevPath,
-            string sessionId,
+            IVbaDebugSessionWorkspaceLease workspaceLease,
             StandaloneVbaDebugLaunchRequest request,
             CancellationToken cancellationToken,
             IDebugLifecycleSink? lifecycleSink = null)

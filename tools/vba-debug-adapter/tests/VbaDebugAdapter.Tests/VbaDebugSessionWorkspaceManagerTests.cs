@@ -23,7 +23,9 @@ public sealed class VbaDebugSessionWorkspaceManagerTests
         try
         {
             var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                manager.ClaimAsync(sessionId, CancellationToken.None).AsTask());
+                manager.ClaimAsync(
+                    DebugSessionId.Parse(sessionId),
+                    CancellationToken.None).AsTask());
 
             Assert.Contains("already exists", exception.Message, StringComparison.OrdinalIgnoreCase);
             Assert.True(File.Exists(retainedPath));
@@ -59,7 +61,7 @@ public sealed class VbaDebugSessionWorkspaceManagerTests
         try
         {
             await using var lease = await manager.ClaimAsync(
-                sessionId,
+                DebugSessionId.Parse(sessionId),
                 CancellationToken.None);
 
             Assert.Equal(
@@ -102,7 +104,7 @@ public sealed class VbaDebugSessionWorkspaceManagerTests
         var exception = await Record.ExceptionAsync(async () =>
         {
             await using var lease = await manager.ClaimAsync(
-                sessionId,
+                DebugSessionId.Parse(sessionId),
                 CancellationToken.None);
         });
 
@@ -139,7 +141,7 @@ public sealed class VbaDebugSessionWorkspaceManagerTests
             });
 
         await using (var lease = await manager.ClaimAsync(
-                         sessionId,
+                         DebugSessionId.Parse(sessionId),
                          CancellationToken.None))
         {
             Assert.True(replacementBlocked);
@@ -148,6 +150,360 @@ public sealed class VbaDebugSessionWorkspaceManagerTests
                 lease.SessionWorkspacePath,
                 "lease.json")));
         }
+    }
+
+    [Fact]
+    public async Task DisposedLeaseCannotRecreateAGenerationWorkspace()
+    {
+        using var temp = TempDirectory.Create();
+        const string sessionId = "0123456789abcdef0123456789abcdef";
+        var manager = new VbaDebugSessionWorkspaceManager(
+            Path.Combine(temp.Path, "adapter-root"));
+        var lease = await manager.ClaimAsync(
+            DebugSessionId.Parse(sessionId),
+            CancellationToken.None);
+        var sessionWorkspacePath = lease.SessionWorkspacePath;
+        var generationWorkspacePath = Path.Combine(
+            sessionWorkspacePath,
+            "generations",
+            "generation-0000000000");
+
+        await using (var generationWorkspace = lease.CreateGenerationWorkspace(
+                         DebugGenerationId.Initial,
+                         "Book1.xlsm"))
+        {
+            Assert.Equal(
+                Path.GetFullPath(generationWorkspacePath),
+                generationWorkspace.GenerationWorkspacePath,
+                ignoreCase: true);
+        }
+        await lease.DisposeAsync();
+
+        Assert.Throws<ObjectDisposedException>(() =>
+            lease.CreateGenerationWorkspace(
+                DebugGenerationId.Initial,
+                "Book1.xlsm"));
+        Assert.False(Directory.Exists(sessionWorkspacePath));
+        Assert.False(Directory.Exists(generationWorkspacePath));
+    }
+
+    [Fact]
+    public async Task LiveLeaseGenerationClaimsAreCreateNewAndPreserveTheExistingOwner()
+    {
+        using var temp = TempDirectory.Create();
+        const string sessionId = "0123456789abcdef0123456789abcdef";
+        var manager = new VbaDebugSessionWorkspaceManager(
+            Path.Combine(temp.Path, "adapter-root"));
+        await using var lease = await manager.ClaimAsync(
+            DebugSessionId.Parse(sessionId),
+            CancellationToken.None);
+        await using var generationWorkspace = lease.CreateGenerationWorkspace(
+            DebugGenerationId.Initial,
+            "Book1.xlsm");
+        var sentinelPath = Path.Combine(
+            generationWorkspace.GenerationWorkspacePath,
+            "owned-by-first-claim.tmp");
+        await File.WriteAllTextAsync(sentinelPath, "first-owner");
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            lease.CreateGenerationWorkspace(
+                DebugGenerationId.Initial,
+                "Book1.xlsm"));
+
+        Assert.Contains(
+            "already exists",
+            exception.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("first-owner", await File.ReadAllTextAsync(sentinelPath));
+
+        await generationWorkspace.DisposeAsync();
+        Assert.False(File.Exists(sentinelPath));
+        var reuseException = Assert.Throws<InvalidOperationException>(() =>
+            lease.CreateGenerationWorkspace(
+                DebugGenerationId.Initial,
+                "Book1.xlsm"));
+        Assert.Contains(
+            "already exists",
+            reuseException.Message,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task SealedGenerationCapabilityRejectsSourceContentMutation()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        const string sessionId = "0123456789abcdef0123456789abcdef";
+        var manager = new VbaDebugSessionWorkspaceManager(
+            Path.Combine(temp.Path, "adapter-root"));
+        await using var lease = await manager.ClaimAsync(
+            DebugSessionId.Parse(sessionId),
+            CancellationToken.None);
+        await using var generationWorkspace = lease.CreateGenerationWorkspace(
+            DebugGenerationId.Initial,
+            "Book1.xlsm");
+        var sourcePath = Path.Combine(
+            generationWorkspace.SourceSnapshotPath,
+            "Module1.bas");
+        await using (var sourceStream =
+                     generationWorkspace.CreateSourceFile("Module1.bas"))
+        {
+            await sourceStream.WriteAsync("source"u8.ToArray());
+        }
+
+        generationWorkspace.SealSourceSnapshot();
+        generationWorkspace.VerifySourceSnapshot();
+        var exception = Record.Exception(() =>
+        {
+            using var mutationStream = new FileStream(
+                sourcePath,
+                FileMode.Open,
+                FileAccess.Write,
+                FileShare.ReadWrite | FileShare.Delete);
+            mutationStream.Write("mutated"u8);
+        });
+
+        Assert.True(
+            exception is IOException or UnauthorizedAccessException,
+            $"Expected sealed source mutation to fail, but received: {exception}");
+        generationWorkspace.VerifySourceSnapshot();
+        Assert.Equal("source", await File.ReadAllTextAsync(sourcePath));
+
+        await generationWorkspace.DisposeAsync();
+
+        Assert.False(File.Exists(sourcePath));
+        Assert.False(Directory.Exists(generationWorkspace.GenerationWorkspacePath));
+    }
+
+    [Fact]
+    public async Task SourceCreationFailureBeforeOwnershipTransferReleasesCreatedHandles()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        const string sessionId = "0123456789abcdef0123456789abcdef";
+        var manager = new VbaDebugSessionWorkspaceManager(
+            Path.Combine(temp.Path, "adapter-root"),
+            cleanupOperations: null,
+            afterCreateSourceFileBeforeOwnershipTransfer: _ =>
+                throw new IOException("Synthetic identity-read failure."));
+        await using var lease = await manager.ClaimAsync(
+            DebugSessionId.Parse(sessionId),
+            CancellationToken.None);
+        var generationWorkspace = lease.CreateGenerationWorkspace(
+            DebugGenerationId.Initial,
+            "Book1.xlsm");
+        var generationPath = generationWorkspace.GenerationWorkspacePath;
+
+        var exception = Assert.Throws<IOException>(() =>
+        {
+            using var source = generationWorkspace.CreateSourceFile(
+                "Module1.bas");
+        });
+        Assert.Equal("Synthetic identity-read failure.", exception.Message);
+
+        await generationWorkspace.DisposeAsync();
+
+        Assert.False(Directory.Exists(generationPath));
+    }
+
+    [Fact]
+    public async Task SealedGenerationCapabilityRejectsPersistentSourceInventoryInjection()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        const string sessionId = "0123456789abcdef0123456789abcdef";
+        var manager = new VbaDebugSessionWorkspaceManager(
+            Path.Combine(temp.Path, "adapter-root"));
+        await using var lease = await manager.ClaimAsync(
+            DebugSessionId.Parse(sessionId),
+            CancellationToken.None);
+        await using var generationWorkspace = lease.CreateGenerationWorkspace(
+            DebugGenerationId.Initial,
+            "Book1.xlsm");
+        await using (var sourceStream =
+                     generationWorkspace.CreateSourceFile("nested/Module1.bas"))
+        {
+            await sourceStream.WriteAsync("source"u8.ToArray());
+        }
+        generationWorkspace.SealSourceSnapshot();
+        string[] injectedPaths =
+        [
+            Path.Combine(
+                generationWorkspace.SourceSnapshotPath,
+                "Injected.bas"),
+            Path.Combine(
+                generationWorkspace.SourceSnapshotPath,
+                "nested",
+                "Injected.cls")
+        ];
+
+        foreach (var injectedPath in injectedPaths)
+        {
+            File.WriteAllText(injectedPath, "injected");
+        }
+
+        var exception = Assert.Throws<IOException>(
+            generationWorkspace.VerifySourceSnapshot);
+        Assert.Contains("inventory changed", exception.Message);
+    }
+
+    [Fact]
+    public async Task PinnedGenerationWorkbookRejectsConcurrentWriteAccess()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        const string sessionId = "0123456789abcdef0123456789abcdef";
+        var manager = new VbaDebugSessionWorkspaceManager(
+            Path.Combine(temp.Path, "adapter-root"));
+        await using var lease = await manager.ClaimAsync(
+            DebugSessionId.Parse(sessionId),
+            CancellationToken.None);
+        await using var generationWorkspace = lease.CreateGenerationWorkspace(
+            DebugGenerationId.Initial,
+            "Book1.xlsm");
+        await File.WriteAllTextAsync(
+            generationWorkspace.WorkbookPath,
+            "workbook");
+
+        generationWorkspace.PinGeneratedWorkbook();
+        generationWorkspace.VerifyGeneratedWorkbook();
+
+        Assert.Throws<InvalidOperationException>(() =>
+            generationWorkspace.PinGeneratedWorkbook());
+        var exception = Record.Exception(() =>
+        {
+            using var mutationStream = new FileStream(
+                generationWorkspace.WorkbookPath,
+                FileMode.Open,
+                FileAccess.Write,
+                FileShare.ReadWrite | FileShare.Delete);
+            mutationStream.Write("mutated"u8);
+        });
+
+        Assert.True(
+            exception is IOException or UnauthorizedAccessException,
+            $"Expected pinned workbook mutation to fail, but received: {exception}");
+        generationWorkspace.VerifyGeneratedWorkbook();
+        Assert.Equal(
+            "workbook",
+            await File.ReadAllTextAsync(generationWorkspace.WorkbookPath));
+
+        await generationWorkspace.DisposeAsync();
+
+        Assert.False(File.Exists(generationWorkspace.WorkbookPath));
+        Assert.False(Directory.Exists(generationWorkspace.GenerationWorkspacePath));
+    }
+
+    [Fact]
+    public async Task PinGeneratedWorkbookRejectsAReparsePointWithoutFollowingIt()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        const string sessionId = "0123456789abcdef0123456789abcdef";
+        var manager = new VbaDebugSessionWorkspaceManager(
+            Path.Combine(temp.Path, "adapter-root"));
+        await using var lease = await manager.ClaimAsync(
+            DebugSessionId.Parse(sessionId),
+            CancellationToken.None);
+        await using (var generationWorkspace = lease.CreateGenerationWorkspace(
+                         DebugGenerationId.Initial,
+                         "Book1.xlsm"))
+        {
+            var outsidePath = Path.Combine(temp.Path, "outside-Book1.xlsm");
+            await File.WriteAllTextAsync(outsidePath, "outside");
+            File.CreateSymbolicLink(
+                generationWorkspace.WorkbookPath,
+                outsidePath);
+
+            var exception = Assert.Throws<IOException>(() =>
+                generationWorkspace.PinGeneratedWorkbook());
+
+            Assert.Contains(
+                "physical file",
+                exception.Message,
+                StringComparison.OrdinalIgnoreCase);
+            Assert.True(
+                (File.GetAttributes(generationWorkspace.WorkbookPath) &
+                 FileAttributes.ReparsePoint) != 0);
+            Assert.Equal("outside", await File.ReadAllTextAsync(outsidePath));
+        }
+
+        Assert.Equal(
+            "outside",
+            await File.ReadAllTextAsync(Path.Combine(
+                temp.Path,
+                "outside-Book1.xlsm")));
+    }
+
+    [Fact]
+    public async Task LiveLeaseRejectsAPreexistingGenerationLinkWithoutFollowingIt()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        const string sessionId = "0123456789abcdef0123456789abcdef";
+        var root = Path.Combine(temp.Path, "adapter-root");
+        var outsideGenerationPath = Path.Combine(temp.Path, "outside-generation");
+        var outsideSentinelPath = Path.Combine(
+            outsideGenerationPath,
+            "outside.tmp");
+        Directory.CreateDirectory(outsideGenerationPath);
+        await File.WriteAllTextAsync(outsideSentinelPath, "outside");
+        var manager = new VbaDebugSessionWorkspaceManager(root);
+
+        await using (var lease = await manager.ClaimAsync(
+                         DebugSessionId.Parse(sessionId),
+                         CancellationToken.None))
+        {
+            var generationsPath = Path.Combine(
+                lease.SessionWorkspacePath,
+                "generations");
+            var generationWorkspacePath = Path.Combine(
+                generationsPath,
+                "generation-0000000000");
+            Directory.CreateDirectory(generationsPath);
+            Directory.CreateSymbolicLink(
+                generationWorkspacePath,
+                outsideGenerationPath);
+
+            Assert.Throws<InvalidOperationException>(() =>
+                lease.CreateGenerationWorkspace(
+                    DebugGenerationId.Initial,
+                    "Book1.xlsm"));
+            Assert.True(
+                (File.GetAttributes(generationWorkspacePath) &
+                 FileAttributes.ReparsePoint) != 0);
+            Assert.Equal(
+                "outside",
+                await File.ReadAllTextAsync(outsideSentinelPath));
+        }
+
+        Assert.Equal(
+            "outside",
+            await File.ReadAllTextAsync(outsideSentinelPath));
     }
 
     [Fact]
@@ -164,10 +520,12 @@ public sealed class VbaDebugSessionWorkspaceManagerTests
         try
         {
             await using (var lease = await manager.ClaimAsync(
-                sessionId,
+                DebugSessionId.Parse(sessionId),
                 CancellationToken.None))
             {
-                var result = await manager.CleanupAsync(sessionId, CancellationToken.None);
+                var result = await manager.CleanupAsync(
+                    DebugSessionId.Parse(sessionId),
+                    CancellationToken.None);
 
                 Assert.False(result.Succeeded);
                 Assert.Equal(Path.GetFullPath(sessionWorkspacePath), result.RetainedPath);
@@ -208,7 +566,9 @@ public sealed class VbaDebugSessionWorkspaceManagerTests
 
         try
         {
-            var result = await manager.CleanupAsync(sessionId, CancellationToken.None);
+            var result = await manager.CleanupAsync(
+                DebugSessionId.Parse(sessionId),
+                CancellationToken.None);
 
             Assert.True(result.Succeeded);
             Assert.Null(result.RetainedPath);
@@ -247,7 +607,9 @@ public sealed class VbaDebugSessionWorkspaceManagerTests
 
         try
         {
-            var result = await manager.CleanupAsync(sessionId, CancellationToken.None);
+            var result = await manager.CleanupAsync(
+                DebugSessionId.Parse(sessionId),
+                CancellationToken.None);
 
             Assert.True(result.Succeeded);
             Assert.False(Directory.Exists(sessionWorkspacePath));
@@ -277,13 +639,16 @@ public sealed class VbaDebugSessionWorkspaceManagerTests
             {"schemaVersion":1,"sessionId":"0123456789abcdef0123456789abcdef","leaseId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","processId":2147483647,"processStartTimeUtc":"2020-01-02T03:04:05.0000000Z"}
             """);
         var cleanupOperations = new ControlledWorkspaceCleanupOperations(
+            root,
             transientFailures: 0,
             reparsePointPath: sessionWorkspacePath);
         var manager = new VbaDebugSessionWorkspaceManager(root, cleanupOperations);
 
         try
         {
-            var result = await manager.CleanupAsync(sessionId, CancellationToken.None);
+            var result = await manager.CleanupAsync(
+                DebugSessionId.Parse(sessionId),
+                CancellationToken.None);
 
             Assert.False(result.Succeeded);
             Assert.Equal(Path.GetFullPath(sessionWorkspacePath), result.RetainedPath);
@@ -314,9 +679,11 @@ public sealed class VbaDebugSessionWorkspaceManagerTests
         File.CreateSymbolicLink(sessionWorkspacePath, missingTargetPath);
         var manager = new VbaDebugSessionWorkspaceManager(root);
 
-        var cleanup = await manager.CleanupAsync(sessionId, CancellationToken.None);
+        var cleanup = await manager.CleanupAsync(
+            DebugSessionId.Parse(sessionId),
+            CancellationToken.None);
         var retained = await manager.ReapStaleAsync(
-            excludedSessionId,
+            DebugSessionId.Parse(excludedSessionId),
             CancellationToken.None);
 
         Assert.False(cleanup.Succeeded);
@@ -367,7 +734,9 @@ public sealed class VbaDebugSessionWorkspaceManagerTests
 
         try
         {
-            var result = await manager.CleanupAsync(sessionId, CancellationToken.None);
+            var result = await manager.CleanupAsync(
+                DebugSessionId.Parse(sessionId),
+                CancellationToken.None);
 
             Assert.True(swapped);
             Assert.False(result.Succeeded);
@@ -421,7 +790,9 @@ public sealed class VbaDebugSessionWorkspaceManagerTests
 
         try
         {
-            var result = await manager.CleanupAsync(sessionId, CancellationToken.None);
+            var result = await manager.CleanupAsync(
+                DebugSessionId.Parse(sessionId),
+                CancellationToken.None);
 
             Assert.True(result.Succeeded);
             Assert.True(replacementBlocked);
@@ -469,7 +840,9 @@ public sealed class VbaDebugSessionWorkspaceManagerTests
             cleanupOperations,
             beforeDeleteOwnedTree: _ => AttemptReplacement());
 
-        var lease = await manager.ClaimAsync(sessionId, CancellationToken.None);
+        var lease = await manager.ClaimAsync(
+            DebugSessionId.Parse(sessionId),
+            CancellationToken.None);
         await lease.DisposeAsync();
 
         Assert.True(replacementBlocked);
@@ -517,7 +890,9 @@ public sealed class VbaDebugSessionWorkspaceManagerTests
 
         try
         {
-            var result = await manager.CleanupAsync(sessionId, CancellationToken.None);
+            var result = await manager.CleanupAsync(
+                DebugSessionId.Parse(sessionId),
+                CancellationToken.None);
 
             Assert.True(result.Succeeded);
             Assert.True(childSwapped);
@@ -553,12 +928,15 @@ public sealed class VbaDebugSessionWorkspaceManagerTests
             {"schemaVersion":1,"sessionId":"0123456789abcdef0123456789abcdef","leaseId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","processId":2147483647,"processStartTimeUtc":"2020-01-02T03:04:05.0000000Z"}
             """);
         var cleanupOperations = new ControlledWorkspaceCleanupOperations(
+            root,
             transientFailures: 2);
         var manager = new VbaDebugSessionWorkspaceManager(root, cleanupOperations);
 
         try
         {
-            var result = await manager.CleanupAsync(sessionId, CancellationToken.None);
+            var result = await manager.CleanupAsync(
+                DebugSessionId.Parse(sessionId),
+                CancellationToken.None);
 
             Assert.True(result.Succeeded);
             Assert.Equal(3, cleanupOperations.DeleteCalls);
@@ -590,12 +968,15 @@ public sealed class VbaDebugSessionWorkspaceManagerTests
             {"schemaVersion":1,"sessionId":"0123456789abcdef0123456789abcdef","leaseId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","processId":2147483647,"processStartTimeUtc":"2020-01-02T03:04:05.0000000Z"}
             """);
         var cleanupOperations = new ControlledWorkspaceCleanupOperations(
+            root,
             transientFailures: int.MaxValue);
         var manager = new VbaDebugSessionWorkspaceManager(root, cleanupOperations);
 
         try
         {
-            var result = await manager.CleanupAsync(sessionId, CancellationToken.None);
+            var result = await manager.CleanupAsync(
+                DebugSessionId.Parse(sessionId),
+                CancellationToken.None);
 
             Assert.False(result.Succeeded);
             Assert.Equal(TimeSpan.FromSeconds(5), cleanupOperations.Elapsed);
@@ -636,7 +1017,9 @@ public sealed class VbaDebugSessionWorkspaceManagerTests
 
         try
         {
-            var result = await manager.CleanupAsync(sessionId, CancellationToken.None);
+            var result = await manager.CleanupAsync(
+                DebugSessionId.Parse(sessionId),
+                CancellationToken.None);
 
             Assert.False(result.Succeeded);
             Assert.Equal(Path.GetFullPath(sessionWorkspacePath), result.RetainedPath);
@@ -669,6 +1052,7 @@ public sealed class VbaDebugSessionWorkspaceManagerTests
     }
 
     private sealed class ControlledWorkspaceCleanupOperations(
+        string workspaceRoot,
         int transientFailures,
         string? reparsePointPath = null)
         : IVbaDebugWorkspaceCleanupOperations
@@ -690,16 +1074,22 @@ public sealed class VbaDebugSessionWorkspaceManagerTests
                     Path.GetFullPath(reparsePointPath),
                     StringComparison.OrdinalIgnoreCase);
 
-        public Stream OpenLeaseStream(string sessionWorkspacePath)
+        public Stream OpenSessionLeaseStream(DebugSessionId sessionId)
             => new FileStream(
-                Path.Combine(sessionWorkspacePath, "lease.json"),
+                Path.Combine(
+                    workspaceRoot,
+                    "workspaces",
+                    sessionId.Value,
+                    "lease.json"),
                 FileMode.Open,
                 FileAccess.Read,
                 FileShare.ReadWrite);
 
-        public IVbaDebugWorkspaceCleanupScope OpenCleanupScope(
-            string sessionWorkspacePath)
-            => new ControlledWorkspaceCleanupScope(this, sessionWorkspacePath);
+        public IVbaDebugWorkspaceCleanupScope OpenSessionCleanupScope(
+            DebugSessionId sessionId)
+            => new ControlledWorkspaceCleanupScope(
+                this,
+                Path.Combine(workspaceRoot, "workspaces", sessionId.Value));
 
         public ValueTask DelayAsync(TimeSpan delay, CancellationToken cancellationToken)
         {
@@ -708,7 +1098,7 @@ public sealed class VbaDebugSessionWorkspaceManagerTests
             return ValueTask.CompletedTask;
         }
 
-        public void DeleteDirectory(string directoryPath)
+        private void DeleteSessionDirectory(string directoryPath)
         {
             DeleteCalls++;
             if (DeleteCalls <= transientFailures)
@@ -731,7 +1121,7 @@ public sealed class VbaDebugSessionWorkspaceManagerTests
                     FileShare.ReadWrite);
 
             public void DeleteDirectory()
-                => owner.DeleteDirectory(sessionWorkspacePath);
+                => owner.DeleteSessionDirectory(sessionWorkspacePath);
 
             public void Dispose()
             {

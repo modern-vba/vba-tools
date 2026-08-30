@@ -11,30 +11,17 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
     private readonly IStandaloneVbaDebugLaunchService launchService;
 
     public StandaloneVbaDebugAdapterStdioRunner()
-        : this(Path.Combine(Path.GetTempPath(), "vba-debug-adapter"))
+        : this(CreateDefaultLaunchService())
     {
     }
 
-    internal StandaloneVbaDebugAdapterStdioRunner(string workspaceRoot)
-        : this(new VbaDebugWorkspaceRootBinding(workspaceRoot))
-    {
-    }
-
-    internal StandaloneVbaDebugAdapterStdioRunner(
-        VbaDebugWorkspaceRootBinding workspaceRootBinding)
-        : this(CreateDefaultLaunchService(workspaceRootBinding))
-    {
-    }
-
-    private static IStandaloneVbaDebugLaunchService CreateDefaultLaunchService(
-        VbaDebugWorkspaceRootBinding workspaceRootBinding)
+    private static IStandaloneVbaDebugLaunchService CreateDefaultLaunchService()
     {
         var validator = TransportedDebugSourceSnapshotValidator
             .CreateForCurrentWindowsSession();
         return new StandaloneVbaDebugLaunchService(
             validator,
             new VbaDevSnapshotWorkbookBuilder(
-                workspaceRootBinding,
                 new ProcessVbaDevBuildProcess(),
                 validator),
             new VbeDebugAutomation(),
@@ -53,14 +40,15 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
 
     public async Task<int> RunAsync(
         string vbaDevPath,
-        string sessionId,
+        IVbaDebugSessionWorkspaceLease workspaceLease,
         Stream standardInput,
         Stream standardOutput,
         Stream standardError,
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(vbaDevPath);
-        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ArgumentNullException.ThrowIfNull(workspaceLease);
+        var sessionId = workspaceLease.SessionId;
         _ = standardError;
         var connection = new DapConnection(standardInput, standardOutput);
         DapRequest? pendingLaunchRequest = null;
@@ -73,7 +61,7 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
         CancellationTokenSource? launchCancellation = null;
         var breakpointRegistry = new DapSourceBreakpointRegistry();
         var configurationDone = false;
-        var restartGeneration = 0;
+        var restartGeneration = DebugRestartGeneration.Initial;
         var lastRestartRequestSequence = -1;
         using var requestReadCancellation = CancellationTokenSource
             .CreateLinkedTokenSource(cancellationToken);
@@ -112,9 +100,10 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                         if (runningSession is not null)
                         {
                             activeLaunch = launchingRequest;
-                            restartGeneration = Math.Max(
+                            restartGeneration = DebugRestartGeneration.Max(
                                 restartGeneration,
-                                activeLaunch?.RestartPreparation?.Generation ?? 0);
+                                activeLaunch?.RestartPreparation?.Generation
+                                    ?? DebugRestartGeneration.Initial);
                         }
                     }
                     catch (OperationCanceledException)
@@ -333,7 +322,7 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                         pendingLaunchRequest,
                         pendingLaunch,
                         vbaDevPath,
-                        sessionId,
+                        workspaceLease,
                         breakpointRegistry,
                         launchCancellation.Token,
                         cancellationToken);
@@ -373,7 +362,7 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                         pendingLaunchRequest,
                         pendingLaunch,
                         vbaDevPath,
-                        sessionId,
+                        workspaceLease,
                         breakpointRegistry,
                         launchCancellation.Token,
                         cancellationToken);
@@ -419,7 +408,7 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                     continue;
                 }
 
-                if (restartGeneration == int.MaxValue)
+                if (restartGeneration.Value == int.MaxValue)
                 {
                     await connection.WriteResponseAsync(
                         request,
@@ -430,7 +419,7 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                     continue;
                 }
 
-                restartGeneration++;
+                restartGeneration = restartGeneration.Next();
                 lastRestartRequestSequence = request.Sequence;
                 pendingRestart = new PendingRestartPreparation(
                     request,
@@ -642,7 +631,7 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                     preparedRestart.Request,
                     freshLaunch,
                     vbaDevPath,
-                    sessionId,
+                    workspaceLease,
                     breakpointRegistry,
                     launchCancellation.Token,
                     cancellationToken);
@@ -772,7 +761,7 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
         DapRequest dapRequest,
         StandaloneVbaDebugLaunchRequest launchRequest,
         string vbaDevPath,
-        string sessionId,
+        IVbaDebugSessionWorkspaceLease workspaceLease,
         DapSourceBreakpointRegistry breakpointRegistry,
         CancellationToken launchCancellationToken,
         CancellationToken transportCancellationToken)
@@ -783,7 +772,7 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
             runningSession = await launchService
                 .LaunchAsync(
                     vbaDevPath,
-                    sessionId,
+                    workspaceLease,
                     launchRequest,
                     launchCancellationToken,
                     new DapDebugLifecycleSink(connection, transportCancellationToken))
@@ -1059,7 +1048,9 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                 "The VBA restart preparation generation must be nonnegative.");
         }
 
-        return new RestartPreparationDescriptor(id, generation);
+        return new RestartPreparationDescriptor(
+            DebugRestartPreparationId.Parse(id),
+            DebugRestartGeneration.FromValue(generation));
     }
 
     private static RestartPreparationResult ParseRestartPreparationResult(JsonElement arguments)
@@ -1089,11 +1080,30 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                 "The VBA restart preparation result requires a Boolean 'success'.");
         }
 
+        var sessionId = RequiredString(arguments, "sessionId");
+        if (!DebugSessionId.TryParse(sessionId, out var parsedSessionId))
+        {
+            throw new DebugSetupException(
+                "The VBA restart preparation result session ID must contain 32 lowercase hexadecimal characters.");
+        }
+        var preparationId = RequiredString(arguments, "preparationId");
+        if (!IsCanonicalHex32(preparationId))
+        {
+            throw new DebugSetupException(
+                "The VBA restart preparation result ID must contain 32 lowercase hexadecimal characters.");
+        }
+        var generation = RequiredInt32(arguments, "generation");
+        if (generation < 0)
+        {
+            throw new DebugSetupException(
+                "The VBA restart preparation result generation must be nonnegative.");
+        }
+
         return new RestartPreparationResult(
-            RequiredString(arguments, "sessionId"),
+            parsedSessionId!,
             RequiredInt32(arguments, "restartRequestSequence"),
-            RequiredString(arguments, "preparationId"),
-            RequiredInt32(arguments, "generation"),
+            DebugRestartPreparationId.Parse(preparationId),
+            DebugRestartGeneration.FromValue(generation),
             successValue.GetBoolean(),
             OptionalString(arguments, "message"),
             arguments.TryGetProperty("launch", out var launch)
@@ -1555,18 +1565,20 @@ public sealed record StandaloneVbaDebugLaunchRequest(
     public RestartPreparationDescriptor? RestartPreparation { get; init; }
 }
 
-public sealed record RestartPreparationDescriptor(string Id, int Generation);
+public sealed record RestartPreparationDescriptor(
+    DebugRestartPreparationId Id,
+    DebugRestartGeneration Generation);
 
 internal sealed record PendingRestartPreparation(
     DapRequest Request,
     RestartPreparationDescriptor Descriptor,
-    int Generation);
+    DebugRestartGeneration Generation);
 
 internal sealed record RestartPreparationResult(
-    string SessionId,
+    DebugSessionId SessionId,
     int RestartRequestSequence,
-    string PreparationId,
-    int Generation,
+    DebugRestartPreparationId PreparationId,
+    DebugRestartGeneration Generation,
     bool Success,
     string? Message,
     JsonElement? Launch);
@@ -1579,7 +1591,7 @@ public interface IStandaloneVbaDebugLaunchService
 
     Task<IStandaloneVbaDebugRunningSession> LaunchAsync(
         string vbaDevPath,
-        string sessionId,
+        IVbaDebugSessionWorkspaceLease workspaceLease,
         StandaloneVbaDebugLaunchRequest request,
         CancellationToken cancellationToken,
         IDebugLifecycleSink? lifecycleSink = null);

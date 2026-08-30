@@ -24,13 +24,17 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
         IVbaDebugWorkspaceCleanupOperations? cleanupOperations,
         Action<string>? beforeCreateLeaseFile = null,
         Action<string>? afterCreateDirectoryBeforeOpen = null,
-        Action<string>? beforeDeleteOwnedTree = null)
+        Action<string>? beforeDeleteOwnedTree = null,
+        Action<string>? beforeCreateSourceFile = null,
+        Action<string>? afterCreateSourceFileBeforeOwnershipTransfer = null)
         : this(
             new VbaDebugWorkspaceRootBinding(workspaceRoot),
             cleanupOperations,
             beforeCreateLeaseFile,
             afterCreateDirectoryBeforeOpen,
-            beforeDeleteOwnedTree)
+            beforeDeleteOwnedTree,
+            beforeCreateSourceFile,
+            afterCreateSourceFileBeforeOwnershipTransfer)
     {
     }
 
@@ -39,7 +43,9 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
         IVbaDebugWorkspaceCleanupOperations? cleanupOperations,
         Action<string>? beforeCreateLeaseFile = null,
         Action<string>? afterCreateDirectoryBeforeOpen = null,
-        Action<string>? beforeDeleteOwnedTree = null)
+        Action<string>? beforeDeleteOwnedTree = null,
+        Action<string>? beforeCreateSourceFile = null,
+        Action<string>? afterCreateSourceFileBeforeOwnershipTransfer = null)
     {
         ArgumentNullException.ThrowIfNull(workspaceRootBinding);
         workspaceContext = new Lazy<WorkspaceContext>(
@@ -49,7 +55,10 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
                     workspaceRootBinding.Resolve(),
                     afterCreateDirectoryBeforeOpen: afterCreateDirectoryBeforeOpen,
                     beforeDeleteOwnedTree: beforeDeleteOwnedTree,
-                    beforeCreateLeaseFile: beforeCreateLeaseFile);
+                    beforeCreateLeaseFile: beforeCreateLeaseFile,
+                    beforeCreateSourceFile: beforeCreateSourceFile,
+                    afterCreateSourceFileBeforeOwnershipTransfer:
+                        afterCreateSourceFileBeforeOwnershipTransfer);
                 return new WorkspaceContext(
                     creator.WorkspaceRoot,
                     creator,
@@ -60,21 +69,16 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
     }
 
     public async ValueTask<IVbaDebugSessionWorkspaceLease> ClaimAsync(
-        string sessionId,
+        DebugSessionId sessionId,
         CancellationToken cancellationToken)
     {
-        if (!IsCanonicalSessionId(sessionId))
-        {
-            throw new ArgumentException(
-                "The adapter session ID must contain 32 lowercase hexadecimal characters.",
-                nameof(sessionId));
-        }
+        ArgumentNullException.ThrowIfNull(sessionId);
 
         cancellationToken.ThrowIfCancellationRequested();
         var sessionWorkspacePath = Path.Combine(
             WorkspaceRoot,
             "workspaces",
-            sessionId);
+            sessionId.Value);
         IVbaDebugSessionWorkspaceCreationScope? creationScope = null;
         FileStream? leaseStream = null;
         try
@@ -85,7 +89,7 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
             using var process = Process.GetCurrentProcess();
             var metadata = new VbaDebugSessionWorkspaceLeaseMetadata(
                 1,
-                sessionId,
+                sessionId.Value,
                 Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant(),
                 process.Id,
                 process.StartTime.ToUniversalTime().ToString("O"));
@@ -98,6 +102,7 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
 
             return new OwnedVbaDebugSessionWorkspaceLease(
                 this,
+                sessionId,
                 sessionWorkspacePath,
                 leaseStream,
                 creationScope);
@@ -135,21 +140,16 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
     }
 
     public async ValueTask<VbaDebugSessionCleanupResult> CleanupAsync(
-        string sessionId,
+        DebugSessionId sessionId,
         CancellationToken cancellationToken)
     {
-        if (!IsCanonicalSessionId(sessionId))
-        {
-            throw new ArgumentException(
-                "The adapter session ID must contain 32 lowercase hexadecimal characters.",
-                nameof(sessionId));
-        }
+        ArgumentNullException.ThrowIfNull(sessionId);
 
         cancellationToken.ThrowIfCancellationRequested();
         var sessionWorkspacePath = Path.Combine(
             WorkspaceRoot,
             "workspaces",
-            sessionId);
+            sessionId.Value);
         if (!WindowsVbaDebugWorkspacePath.EntryExistsNoFollow(
                 sessionWorkspacePath))
         {
@@ -175,7 +175,7 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
         }
 
         var preliminaryLeaseState = InspectLease(
-            () => CleanupOperations.OpenLeaseStream(sessionWorkspacePath),
+            () => CleanupOperations.OpenSessionLeaseStream(sessionId),
             sessionId);
         if (preliminaryLeaseState == VbaDebugSessionLeaseState.Active)
         {
@@ -188,7 +188,7 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
         IVbaDebugWorkspaceCleanupScope cleanupScope;
         try
         {
-            cleanupScope = CleanupOperations.OpenCleanupScope(sessionWorkspacePath);
+            cleanupScope = CleanupOperations.OpenSessionCleanupScope(sessionId);
         }
         catch
         {
@@ -200,7 +200,9 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
 
         using (cleanupScope)
         {
-            var leaseState = InspectLease(cleanupScope.OpenLeaseStream, sessionId);
+            var leaseState = InspectLease(
+                cleanupScope.OpenLeaseStream,
+                sessionId);
             if (leaseState != VbaDebugSessionLeaseState.Stale)
             {
                 var stateDescription = leaseState == VbaDebugSessionLeaseState.Active
@@ -226,15 +228,10 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
     }
 
     public async ValueTask<IReadOnlyList<VbaDebugSessionCleanupResult>> ReapStaleAsync(
-        string excludedSessionId,
+        DebugSessionId excludedSessionId,
         CancellationToken cancellationToken)
     {
-        if (!IsCanonicalSessionId(excludedSessionId))
-        {
-            throw new ArgumentException(
-                "The excluded adapter session ID must contain 32 lowercase hexadecimal characters.",
-                nameof(excludedSessionId));
-        }
+        ArgumentNullException.ThrowIfNull(excludedSessionId);
 
         cancellationToken.ThrowIfCancellationRequested();
         var workspacesPath = Path.Combine(WorkspaceRoot, "workspaces");
@@ -253,32 +250,21 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
                      workspacesPath))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var sessionId = Path.GetFileName(sessionWorkspacePath);
-            if (!IsCanonicalSessionId(sessionId) ||
-                sessionId.Equals(excludedSessionId, StringComparison.Ordinal))
+            var sessionIdValue = Path.GetFileName(sessionWorkspacePath);
+            if (!DebugSessionId.TryParse(sessionIdValue, out var sessionId) ||
+                sessionId == excludedSessionId)
             {
                 continue;
             }
-            var cleanup = await CleanupAsync(sessionId, cancellationToken).ConfigureAwait(false);
+            var cleanup = await CleanupAsync(
+                sessionId!,
+                cancellationToken).ConfigureAwait(false);
             if (!cleanup.Succeeded)
             {
                 retained.Add(cleanup);
             }
         }
         return retained;
-    }
-
-    private async ValueTask<bool> TryDeleteWithRetryAsync(
-        string directoryPath,
-        CancellationToken cancellationToken)
-    {
-        if (HasReparseBoundary(directoryPath))
-        {
-            return false;
-        }
-        return await TryDeleteWithRetryAsync(
-            () => CleanupOperations.DeleteDirectory(directoryPath),
-            cancellationToken).ConfigureAwait(false);
     }
 
     private async ValueTask<bool> TryDeleteWithRetryAsync(
@@ -333,7 +319,7 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
 
     private static VbaDebugSessionLeaseState InspectLease(
         Func<Stream> openLeaseStream,
-        string expectedSessionId)
+        DebugSessionId expectedSessionId)
     {
         try
         {
@@ -365,11 +351,11 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
                 sessionId.ValueKind != JsonValueKind.String ||
                 !string.Equals(
                     sessionId.GetString(),
-                    expectedSessionId,
+                    expectedSessionId.Value,
                     StringComparison.Ordinal) ||
                 !root.TryGetProperty("leaseId", out var leaseId) ||
                 leaseId.ValueKind != JsonValueKind.String ||
-                !IsCanonicalSessionId(leaseId.GetString()!) ||
+                !IsCanonicalHex32(leaseId.GetString()!) ||
                 !root.TryGetProperty("processId", out var processId) ||
                 !processId.TryGetInt32(out var pid) ||
                 pid <= 0 ||
@@ -412,41 +398,55 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
         }
     }
 
-    private static bool IsCanonicalSessionId(string value)
+    private static bool IsCanonicalHex32(string value)
         => value.Length == 32 && value.All(character =>
             character is >= '0' and <= '9' or >= 'a' and <= 'f');
 
-    private void TryDeleteDirectory(string directoryPath)
-    {
-        try
-        {
-            if (WindowsVbaDebugWorkspacePath.EntryExistsNoFollow(directoryPath))
-            {
-                CleanupOperations.DeleteDirectory(directoryPath);
-            }
-        }
-        catch
-        {
-            // The claim failure remains authoritative.
-        }
-    }
-
     private sealed class OwnedVbaDebugSessionWorkspaceLease(
         VbaDebugSessionWorkspaceManager owner,
+        DebugSessionId sessionId,
         string sessionWorkspacePath,
         FileStream leaseStream,
         IVbaDebugSessionWorkspaceCreationScope creationScope)
         : IVbaDebugSessionWorkspaceLease
     {
+        private readonly HashSet<DebugGenerationId> claimedGenerations = [];
+        private readonly object gate = new();
         private int disposed;
+
+        public DebugSessionId SessionId { get; } = sessionId;
 
         public string SessionWorkspacePath { get; } = sessionWorkspacePath;
 
+        public IVbaDebugGenerationWorkspace CreateGenerationWorkspace(
+            DebugGenerationId generationId,
+            string workbookFileName)
+        {
+            lock (gate)
+            {
+                ObjectDisposedException.ThrowIf(disposed != 0, this);
+                if (claimedGenerations.Contains(generationId))
+                {
+                    throw new InvalidOperationException(
+                        $"Debug generation {generationId} already exists for this lease and cannot be claimed again.");
+                }
+                var generationWorkspace = creationScope.CreateGenerationWorkspace(
+                    generationId,
+                    workbookFileName);
+                claimedGenerations.Add(generationId);
+                return generationWorkspace;
+            }
+        }
+
         public async ValueTask DisposeAsync()
         {
-            if (Interlocked.Exchange(ref disposed, 1) != 0)
+            lock (gate)
             {
-                return;
+                if (disposed != 0)
+                {
+                    return;
+                }
+                disposed = 1;
             }
 
             try
@@ -504,21 +504,27 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
 public interface IVbaDebugSessionWorkspaceManager
 {
     ValueTask<IVbaDebugSessionWorkspaceLease> ClaimAsync(
-        string sessionId,
+        DebugSessionId sessionId,
         CancellationToken cancellationToken);
 
     ValueTask<VbaDebugSessionCleanupResult> CleanupAsync(
-        string sessionId,
+        DebugSessionId sessionId,
         CancellationToken cancellationToken);
 
     ValueTask<IReadOnlyList<VbaDebugSessionCleanupResult>> ReapStaleAsync(
-        string excludedSessionId,
+        DebugSessionId excludedSessionId,
         CancellationToken cancellationToken);
 }
 
 public interface IVbaDebugSessionWorkspaceLease : IAsyncDisposable
 {
+    DebugSessionId SessionId { get; }
+
     string SessionWorkspacePath { get; }
+
+    IVbaDebugGenerationWorkspace CreateGenerationWorkspace(
+        DebugGenerationId generationId,
+        string workbookFileName);
 }
 
 public sealed record VbaDebugSessionCleanupResult(
@@ -530,9 +536,10 @@ internal interface IVbaDebugWorkspaceCleanupOperations
 {
     bool IsReparsePoint(string directoryPath);
 
-    Stream OpenLeaseStream(string sessionWorkspacePath);
+    Stream OpenSessionLeaseStream(DebugSessionId sessionId);
 
-    IVbaDebugWorkspaceCleanupScope OpenCleanupScope(string sessionWorkspacePath);
+    IVbaDebugWorkspaceCleanupScope OpenSessionCleanupScope(
+        DebugSessionId sessionId);
 
     long GetTimestamp();
 
@@ -540,7 +547,6 @@ internal interface IVbaDebugWorkspaceCleanupOperations
 
     ValueTask DelayAsync(TimeSpan delay, CancellationToken cancellationToken);
 
-    void DeleteDirectory(string directoryPath);
 }
 
 internal interface IVbaDebugWorkspaceCleanupScope : IDisposable
@@ -571,13 +577,12 @@ internal sealed class SystemVbaDebugWorkspaceCleanupOperations
     public bool IsReparsePoint(string directoryPath)
         => (File.GetAttributes(directoryPath) & FileAttributes.ReparsePoint) != 0;
 
-    public Stream OpenLeaseStream(string sessionWorkspacePath)
-        => WindowsVbaDebugWorkspaceTreeDeleter.OpenPhysicalLeaseStream(
-            sessionWorkspacePath);
+    public Stream OpenSessionLeaseStream(DebugSessionId sessionId)
+        => treeDeleter.OpenSessionLeaseStream(sessionId);
 
-    public IVbaDebugWorkspaceCleanupScope OpenCleanupScope(
-        string sessionWorkspacePath)
-        => treeDeleter.OpenScope(sessionWorkspacePath);
+    public IVbaDebugWorkspaceCleanupScope OpenSessionCleanupScope(
+        DebugSessionId sessionId)
+        => treeDeleter.OpenSessionScope(sessionId);
 
     public long GetTimestamp() => Stopwatch.GetTimestamp();
 
@@ -589,12 +594,4 @@ internal sealed class SystemVbaDebugWorkspaceCleanupOperations
         CancellationToken cancellationToken)
         => await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
 
-    public void DeleteDirectory(string directoryPath)
-    {
-        if (WindowsVbaDebugWorkspacePath.EntryExistsNoFollow(directoryPath))
-        {
-            using var scope = OpenCleanupScope(directoryPath);
-            scope.DeleteDirectory();
-        }
-    }
 }

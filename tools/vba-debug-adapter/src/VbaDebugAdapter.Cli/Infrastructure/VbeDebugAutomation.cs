@@ -343,8 +343,10 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
         private readonly IDebugWorkbookLifetimeMonitor workbookLifetimeMonitor;
         private readonly TaskCompletionSource<object> workbookOpenedSignal =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly object generationOwnershipGate = new();
         private readonly Task<DebugProcessExit> completion;
         private object? workbookObject;
+        private IVbaDebugGenerationWorkspace? generationWorkspace;
         private Task targetPromptObservation = Task.CompletedTask;
         private int? foregroundPermissionHResult;
         private int workbookOpened;
@@ -433,15 +435,42 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                 cancellationToken).ConfigureAwait(false);
         }
 
-        public Task OpenGeneratedWorkbookAsync(
-            string workbookPath,
+        public void AdoptGenerationWorkspace(
+            IVbaDebugGenerationWorkspace generationWorkspace)
+        {
+            ArgumentNullException.ThrowIfNull(generationWorkspace);
+            lock (generationOwnershipGate)
+            {
+                ObjectDisposedException.ThrowIf(disposed != 0, this);
+                if (this.generationWorkspace is not null)
+                {
+                    throw new InvalidOperationException(
+                        "The VBE debug session already owns a generation workspace.");
+                }
+                this.generationWorkspace = generationWorkspace;
+            }
+        }
+
+        public async Task OpenGeneratedWorkbookAsync(
             IDebugInputWaitSink? inputWaitSink,
             CancellationToken cancellationToken)
-            => OpenWorkbookAsync(
-                workbookPath,
+        {
+            IVbaDebugGenerationWorkspace ownedGenerationWorkspace;
+            lock (generationOwnershipGate)
+            {
+                ObjectDisposedException.ThrowIf(disposed != 0, this);
+                ownedGenerationWorkspace = generationWorkspace
+                    ?? throw new InvalidOperationException(
+                        "The VBE debug session has not adopted a generation workspace.");
+            }
+            ownedGenerationWorkspace.VerifyGeneratedWorkbook();
+            await OpenWorkbookAsync(
+                ownedGenerationWorkspace.WorkbookPath,
                 inputWaitSink,
                 verifyVbideAccess: true,
-                cancellationToken);
+                cancellationToken).ConfigureAwait(false);
+            ownedGenerationWorkspace.VerifyGeneratedWorkbook();
+        }
 
         private async Task OpenWorkbookAsync(
             string workbookPath,
@@ -742,9 +771,16 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
 
         public async ValueTask DisposeAsync()
         {
-            if (Interlocked.Exchange(ref disposed, 1) != 0)
+            IVbaDebugGenerationWorkspace? ownedGenerationWorkspace;
+            lock (generationOwnershipGate)
             {
-                return;
+                if (disposed != 0)
+                {
+                    return;
+                }
+                disposed = 1;
+                ownedGenerationWorkspace = generationWorkspace;
+                generationWorkspace = null;
             }
 
             Exception? cleanupError = null;
@@ -795,6 +831,18 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                 try
                 {
                     await dispatcher.DisposeAsync().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    cleanupError ??= ex;
+                }
+            }
+
+            if (ownedGenerationWorkspace is not null)
+            {
+                try
+                {
+                    await ownedGenerationWorkspace.DisposeAsync().ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {

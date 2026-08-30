@@ -10,6 +10,43 @@ namespace VbaDebugAdapter.Tests;
 public sealed class VbeDebugAutomationTests
 {
     [Fact]
+    public async Task AdoptedGenerationWorkspaceIsReleasedExactlyOnceWhenSessionEnds()
+    {
+        using var temp = TempDirectory.Create();
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
+        var events = new List<string>();
+        var model = FakeVbeModel.Create(workbookPath, events);
+        var process = new FakeDebugOwnedProcess(
+            22364,
+            new DateTime(2026, 8, 23, 7, 59, 0, DateTimeKind.Local));
+        var automation = new VbeDebugAutomation(
+            new FakeExcelDebugApplicationFactory(model.Excel),
+            new FakeDebugExcelProcessApi(22364, process),
+            new FakeDebugWindowActivator(events),
+            new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
+        var generationWorkspace = generationFixture.GenerationWorkspace;
+        var generationWorkspacePath = generationWorkspace.GenerationWorkspacePath;
+
+        var session = await automation.StartVisibleAsync(CancellationToken.None);
+        session.AdoptGenerationWorkspace(generationWorkspace);
+        await session.OpenGeneratedWorkbookAsync(
+            inputWaitSink: null,
+            CancellationToken.None);
+
+        Assert.True(model.Excel.Workbooks!.LastReadOnly);
+        Assert.True(Directory.Exists(generationWorkspacePath));
+
+        await session.DisposeAsync();
+        await session.DisposeAsync();
+
+        Assert.False(Directory.Exists(generationWorkspacePath));
+    }
+
+    [Fact]
     public async Task DoctorFixtureCreationUsesTheExactOwnedExcelSession()
     {
         using var temp = TempDirectory.Create();
@@ -134,8 +171,11 @@ public sealed class VbeDebugAutomationTests
     public async Task DoctorBreakModeDeadlineCancellationTerminatesTheExactOwnedProcess()
     {
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "VbaToolsDoctorProbe.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "VbaToolsDoctorProbe.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         var events = new List<string>();
         var model = FakeVbeModel.Create(workbookPath, events);
         var process = new FakeDebugOwnedProcess(
@@ -149,7 +189,7 @@ public sealed class VbeDebugAutomationTests
 
         await using var session = await automation.StartVisibleAsync(
             CancellationToken.None);
-        await session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None);
+        await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         var control = Assert.IsAssignableFrom<IVbeDebugDoctorControl>(session);
         using var cancellation = new CancellationTokenSource();
         var waiting = control.WaitForBreakModeAsync(cancellation.Token);
@@ -166,8 +206,11 @@ public sealed class VbeDebugAutomationTests
     public async Task SetNativeBreakpointsFailsBeforeToggleWhenAnyNonTargetModuleLineIsStale()
     {
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         var sourcePath = Path.Combine(temp.Path, "DebugModule.bas");
         var events = new List<string>();
         var model = FakeVbeModel.Create(
@@ -198,7 +241,7 @@ public sealed class VbeDebugAutomationTests
                 "End Sub"));
 
         await using var session = await automation.StartVisibleAsync(CancellationToken.None);
-        await session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None);
+        await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
             session.SetNativeBreakpointsAsync(
                 [new VbeBreakpoint(
@@ -217,8 +260,11 @@ public sealed class VbeDebugAutomationTests
     public async Task SetNativeBreakpointsVerifiesEveryDistinctModuleBeforeTogglingEitherModule()
     {
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         var events = new List<string>();
         var model = FakeVbeModel.Create(
             workbookPath,
@@ -249,7 +295,7 @@ public sealed class VbeDebugAutomationTests
                 "End Sub"));
 
         await using var session = await automation.StartVisibleAsync(CancellationToken.None);
-        await session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None);
+        await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
             session.SetNativeBreakpointsAsync(
                 [
@@ -280,8 +326,11 @@ public sealed class VbeDebugAutomationTests
         VbaModuleKind moduleKind)
     {
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         var events = new List<string>();
         var model = FakeVbeModel.Create(
             workbookPath,
@@ -303,7 +352,7 @@ public sealed class VbeDebugAutomationTests
             9);
 
         await using var session = await automation.StartVisibleAsync(CancellationToken.None);
-        await session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None);
+        await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         await session.SetNativeBreakpointsAsync([breakpoint], CancellationToken.None);
 
         Assert.Contains("execute:51", events);
@@ -317,8 +366,11 @@ public sealed class VbeDebugAutomationTests
     {
         const string moduleName = "\u00A0";
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         var events = new List<string>();
         var model = FakeVbeModel.Create(
             workbookPath,
@@ -340,7 +392,7 @@ public sealed class VbeDebugAutomationTests
             9);
 
         await using var session = await automation.StartVisibleAsync(CancellationToken.None);
-        await session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None);
+        await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         await session.SetNativeBreakpointsAsync([breakpoint], CancellationToken.None);
 
         Assert.Contains("execute:51", events);
@@ -352,8 +404,11 @@ public sealed class VbeDebugAutomationTests
     public async Task SetNativeBreakpointsFailsBeforeToggleWhenTheComponentKindDoesNotMatch()
     {
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         var events = new List<string>();
         var model = FakeVbeModel.Create(workbookPath, events, componentType: 2);
         var process = new FakeDebugOwnedProcess(
@@ -366,7 +421,7 @@ public sealed class VbeDebugAutomationTests
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
         await using var session = await automation.StartVisibleAsync(CancellationToken.None);
-        await session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None);
+        await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
             session.SetNativeBreakpointsAsync(
                 [CreateBreakpoint(temp.Path)],
@@ -382,8 +437,11 @@ public sealed class VbeDebugAutomationTests
     public async Task SetNativeBreakpointsFailsBeforeToggleWhenTheComponentIdentityDoesNotMatch()
     {
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         var events = new List<string>();
         var model = FakeVbeModel.Create(
             workbookPath,
@@ -399,7 +457,7 @@ public sealed class VbeDebugAutomationTests
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
         await using var session = await automation.StartVisibleAsync(CancellationToken.None);
-        await session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None);
+        await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
             session.SetNativeBreakpointsAsync(
                 [CreateBreakpoint(temp.Path)],
@@ -415,8 +473,11 @@ public sealed class VbeDebugAutomationTests
     public async Task SetNativeBreakpointsFailsBeforeToggleWhenTheCodeModuleLineCountDoesNotMatch()
     {
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         var events = new List<string>();
         var model = FakeVbeModel.Create(
             workbookPath,
@@ -432,7 +493,7 @@ public sealed class VbeDebugAutomationTests
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
         await using var session = await automation.StartVisibleAsync(CancellationToken.None);
-        await session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None);
+        await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
             session.SetNativeBreakpointsAsync(
                 [CreateBreakpoint(temp.Path)],
@@ -448,8 +509,11 @@ public sealed class VbeDebugAutomationTests
     public async Task SetNativeBreakpointsRejectsAnOutOfRangeMappedLineBeforeReadingTheWorkbook()
     {
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         var events = new List<string>();
         var model = FakeVbeModel.Create(workbookPath, events);
         var process = new FakeDebugOwnedProcess(
@@ -466,7 +530,7 @@ public sealed class VbeDebugAutomationTests
             10);
 
         await using var session = await automation.StartVisibleAsync(CancellationToken.None);
-        await session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None);
+        await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
             session.SetNativeBreakpointsAsync([breakpoint], CancellationToken.None));
 
@@ -767,8 +831,11 @@ public sealed class VbeDebugAutomationTests
     public async Task ClosingTheGeneratedWorkbookTerminatesTheOwnedProcessTreeAndCompletesTheSession()
     {
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         var model = FakeVbeModel.Create(workbookPath, []);
         var process = new FakeDebugOwnedProcess(
             31417,
@@ -781,7 +848,7 @@ public sealed class VbeDebugAutomationTests
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
         await using var session = await automation.StartVisibleAsync(CancellationToken.None);
-        await session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None);
+        await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
 
         model.Workbook.Close();
         var completion = await session.Completion.WaitAsync(TimeSpan.FromSeconds(2));
@@ -900,8 +967,11 @@ public sealed class VbeDebugAutomationTests
     public async Task OpenThenSetNativeBreakpointEstablishesExactContextAndExecutesToggleBreakpoint51()
     {
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         var sourcePath = Path.Combine(temp.Path, "DebugModule.bas");
         var events = new List<string>();
         var model = FakeVbeModel.Create(workbookPath, events);
@@ -915,7 +985,7 @@ public sealed class VbeDebugAutomationTests
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
         await using var session = await automation.StartVisibleAsync(CancellationToken.None);
-        await session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None);
+        await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         await session.SetNativeBreakpointsAsync(
             [new VbeBreakpoint(
                 new DebugSourceBreakpoint(sourcePath, 10),
@@ -962,8 +1032,11 @@ public sealed class VbeDebugAutomationTests
     public async Task WorkbookEventsRemainDisabledUntilBreakpointTransferCompletesAndRunStarts()
     {
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         var events = new List<string>();
         var model = FakeVbeModel.Create(workbookPath, events);
         var process = new FakeDebugOwnedProcess(
@@ -976,7 +1049,7 @@ public sealed class VbeDebugAutomationTests
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
         await using var session = await automation.StartVisibleAsync(CancellationToken.None);
-        await session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None);
+        await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         Assert.False(model.Excel.EnableEvents);
 
         await session.SetNativeBreakpointsAsync(
@@ -1014,8 +1087,11 @@ public sealed class VbeDebugAutomationTests
     public async Task WorkbookOpenScopesMacroEnablementToTheExactOpenAndRestoresThePreviousSetting()
     {
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         var events = new List<string>();
         var model = FakeVbeModel.Create(
             workbookPath,
@@ -1033,7 +1109,7 @@ public sealed class VbeDebugAutomationTests
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
         await using var session = await automation.StartVisibleAsync(CancellationToken.None);
-        await session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None);
+        await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
 
         Assert.Equal(3, model.Excel.CurrentAutomationSecurity);
         Assert.Equal(
@@ -1055,8 +1131,11 @@ public sealed class VbeDebugAutomationTests
     public async Task OpenAndTargetStartReportOnlyModalPromptsObservedForTheOwnedProcess()
     {
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         var events = new List<string>();
         var model = FakeVbeModel.Create(workbookPath, events);
         var process = new FakeDebugOwnedProcess(
@@ -1072,8 +1151,8 @@ public sealed class VbeDebugAutomationTests
         var sink = new RecordingDebugInputWaitSink();
 
         await using var session = await automation.StartVisibleAsync(CancellationToken.None);
-        await session.OpenGeneratedWorkbookAsync(
-            workbookPath,
+        await session.OpenTestGenerationAsync(
+            generationFixture.GenerationWorkspace,
             sink,
             CancellationToken.None);
         await session.RunTargetAsync(
@@ -1109,8 +1188,11 @@ public sealed class VbeDebugAutomationTests
     public async Task DisposalClosesTheJobBeforeWaitingForTargetPromptObservation()
     {
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         var events = new List<string>();
         var model = FakeVbeModel.Create(workbookPath, events);
         var killError = new InvalidOperationException("Synthetic exact process kill failure.");
@@ -1132,7 +1214,7 @@ public sealed class VbeDebugAutomationTests
             promptMonitor: new ProcessExitDebugModalPromptMonitor(events));
         var sink = new RecordingDebugInputWaitSink();
         var session = await automation.StartVisibleAsync(CancellationToken.None);
-        await session.OpenGeneratedWorkbookAsync(workbookPath, sink, CancellationToken.None);
+        await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, sink, CancellationToken.None);
         await session.RunTargetAsync(
             new DebugTargetProcedure("DebugModule", "RunTarget"),
             sink,
@@ -1151,8 +1233,11 @@ public sealed class VbeDebugAutomationTests
     public async Task WorkbookOpenFailureRestoresMacroSecurityBeforeTheOwnedProcessIsTerminated()
     {
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         var events = new List<string>();
         var model = FakeVbeModel.Create(
             workbookPath,
@@ -1171,7 +1256,7 @@ public sealed class VbeDebugAutomationTests
 
         await using var session = await automation.StartVisibleAsync(CancellationToken.None);
         await Assert.ThrowsAsync<DebugSetupException>(() =>
-            session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None));
+            session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None));
 
         Assert.Equal(3, model.Excel.CurrentAutomationSecurity);
         Assert.Equal(1, process.KillCalls);
@@ -1190,9 +1275,12 @@ public sealed class VbeDebugAutomationTests
     public async Task WorkbookOpenRejectsAnUnexpectedWorkbookIdentity()
     {
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         var unexpectedWorkbookPath = Path.Combine(temp.Path, "UnexpectedBook.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
         var events = new List<string>();
         var model = FakeVbeModel.Create(
             workbookPath,
@@ -1209,7 +1297,7 @@ public sealed class VbeDebugAutomationTests
 
         await using var session = await automation.StartVisibleAsync(CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
-            session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None));
+            session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None));
 
         Assert.Contains("exact generated debug workbook", error.Message, StringComparison.Ordinal);
         Assert.Equal(1, process.KillCalls);
@@ -1219,8 +1307,11 @@ public sealed class VbeDebugAutomationTests
     public async Task VbProjectTrustFailureIsActionableAndPreventsNativeAutomation()
     {
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         var events = new List<string>();
         var trustError = new COMException(
             "Programmatic access to the Visual Basic Project is not trusted.",
@@ -1243,7 +1334,7 @@ public sealed class VbeDebugAutomationTests
 
         await using var session = await automation.StartVisibleAsync(CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
-            session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None));
+            session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None));
 
         Assert.Contains(
             "Trust access to the VBA project object model",
@@ -1263,8 +1354,11 @@ public sealed class VbeDebugAutomationTests
     public async Task LockedVbProjectIsRejectedDuringWorkbookOpenWithActionableGuidance()
     {
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         var events = new List<string>();
         var model = FakeVbeModel.Create(
             workbookPath,
@@ -1281,7 +1375,7 @@ public sealed class VbeDebugAutomationTests
 
         await using var session = await automation.StartVisibleAsync(CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
-            session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None));
+            session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None));
 
         Assert.Contains("locked for viewing", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(1, process.KillCalls);
@@ -1291,8 +1385,11 @@ public sealed class VbeDebugAutomationTests
     public async Task DebugOpenAndRunPreserveTheUserOwnedVbeEnvironment()
     {
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         var events = new List<string>();
         var model = FakeVbeModel.Create(workbookPath, events);
         var vbe = Assert.IsType<FakeVbe>(model.Excel.VBE);
@@ -1309,7 +1406,7 @@ public sealed class VbeDebugAutomationTests
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
         await using var session = await automation.StartVisibleAsync(CancellationToken.None);
-        await session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None);
+        await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         await session.RunTargetAsync(
             new DebugTargetProcedure("DebugModule", "RunTarget"),
             CancellationToken.None);
@@ -1327,8 +1424,11 @@ public sealed class VbeDebugAutomationTests
     public async Task WorkbookOpenFailureTerminatesTheOwnedProcessWithEventsStillDisabled()
     {
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         var events = new List<string>();
         var openError = new COMException("open failed");
         var model = FakeVbeModel.Create(
@@ -1346,7 +1446,7 @@ public sealed class VbeDebugAutomationTests
 
         await using var session = await automation.StartVisibleAsync(CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
-            session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None));
+            session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None));
 
         Assert.Same(openError, error.InnerException);
         Assert.False(model.Excel.EnableEvents);
@@ -1360,8 +1460,11 @@ public sealed class VbeDebugAutomationTests
     public async Task CancellationDuringBlockingWorkbookOpenTerminatesTheOwnedProcessOutsideTheStaDispatcher()
     {
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         using var openStarted = new ManualResetEventSlim();
         using var releaseOpen = new ManualResetEventSlim();
         var events = new List<string>();
@@ -1380,7 +1483,7 @@ public sealed class VbeDebugAutomationTests
 
         await using var session = await automation.StartVisibleAsync(CancellationToken.None);
         using var cancellation = new CancellationTokenSource();
-        var open = session.OpenGeneratedWorkbookAsync(workbookPath, cancellation.Token);
+        var open = session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, cancellation.Token);
         Assert.True(openStarted.Wait(TimeSpan.FromSeconds(5)));
 
         try
@@ -1400,8 +1503,11 @@ public sealed class VbeDebugAutomationTests
     public async Task SetNativeBreakpointFailsClosedWhenToggleBreakpoint51IsMissing()
     {
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         var events = new List<string>();
         var model = FakeVbeModel.Create(
             workbookPath,
@@ -1419,7 +1525,7 @@ public sealed class VbeDebugAutomationTests
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
         await using var session = await automation.StartVisibleAsync(CancellationToken.None);
-        await session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None);
+        await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
             session.SetNativeBreakpointsAsync(
                 [CreateBreakpoint(temp.Path)],
@@ -1438,8 +1544,11 @@ public sealed class VbeDebugAutomationTests
     public async Task SetNativeBreakpointFailsClosedWhenToggleBreakpoint51IsDisabled()
     {
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         var events = new List<string>();
         var model = FakeVbeModel.Create(
             workbookPath,
@@ -1455,7 +1564,7 @@ public sealed class VbeDebugAutomationTests
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
         await using var session = await automation.StartVisibleAsync(CancellationToken.None);
-        await session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None);
+        await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
             session.SetNativeBreakpointsAsync(
                 [CreateBreakpoint(temp.Path)],
@@ -1478,8 +1587,11 @@ public sealed class VbeDebugAutomationTests
     public async Task SetNativeBreakpointFailsClosedWhenToggleBreakpoint51Throws()
     {
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         var events = new List<string>();
         var executeError = new COMException("toggle breakpoint failed");
         var model = FakeVbeModel.Create(
@@ -1496,7 +1608,7 @@ public sealed class VbeDebugAutomationTests
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
         await using var session = await automation.StartVisibleAsync(CancellationToken.None);
-        await session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None);
+        await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
             session.SetNativeBreakpointsAsync(
                 [CreateBreakpoint(temp.Path)],
@@ -1512,8 +1624,11 @@ public sealed class VbeDebugAutomationTests
     public async Task SetNativeBreakpointFailsClosedWhenTheExactSelectionIsNotRetained()
     {
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         var events = new List<string>();
         var model = FakeVbeModel.Create(
             workbookPath,
@@ -1529,7 +1644,7 @@ public sealed class VbeDebugAutomationTests
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
         await using var session = await automation.StartVisibleAsync(CancellationToken.None);
-        await session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None);
+        await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
             session.SetNativeBreakpointsAsync(
                 [CreateBreakpoint(temp.Path)],
@@ -1545,8 +1660,11 @@ public sealed class VbeDebugAutomationTests
     public async Task SetNativeBreakpointFailsClosedWhenTheTargetCodePaneIsNotActive()
     {
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         var events = new List<string>();
         var model = FakeVbeModel.Create(
             workbookPath,
@@ -1562,7 +1680,7 @@ public sealed class VbeDebugAutomationTests
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
         await using var session = await automation.StartVisibleAsync(CancellationToken.None);
-        await session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None);
+        await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
             session.SetNativeBreakpointsAsync(
                 [CreateBreakpoint(temp.Path)],
@@ -1578,8 +1696,11 @@ public sealed class VbeDebugAutomationTests
     public async Task SetNativeBreakpointFailsClosedWhenGeneratedCodeLineDoesNotMatchTheSnapshot()
     {
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         var events = new List<string>();
         var model = FakeVbeModel.Create(
             workbookPath,
@@ -1595,7 +1716,7 @@ public sealed class VbeDebugAutomationTests
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
         await using var session = await automation.StartVisibleAsync(CancellationToken.None);
-        await session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None);
+        await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
             session.SetNativeBreakpointsAsync(
                 [CreateBreakpoint(temp.Path)],
@@ -1611,8 +1732,11 @@ public sealed class VbeDebugAutomationTests
     public async Task OpenAndRunActivatesTheExactProcedureAndExecutesNativeRunCommand186()
     {
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         var events = new List<string>();
         var model = FakeVbeModel.Create(workbookPath, events);
         var process = new FakeDebugOwnedProcess(
@@ -1626,7 +1750,7 @@ public sealed class VbeDebugAutomationTests
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
         await using var session = await automation.StartVisibleAsync(CancellationToken.None);
-        await session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None);
+        await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         await session.RunTargetAsync(
             new DebugTargetProcedure("DebugModule", "RunTarget"),
             CancellationToken.None);
@@ -1663,8 +1787,11 @@ public sealed class VbeDebugAutomationTests
     public async Task OpenAndRunFailsClosedWhenNativeRunCommand186IsMissing()
     {
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         var events = new List<string>();
         var model = FakeVbeModel.Create(workbookPath, events, runCommandMissing: true);
         var process = new FakeDebugOwnedProcess(
@@ -1680,7 +1807,7 @@ public sealed class VbeDebugAutomationTests
 
         await using var session = await automation.StartVisibleAsync(CancellationToken.None);
 
-        await session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None);
+        await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
             session.RunTargetAsync(
                 new DebugTargetProcedure("DebugModule", "RunTarget"),
@@ -1700,8 +1827,11 @@ public sealed class VbeDebugAutomationTests
     public async Task OpenAndRunFailsClosedWhenNativeRunCommand186IsDisabled()
     {
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         var events = new List<string>();
         var model = FakeVbeModel.Create(workbookPath, events, runCommandEnabled: false);
         var process = new FakeDebugOwnedProcess(
@@ -1715,7 +1845,7 @@ public sealed class VbeDebugAutomationTests
 
         await using var session = await automation.StartVisibleAsync(CancellationToken.None);
 
-        await session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None);
+        await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
             session.RunTargetAsync(
                 new DebugTargetProcedure("DebugModule", "RunTarget"),
@@ -1732,8 +1862,11 @@ public sealed class VbeDebugAutomationTests
     public async Task OpenAndRunFailsClosedWhenNativeRunCommand186Throws()
     {
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         var events = new List<string>();
         var executeError = new COMException("run failed");
         var model = FakeVbeModel.Create(
@@ -1751,7 +1884,7 @@ public sealed class VbeDebugAutomationTests
 
         await using var session = await automation.StartVisibleAsync(CancellationToken.None);
 
-        await session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None);
+        await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
             session.RunTargetAsync(
                 new DebugTargetProcedure("DebugModule", "RunTarget"),
@@ -1804,8 +1937,11 @@ public sealed class VbeDebugAutomationTests
     public async Task ProbeControlObservesBreakModeAndCompletionMarkerFromTheOpenedWorkbook()
     {
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         var events = new List<string>();
         var model = FakeVbeModel.Create(workbookPath, events);
         var process = new FakeDebugOwnedProcess(
@@ -1818,7 +1954,7 @@ public sealed class VbeDebugAutomationTests
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
         await using var session = await automation.StartVisibleAsync(CancellationToken.None);
-        await session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None);
+        await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         var control = Assert.IsAssignableFrom<IVbeDebugProbeControl>(session);
 
         model.Project.Mode = 1;
@@ -1839,8 +1975,11 @@ public sealed class VbeDebugAutomationTests
         Exception? runCommandException = null)
     {
         using var temp = TempDirectory.Create();
-        var workbookPath = Path.Combine(temp.Path, "GeneratedBook.xlsm");
-        File.WriteAllText(workbookPath, "test workbook placeholder");
+        await using var generationFixture =
+            await LeaseIssuedVbeGenerationFixture.CreateAsync(
+                temp.Path,
+                "GeneratedBook.xlsm");
+        var workbookPath = generationFixture.GenerationWorkspace.WorkbookPath;
         var events = new List<string>();
         var model = FakeVbeModel.Create(
             workbookPath,
@@ -1858,7 +1997,7 @@ public sealed class VbeDebugAutomationTests
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
         await using var session = await automation.StartVisibleAsync(CancellationToken.None);
-        await session.OpenGeneratedWorkbookAsync(workbookPath, CancellationToken.None);
+        await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         model.Project.Mode = 1;
         var control = Assert.IsAssignableFrom<IVbeDebugProbeControl>(session);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
@@ -1903,6 +2042,7 @@ public sealed class VbeDebugAutomationTests
             VbaModuleKind.FormModule => ".frm",
             _ => throw new ArgumentOutOfRangeException(nameof(moduleKind), moduleKind, null)
         };
+
 }
 
 public sealed class FakeExcelApplication
@@ -2271,8 +2411,11 @@ public sealed class FakeWorkbooks(FakeWorkbook workbook, List<string> events)
 
     public ManualResetEventSlim? OpenRelease { get; set; }
 
-    public object Open(string workbookPath)
+    public bool LastReadOnly { get; private set; }
+
+    public object Open(string workbookPath, bool ReadOnly = false)
     {
+        LastReadOnly = ReadOnly;
         events.Add($"open:{Path.GetFullPath(workbookPath)}");
         OpenStarted?.Set();
         OpenRelease?.Wait();
@@ -2604,15 +2747,102 @@ public sealed class FakeCommandBarControl(int id, List<string> events)
 
 internal static class VbeDebugSessionTestExtensions
 {
-    public static Task OpenGeneratedWorkbookAsync(
+    public static Task OpenTestGenerationAsync(
         this IVbeDebugSession session,
-        string workbookPath,
+        IVbaDebugGenerationWorkspace generationWorkspace,
         CancellationToken cancellationToken)
-        => session.OpenGeneratedWorkbookAsync(workbookPath, null, cancellationToken);
+        => session.OpenTestGenerationAsync(
+            generationWorkspace,
+            inputWaitSink: null,
+            cancellationToken);
+
+    public static Task OpenTestGenerationAsync(
+        this IVbeDebugSession session,
+        IVbaDebugGenerationWorkspace generationWorkspace,
+        IDebugInputWaitSink? inputWaitSink,
+        CancellationToken cancellationToken)
+    {
+        session.AdoptGenerationWorkspace(generationWorkspace);
+        return session.OpenGeneratedWorkbookAsync(inputWaitSink, cancellationToken);
+    }
 
     public static Task RunTargetAsync(
         this IVbeDebugSession session,
         DebugTargetProcedure target,
         CancellationToken cancellationToken)
         => session.RunTargetAsync(target, null, cancellationToken);
+
+}
+
+internal sealed class LeaseIssuedVbeGenerationFixture : IAsyncDisposable
+{
+    private readonly IVbaDebugSessionWorkspaceLease workspaceLease;
+    private int disposed;
+
+    private LeaseIssuedVbeGenerationFixture(
+        IVbaDebugSessionWorkspaceLease workspaceLease,
+        IVbaDebugGenerationWorkspace generationWorkspace)
+    {
+        this.workspaceLease = workspaceLease;
+        GenerationWorkspace = generationWorkspace;
+    }
+
+    public IVbaDebugGenerationWorkspace GenerationWorkspace { get; }
+
+    public static async Task<LeaseIssuedVbeGenerationFixture> CreateAsync(
+        string fixtureRoot,
+        string workbookFileName)
+    {
+        var manager = new VbaDebugSessionWorkspaceManager(Path.Combine(
+            fixtureRoot,
+            "adapter-root"));
+        IVbaDebugSessionWorkspaceLease? workspaceLease = null;
+        IVbaDebugGenerationWorkspace? generationWorkspace = null;
+        try
+        {
+            workspaceLease = await manager.ClaimAsync(
+                DebugSessionId.Parse(
+                    "0123456789abcdef0123456789abcdef"),
+                CancellationToken.None);
+            generationWorkspace = workspaceLease.CreateGenerationWorkspace(
+                DebugGenerationId.Initial,
+                workbookFileName);
+            await File.WriteAllTextAsync(
+                generationWorkspace.WorkbookPath,
+                "test workbook placeholder");
+            generationWorkspace.PinGeneratedWorkbook();
+            return new LeaseIssuedVbeGenerationFixture(
+                workspaceLease,
+                generationWorkspace);
+        }
+        catch
+        {
+            if (generationWorkspace is not null)
+            {
+                await generationWorkspace.DisposeAsync();
+            }
+            if (workspaceLease is not null)
+            {
+                await workspaceLease.DisposeAsync();
+            }
+            throw;
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref disposed, 1) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            await GenerationWorkspace.DisposeAsync();
+        }
+        finally
+        {
+            await workspaceLease.DisposeAsync();
+        }
+    }
 }

@@ -12,21 +12,13 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
     [Fact]
     public async Task LaunchBuildsThenOpensAndRunsTheTemporarySameNameWorkbook()
     {
-        var root = Path.Combine(
-            Path.GetTempPath(),
-            "vba-debug-adapter-launch-tests",
-            Guid.NewGuid().ToString("N"));
-        var sessionWorkspace = CreateGenerationWorkspacePath(root);
-        var workbookPath = Path.Combine(sessionWorkspace, "output", "Book1.xlsm");
-        Directory.CreateDirectory(Path.GetDirectoryName(workbookPath)!);
-        await File.WriteAllBytesAsync(workbookPath, [0x50, 0x4b]);
+        var fixture = await LeaseIssuedGenerationFixture.CreateAsync();
+        var workbookPath = fixture.GenerationWorkspace.WorkbookPath;
         var events = new List<string>();
+        var generationCapability = fixture.GenerationWorkspace;
         var builder = new RecordingWorkbookBuilder(
             events,
-            new VbaDevSnapshotBuildResult(
-                Path.Combine(sessionWorkspace, "source"),
-                workbookPath,
-                sessionWorkspace)
+            new VbaDevSnapshotBuildResult(generationCapability)
             {
                 Output = ["WARN Protected reference remains."]
             });
@@ -43,7 +35,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         {
             var runningSession = await service.LaunchAsync(
                 Path.GetFullPath("vba-dev.exe"),
-                "0123456789abcdef0123456789abcdef",
+                fixture.WorkspaceLease,
                 new StandaloneVbaDebugLaunchRequest(
                     Path.GetFullPath("project"),
                     "Book1",
@@ -76,45 +68,31 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         }
         finally
         {
-            if (Directory.Exists(root))
-            {
-                Directory.Delete(root, recursive: true);
-            }
+            await fixture.DisposeAsync();
         }
     }
 
     [Fact]
     public async Task LaunchRetainsGenerationOwnershipUntilTheRunningSessionIsDisposed()
     {
-        var root = Path.Combine(
-            Path.GetTempPath(),
-            "vba-debug-adapter-launch-tests",
-            Guid.NewGuid().ToString("N"));
-        var generationWorkspace = CreateGenerationWorkspacePath(root);
-        var workbookPath = Path.Combine(generationWorkspace, "output", "Book1.xlsm");
-        Directory.CreateDirectory(Path.GetDirectoryName(workbookPath)!);
-        await File.WriteAllBytesAsync(workbookPath, [0x50, 0x4b]);
-        var ownership = new RecordingWorkspaceOwnership();
-        var buildResult = new VbaDevSnapshotBuildResult(
-            Path.Combine(generationWorkspace, "source"),
-            workbookPath,
-            generationWorkspace)
-        {
-            WorkspaceOwnership = ownership
-        };
+        var fixture = await LeaseIssuedGenerationFixture.CreateAsync();
+        var generationCapability = fixture.GenerationWorkspace;
+        var generationWorkspacePath = generationCapability.GenerationWorkspacePath;
+        var buildResult = new VbaDevSnapshotBuildResult(generationCapability);
         var events = new List<string>();
+        var visibleSession = new RecordingVbeDebugSession(events);
         var service = new StandaloneVbaDebugLaunchService(
             new TransportedDebugSourceSnapshotValidator(932),
             new RecordingWorkbookBuilder(events, buildResult),
             new RecordingVbeDebugSessionFactory(
                 events,
-                new RecordingVbeDebugSession(events)));
+                visibleSession));
 
         try
         {
             var runningSession = await service.LaunchAsync(
                 Path.GetFullPath("vba-dev.exe"),
-                "0123456789abcdef0123456789abcdef",
+                fixture.WorkspaceLease,
                 new StandaloneVbaDebugLaunchRequest(
                     Path.GetFullPath("project"),
                     "Book1",
@@ -134,43 +112,40 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
                         ])),
                 CancellationToken.None);
 
-            Assert.False(ownership.Disposed);
+            Assert.Same(generationCapability, visibleSession.AdoptedGenerationWorkspace);
+            Assert.True(Directory.Exists(generationWorkspacePath));
 
             await runningSession.DisposeAsync();
 
-            Assert.True(ownership.Disposed);
+            Assert.False(Directory.Exists(generationWorkspacePath));
+
+            await runningSession.DisposeAsync();
+
+            Assert.False(Directory.Exists(generationWorkspacePath));
+
+            await buildResult.DisposeAsync();
+
+            Assert.False(Directory.Exists(generationWorkspacePath));
         }
         finally
         {
             await buildResult.DisposeAsync();
-            if (Directory.Exists(root))
-            {
-                Directory.Delete(root, recursive: true);
-            }
+            await fixture.DisposeAsync();
         }
     }
 
     [Fact]
     public async Task LaunchAcceptsTheClientRawUtf16OrdinalPathOrder()
     {
-        var root = Path.Combine(
-            Path.GetTempPath(),
-            "vba-debug-adapter-launch-tests",
-            Guid.NewGuid().ToString("N"));
-        var sessionWorkspace = CreateGenerationWorkspacePath(root);
-        var workbookPath = Path.Combine(sessionWorkspace, "output", "Book1.xlsm");
-        Directory.CreateDirectory(Path.GetDirectoryName(workbookPath)!);
-        await File.WriteAllBytesAsync(workbookPath, [0x50, 0x4b]);
+        var fixture = await LeaseIssuedGenerationFixture.CreateAsync();
         var events = new List<string>();
         var visibleSession = new RecordingVbeDebugSession(events);
+        var generationCapability = fixture.GenerationWorkspace;
         var service = new StandaloneVbaDebugLaunchService(
             new TransportedDebugSourceSnapshotValidator(932),
             new RecordingWorkbookBuilder(
                 events,
-                new VbaDevSnapshotBuildResult(
-                    Path.Combine(sessionWorkspace, "source"),
-                    workbookPath,
-                    sessionWorkspace)),
+                new VbaDevSnapshotBuildResult(generationCapability)),
             new RecordingVbeDebugSessionFactory(events, visibleSession));
         var snapshot = new TransportedDebugSourceSnapshot(
             1,
@@ -185,7 +160,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         {
             var runningSession = await service.LaunchAsync(
                 Path.GetFullPath("vba-dev.exe"),
-                "0123456789abcdef0123456789abcdef",
+                fixture.WorkspaceLease,
                 new StandaloneVbaDebugLaunchRequest(
                     Path.GetFullPath("project"),
                     "Book1",
@@ -201,10 +176,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         }
         finally
         {
-            if (Directory.Exists(root))
-            {
-                Directory.Delete(root, recursive: true);
-            }
+            await fixture.DisposeAsync();
         }
 
         static TransportedDebugSource Source(
@@ -223,15 +195,15 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
     [Fact]
     public async Task LaunchRejectsAMismatchedPersistentSourceIdentityBeforeBuild()
     {
+        await using var fixture = await LeaseIssuedGenerationFixture.CreateAsync();
         var events = new List<string>();
+        var generationCapability = fixture.GenerationWorkspace;
+        var buildResult = new VbaDevSnapshotBuildResult(generationCapability);
         var service = new StandaloneVbaDebugLaunchService(
             new TransportedDebugSourceSnapshotValidator(932),
             new RecordingWorkbookBuilder(
                 events,
-                new VbaDevSnapshotBuildResult(
-                    Path.GetFullPath("source"),
-                    Path.GetFullPath("Book1.xlsm"),
-                    Path.GetFullPath("workspace"))),
+                buildResult),
             new RecordingVbeDebugSessionFactory(
                 events,
                 new RecordingVbeDebugSession(events)));
@@ -250,7 +222,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             service.LaunchAsync(
                 Path.GetFullPath("vba-dev.exe"),
-                "0123456789abcdef0123456789abcdef",
+                fixture.WorkspaceLease,
                 new StandaloneVbaDebugLaunchRequest(
                     Path.GetFullPath("project"),
                     "Book1",
@@ -262,29 +234,21 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
 
         Assert.Contains("sourceUri", exception.Message, StringComparison.Ordinal);
         Assert.Empty(events);
+        await buildResult.DisposeAsync();
     }
 
     [Fact]
     public async Task LaunchResolvesTheTargetFromTheTransportedPersistentSourcePosition()
     {
-        var root = Path.Combine(
-            Path.GetTempPath(),
-            "vba-debug-adapter-launch-tests",
-            Guid.NewGuid().ToString("N"));
-        var sessionWorkspace = CreateGenerationWorkspacePath(root);
-        var workbookPath = Path.Combine(sessionWorkspace, "output", "Book1.xlsm");
-        Directory.CreateDirectory(Path.GetDirectoryName(workbookPath)!);
-        await File.WriteAllBytesAsync(workbookPath, [0x50, 0x4b]);
+        var fixture = await LeaseIssuedGenerationFixture.CreateAsync();
         var events = new List<string>();
         var visibleSession = new RecordingVbeDebugSession(events);
+        var generationCapability = fixture.GenerationWorkspace;
         var service = new StandaloneVbaDebugLaunchService(
             new TransportedDebugSourceSnapshotValidator(932),
             new RecordingWorkbookBuilder(
                 events,
-                new VbaDevSnapshotBuildResult(
-                    Path.Combine(sessionWorkspace, "source"),
-                    workbookPath,
-                    sessionWorkspace)),
+                new VbaDevSnapshotBuildResult(generationCapability)),
             new RecordingVbeDebugSessionFactory(events, visibleSession));
         const string sourceUri = "file:///C:/persistent/Module1.bas";
         var sourceBytes = Encoding.UTF8.GetBytes(
@@ -306,7 +270,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         {
             var runningSession = await service.LaunchAsync(
                 Path.GetFullPath("vba-dev.exe"),
-                "0123456789abcdef0123456789abcdef",
+                fixture.WorkspaceLease,
                 new StandaloneVbaDebugLaunchRequest(
                     Path.GetFullPath("project"),
                     "Book1",
@@ -322,34 +286,22 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         }
         finally
         {
-            if (Directory.Exists(root))
-            {
-                Directory.Delete(root, recursive: true);
-            }
+            await fixture.DisposeAsync();
         }
     }
 
     [Fact]
     public async Task LaunchTransfersTheExactTransportedBreakpointBeforeRunningTheTarget()
     {
-        var root = Path.Combine(
-            Path.GetTempPath(),
-            "vba-debug-adapter-launch-tests",
-            Guid.NewGuid().ToString("N"));
-        var sessionWorkspace = CreateGenerationWorkspacePath(root);
-        var workbookPath = Path.Combine(sessionWorkspace, "output", "Book1.xlsm");
-        Directory.CreateDirectory(Path.GetDirectoryName(workbookPath)!);
-        await File.WriteAllBytesAsync(workbookPath, [0x50, 0x4b]);
+        var fixture = await LeaseIssuedGenerationFixture.CreateAsync();
         var events = new List<string>();
         var visibleSession = new RecordingVbeDebugSession(events);
+        var generationCapability = fixture.GenerationWorkspace;
         var service = new StandaloneVbaDebugLaunchService(
             new TransportedDebugSourceSnapshotValidator(932),
             new RecordingWorkbookBuilder(
                 events,
-                new VbaDevSnapshotBuildResult(
-                    Path.Combine(sessionWorkspace, "source"),
-                    workbookPath,
-                    sessionWorkspace)),
+                new VbaDevSnapshotBuildResult(generationCapability)),
             new RecordingVbeDebugSessionFactory(events, visibleSession));
         const string sourceUri = "file:///C:/persistent/Module1.bas";
         var transportedSnapshot = new TransportedDebugSourceSnapshot(
@@ -373,7 +325,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         {
             var runningSession = await service.LaunchAsync(
                 Path.GetFullPath("vba-dev.exe"),
-                "0123456789abcdef0123456789abcdef",
+                fixture.WorkspaceLease,
                 new StandaloneVbaDebugLaunchRequest(
                     Path.GetFullPath("project"),
                     "Book1",
@@ -394,32 +346,21 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         }
         finally
         {
-            if (Directory.Exists(root))
-            {
-                Directory.Delete(root, recursive: true);
-            }
+            await fixture.DisposeAsync();
         }
     }
 
     [Fact]
-    public async Task LaunchDeletesTheBuiltSessionWorkspaceWhenCompilationSettingsReadFails()
+    public async Task LaunchDeletesTheBuiltGenerationWorkspaceWhenCompilationSettingsReadFails()
     {
-        var root = Path.Combine(
-            Path.GetTempPath(),
-            "vba-debug-adapter-launch-tests",
-            Guid.NewGuid().ToString("N"));
-        var sessionWorkspace = CreateGenerationWorkspacePath(root);
-        var workbookPath = Path.Combine(sessionWorkspace, "output", "Book1.xlsm");
-        Directory.CreateDirectory(Path.GetDirectoryName(workbookPath)!);
-        await File.WriteAllBytesAsync(workbookPath, [0x50, 0x4b]);
+        var fixture = await LeaseIssuedGenerationFixture.CreateAsync();
+        var generationCapability = fixture.GenerationWorkspace;
+        var generationWorkspacePath = generationCapability.GenerationWorkspacePath;
         var service = new StandaloneVbaDebugLaunchService(
             new TransportedDebugSourceSnapshotValidator(932),
             new RecordingWorkbookBuilder(
                 [],
-                new VbaDevSnapshotBuildResult(
-                    Path.Combine(sessionWorkspace, "source"),
-                    workbookPath,
-                    sessionWorkspace)),
+                new VbaDevSnapshotBuildResult(generationCapability)),
             new RecordingVbeDebugSessionFactory([], new RecordingVbeDebugSession([])),
             breakpointSourceMapper: null,
             compilationSettingsReader: new ThrowingCompilationSettingsReader(),
@@ -439,7 +380,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
                 service.LaunchAsync(
                     Path.GetFullPath("vba-dev.exe"),
-                    "0123456789abcdef0123456789abcdef",
+                    fixture.WorkspaceLease,
                     new StandaloneVbaDebugLaunchRequest(
                         Path.GetFullPath("project"),
                         "Book1",
@@ -458,28 +399,18 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
                     CancellationToken.None));
 
             Assert.Equal("Synthetic compilation-settings read failure.", exception.Message);
-            Assert.False(Directory.Exists(sessionWorkspace));
+            Assert.False(Directory.Exists(generationWorkspacePath));
         }
         finally
         {
-            if (Directory.Exists(root))
-            {
-                Directory.Delete(root, recursive: true);
-            }
+            await fixture.DisposeAsync();
         }
     }
 
     [Fact]
     public async Task LaunchRejectsAnInactiveTargetUsingTheBuiltWorkbookAndVisibleHostFacts()
     {
-        var root = Path.Combine(
-            Path.GetTempPath(),
-            "vba-debug-adapter-launch-tests",
-            Guid.NewGuid().ToString("N"));
-        var sessionWorkspace = CreateGenerationWorkspacePath(root);
-        var workbookPath = Path.Combine(sessionWorkspace, "output", "Book1.xlsm");
-        Directory.CreateDirectory(Path.GetDirectoryName(workbookPath)!);
-        await File.WriteAllBytesAsync(workbookPath, [0x50, 0x4b]);
+        var fixture = await LeaseIssuedGenerationFixture.CreateAsync();
         var events = new List<string>();
         var visibleSession = new RecordingVbeDebugSession(events);
         var settings = new DebugCompilationSettings(
@@ -487,14 +418,13 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             1252,
             [],
             new string('A', 64));
+        var generationCapability = fixture.GenerationWorkspace;
+        var generationWorkspacePath = generationCapability.GenerationWorkspacePath;
         var service = new StandaloneVbaDebugLaunchService(
             new TransportedDebugSourceSnapshotValidator(932),
             new RecordingWorkbookBuilder(
                 events,
-                new VbaDevSnapshotBuildResult(
-                    Path.Combine(sessionWorkspace, "source"),
-                    workbookPath,
-                    sessionWorkspace)),
+                new VbaDevSnapshotBuildResult(generationCapability)),
             new RecordingVbeDebugSessionFactory(events, visibleSession),
             breakpointSourceMapper: null,
             compilationSettingsReader: new ConstantCompilationSettingsReader(settings),
@@ -517,7 +447,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             var exception = await Assert.ThrowsAsync<DebugSetupException>(() =>
                 service.LaunchAsync(
                     Path.GetFullPath("vba-dev.exe"),
-                    "0123456789abcdef0123456789abcdef",
+                    fixture.WorkspaceLease,
                     new StandaloneVbaDebugLaunchRequest(
                         Path.GetFullPath("project"),
                         "Book1",
@@ -538,23 +468,13 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             Assert.Contains("inactive", exception.Message, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("open:Book1.xlsm", events);
             Assert.DoesNotContain("run:Module1.LegacyTarget", events);
+            Assert.False(Directory.Exists(generationWorkspacePath));
         }
         finally
         {
-            if (Directory.Exists(root))
-            {
-                Directory.Delete(root, recursive: true);
-            }
+            await fixture.DisposeAsync();
         }
     }
-
-    private static string CreateGenerationWorkspacePath(string root)
-        => Path.Combine(
-            root,
-            "workspaces",
-            "0123456789abcdef0123456789abcdef",
-            "generations",
-            "generation-0000000000");
 
     private sealed class RecordingWorkbookBuilder(
         List<string> events,
@@ -562,7 +482,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
     {
         public Task<VbaDevSnapshotBuildResult> BuildAsync(
             string vbaDevPath,
-            string sessionId,
+            IVbaDebugSessionWorkspaceLease workspaceLease,
             VbaDevSnapshotBuildRequest request,
             CancellationToken cancellationToken)
         {
@@ -571,14 +491,86 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         }
     }
 
-    private sealed class RecordingWorkspaceOwnership
-        : IVbaDebugOwnedWorkspaceCreationScope
+    private sealed class LeaseIssuedGenerationFixture : IAsyncDisposable
     {
-        public bool Disposed { get; private set; }
+        private int disposed;
+        private readonly TempDirectory temp;
 
-        public void DeleteOwnedTree() => Disposed = true;
+        private LeaseIssuedGenerationFixture(
+            TempDirectory temp,
+            IVbaDebugSessionWorkspaceLease workspaceLease,
+            IVbaDebugGenerationWorkspace generationWorkspace)
+        {
+            this.temp = temp;
+            WorkspaceLease = workspaceLease;
+            GenerationWorkspace = generationWorkspace;
+        }
 
-        public void Dispose() => Disposed = true;
+        public IVbaDebugSessionWorkspaceLease WorkspaceLease { get; }
+
+        public IVbaDebugGenerationWorkspace GenerationWorkspace { get; }
+
+        public static async Task<LeaseIssuedGenerationFixture> CreateAsync()
+        {
+            var temp = TempDirectory.Create();
+            IVbaDebugSessionWorkspaceLease? workspaceLease = null;
+            IVbaDebugGenerationWorkspace? generationWorkspace = null;
+            try
+            {
+                var manager = new VbaDebugSessionWorkspaceManager(temp.Path);
+                workspaceLease = await manager.ClaimAsync(
+                    DebugSessionId.Parse(
+                        "0123456789abcdef0123456789abcdef"),
+                    CancellationToken.None);
+                generationWorkspace = workspaceLease.CreateGenerationWorkspace(
+                    DebugGenerationId.Initial,
+                    "Book1.xlsm");
+                await File.WriteAllBytesAsync(
+                    generationWorkspace.WorkbookPath,
+                    [0x50, 0x4b]);
+                return new LeaseIssuedGenerationFixture(
+                    temp,
+                    workspaceLease,
+                    generationWorkspace);
+            }
+            catch
+            {
+                if (generationWorkspace is not null)
+                {
+                    await generationWorkspace.DisposeAsync();
+                }
+                if (workspaceLease is not null)
+                {
+                    await workspaceLease.DisposeAsync();
+                }
+                temp.Dispose();
+                throw;
+            }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            if (Interlocked.Exchange(ref disposed, 1) != 0)
+            {
+                return;
+            }
+
+            try
+            {
+                await GenerationWorkspace.DisposeAsync();
+            }
+            finally
+            {
+                try
+                {
+                    await WorkspaceLease.DisposeAsync();
+                }
+                finally
+                {
+                    temp.Dispose();
+                }
+            }
+        }
     }
 
     private sealed class ConstantCompilationSettingsReader(
@@ -607,9 +599,13 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
 
     private sealed class RecordingVbeDebugSession(List<string> events) : IVbeDebugSession
     {
+        private int disposed;
+
         public int ProcessId => 1234;
 
         public string? OpenedWorkbookPath { get; private set; }
+
+        public IVbaDebugGenerationWorkspace? AdoptedGenerationWorkspace { get; private set; }
 
         public IDebugInputWaitSink? WorkbookOpenInputWaitSink { get; private set; }
 
@@ -631,14 +627,27 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
                 new DebugCompilerBuiltInConstants(true, true, false, true, true, false),
                 null));
 
+        public void AdoptGenerationWorkspace(
+            IVbaDebugGenerationWorkspace generationWorkspace)
+        {
+            ArgumentNullException.ThrowIfNull(generationWorkspace);
+            if (AdoptedGenerationWorkspace is not null)
+            {
+                throw new InvalidOperationException(
+                    "A generation workspace has already been adopted.");
+            }
+            AdoptedGenerationWorkspace = generationWorkspace;
+        }
+
         public Task OpenGeneratedWorkbookAsync(
-            string workbookPath,
             IDebugInputWaitSink? inputWaitSink,
             CancellationToken cancellationToken)
         {
-            OpenedWorkbookPath = workbookPath;
+            OpenedWorkbookPath = AdoptedGenerationWorkspace?.WorkbookPath
+                ?? throw new InvalidOperationException(
+                    "A generation workspace must be adopted before opening its workbook.");
             WorkbookOpenInputWaitSink = inputWaitSink;
-            events.Add($"open:{Path.GetFileName(workbookPath)}");
+            events.Add($"open:{Path.GetFileName(OpenedWorkbookPath)}");
             return Task.CompletedTask;
         }
 
@@ -663,7 +672,17 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
 
         public ValueTask TerminateAsync() => ValueTask.CompletedTask;
 
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public async ValueTask DisposeAsync()
+        {
+            if (Interlocked.Exchange(ref disposed, 1) != 0)
+            {
+                return;
+            }
+            if (AdoptedGenerationWorkspace is not null)
+            {
+                await AdoptedGenerationWorkspace.DisposeAsync();
+            }
+        }
     }
 
     private sealed class RecordingDebugLifecycleSink : IDebugLifecycleSink

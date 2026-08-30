@@ -45,7 +45,7 @@ public sealed class VbaDebugAdapterCommandLine
             workspaceRootBinding,
             cleanupOperations: null);
         return new VbaDebugAdapterCommandLine(
-            new StandaloneVbaDebugAdapterStdioRunner(workspaceRootBinding),
+            new StandaloneVbaDebugAdapterStdioRunner(),
             new ProcessVbaDevCapabilitiesProbe(),
             sessionWorkspaceManager,
             new DebugEnvironmentDoctor(
@@ -56,22 +56,6 @@ public sealed class VbaDebugAdapterCommandLine
                     new VbeDebugAutomation()),
                 DebugEnvironmentDoctorDeadlines.Default));
     }
-
-    public static VbaDebugAdapterCommandLine Create(IVbaDebugAdapterStdioRunner stdioRunner)
-        => new(
-            stdioRunner ?? throw new ArgumentNullException(nameof(stdioRunner)),
-            new ProcessVbaDevCapabilitiesProbe(),
-            PassthroughVbaDebugSessionWorkspaceManager.Instance,
-            new DebugEnvironmentDoctor());
-
-    public static VbaDebugAdapterCommandLine Create(
-        IVbaDebugAdapterStdioRunner stdioRunner,
-        IVbaDevCapabilitiesProbe vbaDevCapabilitiesProbe)
-        => new(
-            stdioRunner ?? throw new ArgumentNullException(nameof(stdioRunner)),
-            vbaDevCapabilitiesProbe ?? throw new ArgumentNullException(nameof(vbaDevCapabilitiesProbe)),
-            PassthroughVbaDebugSessionWorkspaceManager.Instance,
-            new DebugEnvironmentDoctor());
 
     public static VbaDebugAdapterCommandLine Create(
         IVbaDebugAdapterStdioRunner stdioRunner,
@@ -224,13 +208,14 @@ public sealed class VbaDebugAdapterCommandLine
             args.Count == 3 &&
             string.Equals(args[0], "cleanup", StringComparison.Ordinal) &&
             string.Equals(args[1], "--session", StringComparison.Ordinal) &&
-            IsCanonicalSessionId(args[2]))
+            DebugSessionId.TryParse(args[2], out _))
         {
+            var sessionId = DebugSessionId.Parse(args[2]);
             VbaDebugSessionCleanupResult cleanup;
             try
             {
                 cleanup = await sessionWorkspaceManager
-                    .CleanupAsync(args[2], cancellationToken)
+                    .CleanupAsync(sessionId, cancellationToken)
                     .ConfigureAwait(false);
             }
             catch (Exception exception)
@@ -263,9 +248,10 @@ public sealed class VbaDebugAdapterCommandLine
             string.Equals(args[1], "--vba-dev", StringComparison.Ordinal) &&
             Path.IsPathFullyQualified(args[2]) &&
             string.Equals(args[3], "--session", StringComparison.Ordinal) &&
-            IsCanonicalSessionId(args[4]))
+            DebugSessionId.TryParse(args[4], out _))
         {
             var vbaDevPath = Path.GetFullPath(args[2]);
+            var sessionId = DebugSessionId.Parse(args[4]);
             var capabilities = await vbaDevCapabilitiesProbe
                 .ProbeAsync(vbaDevPath, cancellationToken)
                 .ConfigureAwait(false);
@@ -281,7 +267,7 @@ public sealed class VbaDebugAdapterCommandLine
             try
             {
                 var retainedWorkspaces = await sessionWorkspaceManager
-                    .ReapStaleAsync(args[4], cancellationToken)
+                    .ReapStaleAsync(sessionId, cancellationToken)
                     .ConfigureAwait(false);
                 foreach (var retained in retainedWorkspaces)
                 {
@@ -306,7 +292,7 @@ public sealed class VbaDebugAdapterCommandLine
             try
             {
                 lease = await sessionWorkspaceManager
-                    .ClaimAsync(args[4], cancellationToken)
+                    .ClaimAsync(sessionId, cancellationToken)
                     .ConfigureAwait(false);
             }
             catch (Exception exception)
@@ -323,7 +309,7 @@ public sealed class VbaDebugAdapterCommandLine
             {
                 runnerExitCode = await stdioRunner.RunAsync(
                     vbaDevPath,
-                    args[4],
+                    lease,
                     standardInput,
                     standardOutput,
                     standardError,
@@ -467,10 +453,6 @@ public sealed class VbaDebugAdapterCommandLine
         }
     }
 
-    private static bool IsCanonicalSessionId(string value)
-        => value.Length == 32 && value.All(character =>
-            character is >= '0' and <= '9' or >= 'a' and <= 'f');
-
     private static string ToolVersion
         => typeof(VbaDebugAdapterCommandLine).Assembly
                .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
@@ -489,57 +471,13 @@ public sealed class VbaDebugAdapterCommandLine
         IReadOnlyDictionary<string, string> FeatureVersions,
         IReadOnlyDictionary<string, string> RequiredVbaDevFeatureVersions);
 
-    private sealed class PassthroughVbaDebugSessionWorkspaceManager
-        : IVbaDebugSessionWorkspaceManager
-    {
-        public static PassthroughVbaDebugSessionWorkspaceManager Instance { get; } = new();
-
-        public ValueTask<IVbaDebugSessionWorkspaceLease> ClaimAsync(
-            string sessionId,
-            CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            return ValueTask.FromResult<IVbaDebugSessionWorkspaceLease>(
-                PassthroughVbaDebugSessionWorkspaceLease.Instance);
-        }
-
-        public ValueTask<VbaDebugSessionCleanupResult> CleanupAsync(
-            string sessionId,
-            CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            return ValueTask.FromResult(new VbaDebugSessionCleanupResult(
-                Succeeded: true,
-                RetainedPath: null,
-                Message: null));
-        }
-
-        public ValueTask<IReadOnlyList<VbaDebugSessionCleanupResult>> ReapStaleAsync(
-            string excludedSessionId,
-            CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            return ValueTask.FromResult<IReadOnlyList<VbaDebugSessionCleanupResult>>([]);
-        }
-    }
-
-    private sealed class PassthroughVbaDebugSessionWorkspaceLease
-        : IVbaDebugSessionWorkspaceLease
-    {
-        public static PassthroughVbaDebugSessionWorkspaceLease Instance { get; } = new();
-
-        public string SessionWorkspacePath => string.Empty;
-
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-    }
-
 }
 
 public interface IVbaDebugAdapterStdioRunner
 {
     Task<int> RunAsync(
         string vbaDevPath,
-        string sessionId,
+        IVbaDebugSessionWorkspaceLease workspaceLease,
         Stream standardInput,
         Stream standardOutput,
         Stream standardError,

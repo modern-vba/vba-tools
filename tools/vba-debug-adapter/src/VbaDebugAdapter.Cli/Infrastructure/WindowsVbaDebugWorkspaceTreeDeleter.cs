@@ -33,11 +33,11 @@ internal sealed class WindowsVbaDebugWorkspaceTreeDeleter
         this.beforeOpenEntry = beforeOpenEntry;
     }
 
-    public IVbaDebugWorkspaceCleanupScope OpenScope(string cleanupTargetPath)
+    public IVbaDebugWorkspaceCleanupScope OpenSessionScope(
+        DebugSessionId sessionId)
     {
-        var fullCleanupTargetPath = Path.GetFullPath(cleanupTargetPath);
-        var relativeComponents = ValidateCleanupTarget(fullCleanupTargetPath);
-        var sessionWorkspacePath = Path.Combine(workspacesPath, relativeComponents[0]);
+        ArgumentNullException.ThrowIfNull(sessionId);
+        var sessionWorkspacePath = Path.Combine(workspacesPath, sessionId.Value);
         var ancestorHandles = new List<SafeFileHandle>();
         SafeFileHandle? targetHandle = null;
         try
@@ -45,23 +45,11 @@ internal sealed class WindowsVbaDebugWorkspaceTreeDeleter
             beforeOpenScope?.Invoke();
             ancestorHandles.Add(OpenPinnedDirectory(workspaceRoot, deleteAccess: false));
             ancestorHandles.Add(OpenPinnedDirectory(workspacesPath, deleteAccess: false));
-            var currentPath = workspacesPath;
-            for (var index = 0; index < relativeComponents.Length; index++)
-            {
-                currentPath = Path.Combine(currentPath, relativeComponents[index]);
-                var isTarget = index == relativeComponents.Length - 1;
-                var handle = OpenPinnedDirectory(currentPath, deleteAccess: isTarget);
-                if (isTarget)
-                {
-                    targetHandle = handle;
-                }
-                else
-                {
-                    ancestorHandles.Add(handle);
-                }
-            }
+            targetHandle = OpenPinnedDirectory(
+                sessionWorkspacePath,
+                deleteAccess: true);
             return new PinnedWorkspaceCleanupScope(
-                fullCleanupTargetPath,
+                sessionWorkspacePath,
                 sessionWorkspacePath,
                 ancestorHandles,
                 targetHandle!,
@@ -78,31 +66,6 @@ internal sealed class WindowsVbaDebugWorkspaceTreeDeleter
             throw;
         }
     }
-
-    private string[] ValidateCleanupTarget(string cleanupTargetPath)
-    {
-        var relativePath = Path.GetRelativePath(workspacesPath, cleanupTargetPath);
-        var components = relativePath.Split(
-            [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
-            StringSplitOptions.RemoveEmptyEntries);
-        var isSessionTarget = components.Length == 1 && IsCanonicalHex32(components[0]);
-        var isGenerationTarget = components.Length == 3 &&
-            IsCanonicalHex32(components[0]) &&
-            components[1].Equals("generations", StringComparison.Ordinal) &&
-            components[2].StartsWith("generation-", StringComparison.Ordinal) &&
-            components[2].Length == "generation-".Length + 10 &&
-            components[2]["generation-".Length..].All(char.IsAsciiDigit);
-        if (!isSessionTarget && !isGenerationTarget)
-        {
-            throw new InvalidOperationException(
-                "The VBA debug cleanup target is outside a session or generation workspace.");
-        }
-        return components;
-    }
-
-    private static bool IsCanonicalHex32(string value)
-        => value.Length == 32 && value.All(character =>
-            character is >= '0' and <= '9' or >= 'a' and <= 'f');
 
     private static SafeFileHandle OpenPinnedDirectory(
         string directoryPath,
@@ -151,7 +114,7 @@ internal sealed class WindowsVbaDebugWorkspaceTreeDeleter
             new Win32Exception(error));
     }
 
-    internal static Stream OpenPhysicalLeaseStream(string sessionWorkspacePath)
+    private static Stream OpenPhysicalLeaseStream(string sessionWorkspacePath)
     {
         var leasePath = Path.Combine(sessionWorkspacePath, "lease.json");
         var leaseHandle = OpenHandle(
@@ -172,6 +135,13 @@ internal sealed class WindowsVbaDebugWorkspaceTreeDeleter
             leaseHandle.Dispose();
             throw;
         }
+    }
+
+    public Stream OpenSessionLeaseStream(DebugSessionId sessionId)
+    {
+        ArgumentNullException.ThrowIfNull(sessionId);
+        return OpenPhysicalLeaseStream(
+            Path.Combine(workspacesPath, sessionId.Value));
     }
 
     private static FileAttributes GetAttributes(SafeFileHandle handle, string path)

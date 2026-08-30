@@ -598,25 +598,26 @@ public sealed class VbeDebugEnvironmentProbeTests
         public RecordingWorkspaceLease Lease { get; } = new(workspacePath);
 
         public ValueTask<IVbaDebugSessionWorkspaceLease> ClaimAsync(
-            string sessionId,
+            DebugSessionId sessionId,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            ClaimedSessionIds.Add(sessionId);
+            ClaimedSessionIds.Add(sessionId.Value);
+            Lease.SessionId = sessionId;
             return ValueTask.FromResult<IVbaDebugSessionWorkspaceLease>(Lease);
         }
 
         public ValueTask<VbaDebugSessionCleanupResult> CleanupAsync(
-            string sessionId,
+            DebugSessionId sessionId,
             CancellationToken cancellationToken)
             => throw new InvalidOperationException("The owned lease deletes its workspace.");
 
         public ValueTask<IReadOnlyList<VbaDebugSessionCleanupResult>> ReapStaleAsync(
-            string excludedSessionId,
+            DebugSessionId excludedSessionId,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            ReapedExclusions.Add(excludedSessionId);
+            ReapedExclusions.Add(excludedSessionId.Value);
             return ValueTask.FromResult<IReadOnlyList<VbaDebugSessionCleanupResult>>([]);
         }
     }
@@ -624,10 +625,18 @@ public sealed class VbeDebugEnvironmentProbeTests
     private sealed class RecordingWorkspaceLease(string? workspacePath)
         : IVbaDebugSessionWorkspaceLease
     {
+        public DebugSessionId SessionId { get; set; } =
+            DebugSessionId.Parse("00000000000000000000000000000000");
+
         public string SessionWorkspacePath { get; } =
             workspacePath ?? Path.Combine(Path.GetTempPath(), "vba-tools-doctor-test");
 
         public bool Disposed { get; private set; }
+
+        public IVbaDebugGenerationWorkspace CreateGenerationWorkspace(
+            DebugGenerationId generationId,
+            string workbookFileName)
+            => throw new NotSupportedException();
 
         public ValueTask DisposeAsync()
         {
@@ -701,8 +710,11 @@ public sealed class VbeDebugEnvironmentProbeTests
             CancellationToken cancellationToken)
             => throw new NotSupportedException();
 
+        public void AdoptGenerationWorkspace(
+            IVbaDebugGenerationWorkspace generationWorkspace)
+            => throw new NotSupportedException();
+
         public Task OpenGeneratedWorkbookAsync(
-            string workbookPath,
             IDebugInputWaitSink? inputWaitSink,
             CancellationToken cancellationToken)
             => throw new NotSupportedException();

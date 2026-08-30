@@ -1,3 +1,5 @@
+using VbaDebugAdapter.Infrastructure;
+
 namespace VbaDebugAdapter.Debugging;
 
 public interface IVbeDebugSessionFactory
@@ -14,8 +16,10 @@ public interface IVbeDebugSession : IAsyncDisposable
     Task<DebugCompilationHostFacts> GetCompilationHostFactsAsync(
         CancellationToken cancellationToken);
 
+    void AdoptGenerationWorkspace(
+        IVbaDebugGenerationWorkspace generationWorkspace);
+
     Task OpenGeneratedWorkbookAsync(
-        string workbookPath,
         IDebugInputWaitSink? inputWaitSink,
         CancellationToken cancellationToken);
 

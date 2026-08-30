@@ -87,7 +87,7 @@ public sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunchS
 
     public async Task<IStandaloneVbaDebugRunningSession> LaunchAsync(
         string vbaDevPath,
-        string sessionId,
+        IVbaDebugSessionWorkspaceLease workspaceLease,
         StandaloneVbaDebugLaunchRequest request,
         CancellationToken cancellationToken,
         IDebugLifecycleSink? lifecycleSink = null)
@@ -138,14 +138,15 @@ public sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunchS
         }
         var buildResult = await workbookBuilder.BuildAsync(
             vbaDevPath,
-            sessionId,
+            workspaceLease,
             new VbaDevSnapshotBuildRequest(
                 request.ProjectRoot,
                 request.DocumentName,
                 request.WorkbookFileName,
                 request.SourceSnapshot)
             {
-                Generation = request.RestartPreparation?.Generation ?? 0
+                GenerationId = DebugGenerationId.FromValue(
+                    request.RestartPreparation?.Generation.Value ?? 0)
             },
             cancellationToken).ConfigureAwait(false);
         IVbeDebugSession? visibleSession = null;
@@ -166,9 +167,22 @@ public sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunchS
             visibleSession = await vbeDebugSessionFactory
                 .StartVisibleAsync(cancellationToken)
                 .ConfigureAwait(false);
+            IVbaDebugGenerationWorkspace? generationWorkspace =
+                buildResult.TransferGenerationOwnership();
+            try
+            {
+                visibleSession.AdoptGenerationWorkspace(generationWorkspace);
+                generationWorkspace = null;
+            }
+            finally
+            {
+                if (generationWorkspace is not null)
+                {
+                    await generationWorkspace.DisposeAsync().ConfigureAwait(false);
+                }
+            }
             await visibleSession
                 .OpenGeneratedWorkbookAsync(
-                    buildResult.WorkbookPath,
                     lifecycleSink,
                     cancellationToken)
                 .ConfigureAwait(false);
@@ -209,7 +223,6 @@ public sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunchS
                 .ConfigureAwait(false);
             return new StandaloneVbaDebugRunningSession(
                 visibleSession,
-                buildResult,
                 mappedBreakpoints,
                 launchRequest.Target.ModuleName,
                 launchRequest.Target.ProcedureName);
@@ -221,10 +234,6 @@ public sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunchS
                 await TryTerminateAndDisposeAsync(visibleSession).ConfigureAwait(false);
             }
             await TryDisposeBuildResultAsync(buildResult).ConfigureAwait(false);
-            if (!buildResult.HasWorkspaceOwnership)
-            {
-                TryDeleteSessionWorkspace(buildResult.SessionWorkspacePath);
-            }
             throw;
         }
     }
@@ -259,44 +268,21 @@ public sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunchS
         }
     }
 
-    internal static void TryDeleteSessionWorkspace(string workspacePath)
-    {
-        try
-        {
-            if (WindowsVbaDebugWorkspacePath.EntryExistsNoFollow(workspacePath))
-            {
-                var generationDirectory = new DirectoryInfo(Path.GetFullPath(workspacePath));
-                var workspacesDirectory = generationDirectory.Parent?.Parent?.Parent;
-                var workspaceRoot = workspacesDirectory?.Parent?.FullName
-                    ?? throw new InvalidOperationException(
-                        "The VBA debug generation path has no workspace root.");
-                using var cleanupScope = new WindowsVbaDebugWorkspaceTreeDeleter(
-                    workspaceRoot).OpenScope(generationDirectory.FullName);
-                cleanupScope.DeleteDirectory();
-            }
-        }
-        catch
-        {
-        }
-    }
 }
 
 internal sealed class StandaloneVbaDebugRunningSession : IStandaloneVbaDebugRunningSession
 {
     private readonly IVbeDebugSession session;
-    private readonly VbaDevSnapshotBuildResult buildResult;
     private readonly IReadOnlyList<VbeBreakpoint> verifiedBreakpoints;
     private int disposed;
 
     public StandaloneVbaDebugRunningSession(
         IVbeDebugSession session,
-        VbaDevSnapshotBuildResult buildResult,
         IReadOnlyList<VbeBreakpoint> verifiedBreakpoints,
         string targetModuleName,
         string targetProcedureName)
     {
         this.session = session;
-        this.buildResult = buildResult;
         this.verifiedBreakpoints = verifiedBreakpoints;
         TargetModuleName = targetModuleName;
         TargetProcedureName = targetProcedureName;
@@ -321,25 +307,7 @@ internal sealed class StandaloneVbaDebugRunningSession : IStandaloneVbaDebugRunn
         {
             return;
         }
-        try
-        {
-            await session.DisposeAsync().ConfigureAwait(false);
-        }
-        finally
-        {
-            try
-            {
-                await buildResult.DisposeAsync().ConfigureAwait(false);
-            }
-            finally
-            {
-                if (!buildResult.HasWorkspaceOwnership)
-                {
-                    StandaloneVbaDebugLaunchService.TryDeleteSessionWorkspace(
-                        buildResult.SessionWorkspacePath);
-                }
-            }
-        }
+        await session.DisposeAsync().ConfigureAwait(false);
     }
 
     private static async Task<int> AwaitExitCodeAsync(Task<DebugProcessExit> completion)

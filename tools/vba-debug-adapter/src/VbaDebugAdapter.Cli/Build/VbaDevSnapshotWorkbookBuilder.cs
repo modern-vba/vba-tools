@@ -6,100 +6,45 @@ public sealed class VbaDevSnapshotWorkbookBuilder : IVbaDebugWorkbookBuilder
 {
     private readonly IVbaDevBuildProcess buildProcess;
     private readonly TransportedDebugSourceSnapshotValidator snapshotValidator;
-    private readonly Lazy<BuilderWorkspaceContext> workspaceContext;
 
     public VbaDevSnapshotWorkbookBuilder(
-        string workspaceRoot,
         IVbaDevBuildProcess buildProcess)
         : this(
-            workspaceRoot,
             buildProcess,
             TransportedDebugSourceSnapshotValidator.CreateForCurrentWindowsSession())
     {
     }
 
     public VbaDevSnapshotWorkbookBuilder(
-        string workspaceRoot,
         IVbaDevBuildProcess buildProcess,
         TransportedDebugSourceSnapshotValidator snapshotValidator)
-        : this(
-            new VbaDebugWorkspaceRootBinding(workspaceRoot),
-            buildProcess,
-            snapshotValidator,
-            beforeCreateSourceFile: null)
     {
-    }
-
-    internal VbaDevSnapshotWorkbookBuilder(
-        string workspaceRoot,
-        IVbaDevBuildProcess buildProcess,
-        TransportedDebugSourceSnapshotValidator snapshotValidator,
-        Action<string>? beforeCreateSourceFile)
-        : this(
-            new VbaDebugWorkspaceRootBinding(workspaceRoot),
-            buildProcess,
-            snapshotValidator,
-            beforeCreateSourceFile)
-    {
-    }
-
-    internal VbaDevSnapshotWorkbookBuilder(
-        VbaDebugWorkspaceRootBinding workspaceRootBinding,
-        IVbaDevBuildProcess buildProcess,
-        TransportedDebugSourceSnapshotValidator snapshotValidator,
-        Action<string>? beforeCreateSourceFile = null)
-    {
-        ArgumentNullException.ThrowIfNull(workspaceRootBinding);
         this.buildProcess = buildProcess ?? throw new ArgumentNullException(nameof(buildProcess));
         this.snapshotValidator = snapshotValidator
             ?? throw new ArgumentNullException(nameof(snapshotValidator));
-        workspaceContext = new Lazy<BuilderWorkspaceContext>(
-            () =>
-            {
-                var creator = new WindowsVbaDebugWorkspaceCreator(
-                    workspaceRootBinding.Resolve(),
-                    afterCreateDirectoryBeforeOpen: null,
-                    beforeCreateSourceFile: beforeCreateSourceFile);
-                return new BuilderWorkspaceContext(
-                    creator.WorkspaceRoot,
-                    creator,
-                    new WindowsVbaDebugWorkspaceTreeDeleter(
-                        creator.WorkspaceRoot));
-            },
-            LazyThreadSafetyMode.ExecutionAndPublication);
     }
 
     public async Task<VbaDevSnapshotBuildResult> BuildAsync(
         string vbaDevPath,
-        string sessionId,
+        IVbaDebugSessionWorkspaceLease workspaceLease,
         VbaDevSnapshotBuildRequest request,
         CancellationToken cancellationToken)
     {
-        ValidateRequest(vbaDevPath, sessionId, request);
+        ArgumentNullException.ThrowIfNull(workspaceLease);
+        ValidateRequest(vbaDevPath, request);
         var validatedSnapshot = snapshotValidator.Validate(request.SourceSnapshot);
-        var workspace = workspaceContext.Value;
-        var generationPath = Path.Combine(
-            workspace.WorkspaceRoot,
-            "workspaces",
-            sessionId,
-            "generations",
-            $"generation-{request.Generation:D10}");
-        var generationClaimed = false;
-        IVbaDebugGenerationWorkspaceCreationScope? generationWorkspace = null;
+        IVbaDebugGenerationWorkspace? generationWorkspace = null;
         try
         {
-            generationWorkspace = workspace.Creator.ClaimGeneration(
-                sessionId,
-                request.Generation);
-            generationClaimed = true;
-            var sourceSnapshotPath = generationWorkspace.SourcePath;
-            var workbookPath = Path.Combine(
-                generationWorkspace.OutputPath,
+            generationWorkspace = workspaceLease.CreateGenerationWorkspace(
+                request.GenerationId,
                 request.WorkbookFileName);
+            var sourceSnapshotPath = generationWorkspace.SourceSnapshotPath;
+            var workbookPath = generationWorkspace.WorkbookPath;
             MaterializeSnapshot(
                 validatedSnapshot,
-                sourceSnapshotPath,
                 generationWorkspace);
+            generationWorkspace.SealSourceSnapshot();
             var arguments = new[]
             {
                 "build",
@@ -128,18 +73,16 @@ public sealed class VbaDevSnapshotWorkbookBuilder : IVbaDebugWorkbookBuilder
                 throw new InvalidOperationException(
                     string.Join(Environment.NewLine, diagnostics));
             }
-            if (!File.Exists(workbookPath))
+            generationWorkspace.VerifySourceSnapshot();
+            if (!WindowsVbaDebugWorkspacePath.EntryExistsNoFollow(workbookPath))
             {
                 throw new InvalidOperationException(
                     "vba-dev reported a successful snapshot build without producing the requested workbook.");
             }
+            generationWorkspace.PinGeneratedWorkbook();
 
-            var result = new VbaDevSnapshotBuildResult(
-                Path.GetFullPath(sourceSnapshotPath),
-                Path.GetFullPath(workbookPath),
-                Path.GetFullPath(generationWorkspace.GenerationPath))
+            var result = new VbaDevSnapshotBuildResult(generationWorkspace)
             {
-                WorkspaceOwnership = generationWorkspace,
                 Output = processResult.StandardOutput
                     .Replace("\r\n", "\n", StringComparison.Ordinal)
                     .Split('\n', StringSplitOptions.RemoveEmptyEntries)
@@ -153,20 +96,12 @@ public sealed class VbaDevSnapshotWorkbookBuilder : IVbaDebugWorkbookBuilder
             {
                 try
                 {
-                    generationWorkspace.DeleteOwnedTree();
+                    await generationWorkspace.DisposeAsync().ConfigureAwait(false);
                 }
                 catch
                 {
                     // The original build failure remains authoritative.
                 }
-                finally
-                {
-                    generationWorkspace.Dispose();
-                }
-            }
-            else if (generationClaimed)
-            {
-                TryDeleteDirectory(workspace.TreeDeleter, generationPath);
             }
             throw;
         }
@@ -174,7 +109,6 @@ public sealed class VbaDevSnapshotWorkbookBuilder : IVbaDebugWorkbookBuilder
 
     private static void ValidateRequest(
         string vbaDevPath,
-        string sessionId,
         VbaDevSnapshotBuildRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -184,18 +118,7 @@ public sealed class VbaDevSnapshotWorkbookBuilder : IVbaDebugWorkbookBuilder
                 "The supplied vba-dev path must identify an existing absolute file.",
                 nameof(vbaDevPath));
         }
-        if (!IsCanonicalSessionId(sessionId))
-        {
-            throw new ArgumentException(
-                "The adapter session ID must contain 32 lowercase hexadecimal characters.",
-                nameof(sessionId));
-        }
-        if (request.Generation < 0)
-        {
-            throw new ArgumentException(
-                "The snapshot build generation must be nonnegative.",
-                nameof(request));
-        }
+        ArgumentNullException.ThrowIfNull(request.GenerationId);
         if (!Path.IsPathFullyQualified(request.ProjectRoot) || !Directory.Exists(request.ProjectRoot))
         {
             throw new ArgumentException(
@@ -207,8 +130,8 @@ public sealed class VbaDevSnapshotWorkbookBuilder : IVbaDebugWorkbookBuilder
             throw new ArgumentException("The snapshot build document name is required.", nameof(request));
         }
         if (
-            string.IsNullOrWhiteSpace(request.WorkbookFileName) ||
-            request.WorkbookFileName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 ||
+            !WindowsVbaDebugWorkspacePath.IsUnambiguousEntryName(
+                request.WorkbookFileName) ||
             !string.Equals(
                 Path.GetFileName(request.WorkbookFileName),
                 request.WorkbookFileName,
@@ -232,60 +155,16 @@ public sealed class VbaDevSnapshotWorkbookBuilder : IVbaDebugWorkbookBuilder
 
     private static void MaterializeSnapshot(
         ValidatedTransportedDebugSourceSnapshot snapshot,
-        string sourceSnapshotPath,
-        IVbaDebugGenerationWorkspaceCreationScope generationWorkspace)
+        IVbaDebugGenerationWorkspace generationWorkspace)
     {
         foreach (var source in snapshot.Sources)
         {
-            var filePath = Path.GetFullPath(Path.Combine(
-                sourceSnapshotPath,
-                source.RelativePath.Replace('/', Path.DirectorySeparatorChar)));
-            if (!IsStrictDescendant(filePath, sourceSnapshotPath))
-            {
-                throw new InvalidOperationException(
-                    $"The transported source path escapes its session workspace: '{source.RelativePath}'.");
-            }
             using var stream = generationWorkspace.CreateSourceFile(source.RelativePath);
             stream.Write(source.Bytes);
             stream.Flush(flushToDisk: true);
         }
     }
 
-    private static bool IsStrictDescendant(string filePath, string directoryPath)
-    {
-        var relative = Path.GetRelativePath(directoryPath, filePath);
-        return relative.Length > 0 &&
-               relative != ".." &&
-               !relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal) &&
-               !Path.IsPathFullyQualified(relative);
-    }
-
-    private static bool IsCanonicalSessionId(string value)
-        => value.Length == 32 && value.All(character =>
-            character is >= '0' and <= '9' or >= 'a' and <= 'f');
-
-    private static void TryDeleteDirectory(
-        WindowsVbaDebugWorkspaceTreeDeleter workspaceTreeDeleter,
-        string directoryPath)
-    {
-        try
-        {
-            if (WindowsVbaDebugWorkspacePath.EntryExistsNoFollow(directoryPath))
-            {
-                using var cleanupScope = workspaceTreeDeleter.OpenScope(directoryPath);
-                cleanupScope.DeleteDirectory();
-            }
-        }
-        catch
-        {
-            // The original failure remains authoritative; cleanup diagnostics are added later.
-        }
-    }
-
-    private sealed record BuilderWorkspaceContext(
-        string WorkspaceRoot,
-        WindowsVbaDebugWorkspaceCreator Creator,
-        WindowsVbaDebugWorkspaceTreeDeleter TreeDeleter);
 }
 
 public sealed record VbaDevSnapshotBuildRequest(
@@ -294,7 +173,7 @@ public sealed record VbaDevSnapshotBuildRequest(
     string WorkbookFileName,
     TransportedDebugSourceSnapshot SourceSnapshot)
 {
-    public int Generation { get; init; }
+    public DebugGenerationId GenerationId { get; init; } = DebugGenerationId.Initial;
 }
 
 public sealed record TransportedDebugSourceSnapshot(
@@ -321,33 +200,45 @@ public sealed record TransportedDebugSourceBreakpoint(
     string SourceUri,
     int Line);
 
-public sealed record VbaDevSnapshotBuildResult(
-    string SourceSnapshotPath,
-    string WorkbookPath,
-    string SessionWorkspacePath) : IAsyncDisposable
+public sealed class VbaDevSnapshotBuildResult : IAsyncDisposable
 {
-    private int disposed;
+    private IVbaDebugGenerationWorkspace? generationWorkspace;
+
+    public VbaDevSnapshotBuildResult(
+        IVbaDebugGenerationWorkspace generationWorkspace)
+    {
+        this.generationWorkspace = generationWorkspace
+            ?? throw new ArgumentNullException(nameof(generationWorkspace));
+        GenerationId = generationWorkspace.GenerationId;
+        GenerationWorkspacePath = Path.GetFullPath(
+            generationWorkspace.GenerationWorkspacePath);
+        SourceSnapshotPath = Path.GetFullPath(
+            generationWorkspace.SourceSnapshotPath);
+        WorkbookPath = Path.GetFullPath(generationWorkspace.WorkbookPath);
+    }
+
+    public DebugGenerationId GenerationId { get; }
+
+    public string GenerationWorkspacePath { get; }
+
+    public string SourceSnapshotPath { get; }
+
+    public string WorkbookPath { get; }
 
     public IReadOnlyList<string> Output { get; init; } = [];
 
-    internal IVbaDebugOwnedWorkspaceCreationScope? WorkspaceOwnership { get; init; }
+    internal IVbaDebugGenerationWorkspace TransferGenerationOwnership()
+        => Interlocked.Exchange(ref generationWorkspace, null)
+            ?? throw new InvalidOperationException(
+                "The debug generation workspace ownership has already been transferred or disposed.");
 
-    internal bool HasWorkspaceOwnership => WorkspaceOwnership is not null;
-
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref disposed, 1) == 0)
+        var ownedWorkspace = Interlocked.Exchange(ref generationWorkspace, null);
+        if (ownedWorkspace is not null)
         {
-            try
-            {
-                WorkspaceOwnership?.DeleteOwnedTree();
-            }
-            finally
-            {
-                WorkspaceOwnership?.Dispose();
-            }
+            await ownedWorkspace.DisposeAsync().ConfigureAwait(false);
         }
-        return ValueTask.CompletedTask;
     }
 }
 
@@ -368,7 +259,7 @@ public interface IVbaDebugWorkbookBuilder
 {
     Task<VbaDevSnapshotBuildResult> BuildAsync(
         string vbaDevPath,
-        string sessionId,
+        IVbaDebugSessionWorkspaceLease workspaceLease,
         VbaDevSnapshotBuildRequest request,
         CancellationToken cancellationToken);
 }

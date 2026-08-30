@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Text;
+using VbaDebugAdapter.Infrastructure;
 
 namespace VbaDebugAdapter.Build;
 
@@ -344,10 +345,11 @@ public sealed class TransportedDebugSourceSnapshotValidator
         }
         var portablePath = relativePath.Replace('\\', '/');
         var segments = portablePath.Split('/');
-        if (segments.Any(segment => segment.Length == 0 || segment is "." or ".."))
+        if (segments.Any(segment =>
+                !WindowsVbaDebugWorkspacePath.IsUnambiguousEntryName(segment)))
         {
             throw new InvalidOperationException(
-                $"The transported source path must be a safe descendant: '{relativePath}'.");
+                $"The transported source path must use unambiguous Windows path components: '{relativePath}'.");
         }
         return portablePath;
     }
