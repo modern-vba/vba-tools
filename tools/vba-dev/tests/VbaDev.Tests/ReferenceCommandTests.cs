@@ -1208,6 +1208,253 @@ public sealed class ReferenceCommandTests
     }
 
     [Fact]
+    public async Task SelectionListJsonReturnsStoredReferencesWithoutResolution()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(
+            temp,
+            new VbaProjectReference("MiXeD Library"),
+            new VbaProjectReference("Unavailable Library"));
+        File.Delete(Path.Combine(root, "src", "Book1", "Book1.xlsm"));
+        var application = CommandLineTestFactory.Create(
+            root,
+            vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver
+            {
+                ThrowOnResolve = true
+            },
+            vbaProjectReferenceAmbiguityProbe: new DelegateReferenceAmbiguityProbe(_ =>
+                throw new InvalidOperationException(
+                    "Stored reference selection must not start Excel or VBE probing.")));
+
+        var result = await application.RunAsync([
+            "reference",
+            "list",
+            "--no-resolve",
+            "--project",
+            root,
+            "--document",
+            "Book1",
+            "--format",
+            "json"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.StandardError);
+        using var parsed = JsonDocument.Parse(result.StandardOutput);
+        var output = parsed.RootElement;
+        AssertJsonPropertyNames(
+            output,
+            "schemaVersion",
+            "scope",
+            "project",
+            "document",
+            "mode",
+            "complete",
+            "warnings",
+            "references");
+        Assert.Equal("1.0", output.GetProperty("schemaVersion").GetString());
+        Assert.Equal("project", output.GetProperty("scope").GetString());
+        Assert.Equal(Path.GetFullPath(root), output.GetProperty("project").GetString());
+        Assert.Equal("Book1", output.GetProperty("document").GetString());
+        Assert.Equal("selection", output.GetProperty("mode").GetString());
+        Assert.True(output.GetProperty("complete").GetBoolean());
+        Assert.Empty(output.GetProperty("warnings").EnumerateArray());
+        var references = output.GetProperty("references");
+        Assert.Equal(2, references.GetArrayLength());
+        AssertJsonPropertyNames(references[0], "name");
+        AssertJsonPropertyNames(references[1], "name");
+        Assert.Equal("MiXeD Library", references[0].GetProperty("name").GetString());
+        Assert.Equal("Unavailable Library", references[1].GetProperty("name").GetString());
+    }
+
+    [Fact]
+    public async Task SelectionListTextReturnsStoredReferencesWithoutResolutionIssues()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(
+            temp,
+            new VbaProjectReference("MiXeD Library"),
+            new VbaProjectReference("Unavailable Library"));
+        var application = CommandLineTestFactory.Create(
+            root,
+            vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver
+            {
+                ThrowOnResolve = true
+            });
+
+        var result = await application.RunAsync([
+            "reference",
+            "list",
+            "--no-resolve",
+            "--project",
+            root,
+            "--document",
+            "Book1"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.StandardError);
+        Assert.Contains("Scope: project", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains($"Project: {Path.GetFullPath(root)}", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("Document: Book1", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("Configured references:", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("  MiXeD Library", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("  Unavailable Library", result.StandardOutput, StringComparison.Ordinal);
+        Assert.DoesNotContain("Resolution issues:", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SelectionListTextReportsAnEmptyStoredSelection()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var application = CommandLineTestFactory.Create(
+            root,
+            vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver
+            {
+                ThrowOnResolve = true
+            });
+
+        var result = await application.RunAsync([
+            "reference",
+            "list",
+            "--no-resolve",
+            "--project",
+            root,
+            "--document",
+            "Book1"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.StandardError);
+        Assert.Contains("Configured references:", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("  (none)", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SelectionListRejectsAvailableMode()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp, new VbaProjectReference("Stored Library"));
+        var application = CommandLineTestFactory.Create(root);
+
+        var result = await application.RunAsync([
+            "reference",
+            "list",
+            "--no-resolve",
+            "--available",
+            "--project",
+            root,
+            "--document",
+            "Book1",
+            "--format",
+            "json"]);
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Contains(
+            "--no-resolve cannot be combined with --available.",
+            result.StandardError,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SelectionListUsesImplicitProjectAndPrimaryDocumentContext()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp, new VbaProjectReference("Stored Library"));
+        var application = CommandLineTestFactory.Create(
+            root,
+            vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver
+            {
+                ThrowOnResolve = true
+            });
+
+        var result = await application.RunAsync([
+            "reference",
+            "list",
+            "--no-resolve",
+            "--format",
+            "json"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.StandardError);
+        using var parsed = JsonDocument.Parse(result.StandardOutput);
+        Assert.Equal(Path.GetFullPath(root), parsed.RootElement.GetProperty("project").GetString());
+        Assert.Equal("Book1", parsed.RootElement.GetProperty("document").GetString());
+        Assert.Equal("selection", parsed.RootElement.GetProperty("mode").GetString());
+    }
+
+    [Fact]
+    public async Task SelectionListDoesNotFallBackToEnvironmentScope()
+    {
+        using var temp = TempDirectory.Create();
+        var workingDirectory = temp.CreateDirectory("NoProject");
+        var application = CommandLineTestFactory.Create(workingDirectory);
+
+        var result = await application.RunAsync([
+            "reference",
+            "list",
+            "--no-resolve",
+            "--format",
+            "json"]);
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Contains(
+            "Project manifest was not found",
+            result.StandardError,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SelectionListPublishesNoPartialOutputForAnUnknownDocument()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp, new VbaProjectReference("Stored Library"));
+        var application = CommandLineTestFactory.Create(root);
+
+        var result = await application.RunAsync([
+            "reference",
+            "list",
+            "--no-resolve",
+            "--project",
+            root,
+            "--document",
+            "MissingBook",
+            "--format",
+            "json"]);
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Contains("MissingBook", result.StandardError, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SelectionListPublishesNoPartialOutputForAnInvalidManifest()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("MalformedProject");
+        File.WriteAllText(
+            Path.Combine(root, ProjectManifest.ManifestFileName),
+            "{ malformed",
+            new UTF8Encoding(false));
+        var application = CommandLineTestFactory.Create(root);
+
+        var result = await application.RunAsync([
+            "reference",
+            "list",
+            "--no-resolve",
+            "--project",
+            root,
+            "--document",
+            "Book1",
+            "--format",
+            "json"]);
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.NotEmpty(result.StandardError);
+    }
+
+    [Fact]
     public async Task AvailableListExcludesOnlyTrimmedCaseInsensitiveManifestNamesInProjectScope()
     {
         using var temp = TempDirectory.Create();

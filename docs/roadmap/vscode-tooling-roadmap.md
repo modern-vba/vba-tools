@@ -333,6 +333,21 @@ Expose manifest-defined VBA project references through VS Code commands.
 Expected capabilities:
 
 - list references for the selected document;
+- open Add and Remove as immediately visible, busy, disabled multi-select
+  Quick Picks bound to one exact project/document context, then close the
+  picker before a separate cancellable mutation progress notification;
+- retain the Add inventory's canonical names as command authority, display
+  only resolved not-yet-effective entries with `TypeLib M.m` metadata, and
+  submit one atomic add in inventory order without a configured-list refresh;
+- expose `reference list --no-resolve` as a manifest-only selection inventory
+  and use it for Remove so stored spelling/order and broken names remain
+  removable without registry, Excel, VBE, source-template, or catalog access;
+- cancel and cooperatively clean up discovery when its picker is hidden, with
+  no mutation, popup, or late item publication;
+- strictly validate schema, context, mode/operation, completeness, warnings,
+  and the ordered one-to-one mutation result partition; treat an untrusted
+  exit-zero result as possibly committed and never retry, roll back, or issue
+  a follow-up list automatically;
 - list registered references not yet added to the selected document through
   `reference list --available`, with VBE-equivalent resolution applied only
   where registry identity remains ambiguous;

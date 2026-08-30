@@ -28,6 +28,8 @@ import './vbaDevDoctorOutput.test';
 import './projectCommand.test';
 import './exportCommand.test';
 import './commonModulesCommand.test';
+import './referenceOutputContract.test';
+import './referenceQuickPick.test';
 import './referenceCommand.test';
 import './testExplorer.test';
 import './toolDiagnostics.test';

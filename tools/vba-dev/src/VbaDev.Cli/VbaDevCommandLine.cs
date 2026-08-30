@@ -265,6 +265,11 @@ public sealed class VbaDevCommandLine
             Description = "List registered references not selected by the document."
         };
         referenceListCommand.Add(referenceListAvailableOption);
+        var referenceListNoResolveOption = new Option<bool>("--no-resolve")
+        {
+            Description = "List the stored document reference selection without resolving references."
+        };
+        referenceListCommand.Add(referenceListNoResolveOption);
         var referenceListFormatOption = CreateStringOption(
             "--format",
             "Reference output format.",
@@ -279,6 +284,7 @@ public sealed class VbaDevCommandLine
                     composition,
                     referenceListOptions,
                     referenceListAvailableOption,
+                    referenceListNoResolveOption,
                     referenceListFormatOption,
                     cancellationToken)
                 .ConfigureAwait(false)));
@@ -921,11 +927,31 @@ public sealed class VbaDevCommandLine
         ToolingApplicationComposition composition,
         ProjectDocumentOptions options,
         Option<bool> availableOption,
+        Option<bool> noResolveOption,
         Option<string> formatOption,
         CancellationToken cancellationToken)
     {
         var available = parseResult.GetValue(availableOption);
+        var noResolve = parseResult.GetValue(noResolveOption);
         var format = parseResult.GetValue(formatOption) ?? "text";
+        if (available && noResolve)
+        {
+            return CommandResult.UsageError(
+                "--no-resolve cannot be combined with --available.");
+        }
+
+        if (noResolve)
+        {
+            return await ResolveDocumentContextAsync(
+                    parseResult,
+                    composition,
+                    options,
+                    (context, _) => Task.FromResult(
+                        composition.ReferenceService.ListSelection(context, format)),
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+
         if (!available ||
             parseResult.GetResult(options.Project) is not null ||
             parseResult.GetResult(options.Document) is not null)

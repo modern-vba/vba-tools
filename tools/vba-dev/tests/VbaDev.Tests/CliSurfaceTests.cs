@@ -466,7 +466,7 @@ public sealed class CliSurfaceTests
             ["common-module list"] = ["--project <path>", "--document <name>", "--format <text|json>", "-f"],
             ["common-module update"] = ["--project <path>"],
             ["reference add"] = ["--project <path>", "--document <name>", "-d", "--format <text|json>", "-f"],
-            ["reference list"] = ["--project <path>", "--document <name>", "--available", "--format <text|json>", "-f"],
+            ["reference list"] = ["--project <path>", "--document <name>", "--available", "--no-resolve", "--format <text|json>", "-f"],
             ["reference remove"] = ["--project <path>", "--document <name>", "-d", "--format <text|json>", "-f"],
             ["host-class list"] = ["--project <path>", "--document <name>", "-d", "--format <text|json>", "-f"],
             ["build"] =
@@ -603,6 +603,7 @@ public sealed class CliSurfaceTests
         var referenceList = application.Run(["reference", "list", "--help"]);
         Assert.Equal(0, referenceList.ExitCode);
         Assert.Contains("--format <text|json>", referenceList.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("--no-resolve", referenceList.StandardOutput, StringComparison.Ordinal);
     }
 
     [Fact]

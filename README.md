@@ -257,8 +257,8 @@ existing bin workbook.
 | `VBA Tools: List Common Modules` | List CommonModules entries for the selected document. |
 | `VBA Tools: Update Common Modules` | Update installed CommonModules entries. |
 | `VBA Tools: List References` | List manifest-defined VBA project references. |
-| `VBA Tools: Add Reference` | Add a manifest-defined VBA project reference. |
-| `VBA Tools: Remove Reference` | Remove a manifest-defined VBA project reference. |
+| `VBA Tools: Add Reference` | Select resolved, not-yet-effective references and add them atomically. |
+| `VBA Tools: Remove Reference` | Select stored manifest reference names, including broken entries, and remove them atomically. |
 
 For each invocation, VBA Tools snapshots the active, visible, and open editor
 paths, then reads `vba-project.json` from disk through a narrow target-selection
@@ -288,6 +288,19 @@ verified `Reload from Disk`, or `Keep Editing`; another mutation for that
 manifest remains blocked until coherence is proved. Reference/CommonModules
 List and project Doctor explicitly identify disk as their source while such a
 block remains; debug-adapter Doctor stays independent.
+
+Reference Add and Remove open a disabled, busy multi-select Quick Pick while
+their inventory is loaded for the exact selected project and document. Add
+offers only resolved `reference list --available` entries; Remove uses the
+manifest-only `reference list --no-resolve` inventory so unavailable or
+ambiguous stored names remain repairable without Excel, VBE, registry, or
+template access. Closing the picker cancels discovery and starts no mutation.
+Submitting closes the picker before one separate cancellable progress
+notification runs one atomic add or remove in inventory order. The extension
+accepts only a complete schema `1.0` result that exactly partitions the
+submitted names; an untrusted exit-zero result warns that the manifest may
+already have committed and offers Output without retry, rollback, or a
+follow-up list.
 
 Within the selected project, an active `.bas`, `.cls`, or `.frm` source with one
 exact canonical owner selects that document. With no such source, a sole

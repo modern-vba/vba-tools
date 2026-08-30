@@ -49,11 +49,13 @@ import {
 } from './projectCommand';
 import { ExportCommandRequest, runExportCommand } from './exportCommand';
 import {
-  ReferenceToolCommand,
-  runReferenceAddCommand,
   runReferenceListCommand,
-  runReferenceRemoveCommand
+  runReferenceQuickPickWorkflow
 } from './referenceCommand';
+import {
+  ReferenceQuickPickItem,
+  showReferenceQuickPick
+} from './referenceQuickPick';
 import {
   createWorkbookBackedTestExplorer
 } from './testExplorer';
@@ -1313,65 +1315,67 @@ async function runReferenceCommandWithProgress(
   context: ExtensionContext,
   vbaDevResolver: CompanionExecutableResolver,
   projectManifestMutationCoordinator: ProjectManifestMutationCoordinator,
-  toolCommandName: ReferenceToolCommand,
+  toolCommandName: 'add' | 'list' | 'remove',
   title: string
 ): Promise<void> {
   const targetSnapshot = captureVscodeCommandPaletteInvocationSnapshot();
   const resolveTarget = createCommandPaletteTargetResolver(targetSnapshot);
   const channel = outputChannel ?? window.createOutputChannel('VBA Tools');
   outputChannel = channel;
-  const referenceName = toolCommandName === 'list'
-    ? undefined
-    : await promptForReferenceName(title);
-  if (toolCommandName !== 'list' && referenceName === undefined) {
+  const options = {
+    extensionRoot: context.extensionPath,
+    vbaDevResolver,
+    activeFilePath: targetSnapshot.activeFilePath,
+    workspaceRoots: targetSnapshot.workspaceRoots ?? [],
+    fileExists,
+    findProjectManifests,
+    chooseProject,
+    resolveCommandPaletteTarget: resolveTarget,
+    projectManifestMutationCoordinator,
+    outputChannel: channel,
+    diagnosticReporter: toolDiagnosticReporter,
+    showErrorMessage: (message: string) => window.showErrorMessage(message)
+  };
+
+  if (toolCommandName === 'list') {
+    await window.withProgress(
+      {
+        location: ProgressLocation.Notification,
+        title,
+        cancellable: true
+      },
+      async (progress, token) => runReferenceListCommand({
+        ...options,
+        reportCancellationProgress: (message: string) => progress.report({ message }),
+        cancellationToken: token
+      })
+    );
     return;
   }
 
-  await window.withProgress(
-    {
-      location: ProgressLocation.Notification,
-      title,
-      cancellable: true
+  await runReferenceQuickPickWorkflow({
+    ...options,
+    selectReferences: (request) => showReferenceQuickPick({
+      title: request.title,
+      createQuickPick: () => window.createQuickPick<ReferenceQuickPickItem>(),
+      createCancellationSource: () => new CancellationTokenSource(),
+      discover: request.discover
+    }),
+    runMutationWithProgress: async (progressTitle, task) => {
+      await window.withProgress(
+        {
+          location: ProgressLocation.Notification,
+          title: progressTitle,
+          cancellable: true
+        },
+        async (_progress, token) => task(token)
+      );
     },
-    async (progress, token) => {
-      const options = {
-        extensionRoot: context.extensionPath,
-        vbaDevResolver,
-        activeFilePath: targetSnapshot.activeFilePath,
-        workspaceRoots: targetSnapshot.workspaceRoots ?? [],
-        fileExists,
-        findProjectManifests,
-        chooseProject,
-        resolveCommandPaletteTarget: resolveTarget,
-        projectManifestMutationCoordinator,
-        outputChannel: channel,
-        diagnosticReporter: toolDiagnosticReporter,
-        showErrorMessage: (message: string) => window.showErrorMessage(message),
-        reportCancellationProgress: (message: string) => progress.report({ message }),
-        cancellationToken: token
-      };
-
-      if (toolCommandName === 'add') {
-        await runReferenceAddCommand(options, referenceName ?? '');
-      } else if (toolCommandName === 'remove') {
-        await runReferenceRemoveCommand(options, referenceName ?? '');
-      } else {
-        await runReferenceListCommand(options);
-      }
-    }
-  );
-}
-
-async function promptForReferenceName(title: string): Promise<string | undefined> {
-  const value = await window.showInputBox({
-    title,
-    prompt: 'Enter the exact Reference.Description name.'
-  });
-  if (value === undefined) {
-    return undefined;
-  }
-
-  return value.trim();
+    showInformationMessage: (message) => window.showInformationMessage(message),
+    showWarningMessage: (message, action) => window.showWarningMessage(message, action),
+    showReferenceErrorMessage: (message, action) => window.showErrorMessage(message, action),
+    showOutput: () => channel.show()
+  }, toolCommandName);
 }
 
 function appendVbaDevResolutionLog(

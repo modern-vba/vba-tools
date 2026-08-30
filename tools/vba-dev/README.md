@@ -51,7 +51,7 @@ script after moving or replacing that executable.
 | `common-module update` | project | Update installed CommonModules entries. |
 | `completions script pwsh` | current PowerShell session | Generate PowerShell completion registration. |
 | `reference add` | document | Add VBA project references to the selected document manifest. |
-| `reference list` | document or environment fallback | List configured or available VBA project references. |
+| `reference list` | document or available-mode environment fallback | List configured, stored-selection, or available VBA project references. |
 | `reference remove` | document | Remove VBA project references from the selected document manifest. |
 | `host-class list` | document | Inspect intrinsic form and document-class Event projections from a private workbook copy. |
 | `build` | document | Build the selected document into bin output. |
@@ -209,6 +209,7 @@ Options:
   --project <path>               Project root containing vba-project.json.
   --document <name>, -d <name>   Document name from the project manifest.
   --available                    List registered references not selected by the document.
+  --no-resolve                   List the stored document reference selection without resolving references.
   --format <text|json>, -f <text|json> Reference output format.
 ```
 
@@ -218,6 +219,14 @@ descriptions not present in the selected document. If no project or document was
 specified and upward discovery finds no manifest, available mode warns and lists
 the current environment instead. JSON output uses schema version `1.0` and marks
 that fallback with `scope: "environment"` and null project/document fields.
+
+`--no-resolve` is mutually exclusive with `--available`. It uses the ordinary
+document-scoped project resolution rules, never falls back to environment scope,
+and reads only the valid manifest selection. It does not inspect the registry,
+Excel, VBE, or the source template, so unresolved references remain removable.
+Text output preserves stored spelling and order. JSON extends schema version
+`1.0` with `mode: "selection"`, `scope: "project"`, `complete: true`, an empty
+`warnings` array, and ordered reference entries containing only `{ "name": ... }`.
 
 ### reference remove
 

@@ -285,6 +285,53 @@ public sealed class VbaProjectReferenceService
         => ListAsync(context, format, CancellationToken.None).GetAwaiter().GetResult();
 
     /// <summary>
+    /// Lists the selected document's stored references without environment resolution.
+    /// </summary>
+    /// <param name="context">The resolved project and document context.</param>
+    /// <param name="format">The output format, either text or json.</param>
+    /// <returns>The formatted stored-reference selection.</returns>
+    public CommandResult ListSelection(ResolvedProjectContext context, string format)
+    {
+        var document = ProjectManifestEditor.GetDocument(context.Manifest, context.DocumentName);
+        var references = document.References
+            .Select(reference => new VbaProjectReferenceSelectionEntryOutput(reference.Name))
+            .ToArray();
+        if (format.Equals("json", StringComparison.OrdinalIgnoreCase))
+        {
+            var output = new VbaProjectReferenceSelectionOutput(
+                "1.0",
+                "project",
+                Path.GetFullPath(context.ProjectRoot),
+                context.DocumentName,
+                "selection",
+                Complete: true,
+                Warnings: [],
+                references);
+            return CommandResult.Success(
+                JsonSerializer.Serialize(output, JsonOptions) + Environment.NewLine);
+        }
+
+        var builder = new StringBuilder();
+        builder.AppendLine("Scope: project");
+        builder.AppendLine($"Project: {Path.GetFullPath(context.ProjectRoot)}");
+        builder.AppendLine($"Document: {context.DocumentName}");
+        builder.AppendLine("Configured references:");
+        if (references.Length == 0)
+        {
+            builder.AppendLine("  (none)");
+        }
+        else
+        {
+            foreach (var reference in references)
+            {
+                builder.AppendLine($"  {reference.Name}");
+            }
+        }
+
+        return CommandResult.Success(builder.ToString());
+    }
+
+    /// <summary>
     /// Lists registered references not already selected by the document.
     /// </summary>
     /// <param name="context">The resolved project and document context.</param>
@@ -904,6 +951,18 @@ public sealed class VbaProjectReferenceService
         IReadOnlyList<VbaProjectReferenceDiagnosticOutput>? Diagnostics);
 
     private sealed record VbaProjectReferenceWarningOutput(string Code, string Message);
+
+    private sealed record VbaProjectReferenceSelectionOutput(
+        string SchemaVersion,
+        string Scope,
+        string Project,
+        string Document,
+        string Mode,
+        bool Complete,
+        IReadOnlyList<VbaProjectReferenceWarningOutput> Warnings,
+        IReadOnlyList<VbaProjectReferenceSelectionEntryOutput> References);
+
+    private sealed record VbaProjectReferenceSelectionEntryOutput(string Name);
 
     private sealed record VbaProjectReferenceMutationOutput(
         string SchemaVersion,

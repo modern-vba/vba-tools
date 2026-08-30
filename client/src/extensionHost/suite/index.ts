@@ -5,8 +5,10 @@ import { runDebugConfigurationIntegrationTests } from './debugConfigurationInteg
 import { runModuleRenameIntegrationTests } from './moduleRenameIntegration';
 import { runCommandPaletteTargetIntegrationTests } from './commandPaletteTargetIntegration';
 import { runProjectManifestMutationIntegrationTests } from './projectManifestMutationIntegration';
+import { runReferenceQuickPickIntegrationTests } from './referenceQuickPickIntegration';
 
 export async function run(): Promise<void> {
+  await runReferenceQuickPickIntegrationTests();
   await runCommandPaletteTargetIntegrationTests();
   await runDebugConfigurationIntegrationTests();
   await runTestExplorerNavigationIntegrationTests();

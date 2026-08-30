@@ -230,7 +230,7 @@ test('registered Command Palette workflows capture one invocation target before 
     extractFunctionSource(
       extensionSource,
       'runReferenceCommandWithProgress',
-      'promptForReferenceName'
+      'chooseCommandPaletteProject'
     )
   ];
 
@@ -623,6 +623,26 @@ test('extension contributes VbaProjectReference commands', () => {
     });
     assert.ok(packageJson.activationEvents?.includes(`onCommand:${expected[0]}`));
   }
+});
+
+test('reference mutation commands use multi-select QuickPicks without a free-text fallback', () => {
+  const extensionSource = fs.readFileSync(
+    path.join(process.cwd(), 'client', 'src', 'extension.ts'),
+    'utf8'
+  );
+  const quickPickSource = fs.readFileSync(
+    path.join(process.cwd(), 'client', 'src', 'referenceQuickPick.ts'),
+    'utf8'
+  );
+
+  assert.doesNotMatch(extensionSource, /promptForReferenceName|Enter the exact Reference\.Description name/);
+  assert.match(extensionSource, /showReferenceQuickPick/);
+  assert.match(extensionSource, /window\.createQuickPick<ReferenceQuickPickItem>\(\)/);
+  assert.match(extensionSource, /runMutationWithProgress/);
+  assert.match(quickPickSource, /quickPick\.canSelectMany = true/);
+  assert.match(quickPickSource, /quickPick\.matchOnDescription = true/);
+  assert.match(quickPickSource, /quickPick\.busy = true/);
+  assert.match(quickPickSource, /quickPick\.enabled = false/);
 });
 
 test('extension contributes the guarded VBA Enter command setting and editor-owned state guards', () => {
