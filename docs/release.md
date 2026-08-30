@@ -22,10 +22,14 @@ VS Code Marketplace release, the matching GitHub Release, and the standalone
   build and verification coverage.
 - Treat the release preparation change integrated into `main` as the source of
   truth for the extension version and release notes. The normal path records
-  that change in a pull request. Explicitly authorized direct integration must
-  record the same preparation and verification evidence in the release issue
-  or another maintainer-designated review record. The change must update both
-  `package.json` and `package-lock.json` before the release tag is created.
+  that change in a pull request and requires one eligible approval. A
+  specifically identified maintainer-authored preparation pull request may use
+  Repository Admin pull-request-only bypass after an explicit merge instruction,
+  but it must retain the pull request, squash merge, audit trail, and verification
+  evidence. Explicitly authorized direct integration must record the same
+  preparation and verification evidence in the release issue or another
+  maintainer-designated review record. The change must update both `package.json`
+  and `package-lock.json` before the release tag is created.
 - Prepare that change with a repository-owned, secretless `npm run release:prepare`
   command rather than granting a release-notes bot write credentials. The
   command must accept the extension version and channel plus the bundled
@@ -116,8 +120,9 @@ VS Code Marketplace release, the matching GitHub Release, and the standalone
   publication. Correct ordinary defects with a new patch release. Reserve a
   manual maintainer-approved withdrawal for credential exposure, a legal
   requirement, artifact compromise, or a defect that risks user data.
-- Keep `main` releasable. Introduce `release/vX.Y` branches only when hotfix
-  maintenance requires them.
+- Keep `main` releasable. Do not introduce `release/vX.Y` branches unless a
+  later ADR explicitly adopts multiple maintenance lines and revises the
+  branch policy first.
 
 ## Release Inputs
 
@@ -267,12 +272,15 @@ real Excel automation.
 
 After branch-level `npm test` and `npm run verify:release` pass, integrate the
 release preparation through the workflow in `CONTRIBUTING.md`. Use the normal
-pull request path unless the maintainer explicitly authorizes both direct
-integration and use of that path for this release preparation. Fetch the
-resulting exact `origin/main` commit in a clean worktree and rerun
-`npm run verify:release` before the Windows Excel gate. A squash merge creates a
-new commit, so branch-level verification alone cannot authorize the release
-tag.
+pull request path, including its one-approval rule. A specifically identified
+maintainer-authored preparation pull request may use Repository Admin
+pull-request-only bypass only after an explicit merge instruction for that pull
+request. Pull-request-less integration instead requires explicit authorization
+for both direct integration and use of the Organization Admin always-bypass for
+this release preparation. Fetch the resulting exact `origin/main` commit in a
+clean worktree and rerun `npm run verify:release` before the Windows Excel gate.
+A squash merge creates a new commit, so branch-level verification alone cannot
+authorize the release tag.
 
 On a configured Windows host with desktop Excel and trusted VBIDE access, run
 the complete release verification including the serialized real Excel suite:
@@ -290,6 +298,9 @@ Run this gate against the exact commit intended for the release tag. Record the
 commit SHA, command result, and clean Windows smoke result in the release
 preparation pull request or, for explicitly authorized direct integration, the
 release issue verification note or another maintainer-designated review record.
+When a ruleset bypass was used, record the explicit authorization and whether
+it was the Repository Admin pull-request-only or Organization Admin
+always-bypass path.
 If the tagged content changes, rerun the gate before creating the tag.
 
 Run package verification:

@@ -1,7 +1,8 @@
 # Contributing to VBA Tools
 
 This repository uses [GitHub Flow](https://docs.github.com/en/get-started/using-github/github-flow)
-with a narrowly scoped direct-integration option for its single maintainer.
+with one approval for ordinary pull requests and narrowly scoped ruleset-bypass
+options for its single maintainer.
 `main` is the only permanent integration branch and must remain releasable.
 The rationale is recorded in
 [ADR 0034](docs/adr/0034-use-github-flow-with-maintainer-authorized-direct-integration.md).
@@ -18,9 +19,8 @@ The rationale is recorded in
   only issue labels, comments, closure, and Project status transitions are
   omitted. Record direct-integration evidence in a maintainer-designated review
   record.
-- Do not base one issue branch on another unfinished issue branch. A stacked
-  workflow requires explicit maintainer authorization, documented dependencies,
-  and an explicit merge order.
+- Do not base one issue or work-item branch on another unfinished branch. Finish
+  its integration before starting the next branch from the updated `origin/main`.
 - Push unique commits before pausing or transferring work. Do not leave the only
   copy of work in uncommitted changes or local-only commits.
 - A request to implement an issue authorizes commits and pushes to that issue
@@ -59,8 +59,12 @@ included unless the maintainer explicitly expands the scope.
 Direct-integration authorization must unambiguously permit integration into
 `main` without a pull request. Instructions such as `commit`, `push`, `sync with
 origin`, `finish`, `close`, `move to Done`, or a general grant of GitHub write
-access do not authorize it. An instruction to merge an identified pull request
-authorizes only the normal pull-request merge.
+access authorize neither a merge nor any ruleset bypass. An explicit instruction
+to merge a specifically identified pull request authorizes only that pull
+request's merge. When that pull request was authored by the maintainer, the
+instruction may also authorize the Repository Admin pull-request-only bypass
+for that exact pull request; it never authorizes pull-request-less integration
+or the Organization Admin always-bypass path.
 
 An unqualified instruction to `merge` is ambiguous when it identifies neither
 a pull request nor integration into `main` without one. Clarify it before
@@ -75,15 +79,23 @@ never carries forward to unrelated work.
 
 Repository settings must support this workflow:
 
-- require a pull request for ordinary updates to `main`, with a bypass available
-  only for explicitly authorized direct integration;
-- require zero approving reviews while the repository has one maintainer;
+- require a pull request and one approving review for every ordinary update to
+  `main`, including every non-maintainer-authored pull request;
+- configure Repository Admin bypass as pull-request-only so a specifically
+  identified maintainer-authored pull request can be merged without mechanical
+  self-approval only after an explicit merge instruction;
+- configure Organization Admin as always-bypass solely for explicitly
+  authorized pull-request-less direct integration;
+- protect `main` from deletion, reject force pushes, and require linear history
+  through rules that have no bypass actors;
 - allow squash merge only; and
 - automatically delete remote pull-request branches after successful merge.
 
-If the live settings differ, report the drift instead of self-approving, using a
-normal-path ruleset bypass, or selecting another merge method. Administration
-rights do not convert configuration drift into workflow authorization.
+If the live settings differ, report the drift instead of self-approving, using
+an unauthorized bypass, or selecting another merge method. Administration
+rights do not convert configuration drift into workflow authorization. No
+authorization waives the non-bypass deletion, force-push, or linear-history
+invariants.
 
 ## Pull-request path
 
@@ -105,16 +117,24 @@ rights do not convert configuration drift into workflow authorization.
 7. For issue work, when branch verification is complete, move the issue to
    `In review` and mark it `ready-for-human` according to the issue tracker
    workflow.
-8. Do not approve your own pull request. Required approval count is zero for this
-   single-maintainer repository; the pull request remains the review,
-   verification, and audit record.
+8. Ordinary pull requests, including every non-maintainer-authored pull request,
+   require one approving review. Never create or solicit a mechanical
+   self-approval from its author. The approval exception is a maintainer-authored
+   pull request for which the maintainer explicitly
+   instructs the agent to merge that specifically identified pull request. Only
+   then may the Repository Admin pull-request-only bypass replace the approval
+   for that pull request. Record the instruction and bypass in the pull-request
+   evidence.
 9. Immediately before merge, refresh `origin/main`. If it moved since the last
    branch verification, rebase, update only the work branch with
    `--force-with-lease`, repeat affected verification, and update the pull
    request evidence. If conflict resolution materially changes the reviewed
    diff, obtain a renewed merge instruction.
-10. Do not merge until the maintainer merges it or explicitly instructs the agent
-   to merge that pull request.
+10. Do not merge until the required approval is present and the maintainer
+    merges it or explicitly instructs the agent to merge that pull request. The
+    only approval exception is the explicitly instructed Repository Admin
+    pull-request-only bypass for a specifically identified maintainer-authored
+    pull request described above.
 11. Use squash merge. Do not create a merge commit or use rebase-and-merge.
 12. Verify the integrated commit on `origin/main`, recheck the acceptance criteria
    against the integrated state, and post the verification note.
@@ -128,6 +148,10 @@ rights do not convert configuration drift into workflow authorization.
 An issue with an open or unmerged pull request remains `In review`; any work
 item represented only by an unmerged pull request is incomplete.
 
+A pull-request-only bypass does not convert the work to direct integration. The
+pull request, reviewed diff, squash merge, audit trail, branch verification,
+post-merge verification, and completion evidence all remain required.
+
 ## Maintainer-authorized direct integration
 
 Direct integration skips only the pull request and the per-issue human review.
@@ -135,10 +159,11 @@ It does not waive verification, acceptance criteria, the verification note, or
 the `Done` gate. Work still takes place on a short-lived issue branch, never
 directly on a checked-out `main`.
 
-Use a `main` ruleset bypass only while valid direct-integration authorization
-exists for the issue being integrated. Record that bypass path in the
-verification note; repository administration rights alone are not permission
-to use it.
+Use the Organization Admin always-bypass only while valid direct-integration
+authorization exists for the issue being integrated. The Repository Admin
+bypass is pull-request-only and must not be used for this path. Record the
+authorization and always-bypass path in the verification note; organization or
+repository administration rights alone are not permission to use either bypass.
 
 For each authorized issue or work item, in order:
 
@@ -214,9 +239,9 @@ maintainer-designated direct-integration record.
 ## Release branches and tags
 
 Release tags are created only from verified `main` commits. Do not create a
-long-lived `develop` branch. A `release/vX.Y` branch is allowed only when the
-maintainer explicitly adopts hotfix maintenance for more than one supported
-line, as described in `docs/release.md`.
+long-lived `develop` or `release/vX.Y` branch. Supporting more than one
+maintenance line requires a later ADR and an explicit revision of this policy
+before any release branch is introduced.
 
 Release preparation has additional review and verification requirements in
 `docs/release.md`. Those stricter requirements remain in force unless the

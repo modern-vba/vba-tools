@@ -17,21 +17,26 @@ VBA Tools has one maintainer and one supported mainline. Its release policy
 already requires `main` to remain releasable and creates release tags from exact
 verified `main` commits. A classic Gitflow or git.git-style multi-integration
 workflow would add permanent branches without solving a current product need.
-Requiring the single maintainer to approve a pull request created under the
-same identity would add ceremony without an independent review signal.
+GitHub cannot treat approval from a pull request author as independent review.
+Removing the approval rule for everyone would also remove a useful gate for
+general contributors, so the single-maintainer case needs a narrower exception.
 
 ## Decision
 
 VBA Tools uses GitHub Flow. `main` is the only permanent integration branch.
 Each issue uses one short-lived branch created from the current `origin/main`,
-and unfinished issue branches are not stacked by default.
+and unfinished issue or work-item branches are not stacked.
 
-The normal integration path is a focused pull request to `main`, with required
-approval count zero. The pull request provides the diff, verification,
-discussion, and audit record. The maintainer does not mechanically approve
-their own pull request. Pull requests use squash merge, and their branches are
-automatically deleted on GitHub after a successful merge. Local branches are
-deleted after the integrated commit is verified.
+The normal integration path is a focused pull request to `main`. Ordinary pull
+requests, including every non-maintainer-authored pull request, require one
+approving review. No pull request author is mechanically
+self-approved. The only approval exception is a specifically identified
+maintainer-authored pull request, which may use the Repository Admin
+pull-request-only ruleset bypass only after an explicit instruction to merge
+that pull request. The pull request still provides the diff, verification,
+discussion, and audit record and still uses squash merge. Its remote branch is
+automatically deleted on GitHub after a successful merge, and its local branch
+is deleted after the integrated commit is verified.
 
 The maintainer may explicitly authorize direct integration into `main` without
 a pull request for one issue, one maintainer-requested non-issue work item, or a
@@ -42,9 +47,15 @@ through a non-force fast-forward. Verification, acceptance criteria, a
 verification note, and confirmation of the resulting `origin/main` commit
 remain mandatory.
 
-The `main` ruleset may be bypassed only for a still-valid, explicitly authorized
-direct integration. Possession of repository administration rights is not
-itself authorization to bypass the pull-request path.
+Pull-request-less integration uses the Organization Admin always-bypass only
+for a still-valid, explicitly scoped direct-integration authorization. The
+Repository Admin bypass remains pull-request-only. Possession of either role is
+not itself authorization to merge or bypass a rule, and a request to write,
+commit, or push does not supply that authorization.
+
+Protection from `main` deletion, force-push prevention, and required linear
+history are non-bypass invariants. Repository settings allow squash merge only
+and automatically delete remote pull-request branches after merge.
 
 When two or more issues are requested consecutively and no integration method
 is specified, the agent asks once before implementation whether direct
@@ -61,7 +72,10 @@ tracker workflow.
 ## Consequences
 
 - The repository has one unambiguous integration source.
-- Pull requests remain useful without meaningless self-approval.
+- Ordinary and non-maintainer-authored pull requests retain an independent
+  approval gate without requiring meaningless self-approval from the maintainer.
+- A maintainer-authored pull request can use a narrowly authorized PR-only
+  bypass while retaining its squash merge, audit trail, and verification record.
 - Consecutive autonomous work requires an explicit integration decision before
   implementation begins.
 - Direct integration is auditable and cannot silently follow from a request to
