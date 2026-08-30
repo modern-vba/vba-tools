@@ -326,7 +326,7 @@
     "package": "npm run package:verify && vsce package"
   },
   "dependencies": {
-    "vscode-languageclient": "^9.0.1"
+    "vscode-languageclient": "^10.1.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
