@@ -3380,6 +3380,57 @@ public sealed class VbaDebugAdapterCliSurfaceTests
     }
 
     [Fact]
+    public async Task BuildRecasingWarningEmitsExactDapConsoleOutput()
+    {
+        const string warning =
+            "[WARN] vbeIdentifierRecased: Imported component 'Module1' identifier casing (source -> VBE): 'FileName' -> 'Filename'.";
+        var probe = new RecordingVbaDevCapabilitiesProbe(
+            new VbaDevCapabilitiesProbeResult(
+                0,
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
+                string.Empty));
+        var launchService = new RecordingDebugLaunchService(
+            lifecycleMessage: new DebugLifecycleMessage(warning));
+        var commandLine = CreateCommandLine(
+            new StandaloneVbaDebugAdapterStdioRunner(launchService),
+            probe);
+        using var standardInput = CreateDapInput(
+            new
+            {
+                seq = 1,
+                type = "request",
+                command = "launch",
+                arguments = CreateValidLaunchArguments()
+            },
+            new { seq = 2, type = "request", command = "configurationDone", arguments = new { } });
+        using var standardOutput = new MemoryStream();
+        using var standardError = new MemoryStream();
+
+        var exitCode = await commandLine.InvokeAsync(
+            [
+                "--stdio",
+                "--vba-dev", Path.GetFullPath("vba-dev.exe"),
+                "--session", "0123456789abcdef0123456789abcdef"
+            ],
+            standardInput,
+            standardOutput,
+            standardError,
+            CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        var output = Assert.Single(
+            ReadDapMessages(standardOutput),
+            message => message.TryGetProperty("event", out var eventName) &&
+                       eventName.GetString() == "output");
+        Assert.Equal(
+            "console",
+            output.GetProperty("body").GetProperty("category").GetString());
+        Assert.Equal(
+            warning + Environment.NewLine,
+            output.GetProperty("body").GetProperty("output").GetString());
+    }
+
+    [Fact]
     public async Task LaunchSetupFailureEmitsImportantOutputAndBodylessTermination()
     {
         var probe = new RecordingVbaDevCapabilitiesProbe(
@@ -4458,7 +4509,8 @@ public sealed class VbaDebugAdapterCliSurfaceTests
 
     private sealed class RecordingDebugLaunchService(
         IStandaloneVbaDebugRunningSession? runningSession = null,
-        DebugInputWait? inputWait = null) : IStandaloneVbaDebugLaunchService
+        DebugInputWait? inputWait = null,
+        DebugLifecycleMessage? lifecycleMessage = null) : IStandaloneVbaDebugLaunchService
     {
         public List<(
             string VbaDevPath,
@@ -4481,6 +4533,12 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                     restartBinding,
                     async commitCancellationToken =>
                     {
+                        if (lifecycleMessage is not null && lifecycleSink is not null)
+                        {
+                            await lifecycleSink.WriteAsync(
+                                lifecycleMessage,
+                                commitCancellationToken);
+                        }
                         if (inputWait is not null && lifecycleSink is not null)
                         {
                             await lifecycleSink.InputRequiredAsync(

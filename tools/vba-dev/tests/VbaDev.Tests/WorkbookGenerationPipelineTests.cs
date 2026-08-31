@@ -65,6 +65,37 @@ public sealed class WorkbookGenerationPipelineTests
     }
 
     [Fact]
+    public async Task GenerationDoesNotSaveOrCommitWhenVerificationReturnsNoReport()
+    {
+        using var temp = TempDirectory.Create();
+        var templatePath = Path.Combine(temp.Path, "Template.xlsm");
+        var targetPath = Path.Combine(temp.Path, "bin", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
+        File.WriteAllText(templatePath, "new-workbook", Encoding.UTF8);
+        File.WriteAllText(targetPath, "previous-workbook", Encoding.UTF8);
+        var events = new List<string>();
+        var pipeline = CreatePipeline(
+            new RecordingWorkbookGenerationAutomation(events)
+            {
+                VerificationReport = null
+            });
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            pipeline.GenerateAsync(
+                "Book1",
+                templatePath,
+                targetPath,
+                [],
+                [],
+                WorkbookAutomationTimeouts.Default,
+                CancellationToken.None));
+
+        Assert.Contains("verification report", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("save", events);
+        Assert.Equal("previous-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
+    }
+
+    [Fact]
     public async Task OwnedSnapshotIsReleasedAfterImportMirrorCreationAndBeforeOutputOrExcelStarts()
     {
         using var temp = TempDirectory.Create();
@@ -1158,7 +1189,8 @@ public sealed class WorkbookGenerationPipelineTests
         public Action<string>? OnRemoveReference { get; init; }
 
         public Func<string, ResolvedVbaProjectReference, VbaProjectReferenceProbeAttemptResult>?
-            OnReferenceProbe { get; init; }
+            OnReferenceProbe
+        { get; init; }
 
         public WorkbookAutomationTimeouts? Timeouts { get; private set; }
 
@@ -1175,6 +1207,9 @@ public sealed class WorkbookGenerationPipelineTests
         public IReadOnlyList<WorkbookReference> References { get; init; } = [];
 
         public IReadOnlyList<WorkbookReference>? FinalReferences { get; init; }
+
+        public VbeImportVerificationReport? VerificationReport { get; init; } =
+            VbeImportVerificationReport.Empty;
 
         public async Task<TResult> RunAsync<TResult>(
             string workbookPath,
@@ -1194,6 +1229,7 @@ public sealed class WorkbookGenerationPipelineTests
                     FinalProjectName,
                     References,
                     FinalReferences,
+                    VerificationReport,
                     OnImport,
                     OnRemoveModule,
                     OnRemoveReference,
@@ -1213,6 +1249,7 @@ public sealed class WorkbookGenerationPipelineTests
         string? finalProjectName,
         IReadOnlyList<WorkbookReference> references,
         IReadOnlyList<WorkbookReference>? finalReferences,
+        VbeImportVerificationReport? verificationReport,
         Action<VbeImportSourceFile>? onImport = null,
         Action<string>? onRemoveModule = null,
         Action<string>? onRemoveReference = null,
@@ -1293,10 +1330,10 @@ public sealed class WorkbookGenerationPipelineTests
             CancellationToken cancellationToken)
             => Task.CompletedTask;
 
-        public Task VerifyAsync(CancellationToken cancellationToken)
+        public Task<VbeImportVerificationReport> VerifyAsync(CancellationToken cancellationToken)
         {
             events.Add("verify");
-            return Task.CompletedTask;
+            return Task.FromResult(verificationReport!);
         }
 
         public Task SaveAsync(CancellationToken cancellationToken)

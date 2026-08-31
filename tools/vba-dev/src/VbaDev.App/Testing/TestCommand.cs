@@ -72,6 +72,7 @@ public sealed class TestCommand
     {
         SnapshotTestExecutionWorkspace? snapshotWorkspace = null;
         var hasCompletedTestRunOutput = false;
+        var successfulBuildStandardError = string.Empty;
         CommandResult result;
         try
         {
@@ -138,6 +139,14 @@ public sealed class TestCommand
             result = PreserveReleaseProof(ex, CommandResult.UsageError(ex.Message));
         }
 
+        if (successfulBuildStandardError.Length > 0)
+        {
+            result = result with
+            {
+                StandardError = successfulBuildStandardError + result.StandardError
+            };
+        }
+
         if (snapshotWorkspace is null)
         {
             return result;
@@ -184,6 +193,8 @@ public sealed class TestCommand
                     return buildResult;
                 }
 
+                successfulBuildStandardError = buildResult.StandardError;
+
                 workbookPath = snapshotWorkspace.WorkbookPath;
                 sourceLocationPath = snapshotWorkspace.SourceSnapshotPath;
             }
@@ -195,6 +206,8 @@ public sealed class TestCommand
                 {
                     return buildResult;
                 }
+
+                successfulBuildStandardError = buildResult.StandardError;
             }
 
             if (!File.Exists(workbookPath))

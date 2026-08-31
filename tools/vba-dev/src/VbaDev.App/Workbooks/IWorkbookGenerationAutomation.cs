@@ -56,9 +56,10 @@ public interface IWorkbookGenerationSession : IVbaProjectReferenceProbeSession
             "This workbook generation session does not support module export."));
 
     /// <summary>
-    /// Verifies every imported component's exact identity, kind, and projected code before save.
+    /// Verifies every imported component before save, returning accepted
+    /// identifier-recasing warnings while every other difference remains fatal.
     /// </summary>
-    Task VerifyAsync(CancellationToken cancellationToken);
+    Task<VbeImportVerificationReport> VerifyAsync(CancellationToken cancellationToken);
 
     Task SaveAsync(CancellationToken cancellationToken);
 }
@@ -126,7 +127,7 @@ internal sealed class SynchronousWorkbookGenerationAutomation(
             CancellationToken cancellationToken)
             => RunAsync(() => session.ExportModule(moduleName, destinationPath), cancellationToken);
 
-        public Task VerifyAsync(CancellationToken cancellationToken)
+        public Task<VbeImportVerificationReport> VerifyAsync(CancellationToken cancellationToken)
             => RunAsync(session.VerifyImportedModules, cancellationToken);
 
         public Task SaveAsync(CancellationToken cancellationToken)

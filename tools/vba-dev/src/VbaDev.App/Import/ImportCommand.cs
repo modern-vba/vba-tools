@@ -88,7 +88,7 @@ public sealed class ImportCommand
                 namePreflight.ThrowIfFailed(sourcePreflight);
             }
 
-            await workbookGenerationAutomation.RunAsync(
+            var verificationReport = await workbookGenerationAutomation.RunAsync(
                 targetWorkbookPath,
                 WorkbookAutomationTimeouts.Default,
                 async (session, operationCancellationToken) =>
@@ -126,15 +126,22 @@ public sealed class ImportCommand
 
                     importSourceSet.Dispose();
                     operationCancellationToken.ThrowIfCancellationRequested();
-                    await session.VerifyAsync(operationCancellationToken).ConfigureAwait(false);
+                    var report = await session
+                        .VerifyAsync(operationCancellationToken)
+                        .ConfigureAwait(false)
+                        ?? throw new InvalidOperationException(
+                            "Workbook import verification returned no verification report.");
                     operationCancellationToken.ThrowIfCancellationRequested();
                     await session.SaveAsync(operationCancellationToken).ConfigureAwait(false);
-                    return true;
+                    return report;
                 },
                 cancellationToken).ConfigureAwait(false);
 
             var label = sourceFiles.Count == 1 ? "source file" : "source files";
-            return CommandResult.Success($"Imported {sourceFiles.Count} {label} from {sourceDirectory} to {targetWorkbookPath}{Environment.NewLine}");
+            return new CommandResult(
+                0,
+                $"Imported {sourceFiles.Count} {label} from {sourceDirectory} to {targetWorkbookPath}{Environment.NewLine}",
+                VbeImportWarningRenderer.Render(verificationReport));
         }
         catch (WorkbookAutomationCanceledException ex)
         {

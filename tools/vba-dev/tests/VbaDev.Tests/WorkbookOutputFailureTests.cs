@@ -394,8 +394,8 @@ public sealed class WorkbookOutputFailureTests
             CancellationToken cancellationToken)
             => Task.CompletedTask;
 
-        public Task VerifyAsync(CancellationToken cancellationToken)
-            => Task.CompletedTask;
+        public Task<VbeImportVerificationReport> VerifyAsync(CancellationToken cancellationToken)
+            => Task.FromResult(VbeImportVerificationReport.Empty);
 
         public Task SaveAsync(CancellationToken cancellationToken)
             => Task.CompletedTask;

@@ -44,6 +44,42 @@ public sealed class PublishCommandTests
     }
 
     [Fact]
+    public void PublishKeepsSuccessOutputExactAndEmitsRecasingWarningsOnStandardError()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(
+            root,
+            ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        CreateWorkbookSource(
+            root,
+            "Book1",
+            ("Local.bas", "Attribute VB_Name = \"Local\""));
+        var automation = new FakeWorkbookBuildAutomation();
+        var application = CommandLineTestFactory.Create(
+            root,
+            workbookBuildAutomation: automation);
+
+        var exactResult = application.Run(["publish"]);
+        automation.VerificationReport = new VbeImportVerificationReport(
+        [
+            new VbeIdentifierRecasingWarning(
+                "Local",
+                [new VbeIdentifierRecasingPair("FileName", "Filename")])
+        ]);
+        var warnedResult = application.Run(["publish"]);
+
+        Assert.Equal(0, exactResult.ExitCode);
+        Assert.Equal(0, warnedResult.ExitCode);
+        Assert.Equal(exactResult.StandardOutput, warnedResult.StandardOutput);
+        Assert.Empty(exactResult.StandardError);
+        Assert.Equal(
+            "[WARN] vbeIdentifierRecased: Imported component 'Local' identifier casing (source -> VBE): 'FileName' -> 'Filename'."
+            + Environment.NewLine,
+            warnedResult.StandardError);
+    }
+
+    [Fact]
     public void PublishExcludesRecordedTestOnlyCommonModulesWithoutRepositoryLookup()
     {
         using var temp = TempDirectory.Create();

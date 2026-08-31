@@ -896,8 +896,11 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
         public void ExportModule(string moduleName, string destinationPath)
             => events.Add($"export:{moduleName}");
 
-        public void VerifyImportedModules()
-            => events.Add("verify");
+        public VbeImportVerificationReport VerifyImportedModules()
+        {
+            events.Add("verify");
+            return VbeImportVerificationReport.Empty;
+        }
 
         public void Save()
         {
@@ -1030,8 +1033,8 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
             CancellationToken cancellationToken)
             => Task.CompletedTask;
 
-        public Task VerifyAsync(CancellationToken cancellationToken)
-            => Task.CompletedTask;
+        public Task<VbeImportVerificationReport> VerifyAsync(CancellationToken cancellationToken)
+            => Task.FromResult(VbeImportVerificationReport.Empty);
 
         public Task SaveAsync(CancellationToken cancellationToken)
         {

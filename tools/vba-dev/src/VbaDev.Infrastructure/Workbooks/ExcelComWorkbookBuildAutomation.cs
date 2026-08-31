@@ -509,11 +509,12 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookBuildAuto
         /// <summary>
         /// Verifies every imported component captured by this session.
         /// </summary>
-        public void VerifyImportedModules()
+        public VbeImportVerificationReport VerifyImportedModules()
         {
             dynamic workbook = session.WorkbookObject;
             object? vbProjectObject = null;
             object? componentsObject = null;
+            var warnings = new List<VbeIdentifierRecasingWarning>();
             try
             {
                 vbProjectObject = workbook.VBProject;
@@ -522,7 +523,11 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookBuildAuto
                 dynamic components = componentsObject;
                 foreach (var verification in pendingImportVerifications)
                 {
-                    VerifyImportedModule(components, verification);
+                    var warning = VerifyImportedModule(components, verification);
+                    if (warning is not null)
+                    {
+                        warnings.Add(warning);
+                    }
                 }
             }
             finally
@@ -530,9 +535,11 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookBuildAuto
                 ComObjectReleaser.Release(componentsObject);
                 ComObjectReleaser.Release(vbProjectObject);
             }
+
+            return new VbeImportVerificationReport(warnings);
         }
 
-        private static void VerifyImportedModule(
+        private static VbeIdentifierRecasingWarning? VerifyImportedModule(
             dynamic components,
             (VbeImportVerification Expected, string ImportedComponentName) verification)
         {
@@ -551,7 +558,7 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookBuildAuto
                     codeModuleLines[line - 1] = (string)codeModule.Lines(line, 1);
                 }
 
-                VbeImportedComponentVerifier.Verify(
+                return VbeImportedComponentVerifier.Verify(
                     verification.Expected,
                     new VbeImportedComponent(
                         (string)component.Name,

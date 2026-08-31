@@ -272,6 +272,30 @@ unrepresentable or best-fit-only character fails before Excel starts, and the
 mirror never changes caller-owned bytes and is removed with command scratch.
 _Avoid_: source snapshot, persistent source conversion, lossy staging file
 
+**VbeImportVerification**:
+The post-import materialization proof that each imported component retains its
+source-derived component identity, kind, line structure, and projected VBE
+code. Exact equality is required except for identifier-token spelling changes
+that `VbeIdentifierRecasingClassifier` proves are case-only VBE recasing. Those
+changes produce one non-fatal `vbeIdentifierRecased` warning per component,
+listing distinct source-to-VBE pairs in first-occurrence order; every other
+observed change makes materialization invalid.
+_Avoid_: source encoding validation, source formatting, re-export verification
+
+**VbeIdentifierRecasing**:
+A post-import difference in which corresponding VBA identifier occurrences
+differ only in letter case while token sequence and position, component
+identity, component kind, line structure, and all non-identifier source text
+remain exact. Accepted ADR 0035 defines a non-fatal import-verification warning,
+and production emits that warning only after the complete component difference
+passes the accepted classifier. Identifier classification starts with the
+canonical lexer's exact
+`VbaTokenKind.Identifier` tokens, but token kind is necessary rather than
+sufficient: apostrophe and recognized `Rem` comment suffixes, plus
+identifier-classified fragments of based or decimal-exponent numeric literals,
+remain ordinal-exact and fail closed. This is not `CasingNormalization`.
+_Avoid_: case-insensitive line comparison, component recasing, source formatting
+
 **SnapshotTestExecutionWorkspace**:
 The command-owned temporary directory created only by
 `vba-dev test --source-snapshot`. It contains the invocation-fixed source and a

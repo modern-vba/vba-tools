@@ -66,9 +66,10 @@ public interface IWorkbookBuildSession : IDisposable
             "This workbook session does not support module export.");
 
     /// <summary>
-    /// Verifies every component imported during this session before the workbook is saved.
+    /// Verifies every component imported during this session before the workbook is saved,
+    /// returning accepted identifier-recasing warnings in import order.
     /// </summary>
-    void VerifyImportedModules();
+    VbeImportVerificationReport VerifyImportedModules();
 
     /// <summary>
     /// Saves the workbook after automation changes.

@@ -122,7 +122,14 @@ public sealed class WorkbookOutputCommand
                 timeouts,
                 cancellationToken).ConfigureAwait(false);
 
-            return CommandResult.Success(RenderOutput(profile, targetDocumentPath, sourceFiles, generationResult.Warnings));
+            return new CommandResult(
+                0,
+                RenderOutput(
+                    profile,
+                    targetDocumentPath,
+                    sourceFiles,
+                    generationResult.Warnings),
+                VbeImportWarningRenderer.Render(generationResult.VerificationReport));
         }
         catch (WorkbookAutomationCanceledException ex)
         {

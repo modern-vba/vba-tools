@@ -156,7 +156,7 @@ public sealed class WorkbookGenerationPipeline
             transaction = transactionFactory.Create(
                 templateWorkbookPath,
                 targetWorkbookPath);
-            var warnings = await workbookGenerationAutomation.RunAsync(
+            var sessionResult = await workbookGenerationAutomation.RunAsync(
                 transaction.StagingWorkbookPath,
                 timeouts,
                 async (session, operationCancellationToken) =>
@@ -226,9 +226,15 @@ public sealed class WorkbookGenerationPipeline
                             .ConfigureAwait(false);
                     }
 
-                    await session.VerifyAsync(operationCancellationToken).ConfigureAwait(false);
+                    var verificationReport = await session
+                        .VerifyAsync(operationCancellationToken)
+                        .ConfigureAwait(false)
+                        ?? throw new InvalidOperationException(
+                            "Workbook generation verification returned no verification report.");
                     await session.SaveAsync(operationCancellationToken).ConfigureAwait(false);
-                    return result;
+                    return new WorkbookGenerationSessionResult(
+                        result,
+                        verificationReport);
                 },
                 cancellationToken).ConfigureAwait(false);
 
@@ -259,7 +265,9 @@ public sealed class WorkbookGenerationPipeline
             completedTransaction.Dispose();
 
             // Commit is the success boundary. A later cancellation cannot turn replaced output into cancellation.
-            return new WorkbookGenerationResult(warnings);
+            return new WorkbookGenerationResult(
+                sessionResult.OutputWarnings,
+                sessionResult.VerificationReport);
         }
         catch (Exception operationError)
         {
@@ -377,11 +385,18 @@ public sealed class WorkbookGenerationPipeline
         VbeImportSourceSet SourceSet,
         WorkbookMaterializationNamePreflightReport Preflight);
 
+    private sealed record WorkbookGenerationSessionResult(
+        IReadOnlyList<string> OutputWarnings,
+        VbeImportVerificationReport VerificationReport);
+
     /// <summary>
     /// Contains non-fatal warnings emitted while generating a workbook.
     /// </summary>
-    /// <param name="Warnings">The warnings that should be included in command output.</param>
-    public sealed record WorkbookGenerationResult(IReadOnlyList<string> Warnings);
+    /// <param name="Warnings">Existing warnings that should be included in command output.</param>
+    /// <param name="VerificationReport">Recasing warnings that should be emitted on standard error.</param>
+    public sealed record WorkbookGenerationResult(
+        IReadOnlyList<string> Warnings,
+        VbeImportVerificationReport VerificationReport);
 
     private static void ThrowIfCanceled(
         CancellationToken cancellationToken,

@@ -88,9 +88,8 @@ public sealed class ExcelComWorkbookModuleExporterTests
         {
         }
 
-        public void VerifyImportedModules()
-        {
-        }
+        public VbeImportVerificationReport VerifyImportedModules()
+            => VbeImportVerificationReport.Empty;
 
         public void Save()
         {
@@ -130,8 +129,8 @@ public sealed class ExcelComWorkbookModuleExporterTests
             CancellationToken cancellationToken)
             => Task.CompletedTask;
 
-        public Task VerifyAsync(CancellationToken cancellationToken)
-            => Task.CompletedTask;
+        public Task<VbeImportVerificationReport> VerifyAsync(CancellationToken cancellationToken)
+            => Task.FromResult(VbeImportVerificationReport.Empty);
 
         public Task SaveAsync(CancellationToken cancellationToken)
             => Task.CompletedTask;
@@ -177,7 +176,7 @@ public sealed class ExcelComWorkbookModuleExporterTests
             CancellationToken cancellationToken)
             => throw new NotSupportedException();
 
-        public Task VerifyAsync(CancellationToken cancellationToken)
+        public Task<VbeImportVerificationReport> VerifyAsync(CancellationToken cancellationToken)
             => throw new NotSupportedException();
 
         public Task SaveAsync(CancellationToken cancellationToken)

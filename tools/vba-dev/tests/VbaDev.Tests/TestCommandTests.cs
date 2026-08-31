@@ -697,6 +697,90 @@ public sealed class TestCommandTests
         Assert.DoesNotContain("Built ", result.StandardOutput, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("text")]
+    [InlineData("ndjson")]
+    public void TestKeepsResultOutputExactAndForwardsBuildRecasingWarnings(string format)
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(
+            root,
+            ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        CreateWorkbookSource(
+            root,
+            "Book1",
+            ("Local.bas", "Attribute VB_Name = \"Local\""));
+        var runner = new FakeWorkbookTestRunner(
+            new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
+        var buildAutomation = new FakeWorkbookBuildAutomation();
+        var application = CommandLineTestFactory.Create(
+            root,
+            workbookBuildAutomation: buildAutomation,
+            workbookTestRunner: runner);
+
+        var exactResult = application.Run(["test", "--format", format]);
+        buildAutomation.VerificationReport = new VbeImportVerificationReport(
+        [
+            new VbeIdentifierRecasingWarning(
+                "Local",
+                [new VbeIdentifierRecasingPair("FileName", "Filename")])
+        ]);
+        var warnedResult = application.Run(["test", "--format", format]);
+
+        Assert.Equal(0, exactResult.ExitCode);
+        Assert.Equal(0, warnedResult.ExitCode);
+        Assert.Equal(exactResult.StandardOutput, warnedResult.StandardOutput);
+        Assert.Empty(exactResult.StandardError);
+        Assert.Equal(
+            "[WARN] vbeIdentifierRecased: Imported component 'Local' identifier casing (source -> VBE): 'FileName' -> 'Filename'."
+            + Environment.NewLine,
+            warnedResult.StandardError);
+    }
+
+    [Fact]
+    public void TestRetainsBuildRecasingWarningWhenAWorkbookTestFails()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(
+            root,
+            ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        CreateWorkbookSource(
+            root,
+            "Book1",
+            ("Local.bas", "Attribute VB_Name = \"Local\""));
+        var runner = new FakeWorkbookTestRunner(
+            new WorkbookTestResultRow(
+                "Test_Module",
+                "Test_Fails",
+                "NG",
+                "Expected 1 but was 2"));
+        var buildAutomation = new FakeWorkbookBuildAutomation();
+        var application = CommandLineTestFactory.Create(
+            root,
+            workbookBuildAutomation: buildAutomation,
+            workbookTestRunner: runner);
+
+        var exactResult = application.Run(["test", "--format", "ndjson"]);
+        buildAutomation.VerificationReport = new VbeImportVerificationReport(
+        [
+            new VbeIdentifierRecasingWarning(
+                "Local",
+                [new VbeIdentifierRecasingPair("FileName", "Filename")])
+        ]);
+        var warnedResult = application.Run(["test", "--format", "ndjson"]);
+
+        Assert.Equal(1, exactResult.ExitCode);
+        Assert.Equal(1, warnedResult.ExitCode);
+        Assert.Equal(exactResult.StandardOutput, warnedResult.StandardOutput);
+        Assert.Empty(exactResult.StandardError);
+        Assert.Equal(
+            "[WARN] vbeIdentifierRecased: Imported component 'Local' identifier casing (source -> VBE): 'FileName' -> 'Filename'."
+            + Environment.NewLine,
+            warnedResult.StandardError);
+    }
+
     [Fact]
     public void DefaultBuildBeforeTestStopsOnSourceIdentityConflictBeforeTheRunner()
     {

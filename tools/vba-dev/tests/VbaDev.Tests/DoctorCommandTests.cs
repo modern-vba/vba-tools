@@ -3099,7 +3099,7 @@ public sealed class DoctorCommandTests
             throw new NotSupportedException();
         }
 
-        public Task VerifyAsync(CancellationToken cancellationToken)
+        public Task<VbeImportVerificationReport> VerifyAsync(CancellationToken cancellationToken)
         {
             Events.Add("verify");
             throw new NotSupportedException();
@@ -3212,7 +3212,7 @@ public sealed class DoctorCommandTests
             CancellationToken cancellationToken)
             => throw new NotSupportedException();
 
-        public Task VerifyAsync(CancellationToken cancellationToken)
+        public Task<VbeImportVerificationReport> VerifyAsync(CancellationToken cancellationToken)
             => throw new NotSupportedException();
 
         public Task SaveAsync(CancellationToken cancellationToken)
