@@ -1167,6 +1167,53 @@ public sealed class BuildCommandTests
     }
 
     [Fact]
+    public void BuildKeepsSuccessOutputExactAndEmitsRecasingWarningsOnStandardError()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(
+            root,
+            ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        CreateWorkbookSource(
+            root,
+            "Book1",
+            ("Local.bas", "Attribute VB_Name = \"Local\""));
+        var automation = new FakeWorkbookBuildAutomation();
+        automation.References.Add(new WorkbookReference(
+            "Protected Library",
+            IsRemovable: false,
+            NamespaceName: "ProtectedLibrary"));
+        var application = CommandLineTestFactory.Create(
+            root,
+            workbookBuildAutomation: automation);
+        var baseline = application.Run(["build"]);
+        automation.VerificationReport = new VbeImportVerificationReport(
+        [
+            new VbeIdentifierRecasingWarning(
+                "Local",
+                [
+                    new VbeIdentifierRecasingPair("FileName", "Filename"),
+                    new VbeIdentifierRecasingPair("OtherName", "Othername")
+                ])
+        ]);
+
+        var warned = application.Run(["build"]);
+
+        Assert.Equal(0, warned.ExitCode);
+        Assert.Equal(baseline.StandardOutput, warned.StandardOutput);
+        Assert.Contains(
+            "Book1/Protected Library",
+            warned.StandardOutput,
+            StringComparison.Ordinal);
+        Assert.Equal(string.Empty, baseline.StandardError);
+        Assert.Equal(
+            "[WARN] vbeIdentifierRecased: Imported component 'Local' identifier casing " +
+            "(source -> VBE): 'FileName' -> 'Filename'; 'OtherName' -> 'Othername'." +
+            Environment.NewLine,
+            warned.StandardError);
+    }
+
+    [Fact]
     public void BuildReportsLockedTargetWithoutOpeningTargetWorkbook()
     {
         using var temp = TempDirectory.Create();
@@ -1225,6 +1272,8 @@ internal sealed class FakeWorkbookBuildAutomation : IWorkbookBuildAutomation
 
     public bool ThrowOnVerify { get; init; }
 
+    public bool ThrowOnSave { get; init; }
+
     public bool WaitForCancellationOnOpen { get; init; }
 
     public bool CancellationRequestedAtOpen { get; private set; }
@@ -1249,6 +1298,9 @@ internal sealed class FakeWorkbookBuildAutomation : IWorkbookBuildAutomation
 
     public Dictionary<string, string> AdoptedReferenceNamespaces { get; } =
         new(StringComparer.OrdinalIgnoreCase);
+
+    public VbeImportVerificationReport VerificationReport { get; set; } =
+        VbeImportVerificationReport.Empty;
 
     public int VerifyCalls { get; private set; }
 
@@ -1357,18 +1409,25 @@ internal sealed class FakeWorkbookBuildAutomation : IWorkbookBuildAutomation
         public void ExportModule(string moduleName, string destinationPath)
             => throw new NotSupportedException();
 
-        public void VerifyImportedModules()
+        public VbeImportVerificationReport VerifyImportedModules()
         {
             owner.VerifyCalls++;
             if (owner.ThrowOnVerify)
             {
                 throw new InvalidOperationException("verification failed");
             }
+
+            return owner.VerificationReport;
         }
 
         public void Save()
         {
             owner.SaveCalls++;
+            if (owner.ThrowOnSave)
+            {
+                throw new InvalidOperationException("save failed");
+            }
+
             owner.Events.Add("save");
         }
 
