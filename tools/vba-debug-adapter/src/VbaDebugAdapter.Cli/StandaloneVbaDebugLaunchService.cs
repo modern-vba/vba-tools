@@ -461,41 +461,8 @@ internal sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunc
                 return;
             }
             if (expected is null || actual is null ||
-                !ReferenceEquals(expected.BoundSession, actual.BoundSession) ||
-                expected.SessionId != actual.SessionId ||
-                !expected.CanonicalProjectRoot.Equals(
-                    actual.CanonicalProjectRoot,
-                    StringComparison.OrdinalIgnoreCase) ||
-                !expected.DocumentName.Equals(
-                    actual.DocumentName,
-                    StringComparison.OrdinalIgnoreCase) ||
-                !expected.WorkbookFileName.Equals(
-                    actual.WorkbookFileName,
-                    StringComparison.OrdinalIgnoreCase) ||
-                !expected.TargetModuleName.Equals(
-                    actual.TargetModuleName,
-                    StringComparison.OrdinalIgnoreCase) ||
-                !expected.TargetProcedureName.Equals(
-                    actual.TargetProcedureName,
-                    StringComparison.OrdinalIgnoreCase) ||
-                !string.Equals(
-                    expected.RequestedModuleName,
-                    actual.RequestedModuleName,
-                    StringComparison.OrdinalIgnoreCase) ||
-                !string.Equals(
-                    expected.RequestedProcedureName,
-                    actual.RequestedProcedureName,
-                    StringComparison.OrdinalIgnoreCase) ||
-                expected.PreparationId != actual.PreparationId ||
-                expected.Generation != actual.Generation ||
-                expected.DapRequestSequence != actual.DapRequestSequence ||
-                expected.BoundSession.Completion.IsCompleted ||
-                !expected.BoundSession.TargetModuleName.Equals(
-                    expected.TargetModuleName,
-                    StringComparison.OrdinalIgnoreCase) ||
-                !expected.BoundSession.TargetProcedureName.Equals(
-                    expected.TargetProcedureName,
-                    StringComparison.OrdinalIgnoreCase))
+                !expected.HasSameIdentityAs(actual) ||
+                !expected.IsBoundSessionCurrent)
             {
                 throw new DebugSetupException(
                     "The prepared VBA restart launch binding is stale.");
@@ -549,7 +516,50 @@ internal sealed record DebugRestartLaunchBinding(
     string? RequestedProcedureName,
     DebugRestartPreparationId PreparationId,
     DebugRestartGeneration Generation,
-    int DapRequestSequence);
+    int DapRequestSequence)
+{
+    public bool IsBoundSessionCurrent =>
+        !BoundSession.Completion.IsCompleted &&
+        BoundSession.TargetModuleName.Equals(
+            TargetModuleName,
+            StringComparison.OrdinalIgnoreCase) &&
+        BoundSession.TargetProcedureName.Equals(
+            TargetProcedureName,
+            StringComparison.OrdinalIgnoreCase);
+
+    public bool HasSameIdentityAs(DebugRestartLaunchBinding other)
+    {
+        ArgumentNullException.ThrowIfNull(other);
+        return ReferenceEquals(BoundSession, other.BoundSession) &&
+               SessionId == other.SessionId &&
+               CanonicalProjectRoot.Equals(
+                   other.CanonicalProjectRoot,
+                   StringComparison.OrdinalIgnoreCase) &&
+               DocumentName.Equals(
+                   other.DocumentName,
+                   StringComparison.OrdinalIgnoreCase) &&
+               WorkbookFileName.Equals(
+                   other.WorkbookFileName,
+                   StringComparison.OrdinalIgnoreCase) &&
+               TargetModuleName.Equals(
+                   other.TargetModuleName,
+                   StringComparison.OrdinalIgnoreCase) &&
+               TargetProcedureName.Equals(
+                   other.TargetProcedureName,
+                   StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(
+                   RequestedModuleName,
+                   other.RequestedModuleName,
+                   StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(
+                   RequestedProcedureName,
+                   other.RequestedProcedureName,
+                   StringComparison.OrdinalIgnoreCase) &&
+               PreparationId == other.PreparationId &&
+               Generation == other.Generation &&
+               DapRequestSequence == other.DapRequestSequence;
+    }
+}
 
 internal interface IPreparedDebugLaunchPlan : IAsyncDisposable
 {

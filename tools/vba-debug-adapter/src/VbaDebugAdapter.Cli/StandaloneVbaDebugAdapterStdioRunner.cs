@@ -58,6 +58,7 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
         IStandaloneVbaDebugRunningSession? runningSession = null;
         Task<StandaloneVbaDebugLaunchExecutionResult>? launchTask = null;
         CancellationTokenSource? launchCancellation = null;
+        DebugRestartSwapAuthority? restartSwapAuthority = null;
         var breakpointRegistry = new DapSourceBreakpointRegistry();
         var configurationDone = false;
         var restartGeneration = DebugRestartGeneration.Initial;
@@ -110,8 +111,13 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                         when (launchCancellation?.IsCancellationRequested == true)
                     {
                     }
-                    launchCancellation?.Dispose();
-                    launchCancellation = null;
+                    finally
+                    {
+                        restartSwapAuthority?.Dispose();
+                        restartSwapAuthority = null;
+                        launchCancellation?.Dispose();
+                        launchCancellation = null;
+                    }
                     continue;
                 }
 
@@ -319,7 +325,7 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                             connection,
                             pendingLaunchRequest,
                             pendingLaunch,
-                            restartBinding: null,
+                            restartSwapAuthority: null,
                             retainedLaunch: null,
                             vbaDevPath,
                             workspaceLease,
@@ -360,7 +366,7 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                             connection,
                             pendingLaunchRequest,
                             pendingLaunch,
-                            restartBinding: null,
+                            restartSwapAuthority: null,
                             retainedLaunch: null,
                             vbaDevPath,
                             workspaceLease,
@@ -375,7 +381,7 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
 
                 if (request.Command.Equals("restart", StringComparison.Ordinal))
                 {
-                    if (pendingRestart is not null)
+                    if (launchTask is not null || pendingRestart is not null)
                     {
                         await connection.WriteResponseAsync(
                             request,
@@ -591,6 +597,7 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                     var retainedLaunch = activeLaunch!;
                     runningSession = null;
                     activeLaunch = null;
+                    restartSwapAuthority = new DebugRestartSwapAuthority(restartBinding);
                     launchCancellation?.Dispose();
                     launchCancellation = CancellationTokenSource
                         .CreateLinkedTokenSource(cancellationToken);
@@ -598,7 +605,7 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                         connection,
                         preparedRestart.Request,
                         freshLaunch,
-                        restartBinding,
+                        restartSwapAuthority,
                         retainedLaunch,
                         vbaDevPath,
                         workspaceLease,
@@ -623,6 +630,7 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                     }
                     if (launchTask is not null)
                     {
+                        restartSwapAuthority?.InvalidateForCancellation();
                         launchCancellation!.Cancel();
                         try
                         {
@@ -638,6 +646,8 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                         {
                         }
                         launchTask = null;
+                        restartSwapAuthority?.Dispose();
+                        restartSwapAuthority = null;
                         launchCancellation.Dispose();
                         launchCancellation = null;
                     }
@@ -679,6 +689,7 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
             }
             if (launchTask is not null)
             {
+                restartSwapAuthority?.InvalidateForCancellation();
                 launchCancellation!.Cancel();
                 try
                 {
@@ -694,6 +705,7 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                 {
                 }
             }
+            restartSwapAuthority?.Dispose();
             launchCancellation?.Dispose();
             if (runningSession is not null)
             {
@@ -732,7 +744,7 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
         DapConnection connection,
         DapRequest dapRequest,
         StandaloneVbaDebugLaunchRequest launchRequest,
-        DebugRestartLaunchBinding? restartBinding,
+        DebugRestartSwapAuthority? restartSwapAuthority,
         StandaloneVbaDebugLaunchRequest? retainedLaunch,
         string vbaDevPath,
         IVbaDebugSessionWorkspaceLease workspaceLease,
@@ -740,6 +752,14 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
         CancellationToken launchCancellationToken,
         CancellationToken transportCancellationToken)
     {
+        var restartBinding = restartSwapAuthority?.Binding;
+        using var effectiveLaunchCancellation = restartSwapAuthority is null
+            ? null
+            : CancellationTokenSource.CreateLinkedTokenSource(
+                launchCancellationToken,
+                restartSwapAuthority.InvalidationToken);
+        var effectiveLaunchCancellationToken =
+            effectiveLaunchCancellation?.Token ?? launchCancellationToken;
         IPreparedDebugLaunchPlan? preparedPlan = null;
         IStandaloneVbaDebugRunningSession? runningSession = null;
         IStandaloneVbaDebugRunningSession? resultSession = null;
@@ -753,11 +773,16 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                         workspaceLease,
                         launchRequest,
                         restartBinding,
-                        launchCancellationToken,
+                        effectiveLaunchCancellationToken,
                         new DapDebugLifecycleSink(connection, transportCancellationToken))
                     .ConfigureAwait(false);
+                var currentRestartBinding = restartSwapAuthority?.ClaimForSwap(
+                    preparedPlan.Snapshot.RestartBinding,
+                    effectiveLaunchCancellationToken);
                 runningSession = await preparedPlan
-                    .CommitAsync(restartBinding, launchCancellationToken)
+                    .CommitAsync(
+                        currentRestartBinding,
+                        effectiveLaunchCancellationToken)
                     .ConfigureAwait(false);
                 foreach (var breakpoint in runningSession.VerifiedBreakpoints)
                 {
@@ -793,18 +818,25 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                     resultSession,
                     launchRequest with
                     {
+                        ProjectRoot = preparedPlan.Snapshot.LaunchSettings.CanonicalProjectRoot,
+                        DocumentName = preparedPlan.Snapshot.LaunchSettings.DocumentName,
+                        WorkbookFileName = preparedPlan.Snapshot.LaunchSettings.WorkbookFileName,
                         ModuleName = resultSession.TargetModuleName,
-                        ProcedureName = resultSession.TargetProcedureName
+                        ProcedureName = resultSession.TargetProcedureName,
+                        RestartPreparation = preparedPlan.Snapshot.LaunchSettings.RestartPreparation
                     });
             }
-            catch (OperationCanceledException) when (launchCancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException)
+                when (effectiveLaunchCancellationToken.IsCancellationRequested)
             {
                 if (runningSession is not null)
                 {
                     await StopOwnedSessionAsync(runningSession).ConfigureAwait(false);
                 }
                 resultSession = RetainedRestartSession(preparedPlan, restartBinding);
-                const string cancellationMessage = "VBA debug launch was cancelled.";
+                var cancellationMessage = restartSwapAuthority?.SessionEnded == true
+                    ? "The owned VBA debug session exited during restart build before replacement committed."
+                    : "VBA debug launch was cancelled.";
                 await connection.WriteEventAsync(
                     "output",
                     new
@@ -1580,6 +1612,134 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
         }
     }
 
+}
+
+internal sealed class DebugRestartSwapAuthority : IDisposable
+{
+    private readonly object gate = new();
+    private readonly CancellationTokenSource invalidation = new();
+    private RestartSwapState state;
+
+    public DebugRestartSwapAuthority(DebugRestartLaunchBinding binding)
+    {
+        Binding = binding ?? throw new ArgumentNullException(nameof(binding));
+        var weakAuthority = new WeakReference<DebugRestartSwapAuthority>(this);
+        _ = binding.BoundSession.Completion.ContinueWith(
+            static (_, state) =>
+            {
+                var weakAuthority =
+                    (WeakReference<DebugRestartSwapAuthority>)state!;
+                if (weakAuthority.TryGetTarget(out var authority))
+                {
+                    authority.Invalidate(RestartSwapState.SessionEnded);
+                }
+            },
+            weakAuthority,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    public DebugRestartLaunchBinding Binding { get; }
+
+    public CancellationToken InvalidationToken => invalidation.Token;
+
+    public bool SessionEnded
+    {
+        get
+        {
+            lock (gate)
+            {
+                return state == RestartSwapState.SessionEnded;
+            }
+        }
+    }
+
+    public void InvalidateForCancellation() =>
+        Invalidate(RestartSwapState.Cancelled);
+
+    public DebugRestartLaunchBinding ClaimForSwap(
+        DebugRestartLaunchBinding? preparedBinding,
+        CancellationToken cancellationToken)
+    {
+        lock (gate)
+        {
+            if (state == RestartSwapState.SessionEnded)
+            {
+                throw new DebugSetupException(
+                    "The owned VBA debug session exited during restart build before replacement committed.");
+            }
+            if (state is RestartSwapState.Cancelled or RestartSwapState.Disposed)
+            {
+                throw new OperationCanceledException(
+                    "The VBA debug restart swap was cancelled.",
+                    cancellationToken);
+            }
+            if (state == RestartSwapState.Claimed)
+            {
+                throw new DebugSetupException(
+                    "The prepared VBA restart launch binding is stale.");
+            }
+            if (cancellationToken.IsCancellationRequested)
+            {
+                SetInvalidated(RestartSwapState.Cancelled);
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+            if (preparedBinding is null ||
+                !Binding.HasSameIdentityAs(preparedBinding))
+            {
+                throw new DebugSetupException(
+                    "The prepared VBA restart launch binding is stale.");
+            }
+            if (!Binding.IsBoundSessionCurrent)
+            {
+                SetInvalidated(RestartSwapState.SessionEnded);
+                throw new DebugSetupException(
+                    "The owned VBA debug session exited during restart build before replacement committed.");
+            }
+
+            state = RestartSwapState.Claimed;
+            return Binding with { };
+        }
+    }
+
+    public void Dispose()
+    {
+        lock (gate)
+        {
+            if (state == RestartSwapState.Pending)
+            {
+                state = RestartSwapState.Disposed;
+            }
+            invalidation.Dispose();
+        }
+    }
+
+    private void Invalidate(RestartSwapState invalidatedState)
+    {
+        lock (gate)
+        {
+            if (state == RestartSwapState.Pending)
+            {
+                SetInvalidated(invalidatedState);
+            }
+        }
+    }
+
+    private void SetInvalidated(RestartSwapState invalidatedState)
+    {
+        state = invalidatedState;
+        invalidation.Cancel();
+    }
+
+    private enum RestartSwapState
+    {
+        Pending,
+        Claimed,
+        SessionEnded,
+        Cancelled,
+        Disposed
+    }
 }
 
 internal sealed record StandaloneVbaDebugLaunchExecutionResult(

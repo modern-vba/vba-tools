@@ -354,11 +354,14 @@ _Avoid_: new launch target, active-editor retargeting, project-only restart toke
 The adapter-internal immutable one-shot launch capability produced after one
 initial or restart source snapshot, target procedure, mapped breakpoints,
 conditional-compilation participation, generation, and any restart binding have
-been validated together. Restart may build that generation while the current
-`VbeDebugSession` remains active, but it rechecks the binding and ends the old
-session only after the build succeeds and immediately before starting the
-replacement.
-_Avoid_: raw launch request, reusable launch cache, early restart teardown
+been validated together. For Restart, preparation builds that generation while
+the current `VbeDebugSession` remains active and produces the plan only after
+build success. Commit then rechecks the binding and ends the old session
+immediately before starting the replacement. This build-before-swap ordering
+intentionally replaces the former validation-before-swap behavior: validation
+alone never authorizes teardown of a usable current session.
+_Avoid_: raw launch request, reusable launch cache, early restart teardown,
+validation-before-swap teardown
 
 **DebugWorkspaceLease**:
 The adapter-owned record atomically created under the canonical directory named
@@ -3882,7 +3885,7 @@ Dev: "Can one VS Code window run two `VbeDebugSession`s at the same time?"
 Domain Expert: "No. The initial product permits one active session per window and never ends or reuses that session implicitly for another launch."
 
 Dev: "Does Restart Debugging reuse the existing Excel process?"
-Domain Expert: "No. `DebugRestartPreparation` first captures a new `DebugSourceSnapshot` without saving project files, and its one-shot `PreparedDebugLaunchPlan` builds a fresh generation while the current session remains active. After a successful build it rechecks the same session, document, module, and procedure binding; only then does it force-terminate the old process immediately before starting the replacement. Preparation failure, build failure, cancellation before the swap, or changing the active editor retains the current session."
+Domain Expert: "No. `DebugRestartPreparation` first captures a new `DebugSourceSnapshot` without saving project files and builds a fresh generation while the current session remains active, producing its one-shot `PreparedDebugLaunchPlan` only after build success. Plan commit rechecks the same session, restart request, document, module, and procedure binding; only then does it force-terminate the old process immediately before starting the replacement. Preparation failure, downstream snapshot revalidation failure, build failure, cancellation before the swap, or a stale request binding retains the still-live current session. If the bound session exits during the build, the new generation is cleaned and no replacement starts. If replacement startup fails after the swap, the new generation is cleaned and the terminated process is neither revived nor reused."
 
 Dev: "Does closing only the `DebugWorkbook` leave an empty debug Excel session running?"
 Domain Expert: "No. Once that workbook actually closes, its dedicated Excel process is force-terminated and the `VbeDebugSession` ends. Cancelling workbook close leaves both active."

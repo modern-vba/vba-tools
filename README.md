@@ -433,8 +433,15 @@ Restart Debugging captures a new immutable snapshot from the project and
 document bound at launch, including unsaved editor bytes without saving them.
 Changing the active editor or supplying different restart arguments does not
 retarget the session. The adapter validates the complete fresh snapshot and
-restart identity before terminating the old owned Excel process; capture or
-identity failures fail only Restart and leave the current session active.
+builds its temporary workbook while the current session remains active. After
+the build succeeds, it rechecks the restart binding and terminates the old owned
+Excel process immediately before starting the replacement. Capture, validation,
+build, cancellation before the swap, or a stale request binding while the
+current session is still live fails only Restart and leaves that session active.
+If the bound session exits during the build, the new generation is cleaned and
+no replacement starts. If the replacement cannot start after the swap, Restart
+fails and cleans its new temporary artifacts without reviving the terminated
+process.
 
 The opened workbook is disposable session state, not the configured source
 template, bin workbook, or publish workbook. Saving it changes only the

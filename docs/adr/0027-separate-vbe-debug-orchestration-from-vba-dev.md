@@ -216,12 +216,24 @@ selection. An opaque preparation ID is bound to the adapter session, canonical
 project root, manifest document, and original target module and procedure; each
 pending restart also has its DAP request sequence and a monotonically increasing
 session-local generation. The extension captures the bound document regardless
-of the active editor. Before terminating the old session, the adapter requires
-every identity to match and proves that the same target still exists in the
-fresh snapshot. A stale or mismatched preparation, capture failure, or removed
-target fails only the restart and retains the current session. A matching
-preparation commits a complete new temporary build and launch under the same
-session ID.
+of the active editor. Adapter preparation fixes the validated evidence and
+completes the fresh generation build while the current session remains active.
+Only build success yields an immutable one-shot launch plan that owns the new
+generation. Its commit rechecks the bound session, request sequence, restart
+generation, project, document, module, and procedure. Only a still-current
+binding enters the swap: the adapter terminates the old session immediately
+before starting the replacement visible Excel process under the same session
+ID.
+
+This build-before-swap ordering intentionally replaces the former
+validation-before-swap behavior: validation alone is no longer sufficient
+reason to destroy a usable current session. Capture, downstream snapshot
+revalidation, build, target removal, cancellation before the swap, or a stale
+binding cleans any new generation and retains the still-live current session.
+If the owned session exits during the build, its completion cleans the new
+generation and starts no replacement. Failure to start the replacement after
+the swap reports restart failure and cleans the new generation without reviving
+or reusing the terminated process.
 
 Composition occurs only through the public CLI process boundary. The debug
 component starts `vba-dev build` as a subprocess, supplies ordinary project,

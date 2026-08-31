@@ -35,8 +35,16 @@ timed-out, or cancelled stage.
 Each stdio session uses a random 32-character lowercase hexadecimal ID and a
 create-new lease beneath the adapter-owned temporary root. Restart keeps that
 session ID, validates a fresh snapshot for the originally bound target, and
-uses a separate generation workspace before replacing the owned Excel process.
-A failed or stale preparation leaves the current session running.
+completes the new generation build while the current owned Excel process remains
+active. After build success, it rechecks the bound session and restart request,
+then terminates the old process immediately before starting the replacement.
+This build-before-swap ordering intentionally replaces the former
+validation-before-swap behavior. A preparation, revalidation, build,
+cancellation, or stale-request failure before the swap cleans any new generation
+and leaves a still-live current session running. If the bound session exits
+during the build, its completion cleans the new generation and starts no
+replacement. Replacement-start failure after the swap cleans the new generation
+without reviving or reusing the terminated process.
 
 After an unexpected adapter exit, the extension invokes the session-ID-only
 cleanup surface:

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO.Compression;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Text;
@@ -525,6 +526,275 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
 
     [WindowsExcelIntegrationFact]
     [Trait("Category", "WindowsExcelIntegration")]
+    public async Task FailedPackagedRestartBuildKeepsTheOriginalBreakModeSessionUsable()
+    {
+        var repositoryRoot = ResolveRepositoryRoot();
+        var assets = ResolvePackagedDebugAssets(repositoryRoot);
+        using var temp = TempDirectory.Create();
+        var projectRoot = Path.Combine(temp.Path, "DebugProject");
+        var launchMarkerPath = Path.Combine(temp.Path, "restart-old-session-started.txt");
+        var completionMarkerPath = Path.Combine(temp.Path, "restart-old-session-completed.txt");
+        var sessionId = Guid.NewGuid().ToString("N");
+        var restartPreparationId = Guid.NewGuid().ToString("N");
+        var sessionWorkspacePath = Path.Combine(
+            Path.GetTempPath(),
+            "vba-debug-adapter",
+            "workspaces",
+            sessionId);
+        var baselineExcelProcessIds = CaptureExcelProcessIds();
+        OwnedExcelProcessIdentity? ownedExcelProcess = null;
+
+        try
+        {
+            CreatePackagedDebugProjectFixture(projectRoot);
+            var documentPaths = ResolveProjectDocumentPaths(projectRoot, "DebugProject");
+            var sourcePath = Path.Combine(documentPaths.SourceSetPath, "DebugModule.bas");
+            File.WriteAllText(sourcePath, CreatePersistentSource(), new UTF8Encoding(false));
+            Directory.CreateDirectory(Path.GetDirectoryName(documentPaths.BinPath)!);
+            Directory.CreateDirectory(Path.GetDirectoryName(documentPaths.PublishPath)!);
+            File.Copy(documentPaths.TemplatePath, documentPaths.BinPath, overwrite: true);
+            File.Copy(documentPaths.TemplatePath, documentPaths.PublishPath, overwrite: true);
+            var persistentArtifacts = CapturePersistentArtifacts(documentPaths);
+
+            var sourceText = CreateDebugSource(launchMarkerPath, completionMarkerPath);
+            var sourceBytes = new UTF8Encoding(false).GetBytes(sourceText);
+            var sourceUri = new Uri(sourcePath).AbsoluteUri;
+            var breakpointLine = FindLine(
+                sourceText,
+                "    ThisWorkbook.Worksheets(1).Range(\"A1\").Value2 = \"continued\"");
+            var conflictingSourcePath = Path.Combine(
+                documentPaths.SourceSetPath,
+                "ConflictingThisWorkbook.bas");
+            var conflictingSourceUri = new Uri(conflictingSourcePath).AbsoluteUri;
+            var conflictingSourceBytes = new UTF8Encoding(false).GetBytes(string.Join(
+                "\r\n",
+                "Attribute VB_Name = \"ThisWorkbook\"",
+                "Option Explicit",
+                string.Empty));
+            var initialLaunch = new
+            {
+                project = projectRoot,
+                document = "DebugProject",
+                module = "DebugModule",
+                procedure = "RunTarget",
+                __vbaDebugWorkbookFileName = documentPaths.WorkbookFileName,
+                __vbaRestartPreparation = new
+                {
+                    protocolVersion = 1,
+                    id = restartPreparationId,
+                    generation = 0
+                },
+                sourceSnapshot = new
+                {
+                    schemaVersion = 1,
+                    sources = new[]
+                    {
+                        new
+                        {
+                            relativePath = "DebugModule.bas",
+                            sourceUri,
+                            encoding = "utf8",
+                            contentBase64 = Convert.ToBase64String(sourceBytes)
+                        }
+                    },
+                    breakpoints = new[] { new { sourceUri, line = breakpointLine } }
+                }
+            };
+            var failingRestartLaunch = new
+            {
+                project = projectRoot,
+                document = "DebugProject",
+                module = "DebugModule",
+                procedure = "RunTarget",
+                __vbaDebugWorkbookFileName = documentPaths.WorkbookFileName,
+                __vbaRestartPreparation = new
+                {
+                    protocolVersion = 1,
+                    id = restartPreparationId,
+                    generation = 1
+                },
+                sourceSnapshot = new
+                {
+                    schemaVersion = 1,
+                    sources = new[]
+                    {
+                        new
+                        {
+                            relativePath = "ConflictingThisWorkbook.bas",
+                            sourceUri = conflictingSourceUri,
+                            encoding = "utf8",
+                            contentBase64 = Convert.ToBase64String(conflictingSourceBytes)
+                        },
+                        new
+                        {
+                            relativePath = "DebugModule.bas",
+                            sourceUri,
+                            encoding = "utf8",
+                            contentBase64 = Convert.ToBase64String(sourceBytes)
+                        }
+                    },
+                    breakpoints = new[] { new { sourceUri, line = breakpointLine } }
+                }
+            };
+
+            Assert.False(File.Exists(conflictingSourcePath));
+            await using var adapter = PackagedDebugAdapterProcess.Start(
+                assets.DebugAdapterExecutablePath,
+                assets.VbaDevExecutablePath,
+                projectRoot,
+                sessionId);
+            await adapter.SendRequestAsync(1, "initialize", new { adapterID = "vba" });
+            AssertSuccessfulResponse(
+                await adapter.WaitForResponseAsync(1, TimeSpan.FromSeconds(15)),
+                "initialize");
+            await adapter.SendRequestAsync(
+                2,
+                "setBreakpoints",
+                new
+                {
+                    source = new { path = sourcePath },
+                    breakpoints = new[] { new { line = breakpointLine + 1 } }
+                });
+            AssertSuccessfulResponse(
+                await adapter.WaitForResponseAsync(2, TimeSpan.FromSeconds(15)),
+                "setBreakpoints");
+
+            using (var foregroundAssistCancellation = new CancellationTokenSource())
+            {
+                var foregroundAssist = AssistPackagedDebugForegroundAsync(
+                    baselineExcelProcessIds,
+                    foregroundAssistCancellation.Token);
+                JsonElement launchResponse;
+                try
+                {
+                    await adapter.SendRequestAsync(3, "launch", initialLaunch);
+                    await adapter.SendRequestAsync(4, "configurationDone", new { });
+                    AssertSuccessfulResponse(
+                        await adapter.WaitForResponseAsync(4, TimeSpan.FromSeconds(15)),
+                        "configurationDone");
+                    launchResponse = await adapter.WaitForResponseAsync(
+                        3,
+                        TimeSpan.FromSeconds(90));
+                }
+                finally
+                {
+                    foregroundAssistCancellation.Cancel();
+                    try
+                    {
+                        await foregroundAssist;
+                    }
+                    catch (OperationCanceledException)
+                    {
+                    }
+                }
+
+                AssertSuccessfulResponse(launchResponse, "launch");
+            }
+
+            _ = await adapter.WaitForEventAsync("breakpoint", TimeSpan.FromSeconds(15));
+            var launchReport = await WaitForLaunchReportAsync(
+                launchMarkerPath,
+                TimeSpan.FromSeconds(15));
+            var originalExcelWindowHandle = launchReport.ExcelWindowHandle;
+            var originalExcelProcessId = GetWindowProcessId(originalExcelWindowHandle);
+            ownedExcelProcess = CaptureOwnedExcelProcess(originalExcelProcessId);
+            Assert.DoesNotContain(originalExcelProcessId, baselineExcelProcessIds);
+            await WaitForVbeModeAsync(
+                originalExcelWindowHandle,
+                VbeBreakMode,
+                TimeSpan.FromSeconds(15));
+            Assert.False(File.Exists(completionMarkerPath));
+            AssertPersistentArtifactsUnchanged(documentPaths, persistentArtifacts);
+
+            await adapter.SendRequestAsync(5, "restart", new { });
+            await adapter.SendRequestAsync(
+                6,
+                "vba/restartPrepared",
+                new
+                {
+                    sessionId,
+                    restartRequestSequence = 5,
+                    preparationId = restartPreparationId,
+                    generation = 1,
+                    success = true,
+                    launch = failingRestartLaunch
+                });
+            AssertSuccessfulResponse(
+                await adapter.WaitForResponseAsync(6, TimeSpan.FromSeconds(15)),
+                "vba/restartPrepared");
+            var restartResponse = await adapter.WaitForResponseAsync(
+                5,
+                TimeSpan.FromSeconds(90));
+            Assert.Equal("restart", restartResponse.GetProperty("command").GetString());
+            Assert.False(restartResponse.GetProperty("success").GetBoolean());
+            var restartFailure = restartResponse.GetProperty("message").GetString();
+            Assert.Contains(
+                "vba-dev snapshot build exited with code",
+                restartFailure,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "VBA namespace preflight failed",
+                restartFailure,
+                StringComparison.Ordinal);
+            Assert.Contains("ThisWorkbook", restartFailure, StringComparison.Ordinal);
+
+            Assert.True(IsOwnedExcelProcessRunning(ownedExcelProcess));
+            Assert.Equal(
+                originalExcelProcessId,
+                GetWindowProcessId(originalExcelWindowHandle));
+            Assert.Equal(
+                ownedExcelProcess,
+                CaptureOwnedExcelProcess(originalExcelProcessId));
+            await WaitForVbeModeAsync(
+                originalExcelWindowHandle,
+                VbeBreakMode,
+                TimeSpan.FromSeconds(15));
+            Assert.False(File.Exists(completionMarkerPath));
+            Assert.DoesNotContain(
+                adapter.Messages,
+                message =>
+                    message.TryGetProperty("type", out var type) &&
+                    type.GetString() == "event" &&
+                    message.TryGetProperty("event", out var eventName) &&
+                    eventName.GetString() == "terminated");
+            Assert.False(File.Exists(conflictingSourcePath));
+            AssertPersistentArtifactsUnchanged(documentPaths, persistentArtifacts);
+
+            await ExecuteNativeContinueAsync(originalExcelWindowHandle);
+            await WaitForFileTextAsync(
+                completionMarkerPath,
+                "completed",
+                TimeSpan.FromSeconds(15));
+            await WaitForVbeModeAsync(
+                originalExcelWindowHandle,
+                VbeDesignMode,
+                TimeSpan.FromSeconds(15));
+
+            TerminateOwnedExcelProcess(ownedExcelProcess);
+            _ = await adapter.WaitForEventAsync("terminated", TimeSpan.FromSeconds(30));
+            await adapter.CompleteInputAndWaitForExitAsync(TimeSpan.FromSeconds(15));
+            await WaitForOwnedExcelProcessExitAsync(
+                ownedExcelProcess,
+                TimeSpan.FromSeconds(15));
+            Assert.False(File.Exists(conflictingSourcePath));
+            AssertPersistentArtifactsUnchanged(documentPaths, persistentArtifacts);
+        }
+        finally
+        {
+            if (ownedExcelProcess is not null)
+            {
+                TryTerminateOwnedExcelProcess(ownedExcelProcess);
+            }
+
+            await WaitForNoNewExcelProcessesAsync(
+                baselineExcelProcessIds,
+                TimeSpan.FromSeconds(15));
+            TryDeleteDirectory(sessionWorkspacePath);
+        }
+    }
+
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
     public async Task AbruptPackagedAdapterExitKillsItsExactExcelProcessAndLeavesScopedCleanup()
     {
         var repositoryRoot = ResolveRepositoryRoot();
@@ -825,6 +1095,115 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
             binPath,
             Resolve("publishPath"),
             Path.GetFileName(binPath));
+    }
+
+    private static void CreatePackagedDebugProjectFixture(string projectRoot)
+    {
+        const string documentName = "DebugProject";
+        var sourceSetPath = Path.Combine(projectRoot, "src", documentName);
+        var templatePath = Path.Combine(sourceSetPath, $"{documentName}.xlsm");
+        Directory.CreateDirectory(sourceSetPath);
+        Directory.CreateDirectory(Path.Combine(projectRoot, "bin", documentName));
+        Directory.CreateDirectory(Path.Combine(projectRoot, "publish", documentName));
+        var manifest = new
+        {
+            schemaVersion = 1,
+            projectName = documentName,
+            primaryDocument = documentName,
+            documents = new Dictionary<string, object>
+            {
+                [documentName] = new
+                {
+                    kind = "excel",
+                    sourcePath = $"src/{documentName}",
+                    templatePath = $"src/{documentName}/{documentName}.xlsm",
+                    binPath = $"bin/{documentName}/{documentName}.xlsm",
+                    publishPath = $"publish/{documentName}/{documentName}.xlsm",
+                    commonModules = Array.Empty<object>(),
+                    references = new[]
+                    {
+                        new
+                        {
+                            name = "Microsoft Excel 16.0 Object Library",
+                            requested = true
+                        }
+                    }
+                }
+            }
+        };
+        File.WriteAllText(
+            Path.Combine(projectRoot, "vba-project.json"),
+            JsonSerializer.Serialize(
+                manifest,
+                new JsonSerializerOptions { WriteIndented = true }),
+            new UTF8Encoding(false));
+        CreateEmptyMacroEnabledWorkbook(templatePath);
+    }
+
+    private static void CreateEmptyMacroEnabledWorkbook(string path)
+    {
+        using var archive = ZipFile.Open(path, ZipArchiveMode.Create);
+        WriteArchiveEntry(
+            archive,
+            "[Content_Types].xml",
+            """
+            <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+              <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+              <Default Extension="xml" ContentType="application/xml"/>
+              <Override PartName="/xl/workbook.xml" ContentType="application/vnd.ms-excel.sheet.macroEnabled.main+xml"/>
+              <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+            </Types>
+            """);
+        WriteArchiveEntry(
+            archive,
+            "_rels/.rels",
+            """
+            <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+              <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+            </Relationships>
+            """);
+        WriteArchiveEntry(
+            archive,
+            "xl/workbook.xml",
+            """
+            <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+              <sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>
+            </workbook>
+            """);
+        WriteArchiveEntry(
+            archive,
+            "xl/_rels/workbook.xml.rels",
+            """
+            <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+              <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+            </Relationships>
+            """);
+        WriteArchiveEntry(
+            archive,
+            "xl/worksheets/sheet1.xml",
+            """
+            <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData/></worksheet>
+            """);
+    }
+
+    private static void WriteArchiveEntry(
+        ZipArchive archive,
+        string name,
+        string content)
+    {
+        var entry = archive.CreateEntry(name, CompressionLevel.Optimal);
+        using var stream = entry.Open();
+        using var writer = new StreamWriter(
+            stream,
+            new UTF8Encoding(false),
+            bufferSize: 1024,
+            leaveOpen: false);
+        writer.Write(content);
     }
 
     private static IReadOnlyDictionary<string, byte[]> CapturePersistentArtifacts(

@@ -468,12 +468,25 @@ Stop is valid in every launch phase:
 - after visible Excel starts, that process is force-terminated.
 
 Cancellation is reported as cancelled rather than as a setup failure. Restart
-Debugging first completes the fresh-snapshot preparation transaction described
-below while retaining the current session. Only a matching successful
-preparation force-terminates the current process and performs the complete
-temporary build, open, transfer, and run sequence again within the same session
-ID, using a new `DebugGenerationId` and a new lease-issued generation
-capability. Preparation failure leaves the current session active.
+Debugging completes fresh-snapshot preparation, downstream snapshot
+revalidation, and the complete temporary build while retaining the current
+session. The isolated hidden build Excel process may coexist with the current
+visible debug process, but two visible debug processes never overlap. After the
+build succeeds, the adapter rechecks the bound session, restart request,
+project, document, module, and procedure. Only a still-current binding enters
+the swap: the old process is force-terminated immediately before the replacement
+visible Excel process starts under the same session ID, using a new
+`DebugGenerationId` and a new lease-issued generation capability.
+
+This build-before-swap ordering intentionally replaces the former
+validation-before-swap behavior. Validation alone never authorizes teardown of
+a usable current session. Preparation, snapshot revalidation, build, target
+removal, restart cancellation, or a stale binding before the swap cleans any
+new generation and leaves an active current session unchanged. If the current
+session exits during the build, its completion cleans the new generation and
+starts no replacement. If replacement startup fails after the swap, restart
+fails and the new generation is cleaned without reviving or reusing the
+terminated process.
 
 If the adapter exits unexpectedly, the extension runs
 `vba-debug-adapter cleanup --session <session-id>` after observing process exit.
@@ -559,19 +572,32 @@ Protocol 1.1 makes native VS Code Restart a two-party transaction:
    message. The numeric generation on the wire is parsed back into
    `DebugRestartGeneration`, which launch preparation explicitly maps to a
    `DebugGenerationId`; neither identity is used directly as cleanup authority.
-5. Before commit, the adapter validates all bound identities, snapshot
-   structure and encoding, and the continued existence of the same target
-   module and procedure in the fresh source.
-6. Only a fully matching successful preparation can commit the restart. The old
-   session is then terminated and a complete fresh temporary build, open,
-   breakpoint transfer, and run begins.
+5. The adapter validates all bound identities, snapshot structure and encoding,
+   and the continued existence of the same target module and procedure in the
+   fresh source, then fixes that evidence for one-shot launch preparation.
+6. Preparation supplies the fresh inventory to snapshot-aware `vba-dev build`.
+   Downstream snapshot revalidation and the complete new generation build finish
+   while the old visible session remains active. Only build success produces an
+   immutable one-shot launch plan that owns the built generation.
+7. After build success, one-shot commit rechecks the bound session identity,
+   restart request sequence, restart generation, canonical project, document,
+   module, and procedure. A stale or superseded binding cleans the new
+   generation and starts no replacement.
+8. Only a fully matching current binding can enter the swap. The old session is
+   terminated immediately before a replacement visible Excel process opens the
+   built workbook, transfers breakpoints, and runs the target.
 
 A stale request sequence or restart generation cannot consume the pending
 preparation. A missing or malformed marker, wrong bound identity, wrong
-document or target, or a target removed from the fresh snapshot fails that
-restart while retaining the old session; the unreleased protocol has no
-marker-less compatibility path because it could not capture a fresh editor
-snapshot.
+document or target, target removal, downstream snapshot revalidation failure,
+build failure, or restart-only cancellation before the swap fails that restart,
+cleans any new generation, and retains the old session. If the old session exits
+during the build, its completion cleans the new generation and starts no
+replacement. The unreleased protocol has no marker-less compatibility path
+because it could not capture a fresh editor snapshot. If replacement startup
+fails after the swap, the old session remains terminated and the new generation
+is cleaned; neither process nor generation is revived or reused.
+
 Disconnect, terminate, session release, or notification-transport failure
 cancels pending preparation and ends the owned session. If the old Excel process
 exits before restart commit, process exit is authoritative and no replacement
