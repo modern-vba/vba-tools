@@ -1183,7 +1183,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         {
             Assert.True(SpinWait.SpinUntil(
                 () => ReadUtf8(standardOutput).Contains(
-                    "\"request_seq\":4",
+                    "\"request_seq\":3",
                     StringComparison.Ordinal),
                 TimeSpan.FromSeconds(2)));
             var messages = ReadDapMessages(standardOutput);
@@ -2149,7 +2149,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         {
             Assert.True(SpinWait.SpinUntil(
                 () => ReadUtf8(standardOutput).Contains(
-                    "\"request_seq\":4",
+                    "\"request_seq\":3",
                     StringComparison.Ordinal),
                 TimeSpan.FromSeconds(2)));
             var messages = ReadDapMessages(standardOutput);
@@ -2632,7 +2632,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         {
             Assert.True(SpinWait.SpinUntil(
                 () => ReadUtf8(standardOutput).Contains(
-                    "\"request_seq\":4",
+                    "\"request_seq\":3",
                     StringComparison.Ordinal),
                 TimeSpan.FromSeconds(2)));
             var messages = ReadDapMessages(standardOutput);
