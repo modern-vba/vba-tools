@@ -1588,6 +1588,155 @@ public sealed class VbaDebugAdapterCliSurfaceTests
     }
 
     [Fact]
+    public async Task RestartFailureResponseTransportFailureStopsTheRetainedSessionExactlyOnce()
+    {
+        const string sessionId = "0123456789abcdef0123456789abcdef";
+        const string preparationId = "fedcba9876543210fedcba9876543210";
+        var oldSession = new RecordingRunningSession();
+        var launchService = new SequencedDebugLaunchService(
+            [oldSession],
+            [],
+            request =>
+            {
+                if (request.RestartPreparation?.Generation.Value == 1)
+                {
+                    throw new DebugSetupException("Synthetic restart preparation failure.");
+                }
+            });
+        var commandLine = CreateCommandLine(
+            new StandaloneVbaDebugAdapterStdioRunner(launchService),
+            new RecordingVbaDevCapabilitiesProbe(
+                new VbaDevCapabilitiesProbeResult(
+                    0,
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
+                    string.Empty)));
+        var initialLaunch = CreateValidLaunchArguments();
+        initialLaunch["__vbaRestartPreparation"] = new
+        {
+            protocolVersion = 1,
+            id = preparationId,
+            generation = 0
+        };
+        var freshLaunch = CreateValidLaunchArguments();
+        freshLaunch["__vbaRestartPreparation"] = new
+        {
+            protocolVersion = 1,
+            id = preparationId,
+            generation = 1
+        };
+        using var standardInput = CreateDapInput(
+            new { seq = 1, type = "request", command = "launch", arguments = initialLaunch },
+            new { seq = 2, type = "request", command = "configurationDone", arguments = new { } },
+            new { seq = 3, type = "request", command = "restart", arguments = new { } },
+            new
+            {
+                seq = 4,
+                type = "request",
+                command = "vba/restartPrepared",
+                arguments = new
+                {
+                    sessionId,
+                    restartRequestSequence = 3,
+                    preparationId,
+                    generation = 1,
+                    success = true,
+                    launch = freshLaunch
+                }
+            });
+        using var standardOutput = new DapResponseFailingStream("restart");
+
+        await Assert.ThrowsAsync<IOException>(() => commandLine.InvokeAsync(
+            [
+                "--stdio",
+                "--vba-dev", Path.GetFullPath("vba-dev.exe"),
+                "--session", sessionId
+            ],
+            standardInput,
+            standardOutput,
+            Stream.Null,
+            CancellationToken.None));
+
+        Assert.Single(launchService.Invocations);
+        Assert.Equal(1, oldSession.TerminateCalls);
+        Assert.Equal(1, oldSession.DisposeCalls);
+    }
+
+    [Fact]
+    public async Task RootCancellationDuringRestartPreparationStopsTheRetainedSessionExactlyOnce()
+    {
+        const string sessionId = "0123456789abcdef0123456789abcdef";
+        const string preparationId = "fedcba9876543210fedcba9876543210";
+        using var cancellation = new CancellationTokenSource();
+        var oldSession = new RecordingRunningSession();
+        var launchService = new SequencedDebugLaunchService(
+            [oldSession],
+            [],
+            request =>
+            {
+                if (request.RestartPreparation?.Generation.Value == 1)
+                {
+                    cancellation.Cancel();
+                    cancellation.Token.ThrowIfCancellationRequested();
+                }
+            });
+        var commandLine = CreateCommandLine(
+            new StandaloneVbaDebugAdapterStdioRunner(launchService),
+            new RecordingVbaDevCapabilitiesProbe(
+                new VbaDevCapabilitiesProbeResult(
+                    0,
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\"}}",
+                    string.Empty)));
+        var initialLaunch = CreateValidLaunchArguments();
+        initialLaunch["__vbaRestartPreparation"] = new
+        {
+            protocolVersion = 1,
+            id = preparationId,
+            generation = 0
+        };
+        var freshLaunch = CreateValidLaunchArguments();
+        freshLaunch["__vbaRestartPreparation"] = new
+        {
+            protocolVersion = 1,
+            id = preparationId,
+            generation = 1
+        };
+        using var standardInput = CreateDapInput(
+            new { seq = 1, type = "request", command = "launch", arguments = initialLaunch },
+            new { seq = 2, type = "request", command = "configurationDone", arguments = new { } },
+            new { seq = 3, type = "request", command = "restart", arguments = new { } },
+            new
+            {
+                seq = 4,
+                type = "request",
+                command = "vba/restartPrepared",
+                arguments = new
+                {
+                    sessionId,
+                    restartRequestSequence = 3,
+                    preparationId,
+                    generation = 1,
+                    success = true,
+                    launch = freshLaunch
+                }
+            });
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => commandLine.InvokeAsync(
+            [
+                "--stdio",
+                "--vba-dev", Path.GetFullPath("vba-dev.exe"),
+                "--session", sessionId
+            ],
+            standardInput,
+            new MemoryStream(),
+            Stream.Null,
+            cancellation.Token));
+
+        Assert.Single(launchService.Invocations);
+        Assert.Equal(1, oldSession.TerminateCalls);
+        Assert.Equal(1, oldSession.DisposeCalls);
+    }
+
+    [Fact]
     public async Task RestartPinsTheInitiallyResolvedModuleAndProcedure()
     {
         const string sessionId = "0123456789abcdef0123456789abcdef";
@@ -3307,7 +3456,8 @@ public sealed class VbaDebugAdapterCliSurfaceTests
     {
         public List<(
             string VbaDevPath,
-            IVbaDebugSessionWorkspaceLease WorkspaceLease)> Invocations { get; } = [];
+            IVbaDebugSessionWorkspaceLease WorkspaceLease)> Invocations
+        { get; } = [];
 
         public Action<IVbaDebugSessionWorkspaceLease>? OnRun { get; init; }
 
@@ -3722,21 +3872,32 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         public List<(
             string VbaDevPath,
             IVbaDebugSessionWorkspaceLease WorkspaceLease,
-            StandaloneVbaDebugLaunchRequest Request)> Invocations { get; } = [];
+            StandaloneVbaDebugLaunchRequest Request)> Invocations
+        { get; } = [];
 
-        public async Task<IStandaloneVbaDebugRunningSession> LaunchAsync(
+        public Task<IPreparedDebugLaunchPlan> PrepareAsync(
             string vbaDevPath,
             IVbaDebugSessionWorkspaceLease workspaceLease,
             StandaloneVbaDebugLaunchRequest request,
+            DebugRestartLaunchBinding? restartBinding,
             CancellationToken cancellationToken,
             IDebugLifecycleSink? lifecycleSink = null)
         {
             Invocations.Add((vbaDevPath, workspaceLease, request));
-            if (inputWait is not null && lifecycleSink is not null)
-            {
-                await lifecycleSink.InputRequiredAsync(inputWait, cancellationToken);
-            }
-            return runningSession ?? new RecordingRunningSession();
+            return Task.FromResult<IPreparedDebugLaunchPlan>(
+                new FakePreparedDebugLaunchPlan(
+                    request,
+                    restartBinding,
+                    async commitCancellationToken =>
+                    {
+                        if (inputWait is not null && lifecycleSink is not null)
+                        {
+                            await lifecycleSink.InputRequiredAsync(
+                                inputWait,
+                                commitCancellationToken);
+                        }
+                        return runningSession ?? new RecordingRunningSession();
+                    }));
         }
     }
 
@@ -3751,22 +3912,36 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         public List<(
             string VbaDevPath,
             IVbaDebugSessionWorkspaceLease WorkspaceLease,
-            StandaloneVbaDebugLaunchRequest Request)> Invocations { get; } = [];
+            StandaloneVbaDebugLaunchRequest Request)> Invocations
+        { get; } = [];
 
-        public Task<IStandaloneVbaDebugRunningSession> LaunchAsync(
+        public Task<IPreparedDebugLaunchPlan> PrepareAsync(
             string vbaDevPath,
             IVbaDebugSessionWorkspaceLease workspaceLease,
             StandaloneVbaDebugLaunchRequest request,
+            DebugRestartLaunchBinding? restartBinding,
             CancellationToken cancellationToken,
             IDebugLifecycleSink? lifecycleSink = null)
         {
+            validate?.Invoke(request);
+            if (restartBinding?.BoundSession.Completion.IsCompleted == true)
+            {
+                throw new DebugSetupException(
+                    "The owned VBA debug session exited before restart replacement committed.");
+            }
             Invocations.Add((vbaDevPath, workspaceLease, request));
-            events.Add($"launch:{Invocations.Count}");
-            return Task.FromResult(sessions.Dequeue());
+            var invocation = Invocations.Count;
+            var session = sessions.Dequeue();
+            return Task.FromResult<IPreparedDebugLaunchPlan>(
+                new FakePreparedDebugLaunchPlan(
+                    request,
+                    restartBinding,
+                    _ =>
+                    {
+                        events.Add($"launch:{invocation}");
+                        return Task.FromResult(session);
+                    }));
         }
-
-        public void ValidateForLaunch(StandaloneVbaDebugLaunchRequest request)
-            => validate?.Invoke(request);
     }
 
     private sealed class CancellationAwareDebugLaunchService : IStandaloneVbaDebugLaunchService
@@ -3774,17 +3949,18 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         public TaskCompletionSource CancellationObserved { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public async Task<IStandaloneVbaDebugRunningSession> LaunchAsync(
+        public async Task<IPreparedDebugLaunchPlan> PrepareAsync(
             string vbaDevPath,
             IVbaDebugSessionWorkspaceLease workspaceLease,
             StandaloneVbaDebugLaunchRequest request,
+            DebugRestartLaunchBinding? restartBinding,
             CancellationToken cancellationToken,
             IDebugLifecycleSink? lifecycleSink = null)
         {
             try
             {
                 await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
-                throw new InvalidOperationException("The in-flight launch unexpectedly completed.");
+                throw new InvalidOperationException("The in-flight preparation unexpectedly completed.");
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -3797,13 +3973,99 @@ public sealed class VbaDebugAdapterCliSurfaceTests
     private sealed class FailingDebugLaunchService(Exception exception)
         : IStandaloneVbaDebugLaunchService
     {
-        public Task<IStandaloneVbaDebugRunningSession> LaunchAsync(
+        public Task<IPreparedDebugLaunchPlan> PrepareAsync(
             string vbaDevPath,
             IVbaDebugSessionWorkspaceLease workspaceLease,
             StandaloneVbaDebugLaunchRequest request,
+            DebugRestartLaunchBinding? restartBinding,
             CancellationToken cancellationToken,
             IDebugLifecycleSink? lifecycleSink = null)
-            => Task.FromException<IStandaloneVbaDebugRunningSession>(exception);
+            => Task.FromException<IPreparedDebugLaunchPlan>(exception);
+    }
+
+    private sealed class FakePreparedDebugLaunchPlan : IPreparedDebugLaunchPlan
+    {
+        private readonly DebugRestartLaunchBinding? restartBinding;
+        private readonly Func<CancellationToken, Task<IStandaloneVbaDebugRunningSession>> commit;
+        private int consumed;
+        private int restartSessionReleased;
+
+        public FakePreparedDebugLaunchPlan(
+            StandaloneVbaDebugLaunchRequest request,
+            DebugRestartLaunchBinding? restartBinding,
+            Func<CancellationToken, Task<IStandaloneVbaDebugRunningSession>> commit)
+        {
+            this.restartBinding = restartBinding;
+            this.commit = commit;
+            var targetModuleName = request.ModuleName ??
+                restartBinding?.TargetModuleName ?? "Module1";
+            var targetProcedureName = request.ProcedureName ??
+                restartBinding?.TargetProcedureName ?? "Run";
+            Snapshot = new PreparedDebugLaunchPlanSnapshot(
+                request.SourceSnapshot,
+                request.SourceSnapshot.ActiveSource is null
+                    ? null
+                    : new DebugSourcePosition(
+                        request.SourceSnapshot.ActiveSource.SourceUri,
+                        request.SourceSnapshot.ActiveSource.Line,
+                        request.SourceSnapshot.ActiveSource.Character),
+                new DebugTargetProcedure(targetModuleName, targetProcedureName),
+                [],
+                RequiresConditionalCompilationPreflight: false,
+                DebugGenerationId.FromValue(
+                    request.RestartPreparation?.Generation.Value ?? 0),
+                GenerationWorkspacePath: string.Empty,
+                new PreparedDebugLaunchSettings(
+                    request.ProjectRoot,
+                    request.DocumentName,
+                    request.WorkbookFileName,
+                    request.ModuleName,
+                    request.ProcedureName,
+                    request.RestartPreparation),
+                restartBinding);
+        }
+
+        public PreparedDebugLaunchPlanSnapshot Snapshot { get; }
+
+        public bool RestartSessionReleased =>
+            Volatile.Read(ref restartSessionReleased) != 0;
+
+        public async Task<IStandaloneVbaDebugRunningSession> CommitAsync(
+            DebugRestartLaunchBinding? currentRestartBinding,
+            CancellationToken cancellationToken)
+        {
+            if (Interlocked.Exchange(ref consumed, 1) != 0)
+            {
+                throw new InvalidOperationException(
+                    "The fake prepared debug launch plan was already consumed.");
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            if (restartBinding is not null)
+            {
+                if (!ReferenceEquals(restartBinding, currentRestartBinding))
+                {
+                    throw new DebugSetupException(
+                        "The fake prepared restart binding is stale.");
+                }
+                if (restartBinding.BoundSession.Completion.IsCompleted)
+                {
+                    throw new DebugSetupException(
+                        "The owned VBA debug session exited before restart replacement committed.");
+                }
+                Volatile.Write(ref restartSessionReleased, 1);
+                try
+                {
+                    await restartBinding.BoundSession.TerminateAsync();
+                }
+                finally
+                {
+                    await restartBinding.BoundSession.DisposeAsync();
+                }
+            }
+            return await commit(cancellationToken);
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     private sealed class RecordingRunningSession(
