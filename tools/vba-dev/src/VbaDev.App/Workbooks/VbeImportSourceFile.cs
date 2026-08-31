@@ -105,14 +105,16 @@ public sealed record VbeImportedComponent(
     IReadOnlyList<string> CodeModuleLines);
 
 /// <summary>
-/// Verifies that VBIDE imported one component without changing its projected identity or code.
+/// Verifies that VBIDE imported one component without changing its projected identity or code,
+/// except for accepted identifier-only recasing.
 /// </summary>
 public static class VbeImportedComponentVerifier
 {
     /// <summary>
-    /// Requires exact component name, kind, line count, and line text equality.
+    /// Requires exact component name, kind, and line structure. Returns one non-fatal warning
+    /// only when every projected-code difference is accepted identifier recasing.
     /// </summary>
-    public static void Verify(
+    public static VbeIdentifierRecasingWarning? Verify(
         VbeImportVerification expected,
         VbeImportedComponent actual)
     {
@@ -143,9 +145,21 @@ public static class VbeImportedComponentVerifier
                 actual.CodeModuleLines[index],
                 StringComparison.Ordinal))
             {
+                if (VbeIdentifierRecasingClassifier.TryClassify(
+                        expected,
+                        actual,
+                        out var pairs))
+                {
+                    return new VbeIdentifierRecasingWarning(
+                        actual.ComponentName,
+                        pairs);
+                }
+
                 throw new InvalidOperationException(
                     $"VBIDE imported component '{actual.ComponentName}' with unexpected text at line {index + 1}.");
             }
         }
+
+        return null;
     }
 }

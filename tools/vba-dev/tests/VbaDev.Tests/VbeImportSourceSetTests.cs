@@ -673,6 +673,37 @@ public sealed class VbeImportSourceSetTests
             StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void ReportsOneStructuredWarningForIdentifierOnlyRecasing()
+    {
+        var expected = new VbeImportVerification(
+            componentName: "Module1",
+            componentKind: VbaSourceKind.StandardModule,
+            codeModuleLines:
+            [
+                "Debug.Print FileName",
+                "Debug.Print FileName"
+            ],
+            originalEncoding: "utf8");
+
+        var warning = Assert.IsType<VbeIdentifierRecasingWarning>(
+            VbeImportedComponentVerifier.Verify(
+                expected,
+                new VbeImportedComponent(
+                    "Module1",
+                    VbaSourceKind.StandardModule,
+                    [
+                        "Debug.Print Filename",
+                        "Debug.Print Filename"
+                    ])));
+
+        Assert.Equal("vbeIdentifierRecased", warning.Code);
+        Assert.Equal("Module1", warning.ComponentName);
+        Assert.Equal(
+            [new VbeIdentifierRecasingPair("FileName", "Filename")],
+            warning.DistinctPairs);
+    }
+
     private static Encoding StrictEncoding(int codePage)
         => codePage == 65001
             ? new UTF8Encoding(false, true)

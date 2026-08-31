@@ -773,7 +773,11 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             events,
             new VbaDevSnapshotBuildResult(generationCapability)
             {
-                Output = ["WARN Protected reference remains."]
+                Output =
+                [
+                    "WARN Protected reference remains.",
+                    "[WARN] vbeIdentifierRecased: Imported component 'Module1' identifier casing (source -> VBE): 'FileName' -> 'Filename'."
+                ]
             });
         var visibleSession = new RecordingVbeDebugSession(events);
         var lifecycleSink = new RecordingDebugLifecycleSink();
@@ -814,7 +818,11 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             Assert.Equal(workbookPath, visibleSession.OpenedWorkbookPath);
             Assert.Same(lifecycleSink, visibleSession.WorkbookOpenInputWaitSink);
             Assert.Equal(
-                [new DebugLifecycleMessage("WARN Protected reference remains.")],
+                [
+                    new DebugLifecycleMessage("WARN Protected reference remains."),
+                    new DebugLifecycleMessage(
+                        "[WARN] vbeIdentifierRecased: Imported component 'Module1' identifier casing (source -> VBE): 'FileName' -> 'Filename'.")
+                ],
                 lifecycleSink.Messages);
             Assert.Equal(new DebugTargetProcedure("Module1", "Run"), visibleSession.Target);
             await runningSession.TerminateAsync();

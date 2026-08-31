@@ -21,7 +21,9 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
         await File.WriteAllBytesAsync(vbaDevPath, []);
         var process = new RecordingBuildProcess
         {
-            StandardOutput = "WARN Protected reference remains.\r\n"
+            StandardOutput = "Built Book1.xlsm\r\nWARN Protected reference remains.\r\n",
+            StandardError =
+                "[WARN] vbeIdentifierRecased: Imported component 'DebugModule' identifier casing (source -> VBE): 'FileName' -> 'Filename'.\r\n"
         };
         var builder = new VbaDevSnapshotWorkbookBuilder(process);
         const string sessionId = "0123456789abcdef0123456789abcdef";
@@ -67,7 +69,13 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                 ],
                 invocation.Arguments);
             Assert.True(File.Exists(result.WorkbookPath));
-            Assert.Equal(["WARN Protected reference remains."], result.Output);
+            Assert.Equal(
+                [
+                    "Built Book1.xlsm",
+                    "WARN Protected reference remains.",
+                    "[WARN] vbeIdentifierRecased: Imported component 'DebugModule' identifier casing (source -> VBE): 'FileName' -> 'Filename'."
+                ],
+                result.Output);
         }
         finally
         {

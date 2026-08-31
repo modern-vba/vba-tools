@@ -83,9 +83,9 @@ public sealed class VbaDevSnapshotWorkbookBuilder : IVbaDebugWorkbookBuilder
 
             var result = new VbaDevSnapshotBuildResult(generationWorkspace)
             {
-                Output = processResult.StandardOutput
-                    .Replace("\r\n", "\n", StringComparison.Ordinal)
-                    .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                Output = SplitOutput(processResult.StandardOutput)
+                    .Concat(SplitOutput(processResult.StandardError))
+                    .ToArray()
             };
             generationWorkspace = null;
             return result;
@@ -106,6 +106,11 @@ public sealed class VbaDevSnapshotWorkbookBuilder : IVbaDebugWorkbookBuilder
             throw;
         }
     }
+
+    private static string[] SplitOutput(string output)
+        => output
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries);
 
     private static void ValidateRequest(
         string vbaDevPath,

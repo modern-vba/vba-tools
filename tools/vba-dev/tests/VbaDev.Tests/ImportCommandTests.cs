@@ -55,6 +55,55 @@ public sealed class ImportCommandTests
     }
 
     [Fact]
+    public void ImportKeepsSuccessOutputExactAndEmitsRecasingWarningsOnStandardError()
+    {
+        using var temp = TempDirectory.Create();
+        var sourceDirectory = temp.CreateDirectory("src");
+        var targetWorkbook = Path.Combine(temp.Path, "target.xlsm");
+        File.WriteAllText(
+            Path.Combine(sourceDirectory, "Module1.bas"),
+            "Attribute VB_Name = \"Module1\"",
+            Encoding.UTF8);
+        File.WriteAllText(targetWorkbook, "workbook", Encoding.UTF8);
+        var exactApplication = CommandLineTestFactory.Create(
+            temp.Path,
+            workbookBuildAutomation: new FakeWorkbookBuildAutomation());
+        var warnedAutomation = new FakeWorkbookBuildAutomation
+        {
+            VerificationReport = new VbeImportVerificationReport(
+            [
+                new VbeIdentifierRecasingWarning(
+                    "Module1",
+                    [new VbeIdentifierRecasingPair("FileName", "Filename")])
+            ])
+        };
+        var warnedApplication = CommandLineTestFactory.Create(
+            temp.Path,
+            workbookBuildAutomation: warnedAutomation);
+        var arguments = new[]
+        {
+            "import",
+            "--from",
+            sourceDirectory,
+            "--to",
+            targetWorkbook
+        };
+
+        var exactResult = exactApplication.Run(arguments);
+        var warnedResult = warnedApplication.Run(arguments);
+
+        Assert.Equal(0, exactResult.ExitCode);
+        Assert.Equal(0, warnedResult.ExitCode);
+        Assert.Equal(exactResult.StandardOutput, warnedResult.StandardOutput);
+        Assert.Empty(exactResult.StandardError);
+        Assert.Equal(
+            "[WARN] vbeIdentifierRecased: Imported component 'Module1' identifier casing (source -> VBE): 'FileName' -> 'Filename'."
+            + Environment.NewLine,
+            warnedResult.StandardError);
+        Assert.Equal(1, warnedAutomation.SaveCalls);
+    }
+
+    [Fact]
     public void ImportRejectsRetainedComponentCollisionBeforeFlushingAnyMutation()
     {
         using var temp = TempDirectory.Create();
@@ -555,6 +604,70 @@ public sealed class ImportCommandTests
     }
 
     [Fact]
+    public void ImportCommandDoesNotSaveWhenVerificationReturnsNoReport()
+    {
+        using var temp = TempDirectory.Create();
+        var sourceDirectory = temp.CreateDirectory("src");
+        var targetWorkbook = Path.Combine(temp.Path, "target.xlsm");
+        File.WriteAllText(
+            Path.Combine(sourceDirectory, "Module1.bas"),
+            "Attribute VB_Name = \"Module1\"",
+            new UTF8Encoding(false));
+        File.WriteAllText(targetWorkbook, "workbook", Encoding.UTF8);
+        var automation = new FakeWorkbookBuildAutomation
+        {
+            VerificationReport = null!
+        };
+        var application = CommandLineTestFactory.Create(
+            temp.Path,
+            workbookBuildAutomation: automation);
+
+        var result = application.Run(
+            ["import", "--from", sourceDirectory, "--to", targetWorkbook]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("verification report", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, automation.SaveCalls);
+    }
+
+    [Fact]
+    public void ImportDoesNotEmitRecasingWarningWhenSaveFails()
+    {
+        using var temp = TempDirectory.Create();
+        var sourceDirectory = temp.CreateDirectory("src");
+        var targetWorkbook = Path.Combine(temp.Path, "target.xlsm");
+        File.WriteAllText(
+            Path.Combine(sourceDirectory, "Module1.bas"),
+            "Attribute VB_Name = \"Module1\"",
+            new UTF8Encoding(false));
+        File.WriteAllText(targetWorkbook, "workbook", Encoding.UTF8);
+        var automation = new FakeWorkbookBuildAutomation
+        {
+            ThrowOnSave = true,
+            VerificationReport = new VbeImportVerificationReport(
+            [
+                new VbeIdentifierRecasingWarning(
+                    "Module1",
+                    [new VbeIdentifierRecasingPair("FileName", "Filename")])
+            ])
+        };
+        var application = CommandLineTestFactory.Create(
+            temp.Path,
+            workbookBuildAutomation: automation);
+
+        var result = application.Run(
+            ["import", "--from", sourceDirectory, "--to", targetWorkbook]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("save failed", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            VbeIdentifierRecasingWarning.WarningCode,
+            result.StandardError,
+            StringComparison.Ordinal);
+        Assert.Equal(1, automation.SaveCalls);
+    }
+
+    [Fact]
     public void ImportMirrorCleanupFailurePreventsVerificationAndInPlaceSave()
     {
         using var temp = TempDirectory.Create();
@@ -705,8 +818,8 @@ public sealed class ImportCommandTests
             CancellationToken cancellationToken)
             => Task.CompletedTask;
 
-        public Task VerifyAsync(CancellationToken cancellationToken)
-            => Task.CompletedTask;
+        public Task<VbeImportVerificationReport> VerifyAsync(CancellationToken cancellationToken)
+            => Task.FromResult(VbeImportVerificationReport.Empty);
 
         public Task SaveAsync(CancellationToken cancellationToken)
         {

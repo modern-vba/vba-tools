@@ -555,7 +555,7 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGeneratio
                 cancellationToken,
                 () => session.ExportModule(moduleName, destinationPath));
 
-        public Task VerifyAsync(CancellationToken cancellationToken)
+        public Task<VbeImportVerificationReport> VerifyAsync(CancellationToken cancellationToken)
             => ExecuteAsync(
                 new WorkbookAutomationStage(WorkbookAutomationStageKind.Verification),
                 timeouts.ModuleImport,
