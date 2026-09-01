@@ -152,19 +152,36 @@ receiver's static type.
 For a project-local source file whose basename equals the old
 `ModuleIdentity` under case-insensitive comparison, the same semantic
 `RenamePlan` renames the `.bas`, `.cls`, or `.frm` basename in place to the new
-identity. A matching `.frx` sidecar follows its `.frm` as the same form source
-unit. When the existing basename differs from the old identity, Rename preserves
-that deliberate path spelling rather than guessing a file rename. Explorer F2
-remains an ordinary filesystem rename and never implies semantic
+identity. When the existing basename differs from the old identity, Rename
+preserves that deliberate path spelling rather than guessing a file rename.
+Explorer F2 remains an ordinary filesystem rename and never implies semantic
 `ModuleIdentity` Rename. An intentional case-only identity Rename also changes
 the final basename casing to the requested spelling on a case-insensitive
 filesystem; how the language server safely realizes that transition is an
 internal concern rather than a different user-visible operation.
 
-A conclusively absent `.frx` at request start is valid and produces no sidecar
-operation. Missing request-start evidence, later appearance, disappearance or
-byte change, displacement from the matching `.frm`, unreadable evidence, or a
-destination-sidecar collision fails with `sidecarConflict` and no edit.
+For a source-owned form, the form portion of the plan is one
+`FormSourceUnitRename`. Its `FormSourceUnit` contains the `.frm` text and path,
+the optional same-directory matching `.frx` path and exact bytes, and every
+participating semantic source snapshot fixed at request start. The plan changes
+the authoritative metadata and resolved semantic occurrences together with the
+name in the single outermost `Begin <designer-class> <name>` declaration.
+Nested component identities and unrelated designer text do not participate.
+
+Every syntactically valid designer property reference of the form
+`"<basename>.frx":<hex-offset>` participates regardless of its property name.
+When the basename follows the identity, Rename changes the filename token in
+every matching reference and renames the `.frm` and `.frx` paths while
+preserving each offset. A deliberately different basename preserves its paths
+and reference spelling. A case-only Rename applies the requested casing
+consistently. Rename never rewrites `.frx` bytes merely to change identity.
+
+The outermost designer root must be unique and match the authoritative module
+identity, and every `.frx` reference must be a safe same-directory filename
+matching the form basename. A conclusively absent sidecar is valid only when no
+designer property references it. Missing, displaced, conflicting, multiply
+identified, unreadable, changed, unsafe, malformed, or ambiguous evidence fails
+before the server returns any edit.
 
 Project-local source includes both an unowned source inside a manifest-backed
 `DocumentSourceSet` and source inside an `AdHocVbaProject`. Ad-hoc Rename uses
@@ -185,11 +202,14 @@ does not overwrite an existing destination or ignore a collision.
 A preflight source-unit or destination conflict returns
 `resourceOperationConflict` and no edit. Its structured
 `error.data.condition` is `sourceMissing`, `sourceChanged`,
-`destinationExists`, or `sidecarConflict`, and the error identifies the affected
-path and repair guidance. This filesystem planning failure is distinct from a
-VBA `sameScopeCollision`, from `clientCapabilityMissing`, and from a later
-`WorkspaceEditApplicationFailure`; the stable top-level reason does not expand
-for every file condition.
+`destinationExists`, `sidecarConflict`, `designerRootMissing`,
+`designerRootAmbiguous`, `designerStructureMalformed`,
+`designerIdentityConflict`, `sidecarReferenceMalformed`,
+`sidecarReferenceUnsafe`, `sidecarReferenceConflict`, or `sidecarMissing`.
+The error identifies the affected path and repair guidance. This planning
+failure is distinct from a VBA `sameScopeCollision`, from
+`clientCapabilityMissing`, and from a later
+`WorkspaceEditApplicationFailure`.
 
 Atomicity here is a `RenamePlan` guarantee, not a promise that the client can
 roll back arbitrary filesystem failure. The server returns every required text

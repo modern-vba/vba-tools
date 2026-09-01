@@ -3610,7 +3610,7 @@ location or reference identity when available.
 _Avoid_: invalid params, no-change result, empty workspace edit
 
 **RenameResourceConflict**:
-The pre-plan state in which a required file-following Rename cannot be safely described because its source unit or destination changed or conflicts. Its `resourceOperationConflict` failure distinguishes `sourceMissing`, `sourceChanged`, `destinationExists`, and `sidecarConflict` conditions without emitting any edit.
+The pre-plan state in which a required file-following Rename or `FormSourceUnitRename` cannot be safely described. General conditions are `sourceMissing`, `sourceChanged`, `destinationExists`, and `sidecarConflict`. Form-specific conditions are `designerRootMissing`, `designerRootAmbiguous`, `designerStructureMalformed`, `designerIdentityConflict`, `sidecarReferenceMalformed`, `sidecarReferenceUnsafe`, `sidecarReferenceConflict`, and `sidecarMissing`. Each failure identifies the affected path and repair guidance and emits no edit.
 _Avoid_: DeclarationCollision, WorkspaceEditApplicationFailure, partial file Rename
 
 **WorkspaceEditApplicationFailure**:
@@ -3792,8 +3792,16 @@ initiate an independent Rename.
 _Avoid_: spelling-based handler, handler call reference, Event family member
 
 **FormDesignerBlock**:
-The non-code designer section of an exported `.frm` file, such as form and control property declarations. The MVP keeps it out of AST definitions and references even though the file itself belongs to the `VbaProject`.
-_Avoid_: form code, form module, generated code
+The non-code designer section of an exported `.frm` file. The parser preserves its raw text and boundaries and exposes the candidate outermost form root, ordered `.frx` property references, and evidence problems needed to prove a `FormSourceUnitRename`. These syntax facts do not create `VbaDefinition`s; nested control identities and unrelated designer text remain outside semantic name resolution.
+_Avoid_: form code, form module, designer declaration
+
+**FormSourceUnit**:
+The complete mutation boundary for one source-owned UserForm: its `.frm` text and path, the optional same-directory matching `.frx` path and exact bytes, and every request-start semantic source snapshot participating in the module identity change. A conclusively absent sidecar is retained as an absence fence.
+_Avoid_: `.frm` file alone, designer block, workbook component
+
+**FormSourceUnitRename**:
+The form-specific part of one `RenamePlan`. It changes the authoritative `ModuleIdentityMetadata`, resolved semantic occurrences, and the single outermost designer identity. When the source basename follows the old identity, it also changes every valid matching `.frx` filename reference and the `.frm`/`.frx` paths; a deliberately different basename preserves those paths and references. It preserves resource offsets, nested controls, unrelated designer text, and exact `.frx` bytes, and returns no edit unless every source, designer, sidecar, and snapshot participant is proven current and unambiguous.
+_Avoid_: form-text Rename, binary resource rewrite, workbook-backed component Rename
 
 **ModuleMember**:
 A top-level parsed member inside a VBA module, such as a procedure, property, enum, user-defined type, event, constant, variable, or declaration block. Incremental AST updates use `ModuleMember` ranges as their replacement unit.
@@ -4529,6 +4537,9 @@ Domain Expert: "From any resolved source-owned `ModuleIdentityOccurrence`: the n
 Dev: "Does renaming `ModuleIdentity` `Customer` to `CustomerRecord` also rename `Customer.cls`?"
 Domain Expert: "For project-local source, yes when the old basename and old identity match case-insensitively: keep the directory and extension and rename the basename, including the matching `.frx` with a form. This includes a case-only identity change, for which the final file-name casing follows the requested identity even on a case-insensitive filesystem. Preserve an already-different basename because it may be deliberate. Explorer F2 changes only the path and is not a semantic Rename entry point."
 
+Dev: "What does Rename change when that source-owned module is a UserForm?"
+Domain Expert: "Treat it as one `FormSourceUnitRename`. Change the authoritative `Attribute VB_Name`, every resolved semantic occurrence, and the name in the single outermost `Begin <designer-class> <name>` declaration. If the source basename follows the old identity, also change every valid property reference to the matching `.frx` basename and rename the `.frm` and `.frx` paths. Preserve every resource offset, nested control name, unrelated quoted string, and exact `.frx` byte. A deliberately different basename keeps its paths and sidecar-reference spelling while the semantic and designer-root identities change."
+
 Dev: "Does that file-following rule require a `ProjectManifest`?"
 Domain Expert: "No. An `AdHocVbaProject` applies the same rule within its one-folder project boundary when the source has an explicit `ModuleIdentity`. It neither invents CommonModules ownership nor host projection; its collisions, form sidecar, client-capability, and resource-conflict rules otherwise match ordinary workbook-backed project-local source."
 
@@ -4536,7 +4547,7 @@ Dev: "Does an atomic `RenamePlan` guarantee rollback if the client fails while r
 Domain Expert: "No. It guarantees that the server emits every required text and resource operation or no plan. File-following `ModuleIdentity` Rename requires client support for ordered document changes and file Rename; otherwise it fails with `clientCapabilityMissing` before returning partial edits. A later client or filesystem application failure is `WorkspaceEditApplicationFailure` and uses client-owned Undo, retry, or repair."
 
 Dev: "What if the source unit or destination has already changed while a file-following Rename is being planned?"
-Domain Expert: "Return `resourceOperationConflict` with a structured `sourceMissing`, `sourceChanged`, `destinationExists`, or `sidecarConflict` condition, the affected path, and repair guidance, without returning any edit. A VBA declaration collision remains `sameScopeCollision`, and a failure after a valid plan reaches the client remains `WorkspaceEditApplicationFailure`."
+Domain Expert: "Return `resourceOperationConflict` with a structured general or form-specific `RenameResourceConflict` condition, the affected path, and repair guidance, without returning any edit. A VBA declaration collision remains `sameScopeCollision`, and a failure after a valid plan reaches the client remains `WorkspaceEditApplicationFailure`."
 
 Dev: "Should Rename save dirty editors or silently replan when source changes during the request?"
 Domain Expert: "No. The request-start `VbaProject` snapshot treats then-current unsaved editor contents as authoritative without saving them. A later participating-source change produces `resourceOperationConflict` with `sourceChanged` and asks the user to run Rename again; it never switches the initiating request onto a newer snapshot automatically."

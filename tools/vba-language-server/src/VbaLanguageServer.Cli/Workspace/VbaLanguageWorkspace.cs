@@ -1359,7 +1359,8 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
             VbaProjectSnapshot snapshot,
             IEnumerable<string> sourceUris)
     {
-        var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var paths = new Dictionary<string, string>(
+            StringComparer.OrdinalIgnoreCase);
         foreach (var sourceUri in sourceUris)
         {
             if (VbaProjectResolver.TryGetLocalPath(sourceUri) is not { }
@@ -1368,32 +1369,41 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                 continue;
             }
 
-            paths.Add(sourcePath);
+            var fullSourcePath = Path.GetFullPath(sourcePath);
+            paths.TryAdd(fullSourcePath, fullSourcePath);
             if (Path.GetExtension(sourcePath).Equals(
                 ".frm",
                 StringComparison.OrdinalIgnoreCase))
             {
-                paths.Add(Path.ChangeExtension(sourcePath, ".frx"));
+                var expectedSidecarPath = Path.GetFullPath(
+                    Path.ChangeExtension(sourcePath, ".frx"));
+                paths.TryAdd(expectedSidecarPath, expectedSidecarPath);
             }
         }
 
+        IReadOnlyList<string> observedSidecarPaths = [];
         if (projectFileSystem.DirectoryExists(snapshot.Resolution.RootPath))
         {
             var searchOption = snapshot.Resolution.Kind
                 == VbaProjectResolutionKind.ManifestDocument
                     ? SearchOption.AllDirectories
                     : SearchOption.TopDirectoryOnly;
-            foreach (var candidate in projectFileSystem.EnumerateSourceFiles(
-                snapshot.Resolution.RootPath,
-                "*",
-                searchOption))
-            {
-                if (Path.GetExtension(candidate).Equals(
+            observedSidecarPaths = projectFileSystem
+                .EnumerateSourceFiles(
+                    snapshot.Resolution.RootPath,
+                    "*",
+                    searchOption)
+                .Select(Path.GetFullPath)
+                .Where(path => Path.GetExtension(path).Equals(
                     ".frx",
                     StringComparison.OrdinalIgnoreCase))
-                {
-                    paths.Add(Path.GetFullPath(candidate));
-                }
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(path => path, StringComparer.Ordinal)
+                .ToArray();
+            foreach (var candidate in observedSidecarPaths)
+            {
+                paths[candidate] = candidate;
             }
         }
 
@@ -1406,11 +1416,18 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                 source.RawContentDigest,
                 ReadFailure: null),
             StringComparer.OrdinalIgnoreCase);
-        return paths.ToDictionary(
+        return paths.Values.ToDictionary(
             path => path,
-            path => snapshotEvidence.TryGetValue(path, out var evidence)
-                ? evidence
-                : CaptureRenameFileEvidence(path),
+            path => (snapshotEvidence.TryGetValue(path, out var evidence)
+                    ? evidence
+                    : CaptureRenameFileEvidence(path)) with
+                {
+                    ObservedSidecarPaths = observedSidecarPaths
+                        .Where(candidate => candidate.Equals(
+                            path,
+                            StringComparison.OrdinalIgnoreCase))
+                        .ToArray()
+                },
             StringComparer.OrdinalIgnoreCase);
     }
 
@@ -1485,6 +1502,17 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         IReadOnlyDictionary<string, VbaRenameFileEvidence> requestStartEvidence,
         VbaProjectResolution resolution)
     {
+        var formSourceUnitPreflight = PreflightFormSourceUnits(
+            plan.FormSourceUnits,
+            requestStartEvidence,
+            resolution);
+        if (formSourceUnitPreflight.Failure is not null)
+        {
+            return new VbaRenameFilePreflightResult(
+                plan,
+                formSourceUnitPreflight.Failure);
+        }
+
         var completedFileRenames = new List<VbaRenameFileOperation>();
         foreach (var fileRename in plan.FileRenames)
         {
@@ -1573,108 +1601,9 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                 fileRename.OldUri,
                 fileRename.NewUri,
                 Overwrite: IsCaseOnlyFileRename(sourcePath, destinationPath)));
-
-            if (!Path.GetExtension(sourcePath).Equals(
-                    ".frm",
-                    StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            var sidecarSourcePath = Path.ChangeExtension(sourcePath, ".frx");
-            var displacedSidecarPath = FindDisplacedFormSidecar(
-                sidecarSourcePath,
-                resolution,
-                requestStartEvidence);
-            if (displacedSidecarPath is not null)
-            {
-                return new VbaRenameFilePreflightResult(
-                    plan,
-                    new VbaRenameFailure(
-                        "resourceOperationConflict",
-                        "The form sidecar is displaced from its matching form source.",
-                        Condition: "sidecarConflict",
-                        Path: displacedSidecarPath,
-                        Guidance: "Move or re-export the sidecar beside the form, then retry Rename."));
-            }
-
-            if (!requestStartEvidence.TryGetValue(
-                    sidecarSourcePath,
-                    out var sidecarEvidence))
-            {
-                return new VbaRenameFilePreflightResult(
-                    plan,
-                    new VbaRenameFailure(
-                        "resourceOperationConflict",
-                        "The form sidecar could not be verified from request-start evidence.",
-                        Condition: "sidecarConflict",
-                        Path: sidecarSourcePath,
-                        Guidance: "Reload the form source unit and retry Rename."));
-            }
-
-            var currentSidecarEvidence = CaptureRenameFileEvidence(
-                sidecarSourcePath);
-            if (sidecarEvidence.ReadFailure is not null
-                || currentSidecarEvidence.ReadFailure is not null
-                || sidecarEvidence.Exists != currentSidecarEvidence.Exists
-                || sidecarEvidence.Exists
-                    && (sidecarEvidence.Metadata
-                            != currentSidecarEvidence.Metadata
-                || sidecarEvidence.ContentDigest is null
-                || !sidecarEvidence.ContentDigest.Equals(
-                    currentSidecarEvidence.ContentDigest,
-                    StringComparison.Ordinal)))
-            {
-                return new VbaRenameFilePreflightResult(
-                    plan,
-                    new VbaRenameFailure(
-                        "resourceOperationConflict",
-                        "The form sidecar appeared, changed, or disappeared after request start.",
-                        Condition: "sidecarConflict",
-                        Path: sidecarSourcePath,
-                        Guidance: "Restore or reload the matching form sidecar, then retry Rename."));
-            }
-
-            if (!sidecarEvidence.Exists)
-            {
-                continue;
-            }
-
-            var sidecarDestinationPath = Path.ChangeExtension(
-                destinationPath,
-                ".frx");
-            var sidecarConflictPath = projectFileSystem
-                .EnumerateSourceFiles(
-                    directoryPath,
-                    "*",
-                    SearchOption.TopDirectoryOnly)
-                .Select(Path.GetFullPath)
-                .FirstOrDefault(candidate =>
-                    !projectFileSystem.PathsReferToSameEntry(
-                        candidate,
-                        sidecarSourcePath)
-                    && candidate.Equals(
-                        sidecarDestinationPath,
-                        StringComparison.OrdinalIgnoreCase));
-            if (sidecarConflictPath is not null)
-            {
-                return new VbaRenameFilePreflightResult(
-                    plan,
-                    new VbaRenameFailure(
-                        "resourceOperationConflict",
-                        "The destination for the form sidecar already exists.",
-                        Condition: "sidecarConflict",
-                        Path: sidecarConflictPath,
-                        Guidance: "Choose another module name or remove the conflicting sidecar file."));
-            }
-
-            completedFileRenames.Add(new VbaRenameFileOperation(
-                new Uri(sidecarSourcePath).AbsoluteUri,
-                new Uri(sidecarDestinationPath).AbsoluteUri,
-                Overwrite: IsCaseOnlyFileRename(
-                    sidecarSourcePath,
-                    sidecarDestinationPath)));
         }
+
+        completedFileRenames.AddRange(formSourceUnitPreflight.FileRenames);
 
         return new VbaRenameFilePreflightResult(
             plan with
@@ -1683,6 +1612,188 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
             },
             Failure: null);
     }
+
+    private VbaFormSourceUnitPreflightResult PreflightFormSourceUnits(
+        IReadOnlyList<VbaFormSourceUnit> participants,
+        IReadOnlyDictionary<string, VbaRenameFileEvidence> requestStartEvidence,
+        VbaProjectResolution resolution)
+    {
+        var completedFileRenames = new List<VbaRenameFileOperation>();
+        foreach (var participant in participants)
+        {
+            if (VbaProjectResolver.TryGetLocalPath(participant.FormUri) is not { }
+                    formPath
+                || VbaProjectResolver.TryGetLocalPath(participant.SidecarUri) is not { }
+                    sidecarPath
+                || VbaProjectResolver.TryGetLocalPath(
+                    participant.SidecarDestinationUri) is not { }
+                    sidecarDestinationPath)
+            {
+                return new VbaFormSourceUnitPreflightResult(
+                    completedFileRenames,
+                    new VbaRenameFailure(
+                        "analysisIncomplete",
+                        "Rename could not identify every local form source-unit participant."));
+            }
+
+            if (!requestStartEvidence.TryGetValue(formPath, out var formEvidence)
+                || !formEvidence.Exists
+                || formEvidence.ReadFailure is not null
+                || formEvidence.ContentDigest is null)
+            {
+                return new VbaFormSourceUnitPreflightResult(
+                    completedFileRenames,
+                    new VbaRenameFailure(
+                        "resourceOperationConflict",
+                        "The form source was missing or unreadable at request start.",
+                        Condition: "sourceMissing",
+                        Path: formPath,
+                        Guidance: "Restore or reload the complete .frm source, then retry Rename."));
+            }
+
+            var currentFormEvidence = CaptureRenameFileEvidence(formPath);
+            if (!EvidenceMatches(formEvidence, currentFormEvidence))
+            {
+                return new VbaFormSourceUnitPreflightResult(
+                    completedFileRenames,
+                    new VbaRenameFailure(
+                        "resourceOperationConflict",
+                        "The form source changed after Rename captured its source unit.",
+                        Condition: "sourceChanged",
+                        Path: formPath,
+                        Guidance: "Reload the changed .frm source, then retry Rename."));
+            }
+
+            if (!requestStartEvidence.TryGetValue(
+                    sidecarPath,
+                    out var sidecarEvidence))
+            {
+                return new VbaFormSourceUnitPreflightResult(
+                    completedFileRenames,
+                    new VbaRenameFailure(
+                        "resourceOperationConflict",
+                        "The matching form sidecar could not be verified at request start.",
+                        Condition: "sidecarConflict",
+                        Path: sidecarPath,
+                        Guidance: "Reload the complete .frm/.frx source unit, then retry Rename."));
+            }
+
+            var actualSidecarPath = sidecarEvidence.Exists
+                ? sidecarEvidence.FullPath
+                : sidecarPath;
+            var effectiveSidecarDestinationPath =
+                participant.SidecarPathFollowsIdentity
+                    ? sidecarDestinationPath
+                    : actualSidecarPath;
+            var displacedSidecarPath = FindDisplacedFormSidecar(
+                actualSidecarPath,
+                resolution,
+                requestStartEvidence);
+            if (displacedSidecarPath is not null)
+            {
+                return new VbaFormSourceUnitPreflightResult(
+                    completedFileRenames,
+                    new VbaRenameFailure(
+                        "resourceOperationConflict",
+                        "The form sidecar is displaced or multiply identified outside its matching form source.",
+                        Condition: "sidecarConflict",
+                        Path: displacedSidecarPath,
+                        Guidance: "Keep exactly one matching sidecar beside the form, then retry Rename."));
+            }
+
+            if (!sidecarEvidence.Exists)
+            {
+                if (participant.SidecarRequired)
+                {
+                    return new VbaFormSourceUnitPreflightResult(
+                        completedFileRenames,
+                        new VbaRenameFailure(
+                            "resourceOperationConflict",
+                            "The form designer references a missing matching sidecar.",
+                            Condition: "sidecarMissing",
+                            Path: sidecarPath,
+                            Guidance: "Restore or re-export the matching .frx beside the form, then retry Rename."));
+                }
+            }
+
+            var currentSidecarEvidence = CaptureRenameFileEvidence(
+                actualSidecarPath);
+            if (!EvidenceMatches(sidecarEvidence, currentSidecarEvidence))
+            {
+                return new VbaFormSourceUnitPreflightResult(
+                    completedFileRenames,
+                    new VbaRenameFailure(
+                        "resourceOperationConflict",
+                        "The form sidecar appeared, changed, disappeared, or became unreadable after request start.",
+                        Condition: "sidecarConflict",
+                        Path: actualSidecarPath,
+                        Guidance: "Restore or reload the matching .frx, then retry Rename."));
+            }
+
+            var destinationDirectory = Path.GetDirectoryName(
+                effectiveSidecarDestinationPath);
+            if (destinationDirectory is not null
+                && projectFileSystem.DirectoryExists(destinationDirectory))
+            {
+                var sidecarConflictPath = projectFileSystem
+                    .EnumerateSourceFiles(
+                        destinationDirectory,
+                        "*",
+                        SearchOption.TopDirectoryOnly)
+                    .Select(Path.GetFullPath)
+                    .FirstOrDefault(candidate =>
+                        !projectFileSystem.PathsReferToSameEntry(
+                            candidate,
+                            actualSidecarPath)
+                        && candidate.Equals(
+                            effectiveSidecarDestinationPath,
+                            StringComparison.OrdinalIgnoreCase));
+                if (sidecarConflictPath is not null)
+                {
+                    return new VbaFormSourceUnitPreflightResult(
+                        completedFileRenames,
+                        new VbaRenameFailure(
+                            "resourceOperationConflict",
+                            "The destination for the form sidecar already exists.",
+                            Condition: "sidecarConflict",
+                            Path: sidecarConflictPath,
+                            Guidance: "Choose another module name or remove the conflicting sidecar file."));
+                }
+            }
+
+            if (!sidecarEvidence.Exists
+                || actualSidecarPath.Equals(
+                    effectiveSidecarDestinationPath,
+                    StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            completedFileRenames.Add(new VbaRenameFileOperation(
+                new Uri(actualSidecarPath).AbsoluteUri,
+                new Uri(effectiveSidecarDestinationPath).AbsoluteUri,
+                Overwrite: IsCaseOnlyFileRename(
+                    actualSidecarPath,
+                    effectiveSidecarDestinationPath)));
+        }
+
+        return new VbaFormSourceUnitPreflightResult(
+            completedFileRenames,
+            Failure: null);
+    }
+
+    private static bool EvidenceMatches(
+        VbaRenameFileEvidence expected,
+        VbaRenameFileEvidence actual)
+        => expected.Exists == actual.Exists
+            && expected.Metadata == actual.Metadata
+            && expected.ReadFailure is null
+            && actual.ReadFailure is null
+            && (!expected.Exists
+                || expected.ContentDigest is not null
+                    && expected.ContentDigest.Equals(
+                        actual.ContentDigest,
+                        StringComparison.Ordinal));
 
     private bool IsCaseOnlyFileRename(
         string sourcePath,
@@ -1699,8 +1810,11 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
     {
         var expectedFileName = Path.GetFileName(expectedSidecarPath);
         var requestStartDisplacedPath = requestStartEvidence.Values
-            .Where(evidence => evidence.Exists)
-            .Select(evidence => evidence.FullPath)
+            .SelectMany(evidence => evidence.ObservedSidecarPaths.Count > 0
+                ? evidence.ObservedSidecarPaths
+                : evidence.Exists
+                    ? [evidence.FullPath]
+                    : [])
             .Where(path => Path.GetFileName(path).Equals(
                 expectedFileName,
                 StringComparison.OrdinalIgnoreCase))
@@ -1725,7 +1839,10 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                 ? SearchOption.AllDirectories
                 : SearchOption.TopDirectoryOnly;
         return projectFileSystem
-            .EnumerateSourceFiles(resolution.RootPath, "*", searchOption)
+            .EnumerateSourceFiles(
+                resolution.RootPath,
+                "*",
+                searchOption)
             .Select(Path.GetFullPath)
             .Where(path => Path.GetExtension(path).Equals(
                 ".frx",
@@ -1741,12 +1858,19 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
             .FirstOrDefault();
     }
 
+    private sealed record VbaFormSourceUnitPreflightResult(
+        IReadOnlyList<VbaRenameFileOperation> FileRenames,
+        VbaRenameFailure? Failure);
+
     private sealed record VbaRenameFileEvidence(
         string FullPath,
         bool Exists,
         VbaProjectSourceFileMetadata? Metadata,
         string? ContentDigest,
-        string? ReadFailure);
+        string? ReadFailure)
+    {
+        public IReadOnlyList<string> ObservedSidecarPaths { get; init; } = [];
+    }
 
     IReadOnlyList<VbaSemanticInventory>
         IVbaInteractiveWorkspaceCapture.CaptureWorkspaceSemanticInventories(

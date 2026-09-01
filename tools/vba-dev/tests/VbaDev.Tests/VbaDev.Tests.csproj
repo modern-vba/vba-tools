@@ -23,6 +23,10 @@
     <ProjectReference Include="..\..\src\VbaDev.Composition\VbaDev.Composition.csproj" />
     <ProjectReference Include="..\..\src\VbaDev.Infrastructure\VbaDev.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\VbaTools.TypeLibRegistry\VbaTools.TypeLibRegistry.csproj" />
+    <ProjectReference Include="..\..\..\vba-language-server\src\VbaLanguageServer.Cli\VbaLanguageServer.Cli.csproj"
+                      ReferenceOutputAssembly="false" />
+    <Compile Include="..\..\..\vba-language-server\tests\VbaLanguageServer.Tests\LanguageServerProcessHarness.cs"
+             Link="LanguageServerProcessHarness.cs" />
   </ItemGroup>
 
 </Project>

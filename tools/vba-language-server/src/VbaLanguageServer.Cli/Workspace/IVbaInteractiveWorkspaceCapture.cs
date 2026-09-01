@@ -85,6 +85,7 @@ public sealed class VbaRenameProjectSnapshotCapture : IDisposable
     internal VbaRenameFilePreflightResult PreflightFileRenames(
         VbaRenamePlan plan)
         => plan.FileRenames.Count == 0
+            && plan.FormSourceUnits.Count == 0
             ? new VbaRenameFilePreflightResult(plan, Failure: null)
             : preflightFileRenames(plan);
 

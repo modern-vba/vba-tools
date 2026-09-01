@@ -104,15 +104,35 @@ async function createDebugConfigurationFixture(): Promise<string> {
   ].join('\r\n'), 'utf8');
   await writeFile(path.join(outsidePath, 'Dialog.frm'), [
     'VERSION 5.00',
-    'Begin VB.Form Dialog',
+    'Begin VB.UserForm dIaLoG',
+    '   OleObjectBlob = "DIALOG.FRX":0000',
     'End',
-    'Attribute VB_Name = "Dialog"',
+    'Attribute VB_Name = "dIaLoG"',
     ''
   ].join('\r\n'), 'utf8');
   await writeFile(
-    path.join(outsidePath, 'Dialog.frx'),
+    path.join(outsidePath, 'DIALOG.FRX'),
     Uint8Array.from([0x00, 0x01, 0x02, 0x03])
   );
+  await writeFile(path.join(outsidePath, 'MixedCaseForm.frm'), [
+    'VERSION 5.00',
+    'Begin VB.UserForm mIxEdCaSeFoRm',
+    '   OleObjectBlob = "mixedcaseform.frx":0000',
+    'End',
+    'Attribute VB_Name = "mIxEdCaSeFoRm"',
+    ''
+  ].join('\r\n'), 'utf8');
+  await writeFile(
+    path.join(outsidePath, 'mixedcaseform.frx'),
+    Uint8Array.from([0x04, 0x05, 0x06, 0x07])
+  );
+  await writeFile(path.join(outsidePath, 'StandaloneForm.frm'), [
+    'VERSION 5.00',
+    'Begin VB.UserForm StandaloneForm',
+    'End',
+    'Attribute VB_Name = "StandaloneForm"',
+    ''
+  ].join('\r\n'), 'utf8');
   return fixtureRoot;
 }
 

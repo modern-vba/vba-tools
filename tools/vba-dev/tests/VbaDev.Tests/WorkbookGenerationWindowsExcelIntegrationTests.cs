@@ -1,11 +1,14 @@
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 using VbaDev.App.Build;
 using VbaDev.App.References;
 using VbaDev.App.Workbooks;
 using VbaDev.Infrastructure.Debugging;
 using VbaDev.Infrastructure.Workbooks;
+using VbaLanguageServer.Tests;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -387,6 +390,142 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         Assert.Equal(originalClassBytes, File.ReadAllBytes(classSourcePath));
         Assert.Equal(originalFormBytes, File.ReadAllBytes(formSourcePath));
         Assert.Equal(originalSidecarBytes, File.ReadAllBytes(formSidecarPath));
+        await WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20));
+    }
+
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
+    public async Task RenamedUserFormSourceUnitBuildsAndRoundTripsThroughExcel()
+    {
+        using var temp = TempDirectory.Create();
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        var initialProcesses = CaptureExcelProcessIds();
+        var activeCodePage = ActiveWindowsAnsiCodePage.Get();
+        var nonAsciiText = SelectNonAsciiFixtureText(activeCodePage);
+        var formSourcePath = Path.Combine(temp.Path, "Dialog.frm");
+        var formSidecarPath = Path.Combine(temp.Path, "Dialog.frx");
+        var seedWorkbookPath = Path.Combine(temp.Path, "FormSeed.xlsm");
+        CreateEmptyMacroEnabledWorkbook(seedWorkbookPath);
+        ExportNestedUserFormFixture(
+            seedWorkbookPath,
+            formSourcePath,
+            nonAsciiText);
+        var originalSidecarBytes = File.ReadAllBytes(formSidecarPath);
+        Assert.NotEmpty(originalSidecarBytes);
+
+        var renamedFormSourcePath = Path.Combine(temp.Path, "DialogView.frm");
+        var renamedFormSidecarPath = Path.Combine(temp.Path, "DialogView.frx");
+        await ApplyProductionFormSourceUnitRenameAsync(
+            formSourcePath,
+            formSidecarPath,
+            renamedFormSourcePath,
+            renamedFormSidecarPath,
+            activeCodePage,
+            "Dialog",
+            "DialogView",
+            cancellation.Token);
+        Assert.False(File.Exists(formSourcePath));
+        Assert.False(File.Exists(formSidecarPath));
+        Assert.Equal(
+            originalSidecarBytes,
+            File.ReadAllBytes(renamedFormSidecarPath));
+
+        var templatePath = Path.Combine(temp.Path, "Template.xlsm");
+        var targetPath = Path.Combine(temp.Path, "bin", "RenamedForm.xlsm");
+        CreateEmptyMacroEnabledWorkbook(templatePath);
+        await CreateGenerationPipeline().GenerateAsync(
+            "RenamedForm",
+            templatePath,
+            targetPath,
+            [],
+            [new VbaSourceFile(
+                renamedFormSourcePath,
+                VbaSourceKind.Form,
+                renamedFormSidecarPath)],
+            WorkbookAutomationTimeouts.Default,
+            cancellation.Token);
+
+        await UseOwnedExcelWorkbookAsync(
+            targetPath,
+            session =>
+            {
+                object? projectObject = null;
+                object? componentsObject = null;
+                object? formComponentObject = null;
+                object? codeModuleObject = null;
+                try
+                {
+                    dynamic workbook = session.WorkbookObject;
+                    projectObject = workbook.VBProject;
+                    dynamic project = projectObject;
+                    componentsObject = project.VBComponents;
+                    AssertNestedFormState(
+                        componentsObject,
+                        nonAsciiText,
+                        "DialogView");
+                    dynamic components = componentsObject;
+                    formComponentObject = components.Item("DialogView");
+                    dynamic formComponent = formComponentObject;
+                    codeModuleObject = formComponent.CodeModule;
+                    dynamic codeModule = codeModuleObject;
+                    var code = Convert.ToString(codeModule.Lines(
+                        1,
+                        Math.Max(1, (int)codeModule.CountOfLines)))
+                        ?? string.Empty;
+                    Assert.Contains(
+                        "Private Sub UserForm_Initialize()",
+                        code,
+                        StringComparison.Ordinal);
+                    return true;
+                }
+                finally
+                {
+                    ComObjectReleaser.Release(codeModuleObject);
+                    ComObjectReleaser.Release(formComponentObject);
+                    ComObjectReleaser.Release(componentsObject);
+                    ComObjectReleaser.Release(projectObject);
+                }
+            },
+            cancellation.Token);
+
+        var exportRoot = Path.Combine(temp.Path, "re-export");
+        Directory.CreateDirectory(exportRoot);
+        await new ExcelComWorkbookModuleExporter().ExportModulesAsync(
+            targetPath,
+            exportRoot,
+            cancellation.Token);
+        var exportedFormPath = Path.Combine(exportRoot, "DialogView.frm");
+        var exportedSidecarPath = Path.Combine(exportRoot, "DialogView.frx");
+        Assert.False(File.Exists(Path.Combine(exportRoot, "Dialog.frm")));
+        Assert.False(File.Exists(Path.Combine(exportRoot, "Dialog.frx")));
+        Assert.True(File.Exists(exportedFormPath));
+        Assert.True(File.Exists(exportedSidecarPath));
+        Assert.NotEmpty(File.ReadAllBytes(exportedSidecarPath));
+        var exportedText = DecodeActiveCodePageFile(
+            exportedFormPath,
+            activeCodePage);
+        Assert.Single(Regex.Matches(
+            exportedText,
+            "^Begin[ \\t]+\\S+[ \\t]+DialogView(?=[ \\t]*\\r?$)",
+            RegexOptions.Multiline | RegexOptions.CultureInvariant));
+        Assert.Contains(
+            "Attribute VB_Name = \"DialogView\"",
+            exportedText,
+            StringComparison.Ordinal);
+        Assert.Matches(
+            new Regex(
+                "\"DialogView\\.frx\"[ \\t]*:[ \\t]*[0-9A-Fa-f]+",
+                RegexOptions.CultureInvariant),
+            exportedText);
+        Assert.DoesNotMatch(
+            new Regex(
+                "\"Dialog\\.frx\"[ \\t]*:",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant),
+            exportedText);
+        Assert.Contains(
+            "Private Sub UserForm_Initialize()",
+            exportedText,
+            StringComparison.Ordinal);
         await WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20));
     }
 
@@ -1226,7 +1365,8 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
 
     private static void AssertNestedFormState(
         object componentsObject,
-        string nonAsciiText)
+        string nonAsciiText,
+        string componentName = "Dialog")
     {
         object? formComponentObject = null;
         object? designerObject = null;
@@ -1240,7 +1380,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         try
         {
             dynamic components = componentsObject;
-            formComponentObject = components.Item("Dialog");
+            formComponentObject = components.Item(componentName);
             dynamic formComponent = formComponentObject;
             Assert.Equal(3, (int)formComponent.Type);
             designerObject = formComponent.Designer;
@@ -1294,6 +1434,185 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
 
     private static string DecodeActiveCodePageFile(string path, int activeCodePage)
         => StrictEncoding(activeCodePage).GetString(File.ReadAllBytes(path));
+
+    private static async Task ApplyProductionFormSourceUnitRenameAsync(
+        string sourcePath,
+        string sidecarPath,
+        string destinationPath,
+        string sidecarDestinationPath,
+        int activeCodePage,
+        string oldName,
+        string newName,
+        CancellationToken cancellationToken)
+    {
+        var encoding = StrictEncoding(activeCodePage);
+        var source = encoding.GetString(File.ReadAllBytes(sourcePath));
+        var attribute = $"Attribute VB_Name = \"{oldName}\"";
+        var uri = new Uri(sourcePath).AbsoluteUri;
+        var attributeOffset = source.IndexOf(attribute, StringComparison.Ordinal);
+        Assert.True(attributeOffset >= 0);
+        var attributeLine = source[..attributeOffset].Count(character => character == '\n');
+        await using var server = await LanguageServerProcessHarness.StartAsync();
+        await server.InitializeAsync(
+            new
+            {
+                workspace = new
+                {
+                    workspaceEdit = new
+                    {
+                        documentChanges = true,
+                        resourceOperations = new[] { "rename" }
+                    }
+                }
+            },
+            cancellationToken: cancellationToken);
+        await server.SendNotificationAsync(
+            "textDocument/didOpen",
+            new
+            {
+                textDocument = new
+                {
+                    uri,
+                    languageId = "vba",
+                    version = 1,
+                    text = source
+                }
+            },
+            cancellationToken);
+        var rename = await server.SendRequestAsync(
+            2,
+            "textDocument/rename",
+            new
+            {
+                textDocument = new { uri },
+                position = new
+                {
+                    line = attributeLine,
+                    character = "Attribute VB_Name = \"".Length
+                },
+                newName
+            },
+            timeout: TimeSpan.FromMinutes(1),
+            cancellationToken: cancellationToken);
+        Assert.False(
+            rename.TryGetProperty("error", out var renameError),
+            renameError.ToString());
+        var documentChanges = rename
+            .GetProperty("result")
+            .GetProperty("documentChanges")
+            .EnumerateArray()
+            .ToArray();
+        var textDocumentChange = Assert.Single(
+            documentChanges,
+            change => change.TryGetProperty("textDocument", out _));
+        Assert.Equal(
+            uri,
+            textDocumentChange
+                .GetProperty("textDocument")
+                .GetProperty("uri")
+                .GetString());
+        var renamedSource = ApplyTextEdits(
+            source,
+            textDocumentChange.GetProperty("edits"));
+        Assert.Contains(
+            $"Attribute VB_Name = \"{newName}\"",
+            renamedSource,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            attribute,
+            renamedSource,
+            StringComparison.Ordinal);
+        File.WriteAllBytes(sourcePath, encoding.GetBytes(renamedSource));
+
+        var fileRenames = documentChanges.Where(change =>
+            change.TryGetProperty("kind", out var kind)
+            && kind.GetString() == "rename").ToArray();
+        Assert.Equal(2, fileRenames.Length);
+        Assert.Equal(
+            sourcePath,
+            new Uri(fileRenames[0].GetProperty("oldUri").GetString()!).LocalPath,
+            ignoreCase: true);
+        Assert.Equal(
+            destinationPath,
+            new Uri(fileRenames[0].GetProperty("newUri").GetString()!).LocalPath,
+            ignoreCase: true);
+        Assert.Equal(
+            sidecarPath,
+            new Uri(fileRenames[1].GetProperty("oldUri").GetString()!).LocalPath,
+            ignoreCase: true);
+        Assert.Equal(
+            sidecarDestinationPath,
+            new Uri(fileRenames[1].GetProperty("newUri").GetString()!).LocalPath,
+            ignoreCase: true);
+        foreach (var fileRename in fileRenames)
+        {
+            File.Move(
+                new Uri(fileRename.GetProperty("oldUri").GetString()!).LocalPath,
+                new Uri(fileRename.GetProperty("newUri").GetString()!).LocalPath,
+                fileRename
+                    .GetProperty("options")
+                    .GetProperty("overwrite")
+                    .GetBoolean());
+        }
+
+        await server.ShutdownAsync(3, cancellationToken);
+    }
+
+    private static string ApplyTextEdits(
+        string source,
+        JsonElement edits)
+    {
+        var lineStarts = GetLineStartOffsets(source);
+        var result = source;
+        foreach (var edit in edits
+                     .EnumerateArray()
+                     .OrderByDescending(edit => edit
+                         .GetProperty("range")
+                         .GetProperty("start")
+                         .GetProperty("line")
+                         .GetInt32())
+                     .ThenByDescending(edit => edit
+                         .GetProperty("range")
+                         .GetProperty("start")
+                         .GetProperty("character")
+                         .GetInt32()))
+        {
+            var range = edit.GetProperty("range");
+            var startPosition = range.GetProperty("start");
+            var endPosition = range.GetProperty("end");
+            var start = lineStarts[startPosition.GetProperty("line").GetInt32()]
+                + startPosition.GetProperty("character").GetInt32();
+            var end = lineStarts[endPosition.GetProperty("line").GetInt32()]
+                + endPosition.GetProperty("character").GetInt32();
+            Assert.InRange(start, 0, source.Length);
+            Assert.InRange(end, start, source.Length);
+            result = result[..start]
+                + edit.GetProperty("newText").GetString()
+                + result[end..];
+        }
+
+        return result;
+    }
+
+    private static IReadOnlyList<int> GetLineStartOffsets(string source)
+    {
+        var result = new List<int> { 0 };
+        for (var index = 0; index < source.Length; index++)
+        {
+            if (source[index] == '\r'
+                && index + 1 < source.Length
+                && source[index + 1] == '\n')
+            {
+                result.Add(++index + 1);
+            }
+            else if (source[index] is '\r' or '\n')
+            {
+                result.Add(index + 1);
+            }
+        }
+
+        return result;
+    }
 
     private static string SelectNonAsciiFixtureText(int activeCodePage)
     {

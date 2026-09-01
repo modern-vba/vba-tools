@@ -229,6 +229,82 @@ public sealed class VbaLspRequestExecutionCancellationTests
         }
     }
 
+    [Theory]
+    [InlineData(true, "sourceChanged")]
+    [InlineData(false, "sidecarConflict")]
+    public async Task Deliberate_basename_form_rename_fences_unchanged_source_unit_bytes(
+        bool changeForm,
+        string expectedCondition)
+    {
+        var sourceRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-rename-form-unit-change-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(sourceRoot, "LegacyDialog.frm");
+            var sidecarPath = Path.Combine(sourceRoot, "LegacyDialog.frx");
+            var text = string.Join('\n', [
+                "VERSION 5.00",
+                "Begin VB.UserForm Dialog",
+                "   Picture = \"LegacyDialog.frx\":0000",
+                "End",
+                "Attribute VB_Name = \"Dialog\""
+            ]);
+            File.WriteAllText(sourcePath, text);
+            File.WriteAllBytes(sidecarPath, [0x01, 0x02, 0x03]);
+            var uri = new Uri(sourcePath).AbsoluteUri;
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()));
+            workspace.OpenDocument(uri, version: 1, text);
+            await using var output = new MemoryStream();
+            var executor = new VbaLspRequestExecution(
+                new LspMessageTransport(Stream.Null, output),
+                workspace);
+            var parameters = CreateRenameParameters();
+            parameters["textDocument"]!["uri"] = uri;
+            parameters["position"]!["line"] = 4;
+            parameters["position"]!["character"] =
+                "Attribute VB_Name = \"".Length;
+            parameters["newName"] = "DialogView";
+            var request = new JsonObject
+            {
+                ["jsonrpc"] = "2.0",
+                ["id"] = 1,
+                ["method"] = "textDocument/rename",
+                ["params"] = parameters
+            };
+
+            var captured = executor.Capture(request, CancellationToken.None);
+            if (changeForm)
+            {
+                File.WriteAllText(
+                    sourcePath,
+                    text + "\n' changed on disk while Rename was planning");
+            }
+            else
+            {
+                File.WriteAllBytes(sidecarPath, [0x09, 0x08, 0x07, 0x06]);
+            }
+
+            var outcome = captured.Execute(CancellationToken.None);
+            var data = Assert.IsAssignableFrom<
+                IReadOnlyDictionary<string, object?>>(outcome.ErrorData);
+
+            Assert.Equal(-32803, outcome.ErrorCode);
+            Assert.Equal("resourceOperationConflict", data["reason"]);
+            Assert.Equal(expectedCondition, data["condition"]);
+            Assert.Equal(
+                changeForm ? sourcePath : sidecarPath,
+                Assert.IsType<string>(data["path"]),
+                ignoreCase: true);
+            Assert.Null(outcome.Result);
+        }
+        finally
+        {
+            Directory.Delete(sourceRoot, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task File_following_form_rename_reports_sidecar_conflict_when_frx_appears_after_request_capture()
     {
@@ -302,6 +378,181 @@ public sealed class VbaLspRequestExecutionCancellationTests
                 "retry",
                 Assert.IsType<string>(data["guidance"]),
                 StringComparison.OrdinalIgnoreCase);
+            Assert.Null(outcome.Result);
+        }
+        finally
+        {
+            Directory.Delete(sourceRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Form_rename_rejects_a_case_variant_sidecar_that_appears_after_capture_on_a_case_sensitive_file_system()
+    {
+        var sourceRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-rename-case-variant-sidecar-race-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(sourceRoot, "Dialog.frm");
+            var appearingSidecarPath = Path.Combine(
+                sourceRoot,
+                "DIALOG.FRX");
+            var text = string.Join('\n', [
+                "VERSION 5.00",
+                "Begin VB.Form Dialog",
+                "   Picture = \"Dialog.frx\":0000",
+                "End",
+                "Attribute VB_Name = \"Dialog\""
+            ]);
+            File.WriteAllText(sourcePath, text);
+            var uri = new Uri(sourcePath).AbsoluteUri;
+            var fileSystem = new AppearingCaseVariantSidecarFileSystem(
+                appearingSidecarPath);
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()),
+                NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+                NullVbaDocumentAnalysisBuildObserver.Instance,
+                NullVbaProjectSnapshotBuildObserver.Instance,
+                fileSystem);
+            workspace.OpenDocument(uri, version: 1, text);
+            await using var output = new MemoryStream();
+            var clientCapabilities = new VbaLspClientCapabilityState();
+            clientCapabilities.Update(new JsonObject
+            {
+                ["capabilities"] = new JsonObject
+                {
+                    ["workspace"] = new JsonObject
+                    {
+                        ["workspaceEdit"] = new JsonObject
+                        {
+                            ["documentChanges"] = true,
+                            ["resourceOperations"] = new JsonArray("rename")
+                        }
+                    }
+                }
+            });
+            var executor = new VbaLspRequestExecution(
+                new LspMessageTransport(Stream.Null, output),
+                workspace,
+                clientCapabilities: clientCapabilities);
+            var parameters = CreateRenameParameters();
+            parameters["textDocument"]!["uri"] = uri;
+            parameters["position"]!["line"] = 4;
+            parameters["position"]!["character"] =
+                "Attribute VB_Name = \"".Length;
+            parameters["newName"] = "DialogView";
+            var request = new JsonObject
+            {
+                ["jsonrpc"] = "2.0",
+                ["id"] = 1,
+                ["method"] = "textDocument/rename",
+                ["params"] = parameters
+            };
+
+            var captured = executor.Capture(request, CancellationToken.None);
+            fileSystem.RevealSidecar();
+
+            var outcome = captured.Execute(CancellationToken.None);
+            var data = Assert.IsAssignableFrom<
+                IReadOnlyDictionary<string, object?>>(outcome.ErrorData);
+
+            Assert.Equal(-32803, outcome.ErrorCode);
+            Assert.Equal("resourceOperationConflict", data["reason"]);
+            Assert.Equal("sidecarConflict", data["condition"]);
+            Assert.Equal(
+                appearingSidecarPath,
+                Assert.IsType<string>(data["path"]),
+                ignoreCase: false);
+            Assert.Null(outcome.Result);
+        }
+        finally
+        {
+            Directory.Delete(sourceRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Form_rename_rejects_a_request_start_case_variant_sidecar_that_disappears_before_preflight_on_a_case_sensitive_file_system()
+    {
+        var sourceRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-rename-disappearing-case-variant-sidecar-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(sourceRoot, "Dialog.frm");
+            var sidecarPath = Path.Combine(sourceRoot, "Dialog.frx");
+            var disappearingSidecarPath = Path.Combine(
+                sourceRoot,
+                "DIALOG.FRX");
+            var text = string.Join('\n', [
+                "VERSION 5.00",
+                "Begin VB.Form Dialog",
+                "   Picture = \"Dialog.frx\":0000",
+                "End",
+                "Attribute VB_Name = \"Dialog\""
+            ]);
+            File.WriteAllText(sourcePath, text);
+            var uri = new Uri(sourcePath).AbsoluteUri;
+            var fileSystem =
+                new DisappearingCaseVariantSidecarFileSystem(
+                    sidecarPath,
+                    disappearingSidecarPath);
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()),
+                NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+                NullVbaDocumentAnalysisBuildObserver.Instance,
+                NullVbaProjectSnapshotBuildObserver.Instance,
+                fileSystem);
+            workspace.OpenDocument(uri, version: 1, text);
+            await using var output = new MemoryStream();
+            var clientCapabilities = new VbaLspClientCapabilityState();
+            clientCapabilities.Update(new JsonObject
+            {
+                ["capabilities"] = new JsonObject
+                {
+                    ["workspace"] = new JsonObject
+                    {
+                        ["workspaceEdit"] = new JsonObject
+                        {
+                            ["documentChanges"] = true,
+                            ["resourceOperations"] = new JsonArray("rename")
+                        }
+                    }
+                }
+            });
+            var executor = new VbaLspRequestExecution(
+                new LspMessageTransport(Stream.Null, output),
+                workspace,
+                clientCapabilities: clientCapabilities);
+            var parameters = CreateRenameParameters();
+            parameters["textDocument"]!["uri"] = uri;
+            parameters["position"]!["line"] = 4;
+            parameters["position"]!["character"] =
+                "Attribute VB_Name = \"".Length;
+            parameters["newName"] = "DialogView";
+            var request = new JsonObject
+            {
+                ["jsonrpc"] = "2.0",
+                ["id"] = 1,
+                ["method"] = "textDocument/rename",
+                ["params"] = parameters
+            };
+
+            var captured = executor.Capture(request, CancellationToken.None);
+            fileSystem.HideCaseVariant();
+
+            var outcome = captured.Execute(CancellationToken.None);
+            var data = Assert.IsAssignableFrom<
+                IReadOnlyDictionary<string, object?>>(outcome.ErrorData);
+
+            Assert.Equal(-32803, outcome.ErrorCode);
+            Assert.Equal("resourceOperationConflict", data["reason"]);
+            Assert.Equal("sidecarConflict", data["condition"]);
+            Assert.Equal(
+                disappearingSidecarPath,
+                Assert.IsType<string>(data["path"]),
+                ignoreCase: false);
             Assert.Null(outcome.Result);
         }
         finally
@@ -1403,6 +1654,185 @@ public sealed class VbaLspRequestExecutionCancellationTests
         public bool PathsReferToSameEntry(string left, string right)
             => Path.GetFullPath(left).Equals(
                 Path.GetFullPath(right),
+                StringComparison.Ordinal);
+    }
+
+    private sealed class AppearingCaseVariantSidecarFileSystem(
+        string sidecarPath)
+        : IVbaProjectFileSystem
+    {
+        private readonly string sidecarPath = Path.GetFullPath(sidecarPath);
+        private bool sidecarVisible;
+
+        public bool FileExists(string path)
+            => IsSidecar(path)
+                ? sidecarVisible
+                : File.Exists(path);
+
+        public bool DirectoryExists(string path)
+            => Directory.Exists(path);
+
+        public IEnumerable<string> EnumerateSourceFiles(
+            string rootPath,
+            string searchPattern,
+            SearchOption searchOption)
+        {
+            var files = Directory.EnumerateFiles(
+                rootPath,
+                searchPattern,
+                searchOption);
+            if (!sidecarVisible
+                || searchPattern != "*"
+                    && !Path.GetFileName(sidecarPath).Equals(
+                        searchPattern,
+                        StringComparison.Ordinal))
+            {
+                return files;
+            }
+
+            return files.Append(sidecarPath);
+        }
+
+        public bool TryGetSourceMetadata(
+            string path,
+            out VbaProjectSourceFileMetadata metadata)
+        {
+            if (IsSidecar(path) && sidecarVisible)
+            {
+                metadata = new VbaProjectSourceFileMetadata(
+                    Length: 3,
+                    LastWriteTimeUtcTicks: 1);
+                return true;
+            }
+
+            var fileInfo = new FileInfo(path);
+            if (!fileInfo.Exists)
+            {
+                metadata = default;
+                return false;
+            }
+
+            metadata = new VbaProjectSourceFileMetadata(
+                fileInfo.Length,
+                fileInfo.LastWriteTimeUtc.Ticks);
+            return true;
+        }
+
+        public string ReadManifestText(string path)
+            => File.ReadAllText(path);
+
+        public byte[] ReadSourceBytes(string path)
+            => IsSidecar(path) && sidecarVisible
+                ? [0x01, 0x02, 0x03]
+                : File.ReadAllBytes(path);
+
+        public bool PathsReferToSameEntry(string left, string right)
+            => Path.GetFullPath(left).Equals(
+                Path.GetFullPath(right),
+                StringComparison.Ordinal);
+
+        public void RevealSidecar()
+            => sidecarVisible = true;
+
+        private bool IsSidecar(string path)
+            => Path.GetFullPath(path).Equals(
+                sidecarPath,
+                StringComparison.Ordinal);
+    }
+
+    private sealed class DisappearingCaseVariantSidecarFileSystem(
+        string sidecarPath,
+        string caseVariantSidecarPath)
+        : IVbaProjectFileSystem
+    {
+        private readonly string sidecarPath = Path.GetFullPath(sidecarPath);
+        private readonly string caseVariantSidecarPath = Path.GetFullPath(
+            caseVariantSidecarPath);
+        private bool caseVariantVisible = true;
+
+        public bool FileExists(string path)
+            => IsSidecar(path)
+                || IsCaseVariantSidecar(path) && caseVariantVisible
+                || File.Exists(path);
+
+        public bool DirectoryExists(string path)
+            => Directory.Exists(path);
+
+        public IEnumerable<string> EnumerateSourceFiles(
+            string rootPath,
+            string searchPattern,
+            SearchOption searchOption)
+        {
+            var files = Directory.EnumerateFiles(
+                rootPath,
+                searchPattern,
+                searchOption);
+            if (searchPattern != "*")
+            {
+                return files;
+            }
+
+            var sidecars = new List<string> { sidecarPath };
+            if (caseVariantVisible)
+            {
+                sidecars.Add(caseVariantSidecarPath);
+            }
+
+            return files.Concat(sidecars);
+        }
+
+        public bool TryGetSourceMetadata(
+            string path,
+            out VbaProjectSourceFileMetadata metadata)
+        {
+            if (IsSidecar(path)
+                || IsCaseVariantSidecar(path) && caseVariantVisible)
+            {
+                metadata = new VbaProjectSourceFileMetadata(
+                    Length: 3,
+                    LastWriteTimeUtcTicks: 1);
+                return true;
+            }
+
+            var fileInfo = new FileInfo(path);
+            if (!fileInfo.Exists)
+            {
+                metadata = default;
+                return false;
+            }
+
+            metadata = new VbaProjectSourceFileMetadata(
+                fileInfo.Length,
+                fileInfo.LastWriteTimeUtc.Ticks);
+            return true;
+        }
+
+        public string ReadManifestText(string path)
+            => File.ReadAllText(path);
+
+        public byte[] ReadSourceBytes(string path)
+            => IsSidecar(path)
+                ? [0x01, 0x02, 0x03]
+                : IsCaseVariantSidecar(path) && caseVariantVisible
+                    ? [0x04, 0x05, 0x06]
+                    : File.ReadAllBytes(path);
+
+        public bool PathsReferToSameEntry(string left, string right)
+            => Path.GetFullPath(left).Equals(
+                Path.GetFullPath(right),
+                StringComparison.Ordinal);
+
+        public void HideCaseVariant()
+            => caseVariantVisible = false;
+
+        private bool IsSidecar(string path)
+            => Path.GetFullPath(path).Equals(
+                sidecarPath,
+                StringComparison.Ordinal);
+
+        private bool IsCaseVariantSidecar(string path)
+            => Path.GetFullPath(path).Equals(
+                caseVariantSidecarPath,
                 StringComparison.Ordinal);
     }
 

@@ -194,6 +194,7 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
             var text = string.Join('\n', [
                 "VERSION 5.00",
                 "Begin VB.Form Dialog",
+                "   Picture = \"Dialog.frx\":0000",
                 "End",
                 "Attribute VB_Name = \"Dialog\""
             ]);
@@ -243,7 +244,7 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
                     textDocument = new { uri },
                     position = new
                     {
-                        line = 3,
+                        line = 4,
                         character = "Attribute VB_Name = \"".Length
                     },
                     newName = "DialogView"
@@ -263,6 +264,95 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
                 "beside the form",
                 data.GetProperty("guidance").GetString(),
                 StringComparison.OrdinalIgnoreCase);
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Manifest_deliberate_basename_form_rename_fails_when_its_sidecar_is_multiply_identified()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-duplicate-form-sidecar-rename-").FullName;
+        try
+        {
+            var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
+            var duplicateRoot = Path.Combine(sourceRoot, "duplicate");
+            Directory.CreateDirectory(duplicateRoot);
+            var sourceTemplate = Path.Combine(sourceRoot, "Book1.xlsm");
+            var templateBytes = new byte[] { 0x10, 0x32, 0x54, 0x76 };
+            File.WriteAllBytes(sourceTemplate, templateBytes);
+            WriteProjectManifest(projectRoot);
+            var sourcePath = Path.Combine(sourceRoot, "LegacyDialog.frm");
+            var sidecarPath = Path.Combine(sourceRoot, "LegacyDialog.frx");
+            var duplicateSidecarPath = Path.Combine(
+                duplicateRoot,
+                "LegacyDialog.frx");
+            var uri = new Uri(sourcePath).AbsoluteUri;
+            var text = string.Join('\n', [
+                "VERSION 5.00",
+                "Begin VB.Form Dialog",
+                "   Picture = \"LegacyDialog.frx\":0000",
+                "End",
+                "Attribute VB_Name = \"Dialog\""
+            ]);
+            File.WriteAllText(sourcePath, text);
+            File.WriteAllBytes(sidecarPath, [0x01, 0x02, 0x03]);
+            File.WriteAllBytes(duplicateSidecarPath, [0x04, 0x05, 0x06]);
+
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+            await process.InitializeAsync();
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+            await process.WaitForDiagnosticsAsync(uri);
+            await process.SendNotificationAsync(
+                "vba/hostClassProjectionSnapshot",
+                new
+                {
+                    schemaVersion = 2,
+                    revision = 1,
+                    project = Path.GetFullPath(projectRoot),
+                    document = "Book1",
+                    sourceTemplate = Path.GetFullPath(sourceTemplate),
+                    state = "present",
+                    vbaProjectName = "ContainingProject",
+                    sourceTemplateFingerprint = Convert.ToHexString(
+                        System.Security.Cryptography.SHA256.HashData(
+                            templateBytes)),
+                    classEnumerationComplete = true,
+                    classes = Array.Empty<object>()
+                });
+            await FenceSnapshotAsync(process, uri, text, version: 2);
+
+            var rename = await process.SendRequestAsync(
+                2,
+                "textDocument/rename",
+                new
+                {
+                    textDocument = new { uri },
+                    position = new
+                    {
+                        line = 4,
+                        character = "Attribute VB_Name = \"".Length
+                    },
+                    newName = "DialogView"
+                });
+
+            Assert.False(rename.TryGetProperty("result", out _));
+            var data = rename.GetProperty("error").GetProperty("data");
+            Assert.Equal(
+                "resourceOperationConflict",
+                data.GetProperty("reason").GetString());
+            Assert.Equal("sidecarConflict", data.GetProperty("condition").GetString());
+            Assert.Equal(
+                duplicateSidecarPath,
+                data.GetProperty("path").GetString(),
+                ignoreCase: true);
 
             await process.ShutdownAsync(3);
         }

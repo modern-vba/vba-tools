@@ -57,13 +57,22 @@ A future DoxyVB6 adapter may consume the following syntax information from
   signatures;
 - `VbaSyntaxRange` and `VbaSyntaxPosition` values for linking generated
   documentation back to source locations;
-- `.frm` `FormDesignerBlock` raw text and boundaries when documentation needs
-  to acknowledge form modules without treating designer properties as ordinary
-  code declarations;
+- `.frm` `VbaFormDesignerBlock` raw text and boundaries, its candidate
+  `VbaFormDesignerRoot`, ordered `VbaFormDesignerResourceReference` records
+  with property, filename, offset, and filename ranges, and
+  `VbaFormDesignerEvidenceProblem` records describing incomplete or unsafe
+  evidence;
 - `VbaTokenStream` when documentation tooling needs trivia-sensitive lexical
   information such as comments, line continuations, or preprocessor directives.
 - `VbaSyntaxTreeChangeSet` when repeated full-text parses should safely reuse an
   unchanged tree or derived artifacts outside one replaced `ModuleMember`.
+
+These form-designer nodes are reusable syntax facts, not designer declarations.
+Resource references are recognized from their exported property shape rather
+than an `OleObjectBlob`-only property whitelist. The parser records exact
+filename and offset evidence while leaving nested controls and unrelated text
+opaque; each consumer decides whether the complete evidence is sufficient for
+its operation.
 
 The adapter should translate parser-core syntax nodes into DoxyVB6's own
 documentation model. It should not require the parser core to know about

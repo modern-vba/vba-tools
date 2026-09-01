@@ -228,6 +228,102 @@ public sealed class VbaSyntaxTreeModuleTests
     }
 
     [Fact]
+    public void ParserUsesVbaIdentifierAuthorityForFormDesignerIdentity()
+    {
+        var source = string.Join('\n', [
+            "VERSION 5.00",
+            "Begin VB.UserForm 集計",
+            "  Picture = \"集計.frx\":0010",
+            "End",
+            "Attribute VB_Name = \"集計\""
+        ]);
+
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/集計.frm", source);
+
+        var designer = Assert.IsType<VbaFormDesignerBlock>(
+            tree.Module.FormDesignerBlock);
+        var root = Assert.IsType<VbaFormDesignerRoot>(designer.Root);
+        Assert.Equal("集計", root.Name);
+        Assert.Equal(RangeOf(source, "集計"), root.NameRange);
+        var resource = Assert.Single(designer.ResourceReferences);
+        Assert.Equal("集計.frx", resource.FileName);
+        Assert.Equal("0010", resource.Offset);
+        Assert.Empty(designer.EvidenceProblems);
+    }
+
+    [Fact]
+    public void ParserRecognizesIndexedFormDesignerResourceProperties()
+    {
+        var source = string.Join('\n', [
+            "VERSION 5.00",
+            "Begin VB.UserForm Dialog",
+            "  TabPicture(0) = \"Dialog.frx\":0010",
+            "End",
+            "Attribute VB_Name = \"Dialog\""
+        ]);
+
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Dialog.frm", source);
+
+        var designer = Assert.IsType<VbaFormDesignerBlock>(
+            tree.Module.FormDesignerBlock);
+        var resource = Assert.Single(designer.ResourceReferences);
+        Assert.Equal("TabPicture(0)", resource.PropertyName);
+        Assert.Equal("Dialog.frx", resource.FileName);
+        Assert.Equal("0010", resource.Offset);
+        Assert.Empty(designer.EvidenceProblems);
+    }
+
+    [Fact]
+    public void ParserDistinguishesDotPrefixedSidecarBasenamesFromParentTraversal()
+    {
+        var source = string.Join('\n', [
+            "VERSION 5.00",
+            "Begin VB.UserForm Dialog",
+            "  Picture = \"..Dialog.frx\":0010",
+            "  MouseIcon = \"..\\Dialog.frx\":0020",
+            "End",
+            "Attribute VB_Name = \"Dialog\""
+        ]);
+
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Dialog.frm", source);
+
+        var designer = Assert.IsType<VbaFormDesignerBlock>(
+            tree.Module.FormDesignerBlock);
+        var reference = Assert.Single(designer.ResourceReferences);
+        Assert.Equal("..Dialog.frx", reference.FileName);
+        var problem = Assert.Single(designer.EvidenceProblems);
+        Assert.Equal(
+            VbaFormDesignerEvidenceProblemKind.ResourceReferenceUnsafe,
+            problem.Kind);
+        Assert.Equal("..\\Dialog.frx", problem.Value);
+    }
+
+    [Theory]
+    [InlineData("Begin VB.UserForm Dialog\n   Begin VB.CommandButton\nEnd")]
+    [InlineData("Begin VB.UserForm Dialog\nEnd\nPicture = \"Dialog.frx\":0000")]
+    [InlineData("Begin VB.UserForm Dialog\nEnd\nCaption = \"Outside root\"")]
+    [InlineData("Begin VB.UserForm Dialog\nEnd\nTabCaption(0) = \"Outside root\"")]
+    [InlineData("BeginProperty Font\nEndProperty\nBegin VB.UserForm Dialog\nEnd")]
+    [InlineData("Begin VB.UserForm Dialog\nBeginProperty\nEndProperty\nEnd")]
+    public void ParserReportsMalformedFormDesignerStructure(string designerBody)
+    {
+        var source = string.Join('\n', [
+            "VERSION 5.00",
+            designerBody,
+            "Attribute VB_Name = \"Dialog\""
+        ]);
+
+        var tree = VbaSyntaxTree.ParseModule("file:///C:/work/Dialog.frm", source);
+
+        var designer = Assert.IsType<VbaFormDesignerBlock>(
+            tree.Module.FormDesignerBlock);
+        Assert.Contains(
+            designer.EvidenceProblems,
+            problem => problem.Kind
+                == VbaFormDesignerEvidenceProblemKind.StructureMalformed);
+    }
+
+    [Fact]
     public void ParserReportsRecoverableFormCodeBoundaryFailure()
     {
         var source = string.Join('\n', [
