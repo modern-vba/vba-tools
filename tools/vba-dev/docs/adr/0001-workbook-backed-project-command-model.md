@@ -336,9 +336,11 @@ makes the entire invocation untrusted.
 Schema `1.1` emits `vbaProjectName` and `sourceTemplateFingerprint` only as a
 pair. They are the actual valid `VBProject.Name` observed from the inspected
 private copy and the uppercase SHA-256 fingerprint of those exact workbook
-bytes. If either value cannot be established, both fields are absent and the
-result supplies no containing-project-name authority. Manifest project labels,
-document names, and workbook filenames are never substitutes.
+bytes. If either value cannot be established, both fields are absent. The pair
+remains legacy observational transport during migration; Module Rename and
+project-name diagnostics ignore it and obtain containing-project authority from
+their own request-scoped static source-template read. Class entries continue to
+supply Host Event and current form-ownership evidence independently.
 
 Within the top-level project and document request scope, every class entry
 carries an identity containing the inspected `VBComponent.Name` and component

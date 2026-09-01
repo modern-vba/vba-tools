@@ -1060,8 +1060,12 @@ A set of exported VBA source files that belong to the same logical VBA project. 
 _Avoid_: workspace, repository, package
 
 **VbaProjectName**:
-The actual VBA project name represented by `VBProject.Name`, which participates in VBA's module, project, and object-library name uniqueness rule. A manifest-backed `VbaProject` binds its authority to the exact request-start source-template content and may reuse an observation only for the same content fingerprint; `ProjectManifest.projectName`, a document name, a workbook filename, and a value from older template content are not substitutes, while an `AdHocVbaProject` has no containing-project-name authority by design.
+The actual VBA project name represented by `VBProject.Name`, which participates in VBA's module, project, and object-library name uniqueness rule. A manifest-backed `ModuleIdentity` mutation obtains this authority only from a successful request-scoped `VbaProjectIdentityRead`; `ProjectManifest.projectName`, a document name, a workbook filename, a generated blank-workbook name, a cache, and a host-projection observation are not substitutes. An `AdHocVbaProject` has no containing-project-name authority by design.
 _Avoid_: ProjectManifest.projectName, document name, workbook basename
+
+**VbaProjectIdentityRead**:
+The immutable, request-scoped result of statically reading one exact captured source-template package. It binds the whole-package content identity to the `PROJECTNAME` value decoded with `PROJECTCODEPAGE` from the MS-OVBA directory stream inside the unique OPC `vbaProject.bin` part and its CFB `VBA` storage. It starts neither Excel nor VBIDE, persists no cache, and never falls back to a manifest label, document or file name, generated workbook, reference qualifier, or legacy host-projection pair. Missing, unreadable, malformed, encrypted, subject to unsupported protection, otherwise unsupported, or changed evidence is unavailable; a manifest-backed module Rename then fails with `analysisIncomplete`, and an unconditional final content fence prevents an edit when the package changes after capture.
+_Avoid_: HostClassProjectionSnapshot, cached project name, manifest identity
 
 **VbaDocumentIdentity**:
 The opaque equality identity of one language-server source document, represented
@@ -1523,9 +1527,12 @@ The immutable, document-wide effective host-class state that `VscodeExtension`
 atomically supplies to the language server after combining current projections,
 last-known-good projections, indeterminate identities, and authoritative
 deletion. It is a full replacement rather than a CLI result, class delta, or
-class tombstone. A present schema-`2` snapshot may carry the actual
-`VbaProjectName` and its `SourceTemplateFingerprint` only as a complete pair;
-cleared state carries neither.
+class tombstone. During migration, a present schema-`2` snapshot may still carry
+the legacy inspected `VbaProjectName` and `SourceTemplateFingerprint` only as a
+complete pair; cleared state carries neither. Module Rename and its
+project-name diagnostics ignore that pair and obtain containing-project
+authority through `VbaProjectIdentityRead`, while the snapshot's class entries
+continue to supply Event intelligence and current form-ownership evidence.
 _Avoid_: HostClassProjectionResult, incremental projection update, operational log
 
 **HostClassProjectionSnapshotRevision**:
@@ -1563,15 +1570,17 @@ complete class remains `resolved` when a successfully inspected parameter has
 an unresolved `HostEventTypeReference`; incomplete or untrusted inspection,
 including an unavailable `HostEventAvailability` value, makes it `unverified`.
 Schema `1.1` may additionally pair the actual inspected `VbaProjectName` with
-the exact `SourceTemplateFingerprint`; absence of that pair does not invalidate
-Host Event projection but supplies no containing-project mutation authority.
+the exact `SourceTemplateFingerprint`. That legacy pair remains transport data
+during migration, but its presence or absence neither validates Host Event
+entries nor supplies containing-project mutation or diagnostic authority.
 _Avoid_: all-or-nothing host projection, omitted empty class, partial class inference
 
 **SourceTemplateFingerprint**:
 The uppercase SHA-256 fingerprint of the exact source-template private-copy
-bytes inspected for one `VbaProjectName` observation. It binds containing-project
-mutation authority to content, not merely to a path, timestamp, document name,
-workbook file name, or manifest label.
+bytes inspected for the legacy host-class result's optional `VbaProjectName`
+observation. It remains distinct from refresh generation and from the
+request-scoped whole-package content identity inside `VbaProjectIdentityRead`;
+Module Rename and project-name diagnostics do not consume it.
 _Avoid_: HostClassProjectionRefreshGeneration, source-template mtime, project label
 
 **UnverifiedHostClassEntry**:
@@ -4190,7 +4199,7 @@ Dev: "Who owns `HostClassProjection` refresh and storage?"
 Domain Expert: "`HostClassList` performs one read-only, machine-readable inspection of the selected `ProjectDocument` source template and owns only that invocation and its Excel process. `VscodeExtension` owns the background `HostClassProjectionLifecycle` and supplies committed immutable snapshots to the language server. The manifest stores neither generated Event members nor projection state, and an `AdHocVbaProject` has no projection."
 
 Dev: "Can a slow host-class refresh overwrite a newer project state?"
-Domain Expert: "No. `VscodeExtension` binds each invocation to a `HostClassProjectionRefreshGeneration` and commits only while it remains current and the response's canonical absolute project root, manifest-resolved document name, and canonical absolute source-template path still match. A superseded result changes neither resolved entries nor deletion state. The generation remains consumer-local; `VbaDev` inspects the template copy selected at invocation start and serializes no VS Code request ID, mtime, or inspection timestamp. Its optional `SourceTemplateFingerprint` instead binds the actual inspected project name to those exact bytes."
+Domain Expert: "No. `VscodeExtension` binds each invocation to a `HostClassProjectionRefreshGeneration` and commits only while it remains current and the response's canonical absolute project root, manifest-resolved document name, and canonical absolute source-template path still match. A superseded result changes neither resolved entries nor deletion state. The generation remains consumer-local; `VbaDev` inspects the template copy selected at invocation start and serializes no VS Code request ID, mtime, or inspection timestamp. Its optional legacy `SourceTemplateFingerprint` identifies the bytes behind the transported project-name observation, but Module Rename and project-name diagnostics do not consume that pair."
 
 Dev: "Should editing `Module1.bas` or refreshing a reference catalog start host-class inspection?"
 Domain Expert: "No. A `HostClassProjectionRefreshTrigger` is initial project-document activation, an effective manifest document or source-template identity change, a create/change/delete event for the selected template file, or an explicit consumer refresh. Removing a document or changing its template identity cancels in-flight work and removes the old projection. A same-path template change advances the generation but preserves last-known-good on failure; temporary template absence is unavailable rather than authoritative deletion. Source edits, reference-only changes, editor changes, and bin or publish changes do not trigger inspection. Relevant source and manifest changes may still run `HostClassSourceAssociationReevaluation` against the current snapshot without starting Excel."
@@ -4217,7 +4226,7 @@ Dev: "What is the public CLI for obtaining a host-class projection?"
 Domain Expert: "Use `vba-dev host-class list --project <path> --document <name> --format json`. It follows normal project discovery, defaults to the primary document when `--document` is omitted, defaults to human-readable text, and advertises feature `1.0` as `featureVersions[\"hostClass.list\"]` plus JSON output schema `1.1` as `commandSchemaVersions[\"host-class list\"]`. It starts an owned hidden Excel process but does not write the workbook, source, manifest, or a projection cache."
 
 Dev: "How does module Rename know the containing VBA project name came from the same template content?"
-Domain Expert: "CLI schema `1.1` emits the actual inspected `VBProject.Name` and uppercase SHA-256 `SourceTemplateFingerprint` only as a pair. The extension carries that pair in `vba/hostClassProjectionSnapshot` schema `2`. Rename compares the fingerprint with the exact request-start template bytes; an absent or stale pair is `analysisIncomplete`, and manifest project label, document name, or workbook filename never substitutes."
+Domain Expert: "The language server captures the exact selected source-template package bytes at request start and performs a static `VbaProjectIdentityRead`. It validates the OPC package and unique `vbaProject.bin`, opens the CFB `VBA` storage, decompresses the MS-OVBA directory stream, reads `PROJECTCODEPAGE`, and decodes `PROJECTNAME` from those same bytes without Excel or VBIDE. Before returning a complete module Rename `WorkspaceEdit`, it unconditionally verifies that the current whole-package content still matches the captured identity, even when no file operation is planned. Missing, unreadable, malformed, encrypted, subject to unsupported protection, otherwise unsupported, or changed content is `analysisIncomplete`; no cache, host-projection observation, manifest label, document name, workbook filename, generated workbook name, or reference alias substitutes."
 
 Dev: "Does `host-class list` open and lock the source template itself?"
 Domain Expert: "No. It copies the selected source template into a unique `HostClassInspectionWorkspace`, opens only that copy with macros and Excel Events disabled, imports no source, changes no references, and never saves. It releases the owned Excel process before removing the workspace. If the copy cannot be prepared, the command fails without guessing a projection."
@@ -4562,10 +4571,10 @@ Dev: "Can `ModuleIdentity` use the general 255-character `RenameName` limit?"
 Domain Expert: "No. MS-VBAL limits a module name to 31 characters, counted as Unicode code points under its lexical conventions. A 32-code-point Rename fails with `invalidName`, and an existing overlength `VB_Name` record is malformed `ModuleIdentityMetadata`; other Rename targets retain the shared 255-character limit."
 
 Dev: "Can module Rename compare its new name with `vba-project.json`'s `projectName`?"
-Domain Expert: "No. That field is a tooling label, not `VBProject.Name`. A manifest-backed project compares against the source template's authoritative `VbaProjectName` and fails with `analysisIncomplete` when that name cannot be obtained. An `AdHocVbaProject` deliberately has no containing-project-name authority, so it skips only that collision check rather than disabling module Rename."
+Domain Expert: "No. That field is a tooling label, not `VBProject.Name`. A manifest-backed project compares against the source template's authoritative `VbaProjectName` from the current request's `VbaProjectIdentityRead` and fails with `analysisIncomplete` when that read is unavailable. An `AdHocVbaProject` deliberately has no containing-project-name authority, so it skips only that collision check rather than disabling module Rename."
 
-Dev: "Can Rename reuse a project name inspected from an older version of the source template?"
-Domain Expert: "Only when the current request-start template content has the same fingerprint. A changed template invalidates the old authority and yields `analysisIncomplete` until its current name is available; after the request snapshot is captured, do not reread the template or move the semantic baseline."
+Dev: "Can Rename reuse a project name read or inspected for an older request?"
+Domain Expert: "No. Every manifest-backed module Rename creates a new request-scoped `VbaProjectIdentityRead` from the exact captured template bytes and persists no project-name cache. The final content fence may reread only to prove that the whole package still has the captured identity; it never moves the request onto newer content or silently replans. A change yields `analysisIncomplete` and requires a new Rename request."
 
 Dev: "Should module Rename reject every name listed in a reference catalog's qualifier aliases?"
 Domain Expert: "No. Reject a collision with the selected reference's authoritative `ReferencedVbaProjectName`, such as `VBA` or `Excel`, but do not manufacture collisions from a human-visible manifest reference name or a generated supplemental qualifier such as `MicrosoftExcel160ObjectLibrary`."
@@ -4596,6 +4605,9 @@ Domain Expert: "No. That is a `ManagedModuleIdentity`: rename it in the canonica
 
 Dev: "Can F2 rename an associated UserForm or intrinsic document module?"
 Domain Expert: "Not as an ordinary source Rename. A current form association and every intrinsic document source have `HostManagedModuleIdentity`; changing source text alone would not rename the source-template component. Last-known-good form evidence makes a non-no-op request `analysisIncomplete`. A form conclusively outside host association remains project-local and may rename its `.frm` and `.frx`; a host-managed identity needs a separate workbook-backed refactoring."
+
+Dev: "Does the static `VbaProjectIdentityRead` make every manifest UserForm source-owned?"
+Domain Expert: "No. It changes only containing-project-name authority. The current `HostClassProjectionSnapshot` class entries and `classEnumerationComplete` fence continue to decide form ownership during this migration, so only a form already proven outside host association can use ordinary source Rename. The environment-scoped UserForm Event catalog cutover owns the later source-ownership change; intrinsic document modules remain unsupported."
 
 Dev: "Where should an incompatible Event handler diagnostic point?"
 Domain Expert: "Use its complete parenthesized parameter list, or the handler identifier when the list is omitted. Keep the primary message self-contained, and attach one related item per conclusively incompatible source Event signature. Report ordered structural and type reasons, never parameter-name differences or conditional expressions. TypeLib signatures remain advisory and never cause this diagnostic."

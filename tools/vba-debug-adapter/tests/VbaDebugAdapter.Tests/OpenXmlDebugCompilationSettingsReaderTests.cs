@@ -474,26 +474,20 @@ public sealed class OpenXmlDebugCompilationSettingsReaderTests
 
         private static byte[] CompressAsLiteralChunk(byte[] input)
         {
-            using var payload = new MemoryStream();
-            for (var offset = 0; offset < input.Length; offset += 8)
+            if (input.Length > 4096)
             {
-                payload.WriteByte(0);
-                payload.Write(input, offset, Math.Min(8, input.Length - offset));
+                throw new ArgumentOutOfRangeException(
+                    nameof(input),
+                    "The fixture supports one raw MS-OVBA chunk.");
             }
 
-            var chunkLength = checked((ushort)(payload.Length + 2));
-            var header = checked((ushort)(0xb000 | (chunkLength - 3)));
             using var container = new MemoryStream();
             container.WriteByte(0x01);
-            Span<byte> headerBytes = stackalloc byte[2];
-            BinaryPrimitives.WriteUInt16LittleEndian(headerBytes, header);
-            container.Write(headerBytes);
-            payload.Position = 0;
-            payload.CopyTo(container);
             Span<byte> rawHeader = stackalloc byte[2];
             BinaryPrimitives.WriteUInt16LittleEndian(rawHeader, 0x3fff);
             container.Write(rawHeader);
-            container.Write(new byte[4096]);
+            container.Write(input);
+            container.Write(new byte[4096 - input.Length]);
             return container.ToArray();
         }
 

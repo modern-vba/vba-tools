@@ -26,26 +26,32 @@ of 31 Unicode code points, while other targets retain the shared 255-character
 identifier ceiling. A 32-code-point module Rename fails with `invalidName`.
 
 A manifest-backed `ModuleIdentity` Rename also compares the requested name with
-the containing source template's actual `VbaProjectName` from `VBProject.Name`.
-`ProjectManifest.projectName`, the document name, and the workbook filename are
-tooling identities rather than substitutes for this VBA identity. When the
-source template cannot supply an authoritative containing-project name, Rename
-fails with `analysisIncomplete` instead of claiming that the collision is
-absent. An `AdHocVbaProject` has no containing-project-name authority by design,
-so it skips only this check; that deliberate absence does not disable all ad-hoc
-module Rename. The existing `host-class list` result and extension-owned
-snapshot lifecycle supply this optional authority pair; the language server
-never launches Excel or reads a public manifest field to obtain it. No new
-`VbaDev` command is introduced.
+the containing source template's actual `VbaProjectName`. The language server
+obtains that authority through one immutable, request-scoped
+`VbaProjectIdentityRead`: it captures the exact selected source-template package
+bytes, validates the OPC package and unique `vbaProject.bin` part, opens its CFB
+`VBA` storage, decompresses the MS-OVBA directory stream, reads
+`PROJECTCODEPAGE`, and decodes the `PROJECTNAME` record from those same bytes.
+This static read starts neither Excel nor VBIDE, invokes no `VbaDev` command,
+and persists no project-name cache.
 
-The containing `VbaProjectName` authority is bound to the exact source-template
-content captured at Rename request start. A cached or last-known-good observation
-is authoritative only when its content fingerprint matches that captured
-template; a value from older content is not reused after the template changes.
-If the current content cannot supply the name, Rename fails with
-`analysisIncomplete`. Once the immutable request snapshot has captured the
-matching fingerprint and name, Rename does not reread the template or move its
-semantic baseline during planning.
+`ProjectManifest.projectName`, the document name, workbook filename, a generated
+blank-workbook project name, reference qualifier aliases, a cached value, and
+the legacy project-name/fingerprint pair on `HostClassProjectionSnapshot` are
+not substitutes. Missing, unreadable, malformed, encrypted, subject to
+unsupported protection, or otherwise unsupported package, compound-file,
+stream, record, code-page, or decode evidence fails with `analysisIncomplete`
+rather than claiming that the collision is absent. An `AdHocVbaProject` has no
+containing-project-name authority by design, so it skips only this check; that
+deliberate absence does not disable all ad-hoc module Rename.
+
+The read binds the name to the exact whole-package content captured at Rename
+request start. Before returning the complete `WorkspaceEdit` for a module
+Rename, the language server unconditionally verifies that the current
+source-template content still has the
+captured identity, including when a deliberate basename produces no resource
+operation. A change fails with `analysisIncomplete`; the request never adopts
+newer content, reparses against a moving baseline, or reuses an earlier read.
 
 An active referenced project or object library contributes its authoritative
 `ReferencedVbaProjectName` to the same module-name uniqueness check. For a
@@ -232,8 +238,10 @@ edits inside the installed copy. Because the semantic occurrence and its owner
 are known, Prepare Rename fails actionably with `managedModuleIdentity` rather
 than returning `null`.
 
-`HostManagedModuleIdentity` is the other source-identity exception. A form
-source currently associated with a current `HostClassProjection` cannot
+`VbaProjectIdentityRead` changes only containing-project-name authority and does
+not reclassify module ownership. `HostManagedModuleIdentity` is the other
+source-identity exception. A form source currently associated with a current
+`HostClassProjection` cannot
 initiate ordinary source Rename because editing `Attribute VB_Name`, references,
 and `.frm`/`.frx` paths would not rename the source-template component that owns
 its `HostClassIdentity`. Last-known-good evidence alone cannot prove that the
@@ -242,7 +250,8 @@ association has ceased, so a non-no-op identity Rename fails with
 an ad-hoc `.frm`, remains an ordinary project-local `ModuleIdentity` and follows
 the file rule above. Current host ownership makes Prepare Rename fail with
 `hostManagedModuleIdentity`; last-known-good-only ownership makes it fail with
-`analysisIncomplete`.
+`analysisIncomplete`. The later environment-scoped UserForm Event catalog
+cutover, not this static project-name read, owns any source-ownership change.
 
 An intrinsic document module such as `ThisWorkbook` or a sheet code module is
 always host-managed even if a future source Adapter exposes it to the language

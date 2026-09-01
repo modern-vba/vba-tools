@@ -72,9 +72,11 @@ The top-level object has exactly these properties:
 - `vbaProjectName` and `sourceTemplateFingerprint` are either both present or
   both absent. When present, they are the actual `VBProject.Name` observed from
   the inspected private copy and the uppercase SHA-256 fingerprint of the exact
-  private-copy bytes. A missing pair means the invocation supplied no containing
-  VBA-project-name authority; consumers must not substitute manifest or file
-  names.
+  private-copy bytes. This is legacy observational transport for the current
+  migration; Module Rename and project-name diagnostics ignore the pair and
+  obtain containing-project authority from their own request-scoped static
+  source-template read. Host Event and form-ownership consumers remain
+  independent of the pair.
 - `classEnumerationComplete` is true only for a complete, unambiguous intrinsic
   class identity set.
 - `complete` is true only for a normally completed invocation with complete

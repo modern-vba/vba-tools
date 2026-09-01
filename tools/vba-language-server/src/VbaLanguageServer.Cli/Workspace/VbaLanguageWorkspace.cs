@@ -44,6 +44,9 @@ public sealed record VbaProjectSnapshot(
 /// </summary>
 public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCapture
 {
+    private const long MaximumSourceTemplateIdentityReadLength =
+        512L * 1024 * 1024;
+
     private readonly object gate = new();
     private readonly Dictionary<VbaDocumentIdentity, WorkspaceDocumentState>
         documents = new();
@@ -60,6 +63,7 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         new(retainOnlyWhileCapturesActive: true);
     private readonly IVbaProjectDiskInventory diskInventory;
     private readonly IVbaProjectFileSystem projectFileSystem;
+    private readonly IVbaProjectIdentityReader projectIdentityReader;
     private readonly VbaProjectSourceDocumentCache diskDocumentCache;
     private readonly VbaProjectSnapshotProvider snapshotProvider;
     private readonly VbaHostClassProjectionSnapshotStore hostClassProjectionStore;
@@ -141,10 +145,13 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         IVbaProjectFileSystem projectFileSystem,
         IVbaProjectReconciliationAuthorityLeaseObserver?
             reconciliationAuthorityLeaseObserver = null,
-        DiskSourceDecoding? sourceDecoding = null)
+        DiskSourceDecoding? sourceDecoding = null,
+        IVbaProjectIdentityReader? projectIdentityReader = null)
     {
         this.analysisBuildObserver = analysisBuildObserver;
         this.projectFileSystem = projectFileSystem;
+        this.projectIdentityReader = projectIdentityReader
+            ?? new OpenXmlVbaProjectIdentityReader();
         diskInventory =
             new VbaFileSystemProjectDiskInventory(
                 projectFileSystem,
@@ -895,8 +902,11 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
     {
         cancellationToken.ThrowIfCancellationRequested();
         var projectSnapshot = CreateProjectSnapshot(activeUri, cancellationToken);
-        var sourceTemplateFingerprint =
-            CaptureDiagnosticsSourceTemplateFingerprint(projectSnapshot);
+        var projectIdentityCapture = CaptureSourceTemplateProjectIdentity(
+            projectSnapshot.Resolution,
+            cancellationToken);
+        var sourceTemplateEvidence = CreateDiagnosticsEvidence(
+            projectIdentityCapture.Evidence);
         lock (gate)
         {
             var captured = new List<(
@@ -956,35 +966,13 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                     projectSnapshot.SemanticInventory
                         .GetProjectValidationDiagnostics(
                             item.State.Analysis.Uri,
-                            sourceTemplateFingerprint),
+                            projectIdentityCapture.ReadResult),
                     ownership,
                     projectSnapshot.DiagnosticsOwnership)
                 {
-                    SourceTemplateFingerprint = sourceTemplateFingerprint
+                    SourceTemplateEvidence = sourceTemplateEvidence
                 })
                 .ToArray();
-        }
-    }
-
-    private string? CaptureDiagnosticsSourceTemplateFingerprint(
-        VbaProjectSnapshot projectSnapshot)
-    {
-        if (projectSnapshot.Resolution.Kind
-                != VbaProjectResolutionKind.ManifestDocument
-            || projectSnapshot.Resolution.SourceTemplatePath is not { }
-                sourceTemplatePath)
-        {
-            return null;
-        }
-
-        try
-        {
-            return CaptureRenameFileEvidence(sourceTemplatePath).ContentDigest;
-        }
-        catch (Exception ex) when (ex is IOException
-            or UnauthorizedAccessException)
-        {
-            return null;
         }
     }
 
@@ -1077,7 +1065,7 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         IReadOnlyList<VbaDocumentDiagnosticsOwnership> ownership,
         VbaProjectSnapshotProvider.ProjectSnapshotOwnership?
             projectSnapshotOwnership,
-        string? sourceTemplateFingerprint = null)
+        VbaSourceTemplateDiagnosticsEvidence? sourceTemplateEvidence = null)
     {
         if (!snapshotProvider.IsCurrentProjectSnapshot(
                 projectSnapshotOwnership))
@@ -1116,33 +1104,37 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         return documentsAreCurrent
             && snapshotProvider.IsCurrentProjectSnapshot(
                 projectSnapshotOwnership)
-            && IsCurrentDiagnosticsSourceTemplateFingerprint(
+            && IsCurrentDiagnosticsSourceTemplateEvidence(
                 projectSnapshotOwnership,
-                sourceTemplateFingerprint);
+                sourceTemplateEvidence);
     }
 
-    private bool IsCurrentDiagnosticsSourceTemplateFingerprint(
+    private bool IsCurrentDiagnosticsSourceTemplateEvidence(
         VbaProjectSnapshotProvider.ProjectSnapshotOwnership?
             projectSnapshotOwnership,
-        string? sourceTemplateFingerprint)
+        VbaSourceTemplateDiagnosticsEvidence? sourceTemplateEvidence)
     {
-        if (sourceTemplateFingerprint is null)
+        if (sourceTemplateEvidence is null)
         {
             return true;
         }
 
         if (projectSnapshotOwnership?.Resolution.SourceTemplatePath
-                is not { } sourceTemplatePath)
+                is not { } sourceTemplatePath
+            || !projectFileSystem.PathsReferToSameEntry(
+                sourceTemplatePath,
+                sourceTemplateEvidence.FullPath))
         {
             return false;
         }
 
         try
         {
-            return CaptureRenameFileEvidence(sourceTemplatePath)
-                .ContentDigest?.Equals(
-                    sourceTemplateFingerprint,
-                    StringComparison.Ordinal) == true;
+            return CreateDiagnosticsEvidence(
+                    CaptureRenameFileEvidence(
+                        sourceTemplatePath,
+                        MaximumSourceTemplateIdentityReadLength))
+                == sourceTemplateEvidence;
         }
         catch (Exception ex) when (ex is IOException
             or UnauthorizedAccessException)
@@ -1150,6 +1142,19 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
             return false;
         }
     }
+
+    private static VbaSourceTemplateDiagnosticsEvidence?
+        CreateDiagnosticsEvidence(VbaRenameFileEvidence? evidence)
+        => evidence is null
+            ? null
+            : new VbaSourceTemplateDiagnosticsEvidence(
+                evidence.FullPath,
+                evidence.Exists,
+                evidence.Metadata,
+                evidence.ContentDigest,
+                ContentCaptured: evidence.Exists
+                    && evidence.ReadFailure is null
+                    && evidence.ContentDigest is not null);
 
     /// <summary>
     /// Captures one exact-version open document without project, disk, or reference resolution.
@@ -1316,13 +1321,10 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                 var fileEvidence = CaptureRenameFileEvidence(
                     snapshot,
                     sourceUris);
-                var sourceTemplateFingerprint =
-                    snapshot.Resolution.Kind
-                        == VbaProjectResolutionKind.ManifestDocument
-                    && snapshot.Resolution.SourceTemplatePath is { } sourceTemplatePath
-                        ? CaptureRenameFileEvidence(sourceTemplatePath)
-                            .ContentDigest
-                        : null;
+                var projectIdentityCapture =
+                    CaptureSourceTemplateProjectIdentity(
+                        snapshot.Resolution,
+                        cancellationToken);
                 return new VbaRenameProjectSnapshotCapture(
                     snapshot.SemanticInventory,
                     () => GetRenameSourceChangeFailureSince(
@@ -1342,7 +1344,15 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                         ? null
                         : "Rename cannot prove binding preservation because "
                             + "one or more project sources could not be read.",
-                    sourceTemplateFingerprint);
+                    projectIdentityCapture.ReadResult,
+                    snapshot.Resolution.SourceTemplatePath is { }
+                            sourceTemplatePath
+                        && projectIdentityCapture.Evidence is { }
+                            sourceTemplateEvidence
+                        ? () => GetSourceTemplateChangeFailure(
+                            sourceTemplatePath,
+                            sourceTemplateEvidence)
+                        : null);
             }
         }
         catch
@@ -1352,6 +1362,149 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
             renameRevisionLease.Dispose();
             throw;
         }
+    }
+
+    private VbaSourceTemplateProjectIdentityCapture
+        CaptureSourceTemplateProjectIdentity(
+            VbaProjectResolution resolution,
+            CancellationToken cancellationToken)
+    {
+        if (resolution.Kind != VbaProjectResolutionKind.ManifestDocument)
+        {
+            return new VbaSourceTemplateProjectIdentityCapture(
+                ReadResult: null,
+                Evidence: null);
+        }
+
+        if (resolution.SourceTemplatePath is not { } sourceTemplatePath)
+        {
+            return new VbaSourceTemplateProjectIdentityCapture(
+                VbaProjectIdentityReadResult.Failed(
+                    VbaProjectIdentityReadFailureKind.InvalidPackage,
+                    "The manifest document does not identify a source template."),
+                Evidence: null);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        var fullPath = Path.GetFullPath(sourceTemplatePath);
+        if (!projectFileSystem.TryGetSourceMetadata(fullPath, out var metadata))
+        {
+            return new VbaSourceTemplateProjectIdentityCapture(
+                VbaProjectIdentityReadResult.Failed(
+                    VbaProjectIdentityReadFailureKind.InvalidPackage,
+                    "The containing source-template package is missing."),
+                new VbaRenameFileEvidence(
+                    fullPath,
+                    Exists: false,
+                    Metadata: null,
+                    ContentDigest: null,
+                    ReadFailure: null));
+        }
+
+        if (metadata.Length is <= 0
+            || metadata.Length > MaximumSourceTemplateIdentityReadLength)
+        {
+            return new VbaSourceTemplateProjectIdentityCapture(
+                VbaProjectIdentityReadResult.Failed(
+                    VbaProjectIdentityReadFailureKind.InvalidPackage,
+                    "The containing source-template package has an invalid or excessive length."),
+                new VbaRenameFileEvidence(
+                    fullPath,
+                    Exists: true,
+                    metadata,
+                    ContentDigest: null,
+                    ReadFailure: null));
+        }
+
+        try
+        {
+            var bytes = projectFileSystem.ReadSourceBytes(fullPath);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!projectFileSystem.TryGetSourceMetadata(
+                    fullPath,
+                    out var loadedMetadata)
+                || loadedMetadata != metadata
+                || bytes.LongLength != metadata.Length)
+            {
+                return new VbaSourceTemplateProjectIdentityCapture(
+                    VbaProjectIdentityReadResult.Failed(
+                        VbaProjectIdentityReadFailureKind.InvalidPackage,
+                        "The containing source-template package changed while it was captured."),
+                    new VbaRenameFileEvidence(
+                        fullPath,
+                        Exists: true,
+                        loadedMetadata,
+                        ContentDigest: null,
+                        ReadFailure: null));
+            }
+
+            var evidence = new VbaRenameFileEvidence(
+                fullPath,
+                Exists: true,
+                loadedMetadata,
+                Convert.ToHexString(SHA256.HashData(bytes)),
+                ReadFailure: null);
+            return new VbaSourceTemplateProjectIdentityCapture(
+                projectIdentityReader.Read(bytes, cancellationToken),
+                evidence);
+        }
+        catch (FileNotFoundException)
+        {
+            return new VbaSourceTemplateProjectIdentityCapture(
+                VbaProjectIdentityReadResult.Failed(
+                    VbaProjectIdentityReadFailureKind.InvalidPackage,
+                    "The containing source-template package is missing."),
+                new VbaRenameFileEvidence(
+                    fullPath,
+                    Exists: false,
+                    Metadata: null,
+                    ContentDigest: null,
+                    ReadFailure: null));
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return new VbaSourceTemplateProjectIdentityCapture(
+                VbaProjectIdentityReadResult.Failed(
+                    VbaProjectIdentityReadFailureKind.InvalidPackage,
+                    "The containing source-template package is missing."),
+                new VbaRenameFileEvidence(
+                    fullPath,
+                    Exists: false,
+                    Metadata: null,
+                    ContentDigest: null,
+                    ReadFailure: null));
+        }
+        catch (Exception ex) when (ex is IOException
+            or UnauthorizedAccessException)
+        {
+            return new VbaSourceTemplateProjectIdentityCapture(
+                VbaProjectIdentityReadResult.Failed(
+                    VbaProjectIdentityReadFailureKind.InvalidPackage,
+                    "The containing source-template package could not be read."),
+                new VbaRenameFileEvidence(
+                    fullPath,
+                    Exists: true,
+                    metadata,
+                    ContentDigest: null,
+                    ReadFailure: ex.Message));
+        }
+    }
+
+    private VbaRenameFailure? GetSourceTemplateChangeFailure(
+        string sourceTemplatePath,
+        VbaRenameFileEvidence requestStartEvidence)
+    {
+        var currentEvidence = CaptureRenameFileEvidence(
+            sourceTemplatePath,
+            MaximumSourceTemplateIdentityReadLength);
+        return EvidenceMatches(requestStartEvidence, currentEvidence)
+            ? null
+            : new VbaRenameFailure(
+                "analysisIncomplete",
+                "The containing source-template package changed after Rename captured its VBA project identity.",
+                Condition: "sourceTemplateChanged",
+                Path: Path.GetFullPath(sourceTemplatePath),
+                Guidance: "Retry Rename against the current source-template package.");
     }
 
     private IReadOnlyDictionary<string, VbaRenameFileEvidence>
@@ -1431,7 +1584,9 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
             StringComparer.OrdinalIgnoreCase);
     }
 
-    private VbaRenameFileEvidence CaptureRenameFileEvidence(string path)
+    private VbaRenameFileEvidence CaptureRenameFileEvidence(
+        string path,
+        long? maximumLength = null)
     {
         var fullPath = Path.GetFullPath(path);
         if (!projectFileSystem.TryGetSourceMetadata(fullPath, out var metadata))
@@ -1442,6 +1597,17 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                 Metadata: null,
                 ContentDigest: null,
                 ReadFailure: null);
+        }
+
+        if (maximumLength is { } limit
+            && (metadata.Length is <= 0 || metadata.Length > limit))
+        {
+            return new VbaRenameFileEvidence(
+                fullPath,
+                Exists: true,
+                metadata,
+                ContentDigest: null,
+                ReadFailure: "The file has an invalid or excessive length.");
         }
 
         try
@@ -1861,6 +2027,10 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
     private sealed record VbaFormSourceUnitPreflightResult(
         IReadOnlyList<VbaRenameFileOperation> FileRenames,
         VbaRenameFailure? Failure);
+
+    private sealed record VbaSourceTemplateProjectIdentityCapture(
+        VbaProjectIdentityReadResult? ReadResult,
+        VbaRenameFileEvidence? Evidence);
 
     private sealed record VbaRenameFileEvidence(
         string FullPath,

@@ -154,6 +154,80 @@ public sealed class VbaLspRequestExecutionCancellationTests
         Assert.Equal(0, workspace.RetainedRenameSourceRevisionCount);
     }
 
+    [Theory]
+    [InlineData("ContainingProject")]
+    [InlineData("BillingModule")]
+    public async Task Module_rename_fails_when_the_captured_source_template_changes_before_the_final_fence(
+        string capturedProjectName)
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-rename-template-fence-").FullName;
+        try
+        {
+            const string documentName = "Book1";
+            var sourceRoot = Directory.CreateDirectory(Path.Combine(
+                projectRoot,
+                "src",
+                documentName)).FullName;
+            var sourcePath = Path.Combine(sourceRoot, "SourceUnit.bas");
+            var templatePath = Path.Combine(projectRoot, "Book1.xlsm");
+            const string text = "Attribute VB_Name = \"InvoiceModule\"";
+            WriteManifest(projectRoot, documentName, "src/Book1");
+            File.WriteAllText(sourcePath, text);
+            File.WriteAllBytes(
+                templatePath,
+                VbaProjectIdentityWorkbookFixture.Create(
+                    capturedProjectName,
+                    1252));
+            var uri = new Uri(sourcePath).AbsoluteUri;
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()));
+            workspace.OpenDocument(uri, version: 1, text);
+            await using var output = new MemoryStream();
+            var executor = new VbaLspRequestExecution(
+                new LspMessageTransport(Stream.Null, output),
+                workspace);
+            var parameters = CreateRenameParameters();
+            parameters["textDocument"]!["uri"] = uri;
+            parameters["position"]!["line"] = 0;
+            parameters["position"]!["character"] =
+                "Attribute VB_Name = \"".Length;
+            parameters["newName"] = "BillingModule";
+            var request = new JsonObject
+            {
+                ["jsonrpc"] = "2.0",
+                ["id"] = 1,
+                ["method"] = "textDocument/rename",
+                ["params"] = parameters
+            };
+
+            var captured = executor.Capture(request, CancellationToken.None);
+            File.WriteAllBytes(
+                templatePath,
+                VbaProjectIdentityWorkbookFixture.Create(
+                    "ChangedProject",
+                    1252));
+
+            var outcome = captured.Execute(CancellationToken.None);
+            var data = Assert.IsAssignableFrom<
+                IReadOnlyDictionary<string, object?>>(outcome.ErrorData);
+
+            Assert.Equal(-32803, outcome.ErrorCode);
+            Assert.Equal("analysisIncomplete", data["reason"]);
+            Assert.Equal("sourceTemplateChanged", data["condition"]);
+            Assert.Equal(
+                templatePath,
+                Assert.IsType<string>(data["path"]),
+                ignoreCase: true);
+            Assert.Null(outcome.Result);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task File_following_module_rename_reports_the_changed_source_path_and_repair_guidance()
     {

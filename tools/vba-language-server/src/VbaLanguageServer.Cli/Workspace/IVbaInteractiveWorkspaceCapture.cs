@@ -45,6 +45,8 @@ public sealed class VbaRenameProjectSnapshotCapture : IDisposable
 {
     private readonly Func<VbaRenameFailure?>
         getParticipatingSourceChangeFailure;
+    private readonly Func<VbaRenameFailure?>
+        getSourceTemplateChangeFailure;
     private readonly Func<VbaRenamePlan, VbaRenameFilePreflightResult>
         preflightFileRenames;
     private IDisposable? revisionLease;
@@ -56,7 +58,8 @@ public sealed class VbaRenameProjectSnapshotCapture : IDisposable
         Func<VbaRenamePlan, VbaRenameFilePreflightResult>?
             preflightFileRenames = null,
         string? analysisFailureMessage = null,
-        string? sourceTemplateFingerprint = null)
+        VbaProjectIdentityReadResult? projectIdentityRead = null,
+        Func<VbaRenameFailure?>? getSourceTemplateChangeFailure = null)
     {
         SemanticInventory = semanticInventory;
         this.getParticipatingSourceChangeFailure =
@@ -65,9 +68,11 @@ public sealed class VbaRenameProjectSnapshotCapture : IDisposable
             ?? (static plan => new VbaRenameFilePreflightResult(
                 plan,
                 Failure: null));
+        this.getSourceTemplateChangeFailure =
+            getSourceTemplateChangeFailure ?? (static () => null);
         this.revisionLease = revisionLease;
         AnalysisFailureMessage = analysisFailureMessage;
-        SourceTemplateFingerprint = sourceTemplateFingerprint;
+        ProjectIdentityRead = projectIdentityRead;
     }
 
     /// <summary>
@@ -77,10 +82,13 @@ public sealed class VbaRenameProjectSnapshotCapture : IDisposable
 
     internal string? AnalysisFailureMessage { get; }
 
-    internal string? SourceTemplateFingerprint { get; }
+    internal VbaProjectIdentityReadResult? ProjectIdentityRead { get; }
 
     internal VbaRenameFailure? GetParticipatingSourceChangeFailure()
         => getParticipatingSourceChangeFailure();
+
+    internal VbaRenameFailure? GetSourceTemplateChangeFailure()
+        => getSourceTemplateChangeFailure();
 
     internal VbaRenameFilePreflightResult PreflightFileRenames(
         VbaRenamePlan plan)

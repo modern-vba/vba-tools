@@ -82,7 +82,9 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
             var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
             Directory.CreateDirectory(sourceRoot);
             var sourceTemplate = Path.Combine(sourceRoot, "Book1.xlsm");
-            var templateBytes = new byte[] { 0x10, 0x32, 0x54, 0x76 };
+            var templateBytes = VbaProjectIdentityWorkbookFixture.Create(
+                "ContainingProject",
+                1252);
             File.WriteAllBytes(sourceTemplate, templateBytes);
             WriteProjectManifest(projectRoot);
             var sourcePath = Path.Combine(sourceRoot, "Dialog.frm");
@@ -123,10 +125,6 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
                     document = "Book1",
                     sourceTemplate = Path.GetFullPath(sourceTemplate),
                     state = "present",
-                    vbaProjectName = "ContainingProject",
-                    sourceTemplateFingerprint = Convert.ToHexString(
-                        System.Security.Cryptography.SHA256.HashData(
-                            templateBytes)),
                     classEnumerationComplete = true,
                     classes = Array.Empty<object>()
                 });
@@ -185,7 +183,9 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
             var displacedRoot = Path.Combine(sourceRoot, "displaced");
             Directory.CreateDirectory(displacedRoot);
             var sourceTemplate = Path.Combine(sourceRoot, "Book1.xlsm");
-            var templateBytes = new byte[] { 0x10, 0x32, 0x54, 0x76 };
+            var templateBytes = VbaProjectIdentityWorkbookFixture.Create(
+                "ContainingProject",
+                1252);
             File.WriteAllBytes(sourceTemplate, templateBytes);
             WriteProjectManifest(projectRoot);
             var sourcePath = Path.Combine(sourceRoot, "Dialog.frm");
@@ -284,7 +284,9 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
             var duplicateRoot = Path.Combine(sourceRoot, "duplicate");
             Directory.CreateDirectory(duplicateRoot);
             var sourceTemplate = Path.Combine(sourceRoot, "Book1.xlsm");
-            var templateBytes = new byte[] { 0x10, 0x32, 0x54, 0x76 };
+            var templateBytes = VbaProjectIdentityWorkbookFixture.Create(
+                "ContainingProject",
+                1252);
             File.WriteAllBytes(sourceTemplate, templateBytes);
             WriteProjectManifest(projectRoot);
             var sourcePath = Path.Combine(sourceRoot, "LegacyDialog.frm");
@@ -443,7 +445,9 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
             var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
             Directory.CreateDirectory(sourceRoot);
             var sourceTemplate = Path.Combine(sourceRoot, "Book1.xlsm");
-            var templateBytes = new byte[] { 0x10, 0x32, 0x54, 0x76 };
+            var templateBytes = VbaProjectIdentityWorkbookFixture.Create(
+                "ContainingProject",
+                1252);
             File.WriteAllBytes(sourceTemplate, templateBytes);
             WriteProjectManifest(projectRoot);
             var sourcePath = Path.Combine(sourceRoot, "Sheet1.cls");

@@ -573,6 +573,17 @@ missing attribute is only a filename fallback, and malformed, misplaced,
 duplicate, invalid, or overlength metadata must be repaired or re-exported
 before Rename. VBA module names are limited to 31 Unicode code points.
 
+For a manifest-backed module, the language server reads the actual containing
+VBA project name statically from the exact selected source-template package at
+Rename request start. It reads `PROJECTNAME` with the package's MS-OVBA project
+code page without starting Excel, using VBIDE, waiting for Host Event discovery,
+or consulting a cached host projection. Manifest, document, workbook, generated
+blank-workbook, and reference-alias names never substitute. Missing, unreadable,
+malformed, encrypted, subject to unsupported protection, otherwise unsupported,
+or subsequently changed template content fails with `analysisIncomplete`, and a
+final whole-package content check
+runs before every resulting workspace edit, including a text-only edit.
+
 When the source basename matches the old module name, `.bas`, `.cls`, or `.frm`
 follows the semantic Rename. A source-owned UserForm is one `FormSourceUnit`:
 its `.frm`, optional matching `.frx`, paths, and participating semantic source
@@ -586,7 +597,9 @@ A deliberately different basename and its sidecar-reference spelling remain
 unchanged, while an intentional case-only Rename applies the requested final
 casing everywhere that participates. Installed CommonModules and currently
 workbook-owned form or document components are not silently detached or renamed
-through source F2.
+through source F2. The static containing-project read does not change that
+ownership boundary; only a form already proven outside current host association
+uses ordinary source Rename until the UserForm Event catalog cutover.
 
 The server checks the complete semantic edit set, current project and
 reference-name authority, designer structure, source and sidecar bytes,
@@ -727,6 +740,7 @@ cannot influence executable selection.
 | Excel blocks workbook automation | Enable trusted access to the VBA project object model in Excel Trust Center settings. |
 | Host Events remain queued, unavailable, or last-known-good | Select the `VBA Host Events` status item, review generation, context, reason, and cleanup details in VBA Tools Output, confirm the selected source template exists and is closed, then run `VBA Tools: Refresh Host Events`. There is no automatic retry. |
 | A form or document source cannot associate with Host Events | Review the complete association record in VBA Tools Output and repair or re-export its explicit `Attribute VB_Name`; file names and display names are not association fallbacks. |
+| Module Rename reports `analysisIncomplete` with `containingProjectNameUnavailable` | Follow the reported `path` and `guidance`. Restore or re-export a readable, supported source-template package with one valid VBA project, remove unsupported encryption or protection, and retry Rename after the template stops changing. Do not refresh Host Events for this condition: Rename reads the project identity directly and keeps no project-name cache. |
 | Module Rename reports `resourceOperationConflict` | Follow its `condition`, `path`, and `guidance`: reload or restore a changed or missing source, repair or re-export a displaced form sidecar, or remove the destination collision, then invoke Rename again. No partial plan was returned. |
 | UserForm Rename reports a designer or sidecar condition | Follow the reported `condition`, `path`, and `guidance` first. For `designerRootMissing`, `designerRootAmbiguous`, `designerStructureMalformed`, or `designerIdentityConflict`, repair or re-export the complete `.frm`. For `sidecarReferenceMalformed`, `sidecarReferenceUnsafe`, or `sidecarReferenceConflict`, make every resource property use the matching local `<form-basename>.frx` plus its hexadecimal offset, or re-export the form. For `sidecarMissing`, restore or re-export the missing matching sidecar. For `sidecarConflict`, reload the complete source unit and keep exactly one matching sidecar beside the form when evidence is missing, displaced, or multiply identified; restore or reload a changed or unreadable sidecar; or choose another module name or remove the conflicting destination. Then invoke Rename again; no partial plan was returned. |
 | Module Rename changes only part of the workspace or reports an application failure | Run Undo immediately and verify both source text and source-unit files, including `.frx`. Repair the destination, permissions, or filesystem-provider state, then request Rename again. If VS Code retains stale file models, close the affected editors or reload the window before retrying. |

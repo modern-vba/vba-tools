@@ -1108,8 +1108,11 @@ public sealed class VbaDiagnosticsPublisherTests
         }
     }
 
-    [Fact]
-    public async Task Template_change_after_diagnostic_capture_prevents_stale_module_identity_conflict_publication()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Template_change_after_diagnostic_capture_prevents_stale_module_identity_conflict_publication(
+        bool templateExistsAtCapture)
     {
         var projectRoot = Directory.CreateTempSubdirectory(
             "vba-ls-stale-template-diagnostics-").FullName;
@@ -1121,8 +1124,13 @@ public sealed class VbaDiagnosticsPublisherTests
                 "src",
                 "Book1")).FullName;
             var templatePath = Path.Combine(sourceRoot, "Book1.xlsm");
-            var templateBytes = new byte[] { 0x11, 0x33, 0x55, 0x77 };
-            File.WriteAllBytes(templatePath, templateBytes);
+            var templateBytes = VbaProjectIdentityWorkbookFixture.Create(
+                "ContainingProject",
+                1252);
+            if (templateExistsAtCapture)
+            {
+                File.WriteAllBytes(templatePath, templateBytes);
+            }
             File.WriteAllText(
                 Path.Combine(projectRoot, "vba-project.json"),
                 System.Text.Json.JsonSerializer.Serialize(new
@@ -1148,34 +1156,18 @@ public sealed class VbaDiagnosticsPublisherTests
             const string text = "Attribute VB_Name = \"ContainingProject\"";
             File.WriteAllText(sourcePath, text);
             var uri = new Uri(Path.GetFullPath(sourcePath)).AbsoluteUri;
-            var context = new VbaHostClassProjectionContext(
-                Path.GetFullPath(projectRoot),
-                "Book1",
-                Path.GetFullPath(templatePath));
             var workspace = new VbaLanguageWorkspace(
                 new VbaProjectReferenceCatalogCache(
                     VbaProjectReferenceCatalogSet.CreateBundled()));
             workspace.OpenDocument(uri, 7, text);
             _ = workspace.CreateProjectSnapshot(uri);
-            Assert.True(workspace.TryApplyHostClassProjectionSnapshot(
-                new VbaHostClassProjectionSnapshotUpdate(
-                    context,
-                    Revision: 1,
-                    new VbaHostClassProjectionSnapshot(
-                        Revision: 1,
-                        context,
-                        ClassEnumerationComplete: true,
-                        Classes: [],
-                        VbaProjectName: "ContainingProject",
-                        SourceTemplateFingerprint: Convert.ToHexString(
-                            System.Security.Cryptography.SHA256.HashData(
-                                templateBytes))))));
             var diagnosticSnapshot = Assert.Single(
                 workspace.GetProjectDiagnosticsSnapshots(uri)!);
-            Assert.Contains(
-                diagnosticSnapshot.ProjectValidationDiagnostics,
-                diagnostic => diagnostic.Code
-                    == "validation.moduleIdentityNameConflict");
+            Assert.Equal(
+                templateExistsAtCapture,
+                diagnosticSnapshot.ProjectValidationDiagnostics.Any(
+                    diagnostic => diagnostic.Code
+                        == "validation.moduleIdentityNameConflict"));
 
             await using var output = new CapturingWriteStream();
             var blockerStarted = new TaskCompletionSource(
@@ -1200,7 +1192,11 @@ public sealed class VbaDiagnosticsPublisherTests
             await publisher.PublishProjectDiagnosticsAsync(
                 uri,
                 CancellationToken.None);
-            File.WriteAllBytes(templatePath, [0x22, 0x44, 0x66, 0x88]);
+            File.WriteAllBytes(
+                templatePath,
+                templateExistsAtCapture
+                    ? [0x22, 0x44, 0x66, 0x88]
+                    : templateBytes);
             releaseSchedulerBlocker.TrySetResult();
             await blocker.Completion.WaitAsync(TimeSpan.FromSeconds(5));
             await publisher.WaitForIdleAsync(uri)
