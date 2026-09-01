@@ -18518,7 +18518,8 @@ public sealed class LanguageServerProcessTests
             var sidecarDestinationPath = Path.Combine(sourceRoot, "DialogView.frx");
             var text = string.Join('\n', [
                 "VERSION 5.00",
-                "Begin VB.Form Dialog",
+                "Begin VB.UserForm Dialog",
+                "   OleObjectBlob = \"Dialog.frx\":0000",
                 "End",
                 "Attribute VB_Name = \"Dialog\""
             ]);
@@ -18562,12 +18563,31 @@ public sealed class LanguageServerProcessTests
                 .ToArray();
             Assert.Equal(3, documentChanges.Length);
             Assert.True(documentChanges[0].TryGetProperty("textDocument", out _));
+            var textEdits = documentChanges[0]
+                .GetProperty("edits")
+                .EnumerateArray()
+                .ToArray();
+            Assert.Equal(3, textEdits.Length);
+            Assert.Collection(
+                textEdits,
+                edit => Assert.Equal(
+                    "DialogView",
+                    edit.GetProperty("newText").GetString()),
+                edit => Assert.Equal(
+                    "DialogView.frx",
+                    edit.GetProperty("newText").GetString()),
+                edit => Assert.Equal(
+                    "DialogView",
+                    edit.GetProperty("newText").GetString()));
             Assert.Equal("rename", documentChanges[1].GetProperty("kind").GetString());
             Assert.Equal(uri, documentChanges[1].GetProperty("oldUri").GetString());
             Assert.Equal(ToFileUri(destinationPath), documentChanges[1].GetProperty("newUri").GetString());
             Assert.Equal("rename", documentChanges[2].GetProperty("kind").GetString());
             Assert.Equal(ToFileUri(sidecarPath), documentChanges[2].GetProperty("oldUri").GetString());
             Assert.Equal(ToFileUri(sidecarDestinationPath), documentChanges[2].GetProperty("newUri").GetString());
+            Assert.Equal(
+                new byte[] { 0x01, 0x02, 0x03 },
+                File.ReadAllBytes(sidecarPath));
 
             await process.ShutdownAsync(3);
         }
@@ -18578,7 +18598,706 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
-    public async Task Server_rejects_a_form_rename_when_the_sidecar_destination_exists()
+    public async Task Server_rejects_a_form_rename_when_a_designer_resource_sidecar_is_missing()
+    {
+        var sourceRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-form-missing-sidecar-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(sourceRoot, "Dialog.frm");
+            var text = string.Join('\n', [
+                "VERSION 5.00",
+                "Begin VB.UserForm Dialog",
+                "   TabPicture(0) = \"Dialog.frx\":0010",
+                "End",
+                "Attribute VB_Name = \"Dialog\""
+            ]);
+            File.WriteAllText(sourcePath, text);
+            var uri = ToFileUri(sourcePath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+
+            await process.InitializeAsync(new
+            {
+                workspace = new
+                {
+                    workspaceEdit = new
+                    {
+                        documentChanges = true,
+                        resourceOperations = new[] { "rename" }
+                    }
+                }
+            });
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+
+            var rename = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/rename",
+                uri,
+                text,
+                "Dialog\"",
+                0,
+                new { newName = "DialogView" });
+
+            Assert.False(rename.TryGetProperty("result", out _));
+            var error = rename.GetProperty("error");
+            Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+            var data = error.GetProperty("data");
+            Assert.Equal(
+                "resourceOperationConflict",
+                data.GetProperty("reason").GetString());
+            Assert.Equal(
+                "sidecarMissing",
+                data.GetProperty("condition").GetString());
+            Assert.Equal(
+                Path.ChangeExtension(sourcePath, ".frx"),
+                data.GetProperty("path").GetString(),
+                ignoreCase: true);
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(sourceRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_renames_multiple_form_resources_without_rewriting_nested_names_or_unrelated_strings()
+    {
+        var sourceRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-form-complete-designer-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(sourceRoot, "Dialog.frm");
+            var sidecarPath = Path.Combine(sourceRoot, "Dialog.frx");
+            var text = string.Join('\n', [
+                "VERSION 5.00",
+                "Begin VB.UserForm Dialog",
+                "   Caption = \"Dialog.frx\"",
+                "   TabPicture(0) = \"Dialog.frx\":0010",
+                "   Begin VB.CommandButton CommandButton1",
+                "      MouseIcon = \"Dialog.FRX\":0020",
+                "      Caption = \"Dialog\"",
+                "   End",
+                "End",
+                "Attribute VB_Name = \"Dialog\""
+            ]);
+            File.WriteAllText(sourcePath, text);
+            File.WriteAllBytes(sidecarPath, [0x10, 0x20, 0x30]);
+            var uri = ToFileUri(sourcePath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+
+            await process.InitializeAsync(new
+            {
+                workspace = new
+                {
+                    workspaceEdit = new
+                    {
+                        documentChanges = true,
+                        resourceOperations = new[] { "rename" }
+                    }
+                }
+            });
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+
+            var rename = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/rename",
+                uri,
+                text,
+                "Attribute VB_Name = \"Dialog\"",
+                "Attribute VB_Name = \"".Length,
+                new { newName = "DialogView" });
+
+            Assert.False(
+                rename.TryGetProperty("error", out var renameError),
+                renameError.ToString());
+            var edits = rename
+                .GetProperty("result")
+                .GetProperty("documentChanges")[0]
+                .GetProperty("edits")
+                .EnumerateArray()
+                .ToArray();
+            Assert.Equal(new[] { 1, 3, 5, 9 }, edits
+                .Select(edit => edit
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32())
+                .ToArray());
+            Assert.Equal(
+                new[] { "DialogView", "DialogView.frx", "DialogView.FRX", "DialogView" },
+                edits.Select(edit => edit.GetProperty("newText").GetString()).ToArray());
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(sourceRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_preserves_a_deliberate_form_source_unit_basename_during_identity_rename()
+    {
+        var sourceRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-form-deliberate-basename-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(sourceRoot, "LegacyDialog.frm");
+            var sidecarPath = Path.Combine(sourceRoot, "LegacyDialog.frx");
+            var text = string.Join('\n', [
+                "VERSION 5.00",
+                "Begin VB.UserForm Dialog",
+                "   Picture = \"legacydialog.FRX\":0010",
+                "End",
+                "Attribute VB_Name = \"Dialog\""
+            ]);
+            File.WriteAllText(sourcePath, text);
+            File.WriteAllBytes(sidecarPath, [0x10, 0x20, 0x30]);
+            var uri = ToFileUri(sourcePath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+
+            await process.InitializeAsync();
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+
+            var rename = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/rename",
+                uri,
+                text,
+                "Attribute VB_Name = \"Dialog\"",
+                "Attribute VB_Name = \"".Length,
+                new { newName = "DialogView" });
+
+            Assert.False(
+                rename.TryGetProperty("error", out var renameError),
+                renameError.ToString());
+            var result = rename.GetProperty("result");
+            Assert.False(result.TryGetProperty("documentChanges", out _));
+            var edits = result
+                .GetProperty("changes")
+                .GetProperty(uri)
+                .EnumerateArray()
+                .ToArray();
+            Assert.Equal(new[] { 1, 4 }, edits
+                .Select(edit => edit
+                    .GetProperty("range")
+                    .GetProperty("start")
+                    .GetProperty("line")
+                    .GetInt32())
+                .ToArray());
+            Assert.All(edits, edit => Assert.Equal(
+                "DialogView",
+                edit.GetProperty("newText").GetString()));
+            Assert.True(File.Exists(sourcePath));
+            Assert.True(File.Exists(sidecarPath));
+            Assert.Equal(
+                new byte[] { 0x10, 0x20, 0x30 },
+                File.ReadAllBytes(sidecarPath));
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(sourceRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_renames_a_form_without_an_optional_sidecar()
+    {
+        var sourceRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-form-no-sidecar-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(sourceRoot, "Dialog.frm");
+            var text = string.Join('\n', [
+                "VERSION 5.00",
+                "Begin VB.UserForm Dialog",
+                "   Caption = \"No binary resources\"",
+                "End",
+                "Attribute VB_Name = \"Dialog\""
+            ]);
+            File.WriteAllText(sourcePath, text);
+            var uri = ToFileUri(sourcePath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+
+            await process.InitializeAsync(new
+            {
+                workspace = new
+                {
+                    workspaceEdit = new
+                    {
+                        documentChanges = true,
+                        resourceOperations = new[] { "rename" }
+                    }
+                }
+            });
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+
+            var rename = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/rename",
+                uri,
+                text,
+                "Attribute VB_Name = \"Dialog\"",
+                "Attribute VB_Name = \"".Length,
+                new { newName = "DialogView" });
+
+            Assert.False(
+                rename.TryGetProperty("error", out var renameError),
+                renameError.ToString());
+            var changes = rename
+                .GetProperty("result")
+                .GetProperty("documentChanges")
+                .EnumerateArray()
+                .ToArray();
+            Assert.Equal(2, changes.Length);
+            Assert.Equal(2, changes[0]
+                .GetProperty("edits")
+                .GetArrayLength());
+            Assert.Equal(
+                ToFileUri(Path.Combine(sourceRoot, "DialogView.frm")),
+                changes[1].GetProperty("newUri").GetString());
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(sourceRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_applies_case_only_form_source_unit_casing_consistently()
+    {
+        var sourceRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-form-case-only-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(sourceRoot, "Dialog.frm");
+            var sidecarPath = Path.Combine(sourceRoot, "Dialog.frx");
+            var text = string.Join('\n', [
+                "VERSION 5.00",
+                "Begin VB.UserForm Dialog",
+                "   OleObjectBlob = \"Dialog.frx\":0000",
+                "End",
+                "Attribute VB_Name = \"Dialog\""
+            ]);
+            File.WriteAllText(sourcePath, text);
+            File.WriteAllBytes(sidecarPath, [0x01, 0x02, 0x03]);
+            var uri = ToFileUri(sourcePath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+
+            await process.InitializeAsync(new
+            {
+                workspace = new
+                {
+                    workspaceEdit = new
+                    {
+                        documentChanges = true,
+                        resourceOperations = new[] { "rename" }
+                    }
+                }
+            });
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+
+            var rename = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/rename",
+                uri,
+                text,
+                "Attribute VB_Name = \"Dialog\"",
+                "Attribute VB_Name = \"".Length,
+                new { newName = "DIALOG" });
+
+            Assert.False(
+                rename.TryGetProperty("error", out var renameError),
+                renameError.ToString());
+            var changes = rename
+                .GetProperty("result")
+                .GetProperty("documentChanges")
+                .EnumerateArray()
+                .ToArray();
+            Assert.Equal(3, changes.Length);
+            Assert.Equal(
+                new[] { "DIALOG", "DIALOG.frx", "DIALOG" },
+                changes[0]
+                    .GetProperty("edits")
+                    .EnumerateArray()
+                    .Select(edit => edit.GetProperty("newText").GetString())
+                    .ToArray());
+            Assert.All(changes.Skip(1), change => Assert.True(
+                change.GetProperty("options")
+                    .GetProperty("overwrite")
+                    .GetBoolean()));
+            Assert.Equal(
+                ToFileUri(Path.Combine(sourceRoot, "DIALOG.frm")),
+                changes[1].GetProperty("newUri").GetString());
+            Assert.Equal(
+                ToFileUri(Path.Combine(sourceRoot, "DIALOG.frx")),
+                changes[2].GetProperty("newUri").GetString());
+            Assert.Equal(
+                new byte[] { 0x01, 0x02, 0x03 },
+                File.ReadAllBytes(sidecarPath));
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(sourceRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_omits_no_op_form_source_unit_file_renames_when_the_requested_identity_matches_the_exact_basename()
+    {
+        var sourceRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-form-no-op-file-rename-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(sourceRoot, "Dialog.frm");
+            var sidecarPath = Path.Combine(sourceRoot, "Dialog.frx");
+            var text = string.Join('\n', [
+                "VERSION 5.00",
+                "Begin VB.UserForm dIaLoG",
+                "   OleObjectBlob = \"Dialog.frx\":0000",
+                "End",
+                "Attribute VB_Name = \"dIaLoG\""
+            ]);
+            File.WriteAllText(sourcePath, text);
+            File.WriteAllBytes(sidecarPath, [0x01, 0x02, 0x03]);
+            var uri = ToFileUri(sourcePath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+
+            await process.InitializeAsync(new
+            {
+                workspace = new
+                {
+                    workspaceEdit = new
+                    {
+                        documentChanges = true,
+                        resourceOperations = new[] { "rename" }
+                    }
+                }
+            });
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+
+            var rename = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/rename",
+                uri,
+                text,
+                "Attribute VB_Name = \"dIaLoG\"",
+                "Attribute VB_Name = \"".Length,
+                new { newName = "Dialog" });
+
+            Assert.False(
+                rename.TryGetProperty("error", out var renameError),
+                renameError.ToString());
+            var result = rename.GetProperty("result");
+            Assert.False(result.TryGetProperty("documentChanges", out _));
+            var edits = result
+                .GetProperty("changes")
+                .GetProperty(uri)
+                .EnumerateArray()
+                .ToArray();
+            Assert.Equal(
+                new[] { "Dialog", "Dialog.frx", "Dialog" },
+                edits.Select(edit => edit.GetProperty("newText").GetString()).ToArray());
+            Assert.True(File.Exists(sourcePath));
+            Assert.True(File.Exists(sidecarPath));
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(sourceRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_renames_only_the_case_variant_form_sidecar_when_the_form_basename_already_matches()
+    {
+        var sourceRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-form-sidecar-only-case-rename-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(sourceRoot, "Dialog.frm");
+            var sidecarPath = Path.Combine(sourceRoot, "DIALOG.FRX");
+            var text = string.Join('\n', [
+                "VERSION 5.00",
+                "Begin VB.UserForm dIaLoG",
+                "   OleObjectBlob = \"DIALOG.FRX\":0000",
+                "End",
+                "Attribute VB_Name = \"dIaLoG\""
+            ]);
+            File.WriteAllText(sourcePath, text);
+            File.WriteAllBytes(sidecarPath, [0x01, 0x02, 0x03]);
+            var uri = ToFileUri(sourcePath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+
+            await process.InitializeAsync(new
+            {
+                workspace = new
+                {
+                    workspaceEdit = new
+                    {
+                        documentChanges = true,
+                        resourceOperations = new[] { "rename" }
+                    }
+                }
+            });
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+
+            var rename = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/rename",
+                uri,
+                text,
+                "Attribute VB_Name = \"dIaLoG\"",
+                "Attribute VB_Name = \"".Length,
+                new { newName = "Dialog" });
+
+            Assert.False(
+                rename.TryGetProperty("error", out var renameError),
+                renameError.ToString());
+            var changes = rename
+                .GetProperty("result")
+                .GetProperty("documentChanges")
+                .EnumerateArray()
+                .ToArray();
+            Assert.Equal(2, changes.Length);
+            Assert.Equal(uri, changes[0]
+                .GetProperty("textDocument")
+                .GetProperty("uri")
+                .GetString());
+            Assert.Equal(
+                new[] { "Dialog", "Dialog.FRX", "Dialog" },
+                changes[0]
+                    .GetProperty("edits")
+                    .EnumerateArray()
+                    .Select(edit => edit.GetProperty("newText").GetString())
+                    .ToArray());
+            Assert.Equal(ToFileUri(sidecarPath), changes[1]
+                .GetProperty("oldUri")
+                .GetString());
+            Assert.Equal(
+                ToFileUri(Path.Combine(sourceRoot, "Dialog.FRX")),
+                changes[1].GetProperty("newUri").GetString());
+            Assert.True(changes[1]
+                .GetProperty("options")
+                .GetProperty("overwrite")
+                .GetBoolean());
+            Assert.DoesNotContain(changes.Skip(1), change =>
+                change.GetProperty("oldUri").GetString() == uri);
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(sourceRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_requires_rename_file_capability_for_a_preflight_completed_sidecar_only_rename()
+    {
+        var sourceRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-form-sidecar-only-capability-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(sourceRoot, "Dialog.frm");
+            var sidecarPath = Path.Combine(sourceRoot, "DIALOG.FRX");
+            var text = string.Join('\n', [
+                "VERSION 5.00",
+                "Begin VB.UserForm dIaLoG",
+                "   OleObjectBlob = \"DIALOG.FRX\":0000",
+                "End",
+                "Attribute VB_Name = \"dIaLoG\""
+            ]);
+            File.WriteAllText(sourcePath, text);
+            File.WriteAllBytes(sidecarPath, [0x01, 0x02, 0x03]);
+            var uri = ToFileUri(sourcePath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+
+            await process.InitializeAsync();
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+
+            var rename = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/rename",
+                uri,
+                text,
+                "Attribute VB_Name = \"dIaLoG\"",
+                "Attribute VB_Name = \"".Length,
+                new { newName = "Dialog" });
+
+            Assert.False(rename.TryGetProperty("result", out _));
+            var error = rename.GetProperty("error");
+            Assert.Equal(-32803, error.GetProperty("code").GetInt32());
+            Assert.Equal(
+                "clientCapabilityMissing",
+                error.GetProperty("data").GetProperty("reason").GetString());
+            Assert.Contains(
+                "rename resource operation",
+                error.GetProperty("message").GetString(),
+                StringComparison.OrdinalIgnoreCase);
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(sourceRoot, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(
+        "Begin VB.UserForm OtherDialog\nEnd",
+        "designerIdentityConflict")]
+    [InlineData(
+        "Begin VB.UserForm Dialog\nEnd\nBegin VB.UserForm Dialog\nEnd",
+        "designerRootAmbiguous")]
+    [InlineData(
+        "Begin VB.UserForm Dialog",
+        "malformed")]
+    [InlineData(
+        "Begin VB.UserForm Dialog\nBeginProperty\nEndProperty\nEnd",
+        "designerStructureMalformed")]
+    [InlineData(
+        "Begin VB.UserForm Dialog\n   Picture = \"..\\Dialog.frx\":0000\nEnd",
+        "sidecarReferenceUnsafe")]
+    [InlineData(
+        "Begin VB.UserForm Dialog\n   Picture = \"C:\\Dialog.frx\":0000\nEnd",
+        "sidecarReferenceUnsafe")]
+    [InlineData(
+        "Begin VB.UserForm Dialog\n   Picture = \"Dialog.frx\":NOTHEX\nEnd",
+        "sidecarReferenceMalformed")]
+    [InlineData(
+        "Begin VB.UserForm Dialog\n   TabPicture(index) = \"Dialog.frx\":0000\nEnd",
+        "sidecarReferenceMalformed")]
+    [InlineData(
+        "Begin VB.UserForm Dialog\n   Picture = \"Dialog.frx\":0000\n   MouseIcon = \"Other.frx\":0010\nEnd",
+        "sidecarReferenceConflict")]
+    public async Task Server_rejects_incomplete_or_unsafe_form_designer_evidence(
+        string designerBody,
+        string expectedCondition)
+    {
+        var sourceRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-form-designer-refusal-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(sourceRoot, "Dialog.frm");
+            var sidecarPath = Path.Combine(sourceRoot, "Dialog.frx");
+            var text = string.Join('\n', [
+                "VERSION 5.00",
+                designerBody,
+                "Attribute VB_Name = \"Dialog\""
+            ]);
+            File.WriteAllText(sourcePath, text);
+            File.WriteAllBytes(sidecarPath, [0x01, 0x02, 0x03]);
+            var uri = ToFileUri(sourcePath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+
+            await process.InitializeAsync(new
+            {
+                workspace = new
+                {
+                    workspaceEdit = new
+                    {
+                        documentChanges = true,
+                        resourceOperations = new[] { "rename" }
+                    }
+                }
+            });
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+
+            var attributeLine = text.Count(character => character == '\n');
+            var rename = await process.SendRequestAsync(
+                2,
+                "textDocument/rename",
+                new
+                {
+                    textDocument = new { uri },
+                    position = new
+                    {
+                        line = attributeLine,
+                        character = "Attribute VB_Name = \"".Length
+                    },
+                    newName = "DialogView"
+                });
+
+            Assert.False(rename.TryGetProperty("result", out _));
+            var data = rename.GetProperty("error").GetProperty("data");
+            Assert.Equal(
+                expectedCondition == "malformed"
+                    ? "moduleIdentityInvalid"
+                    : "resourceOperationConflict",
+                data.GetProperty("reason").GetString());
+            Assert.Equal(
+                expectedCondition,
+                data.GetProperty("condition").GetString());
+            if (expectedCondition == "designerStructureMalformed")
+            {
+                Assert.Equal(
+                    sourcePath,
+                    data.GetProperty("path").GetString(),
+                    ignoreCase: true);
+            }
+
+            if (data.TryGetProperty("guidance", out var guidance))
+            {
+                Assert.False(string.IsNullOrWhiteSpace(guidance.GetString()));
+            }
+            else
+            {
+                Assert.Contains(
+                    "repair",
+                    rename.GetProperty("error").GetProperty("message").GetString(),
+                    StringComparison.OrdinalIgnoreCase);
+            }
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(sourceRoot, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Server_rejects_a_form_rename_when_the_sidecar_destination_exists(
+        bool sourceSidecarExists)
     {
         var sourceRoot = Directory.CreateTempSubdirectory(
             "vba-ls-form-sidecar-destination-").FullName;
@@ -18594,7 +19313,10 @@ public sealed class LanguageServerProcessTests
                 "Attribute VB_Name = \"Dialog\""
             ]);
             File.WriteAllText(sourcePath, text);
-            File.WriteAllBytes(sidecarPath, [0x01, 0x02, 0x03]);
+            if (sourceSidecarExists)
+            {
+                File.WriteAllBytes(sidecarPath, [0x01, 0x02, 0x03]);
+            }
             File.WriteAllBytes(sidecarDestinationPath, [0x09, 0x08, 0x07]);
             var uri = ToFileUri(sourcePath);
             await using var process = await LanguageServerProcessHarness.StartAsync();

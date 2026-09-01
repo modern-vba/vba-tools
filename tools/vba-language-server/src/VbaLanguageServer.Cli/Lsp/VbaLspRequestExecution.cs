@@ -614,6 +614,20 @@ internal sealed class VbaLspRequestExecution
                         CreateRenameFailureData(fileRenamePreflight.Failure));
                 }
 
+                if (fileRenamePreflight.Plan.FileRenames.Count > 0
+                    && !clientCapabilities.Snapshot.WorkspaceEdit
+                        .SupportsRenameFile)
+                {
+                    var failure = new VbaRenameFailure(
+                        "clientCapabilityMissing",
+                        "File-following module Rename requires ordered "
+                        + "documentChanges and the rename resource operation.");
+                    return RequestOutcome.Error(
+                        -32803,
+                        failure.Message,
+                        CreateRenameFailureData(failure));
+                }
+
                 var finalSourceChangeFailure =
                     renameCapture.GetParticipatingSourceChangeFailure();
                 if (finalSourceChangeFailure is not null)

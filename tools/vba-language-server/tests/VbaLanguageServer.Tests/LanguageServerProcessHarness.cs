@@ -2,12 +2,14 @@ using System.Diagnostics;
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
-using VbaLanguageServer.SourceModel;
 
 namespace VbaLanguageServer.Tests;
 
 internal sealed class LanguageServerProcessHarness : IAsyncDisposable
 {
+    private const string ReferenceCatalogCacheRootEnvironmentVariable =
+        "VBA_TOOLS_REFERENCE_CATALOG_CACHE_DIR";
+
     private enum HarnessState
     {
         Active,
@@ -91,17 +93,7 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
         IReadOnlyDictionary<string, string>? environment = null,
         IReadOnlyList<string>? serverArguments = null)
     {
-        var serverProjectPath = Path.GetFullPath(
-            Path.Combine(
-                AppContext.BaseDirectory,
-                "..",
-                "..",
-                "..",
-                "..",
-                "..",
-                "src",
-                "VbaLanguageServer.Cli",
-                "VbaLanguageServer.Cli.csproj"));
+        var serverProjectPath = FindServerProjectPath();
         return StartFromProjectAsync(
             serverProjectPath,
             referenceCatalogCacheRoot,
@@ -131,7 +123,7 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
         {
             startInfo.Environment[name] = value;
         }
-        startInfo.Environment[VbaProjectReferenceCatalogPersistentStore.CacheRootEnvironmentVariable] = cacheRoot;
+        startInfo.Environment[ReferenceCatalogCacheRootEnvironmentVariable] = cacheRoot;
 
         startInfo.ArgumentList.Add("run");
         startInfo.ArgumentList.Add("--no-build");
@@ -167,6 +159,29 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
 
             throw;
         }
+    }
+
+    private static string FindServerProjectPath()
+    {
+        for (var directory = new DirectoryInfo(AppContext.BaseDirectory);
+             directory is not null;
+             directory = directory.Parent)
+        {
+            var candidate = Path.Combine(
+                directory.FullName,
+                "tools",
+                "vba-language-server",
+                "src",
+                "VbaLanguageServer.Cli",
+                "VbaLanguageServer.Cli.csproj");
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        throw new InvalidOperationException(
+            "Could not locate the VbaLanguageServer.Cli project from the test output directory.");
     }
 
     public async Task<JsonElement> InitializeAsync(int requestId = 1, CancellationToken cancellationToken = default)

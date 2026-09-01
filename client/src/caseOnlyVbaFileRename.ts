@@ -5,6 +5,7 @@ import type {
   Uri as VscodeUri
 } from 'vscode';
 import { Uri, workspace } from 'vscode';
+import { ordinalIgnoreCaseKey } from './ordinalIgnoreCase';
 
 const vbaSourceExtensions = new Set(['.bas', '.cls', '.frm', '.frx']);
 const planRetentionMilliseconds = 5 * 60 * 1_000;
@@ -21,6 +22,8 @@ interface TrackedCaseOnlyVbaFileRename {
   readonly oldName: string;
   readonly newName: string;
   readonly capturedAt: number;
+  readonly captureBatchId: number;
+  readonly formSourceUnitKey: string | undefined;
   state: 'before' | 'after';
 }
 
@@ -28,6 +31,7 @@ export class CaseOnlyVbaFileRenameAdapter implements Disposable {
   private readonly tracked: TrackedCaseOnlyVbaFileRename[] = [];
   private readonly subscription: Disposable;
   private pending = Promise.resolve();
+  private nextCaptureBatchId = 0;
 
   public constructor(private readonly reportFailure: (message: string) => void) {
     this.subscription = workspace.onDidChangeTextDocument(event => {
@@ -37,7 +41,9 @@ export class CaseOnlyVbaFileRenameAdapter implements Disposable {
 
   public capture(renames: readonly CaseOnlyVbaFileRename[]): void {
     const capturedAt = Date.now();
+    const captureBatchId = ++this.nextCaptureBatchId;
     this.removeExpired(capturedAt);
+    const capturedRenames: TrackedCaseOnlyVbaFileRename[] = [];
     for (const rename of renames) {
       const oldUri = Uri.parse(rename.oldUri);
       const newUri = Uri.parse(rename.newUri);
@@ -51,11 +57,27 @@ export class CaseOnlyVbaFileRenameAdapter implements Disposable {
         oldName: path.basename(oldUri.fsPath, path.extname(oldUri.fsPath)),
         newName: path.basename(newUri.fsPath, path.extname(newUri.fsPath)),
         capturedAt,
+        captureBatchId,
+        formSourceUnitKey: readFormSourceUnitKey(oldUri),
         state: 'before'
       };
+      capturedRenames.push(trackedRename);
+    }
+
+    const supersededFormSourceUnitKeys = new Set(capturedRenames
+      .map(rename => rename.formSourceUnitKey)
+      .filter((key): key is string => key !== undefined));
+    for (let index = this.tracked.length - 1; index >= 0; index--) {
+      const key = this.tracked[index].formSourceUnitKey;
+      if (key !== undefined && supersededFormSourceUnitKeys.has(key)) {
+        this.tracked.splice(index, 1);
+      }
+    }
+
+    for (const trackedRename of capturedRenames) {
       const existingIndex = this.tracked.findIndex(candidate =>
-        pathsEqual(candidate.oldUri.fsPath, oldUri.fsPath)
-          && pathsEqual(candidate.newUri.fsPath, newUri.fsPath));
+        pathsEqual(candidate.oldUri.fsPath, trackedRename.oldUri.fsPath)
+          && pathsEqual(candidate.newUri.fsPath, trackedRename.newUri.fsPath));
       if (existingIndex >= 0) {
         this.tracked.splice(existingIndex, 1, trackedRename);
       } else {
@@ -80,6 +102,7 @@ export class CaseOnlyVbaFileRenameAdapter implements Disposable {
     }
 
     const documentPath = event.document.uri.fsPath;
+    let documentRenameTransitionEnqueued = false;
     for (const rename of this.tracked) {
       if (!pathsEqual(documentPath, rename.oldUri.fsPath)
           && !pathsEqual(documentPath, rename.newUri.fsPath)) {
@@ -87,12 +110,50 @@ export class CaseOnlyVbaFileRenameAdapter implements Disposable {
       }
 
       if (rename.state === 'before' && authoritativeName === rename.newName) {
+        documentRenameTransitionEnqueued = true;
         this.enqueue(rename, rename.newUri, 'after');
         this.enqueueMatchingFormSidecar(rename, 'after');
-      } else if (rename.state === 'after' && authoritativeName === rename.oldName) {
+      } else if (rename.state === 'after'
+          && authoritativeName !== rename.newName
+          && sameOrdinalIgnoreCase(authoritativeName, rename.oldName)) {
+        documentRenameTransitionEnqueued = true;
         this.enqueue(rename, rename.oldUri, 'before');
         this.enqueueMatchingFormSidecar(rename, 'before');
       }
+    }
+
+    if (!documentRenameTransitionEnqueued) {
+      this.enqueueSidecarOnlyCaseRename(documentPath, authoritativeName);
+    }
+  }
+
+  private enqueueSidecarOnlyCaseRename(
+    documentPath: string,
+    authoritativeName: string
+  ): void {
+    if (path.extname(documentPath).toLowerCase() !== '.frm') {
+      return;
+    }
+
+    const formName = path.basename(documentPath, path.extname(documentPath));
+    const formSourceUnitKey = readFormSourceUnitKey(Uri.file(documentPath));
+    const sidecarRename = this.tracked.find(candidate =>
+      path.extname(candidate.oldUri.fsPath).toLowerCase() === '.frx'
+        && candidate.formSourceUnitKey === formSourceUnitKey
+        && sameOrdinalIgnoreCase(candidate.oldName, formName)
+        && sameOrdinalIgnoreCase(candidate.newName, formName)
+        && pathsEqual(
+          path.dirname(candidate.oldUri.fsPath),
+          path.dirname(documentPath)
+        )
+        && (candidate.state === 'before'
+          ? candidate.newName === authoritativeName
+          : candidate.newName !== authoritativeName
+            && sameOrdinalIgnoreCase(candidate.oldName, authoritativeName)));
+    if (sidecarRename?.state === 'before') {
+      this.enqueue(sidecarRename, sidecarRename.newUri, 'after');
+    } else if (sidecarRename !== undefined) {
+      this.enqueue(sidecarRename, sidecarRename.oldUri, 'before');
     }
   }
 
@@ -106,8 +167,10 @@ export class CaseOnlyVbaFileRenameAdapter implements Disposable {
 
     const sidecarRename = this.tracked.find(candidate =>
       path.extname(candidate.oldUri.fsPath).toLowerCase() === '.frx'
-        && candidate.oldName === formRename.oldName
-        && candidate.newName === formRename.newName
+        && candidate.captureBatchId === formRename.captureBatchId
+        && candidate.formSourceUnitKey === formRename.formSourceUnitKey
+        && sameOrdinalIgnoreCase(candidate.oldName, formRename.oldName)
+        && sameOrdinalIgnoreCase(candidate.newName, formRename.newName)
         && pathsEqual(
           path.dirname(candidate.oldUri.fsPath),
           path.dirname(formRename.oldUri.fsPath)
@@ -200,7 +263,7 @@ async function realizeCaseOnlyFileName(requestedUri: VscodeUri): Promise<void> {
   let stagingName: string | undefined;
   for (let index = 0; index < 1_000; index++) {
     const suffix = index === 0 ? '' : `-${index}`;
-    const candidate = `.vba-tools-case-rename-${baseName}${suffix}${extension}`;
+    const candidate = `.vba-tools-case-rename-${baseName}${suffix}${extension}.tmp`;
     if (!existingNames.has(candidate.toLowerCase())) {
       stagingName = candidate;
       break;
@@ -219,4 +282,19 @@ async function realizeCaseOnlyFileName(requestedUri: VscodeUri): Promise<void> {
 
 function pathsEqual(left: string, right: string): boolean {
   return path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase();
+}
+
+function sameOrdinalIgnoreCase(left: string, right: string): boolean {
+  return ordinalIgnoreCaseKey(left) === ordinalIgnoreCaseKey(right);
+}
+
+function readFormSourceUnitKey(uri: VscodeUri): string | undefined {
+  const extension = path.extname(uri.fsPath).toLowerCase();
+  if (extension !== '.frm' && extension !== '.frx') {
+    return undefined;
+  }
+
+  const directory = ordinalIgnoreCaseKey(path.resolve(path.dirname(uri.fsPath)));
+  const baseName = ordinalIgnoreCaseKey(path.basename(uri.fsPath, path.extname(uri.fsPath)));
+  return `${directory}\0${baseName}`;
 }

@@ -901,8 +901,18 @@ public sealed record VbaRenamePlan(
 {
     internal IReadOnlyList<VbaRenameFileOperation> FileRenames { get; init; } = [];
 
+    internal IReadOnlyList<VbaFormSourceUnit> FormSourceUnits
+        { get; init; } = [];
+
     internal VbaRenameTargetCorrespondence? TargetCorrespondence { get; init; }
 }
+
+internal sealed record VbaFormSourceUnit(
+    string FormUri,
+    string SidecarUri,
+    string SidecarDestinationUri,
+    bool SidecarRequired,
+    bool SidecarPathFollowsIdentity);
 
 internal sealed record VbaRenameFileOperation(
     string OldUri,

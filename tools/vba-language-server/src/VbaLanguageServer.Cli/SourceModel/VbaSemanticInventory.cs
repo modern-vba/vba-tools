@@ -1615,6 +1615,16 @@ public sealed class VbaSemanticInventory
                     "Rename cannot prove complete dependent-handler coverage across source and projected host Event alternatives."));
         }
 
+        var formSourceUnitFailure = TryCreateFormSourceUnitRenameEdits(
+            target,
+            newName,
+            out var formSourceUnitEdits,
+            out var formSourceUnit);
+        if (formSourceUnitFailure is not null)
+        {
+            return new VbaRenameResult(Plan: null, formSourceUnitFailure);
+        }
+
         var plannedEdits = targetOccurrences
             .Select(occurrence => new KeyValuePair<string, VbaTextEdit>(
                 occurrence.Uri,
@@ -1626,7 +1636,8 @@ public sealed class VbaSemanticInventory
             .Concat(CreateWithEventsDependentRenameEdits(
                 target,
                 newName,
-                cancellationToken));
+                cancellationToken))
+            .Concat(formSourceUnitEdits);
         var changeSetFailure = TryCreateRenameChangeSet(
             plannedEdits,
             out var changes);
@@ -1656,9 +1667,143 @@ public sealed class VbaSemanticInventory
                     FileRenames = CreateModuleIdentityFileRenames(
                         target,
                         newName),
+                    FormSourceUnits = formSourceUnit is null
+                        ? []
+                        : [formSourceUnit],
                     TargetCorrespondence = targetCorrespondence
                 },
             Failure: null);
+    }
+
+    private VbaRenameFailure? TryCreateFormSourceUnitRenameEdits(
+        VbaSourceDefinition target,
+        string newName,
+        out IReadOnlyList<KeyValuePair<string, VbaTextEdit>> edits,
+        out VbaFormSourceUnit? sourceUnit)
+    {
+        edits = [];
+        sourceUnit = null;
+        if (!IsModuleIdentity(target))
+        {
+            return null;
+        }
+
+        var document = definitionCandidates.FindDocument(target.Uri);
+        if (document is null)
+        {
+            return null;
+        }
+
+        var syntaxTree = document.SyntaxTree
+            ?? VbaSyntaxTree.ParseModule(document.Uri, document.Text);
+        if (syntaxTree.Module.Kind != VbaModuleKind.FormModule)
+        {
+            return null;
+        }
+
+        var sourcePath = VbaProjectResolver.TryGetLocalPath(target.Uri);
+        var designer = syntaxTree.Module.FormDesignerBlock;
+        if (designer is null || designer.EvidenceProblems.Count > 0)
+        {
+            var problem = designer?.EvidenceProblems.FirstOrDefault();
+            return new VbaRenameFailure(
+                "resourceOperationConflict",
+                "The form designer could not be proven structurally complete for Rename.",
+                Condition: problem?.Kind switch
+                {
+                    VbaFormDesignerEvidenceProblemKind.RootMissing
+                        => "designerRootMissing",
+                    VbaFormDesignerEvidenceProblemKind.RootAmbiguous
+                        => "designerRootAmbiguous",
+                    VbaFormDesignerEvidenceProblemKind.ResourceReferenceMalformed
+                        => "sidecarReferenceMalformed",
+                    VbaFormDesignerEvidenceProblemKind.ResourceReferenceUnsafe
+                        => "sidecarReferenceUnsafe",
+                    _ => "designerStructureMalformed"
+                },
+                Path: sourcePath,
+                Guidance: "Re-export or repair the complete .frm/.frx source unit, then retry Rename.");
+        }
+
+        if (designer.Root is not { } root
+            || !root.Name.Equals(target.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            return new VbaRenameFailure(
+                "resourceOperationConflict",
+                "The top-level form designer identity does not match the authoritative module identity.",
+                Condition: "designerIdentityConflict",
+                Path: sourcePath,
+                Guidance: "Re-export or repair the form designer identity, then retry Rename.");
+        }
+
+        if (sourcePath is null)
+        {
+            return AnalysisIncomplete(
+                "Rename could not identify the form source-unit path needed to validate designer resources.");
+        }
+
+        var sourceBaseName = Path.GetFileNameWithoutExtension(sourcePath);
+        var sourceDirectory = Path.GetDirectoryName(sourcePath);
+        if (sourceDirectory is null)
+        {
+            return AnalysisIncomplete(
+                "Rename could not identify the form source-unit directory needed to validate designer resources.");
+        }
+
+        var sidecarFileName = sourceBaseName + ".frx";
+        var conflictingReference = designer.ResourceReferences
+            .FirstOrDefault(reference => !reference.FileName.Equals(
+                sidecarFileName,
+                StringComparison.OrdinalIgnoreCase));
+        if (conflictingReference is not null)
+        {
+            return new VbaRenameFailure(
+                "resourceOperationConflict",
+                "The form designer identifies a different or ambiguous sidecar resource.",
+                Condition: "sidecarReferenceConflict",
+                Path: Path.Combine(sourceDirectory, conflictingReference.FileName),
+                Guidance: "Re-export or repair every designer resource reference to use the matching sidecar basename, then retry Rename.");
+        }
+
+        var result = new List<KeyValuePair<string, VbaTextEdit>>
+        {
+            new(
+                target.Uri,
+                new VbaTextEdit(ToRange(root.NameRange), newName))
+        };
+        var sidecarPathFollowsIdentity = sourceBaseName.Equals(
+            target.Name,
+            StringComparison.OrdinalIgnoreCase);
+        if (sidecarPathFollowsIdentity)
+        {
+            result.AddRange(designer.ResourceReferences.Select(reference =>
+                new KeyValuePair<string, VbaTextEdit>(
+                    target.Uri,
+                    new VbaTextEdit(
+                        ToRange(reference.FileNameRange),
+                        newName + Path.GetExtension(reference.FileName)))));
+        }
+
+        edits = result.ToArray();
+        var sourceSidecarFileName = designer.ResourceReferences
+            .Select(reference => reference.FileName)
+            .FirstOrDefault()
+            ?? sidecarFileName;
+        var sourceSidecarPath = Path.Combine(
+            sourceDirectory,
+            sourceSidecarFileName);
+        var destinationSidecarPath = sidecarPathFollowsIdentity
+            ? Path.Combine(
+                sourceDirectory,
+                newName + Path.GetExtension(sourceSidecarFileName))
+            : sourceSidecarPath;
+        sourceUnit = new VbaFormSourceUnit(
+            target.Uri,
+            new Uri(sourceSidecarPath).AbsoluteUri,
+            new Uri(destinationSidecarPath).AbsoluteUri,
+            designer.ResourceReferences.Count > 0,
+            sidecarPathFollowsIdentity);
+        return null;
     }
 
     private static VbaRenameFailure? TryCreateRenameChangeSet(
@@ -2518,6 +2663,11 @@ public sealed class VbaSemanticInventory
         }
 
         var destinationPath = Path.Combine(directory, newName + extension);
+        if (sourcePath.Equals(destinationPath, StringComparison.Ordinal))
+        {
+            return [];
+        }
+
         return
         [
             new VbaRenameFileOperation(

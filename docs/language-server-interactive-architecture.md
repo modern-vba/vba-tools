@@ -277,12 +277,24 @@ overlength metadata is invalid. Neither state authorizes mutation.
 
 A basename that case-insensitively equals the old identity follows a semantic
 Rename for `.bas`, `.cls`, and `.frm`; a matching `.frx` follows its form. A
-deliberately different basename remains unchanged. The server requires ordered
-`documentChanges` plus the `rename` resource operation, validates every text
-edit and raw-byte file precondition, then returns all required operations or no
-plan. `resourceOperationConflict` distinguishes `sourceMissing`,
-`sourceChanged`, `destinationExists`, and `sidecarConflict` with a path and
-repair guidance.
+deliberately different basename remains unchanged.
+
+For a source-owned form, `VbaFormDesignerBlock` supplies the candidate
+outermost root, ordered resource-reference ranges, and evidence problems without
+creating designer `VbaDefinition`s. `VbaSemanticInventory` converts only
+complete evidence into one `FormSourceUnitRename`, adding the root edit and
+every matching `.frx` filename edit independently of the designer property
+name. Nested controls, unrelated text, offsets, and binary sidecar content do
+not become edits.
+
+`VbaLanguageWorkspace` fences the `.frm`, optional `.frx`, their paths, and
+every participating request-start source snapshot as one `FormSourceUnit`, even
+when a deliberate basename produces no file operation. It verifies exact
+current bytes and rejects malformed, unsafe, missing, displaced, conflicting,
+multiply identified, or changed evidence before returning a plan. When paths
+follow the identity, the client must advertise ordered `documentChanges` and
+the `rename` resource operation. `resourceOperationConflict` carries the
+specific condition, path, and repair guidance.
 
 Containing and referenced project names participate only when current
 authoritative evidence is complete. Manifest labels and generated aliases do

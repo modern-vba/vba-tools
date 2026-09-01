@@ -129,4 +129,59 @@ public sealed record VbaModuleOptionSyntax(
 /// <param name="Range">The source range covered by the designer block.</param>
 public sealed record VbaFormDesignerBlock(
     string RawText,
-    VbaSyntaxRange Range);
+    VbaSyntaxRange Range)
+{
+    /// <summary>
+    /// Gets the single outermost designer component declared by this block.
+    /// </summary>
+    public VbaFormDesignerRoot? Root { get; init; }
+
+    /// <summary>
+    /// Gets syntactically valid resource-bearing property references in source order.
+    /// </summary>
+    public IReadOnlyList<VbaFormDesignerResourceReference> ResourceReferences
+        { get; init; } = [];
+
+    /// <summary>
+    /// Gets evidence problems that prevent a complete form source-unit mutation.
+    /// </summary>
+    public IReadOnlyList<VbaFormDesignerEvidenceProblem> EvidenceProblems
+        { get; init; } = [];
+}
+
+/// <summary>
+/// Represents the outermost component identity in an exported form designer.
+/// </summary>
+public sealed record VbaFormDesignerRoot(
+    string DesignerClass,
+    string Name,
+    VbaSyntaxRange NameRange);
+
+/// <summary>
+/// Represents one designer property whose value points into a form sidecar.
+/// </summary>
+public sealed record VbaFormDesignerResourceReference(
+    string PropertyName,
+    string FileName,
+    string Offset,
+    VbaSyntaxRange FileNameRange);
+
+/// <summary>
+/// Classifies incomplete or unsafe form-designer evidence.
+/// </summary>
+public enum VbaFormDesignerEvidenceProblemKind
+{
+    StructureMalformed,
+    RootMissing,
+    RootAmbiguous,
+    ResourceReferenceMalformed,
+    ResourceReferenceUnsafe
+}
+
+/// <summary>
+/// Represents one form-designer evidence problem relevant to source-unit mutation.
+/// </summary>
+public sealed record VbaFormDesignerEvidenceProblem(
+    VbaFormDesignerEvidenceProblemKind Kind,
+    VbaSyntaxRange Range,
+    string? Value = null);

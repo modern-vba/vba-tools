@@ -137,7 +137,9 @@ internal static class VbaSyntaxTreeParser
             var boundaryLine = FindAttributeNameLine(sourceText);
             if (boundaryLine is null)
             {
-                designerBlock = new VbaFormDesignerBlock(source, sourceText.FullRange);
+                designerBlock = VbaFormDesignerParser.Parse(
+                    sourceText,
+                    source.Length);
                 diagnostics.Add(new VbaSyntaxDiagnostic(
                     "syntax.formCodeSectionBoundaryMissing",
                     "Form module is missing an Attribute VB_Name code-section boundary.",
@@ -147,10 +149,9 @@ internal static class VbaSyntaxTreeParser
             else
             {
                 codeStartLine = boundaryLine.LineNumber;
-                var boundaryStart = sourceText.PositionAt(boundaryLine.StartOffset);
-                designerBlock = new VbaFormDesignerBlock(
-                    source[..boundaryLine.StartOffset],
-                    new VbaSyntaxRange(sourceText.StartPosition, boundaryStart));
+                designerBlock = VbaFormDesignerParser.Parse(
+                    sourceText,
+                    boundaryLine.StartOffset);
             }
         }
 
