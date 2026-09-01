@@ -521,16 +521,46 @@ internal sealed class VbaLspRequestExecution
             using (renameCapture)
             {
                 executionToken.ThrowIfCancellationRequested();
+                var requiresSourceTemplateIdentityFence =
+                    renameCapture.SemanticInventory
+                        .RequiresSourceTemplateIdentityFence(
+                            request.Uri,
+                            request.Line,
+                            request.Character,
+                            request.NewName,
+                            renameCapture.ProjectIdentityRead);
+
+                RequestOutcome? GetSourceTemplateChangeOutcome()
+                {
+                    if (!requiresSourceTemplateIdentityFence
+                        || renameCapture.GetSourceTemplateChangeFailure()
+                            is not { } failure)
+                    {
+                        return null;
+                    }
+
+                    return RequestOutcome.Error(
+                        -32803,
+                        failure.Message,
+                        CreateRenameFailureData(failure));
+                }
+
                 if (renameCapture.SemanticInventory
                         .RequiresFileFollowingModuleRename(
                             request.Uri,
                             request.Line,
                             request.Character,
                             request.NewName,
-                            renameCapture.SourceTemplateFingerprint)
+                            renameCapture.ProjectIdentityRead)
                     && !clientCapabilities.Snapshot.WorkspaceEdit
                         .SupportsRenameFile)
                 {
+                    if (GetSourceTemplateChangeOutcome()
+                        is { } capabilitySourceTemplateChangeOutcome)
+                    {
+                        return capabilitySourceTemplateChangeOutcome;
+                    }
+
                     var failure = new VbaRenameFailure(
                         "clientCapabilityMissing",
                         "File-following module Rename requires ordered "
@@ -547,7 +577,7 @@ internal sealed class VbaLspRequestExecution
                     request.Character,
                     request.NewName,
                     executionToken,
-                    renameCapture.SourceTemplateFingerprint);
+                    renameCapture.ProjectIdentityRead);
                 executionToken.ThrowIfCancellationRequested();
                 var sourceChangeFailure =
                     renameCapture.GetParticipatingSourceChangeFailure();
@@ -557,6 +587,13 @@ internal sealed class VbaLspRequestExecution
                         -32803,
                         sourceChangeFailure.Message,
                         CreateRenameFailureData(sourceChangeFailure));
+                }
+
+                if ((rename.Plan is null || rename.Failure is not null)
+                    && GetSourceTemplateChangeOutcome()
+                        is { } incompleteOutcome)
+                {
+                    return incompleteOutcome;
                 }
 
                 if (rename.Failure?.Reason == "invalidName")
@@ -583,6 +620,12 @@ internal sealed class VbaLspRequestExecution
                 if (rename.Plan!.FileRenames.Count > 0
                     && !clientCapabilities.Snapshot.WorkspaceEdit.SupportsRenameFile)
                 {
+                    if (GetSourceTemplateChangeOutcome()
+                        is { } plannedCapabilitySourceTemplateChangeOutcome)
+                    {
+                        return plannedCapabilitySourceTemplateChangeOutcome;
+                    }
+
                     var failure = new VbaRenameFailure(
                         "clientCapabilityMissing",
                         "File-following module Rename requires ordered "
@@ -595,6 +638,12 @@ internal sealed class VbaLspRequestExecution
 
                 if (renameCapture.AnalysisFailureMessage is not null)
                 {
+                    if (GetSourceTemplateChangeOutcome()
+                        is { } analysisSourceTemplateChangeOutcome)
+                    {
+                        return analysisSourceTemplateChangeOutcome;
+                    }
+
                     var failure = new VbaRenameFailure(
                         "analysisIncomplete",
                         renameCapture.AnalysisFailureMessage);
@@ -606,6 +655,12 @@ internal sealed class VbaLspRequestExecution
 
                 var fileRenamePreflight =
                     renameCapture.PreflightFileRenames(rename.Plan);
+                if (GetSourceTemplateChangeOutcome()
+                    is { } postPreflightSourceTemplateChangeOutcome)
+                {
+                    return postPreflightSourceTemplateChangeOutcome;
+                }
+
                 if (fileRenamePreflight.Failure is not null)
                 {
                     return RequestOutcome.Error(
@@ -636,6 +691,12 @@ internal sealed class VbaLspRequestExecution
                         -32803,
                         finalSourceChangeFailure.Message,
                         CreateRenameFailureData(finalSourceChangeFailure));
+                }
+
+                if (GetSourceTemplateChangeOutcome()
+                    is { } finalSourceTemplateChangeOutcome)
+                {
+                    return finalSourceTemplateChangeOutcome;
                 }
 
                 return RequestOutcome.Success(

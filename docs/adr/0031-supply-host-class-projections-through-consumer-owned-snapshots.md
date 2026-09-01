@@ -55,9 +55,12 @@ independently.
 Schema `1.1` also carries `vbaProjectName` and
 `sourceTemplateFingerprint` as an all-or-nothing pair when inspection can read
 a valid actual `VBProject.Name`. The fingerprint is the uppercase SHA-256 of
-the exact private-copy bytes inspected. It lets a later Rename compare that
-actual name only with identical current template content; a missing pair is no
-authority and never falls back to manifest, document, or file naming.
+the exact private-copy bytes inspected. The pair remains in this unreleased
+legacy producer and transport during migration, but Module Rename and
+project-name diagnostics ignore it. Their containing-project authority comes
+only from a request-scoped static `VbaProjectIdentityRead` of the exact current
+source-template package; neither a present nor missing host-projection pair can
+substitute. Host Event projection remains valid independently of the pair.
 Each entry carries a `HostClassIdentity` scoped by the selected
 `ProjectDocument` and composed of the projection-supplied `VBComponent.Name`
 plus component kind (`form` or `document`). Name equality is case-insensitive
@@ -280,8 +283,9 @@ matches the current selection. A superseded or mismatched result changes
 neither resolved projections nor identity deletion state. The generation is
 not passed to or serialized by `VbaDev`, and schema `1.1` carries no
 consumer-specific request ID, mtime, or inspection timestamp. Its optional
-source-template fingerprint binds the observed project name to inspected bytes
-but is not a refresh generation. Synchronous editor requests never invoke or wait for inspection; an
+legacy source-template fingerprint identifies the bytes behind the transported
+project-name observation but is neither a refresh generation nor Rename or
+diagnostic authority. Synchronous editor requests never invoke or wait for inspection; an
 unavailable projection leaves host Event evidence `indeterminate`, and an
 `AdHocVbaProject` receives no projection rather than inferring one from source
 file or module names.
@@ -407,7 +411,11 @@ payload carries neither. The language server rejects schema `1`, a half pair,
 malformed authority, and unknown payload shapes. Each entry is
 `current`, `lastKnownGood`, or `indeterminate`; only current and last-known-good
 entries carry a complete `HostClassProjection`. Operational reason messages and
-Output history remain extension-owned.
+Output history remain extension-owned. During this migration the language
+server continues to validate and retain the optional pair for schema
+compatibility, but Module Rename and `validation.moduleIdentityNameConflict`
+ignore it. The class entries, revision fence, Event semantics, and current form
+ownership boundary remain unchanged until the environment-catalog cutover.
 
 The language server atomically replaces the complete document snapshot or
 clears it; it processes no class delta or class deletion tombstone. It discards

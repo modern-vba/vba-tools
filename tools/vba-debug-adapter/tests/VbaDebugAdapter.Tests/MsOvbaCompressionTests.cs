@@ -148,6 +148,30 @@ public sealed class MsOvbaCompressionTests
         Assert.Equal(expected, result);
     }
 
+    [Fact]
+    public void RejectsAShortCompressedChunkBeforeAnotherChunk()
+    {
+        var finalChunk = new byte[4098];
+        finalChunk[0] = 0xff;
+        finalChunk[1] = 0x3f;
+        byte[] shortChunk =
+        [
+            0x03, 0xb0,
+            0x00, (byte)'A', (byte)'B', (byte)'C'
+        ];
+        var container = new byte[1 + shortChunk.Length + finalChunk.Length];
+        container[0] = 0x01;
+        shortChunk.CopyTo(container, 1);
+        finalChunk.CopyTo(container, 1 + shortChunk.Length);
+
+        var error = Assert.Throws<InvalidDataException>(() =>
+            MsOvbaCompression.Decompress(
+                container,
+                maximumOutputLength: 5000));
+
+        Assert.Contains("4096", error.Message, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("")]
     [InlineData("00")]

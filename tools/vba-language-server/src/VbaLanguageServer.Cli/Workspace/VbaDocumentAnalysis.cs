@@ -89,6 +89,13 @@ internal sealed record VbaDocumentDiagnosticsOwnership(
     long LifecycleEpoch,
     long ReservationToken);
 
+internal sealed record VbaSourceTemplateDiagnosticsEvidence(
+    string FullPath,
+    bool Exists,
+    VbaProjectSourceFileMetadata? Metadata,
+    string? ContentDigest,
+    bool ContentCaptured);
+
 /// <summary>
 /// Captures a diagnostics publication candidate and the workspace revision that owns it.
 /// </summary>
@@ -106,7 +113,8 @@ internal sealed record VbaDocumentDiagnosticsSnapshot(
     VbaProjectSnapshotProvider.ProjectSnapshotOwnership?
         ProjectSnapshotOwnership)
 {
-    internal string? SourceTemplateFingerprint { get; init; }
+    internal VbaSourceTemplateDiagnosticsEvidence? SourceTemplateEvidence
+        { get; init; }
 }
 
 /// <summary>

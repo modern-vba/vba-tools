@@ -1,6 +1,7 @@
 using VbaLanguageServer.Diagnostics;
 using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.Syntax;
+using VbaLanguageServer.Workspace;
 
 namespace VbaLanguageServer.SourceModel;
 
@@ -158,13 +159,13 @@ public sealed class VbaSemanticInventory
     internal IReadOnlyList<VbaProjectValidationDiagnostic>
         GetProjectValidationDiagnostics(
             string uri,
-            string? sourceTemplateFingerprint = null)
+            VbaProjectIdentityReadResult? projectIdentityRead = null)
     {
         var diagnostics = projectValidationDiagnostics.GetDiagnostics(uri);
         var moduleIdentityDiagnostics =
             CreateModuleIdentityNameConflictDiagnostics(
                 uri,
-                sourceTemplateFingerprint);
+                projectIdentityRead);
         return moduleIdentityDiagnostics.Count == 0
             ? diagnostics
             : diagnostics.Concat(moduleIdentityDiagnostics).ToArray();
@@ -173,7 +174,7 @@ public sealed class VbaSemanticInventory
     private IReadOnlyList<VbaProjectValidationDiagnostic>
         CreateModuleIdentityNameConflictDiagnostics(
             string uri,
-            string? sourceTemplateFingerprint)
+            VbaProjectIdentityReadResult? projectIdentityRead)
     {
         if (projectResolution is null)
         {
@@ -191,13 +192,14 @@ public sealed class VbaSemanticInventory
         {
             if (GetModuleIdentityMutationAuthorityFailure(
                     target,
-                    sourceTemplateFingerprint) is not null)
+                    projectIdentityRead) is not null)
             {
                 continue;
             }
 
             var conflicts = FindExternalModuleIdentityNameConflicts(
-                target.Name);
+                target.Name,
+                projectIdentityRead);
             if (conflicts.Count == 0)
             {
                 continue;
@@ -223,12 +225,14 @@ public sealed class VbaSemanticInventory
     }
 
     private IReadOnlyList<VbaRenameConflict>
-        FindExternalModuleIdentityNameConflicts(string moduleName)
+        FindExternalModuleIdentityNameConflicts(
+            string moduleName,
+            VbaProjectIdentityReadResult? projectIdentityRead)
     {
         var conflicts = new List<VbaRenameConflict>();
         if (projectResolution?.Kind
                 == VbaProjectResolutionKind.ManifestDocument
-            && hostClassProjectionSnapshot?.VbaProjectName is { } projectName
+            && projectIdentityRead?.Identity?.VbaProjectName is { } projectName
             && projectName.Equals(
                 moduleName,
                 StringComparison.OrdinalIgnoreCase))
@@ -1193,7 +1197,7 @@ public sealed class VbaSemanticInventory
         int line,
         int character,
         string newName,
-        string? sourceTemplateFingerprint = null)
+        VbaProjectIdentityReadResult? projectIdentityRead = null)
     {
         var document = definitionCandidates.FindDocument(uri);
         var target = document is null
@@ -1209,9 +1213,35 @@ public sealed class VbaSemanticInventory
             && GetModuleIdentityOwnershipFailure(target) is null
             && GetModuleIdentityMutationAuthorityFailure(
                 target,
-                sourceTemplateFingerprint) is null
+                projectIdentityRead) is null
             && !target.Name.Equals(newName, StringComparison.Ordinal)
             && CreateModuleIdentityFileRenames(target, newName).Count > 0;
+    }
+
+    internal bool RequiresSourceTemplateIdentityFence(
+        string uri,
+        int line,
+        int character,
+        string newName,
+        VbaProjectIdentityReadResult? projectIdentityRead)
+    {
+        var document = definitionCandidates.FindDocument(uri);
+        var target = document is null
+            ? null
+            : FindAuthoritativeModuleIdentityDefinitionAtPosition(
+                document,
+                line,
+                character);
+        target ??= ResolveSourceDefinition(uri, line, character);
+        return projectResolution?.Kind
+                == VbaProjectResolutionKind.ManifestDocument
+            && target is not null
+            && IsModuleIdentity(target)
+            && IsExplicitModuleIdentityTarget(target)
+            && GetModuleIdentityOwnershipFailure(target) is null
+            && projectIdentityRead?.Identity is not null
+            && ValidateRenameTargetName(target, newName) is null
+            && !target.Name.Equals(newName, StringComparison.Ordinal);
     }
 
     internal VbaRenameResult CreateRenameResult(
@@ -1220,7 +1250,7 @@ public sealed class VbaSemanticInventory
         int character,
         string newName,
         CancellationToken cancellationToken = default,
-        string? sourceTemplateFingerprint = null)
+        VbaProjectIdentityReadResult? projectIdentityRead = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var nameFailure = ValidateRenameName(newName);
@@ -1486,7 +1516,7 @@ public sealed class VbaSemanticInventory
         if (isExplicitModuleIdentityTarget
             && GetModuleIdentityMutationAuthorityFailure(
                 target,
-                sourceTemplateFingerprint)
+                projectIdentityRead)
                 is { } mutationAuthorityFailure)
         {
             return new VbaRenameResult(
@@ -1565,7 +1595,10 @@ public sealed class VbaSemanticInventory
                     invalidTargetConflicts));
         }
 
-        var collisions = FindSameScopeCollisions(target, newName)
+        var collisions = FindSameScopeCollisions(
+                target,
+                newName,
+                projectIdentityRead)
             .Concat(FindInterfaceDependentRenameCollisions(target, newName))
             .Concat(FindWithEventsDependentRenameCollisions(target, newName))
             .Distinct()
@@ -2839,7 +2872,7 @@ public sealed class VbaSemanticInventory
 
     private VbaRenameFailure? GetModuleIdentityMutationAuthorityFailure(
         VbaSourceDefinition target,
-        string? sourceTemplateFingerprint)
+        VbaProjectIdentityReadResult? projectIdentityRead)
     {
         if (!IsModuleIdentity(target) || projectResolution is null)
         {
@@ -2847,21 +2880,14 @@ public sealed class VbaSemanticInventory
         }
 
         if (projectResolution.Kind == VbaProjectResolutionKind.ManifestDocument
-            && (string.IsNullOrWhiteSpace(
-                    hostClassProjectionSnapshot?.VbaProjectName)
-                || string.IsNullOrWhiteSpace(
-                    hostClassProjectionSnapshot.SourceTemplateFingerprint)
-                || string.IsNullOrWhiteSpace(sourceTemplateFingerprint)
-                || !hostClassProjectionSnapshot.SourceTemplateFingerprint.Equals(
-                    sourceTemplateFingerprint,
-                    StringComparison.OrdinalIgnoreCase)))
+            && projectIdentityRead?.Identity is null)
         {
             return new VbaRenameFailure(
                 "analysisIncomplete",
-                "Module identity Rename requires the containing source template's current actual VBProject.Name authority.",
+                "Module identity Rename requires a readable containing VBProject.Name from the exact source-template package.",
                 Condition: "containingProjectNameUnavailable",
                 Path: projectResolution.SourceTemplatePath,
-                Guidance: "Refresh the source-template host-class projection and retry Rename.");
+                Guidance: "Restore or re-export a valid supported unencrypted source template, then retry Rename.");
         }
 
         foreach (var referenceName in GetActiveReferenceNamesInSelectionOrder())
@@ -2991,7 +3017,8 @@ public sealed class VbaSemanticInventory
 
     private IReadOnlyList<VbaRenameConflict> FindSameScopeCollisions(
         VbaSourceDefinition target,
-        string newName)
+        string newName,
+        VbaProjectIdentityReadResult? projectIdentityRead = null)
     {
         var candidates = sourceDocuments
             .SelectMany(document => document.Definitions)
@@ -3014,7 +3041,7 @@ public sealed class VbaSemanticInventory
                 candidate.Range))
             .ToList();
         if (IsModuleIdentity(target)
-            && hostClassProjectionSnapshot?.VbaProjectName is { } projectName
+            && projectIdentityRead?.Identity?.VbaProjectName is { } projectName
             && projectName.Equals(newName, StringComparison.OrdinalIgnoreCase))
         {
             conflicts.Add(new VbaRenameConflict(

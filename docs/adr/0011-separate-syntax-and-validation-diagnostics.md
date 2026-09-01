@@ -564,8 +564,11 @@ NameResolution, Definition, References, and repairing Rename; the diagnostic
 does not reclassify valid identity metadata as malformed. A conflict with
 another source module remains `validation.duplicateDeclaration`. If containing
 project or active-reference name authority is incomplete, the collector emits
-no speculative source diagnostic; the established environment and catalog
-availability reporting remains responsible for that evidence gap.
+no speculative source diagnostic. A containing-project gap comes from an
+unavailable static `VbaProjectIdentityRead` of the current source-template
+package and is not Host Event status; an attempted module Rename reports it as
+`analysisIncomplete` with the template path and repair guidance. An
+active-reference gap retains its established catalog-availability reporting.
 
 One authoritative module payload receives at most one such diagnostic even when
 it conflicts with multiple identities. The message lists the complete conflict

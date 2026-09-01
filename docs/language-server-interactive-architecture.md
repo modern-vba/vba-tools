@@ -236,12 +236,12 @@ manifest document. This transport schema is independent from the
 `host-class list --format json` CLI schema `1.1` and from source or workspace
 revisions.
 
-A `present` schema-`2` notification either omits both containing-project
-authority fields or supplies both `vbaProjectName` and
-`sourceTemplateFingerprint`. Rename compares the fingerprint with the
-request-start template bytes before using the actual project name; absent or
-stale authority fails closed without starting Excel or guessing from project
-metadata.
+A `present` schema-`2` notification either omits both legacy project-observation
+fields or supplies both `vbaProjectName` and `sourceTemplateFingerprint`. The
+language server continues to validate and retain that all-or-nothing pair while
+this Event transport exists, but Module Rename and project-name diagnostics
+ignore it. Current class entries, revision fencing, Event semantics, and form
+ownership continue to use the snapshot independently of the pair.
 
 Admission parses the complete nested schema before mutation scheduling. Pending
 notifications with the same project-document key are ranked by their positive
@@ -279,6 +279,20 @@ A basename that case-insensitively equals the old identity follows a semantic
 Rename for `.bas`, `.cls`, and `.frm`; a matching `.frx` follows its form. A
 deliberately different basename remains unchanged.
 
+For a manifest-backed module identity, Rename statically captures the exact
+selected source-template package bytes into one request-scoped
+`VbaProjectIdentityRead`. The reader validates the OPC package and unique
+`vbaProject.bin`, opens its CFB `VBA` storage, decompresses the MS-OVBA
+directory stream, reads `PROJECTCODEPAGE`, and decodes `PROJECTNAME` from the
+same bytes. It starts neither Excel nor VBIDE, waits for no discovery, persists
+no cache, and accepts no manifest, document, filename, generated-workbook,
+reference-alias, or host-projection substitute. Missing, unreadable, malformed,
+encrypted, subject to unsupported protection, or otherwise unsupported evidence
+fails with `analysisIncomplete`. Before returning any complete module Rename
+`WorkspaceEdit`, an unconditional whole-package content
+fence rejects a template change even when the plan has no file operation; the
+request never rebases itself onto newer content.
+
 For a source-owned form, `VbaFormDesignerBlock` supplies the candidate
 outermost root, ordered resource-reference ranges, and evidence problems without
 creating designer `VbaDefinition`s. `VbaSemanticInventory` converts only
@@ -297,9 +311,13 @@ the `rename` resource operation. `resourceOperationConflict` carries the
 specific condition, path, and repair guidance.
 
 Containing and referenced project names participate only when current
-authoritative evidence is complete. Manifest labels and generated aliases do
-not substitute. Installed CommonModules and current host-associated components
-retain their managed ownership. A later provider or filesystem failure is a
+authoritative evidence is complete. Containing authority comes only from the
+request's `VbaProjectIdentityRead`; referenced authority retains its current
+catalog contract. Manifest labels and generated aliases do not substitute.
+This static read changes no ownership classification: installed CommonModules
+and current host-associated forms retain their managed ownership, and only a
+form already proven outside host association is source-renamable until the
+environment-catalog cutover. A later provider or filesystem failure is a
 client-observed `WorkspaceEditApplicationFailure`; the client owns Undo, repair,
 and a fresh request rather than relying on server rollback.
 

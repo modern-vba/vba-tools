@@ -69,10 +69,10 @@ revision, atomically replaces the accepted snapshot, and invalidates only that
 project's semantic inventory.
 
 A present schema-`2` snapshot may carry `vbaProjectName` and
-`sourceTemplateFingerprint` only together. The pair binds the actual inspected
-VBA project name to exact template bytes. Missing, stale, malformed, or
-half-present authority cannot authorize a module Rename and produces
-`analysisIncomplete`; the server never substitutes manifest or file naming.
+`sourceTemplateFingerprint` only together. This legacy observation remains in
+the Event transport during migration, but Module Rename and project-name
+diagnostics ignore it. The snapshot's class entries, revision fence, Event
+semantics, and current form-ownership evidence remain independent of the pair.
 
 `current` entries are authoritative Host Event evidence,
 `lastKnownGood` entries are advisory, and `indeterminate` entries provide no
@@ -88,6 +88,23 @@ ordered `documentChanges` edit containing every required text edit and
 non-overwriting `RenameFile` operation, or returns no edit. Matching `.bas`,
 `.cls`, and `.frm` basenames follow the identity, and a matching `.frx` follows
 its form; a deliberately different basename is preserved.
+
+For a manifest-backed module, Rename captures the exact selected source-template
+package bytes and obtains the containing VBA project name through a
+request-scoped static `VbaProjectIdentityRead`. It validates the OPC and CFB
+structure, decompresses the MS-OVBA directory stream, and decodes `PROJECTNAME`
+with `PROJECTCODEPAGE` without Excel, VBIDE, discovery, or a persisted cache.
+Manifest, document, workbook, generated-workbook, reference-alias, and legacy
+host-projection names never substitute. Missing, unreadable, malformed,
+encrypted, subject to unsupported protection, or otherwise unsupported content
+fails with `analysisIncomplete`. An unconditional final whole-package content
+fence rejects a change before every complete module Rename `WorkspaceEdit`,
+including one with no file operation.
+
+This static identity read does not reclassify forms. Current host-projection
+class evidence continues to determine form ownership until the environment
+UserForm Event catalog cutover; only a form already proven outside host
+association is source-renamable through this protocol.
 
 A recognized rejection uses Request Failed (`-32803`) with
 `error.data.reason`. Module-specific reasons include

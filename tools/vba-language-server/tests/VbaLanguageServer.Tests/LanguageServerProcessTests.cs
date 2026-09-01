@@ -17242,6 +17242,73 @@ public sealed class LanguageServerProcessTests
         }
     }
 
+    [Theory]
+    [InlineData(".bas")]
+    [InlineData(".cls")]
+    public async Task Server_reads_manifest_containing_project_identity_without_host_projection(
+        string extension)
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-static-project-identity-").FullName;
+        try
+        {
+            WriteModuleRenameProjectManifest(projectRoot);
+            var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
+            var sourcePath = Path.Combine(sourceRoot, $"SourceUnit{extension}");
+            var templatePath = Path.Combine(sourceRoot, "Book1.xlsm");
+            var text = extension == ".cls"
+                ? string.Join('\n', [
+                    "VERSION 1.0 CLASS",
+                    "BEGIN",
+                    "  MultiUse = -1",
+                    "END",
+                    "Attribute VB_Name = \"InvoiceModule\""
+                ])
+                : "Attribute VB_Name = \"InvoiceModule\"";
+            File.WriteAllText(sourcePath, text);
+            File.WriteAllBytes(
+                templatePath,
+                VbaProjectIdentityWorkbookFixture.Create(
+                    "ContainingProject",
+                    1252));
+            var uri = ToFileUri(sourcePath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+
+            await process.InitializeAsync();
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+
+            var rename = await SendPositionRequestAsync(
+                process,
+                2,
+                "textDocument/rename",
+                uri,
+                text,
+                "InvoiceModule",
+                0,
+                new { newName = "BillingModule" });
+
+            Assert.False(
+                rename.TryGetProperty("error", out var error),
+                error.ToString());
+            var edits = rename
+                .GetProperty("result")
+                .GetProperty("changes")
+                .GetProperty(uri)
+                .EnumerateArray()
+                .ToArray();
+            var edit = Assert.Single(edits);
+            Assert.Equal("BillingModule", edit.GetProperty("newText").GetString());
+
+            await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task Server_rejects_manifest_module_rename_without_current_containing_project_name_authority()
     {
@@ -17352,7 +17419,7 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
-    public async Task Server_rejects_module_rename_with_a_stale_source_template_fingerprint()
+    public async Task Server_ignores_stale_host_projection_project_identity_when_static_template_is_current()
     {
         var projectRoot = Directory.CreateTempSubdirectory(
             "vba-ls-module-stale-template-authority-").FullName;
@@ -17363,9 +17430,14 @@ public sealed class LanguageServerProcessTests
             var sourcePath = Path.Combine(sourceRoot, "SourceUnit.bas");
             var templatePath = Path.Combine(sourceRoot, "Book1.xlsm");
             const string text = "Attribute VB_Name = \"InvoiceModule\"";
-            var inspectedTemplateBytes = new byte[] { 0x10, 0x20, 0x30, 0x40 };
+            var inspectedTemplateBytes = VbaProjectIdentityWorkbookFixture.Create(
+                "LegacyProjectionProject",
+                1252);
+            var currentTemplateBytes = VbaProjectIdentityWorkbookFixture.Create(
+                "CurrentProject",
+                1252);
             File.WriteAllText(sourcePath, text);
-            File.WriteAllBytes(templatePath, inspectedTemplateBytes);
+            File.WriteAllBytes(templatePath, currentTemplateBytes);
             var uri = ToFileUri(sourcePath);
             await using var process = await LanguageServerProcessHarness.StartAsync();
 
@@ -17384,16 +17456,12 @@ public sealed class LanguageServerProcessTests
                     document = "Book1",
                     sourceTemplate = Path.GetFullPath(templatePath),
                     state = "present",
-                    vbaProjectName = "ContainingProject",
+                    vbaProjectName = "LegacyProjectionProject",
                     sourceTemplateFingerprint = Convert.ToHexString(
                         SHA256.HashData(inspectedTemplateBytes)),
                     classEnumerationComplete = true,
                     classes = Array.Empty<object>()
                 });
-            File.WriteAllBytes(
-                templatePath,
-                [0x50, 0x60, 0x70, 0x80]);
-
             var rename = await SendPositionRequestAsync(
                 process,
                 2,
@@ -17402,20 +17470,12 @@ public sealed class LanguageServerProcessTests
                 text,
                 "InvoiceModule",
                 0,
-                new { newName = "BillingModule" });
+                new { newName = "LegacyProjectionProject" });
 
-            Assert.False(rename.TryGetProperty("result", out _));
-            var error = rename.GetProperty("error");
-            Assert.Equal(-32803, error.GetProperty("code").GetInt32());
-            var data = error.GetProperty("data");
-            Assert.Equal("analysisIncomplete", data.GetProperty("reason").GetString());
-            Assert.Equal(
-                "containingProjectNameUnavailable",
-                data.GetProperty("condition").GetString());
-            Assert.Equal(
-                templatePath,
-                data.GetProperty("path").GetString(),
-                ignoreCase: true);
+            Assert.False(
+                rename.TryGetProperty("error", out var error),
+                error.ToString());
+            Assert.True(rename.TryGetProperty("result", out _));
 
             await process.ShutdownAsync(3);
         }
@@ -17450,7 +17510,9 @@ public sealed class LanguageServerProcessTests
                 "    Excel.Run",
                 "End Sub"
             ]);
-            var templateBytes = new byte[] { 0x42, 0x24, 0x18, 0x81 };
+            var templateBytes = VbaProjectIdentityWorkbookFixture.Create(
+                "ContainingProject",
+                1252);
             File.WriteAllText(sourcePath, text);
             File.WriteAllText(consumerPath, consumerText);
             File.WriteAllBytes(templatePath, templateBytes);
@@ -17597,7 +17659,9 @@ public sealed class LanguageServerProcessTests
             var sourcePath = Path.Combine(sourceRoot, "SourceUnit.bas");
             var templatePath = Path.Combine(sourceRoot, "Book1.xlsm");
             const string text = "Attribute VB_Name = \"InvoiceModule\"";
-            var templateBytes = new byte[] { 0x10, 0x20, 0x30, 0x40 };
+            var templateBytes = VbaProjectIdentityWorkbookFixture.Create(
+                "bILLINGmODULE",
+                1252);
             File.WriteAllText(sourcePath, text);
             File.WriteAllBytes(templatePath, templateBytes);
             var uri = ToFileUri(sourcePath);
@@ -17607,31 +17671,6 @@ public sealed class LanguageServerProcessTests
             await process.SendNotificationAsync(
                 "textDocument/didOpen",
                 CreateOpenDocument(uri, text));
-            await process.WaitForDiagnosticsAsync(uri);
-            await process.SendNotificationAsync(
-                "vba/hostClassProjectionSnapshot",
-                new
-                {
-                    schemaVersion = 2,
-                    revision = 1,
-                    project = Path.GetFullPath(projectRoot),
-                    document = "Book1",
-                    sourceTemplate = Path.GetFullPath(templatePath),
-                    state = "present",
-                    vbaProjectName = "BillingModule",
-                    sourceTemplateFingerprint = Convert.ToHexString(
-                        SHA256.HashData(templateBytes)),
-                    classEnumerationComplete = true,
-                    classes = Array.Empty<object>()
-                });
-            await process.SendNotificationAsync(
-                "textDocument/didChange",
-                new
-                {
-                    textDocument = new { uri, version = 2 },
-                    contentChanges = new[] { new { text } }
-                });
-            await process.WaitForDiagnosticsAsync(uri);
 
             var rename = await SendPositionRequestAsync(
                 process,
@@ -17656,13 +17695,106 @@ public sealed class LanguageServerProcessTests
                 "containingProject",
                 conflict.GetProperty("collisionKind").GetString());
             Assert.Equal(
-                "BillingModule",
+                "bILLINGmODULE",
                 conflict.GetProperty("name").GetString());
             Assert.Equal(
                 ToFileUri(templatePath),
                 conflict.GetProperty("uri").GetString());
 
             await process.ShutdownAsync(3);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_never_substitutes_manifest_document_file_or_host_projection_names_for_project_identity()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-static-project-name-non-substitution-").FullName;
+        try
+        {
+            WriteModuleRenameProjectManifest(projectRoot);
+            var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
+            var sourcePath = Path.Combine(sourceRoot, "SourceUnit.bas");
+            var templatePath = Path.Combine(sourceRoot, "Book1.xlsm");
+            const string text = "Attribute VB_Name = \"InvoiceModule\"";
+            var templateBytes = VbaProjectIdentityWorkbookFixture.Create(
+                "ActualProject",
+                1252);
+            File.WriteAllText(sourcePath, text);
+            File.WriteAllBytes(templatePath, templateBytes);
+            var uri = ToFileUri(sourcePath);
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+
+            await process.InitializeAsync();
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+            await process.SendNotificationAsync(
+                "vba/hostClassProjectionSnapshot",
+                new
+                {
+                    schemaVersion = 2,
+                    revision = 1,
+                    project = Path.GetFullPath(projectRoot),
+                    document = "Book1",
+                    sourceTemplate = Path.GetFullPath(templatePath),
+                    state = "present",
+                    vbaProjectName = "LegacyProjectionName",
+                    sourceTemplateFingerprint = Convert.ToHexString(
+                        SHA256.HashData(templateBytes)),
+                    classEnumerationComplete = true,
+                    classes = Array.Empty<object>()
+                });
+
+            foreach (var candidate in new[]
+                     {
+                         "ModuleRenameProject",
+                         "Book1",
+                         "LegacyProjectionName"
+                     })
+            {
+                var allowed = await SendPositionRequestAsync(
+                    process,
+                    candidate.Length + 10,
+                    "textDocument/rename",
+                    uri,
+                    text,
+                    "InvoiceModule",
+                    0,
+                    new { newName = candidate });
+                Assert.False(
+                    allowed.TryGetProperty("error", out var error),
+                    error.ToString());
+            }
+
+            var collision = await SendPositionRequestAsync(
+                process,
+                99,
+                "textDocument/rename",
+                uri,
+                text,
+                "InvoiceModule",
+                0,
+                new { newName = "actualproject" });
+
+            var data = collision.GetProperty("error").GetProperty("data");
+            Assert.Equal(
+                "sameScopeCollision",
+                data.GetProperty("reason").GetString());
+            var conflict = Assert.Single(
+                data.GetProperty("conflicts").EnumerateArray());
+            Assert.Equal(
+                "containingProject",
+                conflict.GetProperty("collisionKind").GetString());
+            Assert.Equal(
+                "ActualProject",
+                conflict.GetProperty("name").GetString());
+
+            await process.ShutdownAsync(100);
         }
         finally
         {
@@ -17684,7 +17816,9 @@ public sealed class LanguageServerProcessTests
             var sourcePath = Path.Combine(sourceRoot, "SourceUnit.bas");
             var templatePath = Path.Combine(sourceRoot, "Book1.xlsm");
             const string text = "Attribute VB_Name = \"InvoiceModule\"";
-            var templateBytes = new byte[] { 0x11, 0x22, 0x33, 0x44 };
+            var templateBytes = VbaProjectIdentityWorkbookFixture.Create(
+                "ContainingProject",
+                1252);
             File.WriteAllText(sourcePath, text);
             File.WriteAllBytes(templatePath, templateBytes);
             var uri = ToFileUri(sourcePath);
@@ -17786,7 +17920,9 @@ public sealed class LanguageServerProcessTests
             var sourcePath = Path.Combine(sourceRoot, "SourceUnit.bas");
             var templatePath = Path.Combine(sourceRoot, "Book1.xlsm");
             const string text = "Attribute VB_Name = \"InvoiceModule\"";
-            var templateBytes = new byte[] { 0x12, 0x24, 0x36, 0x48 };
+            var templateBytes = VbaProjectIdentityWorkbookFixture.Create(
+                "ContainingProject",
+                1252);
             File.WriteAllText(sourcePath, text);
             File.WriteAllBytes(templatePath, templateBytes);
             var uri = ToFileUri(sourcePath);
@@ -17908,7 +18044,9 @@ public sealed class LanguageServerProcessTests
             var templatePath = Path.Combine(sourceRoot, "Book1.xlsm");
             const string targetText = "Attribute VB_Name = \"InvoiceModule\"";
             const string conflictText = "Attribute VB_Name = \"CollisionName\"";
-            var templateBytes = new byte[] { 0x14, 0x28, 0x42, 0x56 };
+            var templateBytes = VbaProjectIdentityWorkbookFixture.Create(
+                collisionName,
+                1252);
             File.WriteAllText(targetPath, targetText);
             File.WriteAllText(conflictPath, conflictText);
             File.WriteAllBytes(templatePath, templateBytes);
@@ -17926,30 +18064,6 @@ public sealed class LanguageServerProcessTests
                 CreateOpenDocument(conflictUri, conflictText));
             await process.WaitForLogTextAsync(
                 "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
-            await process.SendNotificationAsync(
-                "vba/hostClassProjectionSnapshot",
-                new
-                {
-                    schemaVersion = 2,
-                    revision = 1,
-                    project = Path.GetFullPath(projectRoot),
-                    document = "Book1",
-                    sourceTemplate = Path.GetFullPath(templatePath),
-                    state = "present",
-                    vbaProjectName = collisionName,
-                    sourceTemplateFingerprint = Convert.ToHexString(
-                        SHA256.HashData(templateBytes)),
-                    classEnumerationComplete = true,
-                    classes = Array.Empty<object>()
-                });
-            await process.SendNotificationAsync(
-                "textDocument/didChange",
-                new
-                {
-                    textDocument = new { uri = targetUri, version = 2 },
-                    contentChanges = new[] { new { text = targetText } }
-                });
-            await process.WaitForDiagnosticsAsync(targetUri);
 
             var rename = await SendPositionRequestAsync(
                 process,
@@ -18013,7 +18127,9 @@ public sealed class LanguageServerProcessTests
             var sourcePath = Path.Combine(sourceRoot, "SourceUnit.bas");
             var templatePath = Path.Combine(sourceRoot, "Book1.xlsm");
             const string text = "Attribute VB_Name = \"InvoiceModule\"";
-            var templateBytes = new byte[] { 0x21, 0x32, 0x43, 0x54 };
+            var templateBytes = VbaProjectIdentityWorkbookFixture.Create(
+                "ContainingProject",
+                1252);
             File.WriteAllText(sourcePath, text);
             File.WriteAllBytes(templatePath, templateBytes);
             var uri = ToFileUri(sourcePath);
