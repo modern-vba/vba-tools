@@ -295,10 +295,10 @@ public sealed class VbaProjectIdentityModelTests
         var createMany = Assert.Single(
             providerType.GetMethods(),
             method => method.Name == "CreateProjectSnapshots");
-        var applyHostProjection = Assert.Single(
+        var applyCatalog = Assert.Single(
             providerType.GetMethods(),
             method => method.Name
-                == "TryApplyHostClassProjectionSnapshot");
+                == "TryApplyIntrinsicHostEventCatalog");
 
         Assert.Equal(
             typeof(VbaIdentifiedDocument),
@@ -307,8 +307,8 @@ public sealed class VbaProjectIdentityModelTests
             typeof(IReadOnlyList<VbaIdentifiedDocument>),
             createMany.GetParameters()[0].ParameterType);
         Assert.Equal(
-            typeof(IReadOnlyList<VbaIdentifiedDocument>),
-            applyHostProjection.GetParameters()[1].ParameterType);
+            [typeof(VbaIntrinsicHostEventCatalogUpdate)],
+            applyCatalog.GetParameters().Select(parameter => parameter.ParameterType));
         Assert.Equal(
             typeof(IReadOnlyDictionary<
                 VbaDocumentIdentity,
@@ -734,47 +734,6 @@ public sealed class VbaProjectIdentityModelTests
             fallbackRevision: 0);
 
         Assert.NotEqual(single, split);
-    }
-
-    [Fact]
-    public void Host_projection_coalescing_uses_canonical_project_authority()
-    {
-        var root = CreateRoot("host-projection-authority");
-        var equivalentRoot = Path.Combine(
-            root,
-            "Nested",
-            "..");
-        var first = new VbaHostClassProjectionSnapshotUpdate(
-            new VbaHostClassProjectionContext(
-                root,
-                "Book1",
-                Path.Combine(root, "Book1.xlsm")),
-            Revision: 1,
-            Snapshot: null);
-        var equivalent = new VbaHostClassProjectionSnapshotUpdate(
-            new VbaHostClassProjectionContext(
-                equivalentRoot,
-                "Book1",
-                Path.Combine(root, "Book1.xlsm")),
-            Revision: 2,
-            Snapshot: null);
-
-        Assert.True(first.TryGetAuthority(out var firstAuthority));
-        Assert.True(
-            equivalent.TryGetAuthority(out var equivalentAuthority));
-        Assert.Equal(firstAuthority, equivalentAuthority);
-        Assert.False(
-            new VbaHostClassProjectionSnapshotUpdate(
-                new VbaHostClassProjectionContext(
-                    "\0",
-                    "Book1",
-                    Path.Combine(root, "Book1.xlsm")),
-                Revision: 3,
-                Snapshot: null)
-                .TryGetAuthority(out _));
-        Assert.Null(
-            typeof(VbaHostClassProjectionSnapshotUpdate)
-                .GetProperty("CoalescingKey"));
     }
 
     [Theory]

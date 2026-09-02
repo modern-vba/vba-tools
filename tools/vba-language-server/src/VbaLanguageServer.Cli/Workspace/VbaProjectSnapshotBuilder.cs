@@ -64,7 +64,7 @@ internal sealed class VbaProjectSnapshotBuilder
         IReadOnlySet<VbaDocumentIdentity> existingOpenSourceIdentities,
         VbaProjectReferenceCatalogSet referenceCatalogs,
         IReadOnlyDictionary<string, VbaProjectReferenceCatalogSource> referenceCatalogSources,
-        VbaHostClassProjectionSnapshot? hostClassProjectionSnapshot,
+        VbaIntrinsicHostEventCatalog? intrinsicHostEventCatalog,
         IReadOnlyDictionary<string, VbaProjectReferenceCatalogIdentity>?
             referenceCatalogIdentities = null,
         IReadOnlyDictionary<string, string>?
@@ -84,7 +84,7 @@ internal sealed class VbaProjectSnapshotBuilder
             scopedSourceDocuments,
             manifestContext.ReferenceSelection,
             referenceCatalogs,
-            hostClassProjectionSnapshot,
+            intrinsicHostEventCatalog,
             referenceCatalogSources,
             referenceCatalogIdentities,
             resolution,

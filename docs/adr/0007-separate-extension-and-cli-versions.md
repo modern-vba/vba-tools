@@ -4,6 +4,12 @@ status: accepted
 
 # Version the extension and companion CLI separately
 
+ADR 0036 supersedes only the `host-class list`, `hostClass.list`, and
+`vba/hostClassProjectionSnapshot` command-contract examples below. Their
+replacement is the environment-scoped `host-event list` catalog contract; the
+decision to version the extension, CLI, and command schemas independently
+remains accepted.
+
 The VS Code extension and `vba-dev` should have separate release versions
 because UI, language-server, Test Explorer, and workbook automation changes do
 not always move together. The extension must declare the CLI command contract it

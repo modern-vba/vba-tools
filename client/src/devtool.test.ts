@@ -627,7 +627,7 @@ test('VbaDev compatibility rejects a relative configured path before starting a 
   assert.equal(processStarted, false);
 });
 
-test('Packaged VbaDev contract requires snapshot build and HostClass inspection', () => {
+test('Packaged VbaDev contract requires snapshot build and environment Host Event catalog', () => {
   const extensionRoot = path.resolve(__dirname, '..', '..');
   const contract = loadRequiredVbaDevContract(extensionRoot);
 
@@ -635,8 +635,8 @@ test('Packaged VbaDev contract requires snapshot build and HostClass inspection'
     contract.featureVersions?.['build.sourceSnapshot'],
     '1.0'
   );
-  assert.equal(contract.featureVersions?.['hostClass.list'], '1.0');
-  assert.equal(contract.commandSchemaVersions['host-class list'], '1.1');
+  assert.equal(contract.featureVersions?.['hostEvent.list'], '1.0');
+  assert.equal(contract.commandSchemaVersions['host-event list'], '1.0');
   assert.equal('debugAdapterProtocolVersion' in contract, false);
 });
 

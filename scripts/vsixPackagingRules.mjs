@@ -16,7 +16,7 @@ const requiredExtensionCommandIds = [
   'vbaTools.build',
   'vbaTools.test',
   'vbaTools.publish',
-  'vbaTools.hostClasses.refresh',
+  'vbaTools.userFormEvents.refresh',
   'vbaTools.export',
   'vbaTools.commonModules.add',
   'vbaTools.commonModules.list',
@@ -24,6 +24,10 @@ const requiredExtensionCommandIds = [
   'vbaTools.references.list',
   'vbaTools.references.add',
   'vbaTools.references.remove'
+];
+const removedExtensionCommandIds = [
+  'vbaTools.hostEvents.refresh',
+  'vbaTools.hostClasses.refresh'
 ];
 
 export const requiredBundledCliPath = defaultDistributionManifest.runtimes.vbaDev.executablePath;
@@ -294,6 +298,19 @@ export function assertExtensionDebugPackage(packageJson) {
       )
     ) {
       throw new Error(`Extension package metadata must include required extension command ${commandId}.`);
+    }
+  }
+  for (const commandId of removedExtensionCommandIds) {
+    if (
+      (Array.isArray(contributedCommands) &&
+        contributedCommands.some(
+          (command) => isRecord(command) && command.command === commandId
+        )) ||
+      (Array.isArray(packageJson.activationEvents) &&
+        packageJson.activationEvents.includes(`onCommand:${commandId}`)
+      )
+    ) {
+      throw new Error(`Extension package metadata must not include removed extension command ${commandId}.`);
     }
   }
 }

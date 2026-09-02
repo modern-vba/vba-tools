@@ -226,44 +226,37 @@ revision reservation and mailbox posting in producer order, while revision
 freshness remains in the producer Module. Concurrent producers therefore
 cannot restore an older pending revision.
 
-### Host-class snapshot mutations
+### Intrinsic UserForm Event catalog mutations
 
-The extension owns Host Event inspection, refresh generations, operational
-status, last-known-good folding, and desired snapshot replay. The language
-server receives only the closed `vba/hostClassProjectionSnapshot` notification
-schema `2`: an immutable full `present` snapshot or `cleared` state for one
-manifest document. This transport schema is independent from the
-`host-class list --format json` CLI schema `1.1` and from source or workspace
+The extension owns one environment-scoped catalog acquisition lifecycle,
+operational status, and current-state replay. The language server receives only
+the closed `vba/intrinsicHostEventCatalog` schema-`1.0` notification: a positive
+monotonic revision and either one immutable complete catalog or `null` to clear
+unavailable state. This transport version is independent from the `host-event
+list --format json` CLI schema and from source, workspace, project, or document
 revisions.
 
-A `present` schema-`2` notification either omits both legacy project-observation
-fields or supplies both `vbaProjectName` and `sourceTemplateFingerprint`. The
-language server continues to validate and retain that all-or-nothing pair while
-this Event transport exists, but Module Rename and project-name diagnostics
-ignore it. Current class entries, revision fencing, Event semantics, and form
-ownership continue to use the snapshot independently of the pair.
+Admission parses the complete nested schema before mutation scheduling. Because
+the catalog is environment-wide, pending notifications are ranked by their
+single revision and the ordered lane retains only the greatest queued revision.
+At execution, the workspace accepts only a revision newer than retained state,
+atomically replaces or clears the catalog, and invalidates every affected
+manifest-backed and ad-hoc project snapshot and diagnostic inventory. The
+payload carries no project, document, source-template, component,
+`VbaProjectName`, fingerprint, or source-association context.
 
-Admission parses the complete nested schema before mutation scheduling. Pending
-notifications with the same project-document key are ranked by their positive
-document-local revision, and the ordered lane retains the greatest queued
-revision even when different documents are interleaved. At execution, the
-workspace accepts only a revision newer than retained state whose canonical
-project, exact document name, and canonical selected source-template match the
-current manifest resolution. Acceptance atomically replaces or clears the
-complete stored snapshot and invalidates only matching project-snapshot and
-project-aware diagnostic state.
+After language-client start or restart, the extension replays the latest
+current in-session catalog without running discovery again. It persists no
+catalog across extension activations. Every authoritative `.frm` `FormModule`
+binds the current catalog by source kind; no manifest or template association
+is required.
 
-After language-client start or restart, the extension completes manifest
-synchronization before replaying the latest desired snapshot for every active
-document. Replay starts no inspection and one failed notification does not
-prevent later documents from being attempted.
-
-`current` entries provide authoritative projected Host Event evidence,
-`lastKnownGood` entries remain advisory, and `indeterminate` entries supply no
-projected Event candidate. A request admitted before a later replacement keeps
-its already captured immutable inventory; a later request sees the accepted
+A current catalog provides authoritative built-in UserForm Event evidence. An
+unavailable catalog supplies no advisory replacement and is indeterminate, not
+an authoritative empty surface. A request admitted before a later replacement
+keeps its captured immutable inventory; a later request sees the accepted
 replacement. No completion, hover, signature-help, diagnostic, or other editor
-request invokes `vba-dev`, launches Excel, or waits for inspection or
+request invokes `vba-dev`, launches Excel, or waits for discovery or
 notification completion.
 
 ### Semantic module-identity Rename
@@ -286,7 +279,7 @@ selected source-template package bytes into one request-scoped
 directory stream, reads `PROJECTCODEPAGE`, and decodes `PROJECTNAME` from the
 same bytes. It starts neither Excel nor VBIDE, waits for no discovery, persists
 no cache, and accepts no manifest, document, filename, generated-workbook,
-reference-alias, or host-projection substitute. Missing, unreadable, malformed,
+reference-alias, or Event-catalog substitute. Missing, unreadable, malformed,
 encrypted, subject to unsupported protection, or otherwise unsupported evidence
 fails with `analysisIncomplete`. Before returning any complete module Rename
 `WorkspaceEdit`, an unconditional whole-package content
@@ -315,11 +308,11 @@ authoritative evidence is complete. Containing authority comes only from the
 request's `VbaProjectIdentityRead`; referenced authority retains its current
 catalog contract. Manifest labels and generated aliases do not substitute.
 This static read changes no ownership classification: installed CommonModules
-and current host-associated forms retain their managed ownership, and only a
-form already proven outside host association is source-renamable until the
-environment-catalog cutover. A later provider or filesystem failure is a
-client-observed `WorkspaceEditApplicationFailure`; the client owns Undo, repair,
-and a fresh request rather than relying on server rollback.
+retain their managed ownership, Worksheet and `ThisWorkbook` code-behind remain
+unsupported, and a project-local, source-owned UserForm remains source-renamable
+independently of environment-catalog binding. A later provider or filesystem
+failure is a client-observed `WorkspaceEditApplicationFailure`; the client owns
+Undo, repair, and a fresh request rather than relying on server rollback.
 
 ### Contract declaration-name completion
 
@@ -338,8 +331,8 @@ infer declaration shape from text.
 
 The captured Semantic Inventory enumerates all applicable origins for the
 required callable or Property-accessor kind. Domain admission first applies
-Event-authoring eligibility, current or last-known-good Host Event evidence
-with `authoringAvailable`, interface callable kinds, and derived accessor
+Event-authoring eligibility, current UserForm catalog evidence with
+`authoringAvailable`, interface callable kinds, and derived accessor
 kinds. The shared MS-VBAL declaration relationship policy then excludes the
 physical declaration being edited and applies declaration-kind, namespace,
 Property-accessor, and conditional-family collisions. A candidate with no
@@ -356,7 +349,8 @@ relationship origin is guarded. Member detail is `Event`, `Interface Member`,
 or `Multiple Contracts`; its `[#If]` marker appears when any concrete contract
 provenance is conditional. Member-stage conditionality is computed separately
 from the concrete relationship, Event or interface member, derived Public
-variable, and any host-shadow alternative.
+variable, and any catalog Event retained as a configuration-dependent
+alternative by `IntrinsicHostEventCoexistence`.
 Member rows coalesce only within the required physical declaration kind and
 retain every contributing origin. Their distinct signature presentations use
 the same stable origin order as Signature Help; identical presentations and

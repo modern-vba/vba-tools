@@ -272,7 +272,7 @@ test('managed background invocation preserves output without revealing it', asyn
       onExit: (listener) => listener(0, null),
       kill: () => undefined
     })
-  }, ['host-class', 'list']);
+  }, ['host-event', 'list']);
 
   assert.equal(result?.exitCode, 0);
   assert.equal(reveals, 0);
@@ -303,8 +303,8 @@ test('new excel is never caller-force-killed after cooperative cancellation', as
   assert.equal(outcome.result.cancelled, true);
 });
 
-test('host-class list is never caller-force-killed before owned Excel cleanup completes', async () => {
-  const outcome = await runProtectedCancellation(['host-class', 'list']);
+test('host-event list is never caller-force-killed before owned Excel cleanup completes', async () => {
+  const outcome = await runProtectedCancellation(['host-event', 'list']);
 
   assert.equal(outcome.kills, 0);
   assert.ok(outcome.result);

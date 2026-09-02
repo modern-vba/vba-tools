@@ -56,7 +56,7 @@
     "onCommand:vbaTools.build",
     "onCommand:vbaTools.test",
     "onCommand:vbaTools.publish",
-    "onCommand:vbaTools.hostClasses.refresh",
+    "onCommand:vbaTools.userFormEvents.refresh",
     "onCommand:vbaTools.export",
     "onCommand:vbaTools.commonModules.add",
     "onCommand:vbaTools.commonModules.list",
@@ -213,8 +213,8 @@
         "title": "VBA Tools: Publish"
       },
       {
-        "command": "vbaTools.hostClasses.refresh",
-        "title": "VBA Tools: Refresh Host Events"
+        "command": "vbaTools.userFormEvents.refresh",
+        "title": "VBA Tools: Refresh UserForm Events"
       },
       {
         "command": "vbaTools.export",

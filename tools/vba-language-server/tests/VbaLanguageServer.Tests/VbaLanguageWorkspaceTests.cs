@@ -201,1272 +201,309 @@ public sealed class VbaLanguageWorkspaceTests
     }
 
     [Fact]
-    public void Host_class_snapshot_rebuilds_only_its_matching_project_document_scope()
-    {
-        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-host-snapshot-").FullName;
-        try
-        {
-            WriteProjectManifest(projectRoot);
-            var projectAUri = ToFileUri(
-                Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
-            var projectBUri = ToFileUri(
-                Path.Combine(projectRoot, "src", "SecondBook", "Worker.bas"));
-            var workspace = new VbaLanguageWorkspace(
-                new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled()));
-            workspace.UpdateDocument(
-                projectAUri,
-                "Attribute VB_Name = \"ProjectA\"\nPublic Sub RunA()\nEnd Sub\n");
-            workspace.UpdateDocument(
-                projectBUri,
-                "Attribute VB_Name = \"ProjectB\"\nPublic Sub RunB()\nEnd Sub\n");
-            var beforeA = workspace.CreateProjectSnapshot(projectAUri);
-            var beforeB = workspace.CreateProjectSnapshot(projectBUri);
-            var payload = JsonNode.Parse(JsonSerializer.Serialize(new
-            {
-                schemaVersion = 2,
-                revision = 1,
-                project = Path.GetFullPath(projectRoot),
-                document = "Book1",
-                sourceTemplate = Path.GetFullPath(
-                    Path.Combine(projectRoot, "src", "Book1", "Book1.xlsm")),
-                state = "present",
-                classEnumerationComplete = true,
-                classes = Array.Empty<object>()
-            }))!;
-
-            var accepted = new VbaHostClassProjectionSnapshotHandler(workspace)
-                .TryApply(payload);
-            var afterA = workspace.CreateProjectSnapshot(projectAUri);
-            var afterB = workspace.CreateProjectSnapshot(projectBUri);
-
-            Assert.True(accepted);
-            Assert.NotSame(beforeA, afterA);
-            Assert.Same(beforeB, afterB);
-            Assert.Equal(
-                1,
-                afterA.SemanticInventory.HostClassProjectionSnapshot?.Revision);
-        }
-        finally
-        {
-            Directory.Delete(projectRoot, recursive: true);
-        }
-    }
-
-    [Fact]
-    public void Host_class_snapshot_rejects_the_superseded_transport_schema()
+    public void Intrinsic_catalog_revision_rebuilds_every_project_scope()
     {
         var projectRoot = Directory.CreateTempSubdirectory(
-            "vba-ls-host-schema-").FullName;
+            "vba-ls-intrinsic-catalog-").FullName;
         try
         {
             WriteProjectManifest(projectRoot);
-            var projectUri = ToFileUri(
-                Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
-            var sourceTemplate = Path.GetFullPath(Path.Combine(
-                projectRoot,
-                "src",
-                "Book1",
-                "Book1.xlsm"));
-            var workspace = new VbaLanguageWorkspace(
-                new VbaProjectReferenceCatalogCache(
-                    VbaProjectReferenceCatalogSet.CreateBundled()));
-            workspace.UpdateDocument(
-                projectUri,
-                "Attribute VB_Name = \"ProjectA\"\nPublic Sub RunA()\nEnd Sub\n");
-            var handler = new VbaHostClassProjectionSnapshotHandler(workspace);
-            Assert.True(handler.TryApply(CreateEmptyHostSnapshotPayload(
-                projectRoot,
-                sourceTemplate,
-                revision: 1)));
-            var superseded = CreateEmptyHostSnapshotPayload(
-                projectRoot,
-                sourceTemplate,
-                revision: 2);
-            superseded["schemaVersion"] = 1;
-
-            Assert.False(handler.TryApply(superseded));
-            Assert.Equal(
-                1,
-                workspace.CreateProjectSnapshot(projectUri)
-                    .SemanticInventory.HostClassProjectionSnapshot?.Revision);
-        }
-        finally
-        {
-            Directory.Delete(projectRoot, recursive: true);
-        }
-    }
-
-    [Fact]
-    public async Task Host_class_snapshot_revision_invalidates_an_in_flight_older_project_cache_build()
-    {
-        var projectRoot = Directory.CreateTempSubdirectory(
-            "vba-ls-host-snapshot-race-").FullName;
-        var buildObserver = new BlockingFirstProjectSnapshotBuildObserver();
-        try
-        {
-            WriteProjectManifest(projectRoot);
-            var projectUri = ToFileUri(
-                Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
-            var sourceTemplate = Path.GetFullPath(Path.Combine(
-                projectRoot,
-                "src",
-                "Book1",
-                "Book1.xlsm"));
+            var firstUri = ToFileUri(
+                Path.Combine(projectRoot, "src", "Book1", "Dialog.frm"));
+            var secondUri = ToFileUri(
+                Path.Combine(projectRoot, "src", "SecondBook", "Other.frm"));
+            var observer = new CountingProjectSnapshotBuildObserver();
             var workspace = new VbaLanguageWorkspace(
                 new VbaProjectReferenceCatalogCache(
                     VbaProjectReferenceCatalogSet.CreateBundled()),
                 NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
                 NullVbaDocumentAnalysisBuildObserver.Instance,
-                buildObserver);
+                observer);
             workspace.UpdateDocument(
-                projectUri,
-                "Attribute VB_Name = \"ProjectA\"\nPublic Sub RunA()\nEnd Sub\n");
-            var handler = new VbaHostClassProjectionSnapshotHandler(workspace);
-            Assert.True(handler.TryApply(CreateEmptyHostSnapshotPayload(
-                projectRoot,
-                sourceTemplate,
-                revision: 1)));
+                firstUri,
+                "VERSION 5.00\nBegin VB.Form Dialog\nEnd\n"
+                + "Attribute VB_Name = \"Dialog\"\n");
+            workspace.UpdateDocument(
+                secondUri,
+                "VERSION 5.00\nBegin VB.Form Other\nEnd\n"
+                + "Attribute VB_Name = \"Other\"\n");
 
-            var olderBuild = Task.Run(
-                () => workspace.CreateProjectSnapshot(projectUri));
-            await buildObserver.FirstBuildWaiting.Task.WaitAsync(
-                TimeSpan.FromSeconds(5));
-            Assert.True(handler.TryApply(CreateEmptyHostSnapshotPayload(
-                projectRoot,
-                sourceTemplate,
-                revision: 2)));
-            var newerSnapshot = workspace.CreateProjectSnapshot(projectUri);
-            buildObserver.ReleaseFirstBuild();
-            var olderSnapshot = await olderBuild.WaitAsync(TimeSpan.FromSeconds(5));
-            var reusedSnapshot = workspace.CreateProjectSnapshot(projectUri);
+            var beforeFirst = workspace.CreateProjectSnapshot(firstUri);
+            var beforeSecond = workspace.CreateProjectSnapshot(secondUri);
+            Assert.True(new VbaIntrinsicHostEventCatalogHandler(workspace)
+                .TryApply(CreateCatalogPayload(revision: 1)));
+            var afterFirst = workspace.CreateProjectSnapshot(firstUri);
+            var afterSecond = workspace.CreateProjectSnapshot(secondUri);
 
+            Assert.NotSame(beforeFirst, afterFirst);
+            Assert.NotSame(beforeSecond, afterSecond);
+            Assert.Equal(4, observer.BuildCount);
             Assert.Equal(
-                1,
-                olderSnapshot.SemanticInventory.HostClassProjectionSnapshot?.Revision);
+                "Initialize",
+                Assert.Single(afterFirst.SemanticInventory
+                    .IntrinsicHostEventCatalog!.Events).Name);
             Assert.Equal(
-                2,
-                newerSnapshot.SemanticInventory.HostClassProjectionSnapshot?.Revision);
-            Assert.Same(newerSnapshot, reusedSnapshot);
+                "Initialize",
+                Assert.Single(afterSecond.SemanticInventory
+                    .IntrinsicHostEventCatalog!.Events).Name);
         }
         finally
         {
-            buildObserver.ReleaseFirstBuild();
             Directory.Delete(projectRoot, recursive: true);
         }
     }
 
     [Fact]
-    public void Host_class_snapshot_replay_after_manifest_sync_precedes_source_open()
+    public void Intrinsic_catalog_atomically_replaces_clears_and_rejects_stale_revisions()
     {
-        var projectRoot = Directory.CreateTempSubdirectory(
-            "vba-ls-host-replay-").FullName;
-        try
-        {
-            WriteProjectManifest(projectRoot);
-            var manifestPath = Path.Combine(projectRoot, "vba-project.json");
-            var projectUri = ToFileUri(
-                Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
-            var sourceTemplate = Path.GetFullPath(
-                Path.Combine(projectRoot, "src", "Book1", "Book1.xlsm"));
-            var workspace = new VbaLanguageWorkspace(
-                new VbaProjectReferenceCatalogCache(
-                    VbaProjectReferenceCatalogSet.CreateBundled()));
-            Assert.True(workspace.ManifestWorkspace.OpenManifest(
-                ToFileUri(manifestPath),
-                documentVersion: 1,
-                File.ReadAllText(manifestPath)).Accepted);
+        const string uri = "file:///C:/work/Dialog.frm";
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()));
+        workspace.UpdateDocument(
+            uri,
+            "VERSION 5.00\nBegin VB.Form Dialog\nEnd\n"
+            + "Attribute VB_Name = \"Dialog\"\n");
+        var handler = new VbaIntrinsicHostEventCatalogHandler(workspace);
 
-            var accepted = new VbaHostClassProjectionSnapshotHandler(workspace)
-                .TryApply(CreateEmptyHostSnapshotPayload(
-                    projectRoot,
-                    sourceTemplate,
-                    revision: 1));
+        Assert.True(handler.TryApply(
+            CreateCatalogPayload(revision: 2, eventName: "Initialize")));
+        Assert.False(handler.TryApply(
+            CreateCatalogPayload(revision: 2, eventName: "QueryClose")));
+        Assert.False(handler.TryApply(
+            CreateCatalogPayload(revision: 1, eventName: "QueryClose")));
+        Assert.Equal(
+            "Initialize",
+            Assert.Single(workspace.CreateProjectSnapshot(uri)
+                .SemanticInventory.IntrinsicHostEventCatalog!.Events).Name);
 
-            Assert.True(accepted);
-            workspace.UpdateDocument(
-                projectUri,
-                "Attribute VB_Name = \"ProjectA\"\nPublic Sub RunA()\nEnd Sub\n");
-            Assert.Equal(
-                1,
-                workspace.CreateProjectSnapshot(projectUri)
-                    .SemanticInventory.HostClassProjectionSnapshot?.Revision);
-        }
-        finally
-        {
-            Directory.Delete(projectRoot, recursive: true);
-        }
+        Assert.True(handler.TryApply(CreateClearedCatalogPayload(revision: 3)));
+        Assert.Null(workspace.CreateProjectSnapshot(uri)
+            .SemanticInventory.IntrinsicHostEventCatalog);
+        Assert.False(handler.TryApply(
+            CreateCatalogPayload(revision: 2, eventName: "QueryClose")));
+        Assert.Null(workspace.CreateProjectSnapshot(uri)
+            .SemanticInventory.IntrinsicHostEventCatalog);
     }
 
     [Fact]
-    public void Host_class_snapshot_clear_removes_the_matching_document_projection()
+    public void Intrinsic_catalog_notification_preserves_the_full_structured_contract()
     {
-        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-host-clear-").FullName;
-        try
+        const string uri = "file:///C:/work/Dialog.frm";
+        const string formsGuid = "0d452ee1-e08f-101a-852e-02608c4d0bb4";
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()));
+        workspace.UpdateDocument(
+            uri,
+            "VERSION 5.00\nBegin VB.Form Dialog\nEnd\n"
+            + "Attribute VB_Name = \"Dialog\"\n");
+        var payload = JsonSerializer.SerializeToNode(new
         {
-            WriteProjectManifest(projectRoot);
-            var projectUri = ToFileUri(
-                Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
-            var workspace = new VbaLanguageWorkspace(
-                new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled()));
-            workspace.UpdateDocument(
-                projectUri,
-                "Attribute VB_Name = \"ProjectA\"\nPublic Sub RunA()\nEnd Sub\n");
-            _ = workspace.CreateProjectSnapshot(projectUri);
-            var context = new
+            schemaVersion = "1.0",
+            revision = 7,
+            catalog = new
             {
-                project = Path.GetFullPath(projectRoot),
-                document = "Book1",
-                sourceTemplate = Path.GetFullPath(
-                    Path.Combine(projectRoot, "src", "Book1", "Book1.xlsm"))
-            };
-            var present = JsonNode.Parse(JsonSerializer.Serialize(new
-            {
-                schemaVersion = 2,
-                revision = 1,
-                context.project,
-                context.document,
-                context.sourceTemplate,
-                state = "present",
-                classEnumerationComplete = true,
-                classes = Array.Empty<object>()
-            }))!;
-            var cleared = JsonNode.Parse(JsonSerializer.Serialize(new
-            {
-                schemaVersion = 2,
-                revision = 2,
-                context.project,
-                context.document,
-                context.sourceTemplate,
-                state = "cleared"
-            }))!;
-            var handler = new VbaHostClassProjectionSnapshotHandler(workspace);
+                sourceKind = "userForm",
+                intrinsicEventSourceName = "UserForm",
+                events = new object[]
+                {
+                    new
+                    {
+                        identity = new
+                        {
+                            sourceName = "UserForm",
+                            name = "QueryClose"
+                        },
+                        signature = new
+                        {
+                            parameters = new object[]
+                            {
+                                new
+                                {
+                                    name = "Cancel",
+                                    type = new
+                                    {
+                                        kind = "intrinsic",
+                                        name = "Boolean"
+                                    },
+                                    passing = "byRef",
+                                    arrayShape = "scalar",
+                                    optional = false,
+                                    paramArray = false
+                                },
+                                new
+                                {
+                                    name = "CloseMode",
+                                    type = new
+                                    {
+                                        kind = "typeLib",
+                                        name = "VbQueryClose",
+                                        libraryGuid = formsGuid,
+                                        majorVersion = 2,
+                                        minorVersion = 0,
+                                        lcid = 0
+                                    },
+                                    passing = "byVal",
+                                    arrayShape = "scalar",
+                                    optional = false,
+                                    paramArray = false
+                                }
+                            },
+                            documentation = "Occurs before a UserForm closes."
+                        },
+                        authoringAvailable = true,
+                        existingHandlerRecognizable = true
+                    }
+                },
+                baseTypeProvenance = new
+                {
+                    name = "UserForm",
+                    libraryGuid = formsGuid,
+                    majorVersion = 2,
+                    minorVersion = 0,
+                    lcid = 0
+                }
+            }
+        });
 
-            Assert.True(handler.TryApply(present));
-            var beforeClear = workspace.CreateProjectSnapshot(projectUri);
-            Assert.Equal(
-                1,
-                beforeClear.SemanticInventory.HostClassProjectionSnapshot?.Revision);
+        Assert.True(new VbaIntrinsicHostEventCatalogHandler(workspace)
+            .TryApply(payload));
+        var catalog = workspace.CreateProjectSnapshot(uri)
+            .SemanticInventory.IntrinsicHostEventCatalog;
+        var hostEvent = Assert.Single(catalog!.Events);
+        var cancel = hostEvent.Parameters[0];
+        var closeMode = hostEvent.Parameters[1];
 
-            Assert.True(handler.TryApply(cleared));
-            var afterClear = workspace.CreateProjectSnapshot(projectUri);
-
-            Assert.NotSame(beforeClear, afterClear);
-            Assert.Null(afterClear.SemanticInventory.HostClassProjectionSnapshot);
-        }
-        finally
-        {
-            Directory.Delete(projectRoot, recursive: true);
-        }
+        Assert.Equal(VbaIntrinsicHostEventSourceKind.UserForm, catalog.SourceKind);
+        Assert.Equal("UserForm", hostEvent.Identity.SourceName);
+        Assert.Equal("QueryClose", hostEvent.Identity.Name);
+        Assert.Equal("Occurs before a UserForm closes.", hostEvent.Documentation);
+        Assert.True(hostEvent.AuthoringAvailable);
+        Assert.True(hostEvent.ExistingHandlerRecognizable);
+        Assert.Equal(VbaHostEventParameterPassing.ByRef, cancel.Passing);
+        Assert.IsType<VbaIntrinsicHostEventParameterType>(cancel.Type);
+        Assert.Equal(VbaHostEventParameterPassing.ByVal, closeMode.Passing);
+        Assert.IsType<VbaTypeLibraryHostEventParameterType>(closeMode.Type);
+        Assert.Equal(formsGuid, catalog.BaseTypeProvenance?.LibraryGuid);
     }
 
     [Fact]
-    public void Host_class_snapshot_rejects_malformed_cleared_context_without_throwing()
+    public void Intrinsic_catalog_store_commits_a_deeply_immutable_value()
+    {
+        const string uri = "file:///C:/work/Dialog.frm";
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()));
+        workspace.UpdateDocument(
+            uri,
+            "VERSION 5.00\nBegin VB.Form Dialog\nEnd\n"
+            + "Attribute VB_Name = \"Dialog\"\n");
+        var parameters = new List<VbaHostEventParameter>();
+        var events = new List<VbaIntrinsicHostEvent>
+        {
+            new(
+                new VbaIntrinsicHostEventIdentity("UserForm", "Initialize"),
+                new VbaIntrinsicHostEventSignature(
+                    parameters,
+                    "Initial documentation."),
+                AuthoringAvailable: true,
+                ExistingHandlerRecognizable: true)
+        };
+        var catalog = new VbaIntrinsicHostEventCatalog(
+            VbaIntrinsicHostEventSourceKind.UserForm,
+            "UserForm",
+            events);
+
+        Assert.True(workspace.TryApplyIntrinsicHostEventCatalog(
+            new VbaIntrinsicHostEventCatalogUpdate(1, catalog)));
+        events[0] = events[0] with
+        {
+            Identity = new VbaIntrinsicHostEventIdentity(
+                "UserForm",
+                "QueryClose")
+        };
+        parameters.Add(new VbaHostEventParameter(
+            "Cancel",
+            new VbaIntrinsicHostEventParameterType("Boolean"),
+            VbaHostEventParameterPassing.ByRef,
+            VbaHostEventParameterArrayShape.Scalar,
+            Optional: false,
+            ParamArray: false));
+
+        var committed = workspace.CreateProjectSnapshot(uri)
+            .SemanticInventory.IntrinsicHostEventCatalog;
+        var committedEvent = Assert.Single(committed!.Events);
+        Assert.Equal("Initialize", committedEvent.Name);
+        Assert.Empty(committedEvent.Parameters);
+        Assert.Throws<NotSupportedException>(() =>
+            ((IList<VbaIntrinsicHostEvent>)committed.Events)[0] =
+                events[0]);
+    }
+
+    [Fact]
+    public void Intrinsic_catalog_rejects_unknown_versions_and_fields_without_mutation()
     {
         var workspace = new VbaLanguageWorkspace(
             new VbaProjectReferenceCatalogCache(
                 VbaProjectReferenceCatalogSet.CreateBundled()));
-        var payload = JsonNode.Parse(JsonSerializer.Serialize(new
+        var handler = new VbaIntrinsicHostEventCatalogHandler(workspace);
+        var unsupportedVersion = JsonSerializer.SerializeToNode(new
         {
-            schemaVersion = 2,
+            schemaVersion = "2.0",
             revision = 1,
-            project = "C:\\work\0bad",
-            document = "Book1",
-            sourceTemplate = "C:\\work\\Book1.xlsm",
-            state = "cleared"
-        }))!;
+            catalog = CreateCatalogValue("Initialize")
+        });
+        var unknown = JsonSerializer.SerializeToNode(new
+        {
+            schemaVersion = "1.0",
+            revision = 1,
+            catalog = CreateCatalogValue("Initialize"),
+            futureField = true
+        });
 
-        var accepted = new VbaHostClassProjectionSnapshotHandler(workspace)
-            .TryApply(payload);
-
-        Assert.False(accepted);
+        Assert.False(handler.TryApply(unsupportedVersion));
+        Assert.False(handler.TryApply(unknown));
     }
 
-    [Fact]
-    public void Host_class_snapshot_rejects_noncanonical_equivalent_context()
-    {
-        var projectRoot = Directory.CreateTempSubdirectory(
-            "vba-ls-host-noncanonical-").FullName;
-        try
+    private static JsonNode CreateCatalogPayload(
+        long revision,
+        string eventName = "Initialize")
+        => JsonSerializer.SerializeToNode(new
         {
-            WriteProjectManifest(projectRoot);
-            var projectUri = ToFileUri(
-                Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
-            var sourceTemplate = Path.GetFullPath(Path.Combine(
-                projectRoot,
-                "src",
-                "Book1",
-                "Book1.xlsm"));
-            var workspace = new VbaLanguageWorkspace(
-                new VbaProjectReferenceCatalogCache(
-                    VbaProjectReferenceCatalogSet.CreateBundled()));
-            workspace.UpdateDocument(
-                projectUri,
-                "Attribute VB_Name = \"ProjectA\"\nPublic Sub RunA()\nEnd Sub\n");
-            var payload = CreateEmptyHostSnapshotPayload(
-                projectRoot,
-                sourceTemplate,
-                revision: 1);
-            payload["project"] = Path.Combine(projectRoot, ".");
+            schemaVersion = "1.0",
+            revision,
+            catalog = CreateCatalogValue(eventName)
+        })!;
 
-            var accepted = new VbaHostClassProjectionSnapshotHandler(workspace)
-                .TryApply(payload);
-
-            Assert.False(accepted);
-            Assert.Null(workspace.CreateProjectSnapshot(projectUri)
-                .SemanticInventory.HostClassProjectionSnapshot);
-        }
-        finally
+    private static JsonNode CreateClearedCatalogPayload(long revision)
+        => JsonSerializer.SerializeToNode(new
         {
-            Directory.Delete(projectRoot, recursive: true);
-        }
-    }
+            schemaVersion = "1.0",
+            revision,
+            catalog = (object?)null
+        })!;
 
-    [Fact]
-    public void Host_class_snapshot_rejects_equal_and_stale_revisions_without_replacing_current()
-    {
-        var projectRoot = Directory.CreateTempSubdirectory(
-            "vba-ls-host-stale-revision-").FullName;
-        try
+    private static object CreateCatalogValue(string eventName)
+        => new
         {
-            WriteProjectManifest(projectRoot);
-            var projectUri = ToFileUri(
-                Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
-            var sourceTemplate = Path.GetFullPath(Path.Combine(
-                projectRoot,
-                "src",
-                "Book1",
-                "Book1.xlsm"));
-            var workspace = new VbaLanguageWorkspace(
-                new VbaProjectReferenceCatalogCache(
-                    VbaProjectReferenceCatalogSet.CreateBundled()));
-            workspace.UpdateDocument(
-                projectUri,
-                "Attribute VB_Name = \"ProjectA\"\nPublic Sub RunA()\nEnd Sub\n");
-            var handler = new VbaHostClassProjectionSnapshotHandler(workspace);
-
-            Assert.True(handler.TryApply(CreateEmptyHostSnapshotPayload(
-                projectRoot,
-                sourceTemplate,
-                revision: 2)));
-            Assert.False(handler.TryApply(CreateEmptyHostSnapshotPayload(
-                projectRoot,
-                sourceTemplate,
-                revision: 2)));
-            Assert.False(handler.TryApply(CreateEmptyHostSnapshotPayload(
-                projectRoot,
-                sourceTemplate,
-                revision: 1)));
-
-            Assert.Equal(
-                2,
-                workspace.CreateProjectSnapshot(projectUri)
-                    .SemanticInventory.HostClassProjectionSnapshot?.Revision);
-        }
-        finally
-        {
-            Directory.Delete(projectRoot, recursive: true);
-        }
-    }
-
-    [Fact]
-    public void Host_class_snapshot_rejects_fresh_mismatched_source_template_without_replacing_current()
-    {
-        var projectRoot = Directory.CreateTempSubdirectory(
-            "vba-ls-host-context-mismatch-").FullName;
-        try
-        {
-            WriteProjectManifest(projectRoot);
-            var projectUri = ToFileUri(
-                Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
-            var sourceTemplate = Path.GetFullPath(Path.Combine(
-                projectRoot,
-                "src",
-                "Book1",
-                "Book1.xlsm"));
-            var mismatchedTemplate = Path.GetFullPath(Path.Combine(
-                projectRoot,
-                "src",
-                "Book1",
-                "Other.xlsm"));
-            var workspace = new VbaLanguageWorkspace(
-                new VbaProjectReferenceCatalogCache(
-                    VbaProjectReferenceCatalogSet.CreateBundled()));
-            workspace.UpdateDocument(
-                projectUri,
-                "Attribute VB_Name = \"ProjectA\"\nPublic Sub RunA()\nEnd Sub\n");
-            var handler = new VbaHostClassProjectionSnapshotHandler(workspace);
-
-            Assert.True(handler.TryApply(CreateEmptyHostSnapshotPayload(
-                projectRoot,
-                sourceTemplate,
-                revision: 1)));
-            Assert.False(handler.TryApply(CreateEmptyHostSnapshotPayload(
-                projectRoot,
-                mismatchedTemplate,
-                revision: 2)));
-
-            var retained = workspace.CreateProjectSnapshot(projectUri)
-                .SemanticInventory.HostClassProjectionSnapshot;
-            Assert.NotNull(retained);
-            Assert.Equal(1, retained.Revision);
-            Assert.Equal(sourceTemplate, retained.Context.SourceTemplate);
-        }
-        finally
-        {
-            Directory.Delete(projectRoot, recursive: true);
-        }
-    }
-
-    [Fact]
-    public void Host_class_snapshot_rejects_unknown_nested_schema_without_replacing_current()
-    {
-        var projectRoot = Directory.CreateTempSubdirectory(
-            "vba-ls-host-nested-schema-").FullName;
-        try
-        {
-            WriteProjectManifest(projectRoot);
-            var projectUri = ToFileUri(
-                Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
-            var sourceTemplate = Path.GetFullPath(Path.Combine(
-                projectRoot,
-                "src",
-                "Book1",
-                "Book1.xlsm"));
-            var workspace = new VbaLanguageWorkspace(
-                new VbaProjectReferenceCatalogCache(
-                    VbaProjectReferenceCatalogSet.CreateBundled()));
-            workspace.UpdateDocument(
-                projectUri,
-                "Attribute VB_Name = \"ProjectA\"\nPublic Sub RunA()\nEnd Sub\n");
-            var handler = new VbaHostClassProjectionSnapshotHandler(workspace);
-            Assert.True(handler.TryApply(CreateEmptyHostSnapshotPayload(
-                projectRoot,
-                sourceTemplate,
-                revision: 1)));
-            var invalid = JsonNode.Parse(JsonSerializer.Serialize(new
+            sourceKind = "userForm",
+            intrinsicEventSourceName = "UserForm",
+            events = new object[]
             {
-                schemaVersion = 2,
-                revision = 2,
-                project = Path.GetFullPath(projectRoot),
-                document = "Book1",
-                sourceTemplate,
-                state = "present",
-                classEnumerationComplete = true,
-                classes = new object[]
+                new
                 {
-                    new
+                    identity = new { sourceName = "UserForm", name = eventName },
+                    signature = new
                     {
-                        identity = new { name = "Sheet1", kind = "document" },
-                        authority = "current",
-                        projection = new
-                        {
-                            intrinsicEventSourceName = "Worksheet",
-                            events = Array.Empty<object>(),
-                            unexpected = true
-                        }
-                    }
-                }
-            }))!;
-
-            Assert.False(handler.TryApply(invalid));
-            var invalidIntrinsicType = JsonNode.Parse(JsonSerializer.Serialize(new
-            {
-                schemaVersion = 2,
-                revision = 2,
-                project = Path.GetFullPath(projectRoot),
-                document = "Book1",
-                sourceTemplate,
-                state = "present",
-                classEnumerationComplete = true,
-                classes = new object[]
-                {
-                    new
-                    {
-                        identity = new { name = "Sheet1", kind = "document" },
-                        authority = "current",
-                        projection = new
-                        {
-                            intrinsicEventSourceName = "Worksheet",
-                            events = new object[]
-                            {
-                                new
-                                {
-                                    name = "Change",
-                                    parameters = new object[]
-                                    {
-                                        new
-                                        {
-                                            name = "Target",
-                                            type = new { kind = "intrinsic", name = "Widget" },
-                                            passing = "byVal",
-                                            arrayShape = "scalar",
-                                            optional = false,
-                                            paramArray = false
-                                        }
-                                    },
-                                    authoringAvailable = true,
-                                    existingHandlerRecognizable = true
-                                }
-                            }
-                        }
-                    }
-                }
-            }))!;
-
-            Assert.False(handler.TryApply(invalidIntrinsicType));
-            Assert.Equal(
-                1,
-                workspace.CreateProjectSnapshot(projectUri)
-                    .SemanticInventory.HostClassProjectionSnapshot?.Revision);
-        }
-        finally
-        {
-            Directory.Delete(projectRoot, recursive: true);
-        }
-    }
-
-    [Fact]
-    public void Host_class_snapshot_rejects_case_insensitive_duplicate_identities_without_replacing_current()
-    {
-        var projectRoot = Directory.CreateTempSubdirectory(
-            "vba-ls-host-duplicate-identity-").FullName;
-        try
-        {
-            WriteProjectManifest(projectRoot);
-            var projectUri = ToFileUri(
-                Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
-            var sourceTemplate = Path.GetFullPath(Path.Combine(
-                projectRoot,
-                "src",
-                "Book1",
-                "Book1.xlsm"));
-            var workspace = new VbaLanguageWorkspace(
-                new VbaProjectReferenceCatalogCache(
-                    VbaProjectReferenceCatalogSet.CreateBundled()));
-            workspace.UpdateDocument(
-                projectUri,
-                "Attribute VB_Name = \"ProjectA\"\nPublic Sub RunA()\nEnd Sub\n");
-            var handler = new VbaHostClassProjectionSnapshotHandler(workspace);
-            Assert.True(handler.TryApply(CreateEmptyHostSnapshotPayload(
-                projectRoot,
-                sourceTemplate,
-                revision: 1)));
-            var invalid = JsonNode.Parse(JsonSerializer.Serialize(new
-            {
-                schemaVersion = 2,
-                revision = 2,
-                project = Path.GetFullPath(projectRoot),
-                document = "Book1",
-                sourceTemplate,
-                state = "present",
-                classEnumerationComplete = false,
-                classes = new object[]
-                {
-                    new
-                    {
-                        identity = new { name = "Sheet1", kind = "document" },
-                        authority = "indeterminate"
+                        parameters = Array.Empty<object>(),
+                        documentation = "Intrinsic UserForm Event."
                     },
-                    new
-                    {
-                        identity = new { name = "sheet1", kind = "document" },
-                        authority = "indeterminate"
-                    }
+                    authoringAvailable = true,
+                    existingHandlerRecognizable = true
                 }
-            }))!;
-
-            Assert.False(handler.TryApply(invalid));
-            Assert.Equal(
-                1,
-                workspace.CreateProjectSnapshot(projectUri)
-                    .SemanticInventory.HostClassProjectionSnapshot?.Revision);
-        }
-        finally
-        {
-            Directory.Delete(projectRoot, recursive: true);
-        }
-    }
-
-    [Fact]
-    public void Host_class_snapshot_exposes_current_projection_event_evidence()
-    {
-        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-host-event-").FullName;
-        try
-        {
-            WriteProjectManifest(projectRoot);
-            var projectUri = ToFileUri(
-                Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
-            var workspace = new VbaLanguageWorkspace(
-                new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled()));
-            workspace.UpdateDocument(
-                projectUri,
-                "Attribute VB_Name = \"ProjectA\"\nPublic Sub RunA()\nEnd Sub\n");
-            _ = workspace.CreateProjectSnapshot(projectUri);
-            var payload = JsonNode.Parse(JsonSerializer.Serialize(new
-            {
-                schemaVersion = 2,
-                revision = 1,
-                project = Path.GetFullPath(projectRoot),
-                document = "Book1",
-                sourceTemplate = Path.GetFullPath(
-                    Path.Combine(projectRoot, "src", "Book1", "Book1.xlsm")),
-                state = "present",
-                classEnumerationComplete = true,
-                classes = new object[]
-                {
-                    new
-                    {
-                        identity = new { name = "Sheet1", kind = "document" },
-                        authority = "current",
-                        projection = new
-                        {
-                            intrinsicEventSourceName = "Worksheet",
-                            events = new object[]
-                            {
-                                new
-                                {
-                                    name = "Change",
-                                    parameters = new object[]
-                                    {
-                                        new
-                                        {
-                                            name = "Target",
-                                            type = new { kind = "intrinsic", name = "Variant" },
-                                            passing = "byVal",
-                                            arrayShape = "scalar",
-                                            optional = false,
-                                            paramArray = false
-                                        }
-                                    },
-                                    documentation = "Occurs when cells change.",
-                                    authoringAvailable = true,
-                                    existingHandlerRecognizable = true
-                                }
-                            }
-                        }
-                    }
-                }
-            }))!;
-
-            Assert.True(new VbaHostClassProjectionSnapshotHandler(workspace).TryApply(payload));
-            var snapshot = workspace.CreateProjectSnapshot(projectUri)
-                .SemanticInventory.HostClassProjectionSnapshot;
-            Assert.NotNull(snapshot);
-            var entry = Assert.IsType<VbaCurrentHostClassProjectionEntry>(
-                Assert.Single(snapshot.Classes));
-            var hostEvent = Assert.Single(entry.Projection.Events);
-            var parameter = Assert.Single(hostEvent.Parameters);
-
-            Assert.Equal("Sheet1", entry.Identity.Name);
-            Assert.Equal(VbaHostClassKind.Document, entry.Identity.Kind);
-            Assert.Equal("Worksheet", entry.Projection.IntrinsicEventSourceName);
-            Assert.Equal("Change", hostEvent.Name);
-            Assert.Equal("Occurs when cells change.", hostEvent.Documentation);
-            Assert.True(hostEvent.AuthoringAvailable);
-            Assert.True(hostEvent.ExistingHandlerRecognizable);
-            Assert.Equal("Target", parameter.Name);
-            Assert.Equal(VbaHostEventParameterPassing.ByVal, parameter.Passing);
-            Assert.Equal(VbaHostEventParameterArrayShape.Scalar, parameter.ArrayShape);
-            Assert.False(parameter.Optional);
-            Assert.False(parameter.ParamArray);
-            Assert.Equal(
-                "Variant",
-                Assert.IsType<VbaIntrinsicHostEventParameterType>(parameter.Type).Name);
-        }
-        finally
-        {
-            Directory.Delete(projectRoot, recursive: true);
-        }
-    }
-
-    [Fact]
-    public void Host_class_snapshot_commits_a_deeply_immutable_value()
-    {
-        var projectRoot = Directory.CreateTempSubdirectory(
-            "vba-ls-host-immutable-").FullName;
-        try
-        {
-            WriteProjectManifest(projectRoot);
-            var projectUri = ToFileUri(
-                Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
-            var context = new VbaHostClassProjectionContext(
-                Path.GetFullPath(projectRoot),
-                "Book1",
-                Path.GetFullPath(Path.Combine(
-                    projectRoot,
-                    "src",
-                    "Book1",
-                    "Book1.xlsm")));
-            var parameter = new VbaHostEventParameter(
-                "Target",
-                new VbaIntrinsicHostEventParameterType("Variant"),
-                VbaHostEventParameterPassing.ByVal,
-                VbaHostEventParameterArrayShape.Scalar,
-                Optional: false,
-                ParamArray: false);
-            var hostEvent = new VbaHostEventSignature(
-                "Change",
-                new[] { parameter },
-                Documentation: null,
-                AuthoringAvailable: true,
-                ExistingHandlerRecognizable: true);
-            var entry = new VbaCurrentHostClassProjectionEntry(
-                new VbaHostClassIdentity(
-                    "Sheet1",
-                    VbaHostClassKind.Document),
-                new VbaHostClassProjection(
-                    "Worksheet",
-                    new[] { hostEvent }));
-            var workspace = new VbaLanguageWorkspace(
-                new VbaProjectReferenceCatalogCache(
-                    VbaProjectReferenceCatalogSet.CreateBundled()));
-            workspace.UpdateDocument(
-                projectUri,
-                "Attribute VB_Name = \"ProjectA\"\nPublic Sub RunA()\nEnd Sub\n");
-            _ = workspace.CreateProjectSnapshot(projectUri);
-
-            Assert.True(workspace.TryApplyHostClassProjectionSnapshot(
-                new VbaHostClassProjectionSnapshotUpdate(
-                    context,
-                    Revision: 1,
-                    new VbaHostClassProjectionSnapshot(
-                        Revision: 1,
-                        context,
-                        ClassEnumerationComplete: true,
-                        new VbaHostClassProjectionEntry[] { entry }))));
-            var committed = workspace.CreateProjectSnapshot(projectUri)
-                .SemanticInventory.HostClassProjectionSnapshot;
-            Assert.NotNull(committed);
-            var committedEntry = Assert.IsType<VbaCurrentHostClassProjectionEntry>(
-                Assert.Single(committed!.Classes));
-            var committedEvent = Assert.Single(committedEntry.Projection.Events);
-
-            Assert.Throws<NotSupportedException>(() =>
-            {
-                ((IList<VbaHostClassProjectionEntry>)committed.Classes)[0] =
-                    new VbaIndeterminateHostClassProjectionEntry(
-                        committedEntry.Identity);
-            });
-            Assert.Throws<NotSupportedException>(() =>
-            {
-                ((IList<VbaHostEventSignature>)committedEntry.Projection.Events)[0] =
-                    committedEvent with { Name = "Mutated" };
-            });
-            Assert.Throws<NotSupportedException>(() =>
-            {
-                ((IList<VbaHostEventParameter>)committedEvent.Parameters)[0] =
-                    parameter with { Name = "Mutated" };
-            });
-
-            var recaptured = workspace.CreateProjectSnapshot(projectUri)
-                .SemanticInventory.HostClassProjectionSnapshot;
-            Assert.NotNull(recaptured);
-            Assert.Equal(
-                "Change",
-                Assert.Single(Assert.IsType<VbaCurrentHostClassProjectionEntry>(
-                    Assert.Single(recaptured!.Classes)).Projection.Events).Name);
-        }
-        finally
-        {
-            Directory.Delete(projectRoot, recursive: true);
-        }
-    }
-
-    [Fact]
-    public void Host_class_snapshot_retains_last_known_good_as_advisory_evidence()
-    {
-        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-host-lkg-").FullName;
-        try
-        {
-            WriteProjectManifest(projectRoot);
-            var projectUri = ToFileUri(
-                Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
-            var workspace = new VbaLanguageWorkspace(
-                new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled()));
-            workspace.UpdateDocument(
-                projectUri,
-                "Attribute VB_Name = \"ProjectA\"\nPublic Sub RunA()\nEnd Sub\n");
-            _ = workspace.CreateProjectSnapshot(projectUri);
-            var payload = JsonNode.Parse(JsonSerializer.Serialize(new
-            {
-                schemaVersion = 2,
-                revision = 1,
-                project = Path.GetFullPath(projectRoot),
-                document = "Book1",
-                sourceTemplate = Path.GetFullPath(
-                    Path.Combine(projectRoot, "src", "Book1", "Book1.xlsm")),
-                state = "present",
-                classEnumerationComplete = false,
-                classes = new object[]
-                {
-                    new
-                    {
-                        identity = new { name = "InvoiceForm", kind = "form" },
-                        authority = "lastKnownGood",
-                        projection = new
-                        {
-                            intrinsicEventSourceName = "UserForm",
-                            events = Array.Empty<object>()
-                        }
-                    }
-                }
-            }))!;
-
-            Assert.True(new VbaHostClassProjectionSnapshotHandler(workspace).TryApply(payload));
-            var snapshot = workspace.CreateProjectSnapshot(projectUri)
-                .SemanticInventory.HostClassProjectionSnapshot;
-            Assert.NotNull(snapshot);
-            var entry = Assert.IsType<VbaLastKnownGoodHostClassProjectionEntry>(
-                Assert.Single(snapshot.Classes));
-
-            Assert.Equal("InvoiceForm", entry.Identity.Name);
-            Assert.Equal(VbaHostClassKind.Form, entry.Identity.Kind);
-            Assert.Equal("UserForm", entry.Projection.IntrinsicEventSourceName);
-        }
-        finally
-        {
-            Directory.Delete(projectRoot, recursive: true);
-        }
-    }
-
-    [Fact]
-    public void Host_class_revision_does_not_resurrect_an_old_template_projection()
-    {
-        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-host-template-").FullName;
-        try
-        {
-            WriteProjectManifest(projectRoot);
-            var projectUri = ToFileUri(
-                Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
-            var manifestPath = Path.Combine(projectRoot, "vba-project.json");
-            var manifestUri = ToFileUri(manifestPath);
-            var originalManifest = File.ReadAllText(manifestPath);
-            var alternateManifest = originalManifest.Replace(
-                "src/Book1/Book1.xlsm",
-                "src/Book1/Alternate.xlsm",
-                StringComparison.Ordinal);
-            var originalTemplate = Path.GetFullPath(
-                Path.Combine(projectRoot, "src", "Book1", "Book1.xlsm"));
-            var alternateTemplate = Path.GetFullPath(
-                Path.Combine(projectRoot, "src", "Book1", "Alternate.xlsm"));
-            var workspace = new VbaLanguageWorkspace(
-                new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled()));
-            workspace.UpdateDocument(
-                projectUri,
-                "Attribute VB_Name = \"ProjectA\"\nPublic Sub RunA()\nEnd Sub\n");
-            _ = workspace.CreateProjectSnapshot(projectUri);
-            var handler = new VbaHostClassProjectionSnapshotHandler(workspace);
-
-            Assert.True(handler.TryApply(CreateEmptyHostSnapshotPayload(
-                projectRoot,
-                originalTemplate,
-                revision: 10)));
-            Assert.Equal(
-                10,
-                workspace.CreateProjectSnapshot(projectUri)
-                    .SemanticInventory.HostClassProjectionSnapshot?.Revision);
-
-            Assert.True(workspace.ManifestWorkspace.OpenManifest(
-                manifestUri,
-                documentVersion: 1,
-                alternateManifest).Accepted);
-            Assert.Null(workspace.CreateProjectSnapshot(projectUri)
-                .SemanticInventory.HostClassProjectionSnapshot);
-            Assert.True(handler.TryApply(CreateEmptyHostSnapshotPayload(
-                projectRoot,
-                alternateTemplate,
-                revision: 11)));
-            Assert.Equal(
-                11,
-                workspace.CreateProjectSnapshot(projectUri)
-                    .SemanticInventory.HostClassProjectionSnapshot?.Revision);
-
-            Assert.True(workspace.ManifestWorkspace.ChangeManifest(
-                manifestUri,
-                documentVersion: 2,
-                originalManifest).Accepted);
-
-            Assert.Null(workspace.CreateProjectSnapshot(projectUri)
-                .SemanticInventory.HostClassProjectionSnapshot);
-            Assert.False(handler.TryApply(CreateEmptyHostSnapshotPayload(
-                projectRoot,
-                originalTemplate,
-                revision: 10)));
-        }
-        finally
-        {
-            Directory.Delete(projectRoot, recursive: true);
-        }
-    }
-
-    [Fact]
-    public void Host_class_snapshot_keeps_indeterminate_identity_without_projection()
-    {
-        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-host-indeterminate-").FullName;
-        try
-        {
-            WriteProjectManifest(projectRoot);
-            var projectUri = ToFileUri(
-                Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
-            var workspace = new VbaLanguageWorkspace(
-                new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled()));
-            workspace.UpdateDocument(
-                projectUri,
-                "Attribute VB_Name = \"ProjectA\"\nPublic Sub RunA()\nEnd Sub\n");
-            _ = workspace.CreateProjectSnapshot(projectUri);
-            var payload = JsonNode.Parse(JsonSerializer.Serialize(new
-            {
-                schemaVersion = 2,
-                revision = 1,
-                project = Path.GetFullPath(projectRoot),
-                document = "Book1",
-                sourceTemplate = Path.GetFullPath(
-                    Path.Combine(projectRoot, "src", "Book1", "Book1.xlsm")),
-                state = "present",
-                classEnumerationComplete = false,
-                classes = new object[]
-                {
-                    new
-                    {
-                        identity = new { name = "Sheet1", kind = "document" },
-                        authority = "indeterminate"
-                    }
-                }
-            }))!;
-
-            Assert.True(new VbaHostClassProjectionSnapshotHandler(workspace).TryApply(payload));
-            var snapshot = workspace.CreateProjectSnapshot(projectUri)
-                .SemanticInventory.HostClassProjectionSnapshot;
-            Assert.NotNull(snapshot);
-            var entry = Assert.IsType<VbaIndeterminateHostClassProjectionEntry>(
-                Assert.Single(snapshot.Classes));
-
-            Assert.Equal("Sheet1", entry.Identity.Name);
-            Assert.Equal(VbaHostClassKind.Document, entry.Identity.Kind);
-        }
-        finally
-        {
-            Directory.Delete(projectRoot, recursive: true);
-        }
-    }
-
-    [Fact]
-    public void Host_class_snapshot_accepts_an_exact_terminal_clear_after_document_removal()
-    {
-        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-host-remove-").FullName;
-        try
-        {
-            WriteProjectManifest(projectRoot);
-            var projectUri = ToFileUri(
-                Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
-            var source =
-                "Attribute VB_Name = \"ProjectA\"\nPublic Sub RunA()\nEnd Sub\n";
-            var sourceTemplate = Path.GetFullPath(
-                Path.Combine(projectRoot, "src", "Book1", "Book1.xlsm"));
-            var workspace = new VbaLanguageWorkspace(
-                new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled()));
-            workspace.UpdateDocument(projectUri, source);
-            _ = workspace.CreateProjectSnapshot(projectUri);
-            var handler = new VbaHostClassProjectionSnapshotHandler(workspace);
-            Assert.True(handler.TryApply(CreateEmptyHostSnapshotPayload(
-                projectRoot,
-                sourceTemplate,
-                revision: 1)));
-            Assert.True(workspace.RemoveDocument(projectUri));
-            var cleared = JsonNode.Parse(JsonSerializer.Serialize(new
-            {
-                schemaVersion = 2,
-                revision = 2,
-                project = Path.GetFullPath(projectRoot),
-                document = "Book1",
-                sourceTemplate,
-                state = "cleared"
-            }))!;
-
-            Assert.True(handler.TryApply(cleared));
-
-            workspace.UpdateDocument(projectUri, source);
-            Assert.Null(workspace.CreateProjectSnapshot(projectUri)
-                .SemanticInventory.HostClassProjectionSnapshot);
-            Assert.False(handler.TryApply(CreateEmptyHostSnapshotPayload(
-                projectRoot,
-                sourceTemplate,
-                revision: 1)));
-        }
-        finally
-        {
-            Directory.Delete(projectRoot, recursive: true);
-        }
-    }
-
-    [Fact]
-    public void Host_class_snapshot_preserves_cp2_identifiers_foreign_names_and_type_library_provenance()
-    {
-        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-host-typelib-").FullName;
-        try
-        {
-            const string excelGuid = "00020813-0000-0000-c000-000000000046";
-            const string cp2Name = "\u00a0";
-            const string foreignEventName = "Before-Open";
-            const string foreignName = "Widget-2";
-            const string foreignParameterName = "Arg-1";
-            WriteProjectManifest(projectRoot);
-            var projectUri = ToFileUri(
-                Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
-            var workspace = new VbaLanguageWorkspace(
-                new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled()));
-            workspace.UpdateDocument(
-                projectUri,
-                "Attribute VB_Name = \"ProjectA\"\nPublic Sub RunA()\nEnd Sub\n");
-            _ = workspace.CreateProjectSnapshot(projectUri);
-            var payload = JsonNode.Parse(JsonSerializer.Serialize(new
-            {
-                schemaVersion = 2,
-                revision = 1,
-                project = Path.GetFullPath(projectRoot),
-                document = "Book1",
-                sourceTemplate = Path.GetFullPath(
-                    Path.Combine(projectRoot, "src", "Book1", "Book1.xlsm")),
-                state = "present",
-                classEnumerationComplete = true,
-                classes = new object[]
-                {
-                    new
-                    {
-                        identity = new { name = cp2Name, kind = "document" },
-                        authority = "current",
-                        projection = new
-                        {
-                            intrinsicEventSourceName = cp2Name,
-                            baseTypeProvenance = new
-                            {
-                                name = foreignName,
-                                libraryGuid = excelGuid,
-                                majorVersion = 1,
-                                minorVersion = 9,
-                                lcid = 0
-                            },
-                            events = new object[]
-                            {
-                                new
-                                {
-                                    name = foreignEventName,
-                                    parameters = new object[]
-                                    {
-                                        new
-                                        {
-                                            name = foreignParameterName,
-                                            type = new
-                                            {
-                                                kind = "typeLib",
-                                                name = foreignName,
-                                                libraryGuid = excelGuid,
-                                                majorVersion = 1,
-                                                minorVersion = 9,
-                                                lcid = 0
-                                            },
-                                            passing = "byRef",
-                                            arrayShape = "array",
-                                            optional = true,
-                                            paramArray = false
-                                        }
-                                    },
-                                    authoringAvailable = false,
-                                    existingHandlerRecognizable = false
-                                }
-                            }
-                        }
-                    }
-                }
-            }))!;
-
-            Assert.True(new VbaHostClassProjectionSnapshotHandler(workspace).TryApply(payload));
-            var snapshot = workspace.CreateProjectSnapshot(projectUri)
-                .SemanticInventory.HostClassProjectionSnapshot;
-            Assert.NotNull(snapshot);
-            var entry = Assert.IsType<VbaCurrentHostClassProjectionEntry>(
-                Assert.Single(snapshot.Classes));
-            Assert.NotNull(entry.Projection.BaseTypeProvenance);
-            var provenance = entry.Projection.BaseTypeProvenance;
-            var hostEvent = Assert.Single(entry.Projection.Events);
-            var parameter = Assert.Single(hostEvent.Parameters);
-            var parameterType = Assert.IsType<VbaTypeLibraryHostEventParameterType>(
-                parameter.Type);
-
-            Assert.Equal(cp2Name, entry.Identity.Name);
-            Assert.Equal(cp2Name, entry.Projection.IntrinsicEventSourceName);
-            Assert.Equal(foreignEventName, hostEvent.Name);
-            Assert.Equal(foreignParameterName, parameter.Name);
-            Assert.Equal(foreignName, provenance.Name);
-            Assert.Equal(excelGuid, provenance.LibraryGuid);
-            Assert.Equal(1, provenance.MajorVersion);
-            Assert.Equal(9, provenance.MinorVersion);
-            Assert.Equal(0, provenance.Lcid);
-            Assert.Equal(foreignName, parameterType.Name);
-            Assert.Equal(excelGuid, parameterType.LibraryGuid);
-            Assert.Equal(1, parameterType.MajorVersion);
-            Assert.Equal(9, parameterType.MinorVersion);
-            Assert.Equal(0, parameterType.Lcid);
-        }
-        finally
-        {
-            Directory.Delete(projectRoot, recursive: true);
-        }
-    }
-
-    [Fact]
-    public void Host_class_snapshot_rejects_inconsistent_authoring_for_an_oversized_composite_event_name()
-    {
-        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-host-event-name-").FullName;
-        try
-        {
-            var eventName = new string('A', 247);
-            WriteProjectManifest(projectRoot);
-            var projectUri = ToFileUri(
-                Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
-            var sourceTemplate = Path.GetFullPath(
-                Path.Combine(projectRoot, "src", "Book1", "Book1.xlsm"));
-            var workspace = new VbaLanguageWorkspace(
-                new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled()));
-            workspace.UpdateDocument(
-                projectUri,
-                "Attribute VB_Name = \"ProjectA\"\nPublic Sub RunA()\nEnd Sub\n");
-            _ = workspace.CreateProjectSnapshot(projectUri);
-            var handler = new VbaHostClassProjectionSnapshotHandler(workspace);
-
-            JsonNode CreatePayload(bool authoringAvailable) => JsonNode.Parse(JsonSerializer.Serialize(new
-            {
-                schemaVersion = 2,
-                revision = 1,
-                project = Path.GetFullPath(projectRoot),
-                document = "Book1",
-                sourceTemplate,
-                state = "present",
-                classEnumerationComplete = true,
-                classes = new object[]
-                {
-                    new
-                    {
-                        identity = new { name = "Sheet1", kind = "document" },
-                        authority = "current",
-                        projection = new
-                        {
-                            intrinsicEventSourceName = "Worksheet",
-                            events = new object[]
-                            {
-                                new
-                                {
-                                    name = eventName,
-                                    parameters = Array.Empty<object>(),
-                                    authoringAvailable,
-                                    existingHandlerRecognizable = false
-                                }
-                            }
-                        }
-                    }
-                }
-            }))!;
-
-            Assert.False(handler.TryApply(CreatePayload(authoringAvailable: true)));
-            Assert.True(handler.TryApply(CreatePayload(authoringAvailable: false)));
-            var snapshot = workspace.CreateProjectSnapshot(projectUri)
-                .SemanticInventory.HostClassProjectionSnapshot;
-            var entry = Assert.IsType<VbaCurrentHostClassProjectionEntry>(
-                Assert.Single(snapshot!.Classes));
-            Assert.Equal(
-                eventName,
-                Assert.Single(entry.Projection.Events).Name);
-        }
-        finally
-        {
-            Directory.Delete(projectRoot, recursive: true);
-        }
-    }
-
-    [Fact]
-    public void Host_class_snapshot_preserves_unresolved_parameter_type_without_authority()
-    {
-        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-host-unresolved-").FullName;
-        try
-        {
-            WriteProjectManifest(projectRoot);
-            var projectUri = ToFileUri(
-                Path.Combine(projectRoot, "src", "Book1", "Worker.bas"));
-            var workspace = new VbaLanguageWorkspace(
-                new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.CreateBundled()));
-            workspace.UpdateDocument(
-                projectUri,
-                "Attribute VB_Name = \"ProjectA\"\nPublic Sub RunA()\nEnd Sub\n");
-            _ = workspace.CreateProjectSnapshot(projectUri);
-            var payload = JsonNode.Parse(JsonSerializer.Serialize(new
-            {
-                schemaVersion = 2,
-                revision = 1,
-                project = Path.GetFullPath(projectRoot),
-                document = "Book1",
-                sourceTemplate = Path.GetFullPath(
-                    Path.Combine(projectRoot, "src", "Book1", "Book1.xlsm")),
-                state = "present",
-                classEnumerationComplete = true,
-                classes = new object[]
-                {
-                    new
-                    {
-                        identity = new { name = "InvoiceForm", kind = "form" },
-                        authority = "current",
-                        projection = new
-                        {
-                            intrinsicEventSourceName = "UserForm",
-                            events = new object[]
-                            {
-                                new
-                                {
-                                    name = "CustomEvent",
-                                    parameters = new object[]
-                                    {
-                                        new
-                                        {
-                                            name = "Value",
-                                            type = new
-                                            {
-                                                kind = "unresolved",
-                                                displayName = "Vendor.Widget"
-                                            },
-                                            passing = "byVal",
-                                            arrayShape = "scalar",
-                                            optional = false,
-                                            paramArray = false
-                                        }
-                                    },
-                                    authoringAvailable = false,
-                                    existingHandlerRecognizable = true
-                                }
-                            }
-                        }
-                    }
-                }
-            }))!;
-
-            Assert.True(new VbaHostClassProjectionSnapshotHandler(workspace).TryApply(payload));
-            var snapshot = workspace.CreateProjectSnapshot(projectUri)
-                .SemanticInventory.HostClassProjectionSnapshot;
-            Assert.NotNull(snapshot);
-            var entry = Assert.IsType<VbaCurrentHostClassProjectionEntry>(
-                Assert.Single(snapshot.Classes));
-            var parameter = Assert.Single(
-                Assert.Single(entry.Projection.Events).Parameters);
-
-            Assert.Equal(
-                "Vendor.Widget",
-                Assert.IsType<VbaUnresolvedHostEventParameterType>(parameter.Type)
-                    .DisplayName);
-        }
-        finally
-        {
-            Directory.Delete(projectRoot, recursive: true);
-        }
-    }
-
+            }
+        };
     [Fact]
     public void Manifest_change_does_not_rebuild_an_unrelated_project_scope()
     {
@@ -2607,22 +1644,6 @@ public sealed class VbaLanguageWorkspaceTests
             Path.Combine(projectRoot, "vba-project.json"),
             JsonSerializer.Serialize(manifest, new JsonSerializerOptions { WriteIndented = true }));
     }
-
-    private static JsonNode CreateEmptyHostSnapshotPayload(
-        string projectRoot,
-        string sourceTemplate,
-        long revision)
-        => JsonNode.Parse(JsonSerializer.Serialize(new
-        {
-            schemaVersion = 2,
-            revision,
-            project = Path.GetFullPath(projectRoot),
-            document = "Book1",
-            sourceTemplate = Path.GetFullPath(sourceTemplate),
-            state = "present",
-            classEnumerationComplete = true,
-            classes = Array.Empty<object>()
-        }))!;
 
     private static string ToFileUri(string path)
         => new Uri(path).AbsoluteUri;

@@ -17,7 +17,7 @@ internal sealed record VbaWithEventsTypeEligibility(
     VbaWithEventsTypeEligibilityKind Kind,
     VbaSourceDefinition? TypeDefinition = null,
     VbaTypeLibEventSurface? TypeLibEventSurface = null,
-    VbaHostClassEventSurface? HostClassEventSurface = null);
+    VbaIntrinsicHostEventSurface? IntrinsicHostEventSurface = null);
 
 internal enum VbaWithEventsEventBindingStatus
 {
@@ -30,9 +30,8 @@ internal enum VbaWithEventsEventBindingStatus
 internal enum VbaEventHandlerValidationAuthority
 {
     SourceDeclared,
-    CurrentHostProjected,
-    ExternalTypeLibAdvisory,
-    LastKnownGoodHostAdvisory
+    CurrentIntrinsicHostCatalog,
+    ExternalTypeLibAdvisory
 }
 
 internal abstract record VbaResolvedEventContractIdentity;
@@ -114,7 +113,7 @@ internal sealed record VbaResolvedEventContract(
     public bool IsDiagnosticAuthoritative
         => ValidationAuthority is
             VbaEventHandlerValidationAuthority.SourceDeclared
-                or VbaEventHandlerValidationAuthority.CurrentHostProjected;
+                or VbaEventHandlerValidationAuthority.CurrentIntrinsicHostCatalog;
 }
 
 internal sealed record VbaResolvedEventSignatureSet(
@@ -292,19 +291,19 @@ internal sealed record VbaWithEventsHandlerNameDecomposition(
 internal sealed class VbaWithEventsSemanticModel
 {
     private readonly VbaNameResolutionService nameResolution;
-    private readonly VbaHostClassEventSemanticModel hostClassEvents;
+    private readonly VbaIntrinsicHostEventSemanticModel intrinsicHostEvents;
     private readonly IReadOnlyDictionary<string, VbaProjectReferenceCatalogIdentity>
         referenceCatalogIdentities;
 
     public VbaWithEventsSemanticModel(
         VbaNameResolutionService nameResolution,
-        VbaHostClassEventSemanticModel? hostClassEvents = null,
+        VbaIntrinsicHostEventSemanticModel? intrinsicHostEvents = null,
         IReadOnlyDictionary<string, VbaProjectReferenceCatalogIdentity>?
             referenceCatalogIdentities = null)
     {
         this.nameResolution = nameResolution;
-        this.hostClassEvents = hostClassEvents
-            ?? new VbaHostClassEventSemanticModel(snapshot: null);
+        this.intrinsicHostEvents = intrinsicHostEvents
+            ?? new VbaIntrinsicHostEventSemanticModel(catalog: null);
         this.referenceCatalogIdentities = referenceCatalogIdentities
             ?? new Dictionary<string, VbaProjectReferenceCatalogIdentity>(
                 VbaProjectReferenceName.Comparer);
@@ -548,7 +547,7 @@ internal sealed class VbaWithEventsSemanticModel
             typeDefinition);
         var typeDocument = nameResolution.FindDocument(typeDefinition.Uri);
         var hostSurface = typeDocument is not null
-            && hostClassEvents.TryGetEffectiveSurface(
+            && intrinsicHostEvents.TryGetEffectiveSurface(
                 typeDocument,
                 out var effectiveHostSurface)
             ? effectiveHostSurface
@@ -569,7 +568,7 @@ internal sealed class VbaWithEventsSemanticModel
             return new VbaWithEventsTypeEligibility(
                 VbaWithEventsTypeEligibilityKind.Eligible,
                 typeDefinition,
-                HostClassEventSurface: hostSurface);
+                IntrinsicHostEventSurface: hostSurface);
         }
 
         if (sourceEvents.Length > 0 || hasIncompleteEventSurface)
@@ -577,19 +576,15 @@ internal sealed class VbaWithEventsSemanticModel
             return new VbaWithEventsTypeEligibility(
                 VbaWithEventsTypeEligibilityKind.Indeterminate,
                 typeDefinition,
-                HostClassEventSurface: hostSurface);
+                IntrinsicHostEventSurface: hostSurface);
         }
 
         if (hostSurface is not null)
         {
             return new VbaWithEventsTypeEligibility(
-                hostSurface.Authority == VbaHostClassEventAuthority.Current
-                    ? hostSurface.Projection.Events.Count == 0
-                        ? VbaWithEventsTypeEligibilityKind.InvalidNoEvents
-                        : VbaWithEventsTypeEligibilityKind.Eligible
-                    : VbaWithEventsTypeEligibilityKind.Indeterminate,
+                VbaWithEventsTypeEligibilityKind.Eligible,
                 typeDefinition,
-                HostClassEventSurface: hostSurface);
+                IntrinsicHostEventSurface: hostSurface);
         }
 
         if (typeDefinition.Kind == VbaSourceDefinitionKind.Form)

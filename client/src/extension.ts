@@ -9,6 +9,7 @@ import {
   DebugConfiguration,
   DebugConfigurationProviderTriggerKind,
   ExtensionContext,
+  ExtensionMode,
   OutputChannel,
   ProgressLocation,
   RelativePattern,
@@ -90,26 +91,18 @@ import {
   registerProjectManifestLanguageServerSync
 } from './projectManifestLanguageServerSync';
 import {
-  HostClassProjectionLifecycle
-} from './hostClassProjectionLifecycle';
+  IntrinsicHostEventCatalogLifecycle
+} from './intrinsicHostEventCatalogLifecycle';
 import {
-  classifyHostClassTextDocumentChange,
-  HostClassProjectionWorkspace,
-  HostClassProjectionWorkspaceDocument
-} from './hostClassProjectionWorkspace';
+  IntrinsicHostEventCatalogExtensionHostProbe,
+  VbaToolsExtensionHostTestApi
+} from './intrinsicHostEventCatalogExtensionHostProbe';
 import {
-  HostClassProjectionStatusObserver
-} from './hostClassProjectionStatus';
+  IntrinsicHostEventCatalogStatusObserver
+} from './intrinsicHostEventCatalogStatus';
 import {
-  HostClassProjectionWatcherRegistry
-} from './hostClassProjectionWatcherRegistry';
-import {
-  collectHostClassProjectionFormSources
-} from './hostClassProjectionSourceCollection';
-import type { HostClassSourceCandidate } from './hostClassSourceMetadata';
-import {
-  runHostClassProjectionRefreshCommand
-} from './hostClassProjectionRefreshCommand';
+  runIntrinsicHostEventCatalogRefreshCommand
+} from './intrinsicHostEventCatalogRefreshCommand';
 import {
   createVscodeDiagnosticCollectionAdapter,
   createVscodeTestControllerAdapter
@@ -145,7 +138,6 @@ import {
   stopVbaDebugSessionAfterLifecycleFailure
 } from './vscodeDebugIntegration';
 import type { VbaDebugConfiguration } from './vscodeDebugConfiguration';
-import { decodeVbaSourceFileText } from './vbaSourceFileText';
 import { createLazyOutputChannel } from './lazyOutputChannel';
 import {
   runResolvedVbaDevCommandInvocation,
@@ -183,14 +175,24 @@ let client: LanguageClient | undefined;
 let outputChannel: OutputChannel | undefined;
 let toolDiagnosticReporter: VbaDevDiagnosticReporter | undefined;
 let activeVscodeDebugIntegration: VscodeDebugIntegration | undefined;
-let hostClassProjectionLifecycle: HostClassProjectionLifecycle | undefined;
-let hostClassProjectionWorkspace: HostClassProjectionWorkspace | undefined;
+let intrinsicHostEventCatalogLifecycle: IntrinsicHostEventCatalogLifecycle | undefined;
 
 type CommandPaletteTargetResolver = NonNullable<
   VbaDevCommandRuntimeOptions['resolveCommandPaletteTarget']
 >;
 
-export async function activate(context: ExtensionContext): Promise<void> {
+export async function activate(
+  context: ExtensionContext
+): Promise<VbaToolsExtensionHostTestApi | undefined> {
+  const hostEventCatalogTestProbe =
+    IntrinsicHostEventCatalogExtensionHostProbe.fromEnvironment(
+      process.env,
+      workspace.isTrusted,
+      context.extensionMode === ExtensionMode.Test
+    );
+  const isWorkspaceTrusted = (): boolean => (
+    hostEventCatalogTestProbe?.effectiveWorkspaceTrusted ?? workspace.isTrusted
+  );
   const extensionOutputChannel = createLazyOutputChannel(
     'VBA Tools',
     () => window.createOutputChannel('VBA Tools')
@@ -340,7 +342,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
     }
   });
   const workspaceTrustGate = new ManagedToolingWorkspaceTrustGate({
-    isTrusted: () => workspace.isTrusted,
+    isTrusted: isWorkspaceTrusted,
     invalidateManagedToolingState: () => {
       vbaDevResolver.invalidate();
       backgroundVbaDevResolver.invalidate();
@@ -354,7 +356,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
   let initialVbaDevResolution: CompanionExecutableResolution | undefined;
   try {
     initialVbaDevResolution = await resolveCompanionExecutableForLanguageActivation(
-      workspace.isTrusted,
+      isWorkspaceTrusted(),
       () => vbaDevResolver.resolve()
     );
   } catch (error) {
@@ -514,32 +516,35 @@ export async function activate(context: ExtensionContext): Promise<void> {
     sourceFileWatcher,
     projectManifestWatcher
   );
-  const hostClassStatusItem = window.createStatusBarItem(
-    'vbaTools.hostClasses.status',
+  const userFormEventsStatusItem = window.createStatusBarItem(
+    'vbaTools.userFormEvents.status',
     StatusBarAlignment.Left,
     100
   );
-  hostClassStatusItem.name = 'VBA Host Events';
-  context.subscriptions.push(hostClassStatusItem);
-  const hostClassStatus = new HostClassProjectionStatusObserver({
+  userFormEventsStatusItem.name = 'VBA UserForm Events';
+  context.subscriptions.push(userFormEventsStatusItem);
+  const userFormEventsStatus = new IntrinsicHostEventCatalogStatusObserver({
     updateStatus: (view) => {
-      hostClassStatusItem.text = view.text;
-      hostClassStatusItem.tooltip = view.tooltip;
-      hostClassStatusItem.command = view.command;
+      userFormEventsStatusItem.text = view.text;
+      userFormEventsStatusItem.tooltip = view.tooltip;
+      userFormEventsStatusItem.command = view.command;
       if (view.visible) {
-        hostClassStatusItem.show();
+        userFormEventsStatusItem.show();
       } else {
-        hostClassStatusItem.hide();
+        userFormEventsStatusItem.hide();
       }
     },
     appendOutput: (line) => outputChannel?.appendLine(line)
   });
-  const lifecycle = new HostClassProjectionLifecycle({
-    runHostClassList: async (invocation) => {
-      if (!workspace.isTrusted) {
+  const lifecycle = new IntrinsicHostEventCatalogLifecycle({
+    runHostEventList: async (invocation) => {
+      if (!isWorkspaceTrusted()) {
         throw new Error(
-          'Host-class inspection is unavailable in Restricted Mode.'
+          'UserForm Event catalog acquisition is unavailable in Restricted Mode.'
         );
+      }
+      if (hostEventCatalogTestProbe !== undefined) {
+        return hostEventCatalogTestProbe.runHostEventList(invocation);
       }
       const result = await runVbaDevCommandInvocation({
         extensionRoot: context.extensionPath,
@@ -564,83 +569,23 @@ export async function activate(context: ExtensionContext): Promise<void> {
         throw new Error('The VBA language client is not running.');
       }
       await languageClient.sendNotification(method, parameters);
+      hostEventCatalogTestProbe?.observeNotification(method, parameters);
     },
-    onTransition: (transition) => hostClassStatus.observe(transition)
-  });
-  hostClassProjectionLifecycle = lifecycle;
-  const routeTrustedHostClassEvent = (
-    operation: () => Promise<void>
-  ): void => {
-    if (workspace.isTrusted) {
-      void operation();
+    isNotificationTargetAvailable: () => client?.state === State.Running,
+    onTransition: (transition) => {
+      userFormEventsStatus.observe(transition);
+      hostEventCatalogTestProbe?.observeTransition(transition);
     }
-  };
-  let hostWorkspace: HostClassProjectionWorkspace;
-  const hostClassWatchers = new HostClassProjectionWatcherRegistry({
-    createWatcher: (basePath, pattern) => {
-      const watcher = workspace.createFileSystemWatcher(
-        new RelativePattern(Uri.file(basePath), pattern)
-      );
-      return {
-        onDidCreate: (listener) => watcher.onDidCreate(
-          (uri) => listener(uri.fsPath)),
-        onDidChange: (listener) => watcher.onDidChange(
-          (uri) => listener(uri.fsPath)),
-        onDidDelete: (listener) => watcher.onDidDelete(
-          (uri) => listener(uri.fsPath)),
-        dispose: () => watcher.dispose()
-      };
-    },
-    sourceFileChanged: (filePath) => routeTrustedHostClassEvent(
-      () => hostWorkspace.sourceFileChanged(filePath)),
-    templateFileChanged: (filePath) => routeTrustedHostClassEvent(
-      () => hostWorkspace.templateFileChanged(filePath))
   });
-  context.subscriptions.push(hostClassWatchers);
-  hostWorkspace = new HostClassProjectionWorkspace({
-    lifecycle,
-    findProjectManifests,
-    readManifestText: readHostClassManifestText,
-    collectHostClassSources: collectHostClassProjectionSources,
-    onActiveDocumentsChanged: (documents) => hostClassWatchers.synchronize(documents),
-    reportError: (error) => outputChannel?.appendLine(
-      `VBA Tools host-class workspace update failed: ${
-        error instanceof Error ? error.message : String(error)
-      }`
-    )
-  });
-  hostClassProjectionWorkspace = hostWorkspace;
-  context.subscriptions.push(
-    projectManifestWatcher.onDidCreate((uri) =>
-      routeTrustedHostClassEvent(() => hostWorkspace.manifestChanged(uri.fsPath))),
-    projectManifestWatcher.onDidChange((uri) =>
-      routeTrustedHostClassEvent(() => hostWorkspace.manifestChanged(uri.fsPath))),
-    projectManifestWatcher.onDidDelete((uri) =>
-      routeTrustedHostClassEvent(() => hostWorkspace.manifestRemoved(uri.fsPath))),
-    workspace.onDidOpenTextDocument((document) => {
-      routeHostClassTextDocumentChange(document.uri.scheme, document.uri.fsPath, hostWorkspace);
-    }),
-    workspace.onDidChangeTextDocument((event) => {
-      routeHostClassTextDocumentChange(
-        event.document.uri.scheme,
-        event.document.uri.fsPath,
-        hostWorkspace
-      );
-    }),
-    workspace.onDidCloseTextDocument((document) => {
-      routeHostClassTextDocumentChange(document.uri.scheme, document.uri.fsPath, hostWorkspace);
-    }),
-    workspace.onDidChangeWorkspaceFolders(() => {
-      routeTrustedHostClassEvent(() => hostWorkspace.reconcileWorkspaceFolders(
-        workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? []
-      ));
-    }),
-    workspace.onDidGrantWorkspaceTrust(() => {
-      if (client?.state === State.Running) {
-        void hostWorkspace.activate();
-      }
-    })
-  );
+  intrinsicHostEventCatalogLifecycle = lifecycle;
+  if (isWorkspaceTrusted()) {
+    void lifecycle.activate();
+  }
+  context.subscriptions.push(workspace.onDidGrantWorkspaceTrust(() => {
+    if (isWorkspaceTrusted()) {
+      void lifecycle.activate();
+    }
+  }));
   let projectManifestLanguageServerSync: ProjectManifestLanguageServerSync | undefined;
   try {
     const serverOptions = createVbaLanguageServerOptions({
@@ -766,8 +711,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
         `VBA Tools could not synchronize vba-project.json: ${error instanceof Error ? error.message : String(error)}`
       ),
       onDidSynchronizeLanguageClient: async () => {
-        await lifecycle.replayDesiredSnapshots();
-        await hostWorkspace.reevaluateAllSourceAssociations();
+        await lifecycle.replayCurrentSnapshot();
       }
     });
   } catch (error) {
@@ -899,23 +843,9 @@ export async function activate(context: ExtensionContext): Promise<void> {
         'VBA Tools: Publish'
       );
     },
-    'vbaTools.hostClasses.refresh': async () => {
-      await runHostClassProjectionRefreshCommand({
-        getActiveDocuments: () => hostWorkspace.getActiveDocuments(),
-        chooseDocument: async (documents) => {
-          const selected = await window.showQuickPick(
-            documents.map((document) => ({
-              label: document.context.document,
-              description: document.context.project,
-              detail: document.context.sourceTemplate,
-              document
-            })),
-            { title: 'Select a VBA document to refresh Host Events' }
-          );
-          return selected?.document;
-        },
-        refreshDocument: (selectedContext) =>
-          lifecycle.refreshDocument(selectedContext),
+    'vbaTools.userFormEvents.refresh': async () => {
+      await runIntrinsicHostEventCatalogRefreshCommand({
+        refreshCatalog: () => lifecycle.refresh(),
         runWithCancellableProgress: async (title, task) => {
           await window.withProgress({
             location: ProgressLocation.Notification,
@@ -923,8 +853,6 @@ export async function activate(context: ExtensionContext): Promise<void> {
             cancellable: true
           }, async (_progress, token) => task(token));
         },
-        showWarningMessage: async (message, action) =>
-          window.showWarningMessage(message, action),
         showErrorMessage: async (message, action) =>
           window.showErrorMessage(message, action),
         showOutput: () => outputChannel?.show()
@@ -996,7 +924,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
     ));
   }
   context.subscriptions.push(commands.registerCommand(
-    'vbaTools.hostClasses.showOutput',
+    'vbaTools.userFormEvents.showOutput',
     () => outputChannel?.show()
   ));
   context.subscriptions.push(commands.registerCommand(
@@ -1024,25 +952,33 @@ export async function activate(context: ExtensionContext): Promise<void> {
   ));
   await client?.start();
   await projectManifestLanguageServerSync?.flush();
-  if (workspace.isTrusted && client?.state === State.Running) {
-    await hostWorkspace.activate();
-  }
   await workbookBackedTestExplorer.refresh();
   await promptForActiveWorkbookBackedProject(
     context,
+    isWorkspaceTrusted(),
     managedToolingCommands.find(
       (command) => command.commandId === 'vbaTools.doctor'
-    )?.handler
+      )?.handler
   );
+  if (hostEventCatalogTestProbe === undefined) {
+    return undefined;
+  }
+  return {
+    intrinsicHostEventCatalog: hostEventCatalogTestProbe.createApi(async () => {
+      const languageClient = client;
+      if (languageClient === undefined) {
+        throw new Error('The VBA language client is unavailable.');
+      }
+      await languageClient.restart();
+      await projectManifestLanguageServerSync?.flush();
+    })
+  };
 }
 
 export async function deactivate(): Promise<void> {
-  hostClassProjectionWorkspace?.shutdown();
-  hostClassProjectionLifecycle?.shutdown();
-  await hostClassProjectionWorkspace?.flush();
-  await hostClassProjectionLifecycle?.flush();
-  hostClassProjectionWorkspace = undefined;
-  hostClassProjectionLifecycle = undefined;
+  intrinsicHostEventCatalogLifecycle?.shutdown();
+  await intrinsicHostEventCatalogLifecycle?.flush();
+  intrinsicHostEventCatalogLifecycle = undefined;
   await activeVscodeDebugIntegration?.shutdown();
   activeVscodeDebugIntegration = undefined;
   await client?.stop();
@@ -1053,9 +989,10 @@ export async function deactivate(): Promise<void> {
 
 async function promptForActiveWorkbookBackedProject(
   context: ExtensionContext,
+  workspaceTrusted: boolean,
   runDoctor: ((request?: unknown) => PromiseLike<unknown> | unknown) | undefined
 ): Promise<void> {
-  if (!workspace.isTrusted || runDoctor === undefined) {
+  if (!workspaceTrusted || runDoctor === undefined) {
     return;
   }
 
@@ -1451,88 +1388,6 @@ async function chooseCommandPaletteProject(
     { title: 'Select WorkbookBackedProject' }
   );
   return selected?.candidate;
-}
-
-function routeHostClassTextDocumentChange(
-  uriScheme: string,
-  filePath: string,
-  hostWorkspace: HostClassProjectionWorkspace
-): void {
-  if (!workspace.isTrusted || uriScheme !== 'file') {
-    return;
-  }
-
-  const route = classifyHostClassTextDocumentChange(
-    uriScheme,
-    filePath,
-    workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [],
-    hostWorkspace.getActiveDocuments()
-  );
-  if (route === 'manifest') {
-    void hostWorkspace.manifestChanged(filePath);
-    return;
-  }
-
-  if (route === 'source') {
-    void hostWorkspace.sourceFileChanged(filePath);
-  }
-}
-
-async function readHostClassManifestText(
-  manifestPath: string
-): Promise<string | undefined> {
-  const openDocument = workspace.textDocuments.find((document) =>
-    document.uri.scheme === 'file' &&
-    sameCanonicalFilePath(document.uri.fsPath, manifestPath)
-  );
-  if (openDocument !== undefined) {
-    return openDocument.getText();
-  }
-
-  try {
-    return await readTextFile(manifestPath);
-  } catch {
-    return undefined;
-  }
-}
-
-async function collectHostClassProjectionSources(
-  document: HostClassProjectionWorkspaceDocument
-): Promise<readonly HostClassSourceCandidate[]> {
-  const uris = await workspace.findFiles(
-    new RelativePattern(document.sourceSetPath, '**/*.frm'),
-    null
-  );
-  return collectHostClassProjectionFormSources(
-    document.sourceSetPath,
-    uris.map((uri) => ({
-      filePath: uri.fsPath,
-      sourceUri: uri.toString()
-    })),
-    workspace.textDocuments.map((openDocument) => ({
-      scheme: openDocument.uri.scheme,
-      filePath: openDocument.uri.fsPath,
-      sourceUri: openDocument.uri.toString(),
-      text: openDocument.getText()
-    })),
-    async (source) => decodeVbaSourceFileText(
-      await workspace.fs.readFile(Uri.file(source.filePath))
-    ),
-    {
-      sendRequest: (method, parameters) => {
-        const languageClient = client;
-        if (languageClient === undefined || languageClient.state !== State.Running) {
-          throw new Error('The VBA language client is not running.');
-        }
-        return languageClient.sendRequest<unknown>(method, parameters);
-      }
-    }
-  );
-}
-
-function sameCanonicalFilePath(left: string, right: string): boolean {
-  return path.normalize(path.resolve(left)).toLowerCase() ===
-    path.normalize(path.resolve(right)).toLowerCase();
 }
 
 async function fileExists(filePath: string): Promise<boolean> {

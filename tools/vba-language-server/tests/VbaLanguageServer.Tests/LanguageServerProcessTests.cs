@@ -17245,7 +17245,7 @@ public sealed class LanguageServerProcessTests
     [Theory]
     [InlineData(".bas")]
     [InlineData(".cls")]
-    public async Task Server_reads_manifest_containing_project_identity_without_host_projection(
+    public async Task Server_reads_manifest_containing_project_identity_statically(
         string extension)
     {
         var projectRoot = Directory.CreateTempSubdirectory(
@@ -17419,7 +17419,7 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
-    public async Task Server_ignores_stale_host_projection_project_identity_when_static_template_is_current()
+    public async Task Server_reads_current_static_project_identity_without_environment_catalog_input()
     {
         var projectRoot = Directory.CreateTempSubdirectory(
             "vba-ls-module-stale-template-authority-").FullName;
@@ -17430,9 +17430,6 @@ public sealed class LanguageServerProcessTests
             var sourcePath = Path.Combine(sourceRoot, "SourceUnit.bas");
             var templatePath = Path.Combine(sourceRoot, "Book1.xlsm");
             const string text = "Attribute VB_Name = \"InvoiceModule\"";
-            var inspectedTemplateBytes = VbaProjectIdentityWorkbookFixture.Create(
-                "LegacyProjectionProject",
-                1252);
             var currentTemplateBytes = VbaProjectIdentityWorkbookFixture.Create(
                 "CurrentProject",
                 1252);
@@ -17446,22 +17443,6 @@ public sealed class LanguageServerProcessTests
                 "textDocument/didOpen",
                 CreateOpenDocument(uri, text));
             await process.WaitForDiagnosticsAsync(uri);
-            await process.SendNotificationAsync(
-                "vba/hostClassProjectionSnapshot",
-                new
-                {
-                    schemaVersion = 2,
-                    revision = 1,
-                    project = Path.GetFullPath(projectRoot),
-                    document = "Book1",
-                    sourceTemplate = Path.GetFullPath(templatePath),
-                    state = "present",
-                    vbaProjectName = "LegacyProjectionProject",
-                    sourceTemplateFingerprint = Convert.ToHexString(
-                        SHA256.HashData(inspectedTemplateBytes)),
-                    classEnumerationComplete = true,
-                    classes = Array.Empty<object>()
-                });
             var rename = await SendPositionRequestAsync(
                 process,
                 2,
@@ -17470,7 +17451,7 @@ public sealed class LanguageServerProcessTests
                 text,
                 "InvoiceModule",
                 0,
-                new { newName = "LegacyProjectionProject" });
+                new { newName = "UnrelatedEnvironmentName" });
 
             Assert.False(
                 rename.TryGetProperty("error", out var error),
@@ -17528,22 +17509,6 @@ public sealed class LanguageServerProcessTests
                 "textDocument/didOpen",
                 CreateOpenDocument(consumerUri, consumerText));
             await process.WaitForDiagnosticsAsync(uri);
-            await process.SendNotificationAsync(
-                "vba/hostClassProjectionSnapshot",
-                new
-                {
-                    schemaVersion = 2,
-                    revision = 1,
-                    project = Path.GetFullPath(projectRoot),
-                    document = "Book1",
-                    sourceTemplate = Path.GetFullPath(templatePath),
-                    state = "present",
-                    vbaProjectName = "ContainingProject",
-                    sourceTemplateFingerprint = Convert.ToHexString(
-                        SHA256.HashData(templateBytes)),
-                    classEnumerationComplete = true,
-                    classes = Array.Empty<object>()
-                });
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -17710,7 +17675,7 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
-    public async Task Server_never_substitutes_manifest_document_file_or_host_projection_names_for_project_identity()
+    public async Task Server_never_substitutes_manifest_document_file_or_catalog_names_for_project_identity()
     {
         var projectRoot = Directory.CreateTempSubdirectory(
             "vba-ls-static-project-name-non-substitution-").FullName;
@@ -17734,27 +17699,40 @@ public sealed class LanguageServerProcessTests
                 "textDocument/didOpen",
                 CreateOpenDocument(uri, text));
             await process.SendNotificationAsync(
-                "vba/hostClassProjectionSnapshot",
+                "vba/intrinsicHostEventCatalog",
                 new
                 {
-                    schemaVersion = 2,
+                    schemaVersion = "1.0",
                     revision = 1,
-                    project = Path.GetFullPath(projectRoot),
-                    document = "Book1",
-                    sourceTemplate = Path.GetFullPath(templatePath),
-                    state = "present",
-                    vbaProjectName = "LegacyProjectionName",
-                    sourceTemplateFingerprint = Convert.ToHexString(
-                        SHA256.HashData(templateBytes)),
-                    classEnumerationComplete = true,
-                    classes = Array.Empty<object>()
+                    catalog = new
+                    {
+                        sourceKind = "userForm",
+                        intrinsicEventSourceName = "UserForm",
+                        events = new object[]
+                        {
+                            new
+                            {
+                                identity = new
+                                {
+                                    sourceName = "UserForm",
+                                    name = "Initialize"
+                                },
+                                signature = new
+                                {
+                                    parameters = Array.Empty<object>()
+                                },
+                                authoringAvailable = true,
+                                existingHandlerRecognizable = true
+                            }
+                        }
+                    }
                 });
 
             foreach (var candidate in new[]
                      {
                          "ModuleRenameProject",
                          "Book1",
-                         "LegacyProjectionName"
+                         "UserForm"
                      })
             {
                 var allowed = await SendPositionRequestAsync(
@@ -17829,22 +17807,6 @@ public sealed class LanguageServerProcessTests
                 "textDocument/didOpen",
                 CreateOpenDocument(uri, text));
             await process.WaitForDiagnosticsAsync(uri);
-            await process.SendNotificationAsync(
-                "vba/hostClassProjectionSnapshot",
-                new
-                {
-                    schemaVersion = 2,
-                    revision = 1,
-                    project = Path.GetFullPath(projectRoot),
-                    document = "Book1",
-                    sourceTemplate = Path.GetFullPath(templatePath),
-                    state = "present",
-                    vbaProjectName = "ContainingProject",
-                    sourceTemplateFingerprint = Convert.ToHexString(
-                        SHA256.HashData(templateBytes)),
-                    classEnumerationComplete = true,
-                    classes = Array.Empty<object>()
-                });
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -17935,22 +17897,6 @@ public sealed class LanguageServerProcessTests
                 CreateOpenDocument(uri, text));
             await process.WaitForLogTextAsync(
                 "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
-            await process.SendNotificationAsync(
-                "vba/hostClassProjectionSnapshot",
-                new
-                {
-                    schemaVersion = 2,
-                    revision = 1,
-                    project = Path.GetFullPath(projectRoot),
-                    document = "Book1",
-                    sourceTemplate = Path.GetFullPath(templatePath),
-                    state = "present",
-                    vbaProjectName = "ContainingProject",
-                    sourceTemplateFingerprint = Convert.ToHexString(
-                        SHA256.HashData(templateBytes)),
-                    classEnumerationComplete = true,
-                    classes = Array.Empty<object>()
-                });
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -18140,22 +18086,6 @@ public sealed class LanguageServerProcessTests
                 "textDocument/didOpen",
                 CreateOpenDocument(uri, text));
             await process.WaitForDiagnosticsAsync(uri);
-            await process.SendNotificationAsync(
-                "vba/hostClassProjectionSnapshot",
-                new
-                {
-                    schemaVersion = 2,
-                    revision = 1,
-                    project = Path.GetFullPath(projectRoot),
-                    document = "Book1",
-                    sourceTemplate = Path.GetFullPath(templatePath),
-                    state = "present",
-                    vbaProjectName = "ContainingProject",
-                    sourceTemplateFingerprint = Convert.ToHexString(
-                        SHA256.HashData(templateBytes)),
-                    classEnumerationComplete = true,
-                    classes = Array.Empty<object>()
-                });
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new

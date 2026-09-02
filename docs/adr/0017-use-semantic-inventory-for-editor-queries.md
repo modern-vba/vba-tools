@@ -4,6 +4,12 @@ status: accepted
 
 # Use Semantic Inventory for editor queries
 
+ADR 0036 supersedes only the document-scoped host-projection inventory input
+described below. Semantic Inventory now consumes one current
+environment-scoped UserForm Event catalog and forms its binding from
+authoritative `.frm` source kind; all other immutable inventory and editor-query
+decisions remain accepted.
+
 ## Context
 
 The original editor-query implementation exposed `VbaSourceIndex` as a broad

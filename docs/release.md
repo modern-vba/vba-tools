@@ -326,11 +326,11 @@ VSIX file list, and runs bundled executable probes:
   `vba-debug-adapter-contract.json` must be present.
 - packaged metadata must point `main` at the compiled extension, activate
   dynamic VBA debug resolution, contribute the supported launch schema and user
-  commands including `vbaTools.hostClasses.refresh`, and keep `module` and
+  commands including `vbaTools.userFormEvents.refresh`, and keep `module` and
   `procedure` atomic.
 - the bundled `vba-dev.exe` must answer `capabilities --format json` with the
   command and source-snapshot contract required by the extension, including
-  HostClass feature `1.0` and command-output schema `1.1`, without a DAP or
+  `hostEvent.list` feature `1.0` and `host-event list` schema `1.0`, without a DAP or
   debug-adapter surface.
 - the bundled `vba-debug-adapter.exe` must answer `capabilities --format json`
   with its independent contract, accept its pinned `vba-dev.exe` path, and start
@@ -380,10 +380,10 @@ Excel installed and without a separately installed .NET runtime.
 6. Open a workbook-backed sample workspace that contains `vba-project.json`.
 7. Enable trusted access to the VBA project object model in Excel.
 8. Run `VBA Tools: Doctor`.
-9. Run `VBA Tools: Refresh Host Events` for one document. Confirm a clean
-   refresh is silent, the `VBA Host Events` status item hides after completion,
-   and VBA Tools Output records the committed document-local generation,
-   revision, context, and class counts.
+9. Run `VBA Tools: Refresh UserForm Events`. Confirm it presents no document
+   chooser, a clean refresh leaves healthy status quiet, and VBA Tools Output
+   records the environment catalog revision and Event count. Confirm no project
+   source template opens and the generated workbook is not saved.
 10. Run `VBA Tools: Build`.
 11. Run `VBA Tools: Test`.
 12. Confirm Test Explorer shows workbook-backed test nodes.

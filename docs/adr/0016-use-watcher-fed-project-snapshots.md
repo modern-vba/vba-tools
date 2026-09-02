@@ -1,5 +1,11 @@
 # Use watcher-fed project snapshots
 
+ADR 0036 supersedes only the document-scoped `HostClassProjectionSnapshot`
+input and its template watcher below. One environment-scoped current UserForm
+Event catalog is delivered as a full-catalog snapshot without project-document
+identity or template watching. The watcher-fed source, manifest, reference,
+CommonModules, invalidation, and reconciliation decisions remain accepted.
+
 Warm language-server queries should capture immutable project-scope snapshots that are fed by accepted document revisions, manifest/reference revisions, and watched-file events. `VbaProjectSnapshotIdentity` is an opaque typed value composed from `VbaProjectAuthorityIdentity`, the canonical source root, selected document kind, ordered semantic reference selection, source-template selection, and CommonModules module-file membership. The active document URI and decoded source content are not part of that identity, so different open documents in the same manifest document can share one committed snapshot and a source edit can rebuild that scope without changing its identity.
 
 Snapshot cache lookup, batch deduplication, supersession, invalidation, retirement, and reconciliation resolution comparison keep `VbaProjectSnapshotIdentity` typed end to end. `DiskContentIdentity` remains a separate equality identity for decoded exported-source text and never substitutes for document, authority, or snapshot identity.

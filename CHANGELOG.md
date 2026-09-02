@@ -21,15 +21,15 @@ CLI history.
 - A combined `VBA Tools: Doctor` action that labels project automation and VBE
   diagnostics separately, validates both machine-readable diagnostic results, and
   cooperatively cancels VBE checks without bypassing terminal cleanup.
-- Consumer-owned Host Event projection snapshots with extension-wide
-  single-flight inspection, explicit refresh, status and Output recovery,
-  last-known-good retention, and Excel-free synchronous editor requests.
+- One environment-scoped built-in UserForm Event catalog acquired
+  asynchronously from a generated blank workbook, with explicit refresh,
+  status and Output recovery, and Excel-free synchronous editor requests.
 - Two-stage, name-only completion for intrinsic Host Event, `WithEvents`, and
   `Implements` declarations, with coalesced contract names, retained signature
   variants, and stateless semantic continuation in the VS Code client.
 - Semantic module-identity Rename across authoritative exported metadata,
-  resolved uses, and matching source-unit files, with CommonModules and host
-  ownership boundaries, project/reference collision authority, form-sidecar
+  resolved uses, and matching source-unit files, with CommonModules ownership,
+  project/reference collision authority, source-owned form-sidecar
   and case-only handling, and complete-plan preflight safeguards.
 - Immutable debug snapshots that include dirty editor content without saving and
   run in disposable same-filename workbooks without changing persistent outputs.
@@ -44,3 +44,5 @@ CLI history.
 - Workbook automation and native VBE debugging require desktop Excel and trusted
   access to the VBA project object model. Editor-only language features do not
   require Excel.
+- Worksheet and `ThisWorkbook` code-behind and control-instance Event
+  intelligence are not supported; exported UserForms remain supported.

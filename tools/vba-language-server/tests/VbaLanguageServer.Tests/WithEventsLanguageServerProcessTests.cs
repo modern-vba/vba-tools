@@ -1330,7 +1330,7 @@ public sealed class WithEventsLanguageServerProcessTests
     }
 
     [Fact]
-    public async Task Form_host_projection_supplies_external_WithEvents_completion()
+    public async Task UserForm_catalog_supplies_external_WithEvents_completion()
     {
         var projectRoot = Directory.CreateTempSubdirectory(
             "vba-ls-withevents-completion-host-").FullName;
@@ -1372,12 +1372,8 @@ public sealed class WithEventsLanguageServerProcessTests
                 CreateOpenDocument(workerUri, workerText));
             await process.WaitForDiagnosticsAsync(workerUri);
             await process.SendNotificationAsync(
-                "vba/hostClassProjectionSnapshot",
-                CreateHostProjectionSnapshot(
-                    projectRoot,
-                    sourceTemplate,
-                    "Publisher",
-                    "Change"));
+                "vba/intrinsicHostEventCatalog",
+                CreateIntrinsicCatalogNotification("Change"));
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -1453,12 +1449,8 @@ public sealed class WithEventsLanguageServerProcessTests
                 CreateOpenDocument(workerUri, workerText));
             await process.WaitForDiagnosticsAsync(workerUri);
             await process.SendNotificationAsync(
-                "vba/hostClassProjectionSnapshot",
-                CreateHostProjectionSnapshot(
-                    projectRoot,
-                    sourceTemplate,
-                    "Publisher",
-                    "Change"));
+                "vba/intrinsicHostEventCatalog",
+                CreateIntrinsicCatalogNotification("Change"));
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -1527,10 +1519,10 @@ public sealed class WithEventsLanguageServerProcessTests
     }
 
     [Fact]
-    public async Task Conditional_source_Event_retains_the_projected_host_shadow_alternative()
+    public async Task Conditional_source_Event_retains_the_catalog_shadow_alternative()
     {
         var projectRoot = Directory.CreateTempSubdirectory(
-            "vba-ls-withevents-completion-host-shadow-").FullName;
+            "vba-ls-withevents-intrinsic-event-shadow-").FullName;
         try
         {
             WriteReferenceCatalogProjectManifest(projectRoot);
@@ -1572,12 +1564,8 @@ public sealed class WithEventsLanguageServerProcessTests
                 CreateOpenDocument(workerUri, workerText));
             await process.WaitForDiagnosticsAsync(workerUri);
             await process.SendNotificationAsync(
-                "vba/hostClassProjectionSnapshot",
-                CreateHostProjectionSnapshot(
-                    projectRoot,
-                    sourceTemplate,
-                    "Publisher",
-                    "Change"));
+                "vba/intrinsicHostEventCatalog",
+                CreateIntrinsicCatalogNotification("Change"));
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -7050,11 +7038,8 @@ public sealed class WithEventsLanguageServerProcessTests
         }
     }
 
-    [Theory]
-    [InlineData("current")]
-    [InlineData("lastKnownGood")]
-    public async Task Host_WithEvents_variable_Rename_preserves_the_projected_Event_association(
-        string authority)
+    [Fact]
+    public async Task Catalog_WithEvents_variable_Rename_preserves_the_Event_association()
     {
         var projectRoot = Directory.CreateTempSubdirectory(
             "vba-ls-withevents-rename-host-").FullName;
@@ -7100,13 +7085,8 @@ public sealed class WithEventsLanguageServerProcessTests
                 CreateOpenDocument(workerUri, workerText));
             await process.WaitForDiagnosticsAsync(workerUri);
             await process.SendNotificationAsync(
-                "vba/hostClassProjectionSnapshot",
-                CreateHostProjectionSnapshot(
-                    projectRoot,
-                    sourceTemplate,
-                    "Publisher",
-                    "Change",
-                    authority));
+                "vba/intrinsicHostEventCatalog",
+                CreateIntrinsicCatalogNotification("Change"));
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -7116,12 +7096,11 @@ public sealed class WithEventsLanguageServerProcessTests
                 });
             var diagnosticsBeforeRename =
                 await process.WaitForDiagnosticsAsync(workerUri);
-            Assert.Equal(
-                authority == "current",
+            Assert.Contains(
                 diagnosticsBeforeRename.GetProperty("params")
-                    .GetProperty("diagnostics").EnumerateArray().Any(
-                        diagnostic => diagnostic.GetProperty("code").GetString()
-                            == "validation.eventHandlerMustBeSub"));
+                    .GetProperty("diagnostics").EnumerateArray(),
+                diagnostic => diagnostic.GetProperty("code").GetString()
+                    == "validation.eventHandlerMustBeSub");
 
             var rename = await process.SendRequestAsync(
                 2,
@@ -7166,12 +7145,11 @@ public sealed class WithEventsLanguageServerProcessTests
                 });
             var diagnosticsAfterRename =
                 await process.WaitForDiagnosticsAsync(workerUri);
-            Assert.Equal(
-                authority == "current",
+            Assert.Contains(
                 diagnosticsAfterRename.GetProperty("params")
-                    .GetProperty("diagnostics").EnumerateArray().Any(
-                        diagnostic => diagnostic.GetProperty("code").GetString()
-                            == "validation.eventHandlerMustBeSub"));
+                    .GetProperty("diagnostics").EnumerateArray(),
+                diagnostic => diagnostic.GetProperty("code").GetString()
+                    == "validation.eventHandlerMustBeSub");
 
             await process.ShutdownAsync(4);
         }
@@ -7919,41 +7897,31 @@ public sealed class WithEventsLanguageServerProcessTests
                 ]));
     }
 
-    private static object CreateHostProjectionSnapshot(
-        string projectRoot,
-        string sourceTemplate,
-        string className,
-        string eventName,
-        string authority = "current")
+    private static object CreateIntrinsicCatalogNotification(string eventName)
         => new
         {
-            schemaVersion = 2,
+            schemaVersion = "1.0",
             revision = 1,
-            project = Path.GetFullPath(projectRoot),
-            document = "Book1",
-            sourceTemplate = Path.GetFullPath(sourceTemplate),
-            state = "present",
-            classEnumerationComplete = true,
-            classes = new object[]
+            catalog = new
             {
-                new
+                sourceKind = "userForm",
+                intrinsicEventSourceName = "UserForm",
+                events = new object[]
                 {
-                    identity = new { name = className, kind = "form" },
-                    authority,
-                    projection = new
+                    new
                     {
-                        intrinsicEventSourceName = "UserForm",
-                        events = new object[]
+                        identity = new
                         {
-                            new
-                            {
-                                name = eventName,
-                                parameters = Array.Empty<object>(),
-                                documentation = "Projected host Event.",
-                                authoringAvailable = true,
-                                existingHandlerRecognizable = true
-                            }
-                        }
+                            sourceName = "UserForm",
+                            name = eventName
+                        },
+                        signature = new
+                        {
+                            parameters = Array.Empty<object>(),
+                            documentation = "Intrinsic UserForm Event."
+                        },
+                        authoringAvailable = true,
+                        existingHandlerRecognizable = true
                     }
                 }
             }

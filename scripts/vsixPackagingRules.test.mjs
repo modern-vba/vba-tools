@@ -372,7 +372,7 @@ test('extension package metadata includes the complete user command surface', as
   for (const commandId of [
     'vbaTools.doctor',
     'vbaTools.newExcel',
-    'vbaTools.hostClasses.refresh'
+    'vbaTools.userFormEvents.refresh'
   ]) {
     const missingCommand = structuredClone(packageJson);
     missingCommand.contributes.commands = missingCommand.contributes.commands.filter(
@@ -382,6 +382,29 @@ test('extension package metadata includes the complete user command surface', as
     assert.throws(
       () => assertExtensionDebugPackage(missingCommand),
       new RegExp(`required extension command.*${commandId.replaceAll('.', '\\.')}`, 'i')
+    );
+  }
+});
+
+test('extension package metadata rejects both removed Host Event refresh IDs', async () => {
+  const packageJson = JSON.parse(
+    await fs.readFile(new URL('../package.json', import.meta.url), 'utf8')
+  );
+
+  for (const removedCommandId of [
+    'vbaTools.hostEvents.refresh',
+    'vbaTools.hostClasses.refresh'
+  ]) {
+    const legacyPackage = structuredClone(packageJson);
+    legacyPackage.contributes.commands.push({
+      command: removedCommandId,
+      title: 'Removed command'
+    });
+    legacyPackage.activationEvents.push(`onCommand:${removedCommandId}`);
+
+    assert.throws(
+      () => assertExtensionDebugPackage(legacyPackage),
+      new RegExp(`removed extension command.*${removedCommandId.replaceAll('.', '\\.')}`, 'i')
     );
   }
 });

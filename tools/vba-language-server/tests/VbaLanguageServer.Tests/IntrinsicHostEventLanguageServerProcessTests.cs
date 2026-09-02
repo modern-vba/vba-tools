@@ -6,74 +6,7 @@ namespace VbaLanguageServer.Tests;
 public sealed class IntrinsicHostEventLanguageServerProcessTests
 {
     [Fact]
-    public async Task Current_host_associated_form_module_identity_is_not_a_source_rename_target()
-    {
-        var projectRoot = Directory.CreateTempSubdirectory(
-            "vba-ls-host-owned-form-rename-").FullName;
-        try
-        {
-            var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
-            Directory.CreateDirectory(sourceRoot);
-            var sourceTemplate = Path.Combine(sourceRoot, "Book1.xlsm");
-            WriteProjectManifest(projectRoot);
-            var sourcePath = Path.Combine(sourceRoot, "Dialog.frm");
-            var uri = new Uri(sourcePath).AbsoluteUri;
-            var text = string.Join('\n', [
-                "VERSION 5.00",
-                "Begin VB.Form Dialog",
-                "End",
-                "Attribute VB_Name = \"Dialog\""
-            ]);
-            File.WriteAllText(sourcePath, text);
-
-            await using var process = await LanguageServerProcessHarness.StartAsync();
-            await process.InitializeAsync();
-            await process.SendNotificationAsync(
-                "textDocument/didOpen",
-                CreateOpenDocument(uri, text));
-            await process.WaitForDiagnosticsAsync(uri);
-            await process.SendNotificationAsync(
-                "vba/hostClassProjectionSnapshot",
-                CreateSnapshotNotification(
-                    projectRoot,
-                    sourceTemplate,
-                    "current",
-                    "Initialize",
-                    [],
-                    "Initializes the form."));
-            await FenceSnapshotAsync(process, uri, text, 2);
-
-            var prepare = await SendPositionRequestAsync(
-                process,
-                2,
-                "textDocument/prepareRename",
-                uri,
-                text,
-                "Dialog\"");
-
-            Assert.False(prepare.TryGetProperty("result", out _));
-            var error = prepare.GetProperty("error");
-            Assert.Equal(-32803, error.GetProperty("code").GetInt32());
-            var data = error.GetProperty("data");
-            Assert.Equal(
-                "hostManagedModuleIdentity",
-                data.GetProperty("reason").GetString());
-            Assert.Equal(sourcePath, data.GetProperty("path").GetString(), ignoreCase: true);
-            Assert.Contains(
-                "source template",
-                data.GetProperty("guidance").GetString(),
-                StringComparison.OrdinalIgnoreCase);
-
-            await process.ShutdownAsync(3);
-        }
-        finally
-        {
-            Directory.Delete(projectRoot, recursive: true);
-        }
-    }
-
-    [Fact]
-    public async Task Current_complete_host_projection_without_form_association_allows_manifest_local_form_rename()
+    public async Task Environment_catalog_does_not_own_source_form_module_rename()
     {
         var projectRoot = Directory.CreateTempSubdirectory(
             "vba-ls-host-unassociated-form-rename-").FullName;
@@ -116,18 +49,11 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
                 CreateOpenDocument(uri, text));
             await process.WaitForDiagnosticsAsync(uri);
             await process.SendNotificationAsync(
-                "vba/hostClassProjectionSnapshot",
-                new
-                {
-                    schemaVersion = 2,
-                    revision = 1,
-                    project = Path.GetFullPath(projectRoot),
-                    document = "Book1",
-                    sourceTemplate = Path.GetFullPath(sourceTemplate),
-                    state = "present",
-                    classEnumerationComplete = true,
-                    classes = Array.Empty<object>()
-                });
+                "vba/intrinsicHostEventCatalog",
+                CreateCatalogNotification(
+                    "Initialize",
+                    [],
+                    "Initializes the form."));
             await FenceSnapshotAsync(process, uri, text, version: 2);
 
             var rename = await process.SendRequestAsync(
@@ -218,22 +144,11 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
                 CreateOpenDocument(uri, text));
             await process.WaitForDiagnosticsAsync(uri);
             await process.SendNotificationAsync(
-                "vba/hostClassProjectionSnapshot",
-                new
-                {
-                    schemaVersion = 2,
-                    revision = 1,
-                    project = Path.GetFullPath(projectRoot),
-                    document = "Book1",
-                    sourceTemplate = Path.GetFullPath(sourceTemplate),
-                    state = "present",
-                    vbaProjectName = "ContainingProject",
-                    sourceTemplateFingerprint = Convert.ToHexString(
-                        System.Security.Cryptography.SHA256.HashData(
-                            templateBytes)),
-                    classEnumerationComplete = true,
-                    classes = Array.Empty<object>()
-                });
+                "vba/intrinsicHostEventCatalog",
+                CreateCatalogNotification(
+                    "Initialize",
+                    [],
+                    "Initializes the form."));
             await FenceSnapshotAsync(process, uri, text, version: 2);
 
             var rename = await process.SendRequestAsync(
@@ -313,22 +228,11 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
                 CreateOpenDocument(uri, text));
             await process.WaitForDiagnosticsAsync(uri);
             await process.SendNotificationAsync(
-                "vba/hostClassProjectionSnapshot",
-                new
-                {
-                    schemaVersion = 2,
-                    revision = 1,
-                    project = Path.GetFullPath(projectRoot),
-                    document = "Book1",
-                    sourceTemplate = Path.GetFullPath(sourceTemplate),
-                    state = "present",
-                    vbaProjectName = "ContainingProject",
-                    sourceTemplateFingerprint = Convert.ToHexString(
-                        System.Security.Cryptography.SHA256.HashData(
-                            templateBytes)),
-                    classEnumerationComplete = true,
-                    classes = Array.Empty<object>()
-                });
+                "vba/intrinsicHostEventCatalog",
+                CreateCatalogNotification(
+                    "Initialize",
+                    [],
+                    "Initializes the form."));
             await FenceSnapshotAsync(process, uri, text, version: 2);
 
             var rename = await process.SendRequestAsync(
@@ -365,78 +269,7 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
     }
 
     [Fact]
-    public async Task Last_known_good_form_association_fails_module_identity_mutation_as_incomplete()
-    {
-        var projectRoot = Directory.CreateTempSubdirectory(
-            "vba-ls-host-lkg-form-rename-").FullName;
-        try
-        {
-            var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
-            Directory.CreateDirectory(sourceRoot);
-            var sourceTemplate = Path.Combine(sourceRoot, "Book1.xlsm");
-            WriteProjectManifest(projectRoot);
-            var sourcePath = Path.Combine(sourceRoot, "Dialog.frm");
-            var uri = new Uri(sourcePath).AbsoluteUri;
-            var text = string.Join('\n', [
-                "VERSION 5.00",
-                "Begin VB.Form Dialog",
-                "End",
-                "Attribute VB_Name = \"Dialog\""
-            ]);
-            File.WriteAllText(sourcePath, text);
-
-            await using var process = await LanguageServerProcessHarness.StartAsync();
-            await process.InitializeAsync();
-            await process.SendNotificationAsync(
-                "textDocument/didOpen",
-                CreateOpenDocument(uri, text));
-            await process.WaitForDiagnosticsAsync(uri);
-            await process.SendNotificationAsync(
-                "vba/hostClassProjectionSnapshot",
-                CreateSnapshotNotification(
-                    projectRoot,
-                    sourceTemplate,
-                    "lastKnownGood",
-                    "Initialize",
-                    [],
-                    "Initializes the form."));
-            await FenceSnapshotAsync(process, uri, text, version: 2);
-
-            var rename = await process.SendRequestAsync(
-                2,
-                "textDocument/rename",
-                new
-                {
-                    textDocument = new { uri },
-                    position = new
-                    {
-                        line = 3,
-                        character = "Attribute VB_Name = \"".Length
-                    },
-                    newName = "DialogView"
-                });
-
-            Assert.False(rename.TryGetProperty("result", out _));
-            var data = rename.GetProperty("error").GetProperty("data");
-            Assert.Equal("analysisIncomplete", data.GetProperty("reason").GetString());
-            Assert.Equal(
-                "hostOwnershipUnavailable",
-                data.GetProperty("condition").GetString());
-            Assert.Contains(
-                "retry",
-                data.GetProperty("guidance").GetString(),
-                StringComparison.OrdinalIgnoreCase);
-
-            await process.ShutdownAsync(3);
-        }
-        finally
-        {
-            Directory.Delete(projectRoot, recursive: true);
-        }
-    }
-
-    [Fact]
-    public async Task Ordinary_exported_class_remains_project_local_when_a_document_projection_shares_its_name()
+    public async Task Environment_catalog_does_not_bind_an_ordinary_class_module()
     {
         var projectRoot = Directory.CreateTempSubdirectory(
             "vba-ls-host-owned-document-rename-").FullName;
@@ -478,34 +311,11 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
                 CreateOpenDocument(uri, text));
             await process.WaitForDiagnosticsAsync(uri);
             await process.SendNotificationAsync(
-                "vba/hostClassProjectionSnapshot",
-                new
-                {
-                    schemaVersion = 2,
-                    revision = 1,
-                    project = Path.GetFullPath(projectRoot),
-                    document = "Book1",
-                    sourceTemplate = Path.GetFullPath(sourceTemplate),
-                    state = "present",
-                    vbaProjectName = "ContainingProject",
-                    sourceTemplateFingerprint = Convert.ToHexString(
-                        System.Security.Cryptography.SHA256.HashData(
-                            templateBytes)),
-                    classEnumerationComplete = true,
-                    classes = new object[]
-                    {
-                        new
-                        {
-                            identity = new { name = "Sheet1", kind = "document" },
-                            authority = "current",
-                            projection = new
-                            {
-                                intrinsicEventSourceName = "Worksheet",
-                                events = Array.Empty<object>()
-                            }
-                        }
-                    }
-                });
+                "vba/intrinsicHostEventCatalog",
+                CreateCatalogNotification(
+                    "Initialize",
+                    [],
+                    "Initializes the form."));
             await FenceSnapshotAsync(process, uri, text, version: 2);
 
             var rename = await process.SendRequestAsync(
@@ -610,16 +420,6 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
     }
 
     [Fact]
-    public async Task Last_known_good_host_surface_still_supplies_advisory_completion()
-    {
-        var completion = await GetIntrinsicCompletionAsync(
-            "Private Sub ",
-            authority: "lastKnownGood");
-        var item = Assert.Single(completion.GetProperty("result").EnumerateArray());
-        Assert.Equal("UserForm_", item.GetProperty("label").GetString());
-    }
-
-    [Fact]
     public async Task Non_authoring_host_Event_is_not_offered_for_a_new_declaration()
     {
         var completion = await GetIntrinsicCompletionAsync(
@@ -628,11 +428,8 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
         Assert.Empty(completion.GetProperty("result").EnumerateArray());
     }
 
-    [Theory]
-    [InlineData("current")]
-    [InlineData("lastKnownGood")]
-    public async Task Intrinsic_handler_suffix_hover_uses_associated_projected_Event(
-        string authority)
+    [Fact]
+    public async Task Intrinsic_handler_suffix_hover_uses_the_current_catalog_Event()
     {
         var projectRoot = Directory.CreateTempSubdirectory(
             "vba-ls-intrinsic-host-event-").FullName;
@@ -663,11 +460,8 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
             await process.WaitForDiagnosticsAsync(uri);
 
             await process.SendNotificationAsync(
-                "vba/hostClassProjectionSnapshot",
-                CreateSnapshotNotification(
-                    projectRoot,
-                    sourceTemplate,
-                    authority,
+                "vba/intrinsicHostEventCatalog",
+                CreateCatalogNotification(
                     "Initialize",
                     [],
                     "Occurs when the form is initialized."));
@@ -723,11 +517,8 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
         }
     }
 
-    [Theory]
-    [InlineData("current")]
-    [InlineData("lastKnownGood")]
-    public async Task Intrinsic_handler_declaration_uses_one_host_signature(
-        string authority)
+    [Fact]
+    public async Task Intrinsic_handler_declaration_uses_one_catalog_signature()
     {
         var projectRoot = Directory.CreateTempSubdirectory(
             "vba-ls-intrinsic-host-signature-").FullName;
@@ -757,11 +548,8 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
                 CreateOpenDocument(uri, text));
             await process.WaitForDiagnosticsAsync(uri);
             await process.SendNotificationAsync(
-                "vba/hostClassProjectionSnapshot",
-                CreateSnapshotNotification(
-                    projectRoot,
-                    sourceTemplate,
-                    authority,
+                "vba/intrinsicHostEventCatalog",
+                CreateCatalogNotification(
                     "Change",
                     [
                         new
@@ -807,12 +595,8 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
         }
     }
 
-    [Theory]
-    [InlineData("current", true)]
-    [InlineData("lastKnownGood", false)]
-    public async Task Intrinsic_Function_kind_diagnostic_requires_current_authority(
-        string authority,
-        bool expectDiagnostic)
+    [Fact]
+    public async Task Current_catalog_diagnoses_an_intrinsic_Function_handler()
     {
         var projectRoot = Directory.CreateTempSubdirectory(
             "vba-ls-intrinsic-host-kind-").FullName;
@@ -842,11 +626,8 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
                 CreateOpenDocument(uri, text));
             await process.WaitForDiagnosticsAsync(uri);
             await process.SendNotificationAsync(
-                "vba/hostClassProjectionSnapshot",
-                CreateSnapshotNotification(
-                    projectRoot,
-                    sourceTemplate,
-                    authority,
+                "vba/intrinsicHostEventCatalog",
+                CreateCatalogNotification(
                     "Change",
                     [
                         new
@@ -876,17 +657,10 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
                 .Where(candidate => candidate.GetProperty("code").GetString()
                     == "validation.eventHandlerMustBeSub")
                 .ToArray();
-            if (expectDiagnostic)
-            {
-                var diagnostic = Assert.Single(diagnostics);
-                Assert.Equal(
-                    "Event handlers must be declared as Sub procedures.",
-                    diagnostic.GetProperty("message").GetString());
-            }
-            else
-            {
-                Assert.Empty(diagnostics);
-            }
+            var diagnostic = Assert.Single(diagnostics);
+            Assert.Equal(
+                "Event handlers must be declared as Sub procedures.",
+                diagnostic.GetProperty("message").GetString());
 
             await process.ShutdownAsync(2);
         }
@@ -896,12 +670,8 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
         }
     }
 
-    [Theory]
-    [InlineData("current", true)]
-    [InlineData("lastKnownGood", false)]
-    public async Task Intrinsic_Sub_signature_diagnostic_requires_current_authority(
-        string authority,
-        bool expectDiagnostic)
+    [Fact]
+    public async Task Current_catalog_diagnoses_an_intrinsic_Sub_signature()
     {
         var projectRoot = Directory.CreateTempSubdirectory(
             "vba-ls-intrinsic-host-compatibility-").FullName;
@@ -931,11 +701,8 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
                 CreateOpenDocument(uri, text));
             await process.WaitForDiagnosticsAsync(uri);
             await process.SendNotificationAsync(
-                "vba/hostClassProjectionSnapshot",
-                CreateSnapshotNotification(
-                    projectRoot,
-                    sourceTemplate,
-                    authority,
+                "vba/intrinsicHostEventCatalog",
+                CreateCatalogNotification(
                     "Change",
                     [
                         new
@@ -965,22 +732,15 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
                 .Where(candidate => candidate.GetProperty("code").GetString()
                     == "validation.incompatibleEventHandlerSignature")
                 .ToArray();
-            if (expectDiagnostic)
-            {
-                var diagnostic = Assert.Single(diagnostics);
-                Assert.Equal(
-                    "Event handler signature does not match any available Event signature.\n"
-                        + "Expected signature: Event Change(ByVal Value As Long).\n"
-                        + "Mismatches: parameter 1 type: expected Long, found Boolean.",
-                    diagnostic.GetProperty("message").GetString());
-                Assert.False(diagnostic.TryGetProperty(
-                    "relatedInformation",
-                    out _));
-            }
-            else
-            {
-                Assert.Empty(diagnostics);
-            }
+            var diagnostic = Assert.Single(diagnostics);
+            Assert.Equal(
+                "Event handler signature does not match any available Event signature.\n"
+                    + "Expected signature: Event Change(ByVal Value As Long).\n"
+                    + "Mismatches: parameter 1 type: expected Long, found Boolean.",
+                diagnostic.GetProperty("message").GetString());
+            Assert.False(diagnostic.TryGetProperty(
+                "relatedInformation",
+                out _));
 
             await process.ShutdownAsync(2);
         }
@@ -990,11 +750,8 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
         }
     }
 
-    [Theory]
-    [InlineData("current")]
-    [InlineData("lastKnownGood")]
-    public async Task External_WithEvents_handler_uses_projected_host_Event(
-        string authority)
+    [Fact]
+    public async Task External_WithEvents_handler_uses_the_catalog_Event()
     {
         var projectRoot = Directory.CreateTempSubdirectory(
             "vba-ls-external-host-event-").FullName;
@@ -1035,11 +792,8 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
                 CreateOpenDocument(workerUri, workerText));
             await process.WaitForDiagnosticsAsync(workerUri);
             await process.SendNotificationAsync(
-                "vba/hostClassProjectionSnapshot",
-                CreateSnapshotNotification(
-                    projectRoot,
-                    sourceTemplate,
-                    authority,
+                "vba/intrinsicHostEventCatalog",
+                CreateCatalogNotification(
                     "Initialize",
                     [],
                     "Occurs when the form is initialized."));
@@ -1110,11 +864,8 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
                 CreateOpenDocument(uri, text));
             await process.WaitForDiagnosticsAsync(uri);
             await process.SendNotificationAsync(
-                "vba/hostClassProjectionSnapshot",
-                CreateSnapshotNotification(
-                    projectRoot,
-                    sourceTemplate,
-                    "current",
+                "vba/intrinsicHostEventCatalog",
+                CreateCatalogNotification(
                     "Before_Update",
                     [],
                     "Occurs before the form updates."));
@@ -1160,7 +911,7 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
     }
 
     [Fact]
-    public async Task Intrinsic_handler_rename_follows_snapshot_authority_and_loss()
+    public async Task Current_catalog_intrinsic_handler_is_not_a_Rename_target()
     {
         var projectRoot = Directory.CreateTempSubdirectory(
             "vba-ls-intrinsic-host-rename-").FullName;
@@ -1190,11 +941,8 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
                 CreateOpenDocument(uri, text));
             await process.WaitForDiagnosticsAsync(uri);
             await process.SendNotificationAsync(
-                "vba/hostClassProjectionSnapshot",
-                CreateSnapshotNotification(
-                    projectRoot,
-                    sourceTemplate,
-                    "current",
+                "vba/intrinsicHostEventCatalog",
+                CreateCatalogNotification(
                     "Initialize",
                     [],
                     "Occurs when the form is initialized."));
@@ -1229,59 +977,7 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
                     .GetProperty("reason")
                     .GetString());
 
-            await process.SendNotificationAsync(
-                "vba/hostClassProjectionSnapshot",
-                CreateSnapshotNotification(
-                    projectRoot,
-                    sourceTemplate,
-                    "lastKnownGood",
-                    "Initialize",
-                    [],
-                    "Occurs when the form is initialized.",
-                    revision: 2));
-            await FenceSnapshotAsync(process, uri, text, version: 3);
-            var retainedRename = await process.SendRequestAsync(
-                4,
-                "textDocument/rename",
-                new
-                {
-                    textDocument = new { uri },
-                    position,
-                    newName = "RenamedHandler"
-                });
-            Assert.Equal(
-                "analysisIncomplete",
-                retainedRename
-                    .GetProperty("error")
-                    .GetProperty("data")
-                    .GetProperty("reason")
-                    .GetString());
-
-            await process.SendNotificationAsync(
-                "vba/hostClassProjectionSnapshot",
-                CreateClearedSnapshotNotification(
-                    projectRoot,
-                    sourceTemplate,
-                    revision: 3));
-            await FenceSnapshotAsync(process, uri, text, version: 4);
-            var ordinaryRename = await process.SendRequestAsync(
-                5,
-                "textDocument/rename",
-                new
-                {
-                    textDocument = new { uri },
-                    position,
-                    newName = "RenamedHandler"
-                });
-            var edit = Assert.Single(
-                ordinaryRename
-                    .GetProperty("result")
-                    .GetProperty("changes")
-                    .GetProperty(uri)
-                    .EnumerateArray());
-            Assert.Equal("RenamedHandler", edit.GetProperty("newText").GetString());
-
-            await process.ShutdownAsync(6);
+            await process.ShutdownAsync(4);
         }
         finally
         {
@@ -1336,11 +1032,8 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
                 CreateOpenDocument(workerUri, workerText));
             await process.WaitForDiagnosticsAsync(workerUri);
             await process.SendNotificationAsync(
-                "vba/hostClassProjectionSnapshot",
-                CreateSnapshotNotification(
-                    projectRoot,
-                    sourceTemplate,
-                    "current",
+                "vba/intrinsicHostEventCatalog",
+                CreateCatalogNotification(
                     "Changed",
                     [
                         new
@@ -1395,7 +1088,6 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
 
     private static async Task<JsonElement> GetIntrinsicCompletionAsync(
         string declarationLine,
-        string authority = "current",
         bool authoringAvailable = true)
     {
         var projectRoot = Directory.CreateTempSubdirectory(
@@ -1404,7 +1096,6 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
         {
             var sourceRoot = Path.Combine(projectRoot, "src", "Book1");
             Directory.CreateDirectory(sourceRoot);
-            var sourceTemplate = Path.Combine(sourceRoot, "Book1.xlsm");
             WriteProjectManifest(projectRoot);
 
             var sourcePath = Path.Combine(sourceRoot, "Dialog.frm");
@@ -1425,11 +1116,8 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
                 CreateOpenDocument(uri, text));
             await process.WaitForDiagnosticsAsync(uri);
             await process.SendNotificationAsync(
-                "vba/hostClassProjectionSnapshot",
-                CreateSnapshotNotification(
-                    projectRoot,
-                    sourceTemplate,
-                    authority,
+                "vba/intrinsicHostEventCatalog",
+                CreateCatalogNotification(
                     "Initialize",
                     [],
                     "Occurs when the form is initialized.",
@@ -1472,10 +1160,7 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
             }
         };
 
-    private static object CreateSnapshotNotification(
-        string projectRoot,
-        string sourceTemplate,
-        string authority,
+    private static object CreateCatalogNotification(
         string eventName,
         object[] parameters,
         string documentation,
@@ -1484,50 +1169,31 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
         int revision = 1)
         => new
         {
-            schemaVersion = 2,
+            schemaVersion = "1.0",
             revision,
-            project = Path.GetFullPath(projectRoot),
-            document = "Book1",
-            sourceTemplate = Path.GetFullPath(sourceTemplate),
-            state = "present",
-            classEnumerationComplete = true,
-            classes = new object[]
+            catalog = new
             {
-                new
+                sourceKind = "userForm",
+                intrinsicEventSourceName = "UserForm",
+                events = new object[]
                 {
-                    identity = new { name = "Dialog", kind = "form" },
-                    authority,
-                    projection = new
+                    new
                     {
-                        intrinsicEventSourceName = "UserForm",
-                        events = new object[]
+                        identity = new
                         {
-                            new
-                            {
-                                name = eventName,
-                                parameters,
-                                documentation,
-                                authoringAvailable,
-                                existingHandlerRecognizable
-                            }
-                        }
+                            sourceName = "UserForm",
+                            name = eventName
+                        },
+                        signature = new
+                        {
+                            parameters,
+                            documentation
+                        },
+                        authoringAvailable,
+                        existingHandlerRecognizable
                     }
                 }
             }
-        };
-
-    private static object CreateClearedSnapshotNotification(
-        string projectRoot,
-        string sourceTemplate,
-        int revision)
-        => new
-        {
-            schemaVersion = 2,
-            revision,
-            project = Path.GetFullPath(projectRoot),
-            document = "Book1",
-            sourceTemplate = Path.GetFullPath(sourceTemplate),
-            state = "cleared"
         };
 
     private static async Task FenceSnapshotAsync(

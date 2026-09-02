@@ -18,8 +18,8 @@ internal sealed class VbaLanguageServerRuntime
     private readonly IVbaProjectReconciliationRuntimeLifecycle?
         projectReconciliationLifecycle;
     private readonly VbaDevReferenceListStartupState? vbaDevStartupState;
-    private readonly IVbaHostClassProjectionSnapshotHandler?
-        hostClassProjectionSnapshotHandler;
+    private readonly IVbaIntrinsicHostEventCatalogHandler?
+        intrinsicHostEventCatalogHandler;
     private int startupWarningPublished;
 
     /// <summary>
@@ -32,7 +32,7 @@ internal sealed class VbaLanguageServerRuntime
     /// <param name="schedulerOptions">Optional scheduler options used by deterministic tests.</param>
     /// <param name="projectReconciliationLifecycle">The optional background project reconciliation owner.</param>
     /// <param name="vbaDevStartupState">The optional startup-validated VbaDev reference-list capability.</param>
-    /// <param name="hostClassProjectionSnapshotHandler">The optional consumer-owned host-class snapshot handler.</param>
+    /// <param name="intrinsicHostEventCatalogHandler">The optional environment-scoped intrinsic host Event catalog handler.</param>
     public VbaLanguageServerRuntime(
         LspMessageTransport transport,
         VbaLspRequestExecution requestExecution,
@@ -42,8 +42,8 @@ internal sealed class VbaLanguageServerRuntime
         IVbaProjectReconciliationRuntimeLifecycle?
             projectReconciliationLifecycle = null,
         VbaDevReferenceListStartupState? vbaDevStartupState = null,
-        IVbaHostClassProjectionSnapshotHandler?
-            hostClassProjectionSnapshotHandler = null)
+        IVbaIntrinsicHostEventCatalogHandler?
+            intrinsicHostEventCatalogHandler = null)
     {
         this.transport = transport;
         this.requestExecution = requestExecution;
@@ -52,8 +52,7 @@ internal sealed class VbaLanguageServerRuntime
         this.schedulerOptions = schedulerOptions;
         this.projectReconciliationLifecycle = projectReconciliationLifecycle;
         this.vbaDevStartupState = vbaDevStartupState;
-        this.hostClassProjectionSnapshotHandler =
-            hostClassProjectionSnapshotHandler;
+        this.intrinsicHostEventCatalogHandler = intrinsicHostEventCatalogHandler;
     }
 
     /// <summary>
@@ -105,8 +104,8 @@ internal sealed class VbaLanguageServerRuntime
             catalogRefresh,
             projectReconciliationLifecycle: projectReconciler,
             vbaDevStartupState: vbaDevStartupState,
-            hostClassProjectionSnapshotHandler:
-                new VbaHostClassProjectionSnapshotHandler(workspace));
+            intrinsicHostEventCatalogHandler:
+                new VbaIntrinsicHostEventCatalogHandler(workspace));
     }
 
     internal static IVbaProjectReferenceCatalogDiscovery CreateReferenceCatalogDiscovery(
@@ -265,46 +264,6 @@ internal sealed class VbaLanguageServerRuntime
                     return;
                 }
 
-                if (method == VbaHostClassProjectionSnapshotHandler.Method
-                    && hostClassProjectionSnapshotHandler is { } hostClassHandler)
-                {
-                    if (!hostClassHandler.TryParse(parameters, out var update))
-                    {
-                        continue;
-                    }
-
-                    if (!update.TryGetAuthority(
-                            out var coalescingAuthority))
-                    {
-                        continue;
-                    }
-
-                    try
-                    {
-                        scheduler.AdmitCoalescibleAdvisoryMutation(
-                            method,
-                            coalescingAuthority,
-                            update.Revision,
-                            workCancellationToken =>
-                            {
-                                workCancellationToken.ThrowIfCancellationRequested();
-                                _ = hostClassHandler.TryApply(update);
-                                return Task.CompletedTask;
-                            });
-                    }
-                    catch (VbaInteractiveWorkQueueFullException)
-                    {
-                        responseCancellation.Request();
-                        return;
-                    }
-                    catch (ObjectDisposedException) when (!scheduler.IsAccepting)
-                    {
-                        return;
-                    }
-
-                    continue;
-                }
-
                 Func<CancellationToken, Task> executeNotification =
                     workCancellationToken => HandleNotificationAsync(
                         method,
@@ -453,7 +412,7 @@ internal sealed class VbaLanguageServerRuntime
             or "textDocument/didChange"
             or "textDocument/didClose"
             or "workspace/didChangeWatchedFiles"
-            or VbaHostClassProjectionSnapshotHandler.Method;
+            or VbaIntrinsicHostEventCatalogHandler.Method;
 
     private async Task HandleNotificationAsync(
         string method,
@@ -477,12 +436,12 @@ internal sealed class VbaLanguageServerRuntime
             case "workspace/didChangeWatchedFiles":
                 await documentLifecycle.RecordWatchedFilesChangedAsync(parameters, cancellationToken);
                 return;
-            case VbaHostClassProjectionSnapshotHandler.Method:
+            case VbaIntrinsicHostEventCatalogHandler.Method:
                 cancellationToken.ThrowIfCancellationRequested();
-                if (hostClassProjectionSnapshotHandler is { } handler
-                    && handler.TryParse(parameters, out var update))
+                if (intrinsicHostEventCatalogHandler is { } catalogHandler
+                    && catalogHandler.TryParse(parameters, out var catalogUpdate))
                 {
-                    _ = handler.TryApply(update);
+                    _ = catalogHandler.TryApply(catalogUpdate);
                 }
                 return;
             default:

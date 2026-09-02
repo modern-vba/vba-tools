@@ -23,14 +23,14 @@ _Avoid_: extension, CLI, test adapter
 **VbaDev**:
 The C#/.NET companion CLI that performs workbook-backed project operations such
 as project creation, CommonModules management, reference management, build,
-test, publish, export, read-only host-class inspection, and environment
-diagnostics.
+test, publish, export, environment-scoped UserForm Event discovery, and
+environment diagnostics.
 _Avoid_: language server, VS Code command, CommonModules package
 
 **VscodeExtension**:
 The VS Code extension package that activates VBA language support, launches the
 language server, invokes `VbaDev` for project-level workflows and
-`HostClassProjectionLifecycle`, and launches the separate `VbaDebugAdapter` for
+`IntrinsicHostEventCatalogLifecycle`, and launches the separate `VbaDebugAdapter` for
 VBE debugging.
 _Avoid_: language server, command-line tool
 
@@ -618,9 +618,10 @@ The project-local manifest, stored as `vba-project.json`, that identifies a
 `VbaDev` operations. It is also the language server's source of truth for the
 `VbaProjectReferenceSelection` of each document definition; VS Code settings do
 not define project references for workbook-backed projects. It identifies each
-document's source template used to produce its host-class result, but does not
-store a generated host Event list or `HostClassProjectionSnapshot`. A
-project-local `project.json` is not a
+document's source template for workbook operations and for a request-scoped
+`VbaProjectIdentityRead`, but stores neither environment-discovered UserForm
+Events nor `IntrinsicHostEventCatalogSnapshot` state. A project-local
+`project.json` is not a
 `ProjectManifest` for language-server project-boundary or reference-selection
 behavior.
 _Avoid_: package file, extension settings, workspace settings
@@ -789,10 +790,13 @@ signature help do not synchronously invoke `VbaDev` to resolve project or
 reference state. Background `VbaProjectReferenceCatalogRefresh` may invoke the
 machine-readable `vba-dev reference list --format json` contract with only
 project and document inputs; the selected `ProjectManifest` supplies the
-reference names. `HostClassProjectionLifecycle` separately supplies committed
-immutable host-class projections; synchronous editor requests neither invoke
-nor wait for their producer. `VbaDev` does not consume VS Code editor state,
-and the language server does not own Excel/VBIDE automation. `VscodeExtension` resolves
+reference names. `IntrinsicHostEventCatalogLifecycle` separately supplies one
+committed environment-scoped full catalog; synchronous editor requests use the
+current catalog when available and neither invoke nor wait for its producer.
+Manifest resolution creates no catalog association because every authoritative
+`.frm` source binds through `UserFormHostEventBinding`. `VbaDev` does not consume
+VS Code editor state, and the language server does not own Excel/VBIDE
+automation. `VscodeExtension` resolves
 the bundled or explicitly configured absolute `vba-dev.exe` path and passes it
 to the language server through `--vba-dev`. At startup, the server validates
 that supplied executable once through side-effect-free capability inspection
@@ -1060,12 +1064,12 @@ A set of exported VBA source files that belong to the same logical VBA project. 
 _Avoid_: workspace, repository, package
 
 **VbaProjectName**:
-The actual VBA project name represented by `VBProject.Name`, which participates in VBA's module, project, and object-library name uniqueness rule. A manifest-backed `ModuleIdentity` mutation obtains this authority only from a successful request-scoped `VbaProjectIdentityRead`; `ProjectManifest.projectName`, a document name, a workbook filename, a generated blank-workbook name, a cache, and a host-projection observation are not substitutes. An `AdHocVbaProject` has no containing-project-name authority by design.
+The actual VBA project name represented by `VBProject.Name`, which participates in VBA's module, project, and object-library name uniqueness rule. A manifest-backed `ModuleIdentity` mutation obtains this authority only from a successful request-scoped `VbaProjectIdentityRead`; `ProjectManifest.projectName`, a document name, a workbook filename, a generated blank-workbook name, a cache, and environment Event catalog metadata are not substitutes. An `AdHocVbaProject` has no containing-project-name authority by design.
 _Avoid_: ProjectManifest.projectName, document name, workbook basename
 
 **VbaProjectIdentityRead**:
-The immutable, request-scoped result of statically reading one exact captured source-template package. It binds the whole-package content identity to the `PROJECTNAME` value decoded with `PROJECTCODEPAGE` from the MS-OVBA directory stream inside the unique OPC `vbaProject.bin` part and its CFB `VBA` storage. It starts neither Excel nor VBIDE, persists no cache, and never falls back to a manifest label, document or file name, generated workbook, reference qualifier, or legacy host-projection pair. Missing, unreadable, malformed, encrypted, subject to unsupported protection, otherwise unsupported, or changed evidence is unavailable; a manifest-backed module Rename then fails with `analysisIncomplete`, and an unconditional final content fence prevents an edit when the package changes after capture.
-_Avoid_: HostClassProjectionSnapshot, cached project name, manifest identity
+The immutable, request-scoped result of statically reading one exact captured source-template package. It binds the whole-package content identity to the `PROJECTNAME` value decoded with `PROJECTCODEPAGE` from the MS-OVBA directory stream inside the unique OPC `vbaProject.bin` part and its CFB `VBA` storage. It starts neither Excel nor VBIDE, persists no cache, and never falls back to a manifest label, document or file name, generated workbook, reference qualifier, or environment Event catalog metadata. Missing, unreadable, malformed, encrypted, subject to unsupported protection, otherwise unsupported, or changed evidence is unavailable; a manifest-backed module Rename then fails with `analysisIncomplete`, and an unconditional final content fence prevents an edit when the package changes after capture.
+_Avoid_: environment Event catalog, cached project name, manifest identity
 
 **VbaDocumentIdentity**:
 The opaque equality identity of one language-server source document, represented
@@ -1166,10 +1170,12 @@ A `VbaProject` inferred from exported source files when no containing
 `ProjectManifest` can be found. It provides source definitions,
 `LanguageVocabulary`, and the always-active `VbaStandardLibraryReference`, but
 it has no manifest-controlled `VbaProjectReferenceSelection` and therefore does
-not contribute definitions from other external references. It also has no
-source-template-backed `HostClassProjectionSnapshot`, so intrinsic host Event evidence
-remains `indeterminate`. Its source boundary is the active source file's
-directory, not nested organization directories or the VS Code workspace root.
+not contribute definitions from other external references. An authoritative
+`.frm` still binds to the same environment-scoped current
+`IntrinsicHostEventCatalog` as a manifest-backed form, while the project has no
+containing `VbaProjectName` authority for module Rename. Its source boundary is
+the active source file's directory, not nested organization directories or the
+VS Code workspace root.
 _Avoid_: workbook-backed project, default Excel project, settings-backed project
 
 **VbaDefinition**:
@@ -1366,48 +1372,51 @@ that the Event is offered for authoring or that VBE compile validates the
 external handler signature.
 _Avoid_: Event completion surface, generated handler list, compile-validated handler
 
-**HostClassProjection**:
-The authoritative host description of one intrinsic form or document class,
-identified by its `HostClassIdentity` and containing its
-`IntrinsicEventSourceName` plus the authoritative `HostEventSignature`s
-available to that class. Its Event surface is self-contained rather than
-reconstructed from a reference catalog; source file extensions, reserved
-document-module names, and ordinary module names do not establish it.
-_Avoid_: filename-inferred form class, catalog-rehydrated host Event surface, TypeLib Event surface
+**IntrinsicHostEventCatalog**:
+The immutable environment-scoped description of the locally installed
+UserForm Event surface, containing its `IntrinsicEventSourceName`, complete
+`HostEventSignature`s, availability, and optional base-type provenance. One
+catalog is shared by every authoritative form source and carries no project,
+document, source-template, component-name, or VBA-project-name identity.
+_Avoid_: source-template Event snapshot, per-form Event catalog, project Event catalog
 
-**HostClassIdentity**:
-The identity of one intrinsic host class within a `ProjectDocument`, composed of
-the projection-supplied `VBComponent.Name` and component kind (`form` or
-`document`) with case-insensitive name equality and projection casing retained.
-One enumeration may contain it at most once; a duplicate is a class-enumeration
-failure rather than a coalescible class.
-Source association requires a compatible source kind and explicit
-`Attribute VB_Name`; file-name fallback, display sheet name, component ordinal,
-COM identity, and temporary path do not participate.
-_Avoid_: ModuleIdentity fallback, worksheet display name, VBComponent ordinal
+**IntrinsicHostEventCatalogLifecycle**:
+The `VscodeExtension` lifecycle that starts one asynchronous catalog discovery
+at trusted activation, publishes the result to the language server, and keeps
+editor startup independent from Excel completion. It never enumerates manifests
+to select workbooks and never opens a user source template as fallback.
+_Avoid_: project-scoped discovery, source-template catalog ownership
 
-**HostManagedModuleIdentity**:
-The `ModuleIdentity` of an intrinsic document source or of a form source currently associated with a `HostClassIdentity`, whose component identity is controlled by the source template rather than by source text alone. Last-known-good association evidence is insufficient to authorize identity mutation, while a form conclusively outside host association remains project-local.
-_Avoid_: ordinary form name, filename-owned host class, projected Event name
+**IntrinsicHostEventCatalogDiscovery**:
+The environment-scoped observation performed in one owned Excel process by
+creating an unsaved blank workbook and one temporary UserForm, without importing
+user source or saving a workbook. Failure leaves UserForm host Event evidence
+unavailable rather than causing project-template inspection.
+_Avoid_: source-template inspection, UserForm source import, user-workbook discovery
+
+**UserFormHostEventBinding**:
+The application of the one current `IntrinsicHostEventCatalog` to an
+authoritative `.frm` `ModuleIdentity` whose syntax kind is `FormModule`. The
+binding uses source metadata rather than evidence that a same-named component
+exists in a source template.
+_Avoid_: template component association, filename-only form binding, workbook component identity
 
 **IntrinsicEventSourceName**:
-The projection-supplied VBE Object-box name that qualifies intrinsic handlers
-in one `HostClassProjection`, such as `Worksheet`, `Workbook`, or `UserForm`;
-combining it with `_` and a `HostEventIdentity` forms the handler name.
-Comparison is case-insensitive with projection casing retained, and the value is
-never inferred from `HostClassIdentity`, component kind, source file name, or
-`HostClassBaseTypeProvenance`.
-_Avoid_: VBComponent.Name, inferred handler prefix, base-type name
+The catalog-observed VBE Object-box name `UserForm` that qualifies intrinsic
+form handlers; combining it with `_` and a `HostEventIdentity` forms a name such
+as `UserForm_Initialize`. It is never inferred from a form's module identity,
+file name, or base-type provenance.
+_Avoid_: VBComponent.Name, inferred handler prefix, form module name
 
-**HostClassBaseTypeProvenance**:
-The optional catalog-resolvable identity of the built-in host type behind a
-`HostClassProjection`. It supports provenance and navigation only; absence or
-failed catalog resolution neither supplies nor invalidates the projection's
-authoritative Event signatures.
-_Avoid_: host Event source of truth, required base type, catalog-owned host projection
+**IntrinsicHostBaseTypeProvenance**:
+The optional catalog-resolvable identity of the built-in UserForm host type
+observed during `IntrinsicHostEventCatalogDiscovery`. It supports provenance and
+navigation only; absence or failed external-catalog resolution neither supplies
+nor invalidates the current catalog's authoritative Event signatures.
+_Avoid_: host Event source of truth, required base type, form identity authority
 
 **HostEventSignature**:
-The structured shape of one inspected Event in a `HostClassProjection`,
+The structured shape of one inspected Event in an `IntrinsicHostEventCatalog`,
 containing its name and ordered parameters with names,
 `HostEventTypeReference`s, passing mechanisms, array shape, available
 `Optional` or `ParamArray` metadata, optional documentation, and
@@ -1416,20 +1425,21 @@ presentation rather than Event-handler compatibility identity.
 _Avoid_: display-only Event signature, serialized CallableSignature, parameter-name identity
 
 **HostEventIdentity**:
-The case-insensitive Event name within one `HostClassIdentity`. It denotes one
+The case-insensitive Event name within one `IntrinsicHostEventCatalog`. It denotes one
 structural Event rather than an overload or conditional family; duplicate
 observations coalesce only when their callable contracts and
-`HostEventAvailability` agree, while a conflict makes the class unverified.
+`HostEventAvailability` agree, while a conflict prevents publication of a
+current catalog.
 _Avoid_: Event overload, signature identity, TypeLib member ordinal
 
 **HostEventAvailability**:
-The projected behavior of one structurally present `HostEventSignature`:
+The observed behavior of one structurally present `HostEventSignature`:
 `authoringAvailable` controls ordinary completion and retains eligibility
 evidence for future `MemberStubGeneration`, while
 `existingHandlerRecognizable` controls association of an already-written
 handler. These values describe inspected host behavior rather than exposing raw
 TypeLib flags, may differ for the same Event, and must both be known for a
-resolved host class.
+current catalog.
 _Avoid_: raw TypeLib flags, one Event visibility flag, structural Event existence
 
 **HostEventTypeReference**:
@@ -1441,190 +1451,61 @@ equality. Display casing, human-visible reference names, VBA qualifiers, and
 registry paths do not participate in identity.
 _Avoid_: qualifier-based type identity, registry-path type identity, name-only external type
 
-**HostClassEventSurface**:
-The effective Event surface of one intrinsic form or document class, formed for
-structural eligibility, ordinary authoring, and existing-handler recognition by
-combining its valid source Event declarations with the structurally present
-members and applicable `HostEventAvailability` projections of a complete,
-current `HostClassProjection` under `HostEventShadowing`. A missing, stale, or
-incomplete projection makes the surface `indeterminate`, not authoritatively
-empty, and an intrinsic module handler remains separate from `WithEvents`
-binding.
-_Avoid_: host-name inference, intrinsic handler binding, source-only host Event list
+**IntrinsicHostEventSurface**:
+The effective Event surface of one form source, formed by combining its valid
+source Event declarations with a complete current `IntrinsicHostEventCatalog`
+under `IntrinsicHostEventCoexistence`. An unavailable catalog makes built-in
+UserForm Event evidence indeterminate rather than authoritatively empty, while
+source-declared Events remain available on their own authority.
+_Avoid_: host-name inference, source-only built-in Event list, template component Event list
 
-**HostEventShadowing**:
+**IntrinsicHostEventCoexistence**:
 The relationship by which an unguarded current valid source Event in an
-intrinsic form or document class replaces a same-name projected host Event in
-the source and external `WithEvents` Event surfaces, while the projected Event
+authoritative form replaces a same-name catalog Event in the source and external
+`WithEvents` Event surfaces, while the catalog Event
 remains separate evidence for intrinsic host-handler recognition. A guarded
 valid source Event instead retains its `ConditionalCallableFamily` and the
-same-name host Event as distinct configuration-dependent alternatives without
+same-name catalog Event as distinct configuration-dependent alternatives without
 proving branch coverage; a `RecoveredEventDeclaration` establishes neither
 form.
 _Avoid_: source-host coalescing, duplicate Event collision, intrinsic handler Rename
 
-**HostClassProjectionLifecycle**:
-The consumer-owned `VscodeExtension` project lifecycle that obtains the
-document-scoped intrinsic class set for each active `ProjectDocument` from
-`HostClassList`, folds it into one immutable
-`HostClassProjectionSnapshot`, and commits each `resolved` class independently
-to the language server. An `unverified` class preserves its
-`LastKnownGoodHostClassProjection`, or remains `indeterminate` when none exists;
-`VbaDev` owns only the inspection invocation and its Excel process.
-_Avoid_: CLI-owned projection cache, completion-time inspection, manifest Event list
+**HostEventList**:
+The environment-scoped `vba-dev host-event list` operation that creates one
+unsaved blank workbook and temporary UserForm in an owned Excel process and
+returns the complete local `IntrinsicHostEventCatalog` as text or
+schema-versioned JSON. It accepts no project or document selector and opens,
+imports, changes, or saves no user artifact.
+_Avoid_: document inspection, template Event export, user-workbook inspection
 
-**HostClassProjectionRefreshGeneration**:
-The consumer-local, monotonically increasing commit fence for one
-`ProjectDocument`'s `HostClassProjectionLifecycle`. A result can commit only
-while its generation remains current and its project, document, and source
-template request context still matches; the value is neither a `VbaDev` input
-nor projection data.
-_Avoid_: CLI request ID, inspection timestamp, source-template hash
+**IntrinsicHostEventCatalogRefresh**:
+One extension-wide discovery attempt started asynchronously at trusted
+activation or explicitly by `VBA Tools: Refresh UserForm Events`. Only one
+attempt runs at a time; explicit refresh has no document chooser, a failed
+startup leaves the catalog unavailable, and a failed later refresh retains an
+already-current catalog without automatic retry or template fallback.
+_Avoid_: project-specific refresh, source-scoped retry, implicit rediscovery
 
-**HostClassProjectionRefreshTrigger**:
-A lifecycle event that can change the selected source-template host classes:
-project-document activation, effective document or source-template identity
-change, same-template file create/change/delete or temporary absence, or
-explicit consumer refresh. Exported source edits, reference-catalog changes,
-editor selection, build/test/publish completion, and generated-output changes
-are not triggers.
-_Avoid_: source-edit refresh, catalog refresh, build-completion refresh
+**IntrinsicHostEventCatalogStatus**:
+The environment-level extension state for catalog discovery: running, current,
+or unavailable after failure. Healthy current state is quiet; running or failed
+state may appear in the status bar and Output, and the explicit refresh command
+is the recovery action.
+_Avoid_: per-document status, source diagnostic, project health result
 
-**HostClassSourceAssociationReevaluation**:
-The source-only reassociation of present form and document sources against a context-compatible current `HostClassProjectionSnapshot` after source or manifest changes. It starts no Excel inspection and advances no projection generation; it updates `HostClassSourceAssociationFailure`s and clears their attention state as soon as all associations succeed.
-_Avoid_: HostClassProjectionRefreshTrigger, automatic Excel refresh, projection regeneration
-
-**HostClassProjectionRefreshScheduler**:
-The consumer-owned, extension-wide single-flight coordinator for
-`HostClassProjectionRefreshTrigger`s. It keeps only the latest pending
-generation per `ProjectDocument`, preserves FIFO fairness between documents,
-and never starts replacement inspection before superseded inspection has
-finished cooperative cleanup.
-_Avoid_: parallel Excel inspection, unbounded refresh queue, queue-wait timeout
-
-**HostClassProjectionRefreshRecovery**:
-The explicit recovery boundary after host-class inspection fails or returns an
-unverified result: a later `HostClassProjectionRefreshTrigger` starts a new
-generation, while the lifecycle performs no timer-based retry or hidden
-backoff.
-_Avoid_: automatic Excel retry, retryable CLI result, background retry loop
-
-**HostClassProjectionStatus**:
-The consumer-visible operational state of one `ProjectDocument`'s host-class
-projection, including queued or running refresh, current data, last-known-good
-use, unavailable template, partial result, invocation failure, or
-`HostClassSourceAssociationFailure`. It belongs to
-extension status and output rather than source diagnostics or `VbaDev`
-environment diagnostics.
-_Avoid_: source warning, Doctor result, automatic retry state
-
-**HostClassSourceAssociationFailure**:
-The attention-required state in which current host-class projection data exists but a present form or document source cannot establish its `HostClassIdentity` because `Attribute VB_Name` is missing or mismatched or its component kind is incompatible. Only that source's host Event evidence becomes indeterminate; the current projection and correctly associated sources remain usable, and recovery stays in `HostClassProjectionStatus` rather than source diagnostics, Doctor, or automatic retry.
-_Avoid_: host-class compile error, failed projection refresh, file-name binding
-
-**HostClassProjectionSnapshot**:
-The immutable, document-wide effective host-class state that `VscodeExtension`
-atomically supplies to the language server after combining current projections,
-last-known-good projections, indeterminate identities, and authoritative
-deletion. It is a full replacement rather than a CLI result, class delta, or
-class tombstone. During migration, a present schema-`2` snapshot may still carry
-the legacy inspected `VbaProjectName` and `SourceTemplateFingerprint` only as a
-complete pair; cleared state carries neither. Module Rename and its
-project-name diagnostics ignore that pair and obtain containing-project
-authority through `VbaProjectIdentityRead`, while the snapshot's class entries
-continue to supply Event intelligence and current form-ownership evidence.
-_Avoid_: HostClassProjectionResult, incremental projection update, operational log
-
-**HostClassProjectionSnapshotRevision**:
-The consumer-owned, monotonically increasing transport fence for successive
-`HostClassProjectionSnapshot`s of one `ProjectDocument`. The language server
-accepts only a newer update with exact matching project, document, and selected
-source-template context. The extension replays the latest desired snapshot
-after a connection restart.
-_Avoid_: HostClassProjectionRefreshGeneration, CLI schema version, source revision
-
-**HostClassProjectionAuthority**:
-The semantic trust of one snapshot entry: `current` is authoritative,
-`lastKnownGood` supplies advisory presentation while leaving
-`HostClassEventSurface` indeterminate, and `indeterminate` supplies no projected
-Event evidence. Only current evidence may establish compile-style diagnostics
-or authorize meaning-preserving mutation.
-_Avoid_: stale semantic authority, cached validation evidence, all-or-nothing projection use
-
-**HostClassList**:
-The read-only, document-scoped `vba-dev host-class list` operation that inspects
-the selected source template and returns a `HostClassProjectionResult`
-containing every enumerated intrinsic class as human-readable text or
-schema-versioned JSON. It defaults to the
-`PrimaryOfficeDocument` when no document is specified, owns a dedicated
-`AutomationExcelProcess`, and changes neither the workbook, source, manifest,
-nor projection storage.
-_Avoid_: host Event export, projection refresh command, manifest update
-
-**HostClassProjectionResult**:
-The schema-versioned JSON result of `HostClassList`, containing one `resolved`
-or `unverified` entry per enumerated intrinsic host class,
-`classEnumerationComplete` for authority over the identity set, and `complete`
-only when that set and every class projection are complete. A structurally
-complete class remains `resolved` when a successfully inspected parameter has
-an unresolved `HostEventTypeReference`; incomplete or untrusted inspection,
-including an unavailable `HostEventAvailability` value, makes it `unverified`.
-Schema `1.1` may additionally pair the actual inspected `VbaProjectName` with
-the exact `SourceTemplateFingerprint`. That legacy pair remains transport data
-during migration, but its presence or absence neither validates Host Event
-entries nor supplies containing-project mutation or diagnostic authority.
-_Avoid_: all-or-nothing host projection, omitted empty class, partial class inference
+**IntrinsicHostEventCatalogSnapshot**:
+The versioned immutable full-catalog replacement that `VscodeExtension`
+supplies to the language server and replays after a client restart. It carries
+no project, document, template, component, `VbaProjectName`, or source-association
+state; source models independently form `UserFormHostEventBinding`s.
+_Avoid_: class delta, project identity snapshot, per-document Event snapshot
 
 **SourceTemplateFingerprint**:
-The uppercase SHA-256 fingerprint of the exact source-template private-copy
-bytes inspected for the legacy host-class result's optional `VbaProjectName`
-observation. It remains distinct from refresh generation and from the
-request-scoped whole-package content identity inside `VbaProjectIdentityRead`;
-Module Rename and project-name diagnostics do not consume it.
-_Avoid_: HostClassProjectionRefreshGeneration, source-template mtime, project label
-
-**UnverifiedHostClassEntry**:
-The non-authoritative `HostClassProjectionResult` entry for an enumerated class
-whose inspection is incomplete or untrusted. It carries only
-`HostClassIdentity`, status, a stable reason code, and a human-readable message;
-it contains no partial `HostEventSignature` or `HostClassProjection` payload.
-_Avoid_: partial host projection, diagnostic Event list, best-effort class update
-
-**HostClassInspectionFailureReason**:
-The stable reason category of an `UnverifiedHostClassEntry`: Event enumeration,
-signature read, availability read, inspection timeout, inspection abort,
-cancellation, or an otherwise unclassified class-local inspection failure.
-Whole-class enumeration failure and invocation-invalidating failures are
-reported outside this entry taxonomy; cooperative cancellation uses
-`cancelled` and top-level `operationCancelled`, never `inspectionAborted` or
-`classEnumerationFailure`.
-_Avoid_: exception type, parsed message, class-enumeration reason
-
-**HostClassInspectionState**:
-The shared invocation-local Excel/VBIDE state used to inspect successive
-intrinsic host classes. If it becomes untrusted, a conclusively finalized class
-may remain resolved only when its isolation from the failure is established;
-the causal class reports its specific reason and known later classes report
-`inspectionAborted`.
-_Avoid_: retryable class state, replacement Excel process, all-results cache
-
-**LastKnownGoodHostClassProjection**:
-The latest `resolved` `HostClassProjection` already committed for one intrinsic
-host class under its `HostClassIdentity`. An `unverified` entry, incomplete
-enumeration, failed invocation, or in-flight refresh does not replace or remove
-it; absence from a class-complete identity set does remove it.
-_Avoid_: current inspection attempt, partial projection, manifest cache
-
-**HostClassInspectionWorkspace**:
-The invocation-owned temporary directory in which `HostClassList` opens a fresh
-copy of the selected source template with macros and Excel Events disabled. It
-imports no source, changes no references, never saves the copy, and removes the
-workspace only after releasing its `AutomationExcelProcess`; inability to
-prepare the copy or prove process release yields no projection. After release
-is proved, deletion receives bounded retries; a remaining deletion failure
-retains and reports the absolute path as a housekeeping warning without changing
-the projection or successful exit status.
-_Avoid_: source template lock, generated workbook, projection cache
+The content identity captured from the exact source-template bytes used by one
+`VbaProjectIdentityRead` and manifest-backed module Rename plan. It binds the
+read `VbaProjectName` to those same bytes rather than to a path, timestamp,
+document name, workbook filename, or manifest label.
+_Avoid_: catalog revision, source-template mtime, project label
 
 **VbaProjectReferenceCatalogIdentity**:
 The machine-readable identity used by a `VbaProjectReferenceCatalog` after a
@@ -2129,11 +2010,11 @@ _Avoid_: active-variant name, majority spelling, normalized uppercase name
 
 **ConditionalVariantMarker**:
 The presentation-only `[#If]` marker that identifies a
-`ConditionalDeclarationFamily`, one of its variants, or a host Event retained
-as a configuration-dependent `HostEventShadowing` alternative without
+`ConditionalDeclarationFamily`, one of its variants, or a catalog Event retained
+as a configuration-dependent `IntrinsicHostEventCoexistence` alternative without
 rendering, normalizing, or summarizing the source condition. All simple, nested,
 and long conditional-compilation expressions use the same marker. Callable
-variants and host alternatives use it on their distinct Signature Help and
+variants and coexistence alternatives use it on their distinct Signature Help and
 Hover declarations; a name-deduplicated Event or named argument available in
 only some variants may use it in completion detail. The marker is never part of
 source insertion text. Contract-facing Completion, Signature Help, Hover, and
@@ -2143,7 +2024,7 @@ type-declaration character.
 _Avoid_: `[@#If]`, condition label, branch-path summary
 
 **ConditionalContractProvenance**:
-The presentation fact for one Event or interface contract alternative, marked conditional when its applicable `WithEvents` or `Implements` relationship, source Event or interface member, Public variable owning a derived accessor, or configuration-dependent host-shadow alternative is conditional. Contract-facing Completion, Signature Help, Hover, and diagnostic detail project the same fact, while the guardedness of the completion, handler, or implementation location alone never contributes.
+The presentation fact for one Event or interface contract alternative, marked conditional when conditionality comes from its applicable `WithEvents` or `Implements` relationship, source Event or interface member, Public variable owning a derived accessor, or a catalog Event retained as a configuration-dependent alternative by `IntrinsicHostEventCoexistence`. Contract-facing Completion, Signature Help, Hover, and diagnostic detail project the same fact, while the guardedness of the completion, handler, or implementation location alone never contributes.
 _Avoid_: completion-branch marker, active `#If` condition, declaration-location conditionality
 
 **RecoveredEventDeclaration**:
@@ -2283,9 +2164,10 @@ the admitted shape; the ordinary variable is recovered while the written
 belongs only to the declarator on which it is written and never propagates to a
 sibling. For example, in
 `Private WithEvents publisher As Publisher, other As Publisher, WithEvents app As Excel.Application`,
-only `publisher` and `app` carry `WithEvents`. Class modules include `.cls` and
-`.frm` source and document-module source exported as `.cls`; a standard module
-and a procedure-local declaration are not class-module module-level placement.
+only `publisher` and `app` carry `WithEvents`. Class modules include `.cls` class
+source and `.frm` UserForm source. Worksheet and `ThisWorkbook` code-behind are
+outside the supported source model; a standard module and a procedure-local
+declaration are not class-module module-level placement.
 _Avoid_: declaration-line WithEvents flag, procedure-local event source, handler declaration
 
 **RecoveredWithEventsVariableDeclaration**:
@@ -2326,8 +2208,9 @@ conclusively unavailable to VBA, including an external coclass marked
 an explicitly resolved coclass inaccessible. `invalidNoEvents` means a
 specific, accessible, non-enclosing class has a complete authoritative
 structural Event surface with no valid Event. `indeterminate` means the type is
-unresolved or ambiguous, the applicable catalog or `HostClassEventSurface` is
-missing, stale, or incomplete, or only `RecoveredEventDeclaration` evidence is
+unresolved or ambiguous, the applicable reference catalog or
+`IntrinsicHostEventSurface` is missing or incomplete, or only
+`RecoveredEventDeclaration` evidence is
 available. A declaration whose own conditional-compilation ownership is
 incomplete is also `indeterminate`. A source class's Event surface remains
 incomplete when any recovered, unnamed malformed, or conditionally unowned
@@ -2354,8 +2237,8 @@ existing resolved navigation and dependent-edit projections without claiming
 that the indeterminate Event resolved. A type-eligible conditional sibling may
 independently establish family-wide dependent edits that include the
 conclusive-invalid declaration in ordinary family Rename. A resolved external
-type uses only its `TypeLibEventSurface`; an intrinsic form or document class
-uses its `HostClassEventSurface`.
+type uses only its `TypeLibEventSurface`; an authoritative form source uses its
+`IntrinsicHostEventSurface`.
 _Avoid_: guessed Event source, creatable-class requirement, static-invalid syntax recovery
 
 **WithEventsHandlerNameDecomposition**:
@@ -2390,9 +2273,9 @@ incomplete or ambiguous. An external TypeLib suffix is resolved through
 `TypeLibExistingHandlerRecognitionSurface`, not the narrower
 `TypeLibEventAuthoringSurface`, so an already-written candidate can retain a
 hidden or restricted Event association that ordinary completion would not
-offer. An intrinsic form or document suffix follows `HostEventShadowing`: an
+offer. An authoritative form suffix follows `IntrinsicHostEventCoexistence`: an
 unguarded valid source Event supplies only its source target, while a guarded
-source Event family and a same-name projected host Event remain separate
+source Event family and a same-name current-catalog Event remain separate
 configuration-dependent targets without branch-coverage proof. A declaration
 whose type eligibility is `indeterminate` normally contributes one
 `indeterminate` entry before suffix lookup. When a partial compatibility
@@ -2449,8 +2332,8 @@ records an Event association and non-Sub procedure kind without itself asserting
 that the declaration is invalid. It retains the same prefix and suffix
 navigation projections but does not become a `WithEventsHandlerDeclaration` or
 enter `EventHandlerCompatibility`. Every resolved target still retains
-`EventHandlerValidationAuthority`; an external TypeLib or last-known-good host
-association permits this recognition without authorizing a procedure-kind
+`EventHandlerValidationAuthority`; an external TypeLib association permits this
+recognition without authorizing a procedure-kind
 diagnostic. Every entry being
 a conclusive `notWithEvents` or `notEvent`
 produces `ordinaryProcedure`;
@@ -2471,8 +2354,8 @@ after it becomes `ordinaryProcedure`, variable Rename leaves the procedure
 unchanged.
 Mixed `resolved` and non-resolved entries expose
 the resolved editor projections but cannot establish either a procedure-kind or
-incompatible-signature diagnostic. A fully resolved set containing any
-`externalTypeLibAdvisory` or `lastKnownGoodHostAdvisory` target likewise
+incompatible-signature diagnostic. A fully resolved set containing an
+`externalTypeLibAdvisory` target likewise
 preserves all associations while suppressing both compile-style diagnostics.
 No classification selects a host branch.
 Same-named, same-scope, all-conditional declarations subsequently form the
@@ -2482,19 +2365,18 @@ _Avoid_: guessed handler, all-or-nothing conditional binding, non-Event handler 
 
 **IntrinsicHostHandlerCandidate**:
 A procedure-kind-independent semantic candidate formed for one physical Sub,
-Function, or Property accessor in a source module associated with a
-`HostClassProjection`, when its complete name equals
+Function, or Property accessor in an authoritative form source with a
+`UserFormHostEventBinding`, when its complete name equals
 `IntrinsicEventSourceName`, `_`, and an `existingHandlerRecognizable`
 `HostEventIdentity`. Its complete identifier remains the procedure or Property
 definition, its Event-name suffix is an `EventReference`, and its source-name
 prefix and underscore have no independent semantic target; it has no
-`WithEventsEventBindingSet`, and a source `Event` never replaces its host
-target. Under current projection authority, the complete procedure or Property
+`WithEventsEventBindingSet`, and a source `Event` never replaces its catalog
+target. Under `currentCatalog` authority, the complete procedure or Property
 name is a fixed host-contract spelling rather than a `RenameTarget`; no part of
-the declaration or an ordinary complete-name reference initiates Rename. A
-last-known-good-only association preserves guidance but cannot authorize that
-mutation, while the same spelling follows ordinary procedure Rename rules when
-neither current nor last-known-good evidence associates it with a host Event.
+the declaration or an ordinary complete-name reference initiates Rename. An
+unavailable catalog leaves host-dependent classification indeterminate and
+cannot authorize a semantic mutation that assumes the name is ordinary.
 _Avoid_: WithEventsHandlerCandidate, inferred host handler, source Event handler
 
 **IntrinsicHostHandlerDeclaration**:
@@ -2512,11 +2394,11 @@ external handler projects every `resolved` entry in its
 `WithEventsEventBindingSet`; an `IntrinsicHostHandlerDeclaration` projects its
 single associated host Event. A nonconditional source Event or a resolved
 TypeLib Event projected through `TypeLibEventSurface` contributes one
-signature; a resolved host Event projected through `HostClassEventSurface`
+signature; a resolved catalog Event projected through `IntrinsicHostEventSurface`
 likewise contributes one. A conditional Event `ConditionalCallableFamily`
 contributes every physical source Event signature, and
-configuration-dependent `HostEventShadowing` retains the distinct host
-signature rather than adding it to that family.
+configuration-dependent `IntrinsicHostEventCoexistence` retains the distinct
+catalog signature rather than adding it to that family.
 For an already-written external handler candidate, a hidden or restricted
 member resolved through `TypeLibExistingHandlerRecognitionSurface` contributes
 its retained signature even though `TypeLibEventAuthoringSurface` omits it.
@@ -2525,7 +2407,7 @@ The set retains their variable-variant and Event-target provenance and does not
 turn them into one conditional Event family or overload. Each projected Event
 contract alternative combines an applicable external `WithEvents` relationship
 and its Event target into one `ConditionalContractProvenance`; an intrinsic
-host contract has only target provenance, while a retained host-shadow
+host contract has only target provenance, while a retained catalog-Event
 alternative is conditional in its own right. Identical Event
 locations may be coalesced only for presentation. A binding set with no
 `resolved` entry produces no signature set. Missing catalog, type, array, or
@@ -2539,21 +2421,19 @@ nonconclusive because of the recovered declaration.
 _Avoid_: ConditionalEventFamily, event overload set, guessed handler target
 
 **EventHandlerValidationAuthority**:
-The closed, provenance- and freshness-sensitive evidence controlling whether
+The closed, provenance-sensitive evidence controlling whether
 `EventHandlerProcedureKindDiagnostic` or
 `IncompatibleEventHandlerSignatureDiagnostic` may be emitted.
 `sourceDeclared` applies to a valid source Event, and
-`currentHostProjected` applies to an Event in a current authoritative
-`HostClassProjectionSnapshot`; both permit compile-style validation.
-`externalTypeLibAdvisory` applies to a TypeLib Event, and
-`lastKnownGoodHostAdvisory` applies to retained stale host evidence; both
-preserve association and signature guidance without authorizing either
-diagnostic. An aggregate external-handler diagnostic requires every binding
-entry to be resolved and every resolved target to be `sourceDeclared` or
-`currentHostProjected`; an intrinsic-handler diagnostic requires its one target
-to be `currentHostProjected`. Any advisory authority or incomplete target
-evidence suppresses it.
-_Avoid_: Event signature availability, stale host validation, selected target authority
+`currentCatalog` applies to an Event in the current authoritative
+`IntrinsicHostEventCatalog`; both permit compile-style validation.
+`externalTypeLibAdvisory` applies to a TypeLib Event and preserves association
+and signature guidance without authorizing either diagnostic. An aggregate
+external-handler diagnostic requires every binding entry to be resolved and
+every resolved target to be `sourceDeclared` or `currentCatalog`; an intrinsic
+handler diagnostic requires its one target to be `currentCatalog`. Advisory or
+incomplete target evidence suppresses it.
+_Avoid_: Event signature availability, unavailable-catalog validation, selected target authority
 
 **VbaCallableContractComparison**:
 The shared declaration-to-declaration exact comparison consumed by
@@ -2583,7 +2463,7 @@ complete `WithEventsHandlerDeclaration` or
 before parameter comparison. The analysis then retains a compatible,
 incompatible, or indeterminate result for every signature without selecting a
 conditional variant or compilation branch. The same operation handles a singleton
-nonconditional source Event, a singleton resolved TypeLib or projected host
+nonconditional source Event, a singleton resolved TypeLib or current-catalog
 Event, and a multi-variant conditional Event family. For a conditional handler family, it
 runs independently for every physical handler variant against the same complete
 Event-signature set; one handler variant's match never selects a branch or
@@ -2606,12 +2486,12 @@ evaluated constant value remain independent comparison dimensions. Unavailable
 or unevaluable default evidence remains indeterminate and is never presented as
 a mismatch. A valid source Event cannot declare an Optional parameter, so its
 default absence is conclusive; missing Optional-default metadata from a TypeLib
-or host projection remains indeterminate. Definition, References, Rename, and
+or current catalog remains indeterminate. Definition, References, Rename, and
 the handler's Event-target binding do not change with the compatibility results.
-A TypeLib or
-last-known-good host comparison remains available for Hover, Signature Help,
-and other advisory guidance, but `EventHandlerValidationAuthority` prevents it
-from causing a compile-style error diagnostic.
+A TypeLib comparison remains available for Hover, Signature Help, and other
+advisory guidance, but `EventHandlerValidationAuthority` prevents it from
+causing a compile-style error diagnostic. An unavailable intrinsic catalog
+supplies no comparison result.
 _Avoid_: event overload resolution, handler call mapping, selected Event variant
 
 **ConditionalSignatureRanking**:
@@ -2788,17 +2668,16 @@ The error-severity `VbaValidationDiagnostic` with code
 `WithEventsHandlerCandidate` or `IntrinsicHostHandlerCandidate` classified
 `nonSubProcedureAssociation`. A `WithEventsHandlerCandidate` additionally
 requires every entry in its `WithEventsEventBindingSet` to be `resolved` and
-every resolved target to have `sourceDeclared` or `currentHostProjected`
+every resolved target to have `sourceDeclared` or `currentCatalog`
 `EventHandlerValidationAuthority`; an intrinsic candidate requires its one host
-target to be `currentHostProjected`. A Function selects exactly its `Function`
+target to be `currentCatalog`. A Function selects exactly its `Function`
 keyword. A Property accessor selects the complete source span from `Property`
 through `Get`, `Let`, or `Set`. Its stable message is
 `Event handlers must be declared as Sub procedures.` A `notWithEvents`,
 `notEvent`, or `indeterminate` entry suppresses the diagnostic so the server
-does not diagnose from only some possible compilation configurations. Any
-`externalTypeLibAdvisory` or `lastKnownGoodHostAdvisory` association also
-suppresses it; external TypeLib behavior is advisory, and stale host evidence
-cannot establish current compile behavior. Incomplete conditional-compilation
+does not diagnose from only some possible compilation configurations. An
+`externalTypeLibAdvisory` association also suppresses it because external
+TypeLib behavior is advisory. Incomplete conditional-compilation
 ownership of the candidate declaration likewise suppresses the diagnostic
 without removing its safe positive navigation associations.
 Visibility and initial or trailing `Static` do not participate. Each physical
@@ -2820,19 +2699,19 @@ contains only conclusively incompatible signatures under
 `EventHandlerCompatibility`. An external handler additionally requires only
 `resolved` `WithEventsEventBindingSet` entries, no
 `RecoveredEventDeclaration`, and wholly `sourceDeclared` or
-`currentHostProjected` targets; an intrinsic handler requires its one target to
-be `currentHostProjected`. The handler declaration's own
+`currentCatalog` targets; an intrinsic handler requires its one target to be
+`currentCatalog`. The handler declaration's own
 conditional-compilation ownership must also be complete. Any `notWithEvents`,
 `notEvent`, or `indeterminate`
 binding entry, compatible or indeterminate signature, recovered declaration,
-`externalTypeLibAdvisory`, or `lastKnownGoodHostAdvisory` evidence suppresses
+or `externalTypeLibAdvisory` evidence suppresses
 the diagnostic for that physical handler variant. Advisory signatures remain
 available for guidance but cannot cause this compile-style error. Another
 handler variant's compatibility neither suppresses nor causes it. For a conditional family this avoids selecting a
 conditional-compilation environment: a physical handler variant that matches at
 least one possible Event signature is not diagnosed, even though the language
 server cannot prove that their branch paths correspond. For a singleton source
-or current projected host Event, the rule preserves the same fail-closed
+or current-catalog Event, the rule preserves the same fail-closed
 metadata behavior. Emission does
 not narrow or otherwise change the
 handler's Event-target binding. Its primary range is that physical handler's
@@ -2893,7 +2772,7 @@ contract that has no navigable definition. On a client supporting related
 information, navigable contracts remain only there; identical unlocated
 presentations coalesce, while every
 distinct presentation remains visible without truncation. Source-backed
-related information uses stable project declaration order; a host projection or
+related information uses stable project declaration order; an intrinsic catalog or
 external catalog fallback uses its authoritative contract set's stable
 signature order. Neither surface reorders by conditionality, mismatch count,
 mismatch category, or edit state, and the two surfaces are not interleaved into
@@ -3033,8 +2912,8 @@ _Avoid_: keyword completion, declaration keyword
 **CompletionCandidate**:
 An editor proposal admitted by a `CompletionExpectation` after semantic resolution. It may originate from a `VbaDefinition`, `VbaProjectReferenceDefinition`, `LanguageVocabulary`, named `CallableParameter`, callable-owned line label, contextual branch statement, `ContractMemberNameCompletion`, or `EndStatementCompletion`. Its insertion and replacement facts are complete before LSP projection, and proposals with the same label remain distinct when their effective insertion text differs.
 Candidate discovery reads only the already-admitted `VbaProject` source,
-language vocabulary, committed reference-catalog definitions, and committed
-host-class projections; it does not perform TypeLib or host discovery or refresh
+language vocabulary, committed reference-catalog definitions, and the committed
+current `IntrinsicHostEventCatalog`; it does not perform TypeLib or host discovery or refresh
 during an editor completion request, and it does not wait for in-flight catalog
 work. Hidden or
 restricted catalog definitions are omitted from ordinary completion unless they
@@ -3254,7 +3133,7 @@ partially typed callable declaration-name slot after `Sub`, `Function`,
 `IntrinsicEventSourceName`, a same-class
 `WithEvents` variable, or an interface named by an applicable `Implements`
 relationship, it inserts only the semantic contract prefix and one trailing
-underscore, such as `Worksheet_`, `publisher_`, or `IFoo_`, and leaves the
+underscore, such as `UserForm_`, `publisher_`, or `IFoo_`, and leaves the
 declaration in the same member-completion context as if that prefix had been
 typed manually. A partial name matches candidate prefixes case-insensitively by
 leading text, and selection replaces only that partial declaration-name
@@ -3350,16 +3229,17 @@ repairing action own a conclusive conflict instead of name completion creating
 another declaration. Complementary Property Get, Let, and Set kinds are not
 collision peers merely because they share a Property name.
 A generic `[#If]` detail marker on a member candidate describes conditional
-contract provenance, not the completion location: it appears when an applicable `Implements`
-relationship, same-class `WithEvents` declaration, interface member or Public
-variable owning a derived accessor, source Event declaration, or retained
-configuration-dependent host-shadow alternative is conditional. A surrounding
+contract provenance, not the completion location: it appears when conditionality
+comes from an applicable `Implements` relationship, same-class `WithEvents`
+declaration, interface member or Public variable owning a derived accessor,
+source Event declaration, or a catalog Event retained as a
+configuration-dependent alternative by `IntrinsicHostEventCoexistence`. A surrounding
 conditional branch alone adds no marker. Conditions are neither displayed nor
 proved exhaustive, so equivalent declarations in every branch remain
 conditional provenance.
 Admission requires a complete contract name, its compatible declaration kind,
-and conclusive authoring admission from domain-specific current or committed
-last-known-good evidence. For an Event this includes its authoring surface or
+and conclusive authoring admission from domain-specific committed evidence. For
+an Event this includes its authoring surface or
 explicit `authoringAvailable` behavior; for an interface member it includes a
 valid accessible contract and complete accessor or invoke-kind evidence.
 Missing signature or documentation metadata may degrade detail and Signature
@@ -3380,7 +3260,7 @@ For an intrinsic host contract, only a `Sub` declaration is eligible.
 `IntrinsicEventSourceName` plus underscore only when at least one downstream
 `authoringAvailable` Event survives collision filtering. The member candidate
 then displays that Event as the complete handler name but replaces only the
-typed Event suffix, using current or last-known-good projection evidence. It
+typed Event suffix, using the current `IntrinsicHostEventCatalog`. It
 omits only a conclusively colliding same-scope name after excluding the
 declaration being edited: a set containing any unconditional declaration
 collides, while all-conditional peers, other scopes, and indeterminate collision
@@ -3463,8 +3343,7 @@ _Avoid_: HostSignatureDiscovery, COM refresh, member scan, metadata scrape
 **RenameTarget**:
 A source-defined logical target backed by one or more `VbaDefinition`s that can
 be renamed inside its `VbaProject`, except when the definition is explicitly a
-`DependentRenameTarget`, a `ManagedModuleIdentity`, a
-`HostManagedModuleIdentity`, or a current-authority
+`DependentRenameTarget`, a `ManagedModuleIdentity`, or a current-authority
 `IntrinsicHostHandlerCandidate` with a fixed host-contract name. A call occurrence bound to a
 `ConditionalCallableFamily` identifies the complete family as its
 `RenameTarget`, regardless of signature ranking or per-variant call
@@ -3555,7 +3434,9 @@ requiring raw snapshot identities to remain equal. A plan rejects a
 case-insensitive collision with a distinct declaration in the same VBA
 declaration scope or namespace, and a `ModuleIdentity` plan also rejects a
 collision with the containing `VbaProjectName` or an active
-`ReferencedVbaProjectName`. After applying the hypothetical edits, every
+`ReferencedVbaProjectName`. A form target also requires one complete
+`FormSourceUnitRename`; no root identity, sidecar reference, semantic occurrence,
+or matching basename may be omitted. After applying the hypothetical edits, every
 target occurrence must still resolve to that logical target and every
 pre-existing non-target semantic occurrence must retain its prior binding or
 unresolved/ambiguous classification. An unrelated pre-existing error does not
@@ -3586,11 +3467,11 @@ or Property name while preserving its Event suffix, and renames every ordinary
 reference bound to each dependent logical target. The
 initiating variable Rename and every dependent candidate-target Rename form one
 atomic plan. When `EventHandlerValidationAuthority` is wholly
-diagnostic-authoritative—`sourceDeclared` or `currentHostProjected`—
+diagnostic-authoritative—`sourceDeclared` or `currentCatalog`—
 `validation.eventHandlerMustBeSub` remains on each
 `nonSubProcedureAssociation` Function or Property accessor after either upstream
-Rename; Rename does not repair procedure kind. An external TypeLib or
-last-known-good host association remains diagnostic-free before and after the
+Rename; Rename does not repair procedure kind. An external TypeLib association
+remains diagnostic-free before and after the
 edit. Any derived collision,
 changed binding, or incomplete
 candidate ownership or reference analysis fails the complete plan closed. In
@@ -3607,8 +3488,8 @@ well-formed Prepare Rename or Rename request whose recognized semantic occurrenc
 `error.data.reason` values distinguish `invalidName`, `notRenameTarget`,
 `sameScopeCollision`, `resolutionChanged`, `analysisIncomplete`,
 `moduleIdentityNotExplicit`, `moduleIdentityInvalid`, `managedModuleIdentity`,
-`hostManagedModuleIdentity`, `clientCapabilityMissing`, and
-`resourceOperationConflict`. Protocol shape errors remain `InvalidParams`;
+`clientCapabilityMissing`, and `resourceOperationConflict`. Protocol shape
+errors remain `InvalidParams`;
 Prepare Rename on an occurrence with no semantic target and an ordinally
 unchanged `RenameName` use successful `null` results rather than a
 `RenameFailure`. A `sameScopeCollision` preserves every semantic conflict in the
@@ -3642,7 +3523,7 @@ The case-insensitive process of matching an identifier reference to the closest 
 _Avoid_: lookup, binding, search
 
 **ModuleIdentity**:
-The name of an exported VBA module, class, or form as defined by its authoritative `ModuleIdentityMetadata` record. A source with no such record has only a `FallbackModuleIdentity`, while invalid metadata produces `InvalidModuleIdentityMetadata`; neither state is authoritative for semantic mutation or host-class association.
+The name of an exported VBA module, class, or form as defined by its authoritative `ModuleIdentityMetadata` record. A source with no such record has only a `FallbackModuleIdentity`, while invalid metadata produces `InvalidModuleIdentityMetadata`; neither state is authoritative for semantic mutation or `UserFormHostEventBinding`.
 _Avoid_: file name, module file, path name
 
 **ModuleIdentityMetadata**:
@@ -3658,7 +3539,7 @@ The source state in which a procedural module has duplicate `VB_Name` records, o
 _Avoid_: FallbackModuleIdentity, first-attribute identity, recoverable ModuleIdentity
 
 **FallbackModuleIdentity**:
-An analysis-recovery name derived from the source file basename only when no `VB_Name`-like metadata record exists. It may sustain navigation and name analysis, but it cannot authorize semantic `ModuleIdentity` Rename or establish `HostClassIdentity`; invalid metadata does not fall back to this state.
+An analysis-recovery name derived from the source file basename only when no `VB_Name`-like metadata record exists. It may sustain navigation and name analysis, but it cannot authorize semantic `ModuleIdentity` Rename or establish `UserFormHostEventBinding`; invalid metadata does not fall back to this state.
 _Avoid_: implicit ModuleIdentity, file-owned module name, renameable fallback
 
 **ModuleIdentityOccurrence**:
@@ -3696,7 +3577,7 @@ event-name suffix of a `WithEventsHandlerCandidate` or
 syntactically admitted `RaiseEvent`
 resolves only a source Event or conditional Event family declared in its
 enclosing class module. It never falls back to a same-named Sub or Property,
-another class's Event, a TypeLib Event, or an intrinsic form, document, or host
+another class's Event, a TypeLib Event, or a catalog-backed intrinsic UserForm
 Event. An eligible local `RecoveredEventDeclaration` remains bound for
 Definition, References, and repairing Rename, while its absent valid signature
 contributes only indeterminate call evidence. A placement-invalid `RaiseEvent`
@@ -3724,23 +3605,24 @@ Rename changes the candidate's complete procedure or Property name, its
 declarations and every ordinary reference bound to that dependent logical target
 participate atomically rather than becoming members of the Event family.
 
-An intrinsic candidate's Event-name suffix refers to its one projected
+An intrinsic candidate's Event-name suffix refers to its one current-catalog
 `HostEventIdentity`; its `IntrinsicEventSourceName` prefix and underscore carry
-no separate reference. Hover over the suffix uses the projected Event signature
-and documentation. Definition follows `HostClassBaseTypeProvenance` to a
+no separate reference. Hover over the suffix uses the catalog Event signature
+and documentation. Definition follows `IntrinsicHostBaseTypeProvenance` to a
 navigable external Event definition when available and otherwise returns no
 location without redirecting to the handler procedure. References for that host
 identity include intrinsic and external handler suffixes that actually retain
-the same projected target; an external handler whose source Event shadows the
-host Event is excluded. The complete declaration identifier and ordinary
+the same catalog target; an external handler whose source Event supersedes the
+catalog Event is excluded. The complete declaration identifier and ordinary
 complete-name occurrences continue to define or reference the procedure or its
-`ConditionalDeclarationFamily`. The projected host identity is not a
-source-defined `RenameTarget`: under current authority, Prepare Rename returns
+`ConditionalDeclarationFamily`. The catalog host identity is not a
+source-defined `RenameTarget`: under `currentCatalog` authority, Prepare Rename returns
 no target for the suffix or any other part of the intrinsic candidate, and a
 direct non-no-op Rename of the complete target fails with `notRenameTarget`,
-including a case-only change. Last-known-good-only association instead makes a
-non-no-op direct Rename fail with `analysisIncomplete`. An ordinally unchanged
-request retains the general successful-null result.
+including a case-only change. When the current catalog is unavailable, a
+potential intrinsic association remains indeterminate and a catalog-dependent
+non-no-op Rename fails with `analysisIncomplete`. An ordinally unchanged request
+retains the general successful-null result.
 _Avoid_: callback, event procedure, handler lookup
 
 **HandlerEventRenameConvergence**:
@@ -3777,9 +3659,9 @@ trailing `Static` are valid and do not change handler recognition or
 compatibility. A Function or Property accessor with the same proven bindings is
 instead `nonSubProcedureAssociation`; it receives
 `EventHandlerProcedureKindDiagnostic` only when every resolved target has
-`sourceDeclared` or `currentHostProjected`
-`EventHandlerValidationAuthority`. An external TypeLib or last-known-good host
-association retains its navigation, Hover, and signature-guidance projections
+`sourceDeclared` or `currentCatalog`
+`EventHandlerValidationAuthority`. An external TypeLib association retains its
+navigation, Hover, and signature-guidance projections
 without that error. A declaration in a procedural module or
 another class, an ordinary same-spelled occurrence, a procedure without a valid
 name decomposition, or a candidate classified `ordinaryProcedure` is not a
@@ -4157,7 +4039,7 @@ Dev: "Can an Event parameter declared `As Long` match a handler parameter declar
 Domain Expert: "No. Event-to-handler comparison is declaration compatibility, not call-site conversion. Normalize spelling and resolve both types, then require the same canonical type identity. `Workbook` and `Excel.Workbook` can match when they resolve to the same TypeLib definition; `Object` and `Excel.Workbook`, a class and one of its interfaces, `Variant` and a concrete type, or distinct numeric types do not. If catalog, host, or resolution evidence cannot establish either identity, retain an indeterminate result rather than guessing."
 
 Dev: "Is `EventHandlerCompatibility` only for conditional source Events?"
-Domain Expert: "No. It consumes a `ResolvedEventSignatureSet`: one signature for a nonconditional source, resolved TypeLib Event, or projected host Event, and every physical signature for a conditional Event family. Unresolved, ambiguous, and non-Event targets are not compared, while missing signature metadata remains indeterminate. TypeLib and last-known-good host comparisons remain advisory for Hover and Signature Help; only a complete target set whose authorities are all `sourceDeclared` or `currentHostProjected` authorizes a handler error diagnostic."
+Domain Expert: "No. It consumes a `ResolvedEventSignatureSet`: one signature for a nonconditional source, resolved TypeLib Event, or current-catalog Event, and every physical signature for a conditional Event family. Unresolved, ambiguous, and non-Event targets are not compared, while missing signature metadata remains indeterminate. TypeLib comparisons remain advisory for Hover and Signature Help; only a complete target set whose authorities are all `sourceDeclared` or `currentCatalog` authorizes a handler error diagnostic."
 
 Dev: "Does an invalid Event parameter make the Event name disappear from editor features?"
 Domain Expert: "No. When its name and scope are recoverable, keep a `RecoveredEventDeclaration` for completion, Definition, References, and Rename, but do not project a `CallableSignature`, `ResolvedEventSignatureSet` entry, or Signature Help item. Its presence makes dependent call and handler compatibility indeterminate so the syntax error does not cascade."
@@ -4172,7 +4054,7 @@ Dev: "Does one `WithEvents` keyword apply to every variable on a comma-separated
 Domain Expert: "No. Preserve it per declarator. In `Private WithEvents publisher As Publisher, other As Publisher, WithEvents app As Excel.Application`, only `publisher` and `app` are `WithEventsVariableDeclaration`s; `other` is an ordinary module variable. Never infer a line-wide modifier from either occurrence."
 
 Dev: "Where may a `WithEvents` variable be declared, and what survives invalid placement?"
-Domain Expert: "Only at module level in a class-module code section, introduced by `Public`, `Private`, or `Dim`. Treat `.cls`, `.frm`, and document-module source exported as `.cls` as class modules. For every offending declarator in a standard module or procedure body, publish `syntax.withEventsDeclarationNotAllowedHere` over exactly its own `WithEvents` keyword. Retain a `RecoveredWithEventsVariableDeclaration` for ordinary variable Definition, References, Hover, and Rename, but let it establish no handler-prefix binding, `WithEventsEventBindingSet` entry, handler diagnostic, or dependent Rename of its own; it is neither `notWithEvents` nor `indeterminate` evidence."
+Domain Expert: "Only at module level in a class-module code section, introduced by `Public`, `Private`, or `Dim`. Treat `.cls` class source and `.frm` UserForm source as class modules; Worksheet and `ThisWorkbook` code-behind are outside the supported source model. For every offending declarator in a standard module or procedure body, publish `syntax.withEventsDeclarationNotAllowedHere` over exactly its own `WithEvents` keyword. Retain a `RecoveredWithEventsVariableDeclaration` for ordinary variable Definition, References, Hover, and Rename, but let it establish no handler-prefix binding, `WithEventsEventBindingSet` entry, handler diagnostic, or dependent Rename of its own; it is neither `notWithEvents` nor `indeterminate` evidence."
 
 Dev: "Can a `WithEvents` declarator be an array, use `As New`, use a type-declaration character, or omit its explicit type?"
 Domain Expert: "No. Require `WithEvents IDENTIFIER As class-type-name`. Publish independent declarator-local `syntax.withEventsArrayNotAllowed`, `syntax.withEventsNewNotAllowed`, `syntax.withEventsTypeDeclarationCharacterNotAllowed`, and `syntax.withEventsTypeRequired` diagnostics over the complete array designator, exact `New`, exact suffix character, and either the identifier or type-less `As`, respectively. Retain every present violation. Recover the ordinary variable definition and surviving type metadata, but let that declarator establish no Event binding or dependent Rename of its own. A conditional-family sibling whose `WithEventsTypeEligibility` is `eligible` can still establish family-wide dependent edits. Do not inherit a type or `WithEvents` state from a comma-separated sibling."
@@ -4183,134 +4065,74 @@ Domain Expert: "Classify each declarator independently with `WithEventsTypeEligi
 Dev: "Which TypeLib interfaces supply Events for an external `WithEvents` class?"
 Domain Expert: "Require the declared external type to be a `TKIND_COCLASS` and derive its `TypeLibEventSurface` only from exactly one implemented interface carrying both `FDEFAULT` and `FSOURCE`. Ignore non-default `FSOURCE` interfaces without falling back even when only one exists; `FDEFAULTVTABLE` alone is not a substitute. Preserve every callable default-source member and its `FUNCFLAGS`, then derive separate structural, authoring, and existing-handler-recognition projections. A complete coclass with no default source or a structurally empty source produces `invalidNoEvents`. Multiple default sources or missing, unreadable, stale, or incomplete type or implemented-interface association-set identity, flags, or completeness metadata are `indeterminate` and retain no callable. Only after complete association metadata identifies exactly one default source may an incomplete callable surface retain an individually complete known member for positive advisory existing-handler recognition; it proves neither type eligibility nor a negative suffix result. A directly declared interface or dispinterface is `invalidNotClass`, and its methods are never reclassified as Events merely because another coclass uses that interface."
 
-Dev: "Can a `.frm` file or a module named `ThisWorkbook` establish built-in host Events?"
-Domain Expert: "No. An intrinsic form or document class uses `HostClassEventSurface`, which combines its valid source Event declarations with a complete, current `HostClassProjection` under `HostEventShadowing`. File extensions and module names never substitute for that projection. Missing, stale, or incomplete projection evidence is `indeterminate`, not `invalidNoEvents`, and an intrinsic module handler remains separate from `WithEvents` binding."
+Dev: "What source establishes built-in UserForm Events?"
+Domain Expert: "An authoritative `.frm` with a valid explicit `ModuleIdentity` forms a `UserFormHostEventBinding` to the environment-scoped current `IntrinsicHostEventCatalog`. The form extension or identity alone does not manufacture an Event list. Worksheet and `ThisWorkbook` code-behind are outside the supported source and intrinsic Event model, so their module names establish no built-in handler contract."
 
-Dev: "What happens when an intrinsic form or document class declares an unguarded valid source Event named `Click` even though its host projection also contains `Click`?"
-Domain Expert: "`HostEventShadowing` makes the source Event authoritative for `RaiseEvent`, external `WithEvents` authoring, suffix resolution, and signature guidance without requiring the two signatures to match or reporting a duplicate. The projected Event remains separate evidence for recognizing the intrinsic `UserForm_Click`-style handler. Renaming the source Event changes its declaration, `RaiseEvent` references, and external handlers, but never renames that intrinsic handler. A `RecoveredEventDeclaration` does not shadow the projected Event."
+Dev: "What happens when a UserForm declares a source Event named `Click` and the current catalog also contains `Click`?"
+Domain Expert: "`IntrinsicHostEventCoexistence` keeps the two authorities distinct. An unguarded source Event owns `RaiseEvent`, external `WithEvents` authoring, suffix resolution, and source Event Rename, while the catalog Event remains the fixed contract for `UserForm_Click`. A guarded source family and the catalog Event remain separate `[#If]` alternatives without active-branch or coverage inference. A Rename that cannot preserve every dependent association fails with `analysisIncomplete`."
 
-Dev: "What if that source `Click` Event is guarded by `#If`, including an apparently exhaustive `#If` / `#Else`?"
-Domain Expert: "`RaiseEvent` still resolves only the source `ConditionalCallableFamily`, while an external `WithEvents` binding retains that family and the projected host Event as distinct configuration-dependent alternatives. Do not select an active branch, prove branch coverage, or merge the host Event into the source family. The intrinsic handler remains associated only with the host Event. If a source Event Rename would have to decide whether a shared external handler belongs to the source family or host Event, fail the complete Rename with `analysisIncomplete` rather than applying partial edits."
+Dev: "Who discovers and publishes intrinsic UserForm Events?"
+Domain Expert: "`IntrinsicHostEventCatalogDiscovery` runs once asynchronously from trusted extension activation through `vba-dev host-event list --format json`. `VscodeExtension` owns `IntrinsicHostEventCatalogLifecycle`, publishes one versioned full-catalog replacement to the language server, and replays the latest current catalog after a language-client restart. The manifest owns no Event data or association, and synchronous editor requests never start or wait for Excel."
 
-Dev: "Does external completion show separate source and host items for that conditional `Click`?"
-Domain Expert: "No. Show one `Click` Event completion with `Event [#If]` detail and insert only `Click`. Signature Help retains every valid source-family and host signature as separate `[#If]` entries, without source/host provenance or condition text. `RaiseEvent` completion and Signature Help remain source-family-only. Existing external handlers may retain a host signature through `existingHandlerRecognizable` even when that Event is omitted from ordinary authoring by `authoringAvailable`."
+Dev: "Does discovery open each project document or source template?"
+Domain Expert: "No. One owned Excel process creates an unsaved blank workbook and one temporary UserForm, observes the locally installed UserForm Event surface, and closes everything without saving. It opens no user workbook, imports no user source, accepts no project or document selector, and never falls back to source-template inspection."
 
-Dev: "Who owns `HostClassProjection` refresh and storage?"
-Domain Expert: "`HostClassList` performs one read-only, machine-readable inspection of the selected `ProjectDocument` source template and owns only that invocation and its Excel process. `VscodeExtension` owns the background `HostClassProjectionLifecycle` and supplies committed immutable snapshots to the language server. The manifest stores neither generated Event members nor projection state, and an `AdHocVbaProject` has no projection."
+Dev: "What is the public CLI for environment Event discovery?"
+Domain Expert: "Use `vba-dev host-event list --format json`. It returns the complete environment-scoped `IntrinsicHostEventCatalog`, has no project or document selector, and advertises its own versioned command and catalog contract. Project labels, workbook paths, form identities, and `VBProject.Name` are absent from that result."
 
-Dev: "Can a slow host-class refresh overwrite a newer project state?"
-Domain Expert: "No. `VscodeExtension` binds each invocation to a `HostClassProjectionRefreshGeneration` and commits only while it remains current and the response's canonical absolute project root, manifest-resolved document name, and canonical absolute source-template path still match. A superseded result changes neither resolved entries nor deletion state. The generation remains consumer-local; `VbaDev` inspects the template copy selected at invocation start and serializes no VS Code request ID, mtime, or inspection timestamp. Its optional legacy `SourceTemplateFingerprint` identifies the bytes behind the transported project-name observation, but Module Rename and project-name diagnostics do not consume that pair."
+Dev: "What happens when environment discovery fails?"
+Domain Expert: "A startup failure leaves intrinsic UserForm Event intelligence unavailable and reports environment-level status and Output without blocking language-server startup. `VBA Tools: Refresh UserForm Events` repeats the same discovery without a document chooser. A failed explicit refresh retains an already-current catalog; neither failure starts an automatic template scan or creates a per-document retry queue."
 
-Dev: "Should editing `Module1.bas` or refreshing a reference catalog start host-class inspection?"
-Domain Expert: "No. A `HostClassProjectionRefreshTrigger` is initial project-document activation, an effective manifest document or source-template identity change, a create/change/delete event for the selected template file, or an explicit consumer refresh. Removing a document or changing its template identity cancels in-flight work and removes the old projection. A same-path template change advances the generation but preserves last-known-good on failure; temporary template absence is unavailable rather than authoritative deletion. Source edits, reference-only changes, editor changes, and bin or publish changes do not trigger inspection. Relevant source and manifest changes may still run `HostClassSourceAssociationReevaluation` against the current snapshot without starting Excel."
+Dev: "Can an unavailable catalog be treated as an empty UserForm Event surface?"
+Domain Expert: "No. Built-in UserForm Event evidence is indeterminate, not `invalidNoEvents`. Source-declared Events remain available on their own authority, while host-dependent diagnostics and semantic mutations fail closed when they require catalog classification."
 
-Dev: "Can several template saves start several Excel inspections at once?"
-Domain Expert: "No. `HostClassProjectionRefreshScheduler` runs at most one `HostClassList` invocation extension-wide. Automatic file and manifest activity uses a one-second trailing-edge debounce; activation and explicit refresh do not. A selected-template event advances its generation and requests cancellation immediately before delaying replacement. A raw manifest observation instead fences a matching in-flight result until the final effective context is resolved, so unchanged manifest context releases that result without starting Excel and changed context cannot accept stale output. Each document retains only its newest pending generation. A trigger superseding that document's running inspection requests cooperative cancellation, discards any stale terminal result, and waits for CLI and Excel cleanup before replacement. Other documents retain FIFO order, queue waiting has no timeout, and extension shutdown cancels running work and drops the queue."
+Dev: "How does module Rename obtain the containing `VBProject.Name`?"
+Domain Expert: "It does not use environment discovery. At Rename request time, `VbaProjectIdentityRead` statically reads the `PROJECTNAME` record from the exact source template's `vbaProject.bin` and binds the `VbaProjectName` to the same `SourceTemplateFingerprint`. Missing, malformed, or changing evidence is `analysisIncomplete`; the manifest project label, workbook name, and blank discovery workbook never substitute."
 
-Dev: "Does a failed or unverified host-class refresh retry itself after a delay?"
-Domain Expert: "No. `HostClassProjectionRefreshRecovery` waits for a later lifecycle trigger or explicit consumer refresh to start a new generation. Valid partial results retain their class-level meaning, invocation failures preserve applicable last-known-good state, and cancellation or supersession does not create another retry. Explicit refresh bypasses debounce but still uses the single-flight scheduler. Schema `1.0` adds no retryability or backoff fields."
+Dev: "Does the current catalog own a UserForm name or prevent module Rename?"
+Domain Expert: "No. A UserForm is the source-owned `FormSourceUnit`; the current catalog supplies only its built-in Event contract. Module Rename remains available and must update the outer `Begin <designer-class> <identity>` record, every matching sidecar reference, authoritative `Attribute VB_Name`, all resolved semantic occurrences, and matching `.frm` and `.frx` basenames in one version-fenced plan, including case-only changes. Any uncertain sidecar or designer identity fails closed."
 
-Dev: "Where does a user see and retry a failed background host-class refresh?"
-Domain Expert: "Use `VBA Tools: Refresh Host Events` for one chosen project document. It shows cancellable progress, bypasses debounce, and joins the same scheduler. Healthy background state stays quiet; queued or running work and attention-required `HostClassProjectionStatus` appear in a transient status-bar item whose click opens VBA Tools Output. Background failure never pops up, while an explicitly requested inspection failure shows one error with `Show Output`. If explicit inspection succeeds but source-association failures remain, keep the command successful and show one warning with `Show Output`. Output records generation, context, trigger, lifecycle transitions, counts, deletion, reason, and last-known-good use. Do not publish source diagnostics, add a dedicated Project Health view, or mix this state into `vba-dev doctor`."
+Dev: "Where does `IntrinsicEventSourceName` come from?"
+Domain Expert: "From the current catalog's observed VBE Object-box contract. The supported value is `UserForm`, producing names such as `UserForm_Initialize`; it is not inferred from `UserForm1`, the `.frm` basename, `Attribute VB_Name`, or optional `IntrinsicHostBaseTypeProvenance`."
 
-Dev: "Does cancelling `VBA Tools: Refresh Host Events` discard inspection work that already completed?"
-Domain Expert: "Not when the cancelled invocation still owns the current generation and returns a schema-valid terminal result after process release. Remove a queued request or cooperatively cancel only that document's running request; then apply resolved entries, preserve last-known-good for cancelled or unverified entries, and honor authoritative absence only when `classEnumerationComplete` is true. Invalid output preserves all prior state. A superseded generation is discarded whole, and user cancellation produces neither an error popup nor a retry."
+Dev: "Is `UserForm_Initialize` handled as a `WithEventsHandlerCandidate`?"
+Domain Expert: "No. A matching declaration in an authoritative form is an `IntrinsicHostHandlerCandidate` with one `currentCatalog` target and no variable-prefix binding set. A Sub becomes an `IntrinsicHostHandlerDeclaration`; a Function or Property accessor is a `nonSubProcedureAssociation`. Current-catalog authority permits procedure-kind and signature diagnostics."
 
-Dev: "Does the language server consume `HostClassProjectionResult` directly or receive class deltas?"
-Domain Expert: "Neither. `VscodeExtension` folds the result into one versioned `HostClassProjectionSnapshot` and sends the complete effective document state through `vba/hostClassProjectionSnapshot`. Entries are `current`, `lastKnownGood`, or `indeterminate`; only the first two carry a complete projection. A `present` snapshot replaces the document atomically, while `cleared` removes it. `HostClassProjectionSnapshotRevision` rejects stale notifications, matching project context is required, and the latest desired snapshot is replayed after language-client restart. Manifest synchronization is enqueued first. The notification is a coalescible workspace mutation and never blocks an editor request."
+Dev: "Can F2 rename a recognized `UserForm_Initialize` procedure or only its suffix?"
+Domain Expert: "No. The current catalog makes the complete intrinsic handler name a fixed host contract. Prepare Rename exposes no target in its prefix, underscore, suffix, complete declaration, conditional sibling, non-Sub association, or ordinary complete-name reference. A non-no-op direct Rename fails with `notRenameTarget`, including a case-only change; unavailable catalog evidence cannot authorize a mutation that assumes an intrinsic-looking name is ordinary."
 
-Dev: "Can a `lastKnownGood` host Event still prove a validation error or authorize Rename?"
-Domain Expert: "No. It may continue to supply completion, hover, Signature Help, existing-handler association, and navigation, but `HostClassProjectionAuthority` remains indeterminate for semantic conclusions. Do not establish `invalidNoEvents`, handler incompatibility, result type, or type compatibility from stale evidence, and reject a mutation that needs current host evidence with `analysisIncomplete`. `current` alone is authoritative; an `indeterminate` entry supplies no projected candidates. The status bar reports stale use rather than annotating every editor item."
+Dev: "Does the generic catalog include control-specific handlers such as `CommandButton1_Click`?"
+Domain Expert: "No. Those require designer-instance metadata that one generated UserForm cannot establish. The catalog covers intrinsic UserForm Events only; control Event discovery and member-stub generation remain separate future work."
 
-Dev: "What is the public CLI for obtaining a host-class projection?"
-Domain Expert: "Use `vba-dev host-class list --project <path> --document <name> --format json`. It follows normal project discovery, defaults to the primary document when `--document` is omitted, defaults to human-readable text, and advertises feature `1.0` as `featureVersions[\"hostClass.list\"]` plus JSON output schema `1.1` as `commandSchemaVersions[\"host-class list\"]`. It starts an owned hidden Excel process but does not write the workbook, source, manifest, or a projection cache."
+Dev: "Can the language server derive UserForm Events from base TypeLib metadata?"
+Domain Expert: "No. The current `IntrinsicHostEventCatalog` carries the complete observed Event signatures and availability contract. `IntrinsicHostBaseTypeProvenance` is optional navigation and provenance metadata only; its absence does not invalidate an otherwise complete catalog."
 
-Dev: "How does module Rename know the containing VBA project name came from the same template content?"
-Domain Expert: "The language server captures the exact selected source-template package bytes at request start and performs a static `VbaProjectIdentityRead`. It validates the OPC package and unique `vbaProject.bin`, opens the CFB `VBA` storage, decompresses the MS-OVBA directory stream, reads `PROJECTCODEPAGE`, and decodes `PROJECTNAME` from those same bytes without Excel or VBIDE. Before returning a complete module Rename `WorkspaceEdit`, it unconditionally verifies that the current whole-package content still matches the captured identity, even when no file operation is planned. Missing, unreadable, malformed, encrypted, subject to unsupported protection, otherwise unsupported, or changed content is `analysisIncomplete`; no cache, host-projection observation, manifest label, document name, workbook filename, generated workbook name, or reference alias substitutes."
+Dev: "Can `host-event list --format json` return only rendered VBE signature labels?"
+Domain Expert: "No. Each `HostEventSignature` retains the Event name and ordered parameter types, passing mechanisms, array shape, available `Optional` or `ParamArray` metadata, parameter names, documentation, and both `HostEventAvailability` values. Consumers derive labels; parameter spelling and rendered labels are not handler compatibility identity."
 
-Dev: "Does `host-class list` open and lock the source template itself?"
-Domain Expert: "No. It copies the selected source template into a unique `HostClassInspectionWorkspace`, opens only that copy with macros and Excel Events disabled, imports no source, changes no references, and never saves. It releases the owned Excel process before removing the workspace. If the copy cannot be prepared, the command fails without guessing a projection."
+Dev: "Can the current catalog contain two overload-like UserForm Events with the same name?"
+Domain Expert: "No. `HostEventIdentity` is case-insensitive within the one UserForm surface. Duplicate observations coalesce only when their callable contracts and both availability values agree; conflicting evidence makes discovery unavailable rather than publishing overloads or a partial current catalog."
 
-Dev: "Does failure to remove a `HostClassInspectionWorkspace` invalidate its projection?"
-Domain Expert: "Not after owned-process release is proved. Hold machine-readable projection output until process release succeeds; failure to prove release is a command-level failure with no JSON projection. Then apply bounded deletion retries. If only deletion still fails, report the retained absolute path as a housekeeping warning while preserving the projection and successful exit status. Failure and cancellation use the same cleanup order."
-
-Dev: "Does one unreadable host class invalidate every class in `host-class list`?"
-Domain Expert: "No. Return a schema-valid `HostClassProjectionResult` after process release, even on nonzero exit. Mark each enumerated class `resolved` or `unverified`; `complete` is true only when enumeration and every class projection complete. Commit resolved classes independently. An unverified class preserves its `LastKnownGoodHostClassProjection`, or becomes `indeterminate` when none exists. If enumeration is incomplete, omitted classes are unknown, never authoritative empty surfaces. Malformed JSON, request-context mismatch, or process-release failure invalidates the whole result."
-
-Dev: "Can source file-name fallback bind a form or document module to a `HostClassProjection`?"
-Domain Expert: "No. Match `HostClassIdentity` only within the selected `ProjectDocument`, using case-insensitive `VBComponent.Name`, an explicit matching `Attribute VB_Name`, and a compatible `form` or `document` kind while retaining projection casing. A missing attribute, kind mismatch, or template/source name mismatch creates a `HostClassSourceAssociationFailure`, leaves only that source's host Event evidence `indeterminate`, and makes the document's `HostClassProjectionStatus` attention-required without invalidating other associations. Ordinary non-host source may still use `FallbackModuleIdentity` for analysis recovery only."
-
-Dev: "Does a successful host-class inspection hide status even when one source cannot be associated with its projected host class?"
-Domain Expert: "No. Current projection data and source association are separate facts. Preserve the current projection and every valid association, but keep the document's `HostClassProjectionStatus` attention-required until the `HostClassSourceAssociationFailure` is repaired; do not publish a source diagnostic, retry Excel automatically, or add the failure to either Doctor command."
-
-Dev: "How does `HostClassSourceAssociationFailure` appear, and when does it clear?"
-Domain Expert: "Keep the status-bar item compact: show the VBA Host Events warning and total failure count without paths. Its Hover shows project, document, total count, and counts by reason. Clicking opens VBA Tools Output, which lists every failure without truncation, including source URI, source kind, the present or missing `Attribute VB_Name`, any corresponding projection identity, the exact mismatch, and guidance to re-export or repair metadata. A relevant source or manifest change re-evaluates associations against a context-compatible current snapshot; when all succeed, clear the warning without another Excel inspection."
-
-Dev: "What does an explicit Host Events refresh report when Excel inspection succeeds but source association still fails?"
-Domain Expert: "Complete the command and inspection successfully, retain the attention-required status, and show one warning: `Host Events refreshed, but <N> source module(s) could not be associated.` Its only action is `Show Output`. A background refresh or source-only reassociation remains popup-free, a cancellation shows nothing, and an actual inspection failure keeps the existing error notification instead of also showing this warning."
-
-Dev: "Can the intrinsic handler prefix be derived from `Sheet1`, `ThisWorkbook`, `UserForm1`, or the component kind?"
-Domain Expert: "No. A resolved projection must supply `IntrinsicEventSourceName` from the VBE-equivalent object/Event association: for example `Worksheet` forms `Worksheet_Change`, `Workbook` forms `Workbook_Open`, and `UserForm` forms `UserForm_Initialize`. Match it case-insensitively while retaining projection casing. Do not infer it from `HostClassIdentity`, `form` or `document`, source file names, or optional base-type provenance; if inspection cannot establish it, the class is unverified and retains applicable last-known-good evidence."
-
-Dev: "Is `Worksheet_Change` handled as a `WithEventsHandlerCandidate`?"
-Domain Expert: "No. In its associated document module, an exact case-insensitive match of `IntrinsicEventSourceName`, `_`, and an `existingHandlerRecognizable` host Event forms an `IntrinsicHostHandlerCandidate`. A Sub becomes an `IntrinsicHostHandlerDeclaration`; a Function or Property accessor is a `nonSubProcedureAssociation`. It has no `WithEvents` variable-prefix reference or binding set, and a same-name source Event does not replace its projected host target. Both handler kinds share `EventHandlerCompatibility`; current host evidence permits procedure-kind and signature diagnostics, while last-known-good evidence supplies guidance only."
-
-Dev: "What if several `Worksheet_Change` declarations appear under `#If`?"
-Domain Expert: "Use the existing `ConditionalDeclarationFamily`, not an intrinsic-handler-specific family. Recognize and validate every physical candidate independently against the same projected host Event without evaluating conditions or selecting an active branch. A compatible sibling does not suppress another variant's `validation.eventHandlerMustBeSub` or `validation.incompatibleEventHandlerSignature`; last-known-good authority suppresses diagnostics for every variant. Definition and References retain the complete family, but it has no `WithEvents` or source-Event upstream Rename."
-
-Dev: "What do editor features target inside the `Worksheet_Change` declaration name?"
-Domain Expert: "The complete identifier remains the procedure definition. `Worksheet` and `_` have no independent semantic target; `Change` is an `EventReference` to the projected `HostEventIdentity`. Hover on that suffix shows the host Event signature and documentation. Definition uses navigable base-type provenance when available and otherwise returns no location; it never redirects to the handler itself. Host Event References include intrinsic and external handler suffixes bound to that same projected identity, excluding external handlers shadowed to a source Event. Ordinary complete-name calls still reference the procedure family. Signature Help inside the declaration parameters shows one complete `Worksheet_Change(...)` handler spelling, without `[#If]` merely because the declaration is guarded. Last-known-good evidence preserves the same guidance without an item-level stale marker."
-
-Dev: "Can F2 rename a recognized `Worksheet_Change` procedure or just its `Change` suffix?"
-Domain Expert: "No. With current projection evidence, the intrinsic handler name is a fixed host contract: Prepare Rename returns no target from the prefix, underscore, suffix, complete declaration, conditional sibling, non-Sub association, or ordinary complete-name reference. A direct non-no-op Rename fails with `notRenameTarget`, including a case-only change; an ordinally unchanged request remains a successful no-op. With last-known-good evidence only, direct mutation fails with `analysisIncomplete`. With neither current nor last-known-good association, the procedure is ordinary and normal Rename rules apply. Intentional detachment is a manual edit or a future Code Action, not meaning-preserving Rename."
-
-Dev: "Should the language server derive host Events from the projected class's base TypeLib type?"
-Domain Expert: "No. A resolved `HostClassProjection` carries the complete Event signatures observed for that class and remains the authoritative immutable snapshot. `HostClassBaseTypeProvenance` may identify the built-in base type for navigation or provenance, but a missing or unresolved catalog entry neither removes those signatures nor invalidates the projection."
-
-Dev: "Can `host-class list --format json` return only a VBE-style Event signature label?"
-Domain Expert: "No. Each `HostEventSignature` is structured as an Event name plus ordered parameter metadata for type, passing mechanism, array shape, and any available `Optional` or `ParamArray` flags, with parameter names and optional documentation retained for presentation. Consumers derive their own labels, and Event-handler compatibility never treats a parameter name or rendered label as identity."
-
-Dev: "Can one host class expose two overload-like projected Events named `Change`?"
-Domain Expert: "No. Within one `HostClassIdentity`, case-insensitive Event name is `HostEventIdentity`. Coalesce duplicate observations only when parameter count, canonical types, passing mechanisms, array and Optional or `ParamArray` shape, and both availability values agree. Normalize casing, parameter names, and documentation as presentation metadata. Any callable-contract or availability conflict makes the complete class `unverified` with `eventEnumerationFailure`; never publish multiple same-name signatures as an overload or `ConditionalCallableFamily`."
-
-Dev: "If duplicate `Change` observations differ only in presentation metadata, can coalescing construct a signature by mixing their fields?"
-Domain Expert: "No. Preserve one complete observed presentation. Prefer an observation with documentation, then choose the ordinal minimum of the Event name, ordered parameter names, and documentation using `OrdinalIgnoreCase` followed by `Ordinal`. Callable contract and availability already agree, so this deterministic choice changes no semantic result."
-
-Dev: "Does `HostClassProjectionResult` preserve COM or VBIDE enumeration order?"
-Domain Expert: "No. Order class entries by component kind and then `VBComponent.Name` using `OrdinalIgnoreCase` followed by `Ordinal`, without grouping by resolved status. Order each class's Events by Event name with the same comparison, retain parameter ordinal order, and use the same class and Event order in text and JSON. Enumeration order is not projection data."
-
-Dev: "Can two enumerated document classes named `Sheet1` and `sheet1` be coalesced when their projections match?"
-Domain Expert: "No. They have the same `HostClassIdentity`, which must occur at most once. Omit that ambiguous identity, add top-level `classEnumerationFailure`, set `complete: false`, and exit nonzero while continuing to inspect other unique identities. Do not add `inspectionStateUntrusted` unless separate evidence makes the shared state untrustworthy. A same-name `form` and `document` remain distinct because kind participates in identity."
-
-Dev: "If `Sheet1` disappears while inspection of the remaining `Sheet2` fails, should its last-known-good projection remain?"
-Domain Expert: "No, when `classEnumerationComplete` is true. That required result field makes absence authoritative independently of class-local inspection success, so remove an absent identity while preserving the last-known-good projection for a listed `unverified` class. When enumeration is incomplete, absence is unknown and removes nothing. `complete` is true only when class enumeration and every listed projection are complete; no deletion tombstone or diagnostic-code inference is used."
-
-Dev: "Can a projected `Excel.Range` parameter use the text `Excel` or the local TypeLib path as its type identity?"
-Domain Expert: "No. A TypeLib `HostEventTypeReference` uses the case-insensitive type name with library GUID, major/minor version, and LCID while retaining display casing separately. Intrinsic types use canonical VBA names. Human-visible reference names, VBA qualifiers, and registry paths are not identity, and an unresolved display name never proves type equality."
-
-Dev: "Does one unresolved projected parameter type make its host class `unverified`?"
-Domain Expert: "Not when inspection successfully observes the Event and its complete parameter structure but classifies that type as opaque. Keep the class `resolved`, use its Event names and other structural metadata, and make only compatibility involving that type `indeterminate`. A read failure, incomplete enumeration, or untrusted inspection instead makes the class `unverified` and preserves its `LastKnownGoodHostClassProjection`."
-
-Dev: "Does every projected host Event belong to completion and existing-handler recognition?"
-Domain Expert: "No. Its presence in `HostClassProjection` establishes structural existence. `HostEventAvailability.authoringAvailable` separately controls ordinary completion and retains eligibility evidence for future `MemberStubGeneration`, while `existingHandlerRecognizable` controls association, navigation, and signature guidance for an already-written handler. For example, a non-authorable Event may remain recognizable. Consumers use these projected behaviors rather than raw TypeLib flags."
+Dev: "Does every catalog Event appear in completion and existing-handler recognition?"
+Domain Expert: "No. `HostEventAvailability.authoringAvailable` controls ordinary authoring completion, while `existingHandlerRecognizable` controls association, navigation, and signature guidance for an already-written handler. Both values must be known before the catalog is current."
 
 Dev: "Does host Event authoring add an `Add Event Handler` command in this work?"
 Domain Expert: "No. `MemberStubGeneration` is deferred as one broader feature for `WithEvents`, intrinsic host Events, and `Implements` members. This work supplies completion, Signature Help, and existing-handler recognition only. `BlockSkeletonInsertion` may close a complete header the user has already written, but it never invents a member declaration or its signature."
 
-Dev: "What does completion insert after `Private Sub Worksheet_Ch`?"
-Domain Expert: "In an associated document module, the exact `Worksheet_` prefix admits `ContractMemberNameCompletion` for `authoringAvailable` Events. Show the canonical full label `Worksheet_Change`, but replace only `Ch` with the projected suffix `Change`; do not insert parameters, a body, or `End Sub`. Offer it only in a `Sub` declaration name, not a Function, Property, ordinary expression, or call. Current and last-known-good projections provide the same advisory candidate without an item-level stale marker. An Event that is only `existingHandlerRecognizable` remains usable for an already-written handler but is absent from this authoring list."
+Dev: "What does completion insert after `Private Sub UserForm_In`?"
+Domain Expert: "In an authoritative form with a current catalog, the exact `UserForm_` prefix admits `ContractMemberNameCompletion` for `authoringAvailable` Events. Show the canonical full label `UserForm_Initialize`, but replace only `In` with the catalog suffix `Initialize`; do not insert parameters, a body, or `End Sub`. Offer it only in a `Sub` declaration name, not a Function, Property, ordinary expression, or call. An Event that is only `existingHandlerRecognizable` remains usable for an already-written handler but is absent from this authoring list."
 
-Dev: "Should `Worksheet_Change` disappear from completion when another declaration has that name?"
+Dev: "Should `UserForm_Initialize` disappear from completion when another declaration has that name?"
 Domain Expert: "Only when the source model proves a same-scope collision after excluding the declaration currently being edited. Suppress the candidate when either the existing declaration or the new declaration is unconditional. Keep it when every peer is guarded by `#If`, because they remain one `ConditionalDeclarationFamily` without branch evaluation; also keep it for another module or indeterminate collision evidence and let diagnostics report any later-proven problem."
 
-Dev: "How should `Worksheet_Change` appear in the completion list?"
-Domain Expert: "Use the complete canonical handler name as the label and `Event` as its kind detail, but use the projected suffix `Change` for filtering and name ordering so the typed `Ch` matches naturally. Put the projected Event signature and documentation in the detail pane rather than expanding the list row. Do not add `[#If]` merely because the new procedure is guarded. Selection inserts no parentheses or parameters; typing `(` then opens the already-defined complete-handler Signature Help."
+Dev: "How should `UserForm_Initialize` appear in the completion list?"
+Domain Expert: "Use the complete canonical handler name as the label and `Event` as its kind detail, but use the catalog suffix `Initialize` for filtering and name ordering so the typed `In` matches naturally. Put the catalog Event signature and documentation in the detail pane rather than expanding the list row. Do not add `[#If]` merely because the new procedure is guarded. Selection inserts no parentheses or parameters; typing `(` then opens the already-defined complete-handler Signature Help."
 
 Dev: "Does registering `_` make completion pop up for every VBA identifier containing an underscore?"
 Domain Expert: "No. The LSP trigger character is registered globally and therefore sends a request for every typed underscore, but `_`-triggered completion returns candidates only in a callable declaration-name slot whose complete prefix resolves to an associated `IntrinsicEventSourceName`, a same-class `WithEvents` variable, or an interface named by this class's `Implements` statements. Other underscore-triggered requests return no candidates, while an explicit `Ctrl+Space` keeps ordinary completion behavior. The client does not duplicate those semantic relationships."
 
 Dev: "What does the space after `Function`, `Sub`, or a Property accessor do?"
-Domain Expert: "It admits `ContractPrefixCompletion` in an empty callable declaration-name slot. `Function` offers interface prefixes with at least one remaining Function; `Sub` offers intrinsic host, interface, and same-class `WithEvents` prefixes with at least one remaining Sub or authorable Event; and each complete Property Get, Let, or Set header offers interface prefixes with a remaining matching accessor. Selection inserts only `Worksheet_`, `IFoo_`, or `publisher_` and enters the same `ContractMemberNameCompletion` context as manual prefix entry; it never lists those contracts' complete member names at the first stage. `Property |` still completes Get, Let, or Set before any contract prefix is eligible."
+Domain Expert: "It admits `ContractPrefixCompletion` in an empty callable declaration-name slot. `Function` offers interface prefixes with at least one remaining Function; `Sub` offers intrinsic host, interface, and same-class `WithEvents` prefixes with at least one remaining Sub or authorable Event; and each complete Property Get, Let, or Set header offers interface prefixes with a remaining matching accessor. Selection inserts only `UserForm_`, `IFoo_`, or `publisher_` and enters the same `ContractMemberNameCompletion` context as manual prefix entry; it never lists those contracts' complete member names at the first stage. `Property |` still completes Get, Let, or Set before any contract prefix is eligible."
 
 Dev: "What if the user dismisses the first list and types `Sub publ|` or `Function IF|`?"
 Domain Expert: "Keep the same first-stage completion active. Offer only case-insensitively prefix-matching `publisher_` or `IFoo_` candidates whose downstream members still survive, and replace only the partial declaration-name fragment. Do not expose member suffixes until the text exactly equals a viable semantic prefix including its underscore. At `publisher_|`, enter the second-stage member list and omit longer prefix candidates only when `publisher_` still has a downstream member. If it has none but `publisher_long_` remains viable, keep `publisher_long_` in the first-stage list rather than opening an empty member list."
@@ -4322,10 +4144,10 @@ Dev: "What if `IFoo_Calculate` already exists only inside `#If`?"
 Domain Expert: "Keep the advisory name candidate only when the prospective declaration and every same-scope peer are conditionally guarded. If the new declaration or any peer is unconditional, suppress the candidate because some configuration can contain both. Do not compare condition text, branch ancestry, or nesting—even declarations in an apparently identical branch remain advisory candidates until diagnostics prove a duplicate. Apply this rule equally to interface implementations, `WithEvents` handlers, and intrinsic host handlers."
 
 Dev: "Does the member candidate after `Function IFoo_|` receive a `[#If]` completion marker merely because that position is inside `#If`?"
-Domain Expert: "No. The marker describes the candidate's `ConditionalContractProvenance`, not its insertion site. Add it when an applicable `Implements` statement, same-class `WithEvents` declaration, interface member or Public variable owning a derived accessor, source Event declaration, or retained configuration-dependent host-shadow alternative is conditional. Do not add it when only the completion position is guarded. Keep the generic marker even when equivalent declarations appear in every branch, because the language server neither evaluates the conditions nor proves exhaustive coverage, and never display the condition expression itself."
+Domain Expert: "No. The marker describes the candidate's `ConditionalContractProvenance`, not its insertion site. Add it when conditionality comes from an applicable `Implements` statement, same-class `WithEvents` declaration, interface member or Public variable owning a derived accessor, source Event declaration, or a catalog Event retained as a configuration-dependent alternative by `IntrinsicHostEventCoexistence`. Do not add it when only the completion position is guarded. Keep the generic marker even when equivalent declarations appear in every branch, because the language server neither evaluates the conditions nor proves exhaustive coverage, and never display the condition expression itself."
 
 Dev: "Can Completion mark an Event or interface contract `[#If]` while Signature Help, Hover, or its diagnostic detail leaves the same contract unmarked?"
-Domain Expert: "No. Those contract-facing projections share one `ConditionalContractProvenance` value. If either the relationship, the source contract declaration, the Public variable behind a derived accessor, or a retained host-shadow alternative makes the contract conditional, every projection marks it; a guarded handler, implementation, or completion location by itself marks none of them."
+Domain Expert: "No. Those contract-facing projections share one `ConditionalContractProvenance` value. If conditionality comes from the relationship, source contract declaration, Public variable behind a derived accessor, or a catalog Event retained as a configuration-dependent alternative by `IntrinsicHostEventCoexistence`, every projection marks it; a guarded handler, implementation, or completion location by itself marks none of them."
 
 Dev: "Does `Function |` mark `IFoo_` with `[#If]` when only `IFoo.Calculate` is guarded?"
 Domain Expert: "No. The first stage deliberately inspects downstream members to prove that at least one admissible member remains, but that is an existence filter rather than provenance aggregation. Mark `IFoo_` only when the applicable `Implements` relationship is guarded, and mark `publisher_` only when its `WithEvents` declaration is guarded; intrinsic host prefixes remain unmarked. Conditional provenance belonging only to the selected Event or interface member first appears on its second-stage `ContractMemberNameCompletion`."
@@ -4469,22 +4291,7 @@ Dev: "Does a navigable Event mismatch use different related-information wording 
 Domain Expert: "No. Point to the physical source Event identifier and use the same exact `Required contract: <signature> [#If]. Mismatches: <reasons>.` form, with `Event` included in the signature and the marker omitted only when that Event contract's `ConditionalContractProvenance` is unconditional. Keep each physical Event variant separate because its location remains meaningful. The primary Event diagnostic stays unchanged, while an unlocated host contract continues to use the `Expected signature` fallback instead."
 
 Dev: "Can an unknown `HostEventAvailability` default to `false` or `true`?"
-Domain Expert: "No. Every Event in a `resolved` class has both availability values. Defaulting false can silently hide valid behavior, while defaulting true can offer or bind unsupported behavior. If either value cannot be established, mark the class `unverified` and preserve its `LastKnownGoodHostClassProjection`; an inspected `false`/`false` pair remains a valid resolved result."
-
-Dev: "Can an `UnverifiedHostClassEntry` include the Event signatures observed before failure?"
-Domain Expert: "No. It contains only its `HostClassIdentity`, `unverified` status, stable reason code, and human-readable message. A machine consumer preserves the `LastKnownGoodHostClassProjection` or remains `indeterminate`; it never commits a partial Event array. A future diagnostic-only observation payload requires a new schema version and must remain separate from authoritative projection data."
-
-Dev: "Which `reasonCode` values can an `UnverifiedHostClassEntry` contain?"
-Domain Expert: "Use `eventEnumerationFailure`, `signatureReadFailure`, `availabilityReadFailure`, `inspectionTimeout`, `inspectionAborted`, `cancelled`, or the class-local fallback `inspectionFailure`. The message may identify the Event or inspection stage, but consumers never parse it. If class identities themselves cannot be completely enumerated, emit top-level `classEnumerationFailure`; source-template preparation and process-release failures remain invocation-invalidating rather than class reasons."
-
-Dev: "What does `host-class list --format json` return after cooperative cancellation?"
-Domain Expert: "After request scope is known, return a schema-valid terminal result only when process release and serialization succeed. Preserve classes resolved before cancellation; mark the in-progress and every known unprocessed class `unverified` with `cancelled`; leave undiscovered classes omitted and unknown. Add only top-level `operationCancelled`, set `complete: false`, and exit nonzero. Cancellation itself does not mean `classEnumerationFailure` or `inspectionAborted`; failure to prove process release or serialize leaves no usable JSON."
-
-Dev: "What happens when shared `HostClassInspectionState` becomes untrusted during one class?"
-Domain Expert: "Stop inspection without starting replacement Excel in the same invocation. Give the causal class its most specific reason, such as `inspectionTimeout`, and mark every known later unprocessed class `inspectionAborted`. Preserve earlier finalized `resolved` entries only when their isolation from the failure is established, add top-level `inspectionStateUntrusted`, set `complete: false`, and exit nonzero. If process release fails or earlier results may also be contaminated, the whole JSON result is unusable."
-
-Dev: "Does one large document consume one shared timeout for every host class and Event?"
-Domain Expert: "No. `HostClassList` reuses the ordinary Excel-start, workbook-open, and cleanup deadlines. Complete class-identity enumeration has one 60-second deadline, and each class receives a fresh 60-second deadline for its complete Event, signature, and availability inspection. There is no command-wide or per-Event deadline. A class deadline produces `inspectionTimeout` for that class and `inspectionAborted` for known later classes; an identity-enumeration deadline produces top-level `classEnumerationFailure` and `inspectionStateUntrusted`."
+Domain Expert: "No. Every Event in a current `IntrinsicHostEventCatalog` has both availability values. Defaulting false can hide supported behavior, while defaulting true can offer or bind unsupported behavior. If discovery cannot establish either value or any complete Event contract, it publishes no replacement catalog; startup remains unavailable, and a failed explicit refresh retains an already-current catalog."
 
 Dev: "How do hidden and restricted TypeLib flags affect `WithEvents`?"
 Domain Expert: "A coclass marked `TYPEFLAG_FHIDDEN` remains valid when explicitly resolved, while `TYPEFLAG_FRESTRICTED` produces `invalidInaccessibleType`. Default-source members marked `FUNCFLAG_FHIDDEN` or `FUNCFLAG_FRESTRICTED` still count in `TypeLibStructuralEventSurface`, so a hidden-only or restricted-only coclass remains `eligible`. Omit those members from `TypeLibEventAuthoringSurface`, but retain them in `TypeLibExistingHandlerRecognitionSurface` so an already-written `variable_Event` name can preserve the VBE code-window association."
@@ -4496,13 +4303,13 @@ Dev: "Do visibility or `Static` change whether a matching Sub is an Event handle
 Domain Expert: "No. Public, Private, Friend, or omitted visibility and initial or trailing `Static` are valid handler forms. Retain those modifiers as declaration metadata, but exclude them from candidate identity, handler recognition, parameter compatibility, and conditional-family identity."
 
 Dev: "What happens when a matching Function or Property accessor uses an Event-handler name?"
-Domain Expert: "Keep its prefix variable binding and resolved suffix `EventReference` for navigation, but do not treat it as a handler or compare its parameters. Publish `validation.eventHandlerMustBeSub` on the `Function` keyword or complete `Property Get`, `Property Let`, or `Property Set` keyword span only when every variable binding entry conclusively resolves an Event whose authority is `sourceDeclared` or `currentHostProjected`. Suppress that diagnostic if any entry is `notWithEvents`, `notEvent`, `indeterminate`, `externalTypeLibAdvisory`, or `lastKnownGoodHostAdvisory`, and never add `validation.incompatibleEventHandlerSignature` to the same declaration."
+Domain Expert: "Keep its prefix variable binding and resolved suffix `EventReference` for navigation, but do not treat it as a handler or compare its parameters. Publish `validation.eventHandlerMustBeSub` on the `Function` keyword or complete `Property Get`, `Property Let`, or `Property Set` keyword span only when every variable binding entry conclusively resolves an Event whose authority is `sourceDeclared` or `currentCatalog`. Suppress that diagnostic if any entry is `notWithEvents`, `notEvent`, `indeterminate`, or `externalTypeLibAdvisory`, and never add `validation.incompatibleEventHandlerSignature` to the same declaration."
 
 Dev: "Should a TypeLib Event handler receive procedure-kind or signature errors?"
 Domain Expert: "No. Preserve its `WithEvents` variable and Event associations, Definition, Hover, retained `CallableSignature`, and Signature Help, including for an already-written hidden or restricted Event name. Classify its validation authority as `externalTypeLibAdvisory`; neither `validation.eventHandlerMustBeSub` nor `validation.incompatibleEventHandlerSignature` is emitted, even when the metadata comparison is conclusively incompatible."
 
-Dev: "Can a projected host Event handler receive those errors?"
-Domain Expert: "Only from current evidence. Classify a target from the current authoritative host snapshot as `currentHostProjected`; it may participate in either compile-style handler diagnostic when every binding is resolved and every target is diagnostic-authoritative. Classify retained last-known-good evidence as `lastKnownGoodHostAdvisory`; it preserves association and signature guidance but suppresses both diagnostics until a current projection replaces it."
+Dev: "Can a catalog-backed UserForm Event handler receive those errors?"
+Domain Expert: "Yes, only under `currentCatalog` authority. A current-catalog target may participate in either compile-style handler diagnostic when every binding is resolved and every target is diagnostic-authoritative. An unavailable intrinsic catalog supplies no advisory substitute and suppresses host-dependent diagnostics."
 
 Dev: "How is `order_publisher_Changed` split when a `WithEvents` variable name contains underscores?"
 Domain Expert: "Use `WithEventsHandlerNameDecomposition` and split at the final ASCII underscore, producing `order_publisher` and `Changed`. VBA Event names cannot contain underscores, while the variable prefix can. Do not enumerate alternative splits or consult variable and Event catalogs; missing metadata must not change the syntactic decomposition."
@@ -4514,10 +4321,10 @@ Dev: "What if only some variants in that variable family use `WithEvents`?"
 Domain Expert: "Retain `WithEvents` presence per declarator as variant metadata. An ordinary non-`WithEvents` module-variable variant becomes a conclusive `notWithEvents` entry before type or Event lookup, distinct from a `notEvent` entry for a type-eligible `WithEvents` class that lacks the suffix Event. Both are conclusive non-handler evidence, neutral for Rename convergence, and suppress the aggregate incompatible-handler diagnostic. Syntax-invalid recovered and conclusive-invalid type variants are excluded rather than classified. A family without any `eligible` or `indeterminate` `WithEventsTypeEligibility` never enters handler binding."
 
 Dev: "When does a handler-shaped procedure become an Event handler if its conditional `WithEvents` variants disagree?"
-Domain Expert: "At least one resolved Event entry gives every procedure kind its candidate navigation projections. A Sub becomes a `WithEventsHandlerDeclaration`; a Function or Property accessor becomes a `nonSubProcedureAssociation`. If every entry is `notWithEvents` or `notEvent`, treat it as an ordinary procedure with no handler semantics. If none resolves and at least one is indeterminate, retain the prefix variable binding but defer the Event suffix and diagnostics. Emit either kind or incompatible-signature diagnostics only when every binding is resolved and every target is `sourceDeclared` or `currentHostProjected`; an external TypeLib or last-known-good host association makes the complete diagnostic advisory-only."
+Domain Expert: "At least one resolved Event entry gives every procedure kind its candidate navigation projections. A Sub becomes a `WithEventsHandlerDeclaration`; a Function or Property accessor becomes a `nonSubProcedureAssociation`. If every entry is `notWithEvents` or `notEvent`, treat it as an ordinary procedure with no handler semantics. If none resolves and at least one is indeterminate, retain the prefix variable binding but defer the Event suffix and diagnostics. Emit either kind or incompatible-signature diagnostics only when every binding is resolved and every target is `sourceDeclared` or `currentCatalog`; an external TypeLib association makes the complete diagnostic advisory-only."
 
 Dev: "What if the complete candidate name has several `#If` variants with different procedure kinds or parameters?"
-Domain Expert: "When every physical family variant is classified `resolvedHandler` or `nonSubProcedureAssociation`, use the existing `ConditionalDeclarationFamily`; do not create a separate handler-family kind. Definition and References cover every physical candidate variant, and an Event or `WithEvents` variable Rename updates the whole dependent family atomically. Compare only each Sub handler independently with every possible Event signature. Each Function or Property accessor instead retains its non-Sub association; an error diagnostic is derived from it only for a complete target set whose authorities are all `sourceDeclared` or `currentHostProjected`. Neither result claims that the `#If` branches correspond."
+Domain Expert: "When every physical family variant is classified `resolvedHandler` or `nonSubProcedureAssociation`, use the existing `ConditionalDeclarationFamily`; do not create a separate handler-family kind. Definition and References cover every physical candidate variant, and an Event or `WithEvents` variable Rename updates the whole dependent family atomically. Compare only each Sub handler independently with every possible Event signature. Each Function or Property accessor instead retains its non-Sub association; an error diagnostic is derived from it only for a complete target set whose authorities are all `sourceDeclared` or `currentCatalog`. Neither result claims that the `#If` branches correspond."
 
 Dev: "What if that conditional family also contains an ordinary variable, procedure, or another noncandidate variant?"
 Domain Expert: "Keep one unsplit family for Definition and References, but do not rename the unrelated variant or only the candidate subset. If any conclusive ordinary or noncandidate variant exists, classify the coverage `conclusiveMixed` and fail a non-no-op upstream Rename with `resolutionChanged`. If coverage is incomplete without such conclusive evidence, use `analysisIncomplete`. Conclusive meaning change takes precedence when both kinds of evidence exist. Prefix or convergent suffix target selection can remain available; the requested Rename performs the family-wide proof before producing edits."
@@ -4526,7 +4333,7 @@ Dev: "Can F2 on one handler suffix rename every distinct Event shown by Definiti
 Domain Expert: "No. Definition retains all resolved Event associations, but Rename requires `HandlerEventRenameConvergence`: every resolved association must identify the same source-owned logical Event target and none may be indeterminate. `notWithEvents` and `notEvent` entries are neutral. Never choose or synthesize a multi-Event Rename; an Event declaration Rename also fails closed if a shared dependent suffix has another Event target or indeterminate binding."
 
 Dev: "What else changes when `WithEvents publisher` is renamed to `source`?"
-Domain Expert: "Rename the variable declaration and references, change the prefix of every `resolvedHandler` or `nonSubProcedureAssociation` candidate owned by it, and rename every ordinary reference to each derived procedure, Property identity, or conditional family in one atomic `RenamePlan`. Preserve each Event suffix and every modifier. A Function or Property candidate retains `validation.eventHandlerMustBeSub` only when its complete validation authority remains diagnostic-authoritative—`sourceDeclared` or `currentHostProjected`; an external TypeLib or last-known-good host association remains diagnostic-free. Rename does not repair procedure kind. Fail the whole plan on a derived collision, changed binding, or incomplete analysis. An owned `indeterminateCandidate` specifically fails with `analysisIncomplete`, while an `ordinaryProcedure` remains unchanged."
+Domain Expert: "Rename the variable declaration and references, change the prefix of every `resolvedHandler` or `nonSubProcedureAssociation` candidate owned by it, and rename every ordinary reference to each derived procedure, Property identity, or conditional family in one atomic `RenamePlan`. Preserve each Event suffix and every modifier. A Function or Property candidate retains `validation.eventHandlerMustBeSub` only when its complete validation authority remains diagnostic-authoritative—`sourceDeclared` or `currentCatalog`; an external TypeLib association remains diagnostic-free. Rename does not repair procedure kind. Fail the whole plan on a derived collision, changed binding, or incomplete analysis. An owned `indeterminateCandidate` specifically fails with `analysisIncomplete`, while an `ordinaryProcedure` remains unchanged."
 
 Dev: "Can F2 on an ordinary `publisher_Changed` call independently rename the handler or non-Sub-associated Function or Property?"
 Domain Expert: "No. Each is a `DependentRenameTarget`. Initiate Rename from the variable prefix, from a convergent Event suffix in its declaration, or from another occurrence of that underlying variable or Event target. The underscore and ordinary complete-name references have no Prepare Rename target, and a direct Rename request fails with `notRenameTarget` rather than guessing which upstream name to change. Deliberately detaching a non-Sub-associated Function or Property from the Event relationship is a manual edit or separate repairing Code Action."
@@ -4550,7 +4357,7 @@ Dev: "What does Rename change when that source-owned module is a UserForm?"
 Domain Expert: "Treat it as one `FormSourceUnitRename`. Change the authoritative `Attribute VB_Name`, every resolved semantic occurrence, and the name in the single outermost `Begin <designer-class> <name>` declaration. If the source basename follows the old identity, also change every valid property reference to the matching `.frx` basename and rename the `.frm` and `.frx` paths. Preserve every resource offset, nested control name, unrelated quoted string, and exact `.frx` byte. A deliberately different basename keeps its paths and sidecar-reference spelling while the semantic and designer-root identities change."
 
 Dev: "Does that file-following rule require a `ProjectManifest`?"
-Domain Expert: "No. An `AdHocVbaProject` applies the same rule within its one-folder project boundary when the source has an explicit `ModuleIdentity`. It neither invents CommonModules ownership nor host projection; its collisions, form sidecar, client-capability, and resource-conflict rules otherwise match ordinary workbook-backed project-local source."
+Domain Expert: "No. An `AdHocVbaProject` applies the same rule within its one-folder project boundary when the source has an explicit `ModuleIdentity`. It neither invents CommonModules ownership nor containing `VbaProjectName` authority; its collisions, form sidecar, client-capability, and resource-conflict rules otherwise match ordinary workbook-backed project-local source."
 
 Dev: "Does an atomic `RenamePlan` guarantee rollback if the client fails while renaming a file?"
 Domain Expert: "No. It guarantees that the server emits every required text and resource operation or no plan. File-following `ModuleIdentity` Rename requires client support for ordered document changes and file Rename; otherwise it fails with `clientCapabilityMissing` before returning partial edits. A later client or filesystem application failure is `WorkspaceEditApplicationFailure` and uses client-owned Undo, retry, or repair."
@@ -4598,16 +4405,13 @@ Dev: "What if the same module name conflicts with both the containing project an
 Domain Expert: "Publish one diagnostic on the `VB_Name` payload, not overlapping diagnostics. List every conflict with the containing project first and references in active selection order, retain the same ordered entries in `diagnostic.data.conflicts`, and do not invent related-information locations for binary or external project identities."
 
 Dev: "Does F2 simply say there is no Rename target for a managed module identity?"
-Domain Expert: "No. The semantic occurrence is known, so Prepare Rename returns an actionable `RenameFailure`: `managedModuleIdentity` directs an `InstalledCommonModule` to upstream Rename or explicit detach, while `hostManagedModuleIdentity` explains source-template ownership. Last-known-good host evidence remains `analysisIncomplete`, and a truly nonsemantic cursor position still returns `null`."
+Domain Expert: "No. The semantic occurrence is known, so Prepare Rename returns an actionable `RenameFailure`: `managedModuleIdentity` directs an `InstalledCommonModule` to upstream Rename or explicit detach. A truly nonsemantic cursor position still returns `null`; source-owned forms are not managed merely because their current catalog supplies built-in Events."
 
 Dev: "Can F2 rename the `ModuleIdentity` of an `InstalledCommonModule` in this document?"
 Domain Expert: "No. That is a `ManagedModuleIdentity`: rename it in the canonical CommonModules source or explicitly detach it into project-local source first. F2 never rewrites its manifest identity, mutates the configured repository, or silently detaches dependency ownership. Ordinary member Rename and local content edits remain available."
 
-Dev: "Can F2 rename an associated UserForm or intrinsic document module?"
-Domain Expert: "Not as an ordinary source Rename. A current form association and every intrinsic document source have `HostManagedModuleIdentity`; changing source text alone would not rename the source-template component. Last-known-good form evidence makes a non-no-op request `analysisIncomplete`. A form conclusively outside host association remains project-local and may rename its `.frm` and `.frx`; a host-managed identity needs a separate workbook-backed refactoring."
-
-Dev: "Does the static `VbaProjectIdentityRead` make every manifest UserForm source-owned?"
-Domain Expert: "No. It changes only containing-project-name authority. The current `HostClassProjectionSnapshot` class entries and `classEnumerationComplete` fence continue to decide form ownership during this migration, so only a form already proven outside host association can use ordinary source Rename. The environment-scoped UserForm Event catalog cutover owns the later source-ownership change; intrinsic document modules remain unsupported."
+Dev: "Can F2 rename a UserForm or Worksheet/`ThisWorkbook` code-behind module?"
+Domain Expert: "A UserForm is source-owned and may be renamed through `FormSourceUnitRename`; the current `IntrinsicHostEventCatalog` neither owns nor blocks its `ModuleIdentity`. Worksheet and `ThisWorkbook` code-behind are outside the supported source and intrinsic Event model, so they have no document-module Rename contract here."
 
 Dev: "Where should an incompatible Event handler diagnostic point?"
 Domain Expert: "Use its complete parenthesized parameter list, or the handler identifier when the list is omitted. Keep the primary message self-contained, and attach one related item per conclusively incompatible source Event signature. Report ordered structural and type reasons, never parameter-name differences or conditional expressions. TypeLib signatures remain advisory and never cause this diagnostic."
@@ -5264,7 +5068,7 @@ Dev: "Are `ActiveCell`, `ActiveSheet`, `ActiveWorkbook`, and `ThisWorkbook` also
 Domain Expert: "No. They are Excel-specific host globals and appear only when the Excel object library is the active `MainVbaProjectReference` and its catalog exposes them."
 
 Dev: "Should `ThisWorkbook.cls` be merged with the Excel `ThisWorkbook` host global?"
-Domain Expert: "No. Real Excel projects reserve the workbook document module name, and the language server does not infer document-module identity from that spelling. `ThisWorkbook` is handled as the Excel catalog's read-only host global; source document-module modeling is a separate concern."
+Domain Expert: "No. Real Excel projects reserve the workbook document module name, and the language server does not infer document-module identity from that spelling. `ThisWorkbook` is handled as the Excel catalog's read-only host global; Worksheet and `ThisWorkbook` code-behind are outside the supported source and intrinsic Event model."
 
 Dev: "Should `ActiveCell` be modeled as a global variable so that it can appear in completion?"
 Domain Expert: "No. It is a read-only property `HostGlobalReferenceDefinition`; its project-reference origin makes it available as a value while keeping it outside `RenameTarget`."

@@ -33,20 +33,20 @@ public sealed class VbaSemanticInventory
     private readonly Dictionary<
         VbaDocumentIdentity,
         IReadOnlyList<int>> semanticTokenDataCache = [];
-    private readonly VbaHostClassProjectionSnapshot? hostClassProjectionSnapshot;
+    private readonly VbaIntrinsicHostEventCatalog? intrinsicHostEventCatalog;
 
     private VbaSemanticInventory(
         IReadOnlyList<VbaSourceDocument> sourceDocuments,
         VbaNameCandidateInventory definitionCandidates,
         VbaProjectReferenceSelection? referenceSelection,
         VbaProjectReferenceCatalogSet referenceCatalogs,
-        VbaHostClassProjectionSnapshot? hostClassProjectionSnapshot,
         IReadOnlyDictionary<string, VbaProjectReferenceCatalogSource>
             referenceCatalogSources,
         IReadOnlyDictionary<string, VbaProjectReferenceCatalogIdentity>
             referenceCatalogIdentities,
         VbaProjectResolution? projectResolution,
-        IReadOnlyDictionary<string, string> authoritativeReferencedProjectNames)
+        IReadOnlyDictionary<string, string> authoritativeReferencedProjectNames,
+        VbaIntrinsicHostEventCatalog? intrinsicHostEventCatalog)
     {
         this.sourceDocuments = sourceDocuments;
         this.definitionCandidates = definitionCandidates;
@@ -59,12 +59,12 @@ public sealed class VbaSemanticInventory
         this.projectResolution = projectResolution;
         this.authoritativeReferencedProjectNames =
             authoritativeReferencedProjectNames;
-        this.hostClassProjectionSnapshot = hostClassProjectionSnapshot;
+        this.intrinsicHostEventCatalog = intrinsicHostEventCatalog;
         semanticResolution = new VbaSemanticResolution(
             definitionCandidates,
             resolutionPolicy,
-            hostClassProjectionSnapshot,
-            referenceCatalogIdentities);
+            referenceCatalogIdentities,
+            intrinsicHostEventCatalog);
         resolvedOccurrences = new VbaResolvedIdentifierOccurrenceIndex(
             sourceDocuments,
             semanticResolution.ResolveSourceTarget);
@@ -83,7 +83,7 @@ public sealed class VbaSemanticInventory
         IReadOnlyDictionary<string, VbaSourceDocument> sourceDocuments,
         VbaProjectReferenceSelection? referenceSelection = null,
         VbaProjectReferenceCatalogSet? referenceCatalogs = null,
-        VbaHostClassProjectionSnapshot? hostClassProjectionSnapshot = null,
+        VbaIntrinsicHostEventCatalog? intrinsicHostEventCatalog = null,
         IReadOnlyDictionary<string, VbaProjectReferenceCatalogSource>?
             referenceCatalogSources = null,
         IReadOnlyDictionary<string, VbaProjectReferenceCatalogIdentity>?
@@ -137,18 +137,18 @@ public sealed class VbaSemanticInventory
             definitionCandidates,
             capturedReferenceSelection,
             catalogs,
-            hostClassProjectionSnapshot,
             capturedCatalogSources,
             capturedCatalogIdentities,
             capturedProjectResolution,
-            capturedAuthoritativeReferencedProjectNames);
+            capturedAuthoritativeReferencedProjectNames,
+            intrinsicHostEventCatalog);
     }
 
     /// <summary>
-    /// Gets the immutable consumer-owned host-class projection for this project snapshot.
+    /// Gets the immutable environment-scoped intrinsic host Event catalog.
     /// </summary>
-    public VbaHostClassProjectionSnapshot? HostClassProjectionSnapshot
-        => hostClassProjectionSnapshot;
+    public VbaIntrinsicHostEventCatalog? IntrinsicHostEventCatalog
+        => intrinsicHostEventCatalog;
 
     /// <summary>
     /// Gets definitions declared in a document.
@@ -805,7 +805,7 @@ public sealed class VbaSemanticInventory
 
         if (document is not null
             && resolvedTarget is not null
-            && GetIntrinsicHostHandlerAuthority(document, resolvedTarget) is not null)
+            && HasIntrinsicHostHandlerAssociation(document, resolvedTarget))
         {
             return new VbaPrepareRenameOutcome(Result: null, Failure: null);
         }
@@ -1144,16 +1144,10 @@ public sealed class VbaSemanticInventory
                 || line == range.End.Line
                     && character < range.End.Character);
 
-    private VbaHostClassEventAuthority? GetIntrinsicHostHandlerAuthority(
+    private bool HasIntrinsicHostHandlerAssociation(
         VbaSourceDocument document,
         VbaResolvedNameTarget target)
-        => GetIntrinsicHostHandlerAnalyses(document, target)
-            .Select(analysis => analysis.Surface.Authority)
-            .OrderBy(authority => authority == VbaHostClassEventAuthority.Current
-                ? 0
-                : 1)
-            .Cast<VbaHostClassEventAuthority?>()
-            .FirstOrDefault();
+        => GetIntrinsicHostHandlerAnalyses(document, target).Count > 0;
 
     private IReadOnlyList<VbaIntrinsicHostHandlerAnalysis>
         GetIntrinsicHostHandlerAnalyses(
@@ -1362,17 +1356,11 @@ public sealed class VbaSemanticInventory
                     return new VbaRenameResult(Plan: null, Failure: null);
                 }
 
-                return selectedAssociation.Surface.Authority
-                    == VbaHostClassEventAuthority.Current
-                    ? new VbaRenameResult(
-                        Plan: null,
-                        new VbaRenameFailure(
-                            "notRenameTarget",
-                            "A current intrinsic host Event handler name is a fixed host contract."))
-                    : new VbaRenameResult(
-                        Plan: null,
-                        AnalysisIncomplete(
-                            "Rename requires current host Event evidence for an intrinsic handler."));
+                return new VbaRenameResult(
+                    Plan: null,
+                    new VbaRenameFailure(
+                        "notRenameTarget",
+                        "An intrinsic host Event handler name is a fixed catalog contract."));
             }
         }
 
@@ -1640,12 +1628,12 @@ public sealed class VbaSemanticInventory
             .ThenBy(occurrence => occurrence.Range.Start.Character)
             .ToArray();
         if (target.Kind == VbaSourceDefinitionKind.Event
-            && HasProjectedHostAlternative(targetOccurrences, cancellationToken))
+            && HasIntrinsicHostEventAlternative(targetOccurrences, cancellationToken))
         {
             return new VbaRenameResult(
                 Plan: null,
                 AnalysisIncomplete(
-                    "Rename cannot prove complete dependent-handler coverage across source and projected host Event alternatives."));
+                    "Rename cannot prove complete dependent-handler coverage across source and intrinsic UserForm Event alternatives."));
         }
 
         var formSourceUnitFailure = TryCreateFormSourceUnitRenameEdits(
@@ -2784,16 +2772,6 @@ public sealed class VbaSemanticInventory
 
         var sourcePath = VbaProjectResolver.TryGetLocalPath(target.Uri);
         var document = definitionCandidates.FindDocument(target.Uri);
-        if (document?.Provenance
-            == VbaSourceDocumentProvenance.IntrinsicDocument)
-        {
-            return new VbaRenameFailure(
-                "hostManagedModuleIdentity",
-                $"Module identity '{target.Name}' belongs to a source-template intrinsic document component.",
-                Path: sourcePath,
-                Guidance: "Use the workbook-backed source template refactoring workflow so the intrinsic document component and projected source stay associated.");
-        }
-
         if (projectResolution?.Kind
             != VbaProjectResolutionKind.ManifestDocument)
         {
@@ -2816,55 +2794,6 @@ public sealed class VbaSemanticInventory
                 $"Module identity '{target.Name}' is managed by the CommonModules installation contract.",
                 Path: sourcePath,
                 Guidance: "Rename it in the canonical CommonModules source or explicitly detach it into project-local source first.");
-        }
-
-        if (document is null)
-        {
-            return null;
-        }
-
-        var syntaxTree = document.SyntaxTree
-            ?? VbaSyntaxTree.ParseModule(document.Uri, document.Text);
-        VbaHostClassKind? expectedHostKind = syntaxTree.Module.Kind switch
-        {
-            VbaModuleKind.FormModule => VbaHostClassKind.Form,
-            _ => null
-        };
-        if (expectedHostKind is null)
-        {
-            return null;
-        }
-
-        var matchingEntries = hostClassProjectionSnapshot?.Classes
-            .Where(entry => entry.Identity.Name.Equals(
-                target.Name,
-                StringComparison.OrdinalIgnoreCase))
-            .ToArray() ?? [];
-        var exactEntry = matchingEntries.FirstOrDefault(entry =>
-            entry.Identity.Kind == expectedHostKind);
-        if (exactEntry is VbaCurrentHostClassProjectionEntry
-            || expectedHostKind == VbaHostClassKind.Document
-                && exactEntry is not null)
-        {
-            return new VbaRenameFailure(
-                "hostManagedModuleIdentity",
-                $"Module identity '{target.Name}' belongs to a source-template host component.",
-                Path: sourcePath,
-                Guidance: "Use the workbook-backed source template refactoring workflow so the host component and exported source stay associated.");
-        }
-
-        if (exactEntry is VbaLastKnownGoodHostClassProjectionEntry
-            or VbaIndeterminateHostClassProjectionEntry
-            || matchingEntries.Any()
-            || hostClassProjectionSnapshot is null
-            || !hostClassProjectionSnapshot.ClassEnumerationComplete)
-        {
-            return new VbaRenameFailure(
-                "analysisIncomplete",
-                $"Module identity '{target.Name}' does not have conclusive current host-ownership evidence.",
-                Condition: "hostOwnershipUnavailable",
-                Path: sourcePath,
-                Guidance: "Refresh the source-template host-class projection and retry Rename.");
         }
 
         return null;
@@ -2999,7 +2928,7 @@ public sealed class VbaSemanticInventory
         }
     }
 
-    private bool HasProjectedHostAlternative(
+    private bool HasIntrinsicHostEventAlternative(
         IReadOnlyList<VbaResolvedIdentifierOccurrence> targetOccurrences,
         CancellationToken cancellationToken)
     {
@@ -3582,7 +3511,7 @@ public sealed class VbaSemanticInventory
                 if (matchingPostHostTargets.Length != 1)
                 {
                     return ResolutionChanged(
-                        "Rename would change an existing projected host "
+                        "Rename would change an existing intrinsic UserForm "
                         + "Event binding.");
                 }
 
@@ -3593,7 +3522,7 @@ public sealed class VbaSemanticInventory
                         != hostEventTarget.EventContract.ValidationAuthority)
                 {
                     return ResolutionChanged(
-                        "Rename would change projected host Event authority.");
+                        "Rename would change intrinsic UserForm Event authority.");
                 }
 
                 continue;
@@ -4572,7 +4501,7 @@ public sealed class VbaSemanticInventory
             documents,
             referenceSelection,
             referenceCatalogs,
-            hostClassProjectionSnapshot,
+            intrinsicHostEventCatalog,
             referenceCatalogSources,
             referenceCatalogIdentities,
             projectResolution,
@@ -4885,10 +4814,7 @@ public sealed class VbaSemanticInventory
             document.Text,
             document.ModuleName,
             FreezeList(document.Definitions.Select(CaptureDefinition)),
-            document.SyntaxTree)
-        {
-            Provenance = document.Provenance
-        };
+            document.SyntaxTree);
 
     internal static VbaSourceDefinition CaptureDefinition(VbaSourceDefinition definition)
         => definition.Signature is null
