@@ -6,7 +6,7 @@
     "invocation.stdinCancellation": "1.0",
     "sourceSnapshot.activeWindowsCodePage": "1.0",
     "projectCreation.pathValidation": "1.0",
-    "hostClass.list": "1.0"
+    "hostEvent.list": "1.0"
   },
   "commandSchemaVersions": {
     "build": "1.0",
@@ -15,7 +15,7 @@
     "common-module update": "1.0",
     "doctor": "1.0",
     "export": "1.0",
-    "host-class list": "1.1",
+    "host-event list": "1.0",
     "new excel": "1.0",
     "publish": "1.0",
     "reference add": "1.0",

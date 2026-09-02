@@ -142,7 +142,15 @@ test('restricted activation keeps language assistance safe without eager managed
   assert.match(extensionSource, /outputChannel = extensionOutputChannel;/);
   assert.match(
     extensionSource,
-    /resolveCompanionExecutableForLanguageActivation\(\s*workspace\.isTrusted,\s*\(\) => vbaDevResolver\.resolve\(\)/
+    /IntrinsicHostEventCatalogExtensionHostProbe\.fromEnvironment\(\s*process\.env,\s*workspace\.isTrusted,\s*context\.extensionMode === ExtensionMode\.Test\s*\)/
+  );
+  assert.match(
+    extensionSource,
+    /hostEventCatalogTestProbe\?\.effectiveWorkspaceTrusted \?\? workspace\.isTrusted/
+  );
+  assert.match(
+    extensionSource,
+    /resolveCompanionExecutableForLanguageActivation\(\s*isWorkspaceTrusted\(\),\s*\(\) => vbaDevResolver\.resolve\(\)/
   );
   assert.match(
     extensionSource,
@@ -254,28 +262,56 @@ test('registered Command Palette workflows capture one invocation target before 
   }
 });
 
-test('extension watches selected Host Event paths through absolute RelativePattern bases', () => {
+test('environment UserForm Event activation is nonblocking and has no document watchers', () => {
   const extensionSource = fs.readFileSync(
     path.join(process.cwd(), 'client', 'src', 'extension.ts'),
     'utf8'
   );
 
+  assert.match(extensionSource, /if \(isWorkspaceTrusted\(\)\) \{\s*void lifecycle\.activate\(\);\s*\}/);
   assert.match(
     extensionSource,
-    /new HostClassProjectionWatcherRegistry\(\{[\s\S]*?workspace\.createFileSystemWatcher\(\s*new RelativePattern\(Uri\.file\(basePath\), pattern\)\s*\)[\s\S]*?onActiveDocumentsChanged: \(documents\) => hostClassWatchers\.synchronize\(documents\)/
+    /workspace\.onDidGrantWorkspaceTrust\(\(\) => \{\s*if \(isWorkspaceTrusted\(\)\) \{\s*void lifecycle\.activate\(\);\s*\}\s*\}\)/
+  );
+  assert.equal(extensionSource.match(/lifecycle\.activate\(\)/gu)?.length, 2);
+  assert.doesNotMatch(extensionSource, /await lifecycle\.activate\(\)/);
+  assert.ok(
+    extensionSource.indexOf('void lifecycle.activate();') <
+      extensionSource.indexOf('await client?.start();')
+  );
+  assert.doesNotMatch(extensionSource, /HostClassProjectionWatcherRegistry/);
+  assert.doesNotMatch(extensionSource, /hostClassWatchers|hostWorkspace/);
+  assert.doesNotMatch(extensionSource, /sourceTemplate|refreshDocument/);
+  assert.match(
+    extensionSource,
+    /onDidSynchronizeLanguageClient: async \(\) => \{\s*await lifecycle\.replayCurrentSnapshot\(\);\s*\}/
   );
 });
 
-test('extension reconciles Host Event documents when workspace folders change', () => {
-  const extensionSource = fs.readFileSync(
-    path.join(process.cwd(), 'client', 'src', 'extension.ts'),
-    'utf8'
-  );
-
-  assert.match(
-    extensionSource,
-    /workspace\.onDidChangeWorkspaceFolders\([\s\S]*?hostWorkspace\.reconcileWorkspaceFolders\(\s*workspace\.workspaceFolders/
-  );
+test('legacy document-scoped HostClass extension subsystem is physically removed', () => {
+  for (const basename of [
+    'hostClassProjectionLifecycle',
+    'hostClassProjectionRefreshCommand',
+    'hostClassProjectionSourceCollection',
+    'hostClassProjectionStatus',
+    'hostClassProjectionWatcherRegistry',
+    'hostClassProjectionWorkspace',
+    'hostClassSourceAssociation',
+    'hostClassSourceMetadata'
+  ]) {
+    assert.equal(fs.existsSync(path.join(
+      process.cwd(),
+      'client',
+      'src',
+      `${basename}.ts`
+    )), false);
+    assert.equal(fs.existsSync(path.join(
+      process.cwd(),
+      'client',
+      'src',
+      `${basename}.test.ts`
+    )), false);
+  }
 });
 
 test('extension contributes optional VBA debug selectors with an atomic procedure pair', () => {
@@ -545,7 +581,7 @@ test('extension contributes daily WorkbookBackedProject commands only', () => {
   assert.equal(commands.some((command) => command.command === 'vbaTools.testNoBuild'), false);
 });
 
-test('extension contributes the explicit Host Events refresh command exactly', () => {
+test('extension contributes only the explicit environment UserForm Events refresh command', () => {
   const packageJson = readPackageJson<{
     activationEvents?: string[];
     contributes?: {
@@ -559,16 +595,33 @@ test('extension contributes the explicit Host Events refresh command exactly', (
 
   assert.deepEqual(
     packageJson.contributes?.commands?.find((command) =>
-      command.command === 'vbaTools.hostClasses.refresh'
+      command.command === 'vbaTools.userFormEvents.refresh'
     ),
     {
-      command: 'vbaTools.hostClasses.refresh',
-      title: 'VBA Tools: Refresh Host Events'
+      command: 'vbaTools.userFormEvents.refresh',
+      title: 'VBA Tools: Refresh UserForm Events'
     }
   );
   assert.ok(packageJson.activationEvents?.includes(
-    'onCommand:vbaTools.hostClasses.refresh'
+    'onCommand:vbaTools.userFormEvents.refresh'
   ));
+  for (const removedCommand of [
+    'vbaTools.hostEvents.refresh',
+    'vbaTools.hostClasses.refresh'
+  ]) {
+    assert.equal(
+      packageJson.contributes?.commands?.some((command) =>
+        command.command === removedCommand
+      ),
+      false
+    );
+    assert.equal(packageJson.activationEvents?.includes(
+      `onCommand:${removedCommand}`
+    ), false);
+  }
+  assert.equal(packageJson.activationEvents?.some((event) =>
+    event.includes('hostClasses')
+  ), false);
 });
 
 test('extension forwards export command request arguments to dedicated orchestration', () => {

@@ -41,7 +41,7 @@ public sealed class VbaInteractiveWorkSchedulerTests
         Assert.Equal(firstAuthority.StableKey, secondAuthority.StableKey);
 
         var first = scheduler.AdmitCoalescibleAdvisoryMutation(
-            "vba/hostClassProjectionSnapshot",
+            "test/projectMutation",
             firstAuthority,
             rank: 1,
             _ =>
@@ -50,7 +50,7 @@ public sealed class VbaInteractiveWorkSchedulerTests
                 return Task.CompletedTask;
             });
         var second = scheduler.AdmitCoalescibleAdvisoryMutation(
-            "vba/hostClassProjectionSnapshot",
+            "test/projectMutation",
             secondAuthority,
             rank: 2,
             _ =>
@@ -1709,7 +1709,7 @@ public sealed class VbaInteractiveWorkSchedulerTests
         await blockerStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         var revisionThree = scheduler.AdmitCoalescibleMutation(
-            "vba/hostClassProjectionSnapshot",
+            "test/rankedMutation",
             "C:/work/Project\u001eBook1",
             rank: 3,
             _ =>
@@ -1718,7 +1718,7 @@ public sealed class VbaInteractiveWorkSchedulerTests
                 return Task.CompletedTask;
             });
         var revisionTwo = scheduler.AdmitCoalescibleMutation(
-            "vba/hostClassProjectionSnapshot",
+            "test/rankedMutation",
             "C:/work/Project\u001eBook1",
             rank: 2,
             _ =>

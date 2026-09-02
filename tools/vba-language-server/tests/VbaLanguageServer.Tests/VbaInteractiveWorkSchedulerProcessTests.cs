@@ -107,16 +107,15 @@ public sealed class VbaInteractiveWorkSchedulerProcessTests
     }
 
     [Fact]
-    public async Task Host_projection_notification_does_not_advance_editor_read_fence()
+    public async Task Intrinsic_catalog_notification_advances_the_next_editor_read_fence()
     {
         var projectRoot = Directory.CreateTempSubdirectory(
-            "vba-ls-host-projection-read-fence-").FullName;
+            "vba-ls-intrinsic-catalog-read-fence-").FullName;
         var admissionDirectory = Directory.CreateDirectory(
             Path.Combine(projectRoot, "admissions")).FullName;
         var sourceDirectory = Directory.CreateDirectory(
             Path.Combine(projectRoot, "src", "Book1")).FullName;
         var sourcePath = Path.Combine(sourceDirectory, "Dialog.frm");
-        var sourceTemplate = Path.Combine(sourceDirectory, "Book1.xlsm");
         var uri = new Uri(sourcePath).AbsoluteUri;
         try
         {
@@ -125,7 +124,7 @@ public sealed class VbaInteractiveWorkSchedulerProcessTests
                 JsonSerializer.Serialize(new
                 {
                     schemaVersion = 1,
-                    projectName = "HostProjectionReadFence",
+                    projectName = "IntrinsicCatalogReadFence",
                     primaryDocument = "Book1",
                     documents = new Dictionary<string, object>
                     {
@@ -180,26 +179,30 @@ public sealed class VbaInteractiveWorkSchedulerProcessTests
                 "readFence");
 
             await process.SendNotificationAsync(
-                "vba/hostClassProjectionSnapshot",
+                "vba/intrinsicHostEventCatalog",
                 new
                 {
-                    schemaVersion = 2,
+                    schemaVersion = "1.0",
                     revision = 1,
-                    project = Path.GetFullPath(projectRoot),
-                    document = "Book1",
-                    sourceTemplate = Path.GetFullPath(sourceTemplate),
-                    state = "present",
-                    classEnumerationComplete = true,
-                    classes = new object[]
+                    catalog = new
                     {
-                        new
+                        sourceKind = "userForm",
+                        intrinsicEventSourceName = "UserForm",
+                        events = new object[]
                         {
-                            identity = new { name = "Dialog", kind = "form" },
-                            authority = "current",
-                            projection = new
+                            new
                             {
-                                intrinsicEventSourceName = "UserForm",
-                                events = Array.Empty<object>()
+                                identity = new
+                                {
+                                    sourceName = "UserForm",
+                                    name = "Initialize"
+                                },
+                                signature = new
+                                {
+                                    parameters = Array.Empty<object>()
+                                },
+                                authoringAvailable = true,
+                                existingHandlerRecognizable = true
                             }
                         }
                     }
@@ -215,7 +218,7 @@ public sealed class VbaInteractiveWorkSchedulerProcessTests
             var notificationPath = await WaitForMatchingFileCreatedAsync(
                 admissionDirectory,
                 fileName => fileName.EndsWith(
-                    "-mutation-vba_hostClassProjectionSnapshot-none.completed",
+                    "-mutation-vba_intrinsicHostEventCatalog-none.completed",
                     StringComparison.Ordinal),
                 TimeSpan.FromSeconds(5));
             var hoverPath = await WaitForMatchingFileCreatedAsync(
@@ -229,7 +232,7 @@ public sealed class VbaInteractiveWorkSchedulerProcessTests
                 notificationPath,
                 "inputSequence");
             Assert.True(notificationSequence > baselineReadFence);
-            Assert.Equal(baselineReadFence, ReadTimingValue(hoverPath, "readFence"));
+            Assert.Equal(notificationSequence, ReadTimingValue(hoverPath, "readFence"));
 
             await process.ShutdownAsync(4);
         }

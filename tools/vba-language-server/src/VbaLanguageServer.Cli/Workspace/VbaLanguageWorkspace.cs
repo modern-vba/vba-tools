@@ -66,7 +66,7 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
     private readonly IVbaProjectIdentityReader projectIdentityReader;
     private readonly VbaProjectSourceDocumentCache diskDocumentCache;
     private readonly VbaProjectSnapshotProvider snapshotProvider;
-    private readonly VbaHostClassProjectionSnapshotStore hostClassProjectionStore;
+    private readonly VbaIntrinsicHostEventCatalogStore intrinsicHostEventCatalogStore;
     private readonly IVbaDocumentAnalysisBuildObserver analysisBuildObserver;
     private VbaWorkspaceSnapshotState? workspaceSnapshotState;
     private long nextDocumentLifecycleEpoch;
@@ -158,7 +158,7 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                 sourceDecoding ?? DiskSourceDecoding.ForCurrentProcess);
         diskDocumentCache = new VbaProjectSourceDocumentCache();
         ManifestWorkspace = new VbaProjectManifestWorkspace(projectFileSystem);
-        hostClassProjectionStore = new VbaHostClassProjectionSnapshotStore();
+        intrinsicHostEventCatalogStore = new VbaIntrinsicHostEventCatalogStore();
         snapshotProvider = new VbaProjectSnapshotProvider(
             referenceCatalogCache,
             diskInventory,
@@ -167,7 +167,7 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
             lifecycleObserver,
             snapshotBuildObserver,
             reconciliationAuthorityLeaseObserver,
-            hostClassProjectionStore);
+            intrinsicHostEventCatalogStore);
     }
 
     /// <summary>
@@ -1269,19 +1269,9 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         return snapshots;
     }
 
-    internal bool TryApplyHostClassProjectionSnapshot(
-        VbaHostClassProjectionSnapshotUpdate update)
-    {
-        IReadOnlyList<VbaIdentifiedDocument> activeDocuments;
-        lock (gate)
-        {
-            activeDocuments = CaptureTrackedDocuments();
-        }
-
-        return snapshotProvider.TryApplyHostClassProjectionSnapshot(
-            update,
-            activeDocuments);
-    }
+    internal bool TryApplyIntrinsicHostEventCatalog(
+        VbaIntrinsicHostEventCatalogUpdate update)
+        => snapshotProvider.TryApplyIntrinsicHostEventCatalog(update);
 
     VbaSemanticInventory IVbaInteractiveWorkspaceCapture.CaptureProjectSemanticInventory(
         string activeUri,

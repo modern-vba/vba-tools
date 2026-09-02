@@ -333,7 +333,7 @@ internal sealed class VbaProjectSnapshotProvider
             VbaProjectResolution resolution,
             long workspaceVersion,
             long manifestVersion,
-            long hostClassProjectionRevision,
+            long intrinsicHostEventCatalogRevision,
             long fullInvalidationGeneration,
             long scopeInvalidationGeneration,
             object scopeIdentity,
@@ -345,7 +345,7 @@ internal sealed class VbaProjectSnapshotProvider
             Resolution = resolution;
             WorkspaceVersion = workspaceVersion;
             ManifestVersion = manifestVersion;
-            HostClassProjectionRevision = hostClassProjectionRevision;
+            IntrinsicHostEventCatalogRevision = intrinsicHostEventCatalogRevision;
             FullInvalidationGeneration = fullInvalidationGeneration;
             ScopeInvalidationGeneration = scopeInvalidationGeneration;
             ScopeIdentity = scopeIdentity;
@@ -364,7 +364,7 @@ internal sealed class VbaProjectSnapshotProvider
 
         internal long ManifestVersion { get; }
 
-        internal long HostClassProjectionRevision { get; }
+        internal long IntrinsicHostEventCatalogRevision { get; }
 
         internal long FullInvalidationGeneration { get; }
 
@@ -391,7 +391,7 @@ internal sealed class VbaProjectSnapshotProvider
     private readonly VbaProjectSnapshotBuilder snapshotBuilder;
     private readonly IVbaProjectReferenceCatalogLifecycleObserver lifecycleObserver;
     private readonly IVbaProjectSnapshotBuildObserver buildObserver;
-    private readonly VbaHostClassProjectionSnapshotStore hostClassProjectionStore;
+    private readonly VbaIntrinsicHostEventCatalogStore intrinsicHostEventCatalogStore;
     private readonly IVbaProjectReconciliationAuthorityLeaseObserver
         reconciliationAuthorityLeaseObserver;
     private readonly Dictionary<
@@ -415,7 +415,7 @@ internal sealed class VbaProjectSnapshotProvider
         IVbaProjectSnapshotBuildObserver? buildObserver = null,
         IVbaProjectReconciliationAuthorityLeaseObserver?
             reconciliationAuthorityLeaseObserver = null,
-        VbaHostClassProjectionSnapshotStore? hostClassProjectionStore = null)
+        VbaIntrinsicHostEventCatalogStore? intrinsicHostEventCatalogStore = null)
     {
         this.referenceCatalogCache = referenceCatalogCache;
         this.diskInventory = diskInventory;
@@ -427,8 +427,8 @@ internal sealed class VbaProjectSnapshotProvider
         this.reconciliationAuthorityLeaseObserver =
             reconciliationAuthorityLeaseObserver
             ?? NullVbaProjectReconciliationAuthorityLeaseObserver.Instance;
-        this.hostClassProjectionStore =
-            hostClassProjectionStore ?? new VbaHostClassProjectionSnapshotStore();
+        this.intrinsicHostEventCatalogStore = intrinsicHostEventCatalogStore
+            ?? new VbaIntrinsicHostEventCatalogStore();
         snapshotBuilder = new VbaProjectSnapshotBuilder(
             diskInventory,
             diskDocumentCache);
@@ -503,7 +503,7 @@ internal sealed class VbaProjectSnapshotProvider
                     out var seedCatalogScope)
                         ? seedCatalogScope
                         : null),
-            hostClassProjectionStore.CaptureSelectionState(seed.Resolution),
+            intrinsicHostEventCatalogStore.CaptureState(),
             seed.CacheIdentity,
             SupersededCacheIdentity: null);
     }
@@ -566,7 +566,7 @@ internal sealed class VbaProjectSnapshotProvider
             resolution,
             manifestCapture.Barriers,
             referenceCatalogState,
-            hostClassProjectionStore.CaptureSelectionState(resolution),
+            intrinsicHostEventCatalogStore.CaptureState(),
             cacheIdentity,
             supersededCacheIdentity);
     }
@@ -587,7 +587,7 @@ internal sealed class VbaProjectSnapshotProvider
                 capture.CacheIdentity,
                 capture.ManifestBarriers.Revision,
                 capture.ReferenceCatalogState.Revision,
-                capture.HostClassProjectionState.Revision,
+                capture.IntrinsicHostEventCatalogState.Revision,
                 cancellationToken,
                 out var cachedSnapshot))
             {
@@ -622,7 +622,7 @@ internal sealed class VbaProjectSnapshotProvider
                 inventorySnapshot.ExistingOpenSourceIdentities,
                 capture.ReferenceCatalogState.CatalogSet,
                 capture.ReferenceCatalogState.Sources,
-                capture.HostClassProjectionState.Snapshot,
+                capture.IntrinsicHostEventCatalogState.Catalog,
                 capture.ReferenceCatalogState.Identities,
                 capture.ReferenceCatalogState.AuthoritativeProjectNames) with
             {
@@ -635,7 +635,7 @@ internal sealed class VbaProjectSnapshotProvider
                     capture.Resolution,
                     workspaceState.Version,
                     capture.ManifestBarriers.Revision,
-                    capture.HostClassProjectionState.Revision,
+                    capture.IntrinsicHostEventCatalogState.Revision,
                     capturedInvalidation.FullGeneration,
                     capturedInvalidation.ScopeGeneration,
                     capturedInvalidation.State,
@@ -648,7 +648,7 @@ internal sealed class VbaProjectSnapshotProvider
                 workspaceState.Version,
                 capture.ManifestBarriers.Revision,
                 capture.ReferenceCatalogState.Revision,
-                capture.HostClassProjectionState.Revision,
+                capture.IntrinsicHostEventCatalogState.Revision,
                 capture.SupersededCacheIdentity,
                 inventorySnapshot.DiskSources,
                 snapshot,
@@ -694,86 +694,20 @@ internal sealed class VbaProjectSnapshotProvider
         }
     }
 
-    public bool TryApplyHostClassProjectionSnapshot(
-        VbaHostClassProjectionSnapshotUpdate update,
-        IReadOnlyList<VbaIdentifiedDocument> activeDocuments)
+    public bool TryApplyIntrinsicHostEventCatalog(
+        VbaIntrinsicHostEventCatalogUpdate update)
     {
-        var matchingScopes = activeDocuments
-            .Select(activeDocument => new
-            {
-                ActiveDocument = activeDocument,
-                Resolution = ResolveCurrentManifest(
-                    activeDocument).Resolution
-            })
-            .Where(scope => VbaHostClassProjectionSnapshotStore.Matches(
-                scope.Resolution,
-                update.Context))
-            .Select(scope => new
-            {
-                scope.ActiveDocument,
-                scope.Resolution,
-                CacheIdentity = VbaProjectSnapshotIdentity.Create(
-                    scope.ActiveDocument.Identity,
-                    scope.Resolution)
-            })
-            .GroupBy(scope => scope.CacheIdentity)
-            .Select(group => group.First())
-            .ToArray();
-        if (matchingScopes.Length == 0)
-        {
-            var matchesEffectiveManifest =
-                manifestResolutionSource.TryResolveManifestDocument(
-                    update.Context.Project,
-                    update.Context.Document,
-                    out var manifestResolution)
-                && VbaHostClassProjectionSnapshotStore.Matches(
-                    manifestResolution,
-                    update.Context);
-            lock (gate)
-            {
-                if (!(matchesEffectiveManifest
-                        ? hostClassProjectionStore.TryApply(update)
-                        : hostClassProjectionStore.TryApplyRetainedClear(update)))
-                {
-                    return false;
-                }
-
-                foreach (var (key, invalidationState) in
-                    scopeInvalidationStates)
-                {
-                    if (!VbaHostClassProjectionSnapshotStore.Matches(
-                        invalidationState.Resolution,
-                        update.Context))
-                    {
-                        continue;
-                    }
-
-                    invalidationState.Generation++;
-                    cache.Remove(key);
-                }
-
-                return true;
-            }
-        }
-
         lock (gate)
         {
-            if (!hostClassProjectionStore.TryApply(update))
+            if (!intrinsicHostEventCatalogStore.TryApply(update))
             {
                 return false;
             }
 
-            foreach (var scope in matchingScopes)
-            {
-                cache.Remove(scope.CacheIdentity);
-                if (scopeInvalidationStates.TryGetValue(
-                    scope.CacheIdentity,
-                    out var invalidationState))
-                {
-                    invalidationState.Generation++;
-                }
-            }
-
+            fullInvalidationGeneration++;
+            cache.Clear();
+            scopeAuthoritySeeds.Clear();
+            scopeAuthorityLookup = ProjectScopeAuthorityLookup.Empty;
             return true;
         }
     }
@@ -1686,7 +1620,7 @@ internal sealed class VbaProjectSnapshotProvider
         VbaProjectSnapshotIdentity cacheIdentity,
         long expectedManifestVersion,
         long expectedReferenceCatalogRevision,
-        long expectedHostClassProjectionRevision,
+        long expectedIntrinsicHostEventCatalogRevision,
         CancellationToken cancellationToken,
         out VbaProjectSnapshot snapshot)
     {
@@ -1695,8 +1629,8 @@ internal sealed class VbaProjectSnapshotProvider
         {
             if (cache.TryGetValue(cacheIdentity, out var cached)
                 && cached.ManifestVersion == expectedManifestVersion
-                && cached.HostClassProjectionRevision
-                    == expectedHostClassProjectionRevision)
+                && cached.IntrinsicHostEventCatalogRevision
+                    == expectedIntrinsicHostEventCatalogRevision)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 if (cached.ReferenceCatalogRevision == expectedReferenceCatalogRevision)
@@ -1725,7 +1659,7 @@ internal sealed class VbaProjectSnapshotProvider
         long snapshotWorkspaceVersion,
         long snapshotManifestVersion,
         long snapshotReferenceCatalogRevision,
-        long snapshotHostClassProjectionRevision,
+        long snapshotIntrinsicHostEventCatalogRevision,
         VbaProjectSnapshotIdentity? supersededCacheIdentity,
         IReadOnlyList<VbaProjectDiskSource> diskSources,
         VbaProjectSnapshot snapshot,
@@ -1749,8 +1683,8 @@ internal sealed class VbaProjectSnapshotProvider
                 && (current.WorkspaceVersion > snapshotWorkspaceVersion
                     || current.ManifestVersion > snapshotManifestVersion
                     || current.ReferenceCatalogRevision > snapshotReferenceCatalogRevision
-                    || current.HostClassProjectionRevision
-                        > snapshotHostClassProjectionRevision))
+                    || current.IntrinsicHostEventCatalogRevision
+                        > snapshotIntrinsicHostEventCatalogRevision))
             {
                 return;
             }
@@ -1759,7 +1693,7 @@ internal sealed class VbaProjectSnapshotProvider
                 snapshotWorkspaceVersion,
                 snapshotManifestVersion,
                 snapshotReferenceCatalogRevision,
-                snapshotHostClassProjectionRevision,
+                snapshotIntrinsicHostEventCatalogRevision,
                 diskSources
                     .Select(source => source.DocumentIdentity)
                     .ToArray(),
@@ -1815,9 +1749,8 @@ internal sealed class VbaProjectSnapshotProvider
                         ownership.ActiveUri),
                     ownership.Resolution)
                 .Revision == ownership.ManifestVersion
-            && hostClassProjectionStore
-                .CaptureSelectionState(ownership.Resolution)
-                .Revision == ownership.HostClassProjectionRevision
+            && intrinsicHostEventCatalogStore.CaptureState().Revision
+                == ownership.IntrinsicHostEventCatalogRevision
             && !HasSourceChangedSince(
                 ownership.Resolution,
                 ownership.ActiveDocumentIdentity,
@@ -1952,7 +1885,7 @@ internal sealed class VbaProjectSnapshotProvider
         long WorkspaceVersion,
         long ManifestVersion,
         long ReferenceCatalogRevision,
-        long HostClassProjectionRevision,
+        long IntrinsicHostEventCatalogRevision,
         IReadOnlyList<VbaDocumentIdentity> DiskSourceIdentities,
         VbaProjectSnapshot Snapshot);
 
@@ -2149,7 +2082,7 @@ internal sealed class VbaProjectSnapshotProvider
         VbaProjectResolution Resolution,
         VbaProjectManifestBarrierSnapshot ManifestBarriers,
         VbaProjectReferenceCatalogSelectionState ReferenceCatalogState,
-        VbaHostClassProjectionSelectionState HostClassProjectionState,
+        VbaIntrinsicHostEventCatalogState IntrinsicHostEventCatalogState,
         VbaProjectSnapshotIdentity CacheIdentity,
         VbaProjectSnapshotIdentity? SupersededCacheIdentity)
     {

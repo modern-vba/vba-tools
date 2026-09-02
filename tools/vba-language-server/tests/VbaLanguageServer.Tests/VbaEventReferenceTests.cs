@@ -461,53 +461,7 @@ public sealed class VbaEventReferenceTests
     }
 
     [Fact]
-    public void RaiseEventDoesNotFallBackToAnIntrinsicHostEvent()
-    {
-        const string uri = "file:///C:/work/Worker.cls";
-        var text = string.Join('\n', [
-            "VERSION 1.0 CLASS",
-            "Attribute VB_Name = \"Worker\"",
-            "Public Sub Run()",
-            "    RaiseEvent Saved",
-            "End Sub"
-        ]);
-        var hostProjection = new VbaHostClassProjectionSnapshot(
-            Revision: 1,
-            new VbaHostClassProjectionContext("Book1", "Worker", "Worker.xlsm"),
-            ClassEnumerationComplete: true,
-            [
-                new VbaCurrentHostClassProjectionEntry(
-                    new VbaHostClassIdentity("Worker", VbaHostClassKind.Document),
-                    new VbaHostClassProjection(
-                        "Worksheet",
-                        [
-                            new VbaHostEventSignature(
-                                "Saved",
-                                [],
-                                Documentation: null,
-                                AuthoringAvailable: true,
-                                ExistingHandlerRecognizable: true)
-                        ]))
-            ]);
-        var index = VbaSemanticInventory.Create(
-            VbaSemanticInventoryFixture.ProjectSourceDocuments(
-                new Dictionary<string, string> { [uri] = text }),
-            referenceSelection: null,
-            VbaProjectReferenceCatalogSet.Empty,
-            hostProjection);
-
-        Assert.Null(index.ResolveSourceDefinition(
-            uri,
-            3,
-            "    RaiseEvent ".Length));
-        Assert.Empty(index.FindReferences(
-            uri,
-            3,
-            "    RaiseEvent ".Length));
-    }
-
-    [Fact]
-    public void CurrentHostProjectionResolvesAnIntrinsicHandlerEventSuffix()
+    public void IntrinsicHandlerNameReturnsToOrdinaryRenameAfterAssociationLoss()
     {
         const string uri = "file:///C:/work/Dialog.frm";
         var text = string.Join('\n', [
@@ -518,58 +472,66 @@ public sealed class VbaEventReferenceTests
             "Private Sub UserForm_Initialize()",
             "End Sub"
         ]);
-        var hostProjection = new VbaHostClassProjectionSnapshot(
-            Revision: 1,
-            new VbaHostClassProjectionContext("Book1", "Dialog", "Book1.xlsm"),
-            ClassEnumerationComplete: true,
-            [
-                new VbaCurrentHostClassProjectionEntry(
-                    new VbaHostClassIdentity("Dialog", VbaHostClassKind.Form),
-                    new VbaHostClassProjection(
-                        "UserForm",
-                        [
-                            new VbaHostEventSignature(
-                                "Initialize",
-                                [],
-                                "Occurs when the form is initialized.",
-                                AuthoringAvailable: true,
-                                ExistingHandlerRecognizable: true)
-                        ]))
-            ]);
         var index = VbaSemanticInventory.Create(
             VbaSemanticInventoryFixture.ProjectSourceDocuments(
                 new Dictionary<string, string> { [uri] = text }),
             referenceSelection: null,
             VbaProjectReferenceCatalogSet.Empty,
-            hostProjection);
+            intrinsicHostEventCatalog: null);
 
-        var eventTarget = Assert.IsType<VbaHostEventNameTarget>(
-            index.ResolveSourceTarget(
+        var result = index.CreateRenameResult(
             uri,
             4,
-            "Private Sub UserForm_".Length));
+            "Private Sub UserForm_".Length,
+            "RenamedHandler");
 
-        Assert.Equal("Initialize", eventTarget.HostEventIdentity.EventName);
-        Assert.Equal(
-            "Occurs when the form is initialized.",
-            eventTarget.EventContract.Documentation);
-        Assert.Null(index.ResolveSourceDefinition(
-            uri,
-            4,
-            "Private Sub UserForm_".Length));
-        Assert.Null(index.ResolveDefinition(
-            uri,
-            4,
-            "Private Sub UserForm_".Length));
+        Assert.Null(result.Failure);
+        var plan = Assert.IsType<VbaRenamePlan>(result.Plan);
+        Assert.Single(plan.Changes[uri]);
     }
 
-    [Theory]
-    [InlineData("Dialog_Initialize", true)]
-    [InlineData("UserForm__Initialize", true)]
-    [InlineData("UserForm_Initialize", false)]
-    public void IntrinsicHandlerRequiresExactProjectedSourceAndRecognizableEvent(
-        string handlerName,
-        bool existingHandlerRecognizable)
+    [Fact]
+    public void EnvironmentCatalogBindsEveryAuthoritativeFormBySourceKind()
+    {
+        const string manifestFormUri = "file:///C:/work/Dialog.frm";
+        const string adHocFormUri = "file:///C:/scratch/AdHoc.frm";
+        var manifestFormText = string.Join('\n', [
+            "VERSION 5.00",
+            "Begin VB.Form Dialog",
+            "End",
+            "Attribute VB_Name = \"Dialog\"",
+            "Private Sub UserForm_Initialize()",
+            "End Sub"
+        ]);
+        var adHocFormText = string.Join('\n', [
+            "VERSION 5.00",
+            "Begin VB.Form AdHoc",
+            "End",
+            "Attribute VB_Name = \"AdHoc\"",
+            "Private Sub UserForm_Initialize()",
+            "End Sub"
+        ]);
+        var index = CreateIntrinsicCatalogIndex(
+            new Dictionary<string, string>
+            {
+                [manifestFormUri] = manifestFormText,
+                [adHocFormUri] = adHocFormText
+            },
+            CreateIntrinsicEvent("Initialize"));
+
+        foreach (var uri in new[] { manifestFormUri, adHocFormUri })
+        {
+            var target = Assert.IsType<VbaHostEventNameTarget>(
+                index.ResolveSourceTarget(
+                    uri,
+                    4,
+                    "Private Sub UserForm_".Length));
+            Assert.Equal("Initialize", target.HostEventIdentity.EventName);
+        }
+    }
+
+    [Fact]
+    public void UnavailableCatalogIsIndeterminateAndSuppliesNoEventEvidence()
     {
         const string uri = "file:///C:/work/Dialog.frm";
         var text = string.Join('\n', [
@@ -577,87 +539,111 @@ public sealed class VbaEventReferenceTests
             "Begin VB.Form Dialog",
             "End",
             "Attribute VB_Name = \"Dialog\"",
-            $"Private Sub {handlerName}()",
-            "End Sub"
+            "Private Function UserForm_Initialize() As Boolean",
+            "End Function"
         ]);
-        var hostProjection = new VbaHostClassProjectionSnapshot(
-            Revision: 1,
-            new VbaHostClassProjectionContext("Book1", "Dialog", "Book1.xlsm"),
-            ClassEnumerationComplete: true,
-            [
-                new VbaCurrentHostClassProjectionEntry(
-                    new VbaHostClassIdentity("Dialog", VbaHostClassKind.Form),
-                    new VbaHostClassProjection(
-                        "UserForm",
-                        [
-                            new VbaHostEventSignature(
-                                "Initialize",
-                                [],
-                                Documentation: null,
-                                AuthoringAvailable: true,
-                                ExistingHandlerRecognizable:
-                                    existingHandlerRecognizable)
-                        ]))
-            ]);
         var index = VbaSemanticInventory.Create(
             VbaSemanticInventoryFixture.ProjectSourceDocuments(
                 new Dictionary<string, string> { [uri] = text }),
-            referenceSelection: null,
-            VbaProjectReferenceCatalogSet.Empty,
-            hostProjection);
+            intrinsicHostEventCatalog: null);
 
         Assert.IsNotType<VbaHostEventNameTarget>(index.ResolveSourceTarget(
             uri,
             4,
-            "Private Sub ".Length + handlerName.LastIndexOf('_') + 1));
+            "Private Function UserForm_".Length));
+        Assert.DoesNotContain(
+            index.GetProjectValidationDiagnostics(uri),
+            diagnostic => diagnostic.Code is
+                "validation.eventHandlerMustBeSub"
+                    or "validation.incompatibleEventHandlerSignature");
     }
 
     [Fact]
-    public void ClassModuleDoesNotInferDocumentHostAssociation()
+    public void EnvironmentCatalogDoesNotBindDocumentOrControlHandlers()
     {
-        const string uri = "file:///C:/work/Dialog.cls";
-        var text = string.Join('\n', [
+        const string worksheetUri = "file:///C:/work/Sheet1.cls";
+        const string workbookUri = "file:///C:/work/ThisWorkbook.cls";
+        const string formUri = "file:///C:/work/Dialog.frm";
+        var worksheetText = string.Join('\n', [
             "VERSION 1.0 CLASS",
-            "Attribute VB_Name = \"Dialog\"",
-            "Private Sub Worksheet_Change()",
-            "End Sub"
+            "Attribute VB_Name = \"Sheet1\"",
+            "Private Function Worksheet_Change() As Boolean",
+            "End Function"
         ]);
-        var hostProjection = new VbaHostClassProjectionSnapshot(
-            Revision: 1,
-            new VbaHostClassProjectionContext("Book1", "Dialog", "Book1.xlsm"),
-            ClassEnumerationComplete: true,
-            [
-                new VbaCurrentHostClassProjectionEntry(
-                    new VbaHostClassIdentity("Dialog", VbaHostClassKind.Document),
-                    new VbaHostClassProjection(
-                        "Worksheet",
-                        [
-                            new VbaHostEventSignature(
-                                "Change",
-                                [],
-                                Documentation: null,
-                                AuthoringAvailable: true,
-                                ExistingHandlerRecognizable: true)
-                        ]))
-            ]);
-        var index = VbaSemanticInventory.Create(
-            VbaSemanticInventoryFixture.ProjectSourceDocuments(
-                new Dictionary<string, string> { [uri] = text }),
-            referenceSelection: null,
-            VbaProjectReferenceCatalogSet.Empty,
-            hostProjection);
+        var workbookText = string.Join('\n', [
+            "VERSION 1.0 CLASS",
+            "Attribute VB_Name = \"ThisWorkbook\"",
+            "Private Function Workbook_Open() As Boolean",
+            "End Function"
+        ]);
+        var formText = string.Join('\n', [
+            "VERSION 5.00",
+            "Begin VB.Form Dialog",
+            "End",
+            "Attribute VB_Name = \"Dialog\"",
+            "Private Function CommandButton1_Click() As Boolean",
+            "End Function"
+        ]);
+        var index = CreateIntrinsicCatalogIndex(
+            new Dictionary<string, string>
+            {
+                [worksheetUri] = worksheetText,
+                [workbookUri] = workbookText,
+                [formUri] = formText
+            },
+            CreateIntrinsicEvent("Change"),
+            CreateIntrinsicEvent("Open"),
+            CreateIntrinsicEvent("Click"));
 
         Assert.IsNotType<VbaHostEventNameTarget>(index.ResolveSourceTarget(
-            uri,
+            worksheetUri,
             2,
-            "Private Sub Worksheet_".Length));
+            "Private Function Worksheet_".Length));
+        Assert.IsNotType<VbaHostEventNameTarget>(index.ResolveSourceTarget(
+            workbookUri,
+            2,
+            "Private Function Workbook_".Length));
+        Assert.IsNotType<VbaHostEventNameTarget>(index.ResolveSourceTarget(
+            formUri,
+            4,
+            "Private Function CommandButton1_".Length));
+        Assert.DoesNotContain(
+            new[] { worksheetUri, workbookUri, formUri }
+                .SelectMany(uri => index.GetProjectValidationDiagnostics(uri)),
+            diagnostic => diagnostic.Code is
+                "validation.eventHandlerMustBeSub"
+                    or "validation.incompatibleEventHandlerSignature");
     }
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void IndeterminateOrIncompleteHostProjectionSuppliesNoEventEvidence(
-        bool hasIncompleteCurrentProjection)
+    [Fact]
+    public void RaiseEventDoesNotFallBackToAnIntrinsicCatalogEvent()
+    {
+        const string uri = "file:///C:/work/Dialog.frm";
+        var text = string.Join('\n', [
+            "VERSION 5.00",
+            "Begin VB.Form Dialog",
+            "End",
+            "Attribute VB_Name = \"Dialog\"",
+            "Public Sub Run()",
+            "    RaiseEvent Initialize",
+            "End Sub"
+        ]);
+        var index = CreateIntrinsicCatalogIndex(
+            new Dictionary<string, string> { [uri] = text },
+            CreateIntrinsicEvent("Initialize"));
+
+        Assert.Null(index.ResolveSourceDefinition(
+            uri,
+            5,
+            "    RaiseEvent ".Length));
+        Assert.Empty(index.FindReferences(
+            uri,
+            5,
+            "    RaiseEvent ".Length));
+    }
+
+    [Fact]
+    public void CatalogEventReferencesJoinIntrinsicAndExternalHandlerSuffixes()
     {
         const string formUri = "file:///C:/work/Dialog.frm";
         const string workerUri = "file:///C:/work/Worker.cls";
@@ -666,286 +652,43 @@ public sealed class VbaEventReferenceTests
             "Begin VB.Form Dialog",
             "End",
             "Attribute VB_Name = \"Dialog\"",
-            "Private Sub UserForm_Change(ByVal Value As Boolean)",
+            "Private Sub UserForm_Initialize()",
             "End Sub"
         ]);
         var workerText = string.Join('\n', [
             "VERSION 1.0 CLASS",
             "Attribute VB_Name = \"Worker\"",
             "Private WithEvents dialog As Dialog",
-            "Private Sub dialog_Change(ByVal Value As Boolean)",
+            "Private Sub dialog_Initialize()",
             "End Sub"
         ]);
-        var identity = new VbaHostClassIdentity("Dialog", VbaHostClassKind.Form);
-        VbaHostClassProjectionEntry entry = hasIncompleteCurrentProjection
-            ? new VbaCurrentHostClassProjectionEntry(
-                identity,
-                new VbaHostClassProjection(
-                    IntrinsicEventSourceName: string.Empty,
-                    Events: []))
-            : new VbaIndeterminateHostClassProjectionEntry(identity);
-        var index = VbaSemanticInventory.Create(
-            VbaSemanticInventoryFixture.ProjectSourceDocuments(
-                new Dictionary<string, string>
-                {
-                    [formUri] = formText,
-                    [workerUri] = workerText
-                }),
-            referenceSelection: null,
-            VbaProjectReferenceCatalogSet.Empty,
-            new VbaHostClassProjectionSnapshot(
-                Revision: 1,
-                new VbaHostClassProjectionContext(
-                    "Book1",
-                    "Dialog",
-                    "Book1.xlsm"),
-                ClassEnumerationComplete: true,
-                [entry]));
-
-        Assert.IsNotType<VbaHostEventNameTarget>(index.ResolveSourceTarget(
-            formUri,
-            4,
-            "Private Sub UserForm_".Length));
-        Assert.Null(index.ResolveSourceTarget(
-            workerUri,
-            3,
-            "Private Sub dialog_".Length));
-        Assert.DoesNotContain(
-            index.GetProjectValidationDiagnostics(workerUri),
-            diagnostic => diagnostic.Code is
-                "validation.withEventsTypeMustExposeEvents"
-                    or "validation.eventHandlerMustBeSub"
-                    or "validation.incompatibleEventHandlerSignature");
-    }
-
-    [Theory]
-    [InlineData(true, true)]
-    [InlineData(false, false)]
-    public void EmptyHostProjectionDiagnosesWithEventsTypeOnlyWhenCurrent(
-        bool isCurrent,
-        bool expectDiagnostic)
-    {
-        const string formUri = "file:///C:/work/Dialog.frm";
-        const string workerUri = "file:///C:/work/Worker.cls";
-        var formText = string.Join('\n', [
-            "VERSION 5.00",
-            "Begin VB.Form Dialog",
-            "End",
-            "Attribute VB_Name = \"Dialog\""
-        ]);
-        var workerText = string.Join('\n', [
-            "VERSION 1.0 CLASS",
-            "Attribute VB_Name = \"Worker\"",
-            "Private WithEvents dialog As Dialog"
-        ]);
-        var identity = new VbaHostClassIdentity("Dialog", VbaHostClassKind.Form);
-        var projection = new VbaHostClassProjection("UserForm", Events: []);
-        VbaHostClassProjectionEntry entry = isCurrent
-            ? new VbaCurrentHostClassProjectionEntry(identity, projection)
-            : new VbaLastKnownGoodHostClassProjectionEntry(identity, projection);
-        var index = VbaSemanticInventory.Create(
-            VbaSemanticInventoryFixture.ProjectSourceDocuments(
-                new Dictionary<string, string>
-                {
-                    [formUri] = formText,
-                    [workerUri] = workerText
-                }),
-            referenceSelection: null,
-            VbaProjectReferenceCatalogSet.Empty,
-            new VbaHostClassProjectionSnapshot(
-                Revision: 1,
-                new VbaHostClassProjectionContext(
-                    "Book1",
-                    "Dialog",
-                    "Book1.xlsm"),
-                ClassEnumerationComplete: true,
-                [entry]));
-
-        var diagnostics = index.GetProjectValidationDiagnostics(workerUri)
-            .Where(diagnostic => diagnostic.Code
-                == "validation.withEventsTypeMustExposeEvents")
-            .ToArray();
-        Assert.Equal(expectDiagnostic ? 1 : 0, diagnostics.Length);
-    }
-
-    [Fact]
-    public void CurrentHostProjectionDiagnosesEveryPropertyAccessorAssociation()
-    {
-        const string uri = "file:///C:/work/Dialog.frm";
-        var text = string.Join('\n', [
-            "VERSION 5.00",
-            "Begin VB.Form Dialog",
-            "End",
-            "Attribute VB_Name = \"Dialog\"",
-            "Private Property Get UserForm_Change() As Long",
-            "End Property",
-            "Private Property Let UserForm_Change(ByVal RHS As Long)",
-            "End Property",
-            "Private Property Set UserForm_Change(ByVal RHS As Object)",
-            "End Property"
-        ]);
-        var hostProjection = new VbaHostClassProjectionSnapshot(
-            Revision: 1,
-            new VbaHostClassProjectionContext("Book1", "Dialog", "Book1.xlsm"),
-            ClassEnumerationComplete: true,
-            [
-                new VbaCurrentHostClassProjectionEntry(
-                    new VbaHostClassIdentity("Dialog", VbaHostClassKind.Form),
-                    new VbaHostClassProjection(
-                        "UserForm",
-                        [
-                            new VbaHostEventSignature(
-                                "Change",
-                                [],
-                                Documentation: null,
-                                AuthoringAvailable: true,
-                                ExistingHandlerRecognizable: true)
-                        ]))
-            ]);
-        var index = VbaSemanticInventory.Create(
-            VbaSemanticInventoryFixture.ProjectSourceDocuments(
-                new Dictionary<string, string> { [uri] = text }),
-            referenceSelection: null,
-            VbaProjectReferenceCatalogSet.Empty,
-            hostProjection);
-
-        foreach (var line in new[] { 4, 6, 8 })
-        {
-            Assert.IsType<VbaHostEventNameTarget>(index.ResolveSourceTarget(
-                uri,
-                line,
-                text.Split('\n')[line].IndexOf("UserForm_", StringComparison.Ordinal)
-                    + "UserForm_".Length));
-        }
+        var index = CreateIntrinsicCatalogIndex(
+            new Dictionary<string, string>
+            {
+                [formUri] = formText,
+                [workerUri] = workerText
+            },
+            CreateIntrinsicEvent("Initialize"));
 
         Assert.Equal(
-            [4, 6, 8],
-            index.GetProjectValidationDiagnostics(uri)
-                .Where(diagnostic => diagnostic.Code
-                    == "validation.eventHandlerMustBeSub")
-                .Select(diagnostic => diagnostic.Range.Start.Line)
-                .Order()
+            [
+                (formUri, 4, 21, 31),
+                (workerUri, 3, 19, 29)
+            ],
+            index.FindReferences(
+                    formUri,
+                    4,
+                    "Private Sub UserForm_".Length)
+                .Select(reference => (
+                    reference.Uri,
+                    reference.Range.Start.Line,
+                    reference.Range.Start.Character,
+                    reference.Range.End.Character))
                 .ToArray());
     }
 
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void ConditionalIntrinsicCandidatesRetainFamilyAndPerPhysicalAuthority(
-        bool isCurrent)
-    {
-        const string uri = "file:///C:/work/Dialog.frm";
-        var text = string.Join('\n', [
-            "VERSION 5.00",
-            "Begin VB.Form Dialog",
-            "End",
-            "Attribute VB_Name = \"Dialog\"",
-            "#If VBA7 Then",
-            "Private Sub UserForm_Change(ByVal Value As Long)",
-            "End Sub",
-            "#ElseIf Win64 Then",
-            "Private Sub UserForm_Change(ByVal Value As String)",
-            "End Sub",
-            "#Else",
-            "Private Function UserForm_Change(ByVal Value As Long) As Boolean",
-            "End Function",
-            "#End If"
-        ]);
-        var identity = new VbaHostClassIdentity("Dialog", VbaHostClassKind.Form);
-        var projection = new VbaHostClassProjection(
-            "UserForm",
-            [
-                new VbaHostEventSignature(
-                    "Change",
-                    [
-                        new VbaHostEventParameter(
-                            "Value",
-                            new VbaIntrinsicHostEventParameterType("Long"),
-                            VbaHostEventParameterPassing.ByVal,
-                            VbaHostEventParameterArrayShape.Scalar,
-                            Optional: false,
-                            ParamArray: false)
-                    ],
-                    Documentation: null,
-                    AuthoringAvailable: true,
-                    ExistingHandlerRecognizable: true)
-            ]);
-        VbaHostClassProjectionEntry entry = isCurrent
-            ? new VbaCurrentHostClassProjectionEntry(identity, projection)
-            : new VbaLastKnownGoodHostClassProjectionEntry(identity, projection);
-        var index = VbaSemanticInventory.Create(
-            VbaSemanticInventoryFixture.ProjectSourceDocuments(
-                new Dictionary<string, string> { [uri] = text }),
-            referenceSelection: null,
-            VbaProjectReferenceCatalogSet.Empty,
-            new VbaHostClassProjectionSnapshot(
-                Revision: 1,
-                new VbaHostClassProjectionContext(
-                    "Book1",
-                    "Dialog",
-                    "Book1.xlsm"),
-                ClassEnumerationComplete: true,
-                [entry]));
-
-        Assert.Equal(3, index.ResolveDefinitions(
-            uri,
-            5,
-            "Private Sub ".Length).Count);
-        Assert.Equal(3, index.FindReferences(
-            uri,
-            5,
-            "Private Sub ".Length).Count);
-        var signatureHelp = Assert.IsType<VbaSignatureHelp>(index.GetSignatureHelp(
-            uri,
-            5,
-            "Private Sub UserForm_Change(ByVal Value".Length));
-        Assert.Equal(
-            "UserForm_Change(ByVal Value As Long)",
-            Assert.Single(signatureHelp.Signatures).DisplayLabel);
-
-        var diagnostics = index.GetProjectValidationDiagnostics(uri)
-            .Where(diagnostic => diagnostic.Code is
-                "validation.eventHandlerMustBeSub"
-                    or "validation.incompatibleEventHandlerSignature")
-            .OrderBy(diagnostic => diagnostic.Range.Start.Line)
-            .ToArray();
-        if (isCurrent)
-        {
-            Assert.Equal(
-                [
-                    (8, "validation.incompatibleEventHandlerSignature"),
-                    (11, "validation.eventHandlerMustBeSub")
-                ],
-                diagnostics
-                    .Select(diagnostic => (
-                        diagnostic.Range.Start.Line,
-                        diagnostic.Code))
-                    .ToArray());
-        }
-        else
-        {
-            Assert.Empty(diagnostics);
-        }
-
-        var prepareRename = index.CreatePrepareRenameOutcome(
-            uri,
-            8,
-            "Private Sub ".Length);
-        Assert.Null(prepareRename.Result);
-        Assert.Null(prepareRename.Failure);
-        var rename = index.CreateRenameResult(
-            uri,
-            8,
-            "Private Sub UserForm_".Length,
-            "RenamedHandler");
-        Assert.Null(rename.Plan);
-        Assert.Equal(
-            isCurrent ? "notRenameTarget" : "analysisIncomplete",
-            rename.Failure?.Reason);
-    }
-
     [Fact]
-    public void ProjectedHostEventDefinitionUsesMatchingBaseTypeProvenance()
+    public void CatalogEventDefinitionUsesMatchingBaseTypeProvenance()
     {
         const string uri = "file:///C:/work/Dialog.frm";
         const string referenceName = "Generated Forms Library";
@@ -980,138 +723,22 @@ public sealed class VbaEventReferenceTests
                             CallableKind: VbaCallableKind.Event),
                         ParentTypeName: "BaseForm")
                 ]));
-        var hostProjection = new VbaHostClassProjectionSnapshot(
-            Revision: 1,
-            new VbaHostClassProjectionContext("Book1", "Dialog", "Book1.xlsm"),
-            ClassEnumerationComplete: true,
-            [
-                new VbaCurrentHostClassProjectionEntry(
-                    new VbaHostClassIdentity("Dialog", VbaHostClassKind.Form),
-                    new VbaHostClassProjection(
-                        "UserForm",
-                        [
-                            new VbaHostEventSignature(
-                                "Change",
-                                [],
-                                Documentation: null,
-                                AuthoringAvailable: true,
-                                ExistingHandlerRecognizable: true)
-                        ],
-                        new VbaHostClassBaseTypeProvenance(
-                            "BaseForm",
-                            libraryGuid,
-                            MajorVersion: 1,
-                            MinorVersion: 0,
-                            Lcid: 1033)))
-            ]);
+        var catalog = CreateIntrinsicCatalog(
+            [CreateIntrinsicEvent("Change")],
+            new VbaIntrinsicHostBaseTypeProvenance(
+                "BaseForm",
+                libraryGuid,
+                MajorVersion: 1,
+                MinorVersion: 0,
+                Lcid: 1033));
         var index = VbaSemanticInventory.Create(
             VbaSemanticInventoryFixture.ProjectSourceDocuments(
                 new Dictionary<string, string> { [uri] = text }),
             selection,
             catalogs,
-            hostProjection,
-            referenceCatalogSources: null,
-            referenceCatalogIdentities: new Dictionary<string, VbaProjectReferenceCatalogIdentity>(
-                VbaProjectReferenceName.Comparer)
-            {
-                [referenceName] = new VbaProjectReferenceCatalogIdentity(
-                    referenceName,
-                    libraryGuid,
-                    MajorVersion: 1,
-                    MinorVersion: 0,
-                    Lcid: 1033,
-                    Path: "C:/generated/forms.tlb")
-            });
-
-        var definition = Assert.IsType<VbaSourceDefinition>(index.ResolveSourceDefinition(
-            uri,
-            4,
-            "Private Sub UserForm_".Length));
-
-        Assert.Equal(VbaDefinitionOrigin.ProjectReference, definition.Identity.Origin);
-        Assert.Equal(
-            $"{VbaProjectReferenceCatalogSet.ExternalDefinitionUriPrefix}{Uri.EscapeDataString(referenceName)}/Change",
-            definition.Uri);
-        Assert.Null(index.ResolveDefinition(
-            uri,
-            4,
-            "Private Sub UserForm_".Length));
-    }
-
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void HostTypeLibraryIdentityMakesParameterMismatchConclusive(
-        bool includeMatchingCatalog)
-    {
-        const string uri = "file:///C:/work/Dialog.frm";
-        const string referenceName = "Generated Forms Library";
-        const string libraryGuid = "12345678-1234-1234-1234-1234567890ab";
-        var text = string.Join('\n', [
-            "VERSION 5.00",
-            "Begin VB.Form Dialog",
-            "End",
-            "Attribute VB_Name = \"Dialog\"",
-            "Private Sub UserForm_Change(ByVal Value As Long)",
-            "End Sub"
-        ]);
-        var selection = includeMatchingCatalog
-            ? VbaProjectReferenceSelection.Create(
-                ProjectDocument.ExcelKind,
-                [new VbaProjectReference(referenceName)])
-            : null;
-        var catalogs = includeMatchingCatalog
-            ? VbaProjectReferenceCatalogSet.Empty.WithCatalog(
-                new VbaProjectReferenceCatalog(
-                    referenceName,
-                    ["GeneratedForms"],
-                    [
-                        new VbaProjectReferenceDefinition(
-                            referenceName,
-                            "Widget",
-                            VbaSourceDefinitionKind.Class)
-                    ]))
-            : VbaProjectReferenceCatalogSet.Empty;
-        var hostProjection = new VbaHostClassProjectionSnapshot(
-            Revision: 1,
-            new VbaHostClassProjectionContext("Book1", "Dialog", "Book1.xlsm"),
-            ClassEnumerationComplete: true,
-            [
-                new VbaCurrentHostClassProjectionEntry(
-                    new VbaHostClassIdentity("Dialog", VbaHostClassKind.Form),
-                    new VbaHostClassProjection(
-                        "UserForm",
-                        [
-                            new VbaHostEventSignature(
-                                "Change",
-                                [
-                                    new VbaHostEventParameter(
-                                        "Value",
-                                        new VbaTypeLibraryHostEventParameterType(
-                                            "Widget",
-                                            libraryGuid,
-                                            MajorVersion: 1,
-                                            MinorVersion: 0,
-                                            Lcid: 1033),
-                                        VbaHostEventParameterPassing.ByVal,
-                                        VbaHostEventParameterArrayShape.Scalar,
-                                        Optional: false,
-                                        ParamArray: false)
-                                ],
-                                Documentation: null,
-                                AuthoringAvailable: true,
-                                ExistingHandlerRecognizable: true)
-                        ]))
-            ]);
-        var index = VbaSemanticInventory.Create(
-            VbaSemanticInventoryFixture.ProjectSourceDocuments(
-                new Dictionary<string, string> { [uri] = text }),
-            selection,
-            catalogs,
-            hostProjection,
-            referenceCatalogSources: null,
-            referenceCatalogIdentities: includeMatchingCatalog
-                ? new Dictionary<string, VbaProjectReferenceCatalogIdentity>(
+            catalog,
+            referenceCatalogIdentities:
+                new Dictionary<string, VbaProjectReferenceCatalogIdentity>(
                     VbaProjectReferenceName.Comparer)
                 {
                     [referenceName] = new VbaProjectReferenceCatalogIdentity(
@@ -1121,228 +748,22 @@ public sealed class VbaEventReferenceTests
                         MinorVersion: 0,
                         Lcid: 1033,
                         Path: "C:/generated/forms.tlb")
-                }
-                : null);
+                });
 
-        var diagnostic = Assert.Single(
-            index.GetProjectValidationDiagnostics(uri),
-            diagnostic => diagnostic.Code
-                == "validation.incompatibleEventHandlerSignature");
-
-        var detail = Assert.Single(diagnostic.Details!);
-        Assert.Contains("Widget", detail.FallbackText, StringComparison.Ordinal);
-        Assert.Contains("Long", detail.FallbackText, StringComparison.Ordinal);
-    }
-
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void ProjectedHostEventReferencesJoinIntrinsicAndExternalHandlerSuffixes(
-        bool isCurrent)
-    {
-        const string formUri = "file:///C:/work/Dialog.frm";
-        const string workerUri = "file:///C:/work/Worker.cls";
-        var formText = string.Join('\n', [
-            "VERSION 5.00",
-            "Begin VB.Form Dialog",
-            "End",
-            "Attribute VB_Name = \"Dialog\"",
-            "Private Sub UserForm_Initialize()",
-            "End Sub"
-        ]);
-        var workerText = string.Join('\n', [
-            "VERSION 1.0 CLASS",
-            "Attribute VB_Name = \"Worker\"",
-            "Private WithEvents dialog As Dialog",
-            "Private Sub dialog_Initialize()",
-            "End Sub"
-        ]);
-        var classIdentity = new VbaHostClassIdentity(
-            "Dialog",
-            VbaHostClassKind.Form);
-        var classProjection = new VbaHostClassProjection(
-            "UserForm",
-            [
-                new VbaHostEventSignature(
-                    "Initialize",
-                    [],
-                    "Occurs when the form is initialized.",
-                    AuthoringAvailable: true,
-                    ExistingHandlerRecognizable: true)
-            ]);
-        VbaHostClassProjectionEntry classEntry = isCurrent
-            ? new VbaCurrentHostClassProjectionEntry(
-                classIdentity,
-                classProjection)
-            : new VbaLastKnownGoodHostClassProjectionEntry(
-                classIdentity,
-                classProjection);
-        var hostProjection = new VbaHostClassProjectionSnapshot(
-            Revision: 1,
-            new VbaHostClassProjectionContext("Book1", "Dialog", "Book1.xlsm"),
-            ClassEnumerationComplete: true,
-            [classEntry]);
-        var index = VbaSemanticInventory.Create(
-            VbaSemanticInventoryFixture.ProjectSourceDocuments(
-                new Dictionary<string, string>
-                {
-                    [formUri] = formText,
-                    [workerUri] = workerText
-                }),
-            referenceSelection: null,
-            VbaProjectReferenceCatalogSet.Empty,
-            hostProjection);
-
-        var references = index.FindReferences(
-            formUri,
-            4,
-            "Private Sub UserForm_".Length);
-
+        var definition = Assert.IsType<VbaSourceDefinition>(
+            index.ResolveSourceDefinition(
+                uri,
+                4,
+                "Private Sub UserForm_".Length));
+        Assert.Equal(VbaDefinitionOrigin.ProjectReference, definition.Identity.Origin);
         Assert.Equal(
-            [
-                (formUri, 4, 21, 31),
-                (workerUri, 3, 19, 29)
-            ],
-            references
-                .Select(reference => (
-                    reference.Uri,
-                    reference.Range.Start.Line,
-                    reference.Range.Start.Character,
-                    reference.Range.End.Character))
-                .ToArray());
-    }
-
-    [Theory]
-    [InlineData(0)]
-    [InlineData(8)]
-    [InlineData(9)]
-    public void CurrentIntrinsicHostHandlerHasNoPrepareRenameTarget(int nameOffset)
-    {
-        const string uri = "file:///C:/work/Dialog.frm";
-        var text = string.Join('\n', [
-            "VERSION 5.00",
-            "Begin VB.Form Dialog",
-            "End",
-            "Attribute VB_Name = \"Dialog\"",
-            "Private Sub UserForm_Initialize()",
-            "End Sub"
-        ]);
-        var index = BuildIntrinsicHostIndex(uri, text, isCurrent: true);
-
-        var outcome = index.CreatePrepareRenameOutcome(
+            $"{VbaProjectReferenceCatalogSet.ExternalDefinitionUriPrefix}"
+                + $"{Uri.EscapeDataString(referenceName)}/Change",
+            definition.Uri);
+        Assert.Null(index.ResolveDefinition(
             uri,
             4,
-            "Private Sub ".Length + nameOffset);
-
-        Assert.Null(outcome.Result);
-        Assert.Null(outcome.Failure);
-    }
-
-    [Theory]
-    [InlineData("RenamedHandler")]
-    [InlineData("userForm_Initialize")]
-    public void CurrentIntrinsicHostHandlerRejectsNonNoOpRename(string newName)
-    {
-        const string uri = "file:///C:/work/Dialog.frm";
-        var text = string.Join('\n', [
-            "VERSION 5.00",
-            "Begin VB.Form Dialog",
-            "End",
-            "Attribute VB_Name = \"Dialog\"",
-            "Private Sub UserForm_Initialize()",
-            "End Sub"
-        ]);
-        var index = BuildIntrinsicHostIndex(uri, text, isCurrent: true);
-
-        var result = index.CreateRenameResult(
-            uri,
-            4,
-            "Private Sub ".Length,
-            newName);
-
-        Assert.Null(result.Plan);
-        Assert.Equal("notRenameTarget", result.Failure?.Reason);
-    }
-
-    [Fact]
-    public void LastKnownGoodIntrinsicHostHandlerRenameIsAnalysisIncomplete()
-    {
-        const string uri = "file:///C:/work/Dialog.frm";
-        var text = string.Join('\n', [
-            "VERSION 5.00",
-            "Begin VB.Form Dialog",
-            "End",
-            "Attribute VB_Name = \"Dialog\"",
-            "Private Sub UserForm_Initialize()",
-            "End Sub"
-        ]);
-        var index = BuildIntrinsicHostIndex(uri, text, isCurrent: false);
-
-        var result = index.CreateRenameResult(
-            uri,
-            4,
-            "Private Sub UserForm_".Length,
-            "RenamedHandler");
-
-        Assert.Null(result.Plan);
-        Assert.Equal("analysisIncomplete", result.Failure?.Reason);
-
-    }
-
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void IntrinsicHostHandlerOrdinalNoOpRenameSucceeds(bool isCurrent)
-    {
-        const string uri = "file:///C:/work/Dialog.frm";
-        var text = string.Join('\n', [
-            "VERSION 5.00",
-            "Begin VB.Form Dialog",
-            "End",
-            "Attribute VB_Name = \"Dialog\"",
-            "Private Sub UserForm_Initialize()",
-            "End Sub"
-        ]);
-        var index = BuildIntrinsicHostIndex(uri, text, isCurrent);
-
-        var result = index.CreateRenameResult(
-            uri,
-            4,
-            "Private Sub UserForm_".Length,
-            "UserForm_Initialize");
-
-        Assert.Null(result.Plan);
-        Assert.Null(result.Failure);
-    }
-
-    [Fact]
-    public void IntrinsicHandlerNameReturnsToOrdinaryRenameAfterAssociationLoss()
-    {
-        const string uri = "file:///C:/work/Dialog.frm";
-        var text = string.Join('\n', [
-            "VERSION 5.00",
-            "Begin VB.Form Dialog",
-            "End",
-            "Attribute VB_Name = \"Dialog\"",
-            "Private Sub UserForm_Initialize()",
-            "End Sub"
-        ]);
-        var index = VbaSemanticInventory.Create(
-            VbaSemanticInventoryFixture.ProjectSourceDocuments(
-                new Dictionary<string, string> { [uri] = text }),
-            referenceSelection: null,
-            VbaProjectReferenceCatalogSet.Empty,
-            hostClassProjectionSnapshot: null);
-
-        var result = index.CreateRenameResult(
-            uri,
-            4,
-            "Private Sub UserForm_".Length,
-            "RenamedHandler");
-
-        Assert.Null(result.Failure);
-        var plan = Assert.IsType<VbaRenamePlan>(result.Plan);
-        Assert.Single(plan.Changes[uri]);
+            "Private Sub UserForm_".Length));
     }
 
     [Fact]
@@ -1497,312 +918,6 @@ public sealed class VbaEventReferenceTests
         Assert.Equal(VbaSourceDefinitionKind.Event, referenceEvent?.Kind);
         Assert.Equal("Application", referenceEvent?.ParentTypeName);
         Assert.Equal("Microsoft Excel 16.0 Object Library", referenceEvent?.ModuleName);
-    }
-
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void UnguardedSourceEventShadowsAProjectedHostEventForExternalHandlers(
-        bool isCurrent)
-    {
-        const string formUri = "file:///C:/work/Dialog.frm";
-        const string workerUri = "file:///C:/work/Worker.cls";
-        var formText = string.Join('\n', [
-            "VERSION 5.00",
-            "Begin VB.Form Dialog",
-            "End",
-            "Attribute VB_Name = \"Dialog\"",
-            "Public Event Initialize(ByVal Value As Long)",
-            "Private Sub UserForm_Initialize()",
-            "End Sub"
-        ]);
-        var workerText = string.Join('\n', [
-            "VERSION 1.0 CLASS",
-            "Attribute VB_Name = \"Worker\"",
-            "Private WithEvents dialog As Dialog",
-            "Private Sub dialog_Initialize(ByVal Value As Long)",
-            "End Sub"
-        ]);
-        var hostIdentity = new VbaHostClassIdentity(
-            "Dialog",
-            VbaHostClassKind.Form);
-        var projectedSurface = new VbaHostClassProjection(
-            "UserForm",
-            [
-                new VbaHostEventSignature(
-                    "Initialize",
-                    [],
-                    "Built-in Initialize Event.",
-                    AuthoringAvailable: true,
-                    ExistingHandlerRecognizable: true)
-            ]);
-        VbaHostClassProjectionEntry hostEntry = isCurrent
-            ? new VbaCurrentHostClassProjectionEntry(
-                hostIdentity,
-                projectedSurface)
-            : new VbaLastKnownGoodHostClassProjectionEntry(
-                hostIdentity,
-                projectedSurface);
-        var hostProjection = new VbaHostClassProjectionSnapshot(
-            Revision: 1,
-            new VbaHostClassProjectionContext("Book1", "Dialog", "Book1.xlsm"),
-            ClassEnumerationComplete: true,
-            [hostEntry]);
-        var index = VbaSemanticInventory.Create(
-            VbaSemanticInventoryFixture.ProjectSourceDocuments(
-                new Dictionary<string, string>
-                {
-                    [formUri] = formText,
-                    [workerUri] = workerText
-                }),
-            referenceSelection: null,
-            VbaProjectReferenceCatalogSet.Empty,
-            hostProjection);
-
-        var eventDefinition = index.ResolveSourceDefinition(
-            workerUri,
-            3,
-            "Private Sub dialog_".Length);
-        var signatureHelp = Assert.IsType<VbaSignatureHelp>(
-            index.GetSignatureHelp(
-                workerUri,
-                3,
-                "Private Sub dialog_Initialize(ByVal Value".Length));
-
-        Assert.Equal(formUri, eventDefinition?.Uri);
-        Assert.Equal(VbaSourceDefinitionKind.Event, eventDefinition?.Kind);
-        Assert.Equal("Event Initialize(Value As Long)", signatureHelp.Signature.Label);
-        Assert.Single(signatureHelp.Signatures);
-        var hostReferences = index.FindReferences(
-            formUri,
-            5,
-            "Private Sub UserForm_".Length);
-        var intrinsicReference = Assert.Single(hostReferences);
-        Assert.Equal(formUri, intrinsicReference.Uri);
-        Assert.Equal(5, intrinsicReference.Range.Start.Line);
-        Assert.DoesNotContain(
-            index.GetProjectValidationDiagnostics(formUri),
-            diagnostic => diagnostic.Code == "validation.duplicateDeclaration");
-    }
-
-    [Fact]
-    public void RecoveredSourceEventDoesNotShadowAProjectedHostEventForExternalHandlers()
-    {
-        const string formUri = "file:///C:/work/Dialog.frm";
-        const string workerUri = "file:///C:/work/Worker.cls";
-        var formText = string.Join('\n', [
-            "VERSION 5.00",
-            "Begin VB.Form Dialog",
-            "End",
-            "Attribute VB_Name = \"Dialog\"",
-            "Public Event Initialize(Optional ByVal Value As Long)"
-        ]);
-        var workerText = string.Join('\n', [
-            "VERSION 1.0 CLASS",
-            "Attribute VB_Name = \"Worker\"",
-            "Private WithEvents dialog As Dialog",
-            "Private Sub dialog_Initialize()",
-            "End Sub"
-        ]);
-        var hostProjection = new VbaHostClassProjectionSnapshot(
-            Revision: 1,
-            new VbaHostClassProjectionContext("Book1", "Dialog", "Book1.xlsm"),
-            ClassEnumerationComplete: true,
-            [
-                new VbaCurrentHostClassProjectionEntry(
-                    new VbaHostClassIdentity("Dialog", VbaHostClassKind.Form),
-                    new VbaHostClassProjection(
-                        "UserForm",
-                        [
-                            new VbaHostEventSignature(
-                                "Initialize",
-                                [],
-                                "Built-in Initialize Event.",
-                                AuthoringAvailable: true,
-                                ExistingHandlerRecognizable: true)
-                        ]))
-            ]);
-        var index = VbaSemanticInventory.Create(
-            VbaSemanticInventoryFixture.ProjectSourceDocuments(
-                new Dictionary<string, string>
-                {
-                    [formUri] = formText,
-                    [workerUri] = workerText
-                }),
-            referenceSelection: null,
-            VbaProjectReferenceCatalogSet.Empty,
-            hostProjection);
-
-        var eventDefinition = index.ResolveSourceDefinition(
-            workerUri,
-            3,
-            "Private Sub dialog_".Length);
-        var signatureHelp = Assert.IsType<VbaSignatureHelp>(
-            index.GetSignatureHelp(
-                workerUri,
-                3,
-                "Private Sub dialog_Initialize(".Length));
-
-        Assert.Null(eventDefinition);
-        Assert.Equal("Event Initialize()", signatureHelp.Signature.Label);
-        Assert.Single(signatureHelp.Signatures);
-    }
-
-    [Fact]
-    public void GuardedSourceEventsRetainProjectedHostEventAsExternalHandlerAlternative()
-    {
-        const string formUri = "file:///C:/work/Dialog.frm";
-        const string workerUri = "file:///C:/work/Worker.cls";
-        var formText = string.Join('\n', [
-            "VERSION 5.00",
-            "Begin VB.Form Dialog",
-            "End",
-            "Attribute VB_Name = \"Dialog\"",
-            "#If VBA7 Then",
-            "Public Event Changed(ByVal Value As Long)",
-            "#Else",
-            "Public Event Changed(ByVal Value As String)",
-            "#End If"
-        ]);
-        var workerText = string.Join('\n', [
-            "VERSION 1.0 CLASS",
-            "Attribute VB_Name = \"Worker\"",
-            "Private WithEvents dialog As Dialog",
-            "Private Sub dialog_Changed(ByVal Value As Long)",
-            "End Sub"
-        ]);
-        var hostProjection = new VbaHostClassProjectionSnapshot(
-            Revision: 1,
-            new VbaHostClassProjectionContext("Book1", "Dialog", "Book1.xlsm"),
-            ClassEnumerationComplete: true,
-            [
-                new VbaCurrentHostClassProjectionEntry(
-                    new VbaHostClassIdentity("Dialog", VbaHostClassKind.Form),
-                    new VbaHostClassProjection(
-                        "UserForm",
-                        [
-                            new VbaHostEventSignature(
-                                "Changed",
-                                [
-                                    new VbaHostEventParameter(
-                                        "Enabled",
-                                        new VbaIntrinsicHostEventParameterType("Boolean"),
-                                        VbaHostEventParameterPassing.ByVal,
-                                        VbaHostEventParameterArrayShape.Scalar,
-                                        Optional: false,
-                                        ParamArray: false)
-                                ],
-                                "Built-in Changed Event.",
-                                AuthoringAvailable: true,
-                                ExistingHandlerRecognizable: true)
-                        ]))
-            ]);
-        var index = VbaSemanticInventory.Create(
-            VbaSemanticInventoryFixture.ProjectSourceDocuments(
-                new Dictionary<string, string>
-                {
-                    [formUri] = formText,
-                    [workerUri] = workerText
-                }),
-            referenceSelection: null,
-            VbaProjectReferenceCatalogSet.Empty,
-            hostProjection);
-
-        var signatureHelp = Assert.IsType<VbaSignatureHelp>(
-            index.GetSignatureHelp(
-                workerUri,
-                3,
-                "Private Sub dialog_Changed(ByVal Value".Length));
-
-        Assert.Equal(
-            [
-                "Event Changed(Value As Long) [#If]",
-                "Event Changed(Value As String) [#If]",
-                "Event Changed(ByVal Enabled As Boolean) [#If]"
-            ],
-            signatureHelp.Signatures
-                .Select(signature => signature.DisplayLabel)
-                .ToArray());
-    }
-
-    [Fact]
-    public void GuardedSourceEventRenameFailsClosedWhenHandlerMayBindToHostEvent()
-    {
-        const string formUri = "file:///C:/work/ZDialog.frm";
-        const string workerUri = "file:///C:/work/AWorker.cls";
-        var formText = string.Join('\n', [
-            "VERSION 5.00",
-            "Begin VB.Form Dialog",
-            "End",
-            "Attribute VB_Name = \"Dialog\"",
-            "#If VBA7 Then",
-            "Public Event Changed()",
-            "#End If"
-        ]);
-        var workerText = string.Join('\n', [
-            "VERSION 1.0 CLASS",
-            "Attribute VB_Name = \"Worker\"",
-            "Private WithEvents dialog As Dialog",
-            "Private Sub dialog_Changed()",
-            "End Sub"
-        ]);
-        var hostProjection = new VbaHostClassProjectionSnapshot(
-            Revision: 1,
-            new VbaHostClassProjectionContext("Book1", "Dialog", "Book1.xlsm"),
-            ClassEnumerationComplete: true,
-            [
-                new VbaCurrentHostClassProjectionEntry(
-                    new VbaHostClassIdentity("Dialog", VbaHostClassKind.Form),
-                    new VbaHostClassProjection(
-                        "UserForm",
-                        [
-                            new VbaHostEventSignature(
-                                "Changed",
-                                [],
-                                "Built-in Changed Event.",
-                                AuthoringAvailable: true,
-                                ExistingHandlerRecognizable: true)
-                        ]))
-            ]);
-        var index = VbaSemanticInventory.Create(
-            VbaSemanticInventoryFixture.ProjectSourceDocuments(
-                new Dictionary<string, string>
-                {
-                    [formUri] = formText,
-                    [workerUri] = workerText
-                }),
-            referenceSelection: null,
-            VbaProjectReferenceCatalogSet.Empty,
-            hostProjection);
-
-        var references = index.FindReferences(
-            formUri,
-            5,
-            "Public Event ".Length);
-        Assert.Contains(references, reference => reference.Uri == workerUri);
-
-        var result = index.CreateRenameResult(
-            formUri,
-            5,
-            "Public Event ".Length,
-            "Renamed");
-
-        Assert.Null(result.Plan);
-        Assert.Equal("analysisIncomplete", result.Failure?.Reason);
-
-        var handlerDefinition = index.ResolveSourceDefinition(
-            workerUri,
-            3,
-            "Private Sub dialog_".Length);
-        Assert.Equal(VbaSourceDefinitionKind.Event, handlerDefinition?.Kind);
-        Assert.Equal(formUri, handlerDefinition?.Uri);
-        var handlerResult = index.CreateRenameResult(
-            workerUri,
-            3,
-            "Private Sub dialog_".Length,
-            "Renamed");
-        Assert.Null(handlerResult.Plan);
-        Assert.Equal("analysisIncomplete", handlerResult.Failure?.Reason);
     }
 
     [Fact]
@@ -2297,9 +1412,8 @@ public sealed class VbaEventReferenceTests
 
     [Theory]
     [InlineData((int)VbaEventHandlerValidationAuthority.SourceDeclared, true)]
-    [InlineData((int)VbaEventHandlerValidationAuthority.CurrentHostProjected, true)]
+    [InlineData((int)VbaEventHandlerValidationAuthority.CurrentIntrinsicHostCatalog, true)]
     [InlineData((int)VbaEventHandlerValidationAuthority.ExternalTypeLibAdvisory, false)]
-    [InlineData((int)VbaEventHandlerValidationAuthority.LastKnownGoodHostAdvisory, false)]
     public void ValidationAuthorityControlsCompileStyleHandlerDiagnostics(
         int authorityValue,
         bool expectedAuthoritative)
@@ -2373,7 +1487,7 @@ public sealed class VbaEventReferenceTests
                 ],
                 CallableKind: VbaCallableKind.Event),
             "Projected Event contract.",
-            VbaEventHandlerValidationAuthority.CurrentHostProjected,
+            VbaEventHandlerValidationAuthority.CurrentIntrinsicHostCatalog,
             IsConditionalContract: false,
             IsAuthoringAvailable: false,
             ParameterTypeEvidence:
@@ -2411,7 +1525,7 @@ public sealed class VbaEventReferenceTests
                 ],
                 CallableKind: VbaCallableKind.Event),
             Documentation: null,
-            VbaEventHandlerValidationAuthority.CurrentHostProjected,
+            VbaEventHandlerValidationAuthority.CurrentIntrinsicHostCatalog,
             IsConditionalContract: false,
             ParameterTypeEvidence: [null]);
 
@@ -2444,7 +1558,7 @@ public sealed class VbaEventReferenceTests
                 ],
                 CallableKind: VbaCallableKind.Event),
             Documentation: null,
-            VbaEventHandlerValidationAuthority.CurrentHostProjected,
+            VbaEventHandlerValidationAuthority.CurrentIntrinsicHostCatalog,
             IsConditionalContract: false,
             ParameterTypeEvidence:
             [
@@ -2489,7 +1603,7 @@ public sealed class VbaEventReferenceTests
                 ],
                 CallableKind: VbaCallableKind.Event),
             Documentation: null,
-            VbaEventHandlerValidationAuthority.CurrentHostProjected,
+            VbaEventHandlerValidationAuthority.CurrentIntrinsicHostCatalog,
             IsConditionalContract: false,
             ParameterTypeEvidence:
             [
@@ -2548,12 +1662,12 @@ public sealed class VbaEventReferenceTests
                 [],
                 CallableKind: VbaCallableKind.Event),
             Documentation: null,
-            VbaEventHandlerValidationAuthority.CurrentHostProjected,
+            VbaEventHandlerValidationAuthority.CurrentIntrinsicHostCatalog,
             IsConditionalContract: false);
-        var staleContract = currentContract with
+        var advisoryContract = currentContract with
         {
             ValidationAuthority =
-                VbaEventHandlerValidationAuthority.LastKnownGoodHostAdvisory,
+                VbaEventHandlerValidationAuthority.ExternalTypeLibAdvisory,
             IsConditionalContract = true
         };
         var bindingSet = new VbaWithEventsEventBindingSet(
@@ -2562,7 +1676,7 @@ public sealed class VbaEventReferenceTests
                 new VbaWithEventsEventBindingEntry(
                     variable,
                     VbaWithEventsEventBindingStatus.Resolved,
-                    EventContracts: [currentContract, staleContract])
+                    EventContracts: [currentContract, advisoryContract])
             ]);
 
         Assert.False(bindingSet.IsFullyDiagnosticAuthoritative);
@@ -2610,6 +1724,37 @@ public sealed class VbaEventReferenceTests
                 VbaProjectReferenceCatalogSet.Empty));
         return semanticModel.AnalyzeHandlerCompatibility(document, analysis);
     }
+
+    private static VbaSemanticInventory CreateIntrinsicCatalogIndex(
+        IReadOnlyDictionary<string, string> sourceDocuments,
+        params VbaIntrinsicHostEvent[] events)
+        => VbaSemanticInventory.Create(
+            VbaSemanticInventoryFixture.ProjectSourceDocuments(sourceDocuments),
+            referenceSelection: null,
+            VbaProjectReferenceCatalogSet.Empty,
+            CreateIntrinsicCatalog(events));
+
+    private static VbaIntrinsicHostEventCatalog CreateIntrinsicCatalog(
+        IReadOnlyList<VbaIntrinsicHostEvent> events,
+        VbaIntrinsicHostBaseTypeProvenance? baseTypeProvenance = null)
+        => new(
+            VbaIntrinsicHostEventSourceKind.UserForm,
+            "UserForm",
+            events,
+            baseTypeProvenance);
+
+    private static VbaIntrinsicHostEvent CreateIntrinsicEvent(
+        string name,
+        IReadOnlyList<VbaHostEventParameter>? parameters = null,
+        bool authoringAvailable = true,
+        bool existingHandlerRecognizable = true)
+        => new(
+            new VbaIntrinsicHostEventIdentity("UserForm", name),
+            new VbaIntrinsicHostEventSignature(
+                parameters ?? [],
+                $"Built-in UserForm {name} Event."),
+            authoringAvailable,
+            existingHandlerRecognizable);
 
     private static VbaSemanticInventory BuildHiddenTypeLibIndex(string workerText)
     {
@@ -2727,40 +1872,6 @@ public sealed class VbaEventReferenceTests
 
     private static VbaSemanticInventory BuildIndex(string uri, string text)
         => BuildIndex(new Dictionary<string, string> { [uri] = text });
-
-    private static VbaSemanticInventory BuildIntrinsicHostIndex(
-        string uri,
-        string text,
-        bool isCurrent)
-    {
-        var identity = new VbaHostClassIdentity("Dialog", VbaHostClassKind.Form);
-        var projection = new VbaHostClassProjection(
-            "UserForm",
-            [
-                new VbaHostEventSignature(
-                    "Initialize",
-                    [],
-                    "Occurs when the form is initialized.",
-                    AuthoringAvailable: true,
-                    ExistingHandlerRecognizable: true)
-            ]);
-        VbaHostClassProjectionEntry entry = isCurrent
-            ? new VbaCurrentHostClassProjectionEntry(identity, projection)
-            : new VbaLastKnownGoodHostClassProjectionEntry(identity, projection);
-        return VbaSemanticInventory.Create(
-            VbaSemanticInventoryFixture.ProjectSourceDocuments(
-                new Dictionary<string, string> { [uri] = text }),
-            referenceSelection: null,
-            VbaProjectReferenceCatalogSet.Empty,
-            new VbaHostClassProjectionSnapshot(
-                Revision: 1,
-                new VbaHostClassProjectionContext(
-                    "Book1",
-                    "Dialog",
-                    "Book1.xlsm"),
-                ClassEnumerationComplete: true,
-                [entry]));
-    }
 
     private static VbaSemanticInventory BuildIndex(IReadOnlyDictionary<string, string> sourceDocuments)
         => VbaSemanticInventoryFixture.Create(

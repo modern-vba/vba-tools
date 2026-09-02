@@ -17,7 +17,7 @@ internal sealed class VbaSemanticResolution
     private readonly VbaMemberChainResolution memberChainResolution;
     private readonly VbaCallSiteResolution callSiteResolution;
     private readonly VbaWithEventsSemanticModel withEventsSemantics;
-    private readonly VbaHostClassEventSemanticModel hostClassEvents;
+    private readonly VbaIntrinsicHostEventSemanticModel intrinsicHostEvents;
     private readonly VbaInterfaceSemanticModel interfaceSemantics;
 
     /// <summary>
@@ -27,9 +27,9 @@ internal sealed class VbaSemanticResolution
     public VbaSemanticResolution(
         VbaNameCandidateInventory definitionCandidates,
         VbaResolutionPolicy? resolutionPolicy = null,
-        VbaHostClassProjectionSnapshot? hostClassProjectionSnapshot = null,
         IReadOnlyDictionary<string, VbaProjectReferenceCatalogIdentity>?
-            referenceCatalogIdentities = null)
+            referenceCatalogIdentities = null,
+        VbaIntrinsicHostEventCatalog? intrinsicHostEventCatalog = null)
     {
         this.definitionCandidates = definitionCandidates;
         resolutionPolicy ??= new VbaResolutionPolicy(
@@ -40,13 +40,13 @@ internal sealed class VbaSemanticResolution
             resolutionPolicy);
         typeResolution = new VbaTypeResolution(nameResolution);
         memberChainResolution = new VbaMemberChainResolution(typeResolution);
-        hostClassEvents = new VbaHostClassEventSemanticModel(
-            hostClassProjectionSnapshot,
+        intrinsicHostEvents = new VbaIntrinsicHostEventSemanticModel(
+            intrinsicHostEventCatalog,
             nameResolution,
             referenceCatalogIdentities);
         withEventsSemantics = new VbaWithEventsSemanticModel(
             nameResolution,
-            hostClassEvents,
+            intrinsicHostEvents,
             referenceCatalogIdentities);
         interfaceSemantics = new VbaInterfaceSemanticModel(nameResolution);
         callSiteResolution = new VbaCallSiteResolution(
@@ -112,7 +112,7 @@ internal sealed class VbaSemanticResolution
     internal VbaIntrinsicHostHandlerAnalysis? AnalyzeIntrinsicHostHandler(
         VbaSourceDocument currentDocument,
         VbaSourceDefinition handler)
-        => hostClassEvents.AnalyzeIntrinsicHandler(
+        => intrinsicHostEvents.AnalyzeIntrinsicHandler(
             currentDocument,
             handler);
 
@@ -602,11 +602,11 @@ internal sealed class VbaSemanticResolution
         }
 
         if (declaredDefinition is not null
-            && hostClassEvents.AnalyzeIntrinsicHandler(
+            && intrinsicHostEvents.AnalyzeIntrinsicHandler(
                 currentDocument,
                 declaredDefinition) is { } intrinsicHandler)
         {
-            var prefixLength = intrinsicHandler.Surface.Projection
+            var prefixLength = intrinsicHandler.Surface.Catalog
                 .IntrinsicEventSourceName.Length;
             var identifierOffset = character
                 - declaredDefinition.Range.Start.Character;
@@ -1044,12 +1044,12 @@ internal sealed class VbaSemanticResolution
         var variants = new List<VbaSignatureHelpVariant>();
         if (declarationKind == VbaCallableDeclarationNameKind.Sub)
         {
-            var intrinsicAnalysis = hostClassEvents.AnalyzeIntrinsicHandler(
+            var intrinsicAnalysis = intrinsicHostEvents.AnalyzeIntrinsicHandler(
                 currentDocument,
                 declaration);
             if (intrinsicAnalysis?.EventTarget.EventContract.Signature is not null)
             {
-                var signature = VbaHostClassEventSemanticModel
+                var signature = VbaIntrinsicHostEventSemanticModel
                     .CreateHandlerSignature(
                         intrinsicAnalysis.Surface,
                         intrinsicAnalysis.HostEvent);
@@ -1207,7 +1207,7 @@ internal sealed class VbaSemanticResolution
             return null;
         }
 
-        var intrinsicAnalysis = hostClassEvents.AnalyzeIntrinsicHandler(
+        var intrinsicAnalysis = intrinsicHostEvents.AnalyzeIntrinsicHandler(
             currentDocument,
             handler);
         if (intrinsicAnalysis?.EventTarget.EventContract.Signature
@@ -1216,7 +1216,7 @@ internal sealed class VbaSemanticResolution
             var intrinsicParameterIndex = GetHandlerParameterIndex(
                 callable,
                 position);
-            var signature = VbaHostClassEventSemanticModel
+            var signature = VbaIntrinsicHostEventSemanticModel
                 .CreateHandlerSignature(
                     intrinsicAnalysis.Surface,
                     intrinsicAnalysis.HostEvent);
@@ -2013,21 +2013,21 @@ internal sealed class VbaSemanticResolution
         var origins = new List<VbaContractPrefixCompletionOrigin>();
         if (declarationKind == VbaCallableDeclarationNameKind.Sub)
         {
-            if (hostClassEvents.TryGetEffectiveSurface(
+            if (intrinsicHostEvents.TryGetEffectiveSurface(
                     currentDocument,
                     out var surface))
             {
                 origins.Add(new VbaContractPrefixCompletionOrigin(
-                    surface.Projection.IntrinsicEventSourceName + "_",
+                    surface.Catalog.IntrinsicEventSourceName + "_",
                     VbaContractCompletionDomain.HostEvents,
                     IsConditionalPrefix: false,
-                    surface.Projection.Events
+                    surface.Catalog.Events
                         .Where(hostEvent => hostEvent.AuthoringAvailable)
                         .Select(hostEvent => new VbaContractMemberCompletionOrigin(
                             hostEvent.Name,
                             VbaContractCompletionDomain.HostEvents,
                             IsConditionalContract: false,
-                            VbaHostClassEventSemanticModel.CreateHandlerSignature(
+                            VbaIntrinsicHostEventSemanticModel.CreateHandlerSignature(
                                 surface,
                                 hostEvent),
                             hostEvent.Documentation,
@@ -2169,9 +2169,9 @@ internal sealed class VbaSemanticResolution
                         member.Documentation,
                         member.Identity))
                     .ToList();
-                if (eligibility.HostClassEventSurface is { } hostSurface)
+                if (eligibility.IntrinsicHostEventSurface is { } hostSurface)
                 {
-                    foreach (var hostEvent in hostSurface.Projection.Events.Where(
+                    foreach (var hostEvent in hostSurface.Catalog.Events.Where(
                                  hostEvent => hostEvent.AuthoringAvailable))
                     {
                         var shadowingEvents = sourceEvents
@@ -2194,7 +2194,7 @@ internal sealed class VbaSemanticResolution
                                 VbaContractCompletionDomain.WithEvents,
                                 variableIsConditional
                                     || shadowingEvents.Length > 0,
-                                VbaHostClassEventSemanticModel
+                                VbaIntrinsicHostEventSemanticModel
                                     .CreateEventSignature(hostEvent),
                                 hostEvent.Documentation,
                                 hostEvent));
@@ -2664,8 +2664,8 @@ internal sealed class VbaSemanticResolution
 
             const int restrictedTypeFlag = 0x200;
             VbaHostEventNameTarget? hostEventTarget = null;
-            if (eligibility.HostClassEventSurface is { } hostSurface
-                && hostClassEvents.TryCreateExistingHandlerEventTarget(
+            if (eligibility.IntrinsicHostEventSurface is { } hostSurface
+                && intrinsicHostEvents.TryCreateExistingHandlerEventTarget(
                     hostSurface,
                     eventName,
                     handler,

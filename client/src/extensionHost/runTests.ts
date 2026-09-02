@@ -2,15 +2,24 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { Buffer } from 'node:buffer';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
-import { runTests } from '@vscode/test-electron';
+import {
+  downloadAndUnzipVSCode,
+  runTests
+} from '@vscode/test-electron';
 import {
   createExtensionHostLaunchArgs,
   createExtensionHostRuntimeSelection
 } from './configuration';
+import { runRestrictedModeExtensionHostTests } from './restrictedModeExtensionHost';
 
 async function main(): Promise<void> {
   const extensionDevelopmentPath = path.resolve(__dirname, '..', '..', '..');
   const extensionTestsPath = path.resolve(__dirname, 'suite', 'index.js');
+  const hostEventCatalogTestsPath = path.resolve(
+    __dirname,
+    'suite',
+    'intrinsicHostEventCatalogIndex.js'
+  );
   const runtime = createExtensionHostRuntimeSelection(process.env);
   const userDataPath = await mkdtemp(path.join(
     tmpdir(),
@@ -21,8 +30,49 @@ async function main(): Promise<void> {
     tmpdir(),
     'vba-tools-manifest-mutation-fixture-'
   ));
+  const hostEventCatalogUserDataPath = await mkdtemp(path.join(
+    tmpdir(),
+    'vba-tools-host-event-catalog-user-data-'
+  ));
+  const untrustedHostEventCatalogUserDataPath = await mkdtemp(path.join(
+    tmpdir(),
+    'vba-tools-untrusted-host-event-catalog-user-data-'
+  ));
+  const hostEventCatalogFixtureRoot = await createHostEventCatalogFixture();
 
   try {
+    await runTests({
+      extensionDevelopmentPath,
+      extensionTestsPath: hostEventCatalogTestsPath,
+      vscodeExecutablePath: runtime.vscodeExecutablePath,
+      version: runtime.version,
+      launchArgs: createExtensionHostLaunchArgs(
+        hostEventCatalogUserDataPath,
+        hostEventCatalogFixtureRoot
+      ),
+      extensionTestsEnv: {
+        VBA_TOOLS_EXTENSION_HOST_TEST: '1',
+        VBA_TOOLS_EXTENSION_HOST_FIXTURE_ROOT: hostEventCatalogFixtureRoot,
+        VBA_TOOLS_INTRINSIC_HOST_EVENT_CATALOG_TEST_MODE: 'controlled-trusted'
+      }
+    });
+    const restrictedModeVscodeExecutablePath = runtime.vscodeExecutablePath ??
+      await downloadAndUnzipVSCode({
+        version: runtime.version,
+        extensionDevelopmentPath
+      });
+    await runRestrictedModeExtensionHostTests({
+      extensionDevelopmentPath,
+      extensionTestsPath: hostEventCatalogTestsPath,
+      vscodeExecutablePath: restrictedModeVscodeExecutablePath,
+      userDataPath: untrustedHostEventCatalogUserDataPath,
+      workspacePath: hostEventCatalogFixtureRoot,
+      extensionTestsEnvironment: {
+        VBA_TOOLS_EXTENSION_HOST_TEST: '1',
+        VBA_TOOLS_EXTENSION_HOST_FIXTURE_ROOT: hostEventCatalogFixtureRoot,
+        VBA_TOOLS_INTRINSIC_HOST_EVENT_CATALOG_TEST_MODE: 'actual-untrusted'
+      }
+    });
     await runTests({
       extensionDevelopmentPath,
       extensionTestsPath,
@@ -32,14 +82,73 @@ async function main(): Promise<void> {
       extensionTestsEnv: {
         VBA_TOOLS_EXTENSION_HOST_TEST: '1',
         VBA_TOOLS_EXTENSION_HOST_FIXTURE_ROOT: fixtureRoot,
-        VBA_TOOLS_EXTENSION_HOST_MUTATION_FIXTURE_ROOT: mutationFixtureRoot
+        VBA_TOOLS_EXTENSION_HOST_MUTATION_FIXTURE_ROOT: mutationFixtureRoot,
+        VBA_TOOLS_INTRINSIC_HOST_EVENT_CATALOG_TEST_MODE: 'controlled-trusted'
       }
     });
   } finally {
     await rm(userDataPath, { recursive: true, force: true });
     await rm(fixtureRoot, { recursive: true, force: true });
     await rm(mutationFixtureRoot, { recursive: true, force: true });
+    await rm(hostEventCatalogUserDataPath, { recursive: true, force: true });
+    await rm(untrustedHostEventCatalogUserDataPath, { recursive: true, force: true });
+    await rm(hostEventCatalogFixtureRoot, { recursive: true, force: true });
   }
+}
+
+async function createHostEventCatalogFixture(): Promise<string> {
+  const fixtureRoot = await mkdtemp(path.join(
+    tmpdir(),
+    'vba-tools-host-event-catalog-fixture-'
+  ));
+  const documents: Record<string, {
+    kind: string;
+    sourcePath: string;
+    templatePath: string;
+    binPath: string;
+    publishPath: string;
+    commonModules: never[];
+    references: never[];
+  }> = {};
+  for (let index = 1; index <= 15; index += 1) {
+    const document = `Book${String(index).padStart(2, '0')}`;
+    const sourcePath = path.join(fixtureRoot, 'src', document);
+    const templatePath = path.join(fixtureRoot, 'templates', `${document}.xlsm`);
+    await mkdir(sourcePath, { recursive: true });
+    await mkdir(path.dirname(templatePath), { recursive: true });
+    await writeFile(path.join(sourcePath, 'ProbeForm.frm'), [
+      'VERSION 5.00',
+      'Begin VB.UserForm ProbeForm',
+      'End',
+      'Attribute VB_Name = "ProbeForm"',
+      '',
+      'Private Sub Probe()',
+      'End Sub',
+      '',
+      'Private Sub UserForm_',
+      ''
+    ].join('\r\n'), 'utf8');
+    await writeFile(
+      templatePath,
+      Buffer.from(`sentinel-${document}`, 'utf8')
+    );
+    documents[document] = {
+      kind: 'excel',
+      sourcePath: `src/${document}`,
+      templatePath: `templates/${document}.xlsm`,
+      binPath: `bin/${document}.xlsm`,
+      publishPath: `publish/${document}.xlsm`,
+      commonModules: [],
+      references: []
+    };
+  }
+  await writeFile(path.join(fixtureRoot, 'vba-project.json'), JSON.stringify({
+    schemaVersion: 1,
+    projectName: 'HostEventCatalogFixture',
+    primaryDocument: 'Book01',
+    documents
+  }, undefined, 2), 'utf8');
+  return fixtureRoot;
 }
 
 async function createDebugConfigurationFixture(): Promise<string> {

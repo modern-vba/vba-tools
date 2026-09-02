@@ -58,27 +58,21 @@ building, testing, publishing, exporting, CommonModules updates, and project
 reference manifest edits stay in `vba-dev`; the language server owns editor
 language features.
 
-The VS Code extension also owns Host Event inspection and retained projection
-state. It sends `vba/hostClassProjectionSnapshot` schema `2` notifications as
-immutable full replacements or clears for one manifest document. Each payload
-has an independent, monotonically increasing document-local revision and exact
-canonical project, document, and source-template context. The language server
-strictly validates the payload, rejects stale revisions and mismatched current
-contexts, coalesces queued notifications for the same document to the greatest
-revision, atomically replaces the accepted snapshot, and invalidates only that
-project's semantic inventory.
+The VS Code extension owns one environment-scoped UserForm Event catalog. It
+sends `vba/intrinsicHostEventCatalog` schema `1.0` notifications containing a
+monotonically increasing revision and either one complete catalog or `null` to
+clear unavailable state. The language server validates the full payload,
+rejects stale revisions, atomically replaces or clears the catalog, and
+invalidates project inventories so every authoritative `.frm` `FormModule`
+binds the same current Event surface by source kind. The payload contains no
+project, document, source-template, component, VBA-project-name, fingerprint,
+or source-association identity.
 
-A present schema-`2` snapshot may carry `vbaProjectName` and
-`sourceTemplateFingerprint` only together. This legacy observation remains in
-the Event transport during migration, but Module Rename and project-name
-diagnostics ignore it. The snapshot's class entries, revision fence, Event
-semantics, and current form-ownership evidence remain independent of the pair.
-
-`current` entries are authoritative Host Event evidence,
-`lastKnownGood` entries are advisory, and `indeterminate` entries provide no
-projected Event candidate. Interactive requests capture committed immutable
-state; they never invoke `vba-dev`, launch Excel, or wait for inspection or
-notification completion.
+An unavailable catalog is indeterminate rather than an authoritative empty
+UserForm Event surface. Interactive requests capture committed immutable state;
+they never invoke `vba-dev`, launch Excel, or wait for discovery or notification
+completion. Worksheet and `ThisWorkbook` code-behind and control-instance
+Events receive no catalog-derived semantics.
 
 ### Semantic module-identity Rename protocol
 
@@ -94,23 +88,23 @@ package bytes and obtains the containing VBA project name through a
 request-scoped static `VbaProjectIdentityRead`. It validates the OPC and CFB
 structure, decompresses the MS-OVBA directory stream, and decodes `PROJECTNAME`
 with `PROJECTCODEPAGE` without Excel, VBIDE, discovery, or a persisted cache.
-Manifest, document, workbook, generated-workbook, reference-alias, and legacy
-host-projection names never substitute. Missing, unreadable, malformed,
+Manifest, document, workbook, generated-workbook, reference-alias, and
+environment-catalog values never substitute. Missing, unreadable, malformed,
 encrypted, subject to unsupported protection, or otherwise unsupported content
 fails with `analysisIncomplete`. An unconditional final whole-package content
 fence rejects a change before every complete module Rename `WorkspaceEdit`,
 including one with no file operation.
 
-This static identity read does not reclassify forms. Current host-projection
-class evidence continues to determine form ownership until the environment
-UserForm Event catalog cutover; only a form already proven outside host
-association is source-renamable through this protocol.
+The environment catalog supplies only a form's fixed built-in Event contracts;
+it never owns the form identity. Every authoritative form is a source-owned
+`FormSourceUnit` and follows the same complete designer, sidecar, semantic, and
+file Rename plan whether or not the catalog is available.
 
 A recognized rejection uses Request Failed (`-32803`) with
 `error.data.reason`. Module-specific reasons include
 `moduleIdentityNotExplicit`, `moduleIdentityInvalid`,
-`managedModuleIdentity`, `hostManagedModuleIdentity`,
-`clientCapabilityMissing`, `analysisIncomplete`, `sameScopeCollision`, and
+`managedModuleIdentity`, `clientCapabilityMissing`, `analysisIncomplete`,
+`sameScopeCollision`, and
 `resourceOperationConflict`. Invalid metadata may add `condition: "duplicate"`
 or `"malformed"`. Resource conflicts add `condition`, `path`, and `guidance`;
 conditions are `sourceMissing`, `sourceChanged`, `destinationExists`, and

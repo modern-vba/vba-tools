@@ -134,7 +134,7 @@ test('ProjectManifest sync completes before replaying consumer-owned snapshots a
       await sendNotification(method, parameters);
     },
     onDidSynchronizeLanguageClient: async () => {
-      order.push('host-class replay');
+      order.push('intrinsic catalog replay');
     }
   });
 
@@ -143,7 +143,7 @@ test('ProjectManifest sync completes before replaying consumer-owned snapshots a
 
   assert.deepEqual(order, [
     'textDocument/didOpen',
-    'host-class replay'
+    'intrinsic catalog replay'
   ]);
 });
 

@@ -11,7 +11,7 @@ namespace VbaLanguageServer.Tests;
 public sealed class VbaLanguageServerRuntimeTests
 {
     [Fact]
-    public async Task Host_class_snapshot_notification_mutates_the_workspace_before_shutdown()
+    public async Task Intrinsic_host_event_catalog_notification_mutates_the_workspace_before_shutdown()
     {
         var previousExitCode = Environment.ExitCode;
         var projectRoot = Directory.CreateTempSubdirectory("vba-ls-runtime-host-").FullName;
@@ -60,18 +60,12 @@ public sealed class VbaLanguageServerRuntimeTests
                 new
                 {
                     jsonrpc = "2.0",
-                    method = "vba/hostClassProjectionSnapshot",
+                    method = "vba/intrinsicHostEventCatalog",
                     @params = new
                     {
-                        schemaVersion = 2,
+                        schemaVersion = "1.0",
                         revision = 1,
-                        project = Path.GetFullPath(projectRoot),
-                        document = "Book1",
-                        sourceTemplate = Path.GetFullPath(
-                            Path.Combine(sourceRoot, "Book1.xlsm")),
-                        state = "present",
-                        classEnumerationComplete = true,
-                        classes = Array.Empty<object>()
+                        catalog = CreateCatalog()
                     }
                 },
                 new
@@ -98,15 +92,15 @@ public sealed class VbaLanguageServerRuntimeTests
                     transport,
                     workspace,
                     catalogLifecycle),
-                hostClassProjectionSnapshotHandler:
-                    new VbaHostClassProjectionSnapshotHandler(workspace));
+                intrinsicHostEventCatalogHandler:
+                    new VbaIntrinsicHostEventCatalogHandler(workspace));
 
             await runtime.RunAsync().WaitAsync(TimeSpan.FromSeconds(5));
 
-            Assert.Equal(
-                1,
-                workspace.CreateProjectSnapshot(sourceUri)
-                    .SemanticInventory.HostClassProjectionSnapshot?.Revision);
+            var catalog = workspace.CreateProjectSnapshot(sourceUri)
+                .SemanticInventory.IntrinsicHostEventCatalog;
+            Assert.NotNull(catalog);
+            Assert.Equal("Initialize", Assert.Single(catalog.Events).Name);
         }
         finally
         {
@@ -116,7 +110,7 @@ public sealed class VbaLanguageServerRuntimeTests
     }
 
     [Fact]
-    public async Task Host_class_snapshot_notifications_coalesce_to_the_greatest_queued_revision()
+    public async Task Intrinsic_host_event_catalog_notifications_reject_a_stale_revision()
     {
         var previousExitCode = Environment.ExitCode;
         var analysisGate = new BlockingDocumentAnalysisObserver();
@@ -138,8 +132,8 @@ public sealed class VbaLanguageServerRuntimeTests
                         }
                     }
                 },
-                CreateHostSnapshotNotification(revision: 3),
-                CreateHostSnapshotNotification(revision: 2),
+                CreateCatalogNotification(revision: 3),
+                CreateCatalogNotification(revision: 2),
                 new
                 {
                     jsonrpc = "2.0",
@@ -158,7 +152,7 @@ public sealed class VbaLanguageServerRuntimeTests
                     VbaProjectReferenceCatalogSet.CreateBundled()),
                 NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
                 analysisGate);
-            var handler = new RecordingHostClassProjectionSnapshotHandler();
+            var handler = new RecordingIntrinsicHostEventCatalogHandler();
             var catalogLifecycle = new NoOpReferenceCatalogLifecycle();
             var runtime = new VbaLanguageServerRuntime(
                 transport,
@@ -167,7 +161,7 @@ public sealed class VbaLanguageServerRuntimeTests
                     transport,
                     workspace,
                     catalogLifecycle),
-                hostClassProjectionSnapshotHandler: handler);
+                intrinsicHostEventCatalogHandler: handler);
 
             var run = runtime.RunAsync();
             await analysisGate.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -184,7 +178,7 @@ public sealed class VbaLanguageServerRuntimeTests
     }
 
     [Fact]
-    public async Task Host_class_snapshot_notifications_coalesce_across_interleaved_documents()
+    public async Task Intrinsic_host_event_catalog_notifications_apply_in_revision_order()
     {
         var previousExitCode = Environment.ExitCode;
         var analysisGate = new BlockingDocumentAnalysisObserver();
@@ -206,9 +200,9 @@ public sealed class VbaLanguageServerRuntimeTests
                         }
                     }
                 },
-                CreateHostSnapshotNotification(revision: 2, document: "BookA"),
-                CreateHostSnapshotNotification(revision: 1, document: "BookB"),
-                CreateHostSnapshotNotification(revision: 3, document: "BookA"),
+                CreateCatalogNotification(revision: 2),
+                CreateCatalogNotification(revision: 1),
+                CreateCatalogNotification(revision: 3),
                 new
                 {
                     jsonrpc = "2.0",
@@ -227,7 +221,7 @@ public sealed class VbaLanguageServerRuntimeTests
                     VbaProjectReferenceCatalogSet.CreateBundled()),
                 NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
                 analysisGate);
-            var handler = new RecordingHostClassProjectionSnapshotHandler();
+            var handler = new RecordingIntrinsicHostEventCatalogHandler();
             var runtime = new VbaLanguageServerRuntime(
                 transport,
                 new VbaLspRequestExecution(transport, workspace),
@@ -235,14 +229,14 @@ public sealed class VbaLanguageServerRuntimeTests
                     transport,
                     workspace,
                     new NoOpReferenceCatalogLifecycle()),
-                hostClassProjectionSnapshotHandler: handler);
+                intrinsicHostEventCatalogHandler: handler);
 
             var run = runtime.RunAsync();
             await analysisGate.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
             analysisGate.Release.TrySetResult();
             await run.WaitAsync(TimeSpan.FromSeconds(5));
 
-            Assert.Equal(["BookB:1", "BookA:3"], handler.Applied);
+            Assert.Equal([2, 3], handler.AppliedRevisions);
         }
         finally
         {
@@ -506,35 +500,49 @@ public sealed class VbaLanguageServerRuntimeTests
         return stream.ToArray();
     }
 
-    private static object CreateHostSnapshotNotification(
-        long revision,
-        string document = "Book1")
+    private static object CreateCatalogNotification(long revision)
         => new
         {
             jsonrpc = "2.0",
-            method = "vba/hostClassProjectionSnapshot",
+            method = "vba/intrinsicHostEventCatalog",
             @params = new
             {
-                schemaVersion = 2,
+                schemaVersion = "1.0",
                 revision,
-                project = "C:\\work\\Project",
-                document,
-                sourceTemplate = "C:\\work\\Project\\Book1.xlsm",
-                state = "present",
-                classEnumerationComplete = true,
-                classes = Array.Empty<object>()
+                catalog = CreateCatalog()
             }
         };
 
-    private sealed class RecordingHostClassProjectionSnapshotHandler
-        : IVbaHostClassProjectionSnapshotHandler
+    private static object CreateCatalog()
+        => new
+        {
+            sourceKind = "userForm",
+            intrinsicEventSourceName = "UserForm",
+            events = new object[]
+            {
+                new
+                {
+                    identity = new { sourceName = "UserForm", name = "Initialize" },
+                    signature = new
+                    {
+                        parameters = Array.Empty<object>(),
+                        documentation = "Initializes the form."
+                    },
+                    authoringAvailable = true,
+                    existingHandlerRecognizable = true
+                }
+            }
+        };
+
+    private sealed class RecordingIntrinsicHostEventCatalogHandler
+        : IVbaIntrinsicHostEventCatalogHandler
     {
         public List<long> AppliedRevisions { get; } = [];
-        public List<string> Applied { get; } = [];
+        private long revision;
 
         public bool TryParse(
             JsonNode? parameters,
-            out VbaHostClassProjectionSnapshotUpdate update)
+            out VbaIntrinsicHostEventCatalogUpdate update)
         {
             update = default!;
             if (parameters is not JsonObject payload
@@ -544,34 +552,19 @@ public sealed class VbaLanguageServerRuntimeTests
                 return false;
             }
 
-            if (payload["document"] is not JsonValue documentNode
-                || !documentNode.TryGetValue<string>(out var document))
+            update = new VbaIntrinsicHostEventCatalogUpdate(revision, null);
+            return true;
+        }
+
+        public bool TryApply(VbaIntrinsicHostEventCatalogUpdate update)
+        {
+            if (update.Revision <= revision)
             {
                 return false;
             }
 
-            var projectPath = Path.Combine(
-                Path.GetTempPath(),
-                "vba-language-server-runtime-project");
-            var context = new VbaHostClassProjectionContext(
-                projectPath,
-                document,
-                Path.Combine(projectPath, "Book1.xlsm"));
-            update = new VbaHostClassProjectionSnapshotUpdate(
-                context,
-                revision,
-                new VbaHostClassProjectionSnapshot(
-                    revision,
-                    context,
-                    ClassEnumerationComplete: true,
-                    Classes: []));
-            return true;
-        }
-
-        public bool TryApply(VbaHostClassProjectionSnapshotUpdate update)
-        {
+            revision = update.Revision;
             AppliedRevisions.Add(update.Revision);
-            Applied.Add($"{update.Context.Document}:{update.Revision}");
             return true;
         }
     }

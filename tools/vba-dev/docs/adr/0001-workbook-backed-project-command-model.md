@@ -4,6 +4,13 @@ status: accepted
 
 # Workbook-backed project command model
 
+Repository ADR 0036 supersedes every `host-class list`, document-scoped host
+projection, source-template host inspection, partial/last-known-good projection,
+and related extension lifecycle passage below. The replacement is the
+environment-scoped `host-event list` command, which inspects only an unsaved
+blank workbook and temporary UserForm. The remaining workbook-backed command,
+transaction, process-ownership, and cleanup model stays accepted.
+
 `vba-dev` will model Office macro automation as a Windows-only, workbook-backed command-line workflow centered on a `vba-project.json` project manifest. The manifest identifies the project and primary document, supplies command defaults, and anchors path resolution so commands can behave consistently from project subdirectories and future multi-document projects.
 
 ## Collection and distribution wrapper correction (2026-08-21)

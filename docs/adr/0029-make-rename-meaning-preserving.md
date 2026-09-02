@@ -4,6 +4,13 @@ status: accepted
 
 # Make Rename meaning-preserving
 
+ADR 0036 supersedes this ADR's acquisition of `VbaProjectName` through a host
+projection and its `HostManagedModuleIdentity` treatment of UserForms and
+intrinsic document modules. Containing project identity is read statically from
+the exact request-start `vbaProject.bin`; UserForms are source-owned
+`FormSourceUnit`s; worksheet and `ThisWorkbook` code-behind Rename are outside
+the supported model. The remaining semantic Rename contracts stay accepted.
+
 VbaLanguageServer treats Rename as a semantic refactoring rather than a
 project-wide text replacement. Prepare Rename returns the occurrence range
 under the request with the `RenameTarget` declaration's canonical name as its

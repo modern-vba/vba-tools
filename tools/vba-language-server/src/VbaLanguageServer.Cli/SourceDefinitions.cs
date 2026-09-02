@@ -821,22 +821,6 @@ public sealed record VbaCompletionResult(IReadOnlyList<VbaCompletionCandidate> C
 }
 
 /// <summary>
-/// Identifies authoritative provenance supplied by a source adapter.
-/// </summary>
-public enum VbaSourceDocumentProvenance
-{
-    /// <summary>
-    /// The source is an ordinary exported project-local module.
-    /// </summary>
-    ProjectLocal,
-
-    /// <summary>
-    /// The source projects an intrinsic document component owned by its template.
-    /// </summary>
-    IntrinsicDocument
-}
-
-/// <summary>
 /// Represents one parsed source document used by semantic inventory construction.
 /// </summary>
 /// <param name="Uri">The document URI.</param>
@@ -851,11 +835,6 @@ public sealed record VbaSourceDocument(
     IReadOnlyList<VbaSourceDefinition> Definitions,
     VbaSyntaxTree? SyntaxTree = null)
 {
-    /// <summary>
-    /// Gets the adapter-supplied source provenance used for mutation ownership.
-    /// </summary>
-    public VbaSourceDocumentProvenance Provenance { get; init; }
-
     internal VbaSourceDocumentProjection? Projection { get; init; }
 }
 
@@ -1052,11 +1031,7 @@ internal static class VbaSourceDocumentProjector
                 out var moduleDefinition,
                 out var reusableDefinitions))
         {
-            return Project(uri, syntaxTree) with
-            {
-                Provenance = previousDocument?.Provenance
-                    ?? VbaSourceDocumentProvenance.ProjectLocal
-            };
+            return Project(uri, syntaxTree);
         }
 
         var definitions = new List<VbaSourceDefinition>(
@@ -1080,11 +1055,7 @@ internal static class VbaSourceDocumentProjector
             uri,
             syntaxTree,
             moduleDefinition.Name,
-            definitions) with
-        {
-            Provenance = previousDocument?.Provenance
-                ?? VbaSourceDocumentProvenance.ProjectLocal
-        };
+            definitions);
     }
 
     private static bool IsOwnedProjection(

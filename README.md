@@ -22,8 +22,8 @@ build, test, publish, export, and validate Excel macro workbooks from a
 - Use semantic highlighting for declarations and resolved references.
 - Format VBA source with the built-in document formatter.
 - Run workbook-backed VBA tests from VS Code Test Explorer.
-- Keep intrinsic form and document Host Events available to language features
-  through document-scoped, last-known-good projection snapshots.
+- Keep intrinsic UserForm Events available to language features through one
+  environment-scoped current catalog.
 - Debug eligible VBA procedures in the native VBE from VS Code, with ordinary
   source breakpoints.
 - Run project commands from the Command Palette: Doctor, Build, Test, Publish,
@@ -252,7 +252,7 @@ existing bin workbook.
 | `VBA Tools: Test` | Build, then run VBA unit tests for the selected workbook document. |
 | `VBA Tools: Publish` | Generate the publish workbook for the selected document. |
 | `VBA Tools: Export` | Export VBA modules from the selected workbook into source. |
-| `VBA Tools: Refresh Host Events` | Reinspect intrinsic Host Events for one selected workbook document. |
+| `VBA Tools: Refresh UserForm Events` | Reacquire the environment-scoped built-in UserForm Event catalog. |
 | `VBA Tools: Add Common Module` | Add CommonModules entries to the selected document. |
 | `VBA Tools: List Common Modules` | List CommonModules entries for the selected document. |
 | `VBA Tools: Update Common Modules` | Update installed CommonModules entries. |
@@ -521,47 +521,30 @@ and publish apply those references to generated workbooks.
 
 ## Host Events
 
-For each active document in `vba-project.json`, VBA Tools inspects the selected
-source-template workbook and supplies intrinsic form and document Host Events
-to the language server as one immutable, document-wide snapshot. Inspection
-runs on document activation, an effective document or template identity
-change, a create/change/delete event for that same template, or an explicit
-`VBA Tools: Refresh Host Events` command. Automatic triggers use a one-second
-trailing-edge debounce and one extension-wide queue permits only one
-`host-class list` process at a time. While a manifest edit is being debounced,
-the extension fences matching in-flight results until the final effective
-document and source-template context has been resolved.
+In a trusted workspace, activation starts at most one asynchronous
+environment-scoped UserForm Event discovery. `vba-dev host-event list --format
+json` owns one hidden Excel process, creates one unsaved blank workbook and one
+temporary empty UserForm, reads the installed built-in UserForm Event surface,
+and closes without saving. It never opens, copies, imports, scans, or falls back
+to a project source template. Language-server startup and editor requests do
+not wait for Excel.
 
-Editing exported `.bas`, `.cls`, `.frm`, or `.frx` source does not start Excel.
-Those edits only reevaluate source association through an explicit,
-case-insensitive `Attribute VB_Name` and a compatible component kind. Active
-editor changes, reference refreshes, and build, test, publish, or output
-workbook changes also do not trigger inspection unless the selected template
-identity changes. Synchronous completion, hover, diagnostics, and other editor
-requests use the latest committed snapshot and never launch or wait for Excel.
+The resulting current catalog is shared by every authoritative `.frm`
+`FormModule`, including ad-hoc forms, by source kind rather than workbook
+component association. Catalog unavailability is indeterminate rather than an
+authoritative empty Event surface. Worksheet and `ThisWorkbook` code-behind and
+control-instance Events such as `CommandButton1_Click` are unsupported. The
+Excel `ThisWorkbook` expression remains a read-only global from the active
+reference catalog, and `.frm`/`.frx` import, export, build, test, debug, and
+source-owned Rename do not depend on Event discovery.
 
-The current exported-source collector associates `.frm` form sources only.
-An exported `.cls` remains an ordinary `ClassModule` and is never inferred to
-be an intrinsic document module from its name, metadata flags, or a matching
-projection. A future document-source adapter must provide authoritative
-document provenance before document-source association becomes active.
-
-`VBA Tools: Refresh Host Events` lets you choose one manifest document, joins
-the same queue without debounce, and shows cancellable progress. A clean
-success is silent. Inspection failures and source-association problems remain
-in the VBA Tools output channel; an explicit failure offers `Show Output`, and
-a successful explicit refresh with association problems shows one warning with
-the same action. Background failure and cancellation do not show popups.
-
-The `VBA Host Events` status item appears only while inspection is queued or
-running or when attention is required. Its hover identifies the project,
-document, lifecycle state, last-known-good use, reason, and association-failure
-counts; selecting it opens Output and does not retry. Failed, partial,
-cancelled, or unverified inspection preserves applicable last-known-good data
-and schedules no timer-based retry. Correct the template or `Attribute
-VB_Name`, then use a later lifecycle trigger or the explicit refresh command.
-Host Event inspection requires a trusted workspace, desktop Excel, and trusted
-access to the VBA project object model.
+`VBA Tools: Refresh UserForm Events` repeats the environment acquisition with
+cancellable progress and no project or document chooser. It rechecks Workspace
+Trust before starting Excel. Startup failure leaves the catalog unavailable and
+reports environment-level attention in the VBA Tools Output channel without a
+popup storm or automatic retry. If a later explicit refresh fails, the healthy
+current in-session catalog remains usable. Catalog state is replayed after a
+language-client restart but is never persisted across extension activations.
 
 ---
 
@@ -577,7 +560,7 @@ For a manifest-backed module, the language server reads the actual containing
 VBA project name statically from the exact selected source-template package at
 Rename request start. It reads `PROJECTNAME` with the package's MS-OVBA project
 code page without starting Excel, using VBIDE, waiting for Host Event discovery,
-or consulting a cached host projection. Manifest, document, workbook, generated
+or consulting environment Event catalog metadata. Manifest, document, workbook, generated
 blank-workbook, and reference-alias names never substitute. Missing, unreadable,
 malformed, encrypted, subject to unsupported protection, otherwise unsupported,
 or subsequently changed template content fails with `analysisIncomplete`, and a
@@ -595,11 +578,11 @@ controls, unrelated designer text, and exact `.frx` bytes are preserved.
 
 A deliberately different basename and its sidecar-reference spelling remain
 unchanged, while an intentional case-only Rename applies the requested final
-casing everywhere that participates. Installed CommonModules and currently
-workbook-owned form or document components are not silently detached or renamed
-through source F2. The static containing-project read does not change that
-ownership boundary; only a form already proven outside current host association
-uses ordinary source Rename until the UserForm Event catalog cutover.
+casing everywhere that participates. Installed CommonModules are not silently
+detached or renamed through source F2, and Worksheet and `ThisWorkbook`
+code-behind remain unsupported. The static containing-project read and the
+environment Event catalog do not change that ownership boundary; a project-local,
+source-owned UserForm remains source-renamable independently of catalog binding.
 
 The server checks the complete semantic edit set, current project and
 reference-name authority, designer structure, source and sidecar bytes,
@@ -738,9 +721,9 @@ cannot influence executable selection.
 | F5 cannot establish VBE debugging | Run `VBA Tools: Doctor` and review the `VBE debugging` checks and remediation in the VBA Tools output channel. |
 | VBE Doctor reports an adapter infrastructure failure | Check the executable path and compatibility details in the VBA Tools output channel. If `vbaTools.debugAdapter.path` is set, correct or clear the explicit path; invalid overrides intentionally do not fall back. |
 | Excel blocks workbook automation | Enable trusted access to the VBA project object model in Excel Trust Center settings. |
-| Host Events remain queued, unavailable, or last-known-good | Select the `VBA Host Events` status item, review generation, context, reason, and cleanup details in VBA Tools Output, confirm the selected source template exists and is closed, then run `VBA Tools: Refresh Host Events`. There is no automatic retry. |
-| A form or document source cannot associate with Host Events | Review the complete association record in VBA Tools Output and repair or re-export its explicit `Attribute VB_Name`; file names and display names are not association fallbacks. |
-| Module Rename reports `analysisIncomplete` with `containingProjectNameUnavailable` | Follow the reported `path` and `guidance`. Restore or re-export a readable, supported source-template package with one valid VBA project, remove unsupported encryption or protection, and retry Rename after the template stops changing. Do not refresh Host Events for this condition: Rename reads the project identity directly and keeps no project-name cache. |
+| UserForm Events are unavailable | Review the environment-level catalog status and cleanup details in VBA Tools Output, confirm desktop Excel and trusted VBA-project access are available, then run `VBA Tools: Refresh UserForm Events`. Discovery never opens a project template and does not retry automatically. |
+| A worksheet, `ThisWorkbook`, or control handler has no Host Event intelligence | These code-behind and control-instance Event scopes are intentionally unsupported. Use ordinary source modules/classes/forms; `.frm` UserForms bind to the environment catalog by source kind. |
+| Module Rename reports `analysisIncomplete` with `containingProjectNameUnavailable` | Follow the reported `path` and `guidance`. Restore or re-export a readable, supported source-template package with one valid VBA project, remove unsupported encryption or protection, and retry Rename after the template stops changing. Do not refresh UserForm Events for this condition: Rename reads the project identity directly and keeps no project-name cache. |
 | Module Rename reports `resourceOperationConflict` | Follow its `condition`, `path`, and `guidance`: reload or restore a changed or missing source, repair or re-export a displaced form sidecar, or remove the destination collision, then invoke Rename again. No partial plan was returned. |
 | UserForm Rename reports a designer or sidecar condition | Follow the reported `condition`, `path`, and `guidance` first. For `designerRootMissing`, `designerRootAmbiguous`, `designerStructureMalformed`, or `designerIdentityConflict`, repair or re-export the complete `.frm`. For `sidecarReferenceMalformed`, `sidecarReferenceUnsafe`, or `sidecarReferenceConflict`, make every resource property use the matching local `<form-basename>.frx` plus its hexadecimal offset, or re-export the form. For `sidecarMissing`, restore or re-export the missing matching sidecar. For `sidecarConflict`, reload the complete source unit and keep exactly one matching sidecar beside the form when evidence is missing, displaced, or multiply identified; restore or reload a changed or unreadable sidecar; or choose another module name or remove the conflicting destination. Then invoke Rename again; no partial plan was returned. |
 | Module Rename changes only part of the workspace or reports an application failure | Run Undo immediately and verify both source text and source-unit files, including `.frx`. Repair the destination, permissions, or filesystem-provider state, then request Rename again. If VS Code retains stale file models, close the affected editors or reload the window before retrying. |

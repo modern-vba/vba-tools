@@ -938,10 +938,7 @@ internal sealed class VbaProjectValidationDiagnosticIndex
                     .AnalyzeIntrinsicHostHandler(document, handler);
                 if (intrinsicAnalysis is not null)
                 {
-                    if (intrinsicAnalysis.Surface.Authority
-                        == VbaHostClassEventAuthority.Current)
-                    {
-                        var intrinsicCallable = syntaxTree.Module
+                    var intrinsicCallable = syntaxTree.Module
                             .CallableDeclarations.FirstOrDefault(candidate =>
                                 candidate.Range.Start.Line
                                     == handler.Range.Start.Line
@@ -990,7 +987,6 @@ internal sealed class VbaProjectValidationDiagnosticIndex
                                             .CreateDiagnosticDetails()));
                             }
                         }
-                    }
 
                     continue;
                 }

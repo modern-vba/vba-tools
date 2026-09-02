@@ -169,7 +169,7 @@ internal static class VbeCodeWindowNavigation
         if (IsWindowVisible(window))
         {
             throw new InvalidOperationException(
-                "The exactly owned VBE window could not be kept hidden for host-class inspection.");
+                "The exactly owned VBE window could not be kept hidden for Host Event inspection.");
         }
     }
 

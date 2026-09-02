@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0036
 ---
 
 # Supply host class projections through consumer-owned snapshots

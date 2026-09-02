@@ -4,6 +4,12 @@ status: accepted
 
 # Model conditional declarations as logical families
 
+ADR 0036 supersedes this ADR's document-scoped host-projection authority,
+last-known-good host state, and worksheet/workbook intrinsic examples. Current
+built-in host evidence comes only from the environment-scoped UserForm Event
+catalog. Conditional source families, source/catalog coexistence, completion,
+handler association, and compatibility rules otherwise remain accepted.
+
 VbaLanguageServer analyzes conditionally compiled declarations without
 selecting the `#If` branches of one concrete Office host. One or more
 case-insensitively same-named declarations in the same VBA declaration scope and

@@ -4,6 +4,13 @@ status: accepted
 
 # Separate syntax and validation diagnostics
 
+ADR 0036 supersedes this ADR's document-scoped `HostClassEventSurface`,
+projection-freshness, and last-known-good host authority passages. Built-in
+host Event behavior now uses one current environment-scoped UserForm catalog;
+worksheet, `ThisWorkbook` code-behind, and control-instance Events are outside
+that model. The syntax/validation separation and the remaining source,
+TypeLib, handler, and diagnostic contracts stay accepted.
+
 VbaLanguageServer will keep `SyntaxDiagnostic`s limited to parser recovery and
 malformed VBA source structure, while reporting parsed-source validity rules as
 `VbaValidationDiagnostic`s. LSP `textDocument/publishDiagnostics` may publish

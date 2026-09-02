@@ -9,7 +9,7 @@ using System.Text.Json.Serialization;
 using VbaDev.App.Cli;
 using VbaDev.App.Diagnostics;
 using VbaDev.App.Export;
-using VbaDev.App.HostClasses;
+using VbaDev.App.HostEvents;
 using VbaDev.App.Import;
 using VbaDev.App.Projects;
 using VbaDev.App.Testing;
@@ -358,31 +358,24 @@ public sealed class VbaDevCommandLine
                     cancellationToken)
                 .ConfigureAwait(false)));
 
-        var hostClassCommand = AddCommand(rootCommand, "host-class", "Inspect intrinsic host classes.");
-        var hostClassListCommand = AddCapabilityCommand(
-            hostClassCommand,
+        var hostEventCommand = AddCommand(rootCommand, "host-event", "Inspect generic intrinsic host Events.");
+        var hostEventListCommand = AddCapabilityCommand(
+            hostEventCommand,
             "list",
-            "List intrinsic host classes for the selected document.",
-            "1.1",
+            "List the environment's generic UserForm Event catalog.",
+            "1.0",
             capabilityCommands);
-        var hostClassListOptions = AddProjectDocumentOptions(hostClassListCommand);
-        var hostClassListFormatOption = CreateStringOption(
+        var hostEventListFormatOption = CreateStringOption(
             "--format",
-            "Host-class projection output format.",
+            "Host Event catalog output format.",
             "text|json",
             ["text", "json"],
             "-f");
-        hostClassListCommand.Add(hostClassListFormatOption);
-        hostClassListCommand.SetAction(async (parseResult, cancellationToken) => WriteCommandResult(
+        hostEventListCommand.Add(hostEventListFormatOption);
+        hostEventListCommand.SetAction(async (parseResult, cancellationToken) => WriteCommandResult(
             parseResult,
-            await ResolveDocumentContextAsync(
-                    parseResult,
-                    composition,
-                    hostClassListOptions,
-                    (context, operationCancellationToken) => composition.HostClassListCommand.RunAsync(
-                        context,
-                        parseResult.GetValue(hostClassListFormatOption) ?? "text",
-                        operationCancellationToken),
+            await composition.HostEventListCommand.RunAsync(
+                    parseResult.GetValue(hostEventListFormatOption) ?? "text",
                     cancellationToken)
                 .ConfigureAwait(false)));
 
@@ -614,7 +607,7 @@ public sealed class VbaDevCommandLine
                     ["invocation.stdinCancellation"] = "1.0",
                     ["sourceSnapshot.activeWindowsCodePage"] = "1.0",
                     ["projectCreation.pathValidation"] = "1.0",
-                    ["hostClass.list"] = "1.0"
+                    ["hostEvent.list"] = "1.0"
                 },
                 GetActiveWindowsCodePage(),
                 capabilityCommands

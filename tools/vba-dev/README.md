@@ -23,8 +23,8 @@ Managed callers can require `invocation.stdinCancellation` version `1.0` before
 opting into the hidden `--cancellation-transport stdin-v1` control channel. In
 that mode only, exact BOM-less UTF-8 `cancel\n` requests cooperative command
 cancellation; ordinary terminal invocations do not read standard input.
-Consumers of intrinsic host Event projections can require `hostClass.list`
-version `1.0` before invoking `host-class list --format json`.
+Consumers of built-in UserForm Event catalogs can require `hostEvent.list`
+version `1.0` before invoking `host-event list --format json`.
 
 ## PowerShell completion
 
@@ -53,7 +53,7 @@ script after moving or replacing that executable.
 | `reference add` | document | Add VBA project references to the selected document manifest. |
 | `reference list` | document or available-mode environment fallback | List configured, stored-selection, or available VBA project references. |
 | `reference remove` | document | Remove VBA project references from the selected document manifest. |
-| `host-class list` | document | Inspect intrinsic form and document-class Event projections from a private workbook copy. |
+| `host-event list` | environment | Inspect the built-in UserForm Event catalog from one generated blank workbook. |
 | `build` | document | Build the selected document into bin output. |
 | `test` | document | Run VBA unit tests for the selected document. |
 | `publish` | document | Publish the selected document. |
@@ -85,7 +85,7 @@ Commands:
   common-module  Copy CommonModules entries into the selected document source set.
   completions    Generate shell completion setup.
   reference      Add VBA project references to the selected document manifest.
-  host-class     Inspect intrinsic host classes.
+  host-event     Inspect built-in UserForm Events for the current environment.
   build          Build the selected document into bin output.
   test           Run VBA unit tests for the selected document.
   publish        Publish the selected document.
@@ -256,28 +256,29 @@ Removing an absent reference succeeds and leaves the manifest unchanged.
 
 Add and remove trim and case-insensitively deduplicate names, then apply one rebased crash-atomic manifest mutation. JSON output uses schema version `1.0` and returns one ordered result per normalized request. Add statuses are `added`, `promoted`, and `alreadyPresent`; remove statuses are `removed` and `alreadyAbsent`.
 
-### host-class list
+### host-event list
 
 ```text
-vba-dev host-class list
+vba-dev host-event list
 
-List intrinsic host classes for the selected document.
+List built-in UserForm Events for the current environment.
 
 Usage:
-  vba-dev host-class list [options]
+  vba-dev host-event list [options]
 
 Options:
-  --project <path>               Project root containing vba-project.json.
-  --document <name>, -d <name>   Document name from the project manifest.
-  --format <text|json>, -f <text|json> Host-class projection output format.
+  --format <text|json>, -f <text|json> Host-event output format.
 ```
 
-Text is the default. JSON output uses the closed schema version `1.1` and is
-published only after the dedicated Excel process is proved released. The
-command inspects a read-only private copy with macros and Excel Events disabled;
-it does not generate source or persist projection state. See
-[Host-class list and JSON schema 1.1](docs/host-class-list.md) for the schema,
-exit behavior, partial-result semantics, safety boundary, and consumer
+The command accepts no project or document selector. Its shared exact-process
+launcher may briefly open one generated macro-free `.xlsx` bootstrap, which is
+closed and deleted before catalog discovery. The catalog phase then creates one
+unsaved generated blank workbook and one temporary empty UserForm; it opens and
+imports no user source and closes without saving. Text is the default. JSON
+uses the closed schema version `1.0` and is published only after deterministic
+component, workbook, COM, process, and bootstrap-artifact cleanup. See
+[Host-event list and JSON schema 1.0](docs/host-event-list.md) for the catalog
+shape, failure and cancellation behavior, safety boundary, and consumer
 responsibilities.
 
 ### build

@@ -35,7 +35,7 @@ test('VbaDev background command records output without revealing the channel', a
   let reveals = 0;
   const result = await runVbaDevCommand({
     executablePath: 'vba-dev.exe',
-    args: ['host-class', 'list'],
+    args: ['host-event', 'list'],
     revealOutput: false,
     outputChannel: {
       append: (value) => lines.push(value),
@@ -52,7 +52,7 @@ test('VbaDev background command records output without revealing the channel', a
 
   assert.equal(result.exitCode, 0);
   assert.equal(reveals, 0);
-  assert.match(lines.join(''), /host-class list/);
+  assert.match(lines.join(''), /host-event list/);
   assert.match(lines.join(''), /complete/);
 });
 

@@ -331,7 +331,7 @@ function forceKillDelayForManagedCommand(
 
 function isCallerForceKillExemptCommand(args: readonly string[]): boolean {
   return (args[0] === 'new' && args[1] === 'excel') ||
-    (args[0] === 'host-class' && args[1] === 'list') ||
+    (args[0] === 'host-event' && args[1] === 'list') ||
     (args[0] === 'common-module' && (args[1] === 'add' || args[1] === 'update'));
 }
 
