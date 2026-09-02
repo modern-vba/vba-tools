@@ -22,12 +22,18 @@ internal static class WindowsJobProcessLauncher
         SafeFileHandle jobHandle,
         string applicationPath,
         IReadOnlyList<string> arguments,
-        Action terminateJob)
+        Action terminateJob,
+        string? desktopName = null)
     {
         ArgumentNullException.ThrowIfNull(jobHandle);
         ArgumentException.ThrowIfNullOrWhiteSpace(applicationPath);
         ArgumentNullException.ThrowIfNull(arguments);
         ArgumentNullException.ThrowIfNull(terminateJob);
+        if (desktopName is not null)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(desktopName);
+        }
+
         if (!OperatingSystem.IsWindows())
         {
             throw new PlatformNotSupportedException(
@@ -36,6 +42,7 @@ internal static class WindowsJobProcessLauncher
 
         nint attributeList = nint.Zero;
         nint jobHandleValue = nint.Zero;
+        nint desktopNameValue = nint.Zero;
         var attributeListInitialized = false;
         var jobHandleReferenceAdded = false;
         SafeFileHandle? createdProcessHandle = null;
@@ -51,8 +58,14 @@ internal static class WindowsJobProcessLauncher
             }
 
             jobHandle.DangerousAddRef(ref jobHandleReferenceAdded);
+            if (desktopName is not null)
+            {
+                desktopNameValue = Marshal.StringToHGlobalUni(desktopName);
+            }
+
             var startupInfo = CreateStartupInfo(
                 jobHandle,
+                desktopNameValue,
                 out attributeList,
                 out jobHandleValue,
                 out attributeListInitialized);
@@ -168,6 +181,11 @@ internal static class WindowsJobProcessLauncher
                 Marshal.FreeHGlobal(jobHandleValue);
             }
 
+            if (desktopNameValue != nint.Zero)
+            {
+                Marshal.FreeHGlobal(desktopNameValue);
+            }
+
             if (jobHandleReferenceAdded)
             {
                 jobHandle.DangerousRelease();
@@ -177,6 +195,7 @@ internal static class WindowsJobProcessLauncher
 
     private static StartupInfoEx CreateStartupInfo(
         SafeFileHandle jobHandle,
+        nint desktopName,
         out nint attributeList,
         out nint jobHandleValue,
         out bool attributeListInitialized)
@@ -226,6 +245,7 @@ internal static class WindowsJobProcessLauncher
             StartupInfo = new StartupInfo
             {
                 Size = (uint)Marshal.SizeOf<StartupInfoEx>(),
+                Desktop = desktopName,
                 Flags = StartfUseShowWindow,
                 ShowWindow = ShowWindowHidden
             },

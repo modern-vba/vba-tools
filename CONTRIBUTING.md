@@ -7,6 +7,32 @@ options for its single maintainer.
 The rationale is recorded in
 [ADR 0034](docs/adr/0034-use-github-flow-with-maintainer-authorized-direct-integration.md).
 
+## Private-desktop Excel feasibility proof
+
+Run the isolated Windows/Excel feasibility proof explicitly:
+
+```powershell
+npm run test:private-desktop-excel-feasibility
+```
+
+The supported contract and recorded evidence are documented in
+[Private-desktop Excel feasibility](docs/private-desktop-excel-feasibility.md).
+
+This command opts in only tests in `Category=PrivateDesktopExcelFeasibility`.
+It does not run `test:windows-excel-integration`,
+`InitialWorkbookCreation`, the debug-adapter suite, or the release gate. The
+production baseline intentionally observes the current Excel leak on the
+caller's interactive desktop, so an exactly owned Excel process and Save As
+dialog may be temporarily visible for up to five seconds. Do not interact with
+that dialog:
+the test automatically terminates the owned Job and removes its staging
+artifacts. A separate interactive-control test deliberately keeps a visible,
+foreground Excel fixture while continuously verifying that a private-desktop
+probe does not disturb it. Later private-desktop cases must remain isolated;
+these visible cases are evidence, not an allowed fallback. Job-tree accounting
+and bounded drain verification are proof-only and do not change the existing
+production or debug termination paths.
+
 ## Work branches
 
 - Start each issue from the current `origin/main` and use one short-lived branch

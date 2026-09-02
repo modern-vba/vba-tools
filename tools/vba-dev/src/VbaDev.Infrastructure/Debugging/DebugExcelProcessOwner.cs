@@ -18,6 +18,8 @@ internal interface IDebugExcelProcessApi
 
 internal interface IDebugProcessJob : IDisposable
 {
+    uint ActiveProcessCount { get; }
+
     void Assign(IDebugOwnedProcess process);
 
     void Terminate();
@@ -81,6 +83,7 @@ internal sealed class DebugExcelProcessOwner : IAsyncDisposable
     private readonly SemaphoreSlim terminationLock = new(1, 1);
     private Exception? terminationFailure;
     private int terminationCompleted;
+    private int resourcesDisposed;
     private int disposed;
 
     private DebugExcelProcessOwner(IDebugOwnedProcess process, IDebugProcessJob job)
@@ -99,6 +102,8 @@ internal sealed class DebugExcelProcessOwner : IAsyncDisposable
     internal DateTime ProcessStartTime { get; }
 
     internal bool KillOnCloseJobAssigned => true;
+
+    internal uint ActiveJobProcessCount => job.ActiveProcessCount;
 
     public Task<DebugProcessExit> Completion { get; }
 
@@ -260,6 +265,72 @@ internal sealed class DebugExcelProcessOwner : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Terminates and verifies the complete Job Object process tree for the
+    /// opt-in private-desktop feasibility proof. Production cleanup continues
+    /// to use <see cref="TerminateAsync"/>.
+    /// </summary>
+    internal async ValueTask TerminateProcessTreeForFeasibilityProofAsync(TimeSpan timeout)
+    {
+        if (timeout <= TimeSpan.Zero || timeout == Timeout.InfiniteTimeSpan)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(timeout),
+                timeout,
+                "A finite positive process-tree cleanup timeout is required.");
+        }
+
+        ObjectDisposedException.ThrowIf(
+            Volatile.Read(ref resourcesDisposed) != 0,
+            this);
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        if (!await terminationLock.WaitAsync(timeout).ConfigureAwait(false))
+        {
+            throw new TimeoutException(
+                "Timed out while waiting to serialize feasibility-proof process-tree cleanup.");
+        }
+
+        try
+        {
+            ObjectDisposedException.ThrowIf(
+                Volatile.Read(ref resourcesDisposed) != 0,
+                this);
+            if (!process.HasExited || job.ActiveProcessCount > 0)
+            {
+                try
+                {
+                    job.Terminate();
+                }
+                catch (Exception ex)
+                {
+                    throw new DebugSetupException(
+                        "The feasibility proof could not terminate the owned Excel Job Object.",
+                        ex);
+                }
+            }
+
+            if (!process.HasExited)
+            {
+                await Completion.WaitAsync(RemainingTimeout(timeout, stopwatch))
+                    .ConfigureAwait(false);
+            }
+
+            while (job.ActiveProcessCount > 0)
+            {
+                var remaining = RemainingTimeout(timeout, stopwatch);
+                await Task.Delay(
+                        remaining < TimeSpan.FromMilliseconds(25)
+                            ? remaining
+                            : TimeSpan.FromMilliseconds(25))
+                    .ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            terminationLock.Release();
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref disposed, 1) != 0)
@@ -278,22 +349,32 @@ internal sealed class DebugExcelProcessOwner : IAsyncDisposable
         }
 
         Exception? disposalFailure = null;
+        await terminationLock.WaitAsync().ConfigureAwait(false);
         try
         {
-            process.Dispose();
-        }
-        catch (Exception ex)
-        {
-            disposalFailure = Combine(disposalFailure, ex);
-        }
+            try
+            {
+                process.Dispose();
+            }
+            catch (Exception ex)
+            {
+                disposalFailure = Combine(disposalFailure, ex);
+            }
 
-        try
-        {
-            job.Dispose();
+            try
+            {
+                job.Dispose();
+            }
+            catch (Exception ex)
+            {
+                disposalFailure = Combine(disposalFailure, ex);
+            }
+
+            Volatile.Write(ref resourcesDisposed, 1);
         }
-        catch (Exception ex)
+        finally
         {
-            disposalFailure = Combine(disposalFailure, ex);
+            terminationLock.Release();
         }
 
         if (disposalFailure is not null)
@@ -397,6 +478,20 @@ internal sealed class DebugExcelProcessOwner : IAsyncDisposable
 
     private static Exception Combine(Exception? current, Exception next)
         => current is null ? next : new AggregateException(current, next);
+
+    private static TimeSpan RemainingTimeout(
+        TimeSpan timeout,
+        System.Diagnostics.Stopwatch stopwatch)
+    {
+        var remaining = timeout - stopwatch.Elapsed;
+        if (remaining <= TimeSpan.Zero)
+        {
+            throw new TimeoutException(
+                "Timed out while verifying feasibility-proof cleanup of the owned Excel process tree.");
+        }
+
+        return remaining;
+    }
 
     private static async Task<DebugProcessExit> MonitorExitAsync(IDebugOwnedProcess process)
     {
