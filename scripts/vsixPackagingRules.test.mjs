@@ -1070,6 +1070,79 @@ test('release verification scripts expose every suite and keep Excel integration
   );
 });
 
+test('private-desktop Excel feasibility has an isolated repeatable opt-in command', async () => {
+  const packageJson = JSON.parse(
+    await fs.readFile(new URL('../package.json', import.meta.url), 'utf8')
+  );
+  const script = packageJson.scripts['test:private-desktop-excel-feasibility'];
+
+  assert.equal(typeof script, 'string');
+  assert.match(script, /VbaDev\.Tests\.csproj/);
+  assert.match(script, /--filter Category=PrivateDesktopExcelFeasibility/);
+  assert.match(
+    script,
+    /--environment VBA_TOOLS_RUN_PRIVATE_DESKTOP_EXCEL_FEASIBILITY_TESTS=1/
+  );
+  assert.doesNotMatch(
+    script,
+    /WindowsExcelIntegration|InitialWorkbookCreation|VbaDebugAdapter\.Tests|VbaLanguageServer/
+  );
+  assert.doesNotMatch(packageJson.scripts.test, /private-desktop-excel-feasibility/);
+  assert.doesNotMatch(packageJson.scripts['verify:release'], /private-desktop-excel-feasibility/);
+  assert.doesNotMatch(
+    packageJson.scripts['test:windows-excel-integration'],
+    /PrivateDesktopExcelFeasibility/
+  );
+});
+
+test('private-desktop Excel feasibility tests require their dedicated category and environment gate', async () => {
+  const attributes = await fs.readFile(
+    new URL(
+      '../tools/vba-dev/tests/VbaDev.Tests/WindowsExcelIntegrationAttributes.cs',
+      import.meta.url
+    ),
+    'utf8'
+  );
+
+  assert.match(
+    attributes,
+    /class PrivateDesktopExcelFeasibilityFactAttribute\s*:\s*FactAttribute/
+  );
+  assert.match(
+    attributes,
+    /const string Category\s*=\s*"PrivateDesktopExcelFeasibility"/
+  );
+  assert.match(
+    attributes,
+    /const string OptInEnvironmentVariable\s*=\s*\r?\n?\s*"VBA_TOOLS_RUN_PRIVATE_DESKTOP_EXCEL_FEASIBILITY_TESTS"/
+  );
+  assert.match(
+    attributes,
+    /GetEnvironmentVariable\(OptInEnvironmentVariable\)[\s\S]*?"1"[\s\S]*?Skip\s*=/
+  );
+  assert.match(
+    attributes,
+    /CollectionDefinition\(Name, DisableParallelization = true\)[\s\S]*?class PrivateDesktopExcelFeasibilityCollection/
+  );
+});
+
+test('private-desktop Excel feasibility command documents its intentionally visible baseline', async () => {
+  const contributing = await fs.readFile(
+    new URL('../CONTRIBUTING.md', import.meta.url),
+    'utf8'
+  );
+
+  assert.match(contributing, /npm run test:private-desktop-excel-feasibility/);
+  assert.match(
+    contributing,
+    /baseline[\s\S]*intentionally[\s\S]*interactive desktop[\s\S]*temporarily visible/i
+  );
+  assert.match(
+    contributing,
+    /does not run[\s\S]*test:windows-excel-integration[\s\S]*InitialWorkbookCreation/i
+  );
+});
+
 test('language server test script includes CLI and syntax test projects', async () => {
   const packageJson = JSON.parse(
     await fs.readFile(new URL('../package.json', import.meta.url), 'utf8')

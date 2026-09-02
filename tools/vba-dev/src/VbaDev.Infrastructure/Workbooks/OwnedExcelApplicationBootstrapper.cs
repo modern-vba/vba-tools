@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.IO.Compression;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -457,9 +458,39 @@ internal sealed class WindowsExcelNativeObjectModelBinder : IExcelNativeObjectMo
         new("00020400-0000-0000-C000-000000000046");
 
     public object BindApplication(int processId, Func<bool> hasProcessExited)
+        => BindApplication(
+            processId,
+            hasProcessExited,
+            FindTopLevelWindows);
+
+    internal object BindApplicationOnDesktop(
+        int processId,
+        nint desktopHandle,
+        Func<bool> hasProcessExited)
+    {
+        if (desktopHandle == nint.Zero)
+        {
+            throw new ArgumentException(
+                "An explicit Windows desktop handle is required.",
+                nameof(desktopHandle));
+        }
+
+        return BindApplication(
+            processId,
+            hasProcessExited,
+            candidateProcessId => FindTopLevelWindows(
+                desktopHandle,
+                candidateProcessId));
+    }
+
+    private static object BindApplication(
+        int processId,
+        Func<bool> hasProcessExited,
+        Func<int, IReadOnlyList<nint>> findTopLevelWindows)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(processId);
         ArgumentNullException.ThrowIfNull(hasProcessExited);
+        ArgumentNullException.ThrowIfNull(findTopLevelWindows);
         if (!OperatingSystem.IsWindows())
         {
             throw new InvalidOperationException("Excel native object-model binding requires Windows.");
@@ -467,7 +498,7 @@ internal sealed class WindowsExcelNativeObjectModelBinder : IExcelNativeObjectMo
 
         while (!hasProcessExited())
         {
-            foreach (var topLevelWindow in FindTopLevelWindows(processId))
+            foreach (var topLevelWindow in findTopLevelWindows(processId))
             {
                 var nativeObjectWindow = FindDescendantWindow(topLevelWindow, "EXCEL7");
                 if (nativeObjectWindow == nint.Zero)
@@ -546,6 +577,40 @@ internal sealed class WindowsExcelNativeObjectModelBinder : IExcelNativeObjectMo
         return windows;
     }
 
+    private static IReadOnlyList<nint> FindTopLevelWindows(
+        nint desktopHandle,
+        int processId)
+    {
+        var windows = new List<nint>();
+        Marshal.SetLastPInvokeError(0);
+        if (!EnumDesktopWindows(
+                desktopHandle,
+                (windowHandle, parameter) =>
+                {
+                    _ = GetWindowThreadProcessId(windowHandle, out var windowProcessId);
+                    if (windowProcessId == processId)
+                    {
+                        windows.Add(windowHandle);
+                    }
+
+                    return true;
+                },
+                nint.Zero))
+        {
+            var nativeError = Marshal.GetLastPInvokeError();
+            if (nativeError == 0)
+            {
+                return windows;
+            }
+
+            throw new Win32Exception(
+                nativeError,
+                "The explicit Windows desktop could not be enumerated for Excel native binding.");
+        }
+
+        return windows;
+    }
+
     private static nint FindDescendantWindow(nint parentWindow, string className)
     {
         nint result = nint.Zero;
@@ -579,6 +644,13 @@ internal sealed class WindowsExcelNativeObjectModelBinder : IExcelNativeObjectMo
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool EnumWindows(
+        EnumWindowsCallback callback,
+        nint parameter);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EnumDesktopWindows(
+        nint desktop,
         EnumWindowsCallback callback,
         nint parameter);
 

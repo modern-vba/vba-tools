@@ -71,6 +71,20 @@ current catalog to the language server. Debug start, Restart, break state, and
 adapter Doctor neither trigger nor wait for discovery, while synchronous editor
 requests consume committed catalog state without starting Excel.
 
+Non-debug Excel automation has a stricter visibility boundary. Its
+private-desktop feasibility contract and current evidence are recorded in
+[Private-desktop Excel feasibility](private-desktop-excel-feasibility.md).
+That proof never calls `SwitchDesktop`, never falls back to the caller's
+interactive desktop, and does not change this document's intentionally visible
+`DebugExcelProcess`. Private-desktop adoption belongs only to automation that
+does not require user-visible Excel or VBE interaction. Its proof-only Job
+accounting verifies that the exact process tree drains to zero; desktop release
+means no remaining private-desktop window plus successful closure and
+invalidation of the owned `HDESK`. Windows has no delete-desktop operation, so
+the desktop object's name may remain until all references close or logoff ends
+the window-station session. These proof hooks do not change the existing
+`TerminateAsync`, production automation, or debug paths.
+
 The snapshot directory is authoritative rather than an overlay. It contains the
 complete recursive `.bas`, `.cls`, and `.frm` inventory plus same-directory
 `.frx` sidecars as actual bytes and preserves the original

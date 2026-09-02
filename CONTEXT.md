@@ -125,6 +125,32 @@ remains responsible for every live instance through normal completion,
 cooperative cancellation, and forced cleanup.
 _Avoid_: DebugExcelProcess, active Excel session, shared Excel instance
 
+**AutomationDesktopIsolation**:
+The exact-PID lifecycle invariant for an `AutomationExcelProcess`: no
+user-facing top-level window owned by that process may appear on the caller's
+interactive desktop from before primary-thread resume through confirmed process
+exit. Windows confined to an invocation-scoped private Windows desktop are
+permitted. `Application.Visible = false`, startup show flags, delayed hiding,
+and best-effort flicker suppression do not establish this invariant. The
+private desktop is never displayed or used as a fallback route to the caller's
+desktop.
+_Avoid_: Excel Visible flag, hidden window style, post-launch window move, visual observation
+
+**PrivateDesktopExcelFeasibilityProof**:
+The opt-in Windows/Excel integration evidence that established a reproducible
+supported verdict for `AutomationDesktopIsolation` across native exact-PID
+binding, representative workbook and VBE automation, execution-only macro
+enablement, attempted UI, all terminal paths, a production-leak baseline, a
+separate continuously sampled pre-existing Excel control, and exact cleanup.
+Its release contract requires zero active processes in the owned Job, no window
+on the private desktop, and successful closure and invalidation of its owned
+desktop handle. Windows has no delete-desktop operation, so disappearance of the
+desktop's name is not evidence required by the contract. The Job accounting and
+bounded drain entry point are proof-only; the proof itself changes neither the
+existing production termination path nor the intentionally visible
+`DebugExcelProcess`. Production adoption is a separate work item.
+_Avoid_: production fallback, release test, debug-process isolation
+
 **DebugWorkbook**:
 A session-temporary workbook built from one `DebugSourceSnapshot` and opened by
 a `DebugExcelProcess`. It uses the manifest-defined bin workbook's file name in

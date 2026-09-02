@@ -10,6 +10,7 @@ namespace VbaDev.Infrastructure.Debugging;
 internal sealed class WindowsDebugProcessJob : IDebugProcessJob
 {
     private const uint JobObjectLimitKillOnJobClose = 0x00002000;
+    private const int JobObjectBasicAccountingInformationClass = 1;
     private const int JobObjectExtendedLimitInformationClass = 9;
     private const uint DebugTerminationExitCode = 1;
 
@@ -90,16 +91,37 @@ internal sealed class WindowsDebugProcessJob : IDebugProcessJob
         }
     }
 
+    public uint ActiveProcessCount
+    {
+        get
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
+            if (!QueryInformationJobObject(
+                    handle,
+                    JobObjectBasicAccountingInformationClass,
+                    out var accounting,
+                    (uint)Marshal.SizeOf<JobObjectBasicAccountingInformation>(),
+                    out _))
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+
+            return accounting.ActiveProcesses;
+        }
+    }
+
     internal DebugSuspendedProcessLaunch StartSuspended(
         string applicationPath,
-        IReadOnlyList<string> arguments)
+        IReadOnlyList<string> arguments,
+        string? desktopName = null)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
         return WindowsJobProcessLauncher.StartSuspended(
             handle,
             applicationPath,
             arguments,
-            Terminate);
+            Terminate,
+            desktopName);
     }
 
     public void Dispose()
@@ -136,6 +158,19 @@ internal sealed class WindowsDebugProcessJob : IDebugProcessJob
     }
 
     [StructLayout(LayoutKind.Sequential)]
+    private struct JobObjectBasicAccountingInformation
+    {
+        public long TotalUserTime;
+        public long TotalKernelTime;
+        public long ThisPeriodTotalUserTime;
+        public long ThisPeriodTotalKernelTime;
+        public uint TotalPageFaultCount;
+        public uint TotalProcesses;
+        public uint ActiveProcesses;
+        public uint TotalTerminatedProcesses;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
     private struct JobObjectExtendedLimitInformation
     {
         public JobObjectBasicLimitInformation BasicLimitInformation;
@@ -168,4 +203,13 @@ internal sealed class WindowsDebugProcessJob : IDebugProcessJob
     private static extern bool TerminateJobObject(
         SafeFileHandle job,
         uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool QueryInformationJobObject(
+        SafeFileHandle job,
+        int informationClass,
+        out JobObjectBasicAccountingInformation information,
+        uint informationLength,
+        out uint returnLength);
 }

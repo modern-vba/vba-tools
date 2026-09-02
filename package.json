@@ -307,6 +307,7 @@
     "test:language-server": "dotnet test tools/vba-language-server/VbaLanguageServer.slnx -m:1 -p:UseSharedCompilation=false",
     "test:syntax-core": "dotnet test tools/vba-language-server/tests/VbaLanguageServer.Syntax.Tests/VbaLanguageServer.Syntax.Tests.csproj -m:1 -p:UseSharedCompilation=false",
     "test:windows-excel-integration": "dotnet build tools/vba-language-server/src/VbaLanguageServer.Cli/VbaLanguageServer.Cli.csproj -m:1 -p:UseSharedCompilation=false && dotnet test tools/vba-dev/tests/VbaDev.Tests/VbaDev.Tests.csproj --filter Category=WindowsExcelIntegration --environment VBA_TOOLS_RUN_EXCEL_INTEGRATION_TESTS=1 -m:1 -p:UseSharedCompilation=false && dotnet test tools/vba-debug-adapter/tests/VbaDebugAdapter.Tests/VbaDebugAdapter.Tests.csproj --filter Category=WindowsExcelIntegration --environment VBA_TOOLS_RUN_EXCEL_INTEGRATION_TESTS=1 -m:1 -p:UseSharedCompilation=false",
+    "test:private-desktop-excel-feasibility": "dotnet test tools/vba-dev/tests/VbaDev.Tests/VbaDev.Tests.csproj --filter Category=PrivateDesktopExcelFeasibility --environment VBA_TOOLS_RUN_PRIVATE_DESKTOP_EXCEL_FEASIBILITY_TESTS=1 -m:1 -p:UseSharedCompilation=false",
     "test:packaging": "node --test --test-isolation=none scripts/*.test.mjs",
     "build:devtool": "dotnet build tools/vba-dev/src/VbaDev.Cli/VbaDev.Cli.csproj -m:1 -p:UseSharedCompilation=false",
     "build:debug-adapter": "dotnet build tools/vba-debug-adapter/src/VbaDebugAdapter.Cli/VbaDebugAdapter.Cli.csproj -m:1 -p:UseSharedCompilation=false",

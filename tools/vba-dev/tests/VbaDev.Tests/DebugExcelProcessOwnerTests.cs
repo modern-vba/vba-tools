@@ -38,11 +38,47 @@ public sealed class DebugExcelProcessOwnerTests
 
             await Task.Delay(TimeSpan.FromMilliseconds(50));
             Assert.False(launch.Process.HasExited);
+            Assert.Equal(1u, job.ActiveProcessCount);
 
             launch.PrimaryThread.ResumeExactlyOnce();
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await launch.Process.WaitForExitAsync(timeout.Token);
             Assert.True(launch.Process.HasExited);
+            Assert.Equal(0u, job.ActiveProcessCount);
+        }
+        finally
+        {
+            launch?.PrimaryThread.Dispose();
+            job.Dispose();
+            launch?.Process.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task AtomicJobCountsAndDrainsTheEntireDescendantProcessTree()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var job = WindowsDebugProcessJob.Create();
+        DebugSuspendedProcessLaunch? launch = null;
+        try
+        {
+            launch = job.StartSuspended(
+                Path.Combine(Environment.SystemDirectory, "cmd.exe"),
+                ["/d", "/c", "ping -n 30 127.0.0.1 > nul"]);
+            launch.PrimaryThread.ResumeExactlyOnce();
+
+            await WaitForJobProcessCountAsync(job, minimum: 2, TimeSpan.FromSeconds(5));
+            Assert.True(job.ActiveProcessCount >= 2);
+
+            job.Terminate();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await launch.Process.WaitForExitAsync(timeout.Token);
+            await WaitForJobProcessCountAsync(job, minimum: 0, TimeSpan.FromSeconds(5));
+            Assert.Equal(0u, job.ActiveProcessCount);
         }
         finally
         {
@@ -292,6 +328,130 @@ public sealed class DebugExcelProcessOwnerTests
 
         Assert.Equal(1, process.KillCalls);
     }
+
+    [Fact]
+    public async Task TerminateAfterRootProcessLossPreservesTheExistingNoOpBehavior()
+    {
+        var process = new FakeDebugOwnedProcess(
+            253,
+            new DateTime(2026, 9, 3, 6, 45, 0, DateTimeKind.Local));
+        var job = new FakeDebugProcessJob(process, activeProcessCount: 2);
+        var owner = DebugExcelProcessOwner.Capture(
+            (nint)3457,
+            new Dictionary<int, DateTime>(),
+            new FakeDebugExcelProcessApi(process.Id, process, job));
+        process.Exit(9);
+        _ = await owner.Completion;
+
+        await owner.TerminateAsync();
+
+        Assert.Equal(0, job.TerminateCalls);
+        Assert.Equal(2u, job.ActiveProcessCount);
+        await owner.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task FeasibilityProofCleanupTerminatesRemainingJobMembersAfterRootProcessLoss()
+    {
+        var process = new FakeDebugOwnedProcess(
+            254,
+            new DateTime(2026, 9, 3, 6, 50, 0, DateTimeKind.Local));
+        var job = new FakeDebugProcessJob(process, activeProcessCount: 2);
+        var owner = DebugExcelProcessOwner.Capture(
+            (nint)3458,
+            new Dictionary<int, DateTime>(),
+            new FakeDebugExcelProcessApi(process.Id, process, job));
+        process.Exit(9);
+        _ = await owner.Completion;
+
+        await owner.TerminateProcessTreeForFeasibilityProofAsync(TimeSpan.FromSeconds(1));
+
+        Assert.Equal(1, job.TerminateCalls);
+        Assert.Equal(0u, job.ActiveProcessCount);
+        await owner.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task FeasibilityProofCleanupFailsWhenJobMembersDoNotDrainBeforeTheDeadline()
+    {
+        var process = new FakeDebugOwnedProcess(
+            255,
+            new DateTime(2026, 9, 3, 6, 55, 0, DateTimeKind.Local));
+        var job = new FakeDebugProcessJob(
+            process,
+            activeProcessCount: 2,
+            clearActiveProcessCountOnTerminate: false);
+        var owner = DebugExcelProcessOwner.Capture(
+            (nint)3459,
+            new Dictionary<int, DateTime>(),
+            new FakeDebugExcelProcessApi(process.Id, process, job));
+        process.Exit(9);
+        _ = await owner.Completion;
+
+        var error = await Assert.ThrowsAsync<TimeoutException>(() =>
+            owner.TerminateProcessTreeForFeasibilityProofAsync(
+                    TimeSpan.FromMilliseconds(50))
+                .AsTask());
+
+        Assert.Contains("process tree", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, job.TerminateCalls);
+        Assert.Equal(2u, job.ActiveProcessCount);
+        await owner.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task FeasibilityProofCleanupSerializesConcurrentDrainsAndDisposal()
+    {
+        var process = new FakeDebugOwnedProcess(
+            256,
+            new DateTime(2026, 9, 3, 7, 0, 0, DateTimeKind.Local));
+        using var releaseTermination = new ManualResetEventSlim(false);
+        var terminationEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var job = new FakeDebugProcessJob(
+            process,
+            activeProcessCount: 2,
+            terminateGate: releaseTermination,
+            terminateStarted: () => terminationEntered.TrySetResult());
+        var owner = DebugExcelProcessOwner.Capture(
+            (nint)3460,
+            new Dictionary<int, DateTime>(),
+            new FakeDebugExcelProcessApi(process.Id, process, job));
+
+        var firstDrain = Task.Run(() =>
+            owner.TerminateProcessTreeForFeasibilityProofAsync(TimeSpan.FromSeconds(2)).AsTask());
+        await terminationEntered.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        var secondDrain = owner
+            .TerminateProcessTreeForFeasibilityProofAsync(TimeSpan.FromSeconds(2))
+            .AsTask();
+        var disposal = owner.DisposeAsync().AsTask();
+        await Task.Delay(TimeSpan.FromMilliseconds(50));
+
+        releaseTermination.Set();
+        await Task.WhenAll(firstDrain, secondDrain, disposal).WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal(1, job.TerminateCalls);
+        Assert.Equal(1, job.MaximumConcurrentOperations);
+        Assert.Equal(0, job.AccessAfterDisposeCalls);
+    }
+
+    private static async Task WaitForJobProcessCountAsync(
+        WindowsDebugProcessJob job,
+        uint minimum,
+        TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            var count = job.ActiveProcessCount;
+            if ((minimum == 0 && count == 0) || (minimum > 0 && count >= minimum))
+            {
+                return;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(25));
+        }
+    }
 }
 
 internal sealed class FakeDebugExcelProcessApi : IDebugExcelProcessApi
@@ -343,19 +503,33 @@ internal sealed class FakeDebugProcessJob : IDebugProcessJob
     private readonly Exception? assignmentError;
     private readonly Exception? terminateError;
     private readonly Action? disposeAction;
+    private readonly ManualResetEventSlim? terminateGate;
+    private readonly Action? terminateStarted;
+    private uint? activeProcessCount;
+    private int activeOperations;
+    private int maximumConcurrentOperations;
+    private int accessAfterDisposeCalls;
 
     public FakeDebugProcessJob(
         IDebugOwnedProcess process,
         List<string>? events = null,
         Exception? assignmentError = null,
         Exception? terminateError = null,
-        Action? disposeAction = null)
+        Action? disposeAction = null,
+        uint? activeProcessCount = null,
+        bool clearActiveProcessCountOnTerminate = true,
+        ManualResetEventSlim? terminateGate = null,
+        Action? terminateStarted = null)
     {
         this.process = process;
         this.events = events;
         this.assignmentError = assignmentError;
         this.terminateError = terminateError;
         this.disposeAction = disposeAction;
+        this.activeProcessCount = activeProcessCount;
+        this.terminateGate = terminateGate;
+        this.terminateStarted = terminateStarted;
+        ClearActiveProcessCountOnTerminate = clearActiveProcessCountOnTerminate;
     }
 
     public IDebugOwnedProcess? AssignedProcess { get; private set; }
@@ -363,6 +537,28 @@ internal sealed class FakeDebugProcessJob : IDebugProcessJob
     public int TerminateCalls { get; private set; }
 
     public bool Disposed { get; private set; }
+
+    public uint ActiveProcessCount
+    {
+        get
+        {
+            EnterOperation();
+            try
+            {
+                return activeProcessCount ?? (process.HasExited ? 0u : 1u);
+            }
+            finally
+            {
+                ExitOperation();
+            }
+        }
+    }
+
+    public int MaximumConcurrentOperations => Volatile.Read(ref maximumConcurrentOperations);
+
+    public int AccessAfterDisposeCalls => Volatile.Read(ref accessAfterDisposeCalls);
+
+    private bool ClearActiveProcessCountOnTerminate { get; }
 
     public void Assign(IDebugOwnedProcess ownedProcess)
     {
@@ -378,14 +574,29 @@ internal sealed class FakeDebugProcessJob : IDebugProcessJob
 
     public void Terminate()
     {
-        events?.Add("job-terminate");
-        TerminateCalls++;
-        if (terminateError is not null)
+        EnterOperation();
+        try
         {
-            throw terminateError;
-        }
+            events?.Add("job-terminate");
+            TerminateCalls++;
+            terminateStarted?.Invoke();
+            terminateGate?.Wait();
+            if (terminateError is not null)
+            {
+                throw terminateError;
+            }
 
-        process.Kill();
+            if (ClearActiveProcessCountOnTerminate)
+            {
+                activeProcessCount = 0;
+            }
+
+            process.Kill();
+        }
+        finally
+        {
+            ExitOperation();
+        }
     }
 
     public void Dispose()
@@ -394,6 +605,31 @@ internal sealed class FakeDebugProcessJob : IDebugProcessJob
         Disposed = true;
         disposeAction?.Invoke();
     }
+
+    private void EnterOperation()
+    {
+        if (Disposed)
+        {
+            Interlocked.Increment(ref accessAfterDisposeCalls);
+        }
+
+        var concurrent = Interlocked.Increment(ref activeOperations);
+        int observed;
+        do
+        {
+            observed = Volatile.Read(ref maximumConcurrentOperations);
+            if (concurrent <= observed)
+            {
+                break;
+            }
+        }
+        while (Interlocked.CompareExchange(
+            ref maximumConcurrentOperations,
+            concurrent,
+            observed) != observed);
+    }
+
+    private void ExitOperation() => Interlocked.Decrement(ref activeOperations);
 }
 
 internal sealed class FakeDebugOwnedProcess(
