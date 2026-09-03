@@ -829,7 +829,10 @@ internal sealed class InitialWorkbookArtifactGuard : IInitialWorkbookArtifactGua
                 out _,
                 IntPtr.Zero,
                 FileAttributeNormal,
-                FileShareRead,
+                // Excel SaveAs writes a temporary child before renaming it to
+                // the requested workbook path. Keep delete sharing withheld
+                // to pin this directory, but allow that child write sequence.
+                FileShareRead | FileShareWrite,
                 NtFileCreate,
                 NtFileDirectoryFile |
                 NtFileSynchronousIoNonAlert |

@@ -38,8 +38,6 @@ internal sealed class VbaProjectReferenceCandidateRejectedException(
 public sealed class ExcelComVbaProjectReferenceProbeAutomation
     : IVbaProjectReferenceProbeAutomation
 {
-    private static readonly TimeSpan ForcedTerminationObservationAllowance =
-        TimeSpan.FromSeconds(1);
     private static readonly TimeSpan DispatcherAbandonmentObservation =
         TimeSpan.FromMilliseconds(100);
     private readonly IStaComDispatcherFactory dispatcherFactory;
@@ -115,7 +113,9 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
             () => terminationController.HasAttachedProcessExited,
             terminationController.RequestForcedTermination,
             getOwnedProcessCompletion: () =>
-                terminationController.AttachedProcessCompletion);
+                terminationController.AttachedProcessCompletion,
+            captureAutomationStage: terminationController.CaptureAutomationStage,
+            describeIsolationEvidence: terminationController.DescribeIsolationEvidence);
         object? host = null;
         TResult? result = default;
         Exception? operationError = null;
@@ -155,7 +155,8 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
             terminationController,
             host,
             timeouts.ProcessCleanup,
-            stageExecutor).ConfigureAwait(false);
+            stageExecutor,
+            operationError).ConfigureAwait(false);
         var dispatcherError = await DisposeDispatcherAsync(
             dispatcher,
             stageExecutor.HasAbandonedOperation).ConfigureAwait(false);
@@ -163,9 +164,14 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
         {
             cleanupError = cleanupError is null
                 ? dispatcherError
-                : new WorkbookAutomationCleanupException(
-                    "Reference-probe cleanup and STA dispatcher disposal both failed.",
-                    new AggregateException(cleanupError, dispatcherError));
+                : WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(
+                    cleanupError)
+                    ? new WorkbookAutomationCleanupException(
+                        "Reference-probe cleanup and STA dispatcher disposal both failed, and exact owned-process release could not be proved.",
+                        new AggregateException(cleanupError, dispatcherError))
+                    : new WorkbookAutomationReleasedProcessCleanupException(
+                        "The reference-probe process was released, but cleanup and STA dispatcher disposal both failed.",
+                        new AggregateException(cleanupError, dispatcherError));
         }
 
         try
@@ -174,14 +180,30 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
         }
         catch (Exception exception)
         {
-            cleanupError ??= exception;
+            var combinedCleanupError = cleanupError is null
+                ? exception
+                : new AggregateException(cleanupError, exception);
+            cleanupError = cleanupError is not null &&
+                WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(
+                    cleanupError)
+                    ? new WorkbookAutomationCleanupException(
+                        "The reference probe could not verify exact owned-process release, and its workspace cleanup also failed.",
+                        combinedCleanupError)
+                    : new WorkbookAutomationReleasedProcessCleanupException(
+                        "The reference-probe Excel process was released, but its workspace cleanup failed.",
+                        combinedCleanupError);
         }
 
         if (cleanupError is not null)
         {
+            var releaseVerified =
+                !WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(
+                    cleanupError);
             throw new VbaProjectReferenceProbeAttemptException(
                 "cleanupFailure",
-                "The reference probe could not prove cleanup of its workbook copies and owned Excel process.",
+                releaseVerified
+                    ? "The reference-probe Excel process was released, but cooperative cleanup or automation isolation failed."
+                    : "The reference probe could not prove cleanup of its workbook copies and owned Excel process.",
                 processTrusted: false,
                 operationError is null
                     ? cleanupError
@@ -202,8 +224,12 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
         OwnedExcelTerminationController terminationController,
         object? host,
         TimeSpan cleanupGrace,
-        WorkbookAutomationStageExecutor stageExecutor)
+        WorkbookAutomationStageExecutor stageExecutor,
+        Exception? operationError)
     {
+        var cleanupStage = new WorkbookAutomationStage(
+            WorkbookAutomationStageKind.ProcessCleanup);
+        terminationController.CaptureAutomationStage(cleanupStage);
         if (stageExecutor.HasAbandonedOperation ||
             terminationController.HasAttachedProcessExited ||
             host is null)
@@ -226,16 +252,19 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
                 CancellationToken.None);
             var completed = await Task.WhenAny(
                 cleanupTask,
-                Task.Delay(cleanupGrace + ForcedTerminationObservationAllowance))
+                Task.Delay(
+                    cleanupGrace +
+                    PrivateDesktopOwnedExcelProcessControl.ForcedCleanupObservationAllowance))
                 .ConfigureAwait(false);
             if (completed != cleanupTask)
             {
                 stageExecutor.MarkOperationAbandoned();
                 WorkbookAutomationStageExecutor.ObserveFault(cleanupTask);
                 cleanupError = new WorkbookAutomationTimeoutException(
-                    new WorkbookAutomationStage(
-                        WorkbookAutomationStageKind.ProcessCleanup),
-                    cleanupGrace);
+                    cleanupStage,
+                    cleanupGrace,
+                    isolationDiagnostics:
+                        terminationController.DescribeIsolationEvidence());
             }
             else
             {
@@ -255,11 +284,24 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
             return ownershipError;
         }
 
+        if (ownershipError is null &&
+            ReleasedAutomationCleanupPolicy.CanPreservePrimaryFailure(
+                operationError,
+                cleanupError))
+        {
+            return null;
+        }
+
         return ownershipError is null
             ? cleanupError
-            : new WorkbookAutomationCleanupException(
-                "Cooperative reference-probe cleanup and exact owned-process cleanup both failed.",
-                new AggregateException(cleanupError, ownershipError));
+            : WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(
+                ownershipError)
+                ? new WorkbookAutomationCleanupException(
+                    "Cooperative reference-probe cleanup and exact owned-process cleanup both failed.",
+                    new AggregateException(cleanupError, ownershipError))
+                : new WorkbookAutomationReleasedProcessCleanupException(
+                    "Cooperative reference-probe cleanup and exact owned-process cleanup both failed after exact owned-process release was verified.",
+                    new AggregateException(cleanupError, ownershipError));
     }
 
     private static async Task<Exception?> CleanupOwnedProcessOnlyAsync(
@@ -270,12 +312,19 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
         {
             terminationController.RequestForcedTermination(cleanupGrace);
             await terminationController.ObserveCleanupWithinAsync(
-                ForcedTerminationObservationAllowance).ConfigureAwait(false);
+                PrivateDesktopOwnedExcelProcessControl.ForcedCleanupObservationAllowance)
+                .ConfigureAwait(false);
             return null;
+        }
+        catch (WorkbookAutomationReleasedProcessCleanupException exception)
+        {
+            return exception;
         }
         catch (Exception exception)
         {
-            return exception;
+            return new WorkbookAutomationCleanupException(
+                "The reference probe could not verify exact owned-process release.",
+                exception);
         }
     }
 
@@ -308,8 +357,8 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
         }
         catch (Exception exception)
         {
-            return new WorkbookAutomationCleanupException(
-                "The reference-probe STA dispatcher could not be disposed cleanly.",
+            return new WorkbookAutomationReleasedProcessCleanupException(
+                "The reference-probe process was released, but its STA dispatcher could not be disposed cleanly.",
                 exception);
         }
     }
@@ -333,7 +382,8 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
                     exception.Message,
                     processTrusted: false,
                     exception),
-            WorkbookAutomationCleanupException =>
+            WorkbookAutomationCleanupException or
+            WorkbookAutomationReleasedProcessCleanupException =>
                 new VbaProjectReferenceProbeAttemptException(
                     "cleanupFailure",
                     exception.Message,
@@ -358,6 +408,7 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
             WorkbookAutomationTimeoutException or
             WorkbookAutomationProcessLostException or
             WorkbookAutomationCleanupException or
+            WorkbookAutomationReleasedProcessCleanupException or
             OperationCanceledException => NormalizeError(exception, cancellationToken),
             _ => new VbaProjectReferenceProbeAttemptException(
                 "identityReadFailure",
@@ -377,6 +428,7 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
             WorkbookAutomationTimeoutException or
             WorkbookAutomationProcessLostException or
             WorkbookAutomationCleanupException or
+            WorkbookAutomationReleasedProcessCleanupException or
             OperationCanceledException => NormalizeError(exception, cancellationToken),
             _ => new VbaProjectReferenceProbeBaselineException(
                 baselineKind == VbaProjectReferenceProbeBaselineKind.BlankWorkbook

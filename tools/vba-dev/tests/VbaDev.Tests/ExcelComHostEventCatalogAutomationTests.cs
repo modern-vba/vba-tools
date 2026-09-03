@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using VbaDev.App.HostEvents;
 using VbaDev.App.Workbooks;
 using VbaDev.Infrastructure.Debugging;
@@ -62,6 +63,93 @@ public sealed class ExcelComHostEventCatalogAutomationTests
         Assert.Contains("quit", events);
         Assert.Contains("process-exit-proved", events);
         Assert.Contains("dispatcher-dispose", events);
+    }
+
+    [Fact]
+    public async Task ProcessLossWithComOnlyPostReleaseCleanupPreservesTheProcessLoss()
+    {
+        var events = new List<string>();
+        var processLoss = new WorkbookAutomationProcessLostException(
+            new WorkbookAutomationStage(WorkbookAutomationStageKind.HostEventInspection));
+        var lifecycle = new RecordingHostEventLifecycle(
+            events,
+            eventInspectionError: processLoss,
+            disposeHostError: new COMException(
+                "The released Excel server rejected Quit."));
+        var automation = new ExcelComHostEventCatalogAutomation(
+            new RecordingDispatcherFactory(events),
+            lifecycle,
+            CreateTimeouts());
+
+        var error = await Assert.ThrowsAsync<WorkbookAutomationProcessLostException>(
+            () => automation.ReadAsync(CancellationToken.None));
+
+        Assert.Same(processLoss, error);
+        Assert.Contains("quit", events);
+        Assert.Contains("process-exit-proved", events);
+        Assert.Contains("dispatcher-dispose", events);
+    }
+
+    [Fact]
+    public async Task ProcessLossWithMixedPostReleaseCleanupSurfacesTheCleanupFailure()
+    {
+        var events = new List<string>();
+        var processLoss = new WorkbookAutomationProcessLostException(
+            new WorkbookAutomationStage(WorkbookAutomationStageKind.HostEventInspection));
+        var lifecycle = new RecordingHostEventLifecycle(
+            events,
+            eventInspectionError: processLoss,
+            disposeHostError: new AggregateException(
+                new COMException("The released Excel server rejected Quit."),
+                new InvalidOperationException("Unexpected cleanup defect.")));
+        var automation = new ExcelComHostEventCatalogAutomation(
+            new RecordingDispatcherFactory(events),
+            lifecycle,
+            CreateTimeouts());
+
+        var error = await Assert.ThrowsAsync<WorkbookAutomationReleasedProcessCleanupException>(
+            () => automation.ReadAsync(CancellationToken.None));
+
+        var failures = Assert.IsType<AggregateException>(error.InnerException)
+            .Flatten()
+            .InnerExceptions;
+        Assert.Contains(failures, failure => failure is WorkbookAutomationProcessLostException);
+        Assert.Contains(failures, failure => failure is COMException);
+        Assert.Contains(failures, failure => failure is InvalidOperationException);
+        Assert.Contains("quit", events);
+        Assert.Contains("process-exit-proved", events);
+        Assert.Contains("dispatcher-dispose", events);
+    }
+
+    [Fact]
+    public async Task ProofFailurePreservesCooperativeAndDispatcherCleanupFailures()
+    {
+        var events = new List<string>();
+        var cooperativeError = new InvalidOperationException(
+            "Cooperative Host Event cleanup failed.");
+        var proofError = new WorkbookAutomationCleanupException(
+            "Exact owned-process release could not be proved.");
+        var dispatcherError = new InvalidOperationException(
+            "The Host Event dispatcher could not be disposed.");
+        var lifecycle = new RecordingHostEventLifecycle(
+            events,
+            disposeHostError: cooperativeError,
+            ownerDisposeError: proofError);
+        var automation = new ExcelComHostEventCatalogAutomation(
+            new RecordingDispatcherFactory(events, dispatcherError),
+            lifecycle,
+            CreateTimeouts());
+
+        var error = await Assert.ThrowsAsync<WorkbookAutomationCleanupException>(
+            () => automation.ReadAsync(CancellationToken.None));
+
+        Assert.True(WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error));
+        var failures = Assert.IsType<AggregateException>(error.InnerException)
+            .Flatten()
+            .InnerExceptions;
+        Assert.Contains(failures, failure => ReferenceEquals(failure, cooperativeError));
+        Assert.Contains(failures, failure => ReferenceEquals(failure, proofError));
+        Assert.Contains(failures, failure => ReferenceEquals(failure, dispatcherError));
     }
 
     [Fact]
@@ -206,13 +294,18 @@ public sealed class ExcelComHostEventCatalogAutomationTests
             EventInspection: TimeSpan.FromSeconds(60),
             CooperativeCleanup: TimeSpan.FromSeconds(5));
 
-    private sealed class RecordingDispatcherFactory(List<string> events)
+    private sealed class RecordingDispatcherFactory(
+        List<string> events,
+        Exception? disposeError = null)
         : IStaComDispatcherFactory
     {
-        public IStaComDispatcher Create() => new RecordingDispatcher(events);
+        public IStaComDispatcher Create()
+            => new RecordingDispatcher(events, disposeError);
     }
 
-    private sealed class RecordingDispatcher(List<string> events) : IStaComDispatcher
+    private sealed class RecordingDispatcher(
+        List<string> events,
+        Exception? disposeError) : IStaComDispatcher
     {
         public Task<T> InvokeAsync<T>(Func<T> operation, CancellationToken cancellationToken)
         {
@@ -223,16 +316,21 @@ public sealed class ExcelComHostEventCatalogAutomationTests
         public ValueTask DisposeAsync()
         {
             events.Add("dispatcher-dispose");
-            return ValueTask.CompletedTask;
+            return disposeError is null
+                ? ValueTask.CompletedTask
+                : ValueTask.FromException(disposeError);
         }
     }
 
     private sealed class RecordingHostEventLifecycle(
         List<string> events,
-        FailurePoint failAt = FailurePoint.None)
+        FailurePoint failAt = FailurePoint.None,
+        Exception? eventInspectionError = null,
+        Exception? disposeHostError = null,
+        Exception? ownerDisposeError = null)
         : IExcelComHostEventCatalogLifecycle
     {
-        private readonly RecordingOwnedProcess owner = new(events);
+        private readonly RecordingOwnedProcess owner = new(events, ownerDisposeError);
 
         public HostEventCatalogLifecycleCounters Counters { get; } = new();
 
@@ -277,6 +375,11 @@ public sealed class ExcelComHostEventCatalogAutomationTests
             object userForm)
         {
             events.Add("inspect-empty-userform");
+            if (eventInspectionError is not null)
+            {
+                throw eventInspectionError;
+            }
+
             ThrowIf(FailurePoint.EventInspection);
             return new IntrinsicHostEventCatalog(
                 "UserForm",
@@ -307,6 +410,11 @@ public sealed class ExcelComHostEventCatalogAutomationTests
         {
             events.Add("quit");
             owner.Complete();
+            if (disposeHostError is not null)
+            {
+                throw disposeHostError;
+            }
+
             ThrowIf(FailurePoint.HostDispose);
         }
 
@@ -319,7 +427,9 @@ public sealed class ExcelComHostEventCatalogAutomationTests
         }
     }
 
-    private sealed class RecordingOwnedProcess(List<string> events)
+    private sealed class RecordingOwnedProcess(
+        List<string> events,
+        Exception? disposeError)
         : IOwnedExcelProcessControl
     {
         private readonly TaskCompletionSource completion =
@@ -335,7 +445,10 @@ public sealed class ExcelComHostEventCatalogAutomationTests
             return Task.CompletedTask;
         }
 
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public ValueTask DisposeAsync()
+            => disposeError is null
+                ? ValueTask.CompletedTask
+                : ValueTask.FromException(disposeError);
 
         public void Complete()
         {

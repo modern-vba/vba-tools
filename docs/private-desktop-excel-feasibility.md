@@ -2,17 +2,17 @@
 
 ## Status
 
-This document records the bounded feasibility proof in Issue #329. The proof is
-test-only: it does not yet change the production launch path for
-`AutomationExcelProcess`, and it does not change the visible
-`DebugExcelProcess` used by the debug adapter.
+This document records the bounded feasibility proof in Issue #329 and its
+production adoption in Issue #330. Every non-debug `AutomationExcelProcess`
+now uses the proven private-desktop lifecycle. The intentionally visible
+`DebugExcelProcess` used by the debug adapter remains separate.
 
 The overall verdict is **supported** on the recorded Windows and Excel
 environment. The proof passed native object-model binding, representative
 workbook and VBE automation, execution-only macro enablement, attempted UI,
 pre-existing Excel preservation, and every required terminal path without
-caller-desktop exposure. Issue #330 may adopt the lifecycle contract below.
-This verdict does not itself change the current production launch path.
+caller-desktop exposure. Issue #330 adopted the lifecycle contract below
+centrally, with no command option, best-effort mode, or caller-desktop fallback.
 
 ## Hidden invariant
 
@@ -29,9 +29,10 @@ and records HWND, desktop, window class, title, visibility, lifecycle phase,
 and observation cause. It observes caller-desktop window events and enumerates
 both the caller and private desktops at lifecycle boundaries.
 
-## Supported lifecycle contract
+## Adopted lifecycle contract
 
-A production implementation may adopt this proven contract:
+Production applies this proven contract to every non-debug Excel automation
+process:
 
 1. Capture the caller's interactive desktop and the pre-existing Excel state.
 2. Create a uniquely named, invocation-scoped desktop in the current window
@@ -62,10 +63,11 @@ A production implementation may adopt this proven contract:
 9. Verify that every pre-existing Excel process and its window, focus, workbook,
    and lifetime state are unchanged.
 
-An interactive prompt on the private desktop must become bounded, actionable
-failure evidence; it must not cause an indefinite wait or justify revealing the
-desktop. Failure to satisfy any stage in a production adoption must fail the
-command. It does not permit best-effort flicker suppression.
+An interactive prompt on the private desktop becomes bounded, actionable
+failure evidence; it does not cause an indefinite wait or justify revealing the
+desktop. Failure to satisfy any stage fails the command. The failure records
+the exact PID plus available HWND, desktop, class, title, and lifecycle phase
+evidence. Best-effort flicker suppression is not an alternative contract.
 
 Windows provides `CloseDesktop`, but no operation that deletes a desktop object
 by name. Closing the proof's owned `HDESK` releases that handle; the named
@@ -76,10 +78,10 @@ active processes, explicit enumeration reports no remaining window on the
 private desktop, and `CloseDesktop` succeeds and invalidates the proof's owned
 handle. Failure of a later `OpenDesktop` call is not part of the contract.
 
-Job active-process accounting and the bounded process-tree drain entry point are
-internal, proof-only instrumentation. They do not replace or change the existing
-`DebugExcelProcessOwner.TerminateAsync` behavior, production automation path, or
-debug path.
+Issue #329 introduced Job active-process accounting and the bounded process-tree
+drain as proof instrumentation. Issue #330 generalized that drain for production
+private-desktop cleanup, including root-process loss. The debug adapter retains
+its separate visible-process lifecycle and does not acquire a private desktop.
 
 ## Recorded environment and result
 
@@ -143,16 +145,17 @@ the exact Job process tree to zero, left no private-desktop windows, closed and
 invalidated the owned desktop handle, stopped the observer, and removed the
 bootstrap and temporary proof artifacts without caller-desktop exposure.
 
-The explicit baseline test reproduced both the bootstrap and target-workbook
-leaks for exact PID `25268` on the caller's interactive desktop. Both exact-PID
-observations referred to HWND `0x7A0934`. The target observation was accepted
-only after the visible `XLMAIN` title contained the run-unique
-`vba-dev initial target <GUID>` identity and while the target `SaveAs` task was
-still incomplete (`targetSaveWasBlocked=True`). A completed or faulted save and
-an already-visible bootstrap window cannot satisfy that condition. The proof
-then automatically terminated the owned Job. The baseline retained 187
-observations and cleaned its staging directory and artifacts. This is
-production-leak evidence, not the pre-existing Excel control test.
+The explicit unisolated control baseline reproduced both the bootstrap and
+target-workbook leaks for exact PID `25268` on the caller's interactive
+desktop. Both exact-PID observations referred to HWND `0x7A0934`. The target
+observation was accepted only after the visible `XLMAIN` title contained the
+run-unique `vba-dev initial target <GUID>` identity and while the target
+`SaveAs` task was still incomplete (`targetSaveWasBlocked=True`). A completed
+or faulted save and an already-visible bootstrap window cannot satisfy that
+condition. The proof then automatically terminated the owned Job. The baseline
+retained 187 observations and cleaned its staging directory and artifacts. This
+is deliberately unisolated control evidence, not a statement about the adopted
+production path and not the pre-existing Excel control test.
 
 The separate interactive-control test deliberately made its caller-desktop
 fixture visible only after hidden setup. Exact PID `25372` remained foreground
@@ -169,7 +172,7 @@ fail the proof. The control and all artifacts were then cleaned.
 | Required evidence | Status | Recorded proof |
 | --- | --- | --- |
 | Exact-PID private-desktop launch, atomic Job assignment, pre-resume observer, and native object-model binding | Supported | Representative success test; PID `27652` and application HWND agreed, with 218 observations and no caller exposure |
-| Current interactive-desktop bootstrap and target-workbook leak | Supported | Production baseline PID `25268` reproduced both leaks on HWND `0x7A0934`; the exact-PID target title carried a run-unique identity while `SaveAs` was contemporaneously blocked, then exact cleanup completed automatically |
+| Unisolated interactive-desktop bootstrap and target-workbook control | Supported | Control-baseline PID `25268` reproduced both leaks on HWND `0x7A0934`; the exact-PID target title carried a run-unique identity while `SaveAs` was contemporaneously blocked, then exact cleanup completed automatically |
 | Workbook create/open, `VBProject` access, project mutation, save, reopen, close, and release | Supported | A standard module added to the disposable `.xlsm` persisted after save and reopen |
 | Execution-only macro enablement and `UnitTestMain` through `Application.Run` | Supported | Security transitioned exactly `3 -> 1 -> 3`: lower immediately before execution-workbook open, run the macro, then restore before evidence read and close; the macro wrote `private-desktop-executed` |
 | VBE-dependent UserForm Host Event catalog and reference probes, including required native code-pane or project-window interaction | Supported | 22 UserForm events exercised native code-pane automation; the Scripting reference GUID was observed and the current reference path requires no project-window interaction |
@@ -180,10 +183,10 @@ fail the proof. The control and all artifacts were then cleaned.
 | Pre-existing Excel preservation | Supported | Separate control PID `25372` retained visibility, foreground HWND `0x7403AC`, its complete visible exact-PID top-level window set, workbook state, and lifetime through 147 continuous samples |
 | Repeatability and complete environment record | Supported | Dedicated opt-in command and exact environment/output records require no manually timed visual observation |
 
-Issue #330 is unblocked. Production behavior remains unchanged until that issue
-adopts the supported lifecycle contract. A future deterministic failure on a
-supported environment must fail closed and record its first failing stage; it
-must not weaken `hidden` or fall back to the interactive desktop.
+Issue #330 adopted the supported lifecycle contract. A deterministic isolation
+failure on a supported environment fails closed and records its first failing
+stage and available exact-PID desktop-window evidence; it does not weaken
+`hidden` or fall back to the interactive desktop.
 
 ## Running the proof
 
@@ -196,11 +199,12 @@ npm run test:private-desktop-excel-feasibility
 
 The command does not run the general Windows/Excel integration suite,
 `InitialWorkbookCreation`, the debug-adapter suite, or the release gate. The
-production-baseline case deliberately reproduces current caller-desktop
-exposure, so Excel and a Save As dialog may be visible for up to five seconds
-during that one case. No user action is required: the proof automatically
-terminates the exact owned Job and removes its staging artifacts at the bound.
-This is required evidence, not an allowed fallback for any private-desktop case.
+unisolated control-baseline case deliberately bypasses the adopted production
+isolation to reproduce caller-desktop exposure, so Excel and a Save As dialog
+may be visible for up to five seconds during that one case. No user action is
+required: the proof automatically terminates the exact owned Job and removes
+its staging artifacts at the bound. This is required control evidence, not an
+allowed fallback for any production or private-desktop case.
 The separate interactive-control case deliberately displays its control Excel
 instance while verifying that the private probe does not disturb it. Do not
 include this opt-in proof in ordinary unattended test runs until these visible
@@ -208,10 +212,12 @@ cases are removed or separately gated.
 
 ## Debug asymmetry
 
-Automation and debugging have different visibility requirements. A production
-`AutomationExcelProcess` should be private-desktop isolated when no user
-interaction is required. A `DebugExcelProcess` must remain on the caller's
+Automation and debugging have different visibility requirements. Every
+production `AutomationExcelProcess` is private-desktop isolated. A debug
+launch's preparatory `vba-dev build` therefore remains hidden on a private
+desktop, while the subsequent `DebugExcelProcess` remains on the caller's
 interactive desktop because Excel, the VBE, the selected code pane, modal
-prompts, and break interaction are intentionally user-facing. This proof does
-not route debug-adapter launch, Doctor, or VBE command handling through the
-private desktop.
+prompts, and break interaction are intentionally user-facing. Production
+adoption includes active `vba-dev doctor` automation but does not route a debug
+session, `vba-debug-adapter doctor`, or VBE command handling through the private
+desktop.

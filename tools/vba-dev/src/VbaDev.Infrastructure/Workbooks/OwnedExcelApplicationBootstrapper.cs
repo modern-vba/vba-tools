@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using Microsoft.CSharp.RuntimeBinder;
 using Microsoft.Win32;
+using VbaDev.App.Workbooks;
 using VbaDev.Infrastructure.Debugging;
 
 namespace VbaDev.Infrastructure.Workbooks;
@@ -12,12 +13,16 @@ internal interface IExcelOwnedProcessLauncher
 {
     ExcelOwnedProcessLaunch Start(
         IDebugExcelProcessApi processApi,
+        string qualifiedDesktopName,
         CancellationToken cancellationToken);
 }
 
 internal interface IExcelNativeObjectModelBinder
 {
-    object BindApplication(int processId, Func<bool> hasProcessExited);
+    object BindApplicationOnDesktop(
+        int processId,
+        nint desktopHandle,
+        Func<bool> hasProcessExited);
 }
 
 internal sealed record OwnedExcelApplication(
@@ -33,29 +38,89 @@ internal sealed record ExcelOwnedProcessLaunch(
 /// <summary>
 /// Launches Excel explicitly, establishes exact process ownership, and only then binds COM.
 /// </summary>
-internal sealed class OwnedExcelApplicationBootstrapper(
-    IExcelOwnedProcessLauncher processLauncher,
-    IDebugExcelProcessApi processApi,
-    IExcelNativeObjectModelBinder nativeObjectModelBinder)
+internal sealed class OwnedExcelApplicationBootstrapper
 {
+    private readonly IExcelOwnedProcessLauncher processLauncher;
+    private readonly IDebugExcelProcessApi processApi;
+    private readonly IExcelNativeObjectModelBinder nativeObjectModelBinder;
+    private readonly IExcelAutomationDesktopIsolationFactory desktopIsolationFactory;
+    private readonly Action<string> deleteBootstrapWorkbook;
+
+    public OwnedExcelApplicationBootstrapper(
+        IExcelOwnedProcessLauncher processLauncher,
+        IDebugExcelProcessApi processApi,
+        IExcelNativeObjectModelBinder nativeObjectModelBinder)
+        : this(
+            processLauncher,
+            processApi,
+            nativeObjectModelBinder,
+            WindowsExcelAutomationDesktopIsolationFactory.Instance,
+            ExcelBootstrapWorkbookFile.Delete)
+    {
+    }
+
+    internal OwnedExcelApplicationBootstrapper(
+        IExcelOwnedProcessLauncher processLauncher,
+        IDebugExcelProcessApi processApi,
+        IExcelNativeObjectModelBinder nativeObjectModelBinder,
+        IExcelAutomationDesktopIsolationFactory desktopIsolationFactory)
+        : this(
+            processLauncher,
+            processApi,
+            nativeObjectModelBinder,
+            desktopIsolationFactory,
+            ExcelBootstrapWorkbookFile.Delete)
+    {
+    }
+
+    internal OwnedExcelApplicationBootstrapper(
+        IExcelOwnedProcessLauncher processLauncher,
+        IDebugExcelProcessApi processApi,
+        IExcelNativeObjectModelBinder nativeObjectModelBinder,
+        IExcelAutomationDesktopIsolationFactory desktopIsolationFactory,
+        Action<string> deleteBootstrapWorkbook)
+    {
+        this.processLauncher = processLauncher;
+        this.processApi = processApi;
+        this.nativeObjectModelBinder = nativeObjectModelBinder;
+        this.desktopIsolationFactory = desktopIsolationFactory;
+        this.deleteBootstrapWorkbook = deleteBootstrapWorkbook;
+    }
+
     public OwnedExcelApplication Start(
         OwnedExcelTerminationController terminationController,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(terminationController);
-        using var launchLease = terminationController.BeginLaunch(cancellationToken);
+        OwnedExcelTerminationController.OwnedExcelLaunchLease? launchLease = null;
+        IExcelAutomationDesktopIsolation? desktopIsolation = null;
         ExcelOwnedProcessLaunch? launch = null;
         DebugExcelProcessOwner? owner = null;
+        PrivateDesktopOwnedExcelProcessControl? processControl = null;
+        object? application = null;
         var ownershipTransferred = false;
         var launchSettled = false;
         try
         {
+            launchLease = terminationController.BeginLaunch(cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
-            launch = processLauncher.Start(processApi, cancellationToken);
+            desktopIsolation = desktopIsolationFactory.Create();
+            launch = processLauncher.Start(
+                processApi,
+                desktopIsolation.QualifiedDesktopName,
+                cancellationToken);
             owner = launch.ProcessOwner;
             cancellationToken.ThrowIfCancellationRequested();
+            desktopIsolation.StartObservingBeforeResumeAsync(
+                    owner.ProcessId,
+                    cancellationToken)
+                .GetAwaiter()
+                .GetResult();
+            processControl = new PrivateDesktopOwnedExcelProcessControl(
+                owner,
+                desktopIsolation);
             var continueStartup = terminationController.Attach(
-                new DebugOwnedExcelProcessControl(owner));
+                processControl);
             ownershipTransferred = true;
             launchLease.Dispose();
             launchSettled = true;
@@ -67,10 +132,14 @@ internal sealed class OwnedExcelApplicationBootstrapper(
             }
 
             cancellationToken.ThrowIfCancellationRequested();
+            processControl.Capture(DesktopWindowLifecyclePhase.BootstrapBinding);
             launch.PrimaryThread.ResumeExactlyOnce();
-            var application = nativeObjectModelBinder.BindApplication(
+            application = nativeObjectModelBinder.BindApplicationOnDesktop(
                 owner.ProcessId,
+                desktopIsolation.DesktopHandle,
                 () => owner.HasExited);
+            processControl.Capture(DesktopWindowLifecyclePhase.BootstrapBinding);
+            cancellationToken.ThrowIfCancellationRequested();
             return new OwnedExcelApplication(
                 application,
                 owner,
@@ -78,17 +147,80 @@ internal sealed class OwnedExcelApplicationBootstrapper(
         }
         catch (Exception startException)
         {
-            if (startException is IOwnedExcelSessionStartFailure && launch is null)
+            if (startException is IOwnedExcelSessionStartFailure launchFailure &&
+                launch is null)
             {
+                var launchReleaseProofException = launchFailure.CleanupVerified
+                    ? null
+                    : launchFailure.CleanupException ??
+                        new WorkbookAutomationCleanupException(
+                            "The atomic Excel launch did not verify exact process cleanup.");
+                var launchSecondaryCleanupException = launchFailure.CleanupVerified
+                    ? launchFailure.CleanupException
+                    : null;
+                if (desktopIsolation is not null)
+                {
+                    try
+                    {
+                        desktopIsolation.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                    }
+                    catch (Exception ex)
+                    {
+                        var desktopReleaseFailure =
+                            ex is WorkbookAutomationCleanupException
+                                ? ex
+                                : new WorkbookAutomationCleanupException(
+                                    "The private Excel automation desktop could not be released after launch failure.",
+                                    ex);
+                        launchReleaseProofException = launchReleaseProofException is null
+                            ? desktopReleaseFailure
+                            : new AggregateException(
+                                launchReleaseProofException,
+                                desktopReleaseFailure);
+                    }
+                }
+
+                if (launchReleaseProofException is not null)
+                {
+                    launchLease!.CompleteWithCleanupFailure(launchReleaseProofException);
+                    launchSettled = true;
+                    var combinedCleanupException = launchSecondaryCleanupException is null
+                        ? launchReleaseProofException
+                        : new AggregateException(
+                            launchReleaseProofException,
+                            launchSecondaryCleanupException);
+                    throw CreateStartFailure(
+                        launchFailure.StartException,
+                        combinedCleanupException,
+                        cleanupVerified: false);
+                }
+
+                if (launchSecondaryCleanupException is not null)
+                {
+                    throw new WorkbookAutomationReleasedProcessCleanupException(
+                        "The atomic Excel process was released, but startup cleanup failed.",
+                        new AggregateException(
+                            launchFailure.StartException,
+                            launchSecondaryCleanupException));
+                }
+
                 throw;
             }
 
             var reportedStartException = startException;
-            Exception? cleanupException = null;
+            Exception? releaseProofException = null;
+            Exception? secondaryCleanupException = null;
             if (startException is DebugProcessOwnershipCleanupException ownershipCleanup)
             {
                 reportedStartException = ownershipCleanup.OwnershipException;
-                cleanupException = ownershipCleanup.CleanupException;
+                releaseProofException = ownershipCleanup.CleanupException;
+            }
+
+            if (releaseProofException is null)
+            {
+                reportedStartException = NormalizeUnclassifiedCancellation(
+                    reportedStartException,
+                    cancellationToken);
             }
 
             if (ownershipTransferred)
@@ -99,20 +231,71 @@ internal sealed class OwnedExcelApplicationBootstrapper(
                         .GetAwaiter()
                         .GetResult();
                 }
+                catch (WorkbookAutomationReleasedProcessCleanupException ex)
+                {
+                    secondaryCleanupException = ex;
+                }
                 catch (Exception ex)
                 {
-                    cleanupException = ex;
+                    releaseProofException = ex;
                 }
             }
-            else if (owner is not null)
+            else if (processControl is not null)
             {
                 try
                 {
-                    owner.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                    processControl.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                }
+                catch (WorkbookAutomationReleasedProcessCleanupException ex)
+                {
+                    secondaryCleanupException = ex;
                 }
                 catch (Exception ex)
                 {
-                    cleanupException = ex;
+                    releaseProofException = ex;
+                }
+            }
+            else
+            {
+                if (owner is not null)
+                {
+                    try
+                    {
+                        owner.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                    }
+                    catch (Exception ex)
+                    {
+                        releaseProofException = ex;
+                    }
+                }
+
+                if (desktopIsolation is not null)
+                {
+                    try
+                    {
+                        desktopIsolation.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                    }
+                    catch (Exception ex)
+                    {
+                        releaseProofException = releaseProofException is null
+                            ? ex
+                            : new AggregateException(releaseProofException, ex);
+                    }
+                }
+            }
+
+            if (application is not null)
+            {
+                try
+                {
+                    ComObjectReleaser.Release(application);
+                    ComObjectReleaser.CollectReleasedComObjects();
+                }
+                catch (Exception ex)
+                {
+                    secondaryCleanupException = secondaryCleanupException is null
+                        ? ex
+                        : new AggregateException(secondaryCleanupException, ex);
                 }
             }
 
@@ -120,43 +303,102 @@ internal sealed class OwnedExcelApplicationBootstrapper(
             {
                 try
                 {
-                    ExcelBootstrapWorkbookFile.Delete(launch.BootstrapWorkbookPath);
+                    deleteBootstrapWorkbook(launch.BootstrapWorkbookPath);
                 }
                 catch (Exception ex)
                 {
-                    cleanupException = cleanupException is null
+                    secondaryCleanupException = secondaryCleanupException is null
                         ? ex
-                        : new AggregateException(cleanupException, ex);
+                        : new AggregateException(secondaryCleanupException, ex);
                 }
             }
 
-            if (!ownershipTransferred && cleanupException is not null)
+            if (!ownershipTransferred && releaseProofException is not null)
             {
-                launchLease.CompleteWithCleanupFailure(cleanupException);
+                launchLease!.CompleteWithCleanupFailure(releaseProofException);
                 launchSettled = true;
             }
 
-            if (ownershipTransferred && cleanupException is null)
+            if (releaseProofException is null && secondaryCleanupException is not null)
             {
-                throw new OwnedExcelSessionStartException(
+                throw new WorkbookAutomationReleasedProcessCleanupException(
+                    "The owned Excel process and private desktop were released, but startup cleanup failed.",
+                    new AggregateException(
+                        reportedStartException,
+                        secondaryCleanupException));
+            }
+
+            if (releaseProofException is null)
+            {
+                if (ReferenceEquals(reportedStartException, startException) &&
+                    ExcelComWorkbookSession.IsPreOwnershipBootstrapFailureAlreadyClassified(
+                        reportedStartException))
+                {
+                    throw;
+                }
+
+                throw CreateStartFailure(
                     reportedStartException,
                     cleanupException: null,
                     cleanupVerified: true);
             }
 
-            throw new OwnedExcelSessionStartException(
+            var cleanupException = secondaryCleanupException is null
+                ? releaseProofException
+                : new AggregateException(
+                    releaseProofException,
+                    secondaryCleanupException);
+            throw CreateStartFailure(
                 reportedStartException,
                 cleanupException,
-                cleanupVerified: cleanupException is null);
+                cleanupVerified: false);
         }
         finally
         {
-            launch?.PrimaryThread.Dispose();
-            if (!launchSettled)
+            try
             {
-                launchLease.Dispose();
+                launch?.PrimaryThread.Dispose();
+            }
+            finally
+            {
+                if (!launchSettled)
+                {
+                    launchLease?.Dispose();
+                }
             }
         }
+    }
+
+    internal static Exception CreateStartFailure(
+        Exception startException,
+        Exception? cleanupException,
+        bool cleanupVerified)
+        => startException is OperationCanceledException cancellation
+            ? new OwnedExcelSessionStartCanceledException(
+                cancellation,
+                cleanupException,
+                cleanupVerified)
+            : new OwnedExcelSessionStartException(
+                startException,
+                cleanupException,
+                cleanupVerified);
+
+    private static Exception NormalizeUnclassifiedCancellation(
+        Exception startException,
+        CancellationToken cancellationToken)
+    {
+        if (!cancellationToken.IsCancellationRequested ||
+            startException is OperationCanceledException ||
+            ExcelComWorkbookSession.IsPreOwnershipBootstrapFailureAlreadyClassified(
+                startException))
+        {
+            return startException;
+        }
+
+        return new OperationCanceledException(
+            "Excel startup was canceled before native object-model binding completed.",
+            startException,
+            cancellationToken);
     }
 }
 
@@ -169,6 +411,7 @@ internal sealed class WindowsExcelOwnedProcessLauncher : IExcelOwnedProcessLaunc
         IDebugProcessJob,
         string,
         IReadOnlyList<string>,
+        string,
         DebugSuspendedProcessLaunch> startSuspended;
 
     public WindowsExcelOwnedProcessLauncher()
@@ -176,7 +419,7 @@ internal sealed class WindowsExcelOwnedProcessLauncher : IExcelOwnedProcessLaunc
             ExcelExecutablePathResolver.Resolve,
             ExcelBootstrapWorkbookFile.Create,
             ExcelBootstrapWorkbookFile.Delete,
-            static (job, applicationPath, arguments) =>
+            static (job, applicationPath, arguments, desktopName) =>
             {
                 if (job is not WindowsDebugProcessJob windowsJob)
                 {
@@ -184,7 +427,10 @@ internal sealed class WindowsExcelOwnedProcessLauncher : IExcelOwnedProcessLaunc
                         "Atomic Excel startup requires the Windows Job Object process adapter.");
                 }
 
-                return windowsJob.StartSuspended(applicationPath, arguments);
+                return windowsJob.StartSuspended(
+                    applicationPath,
+                    arguments,
+                    desktopName);
             })
     {
     }
@@ -197,6 +443,7 @@ internal sealed class WindowsExcelOwnedProcessLauncher : IExcelOwnedProcessLaunc
             IDebugProcessJob,
             string,
             IReadOnlyList<string>,
+            string,
             DebugSuspendedProcessLaunch> startSuspended)
     {
         this.resolveExcelExecutablePath = resolveExcelExecutablePath;
@@ -207,9 +454,11 @@ internal sealed class WindowsExcelOwnedProcessLauncher : IExcelOwnedProcessLaunc
 
     public ExcelOwnedProcessLaunch Start(
         IDebugExcelProcessApi processApi,
+        string qualifiedDesktopName,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(processApi);
+        ArgumentException.ThrowIfNullOrWhiteSpace(qualifiedDesktopName);
         cancellationToken.ThrowIfCancellationRequested();
         if (!OperatingSystem.IsWindows())
         {
@@ -229,7 +478,8 @@ internal sealed class WindowsExcelOwnedProcessLauncher : IExcelOwnedProcessLaunc
             suspendedLaunch = startSuspended(
                 job,
                 excelExecutablePath,
-                ["/x", bootstrapWorkbookPath]);
+                ["/x", bootstrapWorkbookPath],
+                qualifiedDesktopName);
             owner = DebugExcelProcessOwner.AdoptPreassignedProcess(
                 suspendedLaunch.Process,
                 job);
@@ -252,13 +502,12 @@ internal sealed class WindowsExcelOwnedProcessLauncher : IExcelOwnedProcessLaunc
             }
 
             var reportedStartException = startException;
-            Exception? cleanupException = null;
-            var cleanupVerified = true;
+            Exception? releaseProofException = null;
+            Exception? secondaryCleanupException = null;
             if (startException is DebugProcessOwnershipCleanupException ownershipCleanup)
             {
                 reportedStartException = ownershipCleanup.OwnershipException;
-                cleanupException = ownershipCleanup.CleanupException;
-                cleanupVerified = false;
+                releaseProofException = ownershipCleanup.CleanupException;
             }
 
             suspendedLaunch?.PrimaryThread.Dispose();
@@ -270,9 +519,9 @@ internal sealed class WindowsExcelOwnedProcessLauncher : IExcelOwnedProcessLaunc
                 }
                 catch (Exception ex)
                 {
-                    cleanupException = cleanupException is null
+                    releaseProofException = releaseProofException is null
                         ? ex
-                        : new AggregateException(cleanupException, ex);
+                        : new AggregateException(releaseProofException, ex);
                 }
             }
             else if (job is not null)
@@ -283,9 +532,9 @@ internal sealed class WindowsExcelOwnedProcessLauncher : IExcelOwnedProcessLaunc
                 }
                 catch (Exception ex)
                 {
-                    cleanupException = cleanupException is null
+                    releaseProofException = releaseProofException is null
                         ? ex
-                        : new AggregateException(cleanupException, ex);
+                        : new AggregateException(releaseProofException, ex);
                 }
             }
 
@@ -297,16 +546,24 @@ internal sealed class WindowsExcelOwnedProcessLauncher : IExcelOwnedProcessLaunc
                 }
                 catch (Exception ex)
                 {
-                    cleanupException = cleanupException is null
+                    secondaryCleanupException = secondaryCleanupException is null
                         ? ex
-                        : new AggregateException(cleanupException, ex);
+                        : new AggregateException(secondaryCleanupException, ex);
                 }
             }
 
-            throw new OwnedExcelSessionStartException(
+            var cleanupException = releaseProofException switch
+            {
+                null => secondaryCleanupException,
+                _ when secondaryCleanupException is null => releaseProofException,
+                _ => new AggregateException(
+                    releaseProofException,
+                    secondaryCleanupException)
+            };
+            throw OwnedExcelApplicationBootstrapper.CreateStartFailure(
                 reportedStartException,
                 cleanupException,
-                cleanupVerified: cleanupVerified && cleanupException is null);
+                cleanupVerified: releaseProofException is null);
         }
     }
 }
@@ -385,7 +642,7 @@ internal static class ExcelBootstrapWorkbookFile
                 throw new OwnedExcelSessionStartException(
                     createException,
                     cleanupException,
-                    cleanupVerified: false);
+                    cleanupVerified: true);
             }
 
             throw;
@@ -457,13 +714,15 @@ internal sealed class WindowsExcelNativeObjectModelBinder : IExcelNativeObjectMo
     private static readonly Guid IDispatchId =
         new("00020400-0000-0000-C000-000000000046");
 
-    public object BindApplication(int processId, Func<bool> hasProcessExited)
+    internal object BindApplicationOnCallerDesktopForUnisolatedControl(
+        int processId,
+        Func<bool> hasProcessExited)
         => BindApplication(
             processId,
             hasProcessExited,
             FindTopLevelWindows);
 
-    internal object BindApplicationOnDesktop(
+    public object BindApplicationOnDesktop(
         int processId,
         nint desktopHandle,
         Func<bool> hasProcessExited)

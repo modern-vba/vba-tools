@@ -21,8 +21,6 @@ internal interface IExcelComWorkbookGenerationLifecycle
 
 public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGenerationAutomation
 {
-    private static readonly TimeSpan ForcedTerminationObservationAllowance =
-        TimeSpan.FromSeconds(1);
     private static readonly TimeSpan DispatcherAbandonmentObservation =
         TimeSpan.FromMilliseconds(100);
     private readonly IStaComDispatcherFactory generationDispatcherFactory;
@@ -76,7 +74,9 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGeneratio
             () => terminationController.HasAttachedProcessExited,
             terminationController.RequestForcedTermination,
             getOwnedProcessCompletion: () =>
-                terminationController.AttachedProcessCompletion);
+                terminationController.AttachedProcessCompletion,
+            captureAutomationStage: terminationController.CaptureAutomationStage,
+            describeIsolationEvidence: terminationController.DescribeIsolationEvidence);
         object? host = null;
         IWorkbookBuildSession? buildSession = null;
         BoundedWorkbookGenerationSession? generationSession = null;
@@ -136,7 +136,8 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGeneratio
             operationError = NormalizeOperationError(
                 ex,
                 cancellationToken,
-                generationSession?.LastStage ?? lifecycleStage);
+                generationSession?.LastStage ?? lifecycleStage,
+                terminationController.DescribeIsolationEvidence());
         }
 
         if (operationError is null && terminationController.HasAttachedProcessExited)
@@ -144,7 +145,9 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGeneratio
             operationError = new WorkbookAutomationProcessLostException(
                 generationSession?.LastStage ??
                 lifecycleStage ??
-                new WorkbookAutomationStage(WorkbookAutomationStageKind.ProcessCleanup));
+                new WorkbookAutomationStage(WorkbookAutomationStageKind.ProcessCleanup),
+                isolationDiagnostics:
+                    terminationController.DescribeIsolationEvidence());
         }
 
         var cleanupError = await CleanupAsync(
@@ -154,7 +157,7 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGeneratio
             buildSession,
             timeouts.ProcessCleanup,
             stageExecutor,
-            operationError is WorkbookAutomationProcessLostException).ConfigureAwait(false);
+            operationError).ConfigureAwait(false);
         var dispatcherError = await DisposeDispatcherAsync(
             dispatcher,
             stageExecutor.HasAbandonedOperation).ConfigureAwait(false);
@@ -178,7 +181,9 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGeneratio
             operationError = new WorkbookAutomationCanceledException(
                 new WorkbookAutomationStage(
                     WorkbookAutomationStageKind.ProcessCleanup),
-                cancellationToken);
+                cancellationToken,
+                isolationDiagnostics:
+                    terminationController.DescribeIsolationEvidence());
         }
 
         if (cleanupError is not null)
@@ -233,8 +238,11 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGeneratio
         IWorkbookBuildSession? session,
         TimeSpan cleanupGrace,
         WorkbookAutomationStageExecutor stageExecutor,
-        bool preserveVerifiedProcessLoss)
+        Exception? terminalFailureToPreserve)
     {
+        var cleanupStage = new WorkbookAutomationStage(
+            WorkbookAutomationStageKind.ProcessCleanup);
+        terminationController.CaptureAutomationStage(cleanupStage);
         if (stageExecutor.HasAbandonedOperation)
         {
             return await CleanupOwnedProcessOnlyAsync(
@@ -270,16 +278,19 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGeneratio
                 CancellationToken.None);
             var completed = await Task.WhenAny(
                 cleanupTask,
-                Task.Delay(cleanupGrace + ForcedTerminationObservationAllowance))
+                Task.Delay(
+                    cleanupGrace +
+                    PrivateDesktopOwnedExcelProcessControl.ForcedCleanupObservationAllowance))
                 .ConfigureAwait(false);
             if (completed != cleanupTask)
             {
                 stageExecutor.MarkOperationAbandoned();
                 WorkbookAutomationStageExecutor.ObserveFault(cleanupTask);
                 cooperativeCleanupError = new WorkbookAutomationTimeoutException(
-                    new WorkbookAutomationStage(
-                        WorkbookAutomationStageKind.ProcessCleanup),
-                    cleanupGrace);
+                    cleanupStage,
+                    cleanupGrace,
+                    isolationDiagnostics:
+                        terminationController.DescribeIsolationEvidence());
             }
             else
             {
@@ -301,19 +312,34 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGeneratio
             return ownershipCleanupError;
         }
 
-        if (ownershipCleanupError is null && preserveVerifiedProcessLoss)
+        if (ownershipCleanupError is null &&
+            CanPreserveVerifiedTerminalFailure(
+                terminalFailureToPreserve,
+                cooperativeCleanupError))
         {
-            // An exited COM server commonly rejects Close/Quit. Exact process-exit proof is
-            // sufficient cleanup evidence, so preserve the stage-specific process-loss result.
+            // A COM server terminated by timeout, cancellation, or unexpected process loss
+            // commonly rejects Close/Quit. Exact process-tree release is sufficient cleanup
+            // evidence, so preserve the stage-specific terminal result.
             return null;
         }
 
         return ownershipCleanupError is null
             ? cooperativeCleanupError
-            : new WorkbookAutomationCleanupException(
-                "Cooperative cleanup and exact owned-process cleanup both failed.",
-                new AggregateException(cooperativeCleanupError, ownershipCleanupError));
+            : ContainsReleaseProofFailure(ownershipCleanupError)
+                ? new WorkbookAutomationCleanupException(
+                    "Cooperative cleanup and exact owned-process cleanup both failed.",
+                    new AggregateException(cooperativeCleanupError, ownershipCleanupError))
+                : new WorkbookAutomationReleasedProcessCleanupException(
+                    "Cooperative cleanup and exact owned-process cleanup both failed after exact owned-process release was verified.",
+                    new AggregateException(cooperativeCleanupError, ownershipCleanupError));
     }
+
+    private static bool CanPreserveVerifiedTerminalFailure(
+        Exception? terminalFailure,
+        Exception cleanupError)
+        => ReleasedAutomationCleanupPolicy.CanPreservePrimaryFailure(
+            terminalFailure,
+            cleanupError);
 
     private static async Task<Exception?> CleanupOwnedProcessOnlyAsync(
         OwnedExcelTerminationController terminationController,
@@ -323,9 +349,14 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGeneratio
         {
             terminationController.RequestForcedTermination(cleanupGrace);
             await terminationController.ObserveCleanupWithinAsync(
-                ForcedTerminationObservationAllowance).ConfigureAwait(false);
+                PrivateDesktopOwnedExcelProcessControl.ForcedCleanupObservationAllowance)
+                .ConfigureAwait(false);
 
             return null;
+        }
+        catch (WorkbookAutomationReleasedProcessCleanupException ex)
+        {
+            return ex;
         }
         catch (Exception ex)
         {
@@ -378,7 +409,8 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGeneratio
     private static Exception NormalizeOperationError(
         Exception error,
         CancellationToken cancellationToken,
-        WorkbookAutomationStage? lastStage)
+        WorkbookAutomationStage? lastStage,
+        string? isolationDiagnostics)
     {
         var stage = lastStage ?? new WorkbookAutomationStage(
             WorkbookAutomationStageKind.ExcelStartup);
@@ -388,6 +420,15 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGeneratio
             var cleanupEvidence = startFailure.CleanupException ??
                 new InvalidOperationException(
                     "The owned Excel process cleanup could not be verified.");
+            if (cleanupEvidence is WorkbookAutomationReleasedProcessCleanupException)
+            {
+                return new WorkbookAutomationReleasedProcessCleanupException(
+                    $"Workbook automation failed during {stage.Description}, and automation cleanup or isolation also failed after owned Excel process release was verified.",
+                    new AggregateException(
+                        startFailure.StartException,
+                        cleanupEvidence));
+            }
+
             return new WorkbookAutomationCleanupException(
                 $"Workbook automation failed during {stage.Description}, and owned Excel process cleanup could not be verified.",
                 new AggregateException(startFailure.StartException, cleanupEvidence));
@@ -404,7 +445,11 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGeneratio
 
         if (error is OperationCanceledException && cancellationToken.IsCancellationRequested)
         {
-            return new WorkbookAutomationCanceledException(stage, cancellationToken, error);
+            return new WorkbookAutomationCanceledException(
+                stage,
+                cancellationToken,
+                error,
+                isolationDiagnostics);
         }
 
         return new InvalidOperationException(
@@ -413,21 +458,7 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGeneratio
     }
 
     private static bool ContainsReleaseProofFailure(Exception error)
-    {
-        if (error is WorkbookAutomationCleanupException)
-        {
-            return true;
-        }
-
-        if (error is AggregateException aggregate
-            && aggregate.InnerExceptions.Any(ContainsReleaseProofFailure))
-        {
-            return true;
-        }
-
-        return error.InnerException is not null
-            && ContainsReleaseProofFailure(error.InnerException);
-    }
+        => WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error);
 
     private static IOwnedExcelSessionStartFailure? FindOwnedSessionStartFailure(
         Exception error)

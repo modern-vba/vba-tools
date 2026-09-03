@@ -122,7 +122,11 @@ A dedicated hidden Excel process exclusively owned by one Excel-automating
 `ToolingCommand` invocation, never a user's existing or shared Excel session.
 One invocation may own zero, one, or multiple such processes sequentially and
 remains responsible for every live instance through normal completion,
-cooperative cancellation, and forced cleanup.
+cooperative cancellation, and forced cleanup. Every such process is created
+suspended on a unique invocation-scoped private desktop, observed by exact PID
+before its primary thread resumes, bound through that desktop, and retained
+with the desktop until the complete owned Job process tree exits. There is no
+caller-desktop or best-effort fallback.
 _Avoid_: DebugExcelProcess, active Excel session, shared Excel instance
 
 **AutomationDesktopIsolation**:
@@ -133,22 +137,28 @@ exit. Windows confined to an invocation-scoped private Windows desktop are
 permitted. `Application.Visible = false`, startup show flags, delayed hiding,
 and best-effort flicker suppression do not establish this invariant. The
 private desktop is never displayed or used as a fallback route to the caller's
-desktop.
+desktop. The shared automation lifecycle applies this invariant to project
+creation, build, test, publish, import, export, Doctor, Host Event discovery,
+reference probes, and every other non-debug Excel/VBE automation consumer. A
+timeout, cancellation, process loss, attempted UI, or cleanup failure reports
+the exact PID and current desktop-window evidence when available and fails
+closed.
 _Avoid_: Excel Visible flag, hidden window style, post-launch window move, visual observation
 
 **PrivateDesktopExcelFeasibilityProof**:
 The opt-in Windows/Excel integration evidence that established a reproducible
 supported verdict for `AutomationDesktopIsolation` across native exact-PID
 binding, representative workbook and VBE automation, execution-only macro
-enablement, attempted UI, all terminal paths, a production-leak baseline, a
+enablement, attempted UI, all terminal paths, an unisolated control baseline, a
 separate continuously sampled pre-existing Excel control, and exact cleanup.
 Its release contract requires zero active processes in the owned Job, no window
 on the private desktop, and successful closure and invalidation of its owned
 desktop handle. Windows has no delete-desktop operation, so disappearance of the
-desktop's name is not evidence required by the contract. The Job accounting and
-bounded drain entry point are proof-only; the proof itself changes neither the
-existing production termination path nor the intentionally visible
-`DebugExcelProcess`. Production adoption is a separate work item.
+desktop's name is not evidence required by the contract. Issue #330 adopted the
+proven launch, observation, binding, and cleanup boundary for every production
+`AutomationExcelProcess`, including the complete Job-tree drain. The deliberately
+unisolated control remains proof-only regression evidence; adoption does not
+change the intentionally visible `DebugExcelProcess`.
 _Avoid_: production fallback, release test, debug-process isolation
 
 **DebugWorkbook**:

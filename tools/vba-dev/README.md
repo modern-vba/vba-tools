@@ -64,6 +64,21 @@ script after moving or replacing that executable.
 
 Document-scoped commands use the manifest `primaryDocument` when `--document` is omitted.
 
+Every non-debug Excel or VBIDE automation path creates each owned Excel process
+suspended on a unique invocation-scoped private Windows desktop. Exact-PID
+observation starts before primary-thread resume, native object-model binding is
+restricted to that desktop, and the desktop remains owned until the complete
+Job process tree exits. This contract covers project creation, build, every test
+mode, publish, import, export, Host Event discovery, reference probes, and
+active Doctor probes. It has no command switch, best-effort mode, or
+caller-desktop fallback. A blocked prompt remains private and becomes a bounded
+failure with available PID, HWND, desktop, class, title, and lifecycle-phase
+evidence.
+
+Interactive debugging is deliberately different. Its preparatory
+`vba-dev build` uses the private automation path, then the separate debug
+adapter opens a new visible `DebugExcelProcess` for VBE interaction.
+
 ## Document source sets
 
 A `DocumentSourceSet` is recursive, but exported VBA source identity is flat. `.bas`, `.cls`, and `.frm` files may live in nested organization directories under `sourcePath`, but their extension-including file names must be unique case-insensitively within that one source set.
@@ -272,11 +287,12 @@ Options:
 
 The command accepts no project or document selector. Its shared exact-process
 launcher may briefly open one generated macro-free `.xlsx` bootstrap, which is
-closed and deleted before catalog discovery. The catalog phase then creates one
-unsaved generated blank workbook and one temporary empty UserForm; it opens and
-imports no user source and closes without saving. Text is the default. JSON
+confined to the invocation's private desktop and closed and deleted before
+catalog discovery. The catalog phase then creates one unsaved generated blank
+workbook and one temporary empty UserForm on the same private desktop; it opens
+and imports no user source and closes without saving. Text is the default. JSON
 uses the closed schema version `1.0` and is published only after deterministic
-component, workbook, COM, process, and bootstrap-artifact cleanup. See
+component, workbook, COM, process, desktop, and bootstrap-artifact cleanup. See
 [Host-event list and JSON schema 1.0](docs/host-event-list.md) for the catalog
 shape, failure and cancellation behavior, safety boundary, and consumer
 responsibilities.
@@ -325,7 +341,10 @@ Options:
   --procedure <name>             Run one test procedure. Requires --module.
 ```
 
-`test` builds before running tests by default. The default output format is `text`. Use `--no-build` to run against the existing bin workbook, and use `--format ndjson` for machine-readable newline-delimited JSON.
+`test` builds before running tests by default. The private-desktop build process
+exits before a distinct private-desktop execution process starts. `--no-build`
+starts only the execution process. The default output format is `text`. Use
+`--format ndjson` for machine-readable newline-delimited JSON.
 
 Supplying `--source-snapshot` builds and tests a same-filename workbook inside a unique command-owned workspace without reading persistent source or touching the manifest bin workbook. It cannot be combined with `--no-build`, and `test` does not accept `--output`. Snapshot declaration ranges come from the fixed snapshot bytes while emitted locations use the corresponding persistent source URIs. The command releases its owned Excel processes before removing the workspace; a post-release deletion failure is warning-only and reports the retained absolute path without changing test outcomes, exit status, or the complete NDJSON 1.2 batch.
 
@@ -577,9 +596,9 @@ Manifest mutation commands transiently own the sibling marker `vba-project.json.
 
 Workbook open and save timeouts are project-level manifest defaults. `vba-dev`
 does not expose per-invocation command-line options for these two values.
-Build and publish use a dedicated hidden Excel process with a 30-second startup
-deadline, a 60-second deadline for each reference attempt, a 30-second deadline
-for each module import, and a 5-second cooperative cleanup grace period. They
-preserve an existing completed output on failure or cancellation and atomically
-replace only the selected output after the staged workbook and owned process
-have completed successfully.
+Build and publish use a dedicated hidden Excel process on an invocation-scoped
+private desktop with a 30-second startup deadline, a 60-second deadline for each
+reference attempt, a 30-second deadline for each module import, and a 5-second
+cooperative cleanup grace period. They preserve an existing completed output on
+failure or cancellation and atomically replace only the selected output after
+the staged workbook and owned process have completed successfully.

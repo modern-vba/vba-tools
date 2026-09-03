@@ -17,10 +17,10 @@ cancellation, session output, and debug-artifact cleanup. It invokes
 snapshot-aware `vba-dev build` as a subprocess for workbook generation.
 
 `VbaDev` owns manifest and project resolution, snapshot source-inventory
-validation, the hidden build Excel process, generation atomicity, and internal
-scratch cleanup for the duration of each build invocation. It returns a
-successful snapshot-specific workbook to the caller and does not own that
-workbook's later debug-session lifecycle.
+validation, the hidden build Excel process on an invocation-scoped private
+desktop, generation atomicity, and internal scratch cleanup for the duration of
+each build invocation. It returns a successful snapshot-specific workbook to
+the caller and does not own that workbook's later debug-session lifecycle.
 
 The extension supplies a typed `DebugSessionId`, which remains an opaque 32
 lowercase hexadecimal character value throughout the adapter. It is neither a
@@ -66,24 +66,31 @@ compatibility are validated and versioned independently.
 UserForm Event discovery is a separate extension-owned lifecycle and never runs
 through the debug adapter. Trusted activation asynchronously invokes the
 environment-scoped `vba-dev host-event list --format json` at most once, using
-one generated blank workbook and temporary UserForm, and sends only the complete
-current catalog to the language server. Debug start, Restart, break state, and
-adapter Doctor neither trigger nor wait for discovery, while synchronous editor
-requests consume committed catalog state without starting Excel.
+one generated blank workbook and temporary UserForm in a private-desktop
+`AutomationExcelProcess`, and sends only the complete current catalog to the
+language server. Debug start, Restart, break state, and adapter Doctor neither
+trigger nor wait for discovery, while synchronous editor requests consume
+committed catalog state without starting Excel.
 
-Non-debug Excel automation has a stricter visibility boundary. Its
-private-desktop feasibility contract and current evidence are recorded in
+Non-debug Excel automation has a stricter visibility boundary. Every
+`AutomationExcelProcess`, including the preparatory snapshot build used by a
+debug launch, uses the private-desktop contract and current evidence recorded in
 [Private-desktop Excel feasibility](private-desktop-excel-feasibility.md).
-That proof never calls `SwitchDesktop`, never falls back to the caller's
-interactive desktop, and does not change this document's intentionally visible
-`DebugExcelProcess`. Private-desktop adoption belongs only to automation that
-does not require user-visible Excel or VBE interaction. Its proof-only Job
-accounting verifies that the exact process tree drains to zero; desktop release
-means no remaining private-desktop window plus successful closure and
-invalidation of the owned `HDESK`. Windows has no delete-desktop operation, so
-the desktop object's name may remain until all references close or logoff ends
-the window-station session. These proof hooks do not change the existing
-`TerminateAsync`, production automation, or debug paths.
+The shared production path creates Excel suspended on a unique
+invocation-scoped desktop, begins exact-PID observation before primary-thread
+resume, binds through explicit private-desktop enumeration, and retains the
+desktop through complete Job-tree exit. It never calls `SwitchDesktop`, never
+falls back to the caller's interactive desktop, and fails closed with available
+PID, HWND, desktop, class, title, and lifecycle-phase evidence. Desktop release
+means zero active Job processes, no remaining private-desktop window, and
+successful closure and invalidation of the owned `HDESK`. Windows has no
+delete-desktop operation, so the desktop object's name may remain until all
+references close or logoff ends the window-station session.
+
+The subsequent `DebugExcelProcess` deliberately does not use this path. Excel,
+the VBE, selected code pane, modal prompts, and breakpoint interaction remain
+visible on the caller's desktop and under the debug session's separate exact
+process ownership.
 
 The snapshot directory is authoritative rather than an overlay. It contains the
 complete recursive `.bas`, `.cls`, and `.frm` inventory plus same-directory
@@ -325,7 +332,7 @@ Every launch follows these phases:
    `DebugGenerationWorkspace`, materialize the snapshot at its exact source
    path, and supply that inventory to `vba-dev build`, which generates the
    workbook at the capability's exact workbook path in a dedicated hidden Excel
-   process and exits.
+   process on an invocation-scoped private desktop and exits.
 3. Close the build process, transfer the same generation capability to the new
    `VbeDebugSession`, and open its workbook in a new dedicated visible
    `DebugExcelProcess`.
@@ -747,7 +754,7 @@ environment checks without discovering a project. The independent
 | VBA compilation, import, or save | No | No | No | No |
 | Native command context, breakpoint, break mode, and Continue | No | No | No | Active authority |
 | Requires a project | Yes | Yes | No | No |
-| Starts Excel | Never | May start owned instances | One owned instance | One adapter-owned fixture |
+| Starts Excel | Never | May start private-desktop owned instances | One private-desktop owned instance | One visible adapter-owned fixture |
 | CI-safe without Excel | Yes | No | No | No |
 
 Project Doctor reports the absolute resolved root and exhaustively combines
@@ -774,9 +781,11 @@ temporary standard module, it:
 7. proves Excel PID capture and strong process ownership; and
 8. closes all temporary state.
 
-The probe does not modify persistent project files. Excel or the VBE may appear
-briefly. A missing, disabled, or failing required command fails the diagnostic;
-there is no fallback.
+The probe does not modify persistent project files. Its adapter-owned Excel and
+VBE may appear briefly because native debug interaction is the capability under
+test. A missing, disabled, or failing required command fails the diagnostic;
+there is no fallback. This visibility exception does not apply to project or
+environment `vba-dev doctor`, whose automation processes use private desktops.
 
 Both Doctor executables use independently owned schema `1.0` results. The
 `vba-dev` schema adds `scope` and nullable-or-absolute `project` request context;

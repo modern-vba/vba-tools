@@ -100,6 +100,42 @@ public sealed class InitialWorkbookArtifactGuardTests
     }
 
     [Fact]
+    public void StagingDirectoryOwnershipAllowsAtomicWorkbookSaveRename()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var guard = new InitialWorkbookArtifactGuard();
+        var staging = guard.CreateStagingArtifact();
+        var temporarySavePath = Path.Combine(
+            staging.DirectoryPath,
+            "excel-save-temporary");
+        try
+        {
+            File.WriteAllBytes(
+                temporarySavePath,
+                Encoding.UTF8.GetBytes("created workbook"));
+
+            File.Move(temporarySavePath, staging.WorkbookPath);
+
+            var evidence = guard.Capture(staging.WorkbookPath);
+            var cleanup = guard.TryDeleteStaging(staging, evidence);
+            Assert.True(cleanup.RemovedOrAbsent);
+            Assert.False(Directory.Exists(staging.DirectoryPath));
+        }
+        finally
+        {
+            if (Directory.Exists(staging.DirectoryPath))
+            {
+                staging.TakeDirectoryOwnershipHandle()?.Dispose();
+                Directory.Delete(staging.DirectoryPath, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public void InvocationOwnedTempStagingIsRemovedOnlyWhenExactAndEmpty()
     {
         if (!OperatingSystem.IsWindows())

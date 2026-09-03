@@ -6,12 +6,14 @@ status: accepted
 
 VBA Tools no longer inspects every project document's source template to obtain
 intrinsic host Events. In a trusted workspace, extension activation starts one
-asynchronous environment-scoped discovery in an owned Excel process, creates an
-unsaved blank workbook and one temporary UserForm, observes the locally
-installed UserForm Event surface, and closes everything without saving. It
-opens no user workbook, imports no user source, does not block language-server
-startup, and shares the resulting catalog with every authoritative `.frm`
-source in the session.
+asynchronous environment-scoped discovery in an owned Excel process on an
+invocation-scoped private desktop, creates an unsaved blank workbook and one
+temporary UserForm, observes the locally installed UserForm Event surface, and
+closes everything without saving. Exact-PID observation begins before process
+resume, and neither startup nor unexpected UI falls back to the interactive
+desktop. It opens no user workbook, imports no user source, does not block
+language-server startup, and shares the resulting catalog with every
+authoritative `.frm` source in the session.
 
 Worksheet and `ThisWorkbook` code-behind are outside the supported source and
 intrinsic Event model, while `.frm`/`.frx` import, export, build, and debug

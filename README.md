@@ -360,12 +360,15 @@ project can set positive whole-second overrides through
 `commandDefaults.excelAutomation.workbookSaveTimeoutSeconds` in
 `vba-project.json`; these values have no per-invocation CLI options.
 
-Build and publish run in a dedicated hidden Excel process and stage their
-selected output beside its destination. Excel startup uses a 30-second
-deadline, each reference attempt 60 seconds, each module import 30 seconds,
-and cooperative cleanup 5 seconds. The prior completed output remains in place
-until reference normalization, import, verification, save, and owned-process
-cleanup have completed; only then is the selected target replaced atomically.
+Build and publish run in a dedicated hidden Excel process on an
+invocation-scoped private Windows desktop and stage their selected output beside
+its destination. Excel startup is observed by exact PID before its primary
+thread resumes; the process is never moved to or rediscovered on the interactive
+desktop, and there is no visibility fallback. Excel startup uses a 30-second
+deadline, each reference attempt 60 seconds, each module import 30 seconds, and
+cooperative cleanup 5 seconds. The prior completed output remains in place until
+reference normalization, import, verification, save, and owned-process cleanup
+have completed; only then is the selected target replaced atomically.
 
 From the `vba-dev` terminal, run:
 
@@ -383,8 +386,9 @@ With the cursor in a parameterless public `Sub` in a standard module, press F5
 and select `VBA: Active Procedure`. VBA Tools captures an immutable snapshot of
 the selected project's clean files and dirty editor content without saving,
 builds a same-filename workbook in an adapter-owned temporary directory, opens
-it in a dedicated visible Excel/VBE session, transfers breakpoints, and runs the
-procedure. `Option Private Module` is supported. Desktop Excel and trusted
+it first through a hidden private-desktop build process, then opens it in a
+separate dedicated visible Excel/VBE session, transfers breakpoints, and runs
+the procedure. `Option Private Module` is supported. Desktop Excel and trusted
 access to the VBA project object model are required.
 
 To pin a target independently of the active editor, save a configuration in
@@ -467,6 +471,9 @@ their unsaved changes would also be discarded.
 
 `VBA Tools: Test` runs `vba-dev test` for the selected workbook document. By
 default, tests build first so the workbook under test matches the source tree.
+The hidden private-desktop build process exits before a distinct hidden
+private-desktop test-execution process starts. `--no-build` starts only the
+execution process.
 
 ### Publish
 
@@ -525,7 +532,9 @@ In a trusted workspace, activation starts at most one asynchronous
 environment-scoped UserForm Event discovery. `vba-dev host-event list --format
 json` owns one hidden Excel process, creates one unsaved blank workbook and one
 temporary empty UserForm, reads the installed built-in UserForm Event surface,
-and closes without saving. It never opens, copies, imports, scans, or falls back
+and closes without saving. The process uses an invocation-scoped private
+desktop, so Excel, the blank workbook, and any unexpected UI are not shown on
+the interactive desktop. It never opens, copies, imports, scans, or falls back
 to a project source template. Language-server startup and editor requests do
 not wait for Excel.
 
@@ -718,7 +727,9 @@ cannot influence executable selection.
 | --- | --- |
 | Language features do not start | VBA Tools currently supports Windows only. Open the VBA Tools output channel and check whether the bundled language server launched. |
 | Workbook commands fail before opening Excel | Run `VBA Tools: Doctor`, review the `Project automation` section, and confirm that the workspace contains `vba-project.json`. |
+| Excel or a dialog appears during build, test, publish, import, export, project creation, Host Event discovery, reference probing, or project Doctor | This is an automation-isolation failure, not expected behavior. Preserve the VBA Tools Output failure, including any PID, HWND, desktop, class, title, and phase evidence, and report it. The command does not fall back to visible Excel. |
 | F5 cannot establish VBE debugging | Run `VBA Tools: Doctor` and review the `VBE debugging` checks and remediation in the VBA Tools output channel. |
+| Excel becomes visible after F5 | This is expected only after the hidden preparatory build has finished: the separately owned debug Excel/VBE session must be visible for breakpoints, code panes, prompts, and interactive execution. |
 | VBE Doctor reports an adapter infrastructure failure | Check the executable path and compatibility details in the VBA Tools output channel. If `vbaTools.debugAdapter.path` is set, correct or clear the explicit path; invalid overrides intentionally do not fall back. |
 | Excel blocks workbook automation | Enable trusted access to the VBA project object model in Excel Trust Center settings. |
 | UserForm Events are unavailable | Review the environment-level catalog status and cleanup details in VBA Tools Output, confirm desktop Excel and trusted VBA-project access are available, then run `VBA Tools: Refresh UserForm Events`. Discovery never opens a project template and does not retry automatically. |

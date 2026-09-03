@@ -52,6 +52,8 @@ internal sealed class OwnedExcelTerminationController : IDisposable
     private readonly object gate = new();
     private IOwnedExcelProcessControl? owner;
     private TaskCompletionSource? activeLaunchSettlement;
+    private Exception? settledLaunchCleanupFailure;
+    private Exception? isolationEvidenceFailure;
     private int activeLaunchId;
     private bool launchSealed;
     private bool disposed;
@@ -107,6 +109,66 @@ internal sealed class OwnedExcelTerminationController : IDisposable
         }
     }
 
+    public void CaptureAutomationStage(WorkbookAutomationStage stage)
+    {
+        ArgumentNullException.ThrowIfNull(stage);
+        IExcelAutomationDesktopProcessControl? process;
+        lock (gate)
+        {
+            process = owner as IExcelAutomationDesktopProcessControl;
+        }
+
+        if (process is null)
+        {
+            return;
+        }
+
+        try
+        {
+            process.Capture(MapDesktopPhase(stage.Kind));
+        }
+        catch (Exception exception)
+        {
+            if (!IsLateIsolationEvidenceFailure(process, exception))
+            {
+                RecordIsolationEvidenceFailure(exception);
+            }
+        }
+    }
+
+    public string? DescribeIsolationEvidence()
+    {
+        IExcelAutomationDesktopProcessControl? process;
+        Exception? evidenceFailure;
+        lock (gate)
+        {
+            process = owner as IExcelAutomationDesktopProcessControl;
+            evidenceFailure = isolationEvidenceFailure;
+        }
+
+        if (evidenceFailure is not null)
+        {
+            return FormatIsolationEvidenceFailure(evidenceFailure);
+        }
+
+        if (process is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            return process.DescribeCurrentEvidence();
+        }
+        catch (Exception exception)
+        {
+            return IsLateIsolationEvidenceFailure(process, exception)
+                ? null
+                : FormatIsolationEvidenceFailure(
+                    RecordIsolationEvidenceFailure(exception));
+        }
+    }
+
     public OwnedExcelLaunchLease BeginLaunch(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -124,6 +186,12 @@ internal sealed class OwnedExcelTerminationController : IDisposable
             {
                 throw new InvalidOperationException(
                     "An owned Excel process launch is already in progress.");
+            }
+
+            if (activeLaunchId != 0)
+            {
+                throw new InvalidOperationException(
+                    "An owned Excel termination controller cannot be reused for another process launch.");
             }
 
             activeLaunchSettlement = new TaskCompletionSource(
@@ -163,7 +231,7 @@ internal sealed class OwnedExcelTerminationController : IDisposable
     {
         lock (gate)
         {
-            return activeLaunchSettlement?.Task ?? Task.CompletedTask;
+            return GetLaunchSettlementTask();
         }
     }
 
@@ -180,7 +248,7 @@ internal sealed class OwnedExcelTerminationController : IDisposable
                 cleanupTask = CleanupCoreAsync(
                     cleanupClock,
                     grace,
-                    activeLaunchSettlement?.Task ?? Task.CompletedTask);
+                    GetLaunchSettlementTask());
                 WorkbookAutomationStageExecutor.ObserveFault(cleanupTask);
             }
 
@@ -273,7 +341,7 @@ internal sealed class OwnedExcelTerminationController : IDisposable
                 cleanupTask = CleanupCoreAsync(
                     cleanupClock = Stopwatch.StartNew(),
                     TimeSpan.Zero,
-                    activeLaunchSettlement?.Task ?? Task.CompletedTask);
+                    GetLaunchSettlementTask());
                 cleanupGrace = TimeSpan.Zero;
                 cleanupToObserve = cleanupTask;
             }
@@ -297,6 +365,7 @@ internal sealed class OwnedExcelTerminationController : IDisposable
 
             settlement = activeLaunchSettlement;
             activeLaunchSettlement = null;
+            settledLaunchCleanupFailure ??= cleanupProofFailure;
         }
 
         if (cleanupProofFailure is null)
@@ -308,6 +377,12 @@ internal sealed class OwnedExcelTerminationController : IDisposable
             settlement.TrySetException(cleanupProofFailure);
         }
     }
+
+    private Task GetLaunchSettlementTask()
+        => activeLaunchSettlement?.Task ??
+           (settledLaunchCleanupFailure is null
+               ? Task.CompletedTask
+               : Task.FromException(settledLaunchCleanupFailure));
 
     private async Task CleanupCoreAsync(
         Stopwatch requestClock,
@@ -406,20 +481,117 @@ internal sealed class OwnedExcelTerminationController : IDisposable
             errors.Add(ex);
         }
 
-        if (errors.Count == 0)
+        Exception? evidenceFailure;
+        lock (gate)
+        {
+            evidenceFailure = isolationEvidenceFailure;
+        }
+
+        if (errors.Count == 0 && evidenceFailure is null)
         {
             return;
         }
 
-        var failure = errors.Count == 1
-            ? errors[0]
-            : new AggregateException(errors);
+        Exception failure;
+        if (evidenceFailure is null)
+        {
+            failure = errors.Count == 1
+                ? errors[0]
+                : new AggregateException(errors);
+        }
+        else if (errors.Count == 0)
+        {
+            failure = new WorkbookAutomationReleasedProcessCleanupException(
+                "Automation isolation evidence capture failed after exact owned Excel process release was verified.",
+                evidenceFailure);
+        }
+        else
+        {
+            var combinedErrors = new List<Exception>(errors.Count + 1)
+            {
+                evidenceFailure
+            };
+            combinedErrors.AddRange(errors);
+            var combinedFailure = new AggregateException(combinedErrors);
+            failure = errors.All(IsReleasedProcessCleanupFailure)
+                ? new WorkbookAutomationReleasedProcessCleanupException(
+                    "Automation isolation evidence capture or cleanup failed after exact owned Excel process release was verified.",
+                    combinedFailure)
+                : new WorkbookAutomationCleanupException(
+                    "Automation isolation evidence capture failed, and exact owned Excel process cleanup could not be verified.",
+                    combinedFailure);
+        }
+
         lock (gate)
         {
             cleanupFailure = failure;
         }
 
         throw failure;
+    }
+
+    private Exception RecordIsolationEvidenceFailure(Exception exception)
+    {
+        lock (gate)
+        {
+            isolationEvidenceFailure ??= exception;
+            return isolationEvidenceFailure;
+        }
+    }
+
+    private static string FormatIsolationEvidenceFailure(Exception exception)
+        => $"Automation Excel isolation evidence unavailable: " +
+           $"{exception.GetType().Name}: {exception.Message}";
+
+    private static bool IsReleasedProcessCleanupFailure(Exception exception)
+        => exception switch
+        {
+            WorkbookAutomationReleasedProcessCleanupException => true,
+            AggregateException aggregate when aggregate.InnerExceptions.Count > 0 =>
+                aggregate.InnerExceptions.All(IsReleasedProcessCleanupFailure),
+            _ => false
+        };
+
+    private static DesktopWindowLifecyclePhase MapDesktopPhase(
+        WorkbookAutomationStageKind stage)
+        => stage switch
+        {
+            WorkbookAutomationStageKind.ExcelStartup =>
+                DesktopWindowLifecyclePhase.BootstrapBinding,
+            WorkbookAutomationStageKind.ReferenceAttempt or
+            WorkbookAutomationStageKind.ReferenceIdentityInspection or
+            WorkbookAutomationStageKind.ModuleRemoval or
+            WorkbookAutomationStageKind.ModuleImport or
+            WorkbookAutomationStageKind.ModuleExport or
+            WorkbookAutomationStageKind.ModuleInspection or
+            WorkbookAutomationStageKind.UserFormCreate or
+            WorkbookAutomationStageKind.HostEventInspection =>
+                DesktopWindowLifecyclePhase.VbeAutomation,
+            WorkbookAutomationStageKind.TestExecution =>
+                DesktopWindowLifecyclePhase.TestExecution,
+            WorkbookAutomationStageKind.ProcessCleanup =>
+                DesktopWindowLifecyclePhase.Shutdown,
+            _ => DesktopWindowLifecyclePhase.WorkbookAutomation
+        };
+
+    private static bool IsLateIsolationEvidenceFailure(
+        IExcelAutomationDesktopProcessControl process,
+        Exception exception)
+    {
+        if (exception is not (ObjectDisposedException or InvalidOperationException) ||
+            process is not IOwnedExcelProcessControl ownedProcess)
+        {
+            return false;
+        }
+
+        try
+        {
+            return ownedProcess.Completion.IsCompletedSuccessfully;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
     }
 
     internal sealed class OwnedExcelLaunchLease(
@@ -459,13 +631,17 @@ internal sealed class WorkbookAutomationStageExecutor
     private readonly Action<TimeSpan> requestForcedTermination;
     private readonly TimeSpan forcedTerminationObservationAllowance;
     private readonly Func<Task?> getOwnedProcessCompletion;
+    private readonly Action<WorkbookAutomationStage> captureAutomationStage;
+    private readonly Func<string?> describeIsolationEvidence;
     private int hasAbandonedOperation;
 
     public WorkbookAutomationStageExecutor(
         Func<bool> hasOwnedProcessExited,
         Action<TimeSpan> requestForcedTermination,
         TimeSpan? forcedTerminationObservationAllowance = null,
-        Func<Task?>? getOwnedProcessCompletion = null)
+        Func<Task?>? getOwnedProcessCompletion = null,
+        Action<WorkbookAutomationStage>? captureAutomationStage = null,
+        Func<string?>? describeIsolationEvidence = null)
     {
         this.hasOwnedProcessExited = hasOwnedProcessExited;
         this.requestForcedTermination = requestForcedTermination;
@@ -475,6 +651,8 @@ internal sealed class WorkbookAutomationStageExecutor
             this.forcedTerminationObservationAllowance,
             TimeSpan.Zero);
         this.getOwnedProcessCompletion = getOwnedProcessCompletion ?? (() => null);
+        this.captureAutomationStage = captureAutomationStage ?? (_ => { });
+        this.describeIsolationEvidence = describeIsolationEvidence ?? (() => null);
     }
 
     public bool HasAbandonedOperation =>
@@ -577,6 +755,8 @@ internal sealed class WorkbookAutomationStageExecutor
                     ? AsyncTerminal.Cancellation
                     : AsyncTerminal.ProcessLost;
             operationCancellation.Cancel();
+            captureAutomationStage(stage);
+            var isolationEvidence = describeIsolationEvidence();
             if (terminal is AsyncTerminal.Timeout or AsyncTerminal.Cancellation)
             {
                 TryRequestForcedTermination(cleanupGrace);
@@ -611,14 +791,22 @@ internal sealed class WorkbookAutomationStageExecutor
             throw terminal switch
             {
                 AsyncTerminal.Timeout =>
-                    new WorkbookAutomationTimeoutException(stage, timeout, operationError),
+                    new WorkbookAutomationTimeoutException(
+                        stage,
+                        timeout,
+                        operationError,
+                        isolationEvidence),
                 AsyncTerminal.Cancellation =>
                     new WorkbookAutomationCanceledException(
                         stage,
                         cancellationToken,
-                        operationError),
+                        operationError,
+                        isolationEvidence),
                 AsyncTerminal.ProcessLost =>
-                    new WorkbookAutomationProcessLostException(stage, operationError),
+                    new WorkbookAutomationProcessLostException(
+                        stage,
+                        operationError,
+                        isolationEvidence),
                 _ => throw new ArgumentOutOfRangeException(nameof(terminal), terminal, null)
             };
         }
@@ -637,14 +825,21 @@ internal sealed class WorkbookAutomationStageExecutor
     {
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(timeout, TimeSpan.Zero);
         ArgumentOutOfRangeException.ThrowIfLessThan(cleanupGrace, TimeSpan.Zero);
+        captureAutomationStage(stage);
+        var isolationEvidence = describeIsolationEvidence();
         if (cancellationToken.IsCancellationRequested)
         {
-            throw new WorkbookAutomationCanceledException(stage, cancellationToken);
+            throw new WorkbookAutomationCanceledException(
+                stage,
+                cancellationToken,
+                isolationDiagnostics: isolationEvidence);
         }
 
         if (hasOwnedProcessExited())
         {
-            throw new WorkbookAutomationProcessLostException(stage);
+            throw new WorkbookAutomationProcessLostException(
+                stage,
+                isolationDiagnostics: isolationEvidence);
         }
     }
 
@@ -656,10 +851,16 @@ internal sealed class WorkbookAutomationStageExecutor
         CancellationToken cancellationToken,
         Exception? innerException = null)
     {
+        captureAutomationStage(stage);
+        var isolationEvidence = describeIsolationEvidence();
         if (clock.Elapsed >= timeout)
         {
             TryRequestForcedTermination(cleanupGrace);
-            throw new WorkbookAutomationTimeoutException(stage, timeout, innerException);
+            throw new WorkbookAutomationTimeoutException(
+                stage,
+                timeout,
+                innerException,
+                isolationEvidence);
         }
 
         if (cancellationToken.IsCancellationRequested)
@@ -668,12 +869,16 @@ internal sealed class WorkbookAutomationStageExecutor
             throw new WorkbookAutomationCanceledException(
                 stage,
                 cancellationToken,
-                innerException);
+                innerException,
+                isolationEvidence);
         }
 
         if (hasOwnedProcessExited())
         {
-            throw new WorkbookAutomationProcessLostException(stage, innerException);
+            throw new WorkbookAutomationProcessLostException(
+                stage,
+                innerException,
+                isolationEvidence);
         }
     }
 

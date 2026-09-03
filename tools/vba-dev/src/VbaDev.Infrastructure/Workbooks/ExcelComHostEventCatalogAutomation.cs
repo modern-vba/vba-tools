@@ -53,8 +53,6 @@ internal interface IExcelComHostEventCatalogLifecycle
 /// </summary>
 public sealed class ExcelComHostEventCatalogAutomation : IHostEventCatalogAutomation
 {
-    private static readonly TimeSpan ForcedTerminationObservationAllowance =
-        TimeSpan.FromSeconds(1);
     private static readonly TimeSpan DispatcherAbandonmentObservation =
         TimeSpan.FromMilliseconds(100);
     private readonly IStaComDispatcherFactory dispatcherFactory;
@@ -97,7 +95,9 @@ public sealed class ExcelComHostEventCatalogAutomation : IHostEventCatalogAutoma
         var stageExecutor = new WorkbookAutomationStageExecutor(
             () => terminationController.HasAttachedProcessExited,
             terminationController.RequestForcedTermination,
-            getOwnedProcessCompletion: () => terminationController.AttachedProcessCompletion);
+            getOwnedProcessCompletion: () => terminationController.AttachedProcessCompletion,
+            captureAutomationStage: terminationController.CaptureAutomationStage,
+            describeIsolationEvidence: terminationController.DescribeIsolationEvidence);
         object? host = null;
         object? workbook = null;
         object? userForm = null;
@@ -166,22 +166,26 @@ public sealed class ExcelComHostEventCatalogAutomation : IHostEventCatalogAutoma
             stageExecutor,
             host,
             workbook,
-            userForm).ConfigureAwait(false);
+            userForm,
+            operationError).ConfigureAwait(false);
         var dispatcherError = await DisposeDispatcherAsync(
             dispatcher,
             stageExecutor.HasAbandonedOperation).ConfigureAwait(false);
-        if (release.ProofError is not null)
-        {
-            throw new WorkbookAutomationCleanupException(
-                "The owned Excel process used for Host Event catalog acquisition could not be verified as released.",
-                operationError is null
-                    ? release.ProofError
-                    : new AggregateException(operationError, release.ProofError));
-        }
-
         var cooperativeCleanupError = CombineErrors(
             release.CooperativeError,
             dispatcherError);
+        if (release.ProofError is not null)
+        {
+            var cleanupError = CombineErrors(
+                release.ProofError,
+                cooperativeCleanupError)!;
+            throw new WorkbookAutomationCleanupException(
+                "The owned Excel process used for Host Event catalog acquisition could not be verified as released.",
+                operationError is null
+                    ? cleanupError
+                    : new AggregateException(operationError, cleanupError));
+        }
+
         if (cooperativeCleanupError is not null)
         {
             throw new WorkbookAutomationReleasedProcessCleanupException(
@@ -209,8 +213,12 @@ public sealed class ExcelComHostEventCatalogAutomation : IHostEventCatalogAutoma
         WorkbookAutomationStageExecutor stageExecutor,
         object? host,
         object? workbook,
-        object? userForm)
+        object? userForm,
+        Exception? operationError)
     {
+        var cleanupStage = new WorkbookAutomationStage(
+            WorkbookAutomationStageKind.ProcessCleanup);
+        terminationController.CaptureAutomationStage(cleanupStage);
         Exception? cooperativeError = null;
         if (!stageExecutor.HasAbandonedOperation && host is not null)
         {
@@ -253,7 +261,9 @@ public sealed class ExcelComHostEventCatalogAutomation : IHostEventCatalogAutoma
                     CancellationToken.None);
                 var completed = await Task.WhenAny(
                     cleanupTask,
-                    Task.Delay(timeouts.CooperativeCleanup + ForcedTerminationObservationAllowance))
+                    Task.Delay(
+                        timeouts.CooperativeCleanup +
+                        PrivateDesktopOwnedExcelProcessControl.ForcedCleanupObservationAllowance))
                     .ConfigureAwait(false);
                 if (completed == cleanupTask)
                 {
@@ -264,8 +274,10 @@ public sealed class ExcelComHostEventCatalogAutomation : IHostEventCatalogAutoma
                     stageExecutor.MarkOperationAbandoned();
                     WorkbookAutomationStageExecutor.ObserveFault(cleanupTask);
                     cooperativeError = new WorkbookAutomationTimeoutException(
-                        new WorkbookAutomationStage(WorkbookAutomationStageKind.ProcessCleanup),
-                        timeouts.CooperativeCleanup);
+                        cleanupStage,
+                        timeouts.CooperativeCleanup,
+                        isolationDiagnostics:
+                            terminationController.DescribeIsolationEvidence());
                 }
             }
             catch (Exception exception)
@@ -278,14 +290,29 @@ public sealed class ExcelComHostEventCatalogAutomation : IHostEventCatalogAutoma
         {
             terminationController.RequestForcedTermination(timeouts.CooperativeCleanup);
             await terminationController.ObserveCleanupWithinAsync(
-                ForcedTerminationObservationAllowance).ConfigureAwait(false);
+                PrivateDesktopOwnedExcelProcessControl.ForcedCleanupObservationAllowance)
+                .ConfigureAwait(false);
+        }
+        catch (WorkbookAutomationReleasedProcessCleanupException exception)
+        {
+            return new OwnedHostReleaseResult(
+                ProofError: null,
+                CooperativeError: CombineErrors(cooperativeError, exception));
         }
         catch (Exception exception)
         {
             return new OwnedHostReleaseResult(exception, cooperativeError);
         }
 
-        return new OwnedHostReleaseResult(null, cooperativeError);
+        return new OwnedHostReleaseResult(
+            ProofError: null,
+            CooperativeError:
+                cooperativeError is not null &&
+                ReleasedAutomationCleanupPolicy.CanPreservePrimaryFailure(
+                    operationError,
+                    cooperativeError)
+                    ? null
+                    : cooperativeError);
     }
 
     private static void TryCleanup(Action cleanup, ICollection<Exception> errors)
