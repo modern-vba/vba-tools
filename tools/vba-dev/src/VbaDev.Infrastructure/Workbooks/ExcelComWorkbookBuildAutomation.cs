@@ -21,7 +21,7 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookBuildAuto
     /// <param name="workbookPath">The workbook path to open.</param>
     /// <returns>An Excel COM-backed workbook build session.</returns>
     public IWorkbookBuildSession OpenWorkbook(string workbookPath)
-        => new ExcelComWorkbookBuildSession(ExcelComWorkbookSession.Open(workbookPath));
+        => OpenWorkbook(workbookPath, CancellationToken.None);
 
     /// <summary>
     /// Opens an Excel workbook in a strongly owned, cancellable build process.

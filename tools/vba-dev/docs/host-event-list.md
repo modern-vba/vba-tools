@@ -134,12 +134,16 @@ two behaviors are separate facts, and both flags must be known.
 
 ## Safety and cleanup boundary
 
-One invocation owns exactly one hidden Excel process. The shared exact-process
-binding path may first create and open one generated macro-free `.xlsx`
-bootstrap artifact solely to expose the native object model for the owned PID.
-That artifact contains no user bytes, is neither inspected nor mutated, and is
-closed and deleted before catalog discovery begins. Catalog discovery fails
-closed unless the owned process then has zero open workbooks.
+One invocation owns exactly one hidden Excel process on a unique private Windows
+desktop. The process is created suspended with atomic Job ownership; exact-PID
+observation starts before its primary thread resumes, and native object-model
+binding enumerates only that private desktop. There is no caller-desktop or
+best-effort fallback. The shared binding path may first create and open one
+generated macro-free `.xlsx` bootstrap artifact solely to expose the native
+object model for the owned PID. That artifact contains no user bytes, is neither
+inspected nor mutated, and is closed and deleted before catalog discovery
+begins. Catalog discovery fails closed unless the owned process then has zero
+open workbooks.
 
 The catalog phase creates exactly one unsaved generated blank workbook and one
 temporary empty UserForm. It verifies that the workbook inventory changes from
@@ -153,7 +157,9 @@ proved released.
 
 The command requires desktop Excel and trusted access to the VBA project object
 model. A discovery failure is environment-level unavailable state; callers must
-not fall back to a user template or manufacture an empty Event surface.
+not fall back to a user template, reveal the private desktop, or manufacture an
+empty Event surface. An unexpected dialog remains private and is converted to a
+bounded failure with available exact-PID window and lifecycle-phase evidence.
 
 ## Consumer ownership
 

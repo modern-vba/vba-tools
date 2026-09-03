@@ -351,7 +351,7 @@ public sealed class DebugExcelProcessOwnerTests
     }
 
     [Fact]
-    public async Task FeasibilityProofCleanupTerminatesRemainingJobMembersAfterRootProcessLoss()
+    public async Task ProcessTreeCleanupTerminatesRemainingJobMembersAfterRootProcessLoss()
     {
         var process = new FakeDebugOwnedProcess(
             254,
@@ -364,7 +364,7 @@ public sealed class DebugExcelProcessOwnerTests
         process.Exit(9);
         _ = await owner.Completion;
 
-        await owner.TerminateProcessTreeForFeasibilityProofAsync(TimeSpan.FromSeconds(1));
+        await owner.TerminateProcessTreeAsync(TimeSpan.FromSeconds(1));
 
         Assert.Equal(1, job.TerminateCalls);
         Assert.Equal(0u, job.ActiveProcessCount);
@@ -372,7 +372,7 @@ public sealed class DebugExcelProcessOwnerTests
     }
 
     [Fact]
-    public async Task FeasibilityProofCleanupFailsWhenJobMembersDoNotDrainBeforeTheDeadline()
+    public async Task ProcessTreeCleanupFailsWhenJobMembersDoNotDrainBeforeTheDeadline()
     {
         var process = new FakeDebugOwnedProcess(
             255,
@@ -389,7 +389,7 @@ public sealed class DebugExcelProcessOwnerTests
         _ = await owner.Completion;
 
         var error = await Assert.ThrowsAsync<TimeoutException>(() =>
-            owner.TerminateProcessTreeForFeasibilityProofAsync(
+            owner.TerminateProcessTreeAsync(
                     TimeSpan.FromMilliseconds(50))
                 .AsTask());
 
@@ -400,7 +400,7 @@ public sealed class DebugExcelProcessOwnerTests
     }
 
     [Fact]
-    public async Task FeasibilityProofCleanupSerializesConcurrentDrainsAndDisposal()
+    public async Task ProcessTreeCleanupSerializesConcurrentDrainsAndDisposal()
     {
         var process = new FakeDebugOwnedProcess(
             256,
@@ -419,10 +419,10 @@ public sealed class DebugExcelProcessOwnerTests
             new FakeDebugExcelProcessApi(process.Id, process, job));
 
         var firstDrain = Task.Run(() =>
-            owner.TerminateProcessTreeForFeasibilityProofAsync(TimeSpan.FromSeconds(2)).AsTask());
+            owner.TerminateProcessTreeAsync(TimeSpan.FromSeconds(2)).AsTask());
         await terminationEntered.Task.WaitAsync(TimeSpan.FromSeconds(1));
         var secondDrain = owner
-            .TerminateProcessTreeForFeasibilityProofAsync(TimeSpan.FromSeconds(2))
+            .TerminateProcessTreeAsync(TimeSpan.FromSeconds(2))
             .AsTask();
         var disposal = owner.DisposeAsync().AsTask();
         await Task.Delay(TimeSpan.FromMilliseconds(50));

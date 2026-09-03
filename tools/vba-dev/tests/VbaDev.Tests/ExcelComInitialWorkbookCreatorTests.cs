@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using VbaDev.App.Workbooks;
 using VbaDev.Domain;
 using VbaDev.Infrastructure.Debugging;
@@ -127,6 +128,57 @@ public sealed class ExcelComInitialWorkbookCreatorTests
 
         Assert.Equal(WorkbookAutomationStageKind.WorkbookOpen, error.Stage.Kind);
         Assert.DoesNotContain(lifecycle.Events, entry => entry.StartsWith("save:", StringComparison.Ordinal));
+        Assert.True(lifecycle.Owner.HasExited);
+        Assert.Equal(1, lifecycle.Owner.DisposeCalls);
+    }
+
+    [Fact]
+    public async Task CancellationWithComOnlyPostReleaseCleanupPreservesTheCancellation()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var lifecycle = new RecordingInitialWorkbookLifecycle(
+            CreateExactBaseline("Visual Basic For Applications"))
+        {
+            AfterEstablish = cancellation.Cancel,
+            DisposeError = new COMException("The released Excel server rejected Close.")
+        };
+        var creator = CreateCreator(lifecycle);
+
+        var error = await Assert.ThrowsAsync<WorkbookAutomationCanceledException>(() =>
+            creator.CreateInitialWorkbookAsync(
+                Path.GetFullPath("CancelledWithReleasedCom.xlsm"),
+                cancellation.Token));
+
+        Assert.Equal(WorkbookAutomationStageKind.WorkbookOpen, error.Stage.Kind);
+        Assert.True(lifecycle.Owner.HasExited);
+        Assert.Equal(1, lifecycle.Owner.DisposeCalls);
+    }
+
+    [Fact]
+    public async Task CancellationWithMixedPostReleaseCleanupSurfacesTheCleanupFailure()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var lifecycle = new RecordingInitialWorkbookLifecycle(
+            CreateExactBaseline("Visual Basic For Applications"))
+        {
+            AfterEstablish = cancellation.Cancel,
+            DisposeError = new AggregateException(
+                new COMException("The released Excel server rejected Close."),
+                new InvalidOperationException("Unexpected cleanup defect."))
+        };
+        var creator = CreateCreator(lifecycle);
+
+        var error = await Assert.ThrowsAsync<WorkbookAutomationReleasedProcessCleanupException>(() =>
+            creator.CreateInitialWorkbookAsync(
+                Path.GetFullPath("CancelledWithMixedCleanup.xlsm"),
+                cancellation.Token));
+
+        var failures = Assert.IsType<AggregateException>(error.InnerException)
+            .Flatten()
+            .InnerExceptions;
+        Assert.Contains(failures, failure => failure is WorkbookAutomationCanceledException);
+        Assert.Contains(failures, failure => failure is COMException);
+        Assert.Contains(failures, failure => failure is InvalidOperationException);
         Assert.True(lifecycle.Owner.HasExited);
         Assert.Equal(1, lifecycle.Owner.DisposeCalls);
     }
@@ -303,6 +355,8 @@ public sealed class ExcelComInitialWorkbookCreatorTests
 
         public bool CompleteOwnerDuringDispose { get; init; } = true;
 
+        public Exception? DisposeError { get; init; }
+
         public string? SavedWorkbookPath { get; private set; }
 
         public object Start(
@@ -333,6 +387,11 @@ public sealed class ExcelComInitialWorkbookCreatorTests
             {
                 Owner.Complete();
             }
+
+            if (DisposeError is not null)
+            {
+                throw DisposeError;
+            }
         }
 
         public void DisposeSession(
@@ -343,6 +402,11 @@ public sealed class ExcelComInitialWorkbookCreatorTests
             if (CompleteOwnerDuringDispose)
             {
                 Owner.Complete();
+            }
+
+            if (DisposeError is not null)
+            {
+                throw DisposeError;
             }
         }
     }

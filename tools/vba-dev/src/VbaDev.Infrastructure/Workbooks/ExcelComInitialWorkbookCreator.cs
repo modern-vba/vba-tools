@@ -51,8 +51,6 @@ public sealed class ExcelComInitialWorkbookCreator : IInitialWorkbookCreator
 {
     private const int XlOpenXmlWorkbookMacroEnabled = 52;
     private const int XlWbatWorksheet = -4167;
-    private static readonly TimeSpan ForcedTerminationObservationAllowance =
-        TimeSpan.FromSeconds(1);
     private static readonly TimeSpan DispatcherAbandonmentObservation =
         TimeSpan.FromMilliseconds(100);
     private readonly IStaComDispatcherFactory dispatcherFactory;
@@ -134,7 +132,11 @@ public sealed class ExcelComInitialWorkbookCreator : IInitialWorkbookCreator
                 () => candidateTerminationController.HasAttachedProcessExited,
                 candidateTerminationController.RequestForcedTermination,
                 getOwnedProcessCompletion: () =>
-                    candidateTerminationController.AttachedProcessCompletion);
+                    candidateTerminationController.AttachedProcessCompletion,
+                captureAutomationStage:
+                    candidateTerminationController.CaptureAutomationStage,
+                describeIsolationEvidence:
+                    candidateTerminationController.DescribeIsolationEvidence);
         }
         catch (Exception setupError)
         {
@@ -258,7 +260,8 @@ public sealed class ExcelComInitialWorkbookCreator : IInitialWorkbookCreator
             terminationController,
             host,
             session,
-            stageExecutor).ConfigureAwait(false);
+            stageExecutor,
+            operationError).ConfigureAwait(false);
         var dispatcherError = await DisposeDispatcherAsync(
             dispatcher,
             stageExecutor.HasAbandonedOperation).ConfigureAwait(false);
@@ -293,11 +296,20 @@ public sealed class ExcelComInitialWorkbookCreator : IInitialWorkbookCreator
 
         if (cleanupError is not null)
         {
-            throw new WorkbookAutomationCleanupException(
-                "The initial workbook could not prove release of its exactly owned Excel process.",
-                operationError is null
-                    ? cleanupError
-                    : new AggregateException(operationError, cleanupError));
+            var combinedError = operationError is null
+                ? cleanupError
+                : new AggregateException(operationError, cleanupError);
+            if (WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(
+                cleanupError))
+            {
+                throw new WorkbookAutomationCleanupException(
+                    "The initial workbook could not prove release of its exactly owned Excel process.",
+                    combinedError);
+            }
+
+            throw new WorkbookAutomationReleasedProcessCleanupException(
+                "The initial-workbook Excel process was released, but cooperative cleanup or automation isolation failed.",
+                combinedError);
         }
 
         if (operationError is not null)
@@ -406,8 +418,12 @@ public sealed class ExcelComInitialWorkbookCreator : IInitialWorkbookCreator
         OwnedExcelTerminationController terminationController,
         object? host,
         IExcelComInitialWorkbookSession? session,
-        WorkbookAutomationStageExecutor stageExecutor)
+        WorkbookAutomationStageExecutor stageExecutor,
+        Exception? operationError)
     {
+        var cleanupStage = new WorkbookAutomationStage(
+            WorkbookAutomationStageKind.ProcessCleanup);
+        terminationController.CaptureAutomationStage(cleanupStage);
         if (stageExecutor.HasAbandonedOperation ||
             terminationController.HasAttachedProcessExited ||
             (host is null && session is null))
@@ -440,15 +456,17 @@ public sealed class ExcelComInitialWorkbookCreator : IInitialWorkbookCreator
                 cleanupTask,
                 Task.Delay(
                     timeouts.ProcessCleanup +
-                    ForcedTerminationObservationAllowance)).ConfigureAwait(false);
+                    PrivateDesktopOwnedExcelProcessControl.ForcedCleanupObservationAllowance))
+                .ConfigureAwait(false);
             if (completed != cleanupTask)
             {
                 stageExecutor.MarkOperationAbandoned();
                 WorkbookAutomationStageExecutor.ObserveFault(cleanupTask);
                 cooperativeCleanupError = new WorkbookAutomationTimeoutException(
-                    new WorkbookAutomationStage(
-                        WorkbookAutomationStageKind.ProcessCleanup),
-                    timeouts.ProcessCleanup);
+                    cleanupStage,
+                    timeouts.ProcessCleanup,
+                    isolationDiagnostics:
+                        terminationController.DescribeIsolationEvidence());
             }
             else
             {
@@ -468,6 +486,14 @@ public sealed class ExcelComInitialWorkbookCreator : IInitialWorkbookCreator
             return ownershipError;
         }
 
+        if (ownershipError is null &&
+            ReleasedAutomationCleanupPolicy.CanPreservePrimaryFailure(
+                operationError,
+                cooperativeCleanupError))
+        {
+            return null;
+        }
+
         return ownershipError is null
             ? cooperativeCleanupError
             : new AggregateException(cooperativeCleanupError, ownershipError);
@@ -481,12 +507,19 @@ public sealed class ExcelComInitialWorkbookCreator : IInitialWorkbookCreator
         {
             terminationController.RequestForcedTermination(cleanupGrace);
             await terminationController.ObserveCleanupWithinAsync(
-                ForcedTerminationObservationAllowance).ConfigureAwait(false);
+                PrivateDesktopOwnedExcelProcessControl.ForcedCleanupObservationAllowance)
+                .ConfigureAwait(false);
             return null;
+        }
+        catch (WorkbookAutomationReleasedProcessCleanupException exception)
+        {
+            return exception;
         }
         catch (Exception exception)
         {
-            return exception;
+            return new WorkbookAutomationCleanupException(
+                "The initial workbook could not verify exact owned-process release.",
+                exception);
         }
     }
 

@@ -228,7 +228,7 @@ public sealed class PrivateDesktopExcelFeasibilityWindowsExcelIntegrationTests(
                 await AttemptCleanupAsync(
                     cleanupFailures,
                     "success-path exact process-tree termination",
-                    () => owner.TerminateProcessTreeForFeasibilityProofAsync(
+                    () => owner.TerminateProcessTreeAsync(
                         TimeSpan.FromSeconds(5)).AsTask());
             }
 
@@ -419,7 +419,7 @@ public sealed class PrivateDesktopExcelFeasibilityWindowsExcelIntegrationTests(
                 $"title={detectedUi.Title}; phase={detectedUi.LifecyclePhase}.";
 
             cleanup.Start();
-            await owner.TerminateProcessTreeForFeasibilityProofAsync(TimeSpan.FromSeconds(5));
+            await owner.TerminateProcessTreeAsync(TimeSpan.FromSeconds(5));
             await owner.Completion.WaitAsync(TimeSpan.FromSeconds(5));
             await AwaitJobEmptyAsync(owner, TimeSpan.FromSeconds(5));
             try
@@ -449,7 +449,7 @@ public sealed class PrivateDesktopExcelFeasibilityWindowsExcelIntegrationTests(
                 await AttemptCleanupAsync(
                     cleanupFailures,
                     "interactive-UI exact process-tree termination",
-                    () => owner.TerminateProcessTreeForFeasibilityProofAsync(
+                    () => owner.TerminateProcessTreeAsync(
                         TimeSpan.FromSeconds(5)).AsTask());
             }
 
@@ -542,7 +542,7 @@ public sealed class PrivateDesktopExcelFeasibilityWindowsExcelIntegrationTests(
 
     [PrivateDesktopExcelFeasibilityFact]
     [Trait("Category", PrivateDesktopExcelFeasibilityFactAttribute.Category)]
-    public async Task BaselineObserverReproducesProductionBootstrapAndTargetLeaks()
+    public async Task UnisolatedControlObserverReproducesBootstrapAndTargetLeaks()
     {
         var initialProcesses = CaptureExcelProcessIds();
         var initialBootstrapArtifacts = CaptureBootstrapArtifacts();
@@ -591,7 +591,9 @@ public sealed class PrivateDesktopExcelFeasibilityWindowsExcelIntegrationTests(
                     {
                         launch.PrimaryThread.ResumeExactlyOnce();
                         application = new WindowsExcelNativeObjectModelBinder()
-                            .BindApplication(owner.ProcessId, () => owner.HasExited);
+                            .BindApplicationOnCallerDesktopForUnisolatedControl(
+                                owner.ProcessId,
+                                () => owner.HasExited);
                         dynamic excel = application;
                         excel.Visible = false;
                         excel.DisplayAlerts = false;
@@ -624,7 +626,7 @@ public sealed class PrivateDesktopExcelFeasibilityWindowsExcelIntegrationTests(
                     },
                     CancellationToken.None),
                 owner,
-                "production baseline bootstrap close",
+                "unisolated control bootstrap close",
                 TimeSpan.FromSeconds(10));
 
             observer.Capture(DesktopWindowLifecyclePhase.WorkbookAutomation);
@@ -697,7 +699,7 @@ public sealed class PrivateDesktopExcelFeasibilityWindowsExcelIntegrationTests(
                 DesktopWindowLifecyclePhase.WorkbookAutomation,
                 targetCaptionLeak.LifecyclePhase);
             observer.Capture(DesktopWindowLifecyclePhase.Shutdown);
-            await owner.TerminateProcessTreeForFeasibilityProofAsync(TimeSpan.FromSeconds(5));
+            await owner.TerminateProcessTreeAsync(TimeSpan.FromSeconds(5));
             await AwaitCompletedTaskAsync(targetSave, TimeSpan.FromSeconds(5));
             await owner.Completion.WaitAsync(TimeSpan.FromSeconds(5));
             await AwaitJobEmptyAsync(owner, TimeSpan.FromSeconds(5));
@@ -709,7 +711,7 @@ public sealed class PrivateDesktopExcelFeasibilityWindowsExcelIntegrationTests(
             Assert.All(finalEvidence.Observations, observation =>
                 Assert.Equal(owner.ProcessId, observation.ProcessId));
             output.WriteLine(
-                "Production baseline leak: PID={0}; bootstrapHWND=0x{1:X}; " +
+                "Unisolated control leak: PID={0}; bootstrapHWND=0x{1:X}; " +
                 "targetHWND=0x{2:X}; targetClass={3}; targetTitle={4}; " +
                 "targetIdentity={5}; targetSaveWasBlocked={6}; observations={7}.",
                 owner.ProcessId,
@@ -728,8 +730,8 @@ public sealed class PrivateDesktopExcelFeasibilityWindowsExcelIntegrationTests(
             {
                 await AttemptCleanupAsync(
                     cleanupFailures,
-                    "baseline exact process-tree termination",
-                    () => owner.TerminateProcessTreeForFeasibilityProofAsync(
+                    "unisolated-control exact process-tree termination",
+                    () => owner.TerminateProcessTreeAsync(
                         TimeSpan.FromSeconds(5)).AsTask());
             }
 
@@ -737,7 +739,7 @@ public sealed class PrivateDesktopExcelFeasibilityWindowsExcelIntegrationTests(
             {
                 await AttemptCleanupAsync(
                     cleanupFailures,
-                    "baseline target SaveAs unwind",
+                    "unisolated-control target SaveAs unwind",
                     () => AwaitCompletedTaskAsync(targetSave, TimeSpan.FromSeconds(5)));
             }
 
@@ -766,19 +768,19 @@ public sealed class PrivateDesktopExcelFeasibilityWindowsExcelIntegrationTests(
             {
                 AttemptCleanup(
                     cleanupFailures,
-                    "baseline bootstrap artifact deletion",
+                    "unisolated-control bootstrap artifact deletion",
                     () => ExcelBootstrapWorkbookFile.Delete(bootstrapPath));
             }
             if (staging is not null)
             {
                 AttemptCleanup(
                     cleanupFailures,
-                    "baseline initial-workbook staging deletion",
+                    "unisolated-control initial-workbook staging deletion",
                     () => DeleteInitialWorkbookStagingForProof(artifactGuard, staging));
             }
             AttemptCleanup(
                 cleanupFailures,
-                "baseline exact artifact absence verification",
+                "unisolated-control exact artifact absence verification",
                 () =>
                 {
                     Assert.True(bootstrapPath is null || !File.Exists(bootstrapPath));
@@ -787,7 +789,7 @@ public sealed class PrivateDesktopExcelFeasibilityWindowsExcelIntegrationTests(
                 });
             ThrowIfCleanupFailed(
                 cleanupFailures,
-                "The production baseline did not complete every cleanup boundary.");
+                "The unisolated control did not complete every cleanup boundary.");
         }
 
         await WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20));
@@ -847,7 +849,9 @@ public sealed class PrivateDesktopExcelFeasibilityWindowsExcelIntegrationTests(
                     {
                         launch.PrimaryThread.ResumeExactlyOnce();
                         application = new WindowsExcelNativeObjectModelBinder()
-                            .BindApplication(owner.ProcessId, () => owner.HasExited);
+                            .BindApplicationOnCallerDesktopForUnisolatedControl(
+                                owner.ProcessId,
+                                () => owner.HasExited);
                         dynamic excel = application;
                         excel.Visible = false;
                         excel.DisplayAlerts = false;
@@ -1052,7 +1056,7 @@ public sealed class PrivateDesktopExcelFeasibilityWindowsExcelIntegrationTests(
                 owner,
                 "interactive control shutdown",
                 TimeSpan.FromSeconds(20));
-            await owner.TerminateProcessTreeForFeasibilityProofAsync(
+            await owner.TerminateProcessTreeAsync(
                 TimeSpan.FromSeconds(5));
             await owner.Completion.WaitAsync(TimeSpan.FromSeconds(5));
             await AwaitJobEmptyAsync(owner, TimeSpan.FromSeconds(5));
@@ -1077,7 +1081,7 @@ public sealed class PrivateDesktopExcelFeasibilityWindowsExcelIntegrationTests(
                 await AttemptCleanupAsync(
                     cleanupFailures,
                     "interactive-control exact process-tree termination",
-                    () => owner.TerminateProcessTreeForFeasibilityProofAsync(
+                    () => owner.TerminateProcessTreeAsync(
                         TimeSpan.FromSeconds(5)).AsTask());
             }
 
@@ -1223,7 +1227,7 @@ public sealed class PrivateDesktopExcelFeasibilityWindowsExcelIntegrationTests(
                 await AttemptCleanupAsync(
                     cleanupFailures,
                     "private control-probe exact process-tree termination",
-                    () => owner.TerminateProcessTreeForFeasibilityProofAsync(
+                    () => owner.TerminateProcessTreeAsync(
                         TimeSpan.FromSeconds(5)).AsTask());
             }
 
@@ -1810,7 +1814,7 @@ public sealed class PrivateDesktopExcelFeasibilityWindowsExcelIntegrationTests(
                 await AttemptCleanupAsync(
                     cleanupFailures,
                     "exact Job termination",
-                    () => owner.TerminateProcessTreeForFeasibilityProofAsync(
+                    () => owner.TerminateProcessTreeAsync(
                         TimeSpan.FromSeconds(5)).AsTask());
             }
 
@@ -2030,7 +2034,7 @@ public sealed class PrivateDesktopExcelFeasibilityWindowsExcelIntegrationTests(
             await Task.Delay(grace);
         }
 
-        await owner.TerminateProcessTreeForFeasibilityProofAsync(TimeSpan.FromSeconds(5));
+        await owner.TerminateProcessTreeAsync(TimeSpan.FromSeconds(5));
     }
 
     private static async Task AwaitCompletedTaskAsync(Task task, TimeSpan timeout)
@@ -2387,7 +2391,7 @@ public sealed class PrivateDesktopExcelFeasibilityWindowsExcelIntegrationTests(
             return await binding;
         }
 
-        await owner.TerminateProcessTreeForFeasibilityProofAsync(TimeSpan.FromSeconds(5))
+        await owner.TerminateProcessTreeAsync(TimeSpan.FromSeconds(5))
             .AsTask()
             .WaitAsync(TimeSpan.FromSeconds(6));
         await AwaitCompletedTaskAsync(binding, TimeSpan.FromSeconds(5));
@@ -2424,7 +2428,7 @@ public sealed class PrivateDesktopExcelFeasibilityWindowsExcelIntegrationTests(
             return await operation;
         }
 
-        await owner.TerminateProcessTreeForFeasibilityProofAsync(TimeSpan.FromSeconds(5))
+        await owner.TerminateProcessTreeAsync(TimeSpan.FromSeconds(5))
             .AsTask()
             .WaitAsync(TimeSpan.FromSeconds(6));
         await AwaitCompletedTaskAsync(operation, TimeSpan.FromSeconds(5));

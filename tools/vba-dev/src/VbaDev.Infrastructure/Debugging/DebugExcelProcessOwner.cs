@@ -266,11 +266,10 @@ internal sealed class DebugExcelProcessOwner : IAsyncDisposable
     }
 
     /// <summary>
-    /// Terminates and verifies the complete Job Object process tree for the
-    /// opt-in private-desktop feasibility proof. Production cleanup continues
-    /// to use <see cref="TerminateAsync"/>.
+    /// Terminates and verifies the complete Job Object process tree before
+    /// desktop and process-ownership resources are released.
     /// </summary>
-    internal async ValueTask TerminateProcessTreeForFeasibilityProofAsync(TimeSpan timeout)
+    internal async ValueTask TerminateProcessTreeAsync(TimeSpan timeout)
     {
         if (timeout <= TimeSpan.Zero || timeout == Timeout.InfiniteTimeSpan)
         {
@@ -287,7 +286,7 @@ internal sealed class DebugExcelProcessOwner : IAsyncDisposable
         if (!await terminationLock.WaitAsync(timeout).ConfigureAwait(false))
         {
             throw new TimeoutException(
-                "Timed out while waiting to serialize feasibility-proof process-tree cleanup.");
+                "Timed out while waiting to serialize owned process-tree cleanup.");
         }
 
         try
@@ -304,16 +303,13 @@ internal sealed class DebugExcelProcessOwner : IAsyncDisposable
                 catch (Exception ex)
                 {
                     throw new DebugSetupException(
-                        "The feasibility proof could not terminate the owned Excel Job Object.",
+                        "The owned Excel Job Object could not be terminated.",
                         ex);
                 }
             }
 
-            if (!process.HasExited)
-            {
-                await Completion.WaitAsync(RemainingTimeout(timeout, stopwatch))
-                    .ConfigureAwait(false);
-            }
+            await Completion.WaitAsync(RemainingTimeout(timeout, stopwatch))
+                .ConfigureAwait(false);
 
             while (job.ActiveProcessCount > 0)
             {
@@ -487,7 +483,7 @@ internal sealed class DebugExcelProcessOwner : IAsyncDisposable
         if (remaining <= TimeSpan.Zero)
         {
             throw new TimeoutException(
-                "Timed out while verifying feasibility-proof cleanup of the owned Excel process tree.");
+                "Timed out while verifying cleanup of the owned Excel process tree.");
         }
 
         return remaining;

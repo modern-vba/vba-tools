@@ -96,18 +96,31 @@ public sealed class WorkbookAutomationTimeoutException : TimeoutException
     public WorkbookAutomationTimeoutException(
         WorkbookAutomationStage stage,
         TimeSpan timeout,
-        Exception? innerException = null)
+        Exception? innerException = null,
+        string? isolationDiagnostics = null)
         : base(
-            $"Workbook automation timed out during {stage.Description} after {timeout.TotalSeconds:0.###} seconds.",
+            AppendIsolationDiagnostics(
+                $"Workbook automation timed out during {stage.Description} after {timeout.TotalSeconds:0.###} seconds.",
+                isolationDiagnostics),
             innerException)
     {
         Stage = stage;
         Timeout = timeout;
+        IsolationDiagnostics = isolationDiagnostics;
     }
 
     public WorkbookAutomationStage Stage { get; }
 
     public TimeSpan Timeout { get; }
+
+    public string? IsolationDiagnostics { get; }
+
+    private static string AppendIsolationDiagnostics(
+        string message,
+        string? isolationDiagnostics)
+        => string.IsNullOrWhiteSpace(isolationDiagnostics)
+            ? message
+            : $"{message} {isolationDiagnostics}";
 }
 
 /// <summary>
@@ -118,16 +131,29 @@ public sealed class WorkbookAutomationCanceledException : OperationCanceledExcep
     public WorkbookAutomationCanceledException(
         WorkbookAutomationStage stage,
         CancellationToken cancellationToken,
-        Exception? innerException = null)
+        Exception? innerException = null,
+        string? isolationDiagnostics = null)
         : base(
-            $"Workbook automation was cancelled during {stage.Description}.",
+            AppendIsolationDiagnostics(
+                $"Workbook automation was cancelled during {stage.Description}.",
+                isolationDiagnostics),
             innerException,
             cancellationToken)
     {
         Stage = stage;
+        IsolationDiagnostics = isolationDiagnostics;
     }
 
     public WorkbookAutomationStage Stage { get; }
+
+    public string? IsolationDiagnostics { get; }
+
+    private static string AppendIsolationDiagnostics(
+        string message,
+        string? isolationDiagnostics)
+        => string.IsNullOrWhiteSpace(isolationDiagnostics)
+            ? message
+            : $"{message} {isolationDiagnostics}";
 }
 
 /// <summary>
@@ -137,15 +163,28 @@ public sealed class WorkbookAutomationProcessLostException : Exception
 {
     public WorkbookAutomationProcessLostException(
         WorkbookAutomationStage stage,
-        Exception? innerException = null)
+        Exception? innerException = null,
+        string? isolationDiagnostics = null)
         : base(
-            $"The owned Excel process exited during {stage.Description}.",
+            AppendIsolationDiagnostics(
+                $"The owned Excel process exited during {stage.Description}.",
+                isolationDiagnostics),
             innerException)
     {
         Stage = stage;
+        IsolationDiagnostics = isolationDiagnostics;
     }
 
     public WorkbookAutomationStage Stage { get; }
+
+    public string? IsolationDiagnostics { get; }
+
+    private static string AppendIsolationDiagnostics(
+        string message,
+        string? isolationDiagnostics)
+        => string.IsNullOrWhiteSpace(isolationDiagnostics)
+            ? message
+            : $"{message} {isolationDiagnostics}";
 }
 
 /// <summary>
@@ -160,7 +199,8 @@ public sealed class WorkbookAutomationCleanupException : Exception
 }
 
 /// <summary>
-/// Reports secondary automation cleanup failure after exact owned-process release was proved.
+/// Reports an automation-isolation violation or secondary cleanup failure after
+/// exact owned-process release was proved.
 /// </summary>
 public sealed class WorkbookAutomationReleasedProcessCleanupException : Exception
 {
@@ -177,6 +217,11 @@ internal static class WorkbookAutomationFailureClassifier
     public static bool ContainsCleanupProofFailure(Exception error)
     {
         ArgumentNullException.ThrowIfNull(error);
+        if (error is WorkbookAutomationReleasedProcessCleanupException)
+        {
+            return false;
+        }
+
         if (error is WorkbookAutomationCleanupException)
         {
             return true;

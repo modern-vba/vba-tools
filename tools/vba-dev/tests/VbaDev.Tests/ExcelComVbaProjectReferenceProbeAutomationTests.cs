@@ -137,6 +137,344 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomationTests
     }
 
     [Fact]
+    public async Task TimeoutWithComOnlyPostReleaseCleanupPreservesTheProbeTimeout()
+    {
+        var lifecycle = new FakeReferenceProbeLifecycle
+        {
+            DisposeHostError = new COMException(
+                "The released Excel server rejected Quit.")
+        };
+        var automation = new ExcelComVbaProjectReferenceProbeAutomation(
+            new ImmediateDispatcherFactory(),
+            lifecycle);
+        var timeout = new WorkbookAutomationTimeoutException(
+            new WorkbookAutomationStage(WorkbookAutomationStageKind.ReferenceAttempt),
+            TimeSpan.FromSeconds(1));
+
+        var error = await Assert.ThrowsAsync<VbaProjectReferenceProbeAttemptException>(() =>
+            automation.RunAsync(
+                VbaProjectReferenceProbeBaseline.BlankWorkbook,
+                WorkbookAutomationTimeouts.Default,
+                (_, _) => Task.FromException<bool>(timeout),
+                CancellationToken.None));
+
+        Assert.Equal("probeTimeout", error.ReasonCode);
+        Assert.Same(timeout, error.InnerException);
+        Assert.False(error.ProcessTrusted);
+        Assert.Equal(1, lifecycle.DisposeHostCalls);
+        Assert.True(lifecycle.OwnerHasExited);
+    }
+
+    [Fact]
+    public async Task TimeoutWithMixedPostReleaseCleanupSurfacesTheProbeCleanupFailure()
+    {
+        var lifecycle = new FakeReferenceProbeLifecycle
+        {
+            DisposeHostError = new AggregateException(
+                new COMException("The released Excel server rejected Quit."),
+                new InvalidOperationException("Unexpected cleanup defect."))
+        };
+        var automation = new ExcelComVbaProjectReferenceProbeAutomation(
+            new ImmediateDispatcherFactory(),
+            lifecycle);
+        var timeout = new WorkbookAutomationTimeoutException(
+            new WorkbookAutomationStage(WorkbookAutomationStageKind.ReferenceAttempt),
+            TimeSpan.FromSeconds(1));
+
+        var error = await Assert.ThrowsAsync<VbaProjectReferenceProbeAttemptException>(() =>
+            automation.RunAsync(
+                VbaProjectReferenceProbeBaseline.BlankWorkbook,
+                WorkbookAutomationTimeouts.Default,
+                (_, _) => Task.FromException<bool>(timeout),
+                CancellationToken.None));
+
+        Assert.Equal("cleanupFailure", error.ReasonCode);
+        Assert.False(error.ProcessTrusted);
+        var failures = Assert.IsType<AggregateException>(error.InnerException)
+            .Flatten()
+            .InnerExceptions;
+        Assert.Contains(
+            failures,
+            failure => failure is VbaProjectReferenceProbeAttemptException
+            {
+                ReasonCode: "probeTimeout"
+            });
+        Assert.Contains(failures, failure => failure is COMException);
+        Assert.Contains(failures, failure => failure is InvalidOperationException);
+        Assert.Equal(1, lifecycle.DisposeHostCalls);
+        Assert.True(lifecycle.OwnerHasExited);
+    }
+
+    [Fact]
+    public async Task DispatcherDisposalFailureAfterExactReleaseIsClassifiedAsReleasedCleanup()
+    {
+        var lifecycle = new FakeReferenceProbeLifecycle();
+        var dispatcherError = new InvalidOperationException(
+            "The reference-probe dispatcher could not be disposed.");
+        var automation = new ExcelComVbaProjectReferenceProbeAutomation(
+            new FakeStaComDispatcherFactory(
+                new DisposeFailingDispatcher(dispatcherError)),
+            lifecycle);
+
+        var error = await Assert.ThrowsAsync<VbaProjectReferenceProbeAttemptException>(() =>
+            automation.RunAsync(
+                VbaProjectReferenceProbeBaseline.BlankWorkbook,
+                WorkbookAutomationTimeouts.Default,
+                (_, _) => Task.FromResult(true),
+                CancellationToken.None));
+
+        Assert.Equal("cleanupFailure", error.ReasonCode);
+        Assert.False(error.ProcessTrusted);
+        var releasedCleanup = Assert.IsType<WorkbookAutomationReleasedProcessCleanupException>(
+            error.InnerException);
+        Assert.Same(dispatcherError, releasedCleanup.InnerException);
+        Assert.True(lifecycle.OwnerHasExited);
+    }
+
+    [Fact]
+    public async Task ReleasedCleanupAndDispatcherDisposalFailureRemainReleasedCleanup()
+    {
+        var lifecycleCleanup = new WorkbookAutomationReleasedProcessCleanupException(
+            "The process was released after cooperative cleanup failed.",
+            new COMException("The released Excel server rejected Quit."));
+        var lifecycle = new FakeReferenceProbeLifecycle
+        {
+            DisposeHostError = lifecycleCleanup
+        };
+        var dispatcherError = new InvalidOperationException(
+            "The reference-probe dispatcher could not be disposed.");
+        var automation = new ExcelComVbaProjectReferenceProbeAutomation(
+            new FakeStaComDispatcherFactory(
+                new DisposeFailingDispatcher(dispatcherError)),
+            lifecycle);
+
+        var error = await Assert.ThrowsAsync<VbaProjectReferenceProbeAttemptException>(() =>
+            automation.RunAsync(
+                VbaProjectReferenceProbeBaseline.BlankWorkbook,
+                WorkbookAutomationTimeouts.Default,
+                (_, _) => Task.FromResult(true),
+                CancellationToken.None));
+
+        Assert.Equal("cleanupFailure", error.ReasonCode);
+        Assert.False(error.ProcessTrusted);
+        var releasedCleanup = Assert.IsType<WorkbookAutomationReleasedProcessCleanupException>(
+            error.InnerException);
+        var failures = Assert.IsType<AggregateException>(releasedCleanup.InnerException)
+            .InnerExceptions;
+        Assert.Same(lifecycleCleanup, failures[0]);
+        var dispatcherCleanup = Assert.IsType<WorkbookAutomationReleasedProcessCleanupException>(
+            failures[1]);
+        Assert.Same(dispatcherError, dispatcherCleanup.InnerException);
+        Assert.True(lifecycle.OwnerHasExited);
+    }
+
+    [Fact]
+    public async Task CooperativeAndReleasedOwnershipCleanupRemainReleaseVerified()
+    {
+        var cooperativeError = new InvalidOperationException(
+            "Cooperative reference-probe cleanup failed.");
+        var ownershipError = new WorkbookAutomationReleasedProcessCleanupException(
+            "Exact owned-process release was verified despite an isolation failure.");
+        var lifecycle = new FakeReferenceProbeLifecycle
+        {
+            DisposeHostError = cooperativeError,
+            OwnerDisposeError = ownershipError
+        };
+        var automation = new ExcelComVbaProjectReferenceProbeAutomation(
+            new ImmediateDispatcherFactory(),
+            lifecycle);
+
+        var error = await Assert.ThrowsAsync<VbaProjectReferenceProbeAttemptException>(() =>
+            automation.RunAsync(
+                VbaProjectReferenceProbeBaseline.BlankWorkbook,
+                WorkbookAutomationTimeouts.Default,
+                (_, _) => Task.FromResult(true),
+                CancellationToken.None));
+
+        Assert.Equal("cleanupFailure", error.ReasonCode);
+        Assert.False(WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error));
+        var cleanup = Assert.IsType<WorkbookAutomationReleasedProcessCleanupException>(
+            error.InnerException);
+        var failures = Assert.IsType<AggregateException>(cleanup.InnerException)
+            .InnerExceptions;
+        Assert.Contains(failures, failure => ReferenceEquals(failure, cooperativeError));
+        Assert.Contains(failures, failure => ReferenceEquals(failure, ownershipError));
+    }
+
+    [Fact]
+    public async Task CooperativeAndUnprovedOwnershipCleanupRemainProofFailure()
+    {
+        var cooperativeError = new InvalidOperationException(
+            "Cooperative reference-probe cleanup failed.");
+        var ownershipError = new WorkbookAutomationCleanupException(
+            "Exact owned-process release could not be proved.");
+        var lifecycle = new FakeReferenceProbeLifecycle
+        {
+            DisposeHostError = cooperativeError,
+            OwnerDisposeError = ownershipError
+        };
+        var automation = new ExcelComVbaProjectReferenceProbeAutomation(
+            new ImmediateDispatcherFactory(),
+            lifecycle);
+
+        var error = await Assert.ThrowsAsync<VbaProjectReferenceProbeAttemptException>(() =>
+            automation.RunAsync(
+                VbaProjectReferenceProbeBaseline.BlankWorkbook,
+                WorkbookAutomationTimeouts.Default,
+                (_, _) => Task.FromResult(true),
+                CancellationToken.None));
+
+        Assert.Equal("cleanupFailure", error.ReasonCode);
+        Assert.True(WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error));
+        var cleanup = Assert.IsType<WorkbookAutomationCleanupException>(error.InnerException);
+        var failures = Assert.IsType<AggregateException>(cleanup.InnerException)
+            .InnerExceptions;
+        Assert.Contains(failures, failure => ReferenceEquals(failure, cooperativeError));
+        Assert.Contains(
+            failures,
+            failure => failure is WorkbookAutomationCleanupException ownershipCleanup &&
+                       ReferenceEquals(ownershipCleanup.InnerException, ownershipError));
+    }
+
+    [Fact]
+    public async Task ReleasedProcessCleanupPreservesFinalWorkspaceCleanupFailure()
+    {
+        using var temp = TempDirectory.Create();
+        var templatePath = Path.Combine(temp.Path, "Book1.xlsm");
+        File.WriteAllText(templatePath, "source template", new UTF8Encoding(false));
+        var ownershipError = new WorkbookAutomationReleasedProcessCleanupException(
+            "Exact owned-process release was verified despite an isolation failure.");
+        var lifecycle = new FakeReferenceProbeLifecycle
+        {
+            CreateWorkspaceBlockerOnOpen = true,
+            OwnerDisposeError = ownershipError
+        };
+        var automation = new ExcelComVbaProjectReferenceProbeAutomation(
+            new ImmediateDispatcherFactory(),
+            lifecycle);
+        try
+        {
+            var error = await Assert.ThrowsAsync<VbaProjectReferenceProbeAttemptException>(() =>
+                automation.RunAsync(
+                    VbaProjectReferenceProbeBaseline.SourceTemplate(templatePath),
+                    WorkbookAutomationTimeouts.Default,
+                    (session, cancellationToken) => session.TryResolveAsync(
+                        "Widget Library",
+                        new ResolvedVbaProjectReference(
+                            "Widget Library",
+                            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                            1,
+                            0),
+                        cancellationToken),
+                    CancellationToken.None));
+
+            Assert.Equal("cleanupFailure", error.ReasonCode);
+            Assert.False(WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error));
+            var cleanup = Assert.IsType<WorkbookAutomationReleasedProcessCleanupException>(
+                error.InnerException);
+            var failures = Assert.IsType<AggregateException>(cleanup.InnerException)
+                .InnerExceptions;
+            Assert.Contains(failures, failure => ReferenceEquals(failure, ownershipError));
+            Assert.Contains(failures, failure => failure is IOException);
+        }
+        finally
+        {
+            if (lifecycle.WorkspaceBlockerPath is not null)
+            {
+                var workspacePath = Path.GetDirectoryName(
+                    lifecycle.WorkspaceBlockerPath)!;
+                if (Directory.Exists(workspacePath))
+                {
+                    Directory.Delete(workspacePath, recursive: true);
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public async Task UnprovedProcessCleanupAndFinalWorkspaceFailureRemainProofFailure()
+    {
+        using var temp = TempDirectory.Create();
+        var templatePath = Path.Combine(temp.Path, "Book1.xlsm");
+        File.WriteAllText(templatePath, "source template", new UTF8Encoding(false));
+        var ownershipError = new WorkbookAutomationCleanupException(
+            "Exact owned-process release could not be proved.");
+        var lifecycle = new FakeReferenceProbeLifecycle
+        {
+            CreateWorkspaceBlockerOnOpen = true,
+            OwnerDisposeError = ownershipError
+        };
+        var automation = new ExcelComVbaProjectReferenceProbeAutomation(
+            new ImmediateDispatcherFactory(),
+            lifecycle);
+        try
+        {
+            var error = await Assert.ThrowsAsync<VbaProjectReferenceProbeAttemptException>(() =>
+                automation.RunAsync(
+                    VbaProjectReferenceProbeBaseline.SourceTemplate(templatePath),
+                    WorkbookAutomationTimeouts.Default,
+                    (session, cancellationToken) => session.TryResolveAsync(
+                        "Widget Library",
+                        new ResolvedVbaProjectReference(
+                            "Widget Library",
+                            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                            1,
+                            0),
+                        cancellationToken),
+                    CancellationToken.None));
+
+            Assert.True(WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error));
+            var cleanup = Assert.IsType<WorkbookAutomationCleanupException>(
+                error.InnerException);
+            var failures = Assert.IsType<AggregateException>(cleanup.InnerException)
+                .InnerExceptions;
+            Assert.Contains(
+                failures,
+                failure => WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(
+                    failure));
+            Assert.Contains(failures, failure => failure is IOException);
+        }
+        finally
+        {
+            if (lifecycle.WorkspaceBlockerPath is not null)
+            {
+                var workspacePath = Path.GetDirectoryName(
+                    lifecycle.WorkspaceBlockerPath)!;
+                if (Directory.Exists(workspacePath))
+                {
+                    Directory.Delete(workspacePath, recursive: true);
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ReleasedBootstrapCleanupFailureUsesCleanupFailureReason()
+    {
+        var releasedCleanup = new WorkbookAutomationReleasedProcessCleanupException(
+            "The bootstrap process was released, but artifact cleanup failed.");
+        var lifecycle = new FakeReferenceProbeLifecycle
+        {
+            StartError = releasedCleanup
+        };
+        var automation = new ExcelComVbaProjectReferenceProbeAutomation(
+            new ImmediateDispatcherFactory(),
+            lifecycle);
+
+        var error = await Assert.ThrowsAsync<VbaProjectReferenceProbeAttemptException>(() =>
+            automation.RunAsync(
+                VbaProjectReferenceProbeBaseline.BlankWorkbook,
+                WorkbookAutomationTimeouts.Default,
+                (_, _) => Task.FromResult(true),
+                CancellationToken.None));
+
+        Assert.Equal("cleanupFailure", error.ReasonCode);
+        Assert.False(error.ProcessTrusted);
+        Assert.Same(releasedCleanup, error.InnerException);
+        Assert.False(WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error));
+    }
+
+    [Fact]
     public async Task IdentityReadFailureRemainsCandidateLocalAfterVerifiedBaselineCleanup()
     {
         using var temp = TempDirectory.Create();
@@ -586,6 +924,18 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomationTests
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
+    private sealed class DisposeFailingDispatcher(Exception error) : IStaComDispatcher
+    {
+        public Task<T> InvokeAsync<T>(Func<T> operation, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(operation());
+        }
+
+        public ValueTask DisposeAsync()
+            => new(Task.FromException(error));
+    }
+
     private sealed class BlockingInvocationDispatcher(int blockedInvocation)
         : IStaComDispatcher
     {
@@ -719,11 +1069,17 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomationTests
 
         public int TerminateCalls => owner.TerminateCalls;
 
+        public bool OwnerHasExited => owner.HasExited;
+
         public List<string> OpenedWorkbookPaths { get; } = [];
 
         public List<string> ObservedBaselineContents { get; } = [];
 
         public List<object> BlankWorkbooks { get; } = [];
+
+        public bool CreateWorkspaceBlockerOnOpen { get; init; }
+
+        public string? WorkspaceBlockerPath { get; private set; }
 
         public Exception? ReadIdentityError { get; init; }
 
@@ -735,11 +1091,26 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomationTests
 
         public Exception? FindReferenceError { get; init; }
 
+        public Exception? DisposeHostError { get; init; }
+
+        public Exception? StartError { get; init; }
+
+        public Exception? OwnerDisposeError
+        {
+            get => owner.DisposeError;
+            init => owner.DisposeError = value;
+        }
+
         public object Start(
             OwnedExcelTerminationController terminationController,
             CancellationToken cancellationToken)
         {
             StartCalls++;
+            if (StartError is not null)
+            {
+                throw StartError;
+            }
+
             terminationController.Attach(owner);
             return new object();
         }
@@ -748,6 +1119,17 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomationTests
         {
             OpenedWorkbookPaths.Add(workbookPath);
             ObservedBaselineContents.Add(File.ReadAllText(workbookPath, Encoding.UTF8));
+            if (CreateWorkspaceBlockerOnOpen && WorkspaceBlockerPath is null)
+            {
+                WorkspaceBlockerPath = Path.Combine(
+                    Path.GetDirectoryName(workbookPath)!,
+                    "workspace-cleanup-blocker.tmp");
+                File.WriteAllText(
+                    WorkspaceBlockerPath,
+                    "block final non-recursive workspace deletion",
+                    new UTF8Encoding(false));
+            }
+
             if (OpenWorkbookError is not null)
             {
                 throw OpenWorkbookError;
@@ -811,6 +1193,10 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomationTests
         {
             DisposeHostCalls++;
             owner.Complete();
+            if (DisposeHostError is not null)
+            {
+                throw DisposeHostError;
+            }
         }
     }
 
@@ -825,6 +1211,8 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomationTests
 
         public int TerminateCalls { get; private set; }
 
+        public Exception? DisposeError { get; set; }
+
         public Task TerminateAsync()
         {
             TerminateCalls++;
@@ -832,7 +1220,10 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomationTests
             return Task.CompletedTask;
         }
 
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public ValueTask DisposeAsync()
+            => DisposeError is null
+                ? ValueTask.CompletedTask
+                : ValueTask.FromException(DisposeError);
 
         public void Complete() => completion.TrySetResult();
     }

@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Text;
 using VbaDev.App.Testing;
 using VbaDev.App.Workbooks;
@@ -340,6 +341,109 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
     }
 
     [Fact]
+    public async Task CooperativeAndReleasedOwnershipCleanupRemainReleaseVerified()
+    {
+        var events = new List<string>();
+        var cooperativeError = new InvalidOperationException("cooperative cleanup failed");
+        var ownershipError = new WorkbookAutomationReleasedProcessCleanupException(
+            "Exact owned-process release was verified despite an isolation failure.",
+            new WorkbookAutomationCleanupException(
+                "An earlier cleanup attempt could not prove release."));
+        var lifecycle = new FakeWorkbookGenerationLifecycle(events)
+        {
+            CleanupError = cooperativeError
+        };
+        lifecycle.Owner.DisposeError = ownershipError;
+        var automation = new ExcelComWorkbookBuildAutomation(
+            new RecordingGenerationDispatcherFactory(
+                new RecordingGenerationDispatcher(events)),
+            lifecycle);
+
+        var error = await Assert.ThrowsAsync<WorkbookAutomationReleasedProcessCleanupException>(
+            () => automation.RunAsync(
+                "staged.xlsm",
+                WorkbookAutomationTimeouts.Default,
+                static (_, _) => Task.FromResult(true),
+                CancellationToken.None));
+
+        Assert.False(WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error));
+        var failures = Assert.IsType<AggregateException>(error.InnerException).InnerExceptions;
+        Assert.Contains(
+            failures,
+            failure => failure is WorkbookAutomationReleasedProcessCleanupException cleanup &&
+                       ReferenceEquals(cleanup.InnerException, cooperativeError));
+        Assert.Contains(failures, failure => ReferenceEquals(failure, ownershipError));
+    }
+
+    [Fact]
+    public async Task CooperativeAndUnprovedOwnershipCleanupRemainProofFailure()
+    {
+        var cooperativeError = new InvalidOperationException("cooperative cleanup failed");
+        var ownershipError = new WorkbookAutomationCleanupException(
+            "Exact owned-process release could not be proved.");
+        var lifecycle = new FakeWorkbookGenerationLifecycle([])
+        {
+            CleanupError = cooperativeError
+        };
+        lifecycle.Owner.DisposeError = ownershipError;
+        var automation = new ExcelComWorkbookBuildAutomation(
+            new RecordingGenerationDispatcherFactory(
+                new RecordingGenerationDispatcher([])),
+            lifecycle);
+
+        var error = await Assert.ThrowsAsync<WorkbookAutomationCleanupException>(
+            () => automation.RunAsync(
+                "staged.xlsm",
+                WorkbookAutomationTimeouts.Default,
+                static (_, _) => Task.FromResult(true),
+                CancellationToken.None));
+
+        Assert.True(WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error));
+        var failures = Assert.IsType<AggregateException>(error.InnerException).InnerExceptions;
+        Assert.Contains(failures, failure =>
+            failure is WorkbookAutomationReleasedProcessCleanupException cleanup &&
+            ReferenceEquals(cleanup.InnerException, cooperativeError));
+        Assert.Contains(
+            failures,
+            failure => failure is WorkbookAutomationCleanupException cleanup &&
+                       ReferenceEquals(cleanup.InnerException, ownershipError));
+    }
+
+    [Fact]
+    public async Task PostTerminationComDisconnectPreservesTheOriginalStageTimeout()
+    {
+        var events = new List<string>();
+        var dispatcher = new RecordingGenerationDispatcher(events);
+        var lifecycle = new FakeWorkbookGenerationLifecycle(events)
+        {
+            BlockSaveUntilTermination = true,
+            CleanupError = new COMException("The RPC server is unavailable.")
+        };
+        var automation = new ExcelComWorkbookBuildAutomation(
+            new RecordingGenerationDispatcherFactory(dispatcher),
+            lifecycle);
+        var timeouts = WorkbookAutomationTimeouts.Default with
+        {
+            WorkbookSave = TimeSpan.FromMilliseconds(20),
+            ProcessCleanup = TimeSpan.Zero
+        };
+
+        var error = await Assert.ThrowsAsync<WorkbookAutomationTimeoutException>(() =>
+            automation.RunAsync(
+                "staged.xlsm",
+                timeouts,
+                async (session, cancellationToken) =>
+                {
+                    await session.SaveAsync(cancellationToken);
+                    return true;
+                },
+                CancellationToken.None));
+
+        Assert.Equal(WorkbookAutomationStageKind.WorkbookSave, error.Stage.Kind);
+        Assert.Equal(1, lifecycle.Owner.TerminationCalls);
+    }
+
+    [Fact]
     public async Task OpenFailureIdentifiesWorkbookOpenAndCleansTheStartedHost()
     {
         var events = new List<string>();
@@ -536,6 +640,37 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
     }
 
     [Fact]
+    public async Task VerifiedStartupReleaseDoesNotReclassifyIsolationFailureAsUnproved()
+    {
+        var events = new List<string>();
+        var startError = new InvalidOperationException("activation failed");
+        var cleanupError = new WorkbookAutomationReleasedProcessCleanupException(
+            "Caller-desktop exposure was detected after exact release.");
+        var lifecycle = new FakeWorkbookGenerationLifecycle(events)
+        {
+            StartError = new UnverifiedOwnedSessionStartFailure(startError, cleanupError),
+            ExitOwnedProcessBeforeStartError = true
+        };
+        var automation = new ExcelComWorkbookBuildAutomation(
+            new RecordingGenerationDispatcherFactory(
+                new RecordingGenerationDispatcher(events)),
+            lifecycle);
+
+        var error = await Assert.ThrowsAsync<WorkbookAutomationReleasedProcessCleanupException>(
+            () => automation.RunAsync(
+                "staged.xlsm",
+                WorkbookAutomationTimeouts.Default,
+                static (_, _) => Task.FromResult(true),
+                CancellationToken.None));
+
+        Assert.False(WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error));
+        Assert.Contains("Excel startup", error.Message, StringComparison.OrdinalIgnoreCase);
+        var aggregate = Assert.IsType<AggregateException>(error.InnerException);
+        Assert.Contains(startError, aggregate.InnerExceptions);
+        Assert.Contains(cleanupError, aggregate.InnerExceptions);
+    }
+
+    [Fact]
     public async Task StartupFailureAfterOwnershipForceTerminatesOnlyTheAttachedProcess()
     {
         var events = new List<string>();
@@ -563,6 +698,44 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
         Assert.Equal(1, lifecycle.Owner.TerminationCalls);
         Assert.True(lifecycle.Owner.HasExited);
         Assert.Equal(["start", "dispatcher-dispose"], events);
+    }
+
+    [Fact]
+    public async Task OwnedProcessExitDoesNotHideMixedCleanupFailureLeaves()
+    {
+        var events = new List<string>();
+        var cleanupError = new AggregateException(
+            new COMException("The RPC server is unavailable."),
+            new InvalidOperationException("Unexpected cleanup defect."));
+        var lifecycle = new FakeWorkbookGenerationLifecycle(events)
+        {
+            CleanupError = cleanupError
+        };
+        var automation = new ExcelComWorkbookBuildAutomation(
+            new RecordingGenerationDispatcherFactory(
+                new RecordingGenerationDispatcher(events)),
+            lifecycle);
+
+        var error = await Assert.ThrowsAsync<WorkbookAutomationReleasedProcessCleanupException>(() =>
+            automation.RunAsync(
+                "staged.xlsm",
+                WorkbookAutomationTimeouts.Default,
+                async (session, cancellationToken) =>
+                {
+                    await session.SaveAsync(cancellationToken);
+                    lifecycle.Owner.CompleteCooperatively();
+                    return true;
+                },
+                CancellationToken.None));
+
+        var aggregate = Assert.IsType<AggregateException>(error.InnerException);
+        Assert.Contains(
+            aggregate.InnerExceptions,
+            item => item is WorkbookAutomationProcessLostException);
+        Assert.Contains(
+            aggregate.InnerExceptions,
+            item => item is WorkbookAutomationReleasedProcessCleanupException cleanup &&
+                    ReferenceEquals(cleanup.InnerException, cleanupError));
     }
 
     [Fact]
@@ -939,6 +1112,8 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
 
         public int DisposeCalls { get; private set; }
 
+        public Exception? DisposeError { get; set; }
+
         public bool HasExited { get; private set; }
 
         public Task Completion => completion.Task;
@@ -961,7 +1136,9 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
         public ValueTask DisposeAsync()
         {
             DisposeCalls++;
-            return ValueTask.CompletedTask;
+            return DisposeError is null
+                ? ValueTask.CompletedTask
+                : ValueTask.FromException(DisposeError);
         }
     }
 
