@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import * as path from 'node:path';
 
 import { VbaDevSessionResolver } from './devtool';
-import { createVbaLanguageServerOptions } from './languageServer';
 
 import {
   ManagedToolingWorkspaceTrustGate,
@@ -11,35 +10,8 @@ import {
   ProjectCreationRestrictedModeMessage,
   WorkspaceTrustAction,
   createManagedToolingCommandHandler,
-  createManagedToolingCommandHandlers,
-  resolveCompanionExecutableForLanguageActivation
+  createManagedToolingCommandHandlers
 } from './workspaceTrust';
-
-test('restricted language activation starts safe language assistance without managed tooling', async () => {
-  let resolutions = 0;
-
-  const resolution = await resolveCompanionExecutableForLanguageActivation(
-    false,
-    async () => {
-      resolutions += 1;
-      return { executablePath: 'vba-dev.exe' };
-    }
-  );
-  const vbaDevExecutablePath = resolution?.executablePath;
-
-  assert.equal(resolution, undefined);
-  assert.equal(resolutions, 0);
-  const languageServerOptions = createVbaLanguageServerOptions({
-    extensionRoot: path.resolve(__dirname, '..', '..'),
-    platform: 'win32',
-    vbaDevExecutablePath
-  }) as {
-    readonly run: { readonly args?: readonly string[] };
-    readonly debug: { readonly args?: readonly string[] };
-  };
-  assert.equal(languageServerOptions.run.args, undefined);
-  assert.equal(languageServerOptions.debug.args, undefined);
-});
 
 test('restricted managed command handler blocks before the operation and only offers trust management', async () => {
   const warnings: Array<{ message: string; actions: readonly string[] }> = [];

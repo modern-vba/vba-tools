@@ -196,9 +196,11 @@ internal sealed class VbaInteractiveReferenceCatalogMutationLane
 /// </summary>
 internal sealed class ReferenceCatalogRefreshCoordinator
     : IReferenceCatalogRuntimeLifecycle,
-      IVbaProjectReferenceCatalogCommitObserver
+      IVbaProjectReferenceCatalogCommitObserver,
+      IVbaCompanionReferenceCatalogRefresh
 {
-    private static readonly TimeSpan ShutdownWaitTimeout = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan RegistryOnlyShutdownWaitTimeout =
+        TimeSpan.FromSeconds(1);
     private readonly VbaProjectReferenceCatalogCache catalogCache;
     private readonly VbaProjectReferenceCatalogRefreshService refreshService;
     private readonly VbaProjectManifestWorkspace manifestWorkspace;
@@ -338,6 +340,50 @@ internal sealed class ReferenceCatalogRefreshCoordinator
         if (TryCreateLifecyclePlan(uri, text: "", out var plan))
         {
             ScheduleLifecycle(plan, beforePost: null);
+        }
+    }
+
+    /// <summary>
+    /// Re-runs automatic catalog discovery for the currently open project scopes.
+    /// </summary>
+    /// <param name="uris">The currently open document URIs.</param>
+    public void RefreshActiveProjects(IReadOnlyList<string> uris)
+    {
+        ArgumentNullException.ThrowIfNull(uris);
+        var selectionsByAuthority = new Dictionary<
+            VbaProjectAuthorityIdentity,
+            (VbaIdentifiedDocument Document,
+                VbaProjectReferenceSelectionContext Selection)>();
+        foreach (var uri in uris.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (!TryCreateLifecyclePlan(uri, text: "", out var plan))
+            {
+                continue;
+            }
+
+            foreach (var selection in plan.Selections)
+            {
+                selectionsByAuthority.TryAdd(
+                    selection.Authority,
+                    (plan.Document, selection));
+            }
+        }
+
+        foreach (var documentGroup in selectionsByAuthority.Values.GroupBy(
+            candidate => candidate.Document.Identity))
+        {
+            var document = documentGroup.First().Document;
+            ScheduleLifecycle(
+                new ReferenceCatalogRefreshPlan(
+                    document,
+                    documentGroup
+                        .Select(candidate => candidate.Selection)
+                        .ToArray(),
+                    Revision: 0,
+                    ScopeRevisions:
+                        new Dictionary<VbaProjectAuthorityIdentity, long>()),
+                beforePost: null,
+                forceRefresh: true);
         }
     }
 
@@ -492,11 +538,13 @@ internal sealed class ReferenceCatalogRefreshCoordinator
 
         try
         {
+            var shutdownWaitTimeout = RegistryOnlyShutdownWaitTimeout
+                + refreshService.CancellationCleanupTimeout;
             await Task.WhenAll(
                     tasks
                         .Append(cancellation)
                         .Append(mailboxIdle))
-                .WaitAsync(ShutdownWaitTimeout);
+                .WaitAsync(shutdownWaitTimeout);
         }
         catch (TimeoutException)
         {
@@ -525,10 +573,13 @@ internal sealed class ReferenceCatalogRefreshCoordinator
 
     private void ScheduleLifecycle(
         ReferenceCatalogRefreshPlan plan,
-        Func<IReadOnlyList<VbaProjectAuthorityIdentity>>? beforePost)
+        Func<IReadOnlyList<VbaProjectAuthorityIdentity>>? beforePost,
+        bool forceRefresh = false)
     {
         var retiredAuthorities =
             new HashSet<VbaProjectAuthorityIdentity>();
+        var supersededWorkKeys =
+            new HashSet<VbaProjectReferenceCatalogAutomaticWorkIdentity>();
         ReferenceCatalogRefreshPlan scheduledPlan;
         VbaProjectValidationLifecycleLease[] activatedLeases;
         lock (lifecyclePlanGate)
@@ -540,6 +591,22 @@ internal sealed class ReferenceCatalogRefreshCoordinator
                 {
                     return;
                 }
+
+                var effectiveSelections = forceRefresh
+                    ? plan.Selections
+                        .Where(selection =>
+                            latestLifecycleScopeFingerprints.TryGetValue(
+                                selection.Authority,
+                                out var latestFingerprint)
+                            && latestFingerprint == selection.Fingerprint)
+                        .ToArray()
+                    : plan.Selections;
+                if (effectiveSelections.Count == 0)
+                {
+                    return;
+                }
+
+                plan = plan with { Selections = effectiveSelections };
 
                 mailbox = lifecycleMailbox
                     ?? throw new InvalidOperationException(
@@ -579,6 +646,14 @@ internal sealed class ReferenceCatalogRefreshCoordinator
 
                 foreach (var selection in plan.Selections)
                 {
+                    if (forceRefresh
+                        && lifecycleStates.Remove(
+                            selection.Authority,
+                            out var supersededState))
+                    {
+                        supersededWorkKeys.Add(supersededState.WorkKey);
+                    }
+
                     latestLifecycleScopeFingerprints[selection.Authority] =
                         selection.Fingerprint;
                     latestLifecycleScopeReferenceNames[selection.Authority] =
@@ -587,10 +662,13 @@ internal sealed class ReferenceCatalogRefreshCoordinator
                             .ToHashSet(VbaProjectReferenceName.Comparer);
                 }
 
-                retiredAuthorities.UnionWith(
-                    InvalidateMissingManifestScopesCore(
-                        plan.Uri,
-                        plan.Selections));
+                if (!forceRefresh)
+                {
+                    retiredAuthorities.UnionWith(
+                        InvalidateMissingManifestScopesCore(
+                            plan.Uri,
+                            plan.Selections));
+                }
 
                 scheduledPlan = plan with
                 {
@@ -611,6 +689,7 @@ internal sealed class ReferenceCatalogRefreshCoordinator
                 retiredAuthorities,
                 scheduledPlan.Revision);
             ActivateProjectValidations(activatedLeases);
+            CancelUnusedSharedWork(supersededWorkKeys);
             mailbox.Post(
                 scheduledPlan.Document.Identity,
                 cancellationToken =>
@@ -619,13 +698,15 @@ internal sealed class ReferenceCatalogRefreshCoordinator
                     planObserver.BeforePlanCommit(
                         scheduledPlan.Uri,
                         scheduledPlan.Revision);
-                    ScheduleLifecycleCore(scheduledPlan);
+                    ScheduleLifecycleCore(scheduledPlan, forceRefresh);
                     return Task.CompletedTask;
                 });
         }
     }
 
-    private void ScheduleLifecycleCore(ReferenceCatalogRefreshPlan plan)
+    private void ScheduleLifecycleCore(
+        ReferenceCatalogRefreshPlan plan,
+        bool forceRefresh)
     {
         var scheduledSelections = new List<ScheduledReferenceCatalogSelection>();
         var replacedWorkKeys =
@@ -647,8 +728,11 @@ internal sealed class ReferenceCatalogRefreshCoordinator
                 }
 
                 var fingerprint = selection.Fingerprint;
+                var workKey = CreateAutomaticWorkKey(selection, fingerprint);
                 if (lifecycleStates.TryGetValue(selection.Authority, out var current)
-                    && current.Fingerprint == fingerprint)
+                    && current.Fingerprint == fingerprint
+                    && current.WorkKey == workKey
+                    && !forceRefresh)
                 {
                     continue;
                 }
@@ -661,7 +745,7 @@ internal sealed class ReferenceCatalogRefreshCoordinator
                 lifecycleRevision++;
                 var state = new ReferenceCatalogLifecycleState(
                     fingerprint,
-                    CreateAutomaticWorkKey(selection, fingerprint),
+                    workKey,
                     lifecycleRevision);
                 lifecycleStates[selection.Authority] = state;
                 scheduledSelections.Add(new ScheduledReferenceCatalogSelection(
@@ -880,7 +964,15 @@ internal sealed class ReferenceCatalogRefreshCoordinator
         }
     }
 
+    void IVbaProjectReferenceCatalogCommitObserver.CatalogPersistedPreloadSettled(
+        VbaProjectReferenceCatalogRefreshBatchIdentity batch)
+        => FlushPendingProjectValidationRefreshes(batch);
+
     void IVbaProjectReferenceCatalogCommitObserver.CatalogRefreshSettled(
+        VbaProjectReferenceCatalogRefreshBatchIdentity batch)
+        => FlushPendingProjectValidationRefreshes(batch);
+
+    private void FlushPendingProjectValidationRefreshes(
         VbaProjectReferenceCatalogRefreshBatchIdentity batch)
     {
         IVbaProjectValidationLifecycleSink? validationLifecycle;

@@ -101,7 +101,8 @@ internal enum VbaInteractiveBackgroundWorkType
 
 internal readonly record struct VbaInteractiveReadPolicy(
     VbaInteractiveWorkClass WorkClass,
-    bool Concurrent)
+    bool Concurrent,
+    bool IsolateSynchronousPrefixFromPump = false)
 {
     public static VbaInteractiveReadPolicy ForMethod(string method)
         => method switch
@@ -128,6 +129,11 @@ internal readonly record struct VbaInteractiveReadPolicy(
                 or "vba/referenceCatalogRefresh"
                 or "vba/referenceCatalogPublication"
                 => new(VbaInteractiveWorkClass.Background, Concurrent: true),
+            "vba/companionExecutable"
+                => new(
+                    VbaInteractiveWorkClass.Background,
+                    Concurrent: true,
+                    IsolateSynchronousPrefixFromPump: true),
             _ => new(VbaInteractiveWorkClass.Normal, Concurrent: false)
         };
 }
@@ -145,6 +151,14 @@ internal readonly record struct VbaInteractiveWorkAdmissionTiming(
     string Method,
     VbaLspRequestId? RequestId,
     TimeSpan AdmissionTime);
+
+internal readonly record struct VbaInteractiveWorkCaptureTiming(
+    long InputSequence,
+    long ReadFence,
+    VbaInteractiveWorkKind Kind,
+    string Method,
+    VbaLspRequestId? RequestId,
+    TimeSpan CaptureTime);
 
 internal readonly record struct VbaInteractiveWorkCompletionTiming(
     long InputSequence,
@@ -167,6 +181,10 @@ internal readonly record struct VbaInteractiveWorkFailure(
 internal interface IVbaInteractiveWorkTimingSink
 {
     void RecordAdmission(VbaInteractiveWorkAdmissionTiming timing);
+
+    void RecordCapture(VbaInteractiveWorkCaptureTiming timing)
+    {
+    }
 
     void RecordCompletion(VbaInteractiveWorkCompletionTiming timing);
 }
@@ -1267,15 +1285,21 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
 
     private async Task DispatchReadAsync(ScheduledWork work)
     {
-        var execution = ExecuteCapturedWorkAsync(work);
+        var readPolicy = work.ReadPolicy!.Value;
+        var execution = readPolicy.IsolateSynchronousPrefixFromPump
+            ? DispatchPumpIsolatedReadAsync(work)
+            : ExecuteCapturedWorkAsync(work);
         if (!execution.IsCompleted)
         {
-            activeReads.Add(new ActiveRead(execution, work.ReadPolicy!.Value.WorkClass));
+            activeReads.Add(new ActiveRead(execution, readPolicy.WorkClass));
             return;
         }
 
         await execution;
     }
+
+    private Task DispatchPumpIsolatedReadAsync(ScheduledWork work)
+        => Task.Run(() => ExecuteCapturedWorkAsync(work));
 
     private Task ExecuteCapturedWorkAsync(ScheduledWork work)
         => ExecuteWorkAsync(
@@ -1303,7 +1327,16 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
                 work.Cancellation.Token.ThrowIfCancellationRequested();
             }
 
+            var captureStarted = Stopwatch.GetTimestamp();
             work.CapturedRead = work.CaptureRead!(work.Cancellation.Token);
+            var capturedAt = Stopwatch.GetTimestamp();
+            RecordCapture(new VbaInteractiveWorkCaptureTiming(
+                work.InputSequence,
+                work.ReadFence,
+                work.Kind,
+                work.Method,
+                work.RequestId,
+                Stopwatch.GetElapsedTime(captureStarted, capturedAt)));
             return true;
         }
         catch (OperationCanceledException exception)
@@ -1696,6 +1729,20 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
             lock (timingGate)
             {
                 timingSink.RecordCompletion(timing);
+            }
+        }
+        catch (Exception)
+        {
+        }
+    }
+
+    private void RecordCapture(VbaInteractiveWorkCaptureTiming timing)
+    {
+        try
+        {
+            lock (timingGate)
+            {
+                timingSink.RecordCapture(timing);
             }
         }
         catch (Exception)

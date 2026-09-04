@@ -58,6 +58,25 @@ A user-facing or automation-facing `VbaDev` command. It should have explicit
 inputs, outputs, side effects, and verification behavior.
 _Avoid_: script, helper, task
 
+**VbaDevProcessInvocation**:
+A language-server-local one-shot invocation of one session-pinned absolute
+`vba-dev` executable through its public process contract. It preserves argument
+order, starts stdout and stderr drain together, and returns exit status and both
+complete streams without interpreting a command's JSON. Cancellation observed
+while terminal exit or either stream drain is pending requests one process-tree
+termination, waits without the cancelled token for terminal exit and both
+drains within a bounded cleanup deadline, then preserves cancellation as the
+authoritative outcome. Reference-catalog shutdown keeps observing cooperative
+work for longer than this process-cleanup deadline. A missed deadline is a
+lifecycle failure because termination cannot be proved.
+Capability inspection and CLI-backed reference discovery share this process
+lifecycle while retaining separate command contracts. This lifecycle adds only
+a consumer-side dependency from the language server to the public CLI process
+contract. It adds no reverse dependency to `VbaDev`; the pre-existing
+language-server-owned parser reference remains a separate migration tracked by
+issue 361.
+_Avoid_: process lease, command-specific process runner, shared JSON contract
+
 **VbaDevTerminal**:
 A VS Code integrated terminal session opened by `VscodeExtension` for direct
 `VbaDev` use. It scopes command availability to that terminal environment
@@ -71,12 +90,24 @@ the bundled or explicitly overridden `vba-dev.exe` and
 `vbaTools.debugAdapter.path`. A missing or incompatible `vba-dev` override
 produces an actionable warning and falls back to a compatible bundled CLI; the
 resulting effective CLI path is pinned for every extension consumer in that
-session, and Doctor reports any difference from the configured path. A missing
+session, including commands, Doctor, CLI-backed reference discovery, and
+UserForm Event discovery. Doctor reports any difference from the configured
+path. A missing
 or incompatible debug-adapter override remains a failed explicit selection and
 does not fall back. Neither executable is discovered from `PATH`. A debug
 session pins both effective absolute paths and passes the CLI path to the adapter
 through `--vba-dev`.
 _Avoid_: PATH lookup, sibling inference, automatic download, silent fallback
+
+**CompanionExecutableReadiness**:
+The trusted-window state reached after the language client is operational,
+`CompanionExecutableResolution` has produced the one session-pinned effective
+`vba-dev` path, and that validated selection has been published to the language
+server through `vba/companionExecutable`. It enables CLI-backed reference
+catalog refresh and other managed companion consumers but is never a
+prerequisite for `InteractiveSemanticReadiness`. In Restricted Mode it remains
+unavailable and no managed process is resolved or started.
+_Avoid_: language-client readiness, semantic readiness, language-server startup argument
 
 **VbaDebugAdapterContract**:
 The extension-owned compatibility requirement stored as
@@ -832,16 +863,26 @@ current catalog when available and neither invoke nor wait for its producer.
 Manifest resolution creates no catalog association because every authoritative
 `.frm` source binds through `UserFormHostEventBinding`. `VbaDev` does not consume
 VS Code editor state, and the language server does not own Excel/VBIDE
-automation. `VscodeExtension` resolves
-the bundled or explicitly configured absolute `vba-dev.exe` path and passes it
-to the language server through `--vba-dev`. At startup, the server validates
-that supplied executable once through side-effect-free capability inspection
-and requires `reference list` JSON schema `1.0`; it does not repeat validation
-for each catalog refresh. The server does not search `PATH`, inspect VS Code
-settings, infer a sibling executable, or replace the supplied selection. A
-missing argument or failed startup validation records a warning and keeps
-registry-only, fail-closed catalog discovery without stopping the language
-server. A schema-valid, complete `reference list` response with project scope
+automation. `VscodeExtension` starts and initializes the language client before
+it resolves any companion executable. Once the client is operational in a
+trusted window, the extension resolves and validates the bundled or explicitly
+configured absolute `vba-dev.exe` path through its single session resolver and
+publishes the exact selection through the closed schema-`1.0`
+`vba/companionExecutable` notification. The server pins the first valid
+notification for the session. It applies notifications as non-coalescing
+background scheduler work, without creating an ordered barrier behind an active
+read or fencing a later higher-priority editor request, and schedules a
+latest-only background refresh for each still-active project authority; a
+different later path, malformed payload, or incompatible schema cannot replace
+it. No window reload, server restart, or editor-request wait is required. A
+standalone server may instead receive one
+absolute `--vba-dev` path with stdio selection, but starts its protocol loop
+before asynchronously validating `vba-dev capabilities --format json` and
+requiring `reference list` JSON schema `1.0`. Until either late path is admitted,
+and after any failure, discovery remains registry-only and fail-closed. The
+server does not search `PATH`, inspect VS Code settings, infer a sibling
+executable, or replace the supplied selection. A schema-valid, complete
+`reference list` response with project scope
 and matching project, document, and mode is consumed per reference even when
 the command exits nonzero: resolved entries may update their catalogs, while
 conclusively ambiguous or unavailable entries preserve their own
@@ -1418,9 +1459,10 @@ _Avoid_: source-template Event snapshot, per-form Event catalog, project Event c
 
 **IntrinsicHostEventCatalogLifecycle**:
 The `VscodeExtension` lifecycle that starts one asynchronous catalog discovery
-at trusted activation, publishes the result to the language server, and keeps
-editor startup independent from Excel completion. It never enumerates manifests
-to select workbooks and never opens a user source template as fallback.
+only after the language client is operational in a trusted window, publishes
+the result to the language server, and keeps editor startup independent from
+companion resolution and Excel completion. It never enumerates manifests to
+select workbooks and never opens a user source template as fallback.
 _Avoid_: project-scoped discovery, source-template catalog ownership
 
 **IntrinsicHostEventCatalogDiscovery**:
@@ -1516,10 +1558,12 @@ _Avoid_: document inspection, template Event export, user-workbook inspection
 
 **IntrinsicHostEventCatalogRefresh**:
 One extension-wide discovery attempt started asynchronously at trusted
-activation or explicitly by `VBA Tools: Refresh UserForm Events`. Only one
-attempt runs at a time; explicit refresh has no document chooser, a failed
-startup leaves the catalog unavailable, and a failed later refresh retains an
-already-current catalog without automatic retry or template fallback.
+activation after the language client becomes operational, or explicitly by
+`VBA Tools: Refresh UserForm Events`. Only one automatic attempt starts per
+extension activation and only one attempt runs at a time; explicit refresh has
+no document chooser, a failed startup leaves the catalog unavailable, and a
+failed later refresh retains an already-current catalog without automatic retry
+or template fallback.
 _Avoid_: project-specific refresh, source-scoped retry, implicit rediscovery
 
 **IntrinsicHostEventCatalogStatus**:
@@ -1879,7 +1923,8 @@ The state in which one exact immutable `VbaProjectSnapshot` has completed
 source capture, projection, reference selection, and `VbaSemanticInventory`
 construction and can therefore serve editor reads. It does not require the
 snapshot's project-aware `VbaValidationDiagnostic`s to have been computed or
-published. Project validation may later consume that same inventory, but it
+published, `CompanionExecutableReadiness`, or a current
+`IntrinsicHostEventCatalog`. Project validation may later consume that same inventory, but it
 cannot mutate its definitions, resolution, occurrence shards, semantic-token
 caches, or revision ownership. An editor request never constructs Project
 Validation Diagnostics as a condition of reading a ready inventory.
@@ -4143,7 +4188,10 @@ Dev: "What happens when a UserForm declares a source Event named `Click` and the
 Domain Expert: "`IntrinsicHostEventCoexistence` keeps the two authorities distinct. An unguarded source Event owns `RaiseEvent`, external `WithEvents` authoring, suffix resolution, and source Event Rename, while the catalog Event remains the fixed contract for `UserForm_Click`. A guarded source family and the catalog Event remain separate `[#If]` alternatives without active-branch or coverage inference. A Rename that cannot preserve every dependent association fails with `analysisIncomplete`."
 
 Dev: "Who discovers and publishes intrinsic UserForm Events?"
-Domain Expert: "`IntrinsicHostEventCatalogDiscovery` runs once asynchronously from trusted extension activation through `vba-dev host-event list --format json`. `VscodeExtension` owns `IntrinsicHostEventCatalogLifecycle`, publishes one versioned full-catalog replacement to the language server, and replays the latest current catalog after a language-client restart. The manifest owns no Event data or association, and synchronous editor requests never start or wait for Excel."
+Domain Expert: "After the language client is operational in a trusted window, `IntrinsicHostEventCatalogDiscovery` runs once asynchronously through `vba-dev host-event list --format json` and the session-pinned `CompanionExecutableResolution`. `VscodeExtension` owns `IntrinsicHostEventCatalogLifecycle`, publishes one versioned full-catalog replacement to the language server, and replays the latest current catalog after a language-client restart. The manifest owns no Event data or association, and synchronous editor requests never start or wait for companion resolution or Excel."
+
+Dev: "Should semantic highlighting wait for `vba-dev capabilities` so reference and UserForm metadata are complete?"
+Domain Expert: "No. Start and initialize the language client first. In a trusted window resolve the companion afterward, publish the validated path through `vba/companionExecutable`, and let reference catalogs and the UserForm Event catalog refresh in the background. Restricted Mode performs none of that managed process work but retains safe source language assistance."
 
 Dev: "Does discovery open each project document or source template?"
 Domain Expert: "No. One owned Excel process creates an unsaved blank workbook and one temporary UserForm, observes the locally installed UserForm Event surface, and closes everything without saving. It opens no user workbook, imports no user source, accepts no project or document selector, and never falls back to source-template inspection."

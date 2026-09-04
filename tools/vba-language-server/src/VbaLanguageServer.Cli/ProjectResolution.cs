@@ -58,7 +58,7 @@ public sealed record VbaProjectResolution(
     public bool ContainsUri(string uri)
     {
         var localPath = VbaProjectResolver.TryGetLocalPath(uri);
-        if (localPath is null)
+        if (localPath is null || string.IsNullOrWhiteSpace(RootPath))
         {
             return false;
         }

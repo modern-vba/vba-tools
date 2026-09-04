@@ -10,20 +10,15 @@ namespace VbaLanguageServer.Tests;
 public sealed class LanguageServerProcessTests
 {
     [Fact]
-    public async Task Server_without_a_supplied_vba_dev_warns_after_initialized_and_keeps_running()
+    public async Task Server_without_a_supplied_vba_dev_keeps_running_without_a_companion_warning()
     {
         await using var server = await LanguageServerProcessHarness.StartAsync();
 
         await server.InitializeAsync();
 
-        var warning = await server.WaitForLogMessageAsync(
-            "did not receive one absolute --vba-dev executable path");
-        Assert.Equal(2, warning.GetProperty("params").GetProperty("type").GetInt32());
-
-        var afterWarning = server.TranscriptCheckpoint;
-        await server.SendNotificationAsync("initialized", new { });
+        var afterInitialization = server.TranscriptCheckpoint;
         await Assert.ThrowsAsync<TimeoutException>(() => server.WaitForMessageAsync(
-            afterWarning,
+            afterInitialization,
             message => message.TryGetProperty("method", out var method)
                 && method.GetString() == "window/logMessage"
                 && message.GetProperty("params").GetProperty("message").GetString()
@@ -39,6 +34,21 @@ public sealed class LanguageServerProcessTests
                 position = new { line = 0, character = 0 }
             });
         Assert.Equal(JsonValueKind.Array, completion.GetProperty("result").ValueKind);
+    }
+
+    [Fact]
+    public async Task Server_warns_for_invalid_companionless_startup_arguments()
+    {
+        await using var server = await LanguageServerProcessHarness.StartAsync(
+            serverArguments: ["--stdio", "--stdio"]);
+
+        await server.InitializeAsync();
+
+        var warning = await server.WaitForLogMessageAsync(
+            "did not receive one absolute --vba-dev executable path");
+        Assert.Contains(
+            "registry-only discovery remains available",
+            warning.GetProperty("params").GetProperty("message").GetString());
     }
 
     [Fact]
@@ -63,7 +73,7 @@ public sealed class LanguageServerProcessTests
             Path.GetTempPath(),
             $"missing-vba-dev-{Guid.NewGuid():N}.exe"));
         await using var server = await LanguageServerProcessHarness.StartAsync(
-            serverArguments: ["--vba-dev", missingExecutablePath]);
+            serverArguments: ["--vba-dev", missingExecutablePath, "--stdio"]);
 
         var initialize = await server.InitializeAsync();
 
@@ -1365,7 +1375,7 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
-    public async Task Server_publishes_diagnostics_after_open_and_change_notifications()
+    public async Task Server_waits_for_current_diagnostics_when_an_older_version_frame_may_arrive_late()
     {
         await using var process = await LanguageServerProcessHarness.StartAsync();
 
@@ -1379,13 +1389,14 @@ public sealed class LanguageServerProcessTests
             });
         await process.SendNotificationAsync("initialized", new { });
 
+        const string uri = "file:///C:/work/Module1.bas";
         const string invalidLine = "        \"needle\", _ ' comment";
         await process.SendNotificationAsync("textDocument/didOpen",
             new
             {
                 textDocument = new
                 {
-                    uri = "file:///C:/work/Module1.bas",
+                    uri,
                     languageId = "vba",
                     version = 1,
                     text = string.Join('\n', [
@@ -1400,7 +1411,9 @@ public sealed class LanguageServerProcessTests
                 }
             });
 
-        var invalidDiagnostics = await process.WaitForNotificationAsync("textDocument/publishDiagnostics");
+        var invalidDiagnostics = await process.WaitForCurrentDiagnosticsAsync(
+            uri,
+            currentVersion: 1);
         var firstDiagnostic = invalidDiagnostics
             .GetProperty("params")
             .GetProperty("diagnostics")
@@ -1420,7 +1433,7 @@ public sealed class LanguageServerProcessTests
             {
                 textDocument = new
                 {
-                    uri = "file:///C:/work/Module1.bas",
+                    uri,
                     version = 2
                 },
                 contentChanges = new[]
@@ -1440,7 +1453,12 @@ public sealed class LanguageServerProcessTests
                 }
             });
 
-        var validDiagnostics = await process.WaitForNotificationAsync("textDocument/publishDiagnostics");
+        var validDiagnostics = await process.WaitForCurrentDiagnosticsAsync(
+            uri,
+            currentVersion: 2);
+        Assert.Equal(
+            2,
+            validDiagnostics.GetProperty("params").GetProperty("version").GetInt32());
         Assert.Empty(validDiagnostics.GetProperty("params").GetProperty("diagnostics").EnumerateArray());
 
         await process.ShutdownAsync(2);

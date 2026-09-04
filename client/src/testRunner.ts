@@ -14,6 +14,8 @@ import './projectManifestMutationVscodeAdapter.test';
 import './devtoolCommand.test';
 import './devtoolRuntime.test';
 import './workspaceTrust.test';
+import './companionLanguageServerLifecycle.test';
+import './semanticReadinessPerformanceEvidence.test';
 import './lazyOutputChannel.test';
 import './vbaDevTerminalCommand.test';
 import './vbaSourceFileText.test';

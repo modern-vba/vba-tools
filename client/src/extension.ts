@@ -111,7 +111,6 @@ import {
   openVbaDevTerminal
 } from './vbaDevTerminalCommand';
 import {
-  CompanionExecutableResolution,
   CompanionExecutableResolver,
   VbaDevResolutionLog,
   VbaDevResolutionNotice,
@@ -163,9 +162,11 @@ import {
 import {
   ManagedToolingCommandOperations,
   ManagedToolingWorkspaceTrustGate,
-  createManagedToolingCommandHandlers,
-  resolveCompanionExecutableForLanguageActivation
+  createManagedToolingCommandHandlers
 } from './workspaceTrust';
+import {
+  CompanionExecutableLanguageServerLifecycle
+} from './companionLanguageServerLifecycle';
 import { ProjectManifestMutationCoordinator } from './projectManifestMutation';
 import {
   createProjectManifestMutationVscodeAdapter
@@ -175,7 +176,10 @@ let client: LanguageClient | undefined;
 let outputChannel: OutputChannel | undefined;
 let toolDiagnosticReporter: VbaDevDiagnosticReporter | undefined;
 let activeVscodeDebugIntegration: VscodeDebugIntegration | undefined;
+let activeVbaDevResolver: VbaDevSessionResolver | undefined;
 let intrinsicHostEventCatalogLifecycle: IntrinsicHostEventCatalogLifecycle | undefined;
+let companionExecutableLanguageServerLifecycle:
+  CompanionExecutableLanguageServerLifecycle | undefined;
 
 type CommandPaletteTargetResolver = NonNullable<
   VbaDevCommandRuntimeOptions['resolveCommandPaletteTarget']
@@ -255,13 +259,16 @@ export async function activate(
     extensionRoot: context.extensionPath,
     configuredPathProvider: getConfiguredDevToolPath,
     reportLog: (log) => appendVbaDevResolutionLog(outputChannel, log),
-    reportNotice: (notice) => reportVbaDevResolutionNotice(outputChannel, notice)
+    reportNotice: (notice) => reportVbaDevResolutionNotice(outputChannel, notice),
+    runProcess: hostEventCatalogTestProbe?.controlsCompanionResolution !== true
+      ? undefined
+      : (file, args, signal) => hostEventCatalogTestProbe.runCompanionProcess(
+          file,
+          args,
+          signal
+        )
   });
-  const backgroundVbaDevResolver = new VbaDevSessionResolver({
-    extensionRoot: context.extensionPath,
-    configuredPathProvider: getConfiguredDevToolPath,
-    reportLog: (log) => appendVbaDevResolutionLog(outputChannel, log)
-  });
+  activeVbaDevResolver = vbaDevResolver;
   const newExcelProjectCommand = new NewExcelProjectCommand({
     resolveCompanionExecutable: () => vbaDevResolver.resolve(),
     runCommand: async (resolution, args) => {
@@ -345,7 +352,6 @@ export async function activate(
     isTrusted: isWorkspaceTrusted,
     invalidateManagedToolingState: () => {
       vbaDevResolver.invalidate();
-      backgroundVbaDevResolver.invalidate();
       newExcelProjectCommand.invalidatePreflight();
     },
     showWarningMessage: (message, ...actions) => (
@@ -353,17 +359,6 @@ export async function activate(
     ),
     executeCommand: (command) => commands.executeCommand(command)
   });
-  let initialVbaDevResolution: CompanionExecutableResolution | undefined;
-  try {
-    initialVbaDevResolution = await resolveCompanionExecutableForLanguageActivation(
-      isWorkspaceTrusted(),
-      () => vbaDevResolver.resolve()
-    );
-  } catch (error) {
-    if (!isReportedVbaDevResolutionFailure(error)) {
-      reportUnreportedVbaDevResolutionFailure(outputChannel, error);
-    }
-  }
   const captureSnapshotSourceInventoryFromVscode = createSnapshotSourceInventoryVscodeAdapter({
     getActiveWindowsCodePage: () => vbaDevResolver.readActiveWindowsCodePage(),
     getOpenTextDocuments: () => workspace.textDocuments.map((document) => ({
@@ -544,11 +539,12 @@ export async function activate(
         );
       }
       if (hostEventCatalogTestProbe !== undefined) {
+        await vbaDevResolver.resolve();
         return hostEventCatalogTestProbe.runHostEventList(invocation);
       }
       const result = await runVbaDevCommandInvocation({
         extensionRoot: context.extensionPath,
-        vbaDevResolver: backgroundVbaDevResolver,
+        vbaDevResolver,
         outputChannel: extensionOutputChannel,
         revealOutput: false,
         cancellationToken: invocation.cancellationToken
@@ -578,19 +574,10 @@ export async function activate(
     }
   });
   intrinsicHostEventCatalogLifecycle = lifecycle;
-  if (isWorkspaceTrusted()) {
-    void lifecycle.activate();
-  }
-  context.subscriptions.push(workspace.onDidGrantWorkspaceTrust(() => {
-    if (isWorkspaceTrusted()) {
-      void lifecycle.activate();
-    }
-  }));
   let projectManifestLanguageServerSync: ProjectManifestLanguageServerSync | undefined;
   try {
     const serverOptions = createVbaLanguageServerOptions({
       extensionRoot: context.extensionPath,
-      vbaDevExecutablePath: initialVbaDevResolution?.executablePath,
       referenceCatalogCacheRoot: createVbaLanguageServerReferenceCatalogCacheRoot(
         context.globalStorageUri.fsPath
       )
@@ -686,6 +673,42 @@ export async function activate(
 
     context.subscriptions.push(client);
     const languageClient = client;
+    const companionLifecycle = new CompanionExecutableLanguageServerLifecycle({
+      isTrusted: isWorkspaceTrusted,
+      resolveCompanion: () => vbaDevResolver.resolve(),
+      observeCompanionResolution: (listener) => vbaDevResolver.onDidResolve(listener),
+      sendNotification: (method, parameters) => (
+        languageClient.sendNotification(method, parameters)
+      ),
+      startUserFormEventCatalog: () => {
+        void lifecycle.activate();
+      },
+      reportResolutionError: (error) => {
+        if (!isReportedVbaDevResolutionFailure(error)) {
+          reportUnreportedVbaDevResolutionFailure(outputChannel, error);
+        }
+      },
+      reportPublicationError: (error) => outputChannel?.appendLine(
+        'VBA Tools could not publish the validated vba-dev companion to '
+        + 'the current language-server connection; language assistance '
+        + `continues with the registry-only catalog: ${error instanceof Error ? error.message : String(error)}`
+      )
+    });
+    companionExecutableLanguageServerLifecycle = companionLifecycle;
+    const observeCompanionReadiness = (isRunning: boolean): void => {
+      companionLifecycle.observeLanguageClientRunning(isRunning);
+      if (isRunning) {
+        companionLifecycle.activateTrustedServices();
+      }
+    };
+    context.subscriptions.push(
+      languageClient.onDidChangeState((event) => {
+        observeCompanionReadiness(event.newState === State.Running);
+      }),
+      workspace.onDidGrantWorkspaceTrust(() => {
+        observeCompanionReadiness(languageClient.state === State.Running);
+      })
+    );
     context.subscriptions.push(useBlockSkeletonInsertionPlanProvider(
       createLanguageClientBlockSkeletonInsertionPlanProvider(
         {
@@ -951,6 +974,10 @@ export async function activate(
     }
   ));
   await client?.start();
+  if (client?.state === State.Running) {
+    companionExecutableLanguageServerLifecycle?.observeLanguageClientRunning(true);
+    companionExecutableLanguageServerLifecycle?.activateTrustedServices();
+  }
   await projectManifestLanguageServerSync?.flush();
   await workbookBackedTestExplorer.refresh();
   await promptForActiveWorkbookBackedProject(
@@ -964,6 +991,7 @@ export async function activate(
     return undefined;
   }
   return {
+    companionExecutable: hostEventCatalogTestProbe.createCompanionApi(),
     intrinsicHostEventCatalog: hostEventCatalogTestProbe.createApi(async () => {
       const languageClient = client;
       if (languageClient === undefined) {
@@ -976,8 +1004,16 @@ export async function activate(
 }
 
 export async function deactivate(): Promise<void> {
+  const companionLifecycle = companionExecutableLanguageServerLifecycle;
+  companionLifecycle?.dispose();
+  companionExecutableLanguageServerLifecycle = undefined;
+  activeVbaDevResolver?.invalidate();
+  activeVbaDevResolver = undefined;
   intrinsicHostEventCatalogLifecycle?.shutdown();
-  await intrinsicHostEventCatalogLifecycle?.flush();
+  await Promise.all([
+    companionLifecycle?.flush(),
+    intrinsicHostEventCatalogLifecycle?.flush()
+  ]);
   intrinsicHostEventCatalogLifecycle = undefined;
   await activeVscodeDebugIntegration?.shutdown();
   activeVscodeDebugIntegration = undefined;

@@ -151,7 +151,13 @@ then stops per-URI publication ownership before the scheduler drains or aborts.
 
 Reference-catalog discovery remains on its dedicated low-impact worker because
 TypeLib COM calls may not cooperate with cancellation. The scheduler fairly
-admits the short, latest-only refresh-start ticket. Persisted or discovered
+admits the short, latest-only refresh-start ticket. Companion notification
+capture pins the first valid path on the ordered lane, then its prepared refresh
+application alone is explicitly dispatched before its synchronous prefix runs,
+so it cannot occupy the scheduler pump while later editor mutations and
+latency-critical reads arrive. Other background work retains the ordinary
+scheduler dispatch-start ordering.
+Persisted or discovered
 catalog data does not become visible directly from that external task: its
 cache commit is admitted back through the ordered mutation lane. A
 correctness-bearing commit waits cooperatively for capacity and reserves the

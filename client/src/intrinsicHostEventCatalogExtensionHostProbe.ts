@@ -4,10 +4,13 @@ import {
   IntrinsicHostEventCatalogLifecycleTransition,
   IntrinsicHostEventCatalogRunResult
 } from './intrinsicHostEventCatalogLifecycle';
+import type { ProcessResult } from './devtool';
 
 const ExtensionHostTestEnvironment = 'VBA_TOOLS_EXTENSION_HOST_TEST';
 const CatalogTestModeEnvironment =
   'VBA_TOOLS_INTRINSIC_HOST_EVENT_CATALOG_TEST_MODE';
+const CompanionResolutionTestEnvironment =
+  'VBA_TOOLS_COMPANION_RESOLUTION_TEST';
 
 export interface IntrinsicHostEventCatalogExtensionHostTestSnapshot {
   readonly invocations: readonly {
@@ -19,6 +22,7 @@ export interface IntrinsicHostEventCatalogExtensionHostTestSnapshot {
     readonly method: string;
     readonly parameters: unknown;
   }[];
+  readonly pendingInvocationCount: number;
 }
 
 export interface IntrinsicHostEventCatalogExtensionHostTestApi {
@@ -32,7 +36,19 @@ export interface IntrinsicHostEventCatalogExtensionHostTestApi {
   restartLanguageClient(): Promise<void>;
 }
 
+export interface CompanionExecutableExtensionHostTestApi {
+  snapshot(): {
+    readonly invocations: readonly {
+      readonly file: string;
+      readonly args: readonly string[];
+    }[];
+    readonly pendingInvocationCount: number;
+  };
+  completeInvocation(index: number, result: ProcessResult): void;
+}
+
 export interface VbaToolsExtensionHostTestApi {
+  readonly companionExecutable: CompanionExecutableExtensionHostTestApi;
   readonly intrinsicHostEventCatalog: IntrinsicHostEventCatalogExtensionHostTestApi;
 }
 
@@ -41,7 +57,18 @@ interface PendingInvocation {
   settled: boolean;
 }
 
+interface PendingCompanionInvocation {
+  readonly settle: (result: ProcessResult) => void;
+  readonly abort: () => void;
+  settled: boolean;
+}
+
 export class IntrinsicHostEventCatalogExtensionHostProbe {
+  private readonly companionInvocations: Array<{
+    readonly file: string;
+    readonly args: readonly string[];
+  }> = [];
+  private readonly pendingCompanionInvocations: PendingCompanionInvocation[] = [];
   private readonly invocations: Array<{
     readonly trigger: IntrinsicHostEventCatalogInvocation['trigger'];
     readonly args: readonly string[];
@@ -55,7 +82,8 @@ export class IntrinsicHostEventCatalogExtensionHostProbe {
 
   private constructor(
     public readonly actualWorkspaceTrusted: boolean,
-    public readonly effectiveWorkspaceTrusted: boolean
+    public readonly effectiveWorkspaceTrusted: boolean,
+    public readonly controlsCompanionResolution: boolean
   ) {
   }
 
@@ -73,7 +101,8 @@ export class IntrinsicHostEventCatalogExtensionHostProbe {
     }
     return new IntrinsicHostEventCatalogExtensionHostProbe(
       actualWorkspaceTrusted,
-      mode === 'controlled-trusted' ? true : actualWorkspaceTrusted
+      mode === 'controlled-trusted' ? true : actualWorkspaceTrusted,
+      environment[CompanionResolutionTestEnvironment] === '1'
     );
   }
 
@@ -114,6 +143,43 @@ export class IntrinsicHostEventCatalogExtensionHostProbe {
     });
   }
 
+  public runCompanionProcess(
+    file: string,
+    args: readonly string[],
+    signal?: AbortSignal
+  ): Promise<ProcessResult> {
+    this.companionInvocations.push({ file, args: [...args] });
+    return new Promise((resolve, reject) => {
+      const removeAbortListener = (): void => {
+        signal?.removeEventListener('abort', abort);
+      };
+      const settle = (complete: () => void): void => {
+        if (pending.settled) {
+          return;
+        }
+        pending.settled = true;
+        removeAbortListener();
+        complete();
+      };
+      const abort = (): void => settle(() => {
+        const error = new Error('The companion process invocation was aborted.');
+        error.name = 'AbortError';
+        reject(error);
+      });
+      const pending: PendingCompanionInvocation = {
+        settled: false,
+        settle: (result) => settle(() => resolve(result)),
+        abort
+      };
+      this.pendingCompanionInvocations.push(pending);
+      if (signal?.aborted) {
+        abort();
+      } else {
+        signal?.addEventListener('abort', abort, { once: true });
+      }
+    });
+  }
+
   public observeTransition(
     transition: IntrinsicHostEventCatalogLifecycleTransition
   ): void {
@@ -142,7 +208,10 @@ export class IntrinsicHostEventCatalogExtensionHostProbe {
         notifications: this.notifications.map((notification) => ({
           method: notification.method,
           parameters: cloneJsonValue(notification.parameters)
-        }))
+        })),
+        pendingInvocationCount: this.pendingInvocations.filter(
+          (invocation) => !invocation.settled
+        ).length
       }),
       completeInvocation: (index, result) => {
         const pending = this.pendingInvocations[index];
@@ -155,6 +224,30 @@ export class IntrinsicHostEventCatalogExtensionHostProbe {
         pending.settle(result);
       },
       restartLanguageClient
+    };
+  }
+
+  public createCompanionApi(): CompanionExecutableExtensionHostTestApi {
+    return {
+      snapshot: () => ({
+        invocations: this.companionInvocations.map((invocation) => ({
+          file: invocation.file,
+          args: [...invocation.args]
+        })),
+        pendingInvocationCount: this.pendingCompanionInvocations.filter(
+          (invocation) => !invocation.settled
+        ).length
+      }),
+      completeInvocation: (index, result) => {
+        const pending = this.pendingCompanionInvocations[index];
+        if (pending === undefined) {
+          throw new Error(`Companion invocation ${index} has not started.`);
+        }
+        if (pending.settled) {
+          throw new Error(`Companion invocation ${index} is already complete.`);
+        }
+        pending.settle(result);
+      }
     };
   }
 }

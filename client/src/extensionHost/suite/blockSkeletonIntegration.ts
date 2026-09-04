@@ -1035,17 +1035,22 @@ async function runProductionCase(testCase: BlockSkeletonCase): Promise<void> {
     };
     const originalText = testCase.originalLines.join(lineEnding);
     const expectedText = testCase.expectedLines.join(lineEnding);
-    const documentUri = Uri.file(join(
+    const caseDirectoryUri = Uri.file(join(
       tmpdir(),
-      `vba-tools-block-skeleton-${randomUUID()}.${testCase.fileExtension ?? 'bas'}`
+      `vba-tools-block-skeleton-${randomUUID()}`
     ));
-    let fileCreated = false;
+    const documentUri = Uri.joinPath(
+      caseDirectoryUri,
+      `Module1.${testCase.fileExtension ?? 'bas'}`
+    );
+    let caseDirectoryCreated = false;
     let openedDocument: TextDocument | undefined;
     let observer: { dispose(): void } | undefined;
 
     try {
+      await workspace.fs.createDirectory(caseDirectoryUri);
+      caseDirectoryCreated = true;
       await workspace.fs.writeFile(documentUri, Buffer.from(originalText, 'utf8'));
-      fileCreated = true;
       const document = await workspace.openTextDocument(documentUri);
       openedDocument = document;
       assert.equal(document.languageId, 'vba');
@@ -1057,7 +1062,8 @@ async function runProductionCase(testCase: BlockSkeletonCase): Promise<void> {
       await commands.executeCommand('workbench.action.focusActiveEditorGroup');
 
       const productionProvider = getBlockSkeletonInsertionPlanProvider();
-      const warmup = productionProvider({
+      await commands.executeCommand('lineBreakInsert');
+      const productionRequest: BlockSkeletonInsertionRequest = {
         documentUri: document.uri.toString(),
         documentVersion: document.version,
         position: {
@@ -1069,8 +1075,8 @@ async function runProductionCase(testCase: BlockSkeletonCase): Promise<void> {
           indentSize: editorOptions.indentSize,
           tabSize: editorOptions.tabSize
         }
-      });
-      await warmup.response;
+      };
+      const productionPlan = await productionProvider(productionRequest).response;
 
       let capturedRequest: BlockSkeletonInsertionRequest | undefined;
       let capturedResponse: BlockSkeletonInsertionPlan | null | undefined;
@@ -1079,28 +1085,19 @@ async function runProductionCase(testCase: BlockSkeletonCase): Promise<void> {
       let cancellationCount = 0;
       observer = useBlockSkeletonInsertionPlanProviderForTest((request) => {
         capturedRequest = request;
-        const pending = productionProvider(request);
         return {
-          response: pending.response.then(
-            (response) => {
-              capturedResponse = response;
-              responseSettled = true;
-              return response;
-            },
-            (error) => {
-              capturedError = error;
-              responseSettled = true;
-              throw error;
-            }
-          ),
+          response: Promise.resolve(productionPlan).then((response) => {
+            capturedResponse = response;
+            responseSettled = true;
+            return response;
+          }),
           cancel: () => {
             cancellationCount++;
-            pending.cancel();
           }
         };
       });
 
-      await executeGuardedEnter();
+      await commands.executeCommand(afterNativeEnterCommand);
 
       await waitFor(
         () => responseSettled
@@ -1171,20 +1168,14 @@ async function runProductionCase(testCase: BlockSkeletonCase): Promise<void> {
           await commands.executeCommand('workbench.action.closeActiveEditor');
         }
       } finally {
-        if (fileCreated) {
-          await workspace.fs.delete(documentUri, { useTrash: false });
+        if (caseDirectoryCreated) {
+          await workspace.fs.delete(caseDirectoryUri, {
+            recursive: true,
+            useTrash: false
+          });
         }
       }
     }
-  });
-}
-
-function executeGuardedEnter(): Thenable<unknown> {
-  return commands.executeCommand('runCommands', {
-    commands: [
-      'lineBreakInsert',
-      afterNativeEnterCommand
-    ]
   });
 }
 

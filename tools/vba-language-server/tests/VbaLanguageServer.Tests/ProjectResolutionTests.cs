@@ -8,6 +8,19 @@ namespace VbaLanguageServer.Tests;
 public sealed class ProjectResolutionTests
 {
     [Fact]
+    public void NonFileAdHocResolutionContainsNoFileDocument()
+    {
+        var resolution = VbaProjectResolver.Resolve("untitled:Untitled-1");
+        var fileUri = new Uri(Path.Combine(
+            Path.GetTempPath(),
+            "Module1.bas")).AbsoluteUri;
+
+        Assert.Equal(VbaProjectResolutionKind.AdHoc, resolution.Kind);
+        Assert.Equal(string.Empty, resolution.RootPath);
+        Assert.False(resolution.ContainsUri(fileUri));
+    }
+
+    [Fact]
     public void ActiveFileAliasIntoDeclaredSourceRootResolvesTheManifestDocument()
     {
         using var temp = TestDirectory.Create();

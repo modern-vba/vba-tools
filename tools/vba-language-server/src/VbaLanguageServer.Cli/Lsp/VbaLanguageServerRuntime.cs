@@ -20,6 +20,13 @@ internal sealed class VbaLanguageServerRuntime
     private readonly VbaDevReferenceListStartupState? vbaDevStartupState;
     private readonly IVbaIntrinsicHostEventCatalogHandler?
         intrinsicHostEventCatalogHandler;
+    private readonly IVbaCompanionExecutableNotificationHandler?
+        companionExecutableHandler;
+    private readonly Func<
+        CancellationToken,
+        Task<VbaDevReferenceListStartupState>>? vbaDevStartupResolver;
+    private readonly TaskCompletionSource initialized = new(
+        TaskCreationOptions.RunContinuationsAsynchronously);
     private int startupWarningPublished;
 
     /// <summary>
@@ -33,6 +40,8 @@ internal sealed class VbaLanguageServerRuntime
     /// <param name="projectReconciliationLifecycle">The optional background project reconciliation owner.</param>
     /// <param name="vbaDevStartupState">The optional startup-validated VbaDev reference-list capability.</param>
     /// <param name="intrinsicHostEventCatalogHandler">The optional environment-scoped intrinsic host Event catalog handler.</param>
+    /// <param name="companionExecutableHandler">The optional late-bound companion executable handler.</param>
+    /// <param name="vbaDevStartupResolver">The optional asynchronous standalone companion validator.</param>
     public VbaLanguageServerRuntime(
         LspMessageTransport transport,
         VbaLspRequestExecution requestExecution,
@@ -43,7 +52,11 @@ internal sealed class VbaLanguageServerRuntime
             projectReconciliationLifecycle = null,
         VbaDevReferenceListStartupState? vbaDevStartupState = null,
         IVbaIntrinsicHostEventCatalogHandler?
-            intrinsicHostEventCatalogHandler = null)
+            intrinsicHostEventCatalogHandler = null,
+        IVbaCompanionExecutableNotificationHandler?
+            companionExecutableHandler = null,
+        Func<CancellationToken, Task<VbaDevReferenceListStartupState>>?
+            vbaDevStartupResolver = null)
     {
         this.transport = transport;
         this.requestExecution = requestExecution;
@@ -53,6 +66,8 @@ internal sealed class VbaLanguageServerRuntime
         this.projectReconciliationLifecycle = projectReconciliationLifecycle;
         this.vbaDevStartupState = vbaDevStartupState;
         this.intrinsicHostEventCatalogHandler = intrinsicHostEventCatalogHandler;
+        this.companionExecutableHandler = companionExecutableHandler;
+        this.vbaDevStartupResolver = vbaDevStartupResolver;
     }
 
     /// <summary>
@@ -64,7 +79,9 @@ internal sealed class VbaLanguageServerRuntime
     public static VbaLanguageServerRuntime CreateDefault(
         Stream input,
         Stream output,
-        VbaDevReferenceListStartupState? vbaDevStartupState = null)
+        VbaDevReferenceListStartupState? vbaDevStartupState = null,
+        Func<CancellationToken, Task<VbaDevReferenceListStartupState>>?
+            vbaDevStartupResolver = null)
     {
         var transport = new LspMessageTransport(input, output);
         var referenceCatalogCache = new VbaProjectReferenceCatalogCache(
@@ -110,19 +127,29 @@ internal sealed class VbaLanguageServerRuntime
             projectReconciliationLifecycle: projectReconciler,
             vbaDevStartupState: vbaDevStartupState,
             intrinsicHostEventCatalogHandler:
-                new VbaIntrinsicHostEventCatalogHandler(workspace));
+                new VbaIntrinsicHostEventCatalogHandler(workspace),
+            companionExecutableHandler:
+                new VbaCompanionExecutableNotificationHandler(
+                    catalogDiscovery,
+                    () => workspace.GetOpenDocumentUris(),
+                    catalogRefresh),
+            vbaDevStartupResolver: vbaDevStartupResolver);
     }
 
-    internal static IVbaProjectReferenceCatalogDiscovery CreateReferenceCatalogDiscovery(
+    internal static SessionPinnedVbaDevReferenceCatalogDiscovery
+        CreateReferenceCatalogDiscovery(
         IVbaProjectReferenceCatalogDiscovery registryDiscovery,
         VbaDevReferenceListStartupState? vbaDevStartupState)
     {
         ArgumentNullException.ThrowIfNull(registryDiscovery);
-        return vbaDevStartupState?.ExecutablePath is { } executablePath
-            ? new VbaDevReferenceListCatalogDiscoveryFactory(
-                registryDiscovery,
-                executablePath)
-            : registryDiscovery;
+        var discovery = new SessionPinnedVbaDevReferenceCatalogDiscovery(
+            registryDiscovery);
+        if (vbaDevStartupState?.ExecutablePath is { } executablePath)
+        {
+            _ = discovery.TryPin(executablePath);
+        }
+
+        return discovery;
     }
 
     /// <summary>
@@ -147,6 +174,15 @@ internal sealed class VbaLanguageServerRuntime
         documentLifecycle.AttachScheduler(scheduler);
         catalogLifecycle?.AttachScheduler(scheduler);
         projectReconciliationLifecycle?.AttachScheduler(scheduler);
+        using var startupResolutionCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(
+                responseLifetime.Token);
+        var startupResolution = vbaDevStartupResolver is null
+            ? Task.CompletedTask
+            : Task.Run(
+                () => ResolveStandaloneCompanionAsync(
+                    startupResolutionCancellation.Token),
+                CancellationToken.None);
         var gracefulExit = false;
         var shutdownAdmitted = false;
         try
@@ -282,7 +318,23 @@ internal sealed class VbaLanguageServerRuntime
                         workCancellationToken);
                 try
                 {
-                    if (IsWorkspaceMutationNotification(method))
+                    if (method == VbaCompanionExecutableNotification.Method)
+                    {
+                        scheduler.AdmitRequest<VbaCompanionExecutableApplication?>(
+                            requestId: null,
+                            method,
+                            workCancellationToken =>
+                                PrepareCompanionExecutableApplication(
+                                    parameters,
+                                    workCancellationToken),
+                            static (application, workCancellationToken) =>
+                            {
+                                workCancellationToken.ThrowIfCancellationRequested();
+                                _ = application?.Apply();
+                                return Task.CompletedTask;
+                            });
+                    }
+                    else if (IsWorkspaceMutationNotification(method))
                     {
                         if (method == "textDocument/didChange"
                             && TryGetTextDocumentUri(parameters, out var changedDocumentUri))
@@ -328,33 +380,51 @@ internal sealed class VbaLanguageServerRuntime
             {
                 try
                 {
-                    if (projectReconciliationLifecycle is not null)
-                    {
-                        await projectReconciliationLifecycle.StopAsync();
-                    }
+                    await startupResolutionCancellation.CancelAsync();
+                }
+                catch (Exception)
+                {
+                    // A failing cancellation callback cannot bypass runtime cleanup.
                 }
                 finally
                 {
-                    try
-                    {
-                        if (catalogLifecycle is not null)
-                        {
-                            await catalogLifecycle.StopAsync();
-                        }
-                    }
-                    finally
-                    {
-                        await scheduler.StopAsync(
-                            gracefulExit
-                                ? VbaInteractiveStopReason.Complete
-                                : VbaInteractiveStopReason.Abort);
-                    }
+                    await ObserveStartupResolutionAsync(startupResolution);
                 }
             }
             finally
             {
-                hostCancellationRegistration.Dispose();
-                await responseCancellation.ObserveAsync();
+                try
+                {
+                    try
+                    {
+                        if (projectReconciliationLifecycle is not null)
+                        {
+                            await projectReconciliationLifecycle.StopAsync();
+                        }
+                    }
+                    finally
+                    {
+                        try
+                        {
+                            if (catalogLifecycle is not null)
+                            {
+                                await catalogLifecycle.StopAsync();
+                            }
+                        }
+                        finally
+                        {
+                            await scheduler.StopAsync(
+                                gracefulExit
+                                    ? VbaInteractiveStopReason.Complete
+                                    : VbaInteractiveStopReason.Abort);
+                        }
+                    }
+                }
+                finally
+                {
+                    hostCancellationRegistration.Dispose();
+                    await responseCancellation.ObserveAsync();
+                }
             }
         }
     }
@@ -433,6 +503,7 @@ internal sealed class VbaLanguageServerRuntime
         switch (method)
         {
             case "initialized":
+                initialized.TrySetResult();
                 await PublishStartupWarningAsync(cancellationToken);
                 return;
             case "textDocument/didOpen":
@@ -460,15 +531,93 @@ internal sealed class VbaLanguageServerRuntime
         }
     }
 
-    private Task PublishStartupWarningAsync(CancellationToken cancellationToken)
+    private VbaCompanionExecutableApplication?
+        PrepareCompanionExecutableApplication(
+            JsonNode? parameters,
+            CancellationToken cancellationToken)
     {
-        var warning = vbaDevStartupState?.WarningMessage;
-        return warning is not null
+        cancellationToken.ThrowIfCancellationRequested();
+        return companionExecutableHandler is { } handler
+            && VbaCompanionExecutableNotification.TryParse(
+                parameters,
+                out var update)
+                ? handler.TryPrepare(update)
+                : null;
+    }
+
+    private Task PublishStartupWarningAsync(CancellationToken cancellationToken)
+        => PublishStartupWarningAsync(
+            vbaDevStartupState?.WarningMessage,
+            cancellationToken);
+
+    private Task PublishStartupWarningAsync(
+        string? warning,
+        CancellationToken cancellationToken)
+        => warning is not null
             && Interlocked.Exchange(ref startupWarningPublished, 1) == 0
                 ? transport.WriteLogMessageAsync(2, warning, cancellationToken)
                 : Task.CompletedTask;
+
+    private async Task ResolveStandaloneCompanionAsync(
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var state = await vbaDevStartupResolver!(cancellationToken)
+                .ConfigureAwait(false);
+            await initialized.Task.WaitAsync(cancellationToken)
+                .ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (state.ExecutablePath is { } executablePath)
+            {
+                _ = companionExecutableHandler?
+                    .TryPrepare(
+                        new VbaCompanionExecutableUpdate(executablePath))?
+                    .Apply();
+                return;
+            }
+
+            await PublishStartupWarningAsync(
+                    state.WarningMessage,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            try
+            {
+                await initialized.Task.WaitAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                await PublishStartupWarningAsync(
+                        $"Standalone vba-dev validation failed: {exception.Message} "
+                            + "CLI-backed reference catalog resolution is disabled; "
+                            + "registry-only discovery remains available.",
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+            }
+        }
     }
 
+    private static async Task ObserveStartupResolutionAsync(Task resolution)
+    {
+        try
+        {
+            await resolution.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception)
+        {
+            // Standalone validation failures are converted to a session warning.
+        }
+    }
     private sealed class ResponseLifetimeCancellation(
         CancellationTokenSource lifetime)
     {

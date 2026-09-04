@@ -37,7 +37,7 @@ internal sealed class VbaInteractiveWorkTimingFileSink : IVbaInteractiveWorkTimi
             timing.Kind,
             timing.Method,
             timing.RequestId);
-        File.WriteAllText(
+        WriteRecordAtomically(
             Path.Combine(directory, $"{stem}.admitted"),
             string.Join('\n',
             [
@@ -57,7 +57,7 @@ internal sealed class VbaInteractiveWorkTimingFileSink : IVbaInteractiveWorkTimi
             timing.Kind,
             timing.Method,
             timing.RequestId);
-        File.WriteAllText(
+        WriteRecordAtomically(
             Path.Combine(directory, $"{stem}.completed"),
             string.Join('\n',
             [
@@ -70,6 +70,26 @@ internal sealed class VbaInteractiveWorkTimingFileSink : IVbaInteractiveWorkTimi
                 $"executionMilliseconds={FormatMilliseconds(timing.ExecutionTime)}",
                 $"cancelled={timing.Cancelled}",
                 $"faulted={timing.Faulted}"
+            ]));
+    }
+
+    public void RecordCapture(VbaInteractiveWorkCaptureTiming timing)
+    {
+        var stem = CreateFileStem(
+            timing.InputSequence,
+            timing.Kind,
+            timing.Method,
+            timing.RequestId);
+        WriteRecordAtomically(
+            Path.Combine(directory, $"{stem}.captured"),
+            string.Join('\n',
+            [
+                $"inputSequence={timing.InputSequence}",
+                $"readFence={timing.ReadFence}",
+                $"kind={timing.Kind}",
+                $"method={timing.Method}",
+                $"requestId={timing.RequestId?.ToString() ?? "none"}",
+                $"captureMilliseconds={FormatMilliseconds(timing.CaptureTime)}"
             ]));
     }
 
@@ -101,4 +121,21 @@ internal sealed class VbaInteractiveWorkTimingFileSink : IVbaInteractiveWorkTimi
 
     private static string FormatMilliseconds(TimeSpan value)
         => value.TotalMilliseconds.ToString("0.000000", CultureInfo.InvariantCulture);
+
+    private static void WriteRecordAtomically(string path, string content)
+    {
+        var temporaryPath = $"{path}.{Environment.ProcessId}.tmp";
+        try
+        {
+            File.WriteAllText(temporaryPath, content);
+            File.Move(temporaryPath, path);
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath))
+            {
+                File.Delete(temporaryPath);
+            }
+        }
+    }
 }

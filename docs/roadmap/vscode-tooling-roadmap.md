@@ -27,24 +27,27 @@ The first implementation batch should complete the Phase 1 command bridge before
 starting Test Explorer work. Test Explorer integration depends on a shared,
 validated command runner and project selection flow.
 
-1. Resolve the bundled or configured `vba-dev` executable and validate
-   `vba-dev capabilities --format json`.
-2. Pass that exact absolute path to the C# language server through
-   `--vba-dev`; have the server validate the supplied capabilities once at
-   startup, including `reference list` JSON schema `1.0`.
-3. Resolve and independently validate the bundled or explicitly configured
+1. Start and initialize the C# language client so source language assistance
+   does not wait for optional companion work.
+2. In a trusted window, resolve the bundled or configured `vba-dev` executable
+   and validate `vba-dev capabilities --format json` through the shared session
+   resolver.
+3. Publish that exact validated path through `vba/companionExecutable`; have the
+   language server pin it and refresh active project references in latest-only
+   background work.
+4. Resolve and independently validate the bundled or explicitly configured
    `vba-debug-adapter` against `vba-debug-adapter-contract.json`; keep an
    invalid explicit adapter override strict.
-4. Discover `ProjectManifest` candidates from the active file or workspace and
+5. Discover `ProjectManifest` candidates from the active file or workspace and
    pass the selected project root to the CLI explicitly.
-5. Build the shared command runner with Output Channel logging, error handling,
+6. Build the shared command runner with Output Channel logging, error handling,
    and cancellation handling.
-6. Implement `VBA Tools: Doctor` by running `vba-dev doctor` and then
+7. Implement `VBA Tools: Doctor` by running `vba-dev doctor` and then
    `vba-debug-adapter doctor --format json`, continuing with the second result
    when the first fails, followed by the first-run "Run Doctor?" prompt.
-7. Implement `Build`, `Test`, `Publish`, and `Export` Command Palette entries
+8. Implement `Build`, `Test`, `Publish`, and `Export` Command Palette entries
    through the shared runner.
-8. Implement CommonModules and reference command bridge entries.
+9. Implement CommonModules and reference command bridge entries.
 
 ## Phase 1: Extension command bridge
 
@@ -91,9 +94,14 @@ Expected capabilities:
   document, original target module and procedure, DAP request sequence, and
   session-local generation; capture the bound document rather than the active
   editor, and retain the old session on stale identity or a removed target;
-- have the language server validate the supplied effective CLI once at startup,
-  continue with registry-only fail-closed reference discovery if that validation
-  fails, and never rediscover or replace the executable itself;
+- start and initialize the language client before automatic companion
+  resolution, publish the first validated effective CLI through
+  `vba/companionExecutable`, and have the language server pin it one way and
+  refresh active projects without reload or restart;
+- let standalone `--vba-dev` validation run asynchronously after the stdio loop
+  starts, continue with registry-only fail-closed reference discovery before a
+  successful pin or after validation failure, and never rediscover or replace
+  the executable itself;
 - avoid implicit `PATH` discovery for the companion CLI, while allowing an
   explicit terminal command to prepend the resolved CLI directory to that
   terminal's environment;

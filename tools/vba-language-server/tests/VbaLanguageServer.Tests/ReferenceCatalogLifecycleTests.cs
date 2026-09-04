@@ -9,6 +9,7 @@ using Xunit.Abstractions;
 
 namespace VbaLanguageServer.Tests;
 
+[Collection(VbaDocumentAnalysisPerformanceTestCollection.Name)]
 public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
 {
     private readonly ITestOutputHelper testOutput;
@@ -493,6 +494,62 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
         Assert.Empty(validationLifecycle.RefreshedAuthorities);
         Assert.Empty(validationLifecycle.InvalidatedAuthorities);
         await lifecycle.StopAsync();
+    }
+
+    [Fact]
+    public async Task Stale_persisted_preload_refreshes_project_validation_before_discovery_settles()
+    {
+        const string referenceName = "Library A";
+        var discovered = CreateDiscoverySuccess(referenceName);
+        var catalogCache = new VbaProjectReferenceCatalogCache(
+            VbaProjectReferenceCatalogSet.Empty);
+        var persistentStore = new CountingPersistentStore
+        {
+            LoadResult = VbaProjectReferenceCatalogPersistentLoadResult.Stale(
+                new VbaProjectReferenceCatalogPersistentEntry(
+                    Assert.Single(discovered.Identities),
+                    Assert.IsType<VbaProjectReferenceCatalog>(discovered.Catalog)),
+                "Expected stale persisted catalog.")
+        };
+        var discovery = new NonCooperativeBlockingDiscovery();
+        var refreshService = new VbaProjectReferenceCatalogRefreshService(
+            catalogCache,
+            discovery,
+            persistentStore,
+            new InlineRefreshWorker());
+        await using var output = new MemoryStream();
+        var lifecycle = new ReferenceCatalogRefreshCoordinator(
+            catalogCache,
+            refreshService,
+            new VbaProjectManifestWorkspace(),
+            new LspMessageTransport(Stream.Null, output));
+        var validationLifecycle = new RecordingProjectValidationLifecycleSink();
+        lifecycle.AttachProjectValidationLifecycle(validationLifecycle);
+        lifecycle.AttachScheduler(defaultScheduler);
+
+        lifecycle.ApplyManifestSelectionChange(
+            "file:///C:/work/Book1/vba-project.json",
+            CreateManifestText(referenceName));
+        try
+        {
+            await discovery.DiscoveryStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Single(validationLifecycle.InvalidatedAuthorities);
+            Assert.Single(validationLifecycle.RefreshedAuthorities);
+            Assert.False(discovery.DiscoveryCompleted.Task.IsCompleted);
+
+            discovery.ReleaseDiscovery();
+            await lifecycle.WaitForIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Equal(2, validationLifecycle.InvalidatedAuthorities.Count);
+            Assert.Equal(2, validationLifecycle.RefreshedAuthorities.Count);
+        }
+        finally
+        {
+            discovery.ReleaseDiscovery();
+            await lifecycle.WaitForIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            await lifecycle.StopAsync();
+        }
     }
 
     [Fact]
@@ -2213,6 +2270,168 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Companion_supply_refreshes_an_open_project_even_when_its_selection_is_unchanged()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-companion-refresh-").FullName;
+        try
+        {
+            var sourcePath = WriteProject(projectRoot, "Generated Library");
+            var sourceUri = new Uri(sourcePath).AbsoluteUri;
+            var catalogCache = new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.Empty);
+            var discovery = new CountingDiscovery();
+            var refreshService = new VbaProjectReferenceCatalogRefreshService(
+                catalogCache,
+                discovery,
+                new CountingPersistentStore(),
+                new InlineRefreshWorker());
+            await using var output = new MemoryStream();
+            var lifecycle = new ReferenceCatalogRefreshCoordinator(
+                catalogCache,
+                refreshService,
+                new VbaProjectManifestWorkspace(),
+                new LspMessageTransport(Stream.Null, output));
+            lifecycle.AttachScheduler(defaultScheduler);
+
+            lifecycle.ActivateProject(sourceUri);
+            await lifecycle.WaitForIdleAsync();
+            lifecycle.RefreshActiveProjects([sourceUri]);
+            await lifecycle.WaitForIdleAsync();
+
+            Assert.Equal(2, discovery.CallCount);
+            await lifecycle.StopAsync();
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Stale_companion_refresh_cannot_replace_a_newer_manifest_selection()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-stale-companion-refresh-").FullName;
+        var sourceUri = new Uri(WriteProject(projectRoot, "Library A")).AbsoluteUri;
+        var manifestPath = Path.Combine(projectRoot, "vba-project.json");
+        var manifestUri = new Uri(manifestPath).AbsoluteUri;
+        var initialManifest = CreateManifestText("Library A");
+        var changedManifest = CreateManifestText("Library B");
+        var manifestWorkspace = new VbaProjectManifestWorkspace();
+        var initialUpdate = manifestWorkspace.OpenManifest(
+            manifestUri,
+            documentVersion: 1,
+            initialManifest);
+        Assert.True(initialUpdate.Accepted);
+        var catalogCache = new VbaProjectReferenceCatalogCache(
+            VbaProjectReferenceCatalogSet.Empty);
+        var discovery = new CountingDiscovery();
+        var refreshService = new VbaProjectReferenceCatalogRefreshService(
+            catalogCache,
+            discovery,
+            new CountingPersistentStore(),
+            new InlineRefreshWorker());
+        await using var output = new MemoryStream();
+        var lifecycle = new ReferenceCatalogRefreshCoordinator(
+            catalogCache,
+            refreshService,
+            manifestWorkspace,
+            new LspMessageTransport(Stream.Null, output));
+        lifecycle.AttachScheduler(defaultScheduler);
+        var activeUris = new BlockingAfterFirstUriList(sourceUri);
+        var staleRefresh = Task.Factory.StartNew(
+            () => lifecycle.RefreshActiveProjects(activeUris),
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
+
+        try
+        {
+            await activeUris.FirstUriEnumerated.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var changedUpdate = manifestWorkspace.ChangeManifest(
+                manifestUri,
+                documentVersion: 2,
+                changedManifest);
+            Assert.True(changedUpdate.Accepted);
+            Assert.True(changedUpdate.EffectiveChanged);
+            lifecycle.ApplyManifestSelectionChange(manifestUri, changedManifest);
+            await lifecycle.WaitForIdleAsync();
+
+            Assert.Equal(["Library B"], discovery.ReferenceNames);
+
+            activeUris.Release();
+            await staleRefresh.WaitAsync(TimeSpan.FromSeconds(5));
+            await lifecycle.WaitForIdleAsync();
+
+            Assert.Equal(["Library B"], discovery.ReferenceNames);
+        }
+        finally
+        {
+            activeUris.Release();
+            await lifecycle.StopAsync();
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Project_reopened_after_companion_pin_replaces_its_registry_only_lifecycle()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-reopened-companion-refresh-").FullName;
+        try
+        {
+            var sourceUri = new Uri(
+                WriteProject(projectRoot, "Library A")).AbsoluteUri;
+            var catalogCache = new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.Empty);
+            var registryDiscovery = new CountingDiscovery();
+            var companionDiscovery = new RecordingContextDiscoveryFactory();
+            var sessionDiscovery =
+                new SessionPinnedVbaDevReferenceCatalogDiscovery(
+                    registryDiscovery,
+                    _ => companionDiscovery);
+            var refreshService = new VbaProjectReferenceCatalogRefreshService(
+                catalogCache,
+                sessionDiscovery,
+                new CountingPersistentStore(),
+                new InlineRefreshWorker());
+            await using var output = new MemoryStream();
+            var lifecycle = new ReferenceCatalogRefreshCoordinator(
+                catalogCache,
+                refreshService,
+                new VbaProjectManifestWorkspace(),
+                new LspMessageTransport(Stream.Null, output));
+            lifecycle.AttachScheduler(defaultScheduler);
+
+            lifecycle.ActivateProject(sourceUri);
+            await lifecycle.WaitForIdleAsync();
+            Assert.Equal(1, registryDiscovery.CallCount);
+            Assert.Empty(companionDiscovery.Contexts);
+
+            var companionHandler = new VbaCompanionExecutableNotificationHandler(
+                sessionDiscovery,
+                static () => [],
+                lifecycle);
+            Assert.True(companionHandler.TryApply(
+                new VbaCompanionExecutableUpdate(
+                    Path.GetFullPath("vba-dev.exe"))));
+            await lifecycle.WaitForIdleAsync();
+            Assert.Empty(companionDiscovery.Contexts);
+
+            lifecycle.ActivateProject(sourceUri);
+            await lifecycle.WaitForIdleAsync();
+
+            Assert.Single(companionDiscovery.Contexts);
+            await lifecycle.StopAsync();
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Persisted_negative_result_is_cached_for_revision_but_retry_and_changed_selection_run()
     {
         var catalogCache = new VbaProjectReferenceCatalogCache(
@@ -3122,6 +3341,47 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Stop_keeps_observing_bounded_companion_cleanup_past_the_registry_only_window()
+    {
+        var catalogCache = new VbaProjectReferenceCatalogCache(
+            VbaProjectReferenceCatalogSet.Empty);
+        var discovery = new BoundedCancellationCleanupDiscovery();
+        var refreshService = new VbaProjectReferenceCatalogRefreshService(
+            catalogCache,
+            discovery,
+            persistentStore: null,
+            new InlineRefreshWorker());
+        await using var output = new MemoryStream();
+        var lifecycle = new ReferenceCatalogRefreshCoordinator(
+            catalogCache,
+            refreshService,
+            new VbaProjectManifestWorkspace(),
+            new LspMessageTransport(Stream.Null, output));
+        lifecycle.AttachScheduler(defaultScheduler);
+
+        lifecycle.ApplyManifestSelectionChange(
+            "file:///C:/work/Book1/vba-project.json",
+            CreateManifestText("Bounded Cleanup Library"));
+        await discovery.DiscoveryStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var stop = lifecycle.StopAsync();
+        await discovery.CancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await Task.Delay(TimeSpan.FromMilliseconds(1_100));
+
+        try
+        {
+            Assert.False(stop.IsCompleted);
+        }
+        finally
+        {
+            discovery.CompleteCleanup();
+        }
+
+        await stop.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.True(discovery.CleanupCompleted.Task.IsCompletedSuccessfully);
+    }
+
+    [Fact]
     public async Task Stop_is_bounded_when_discovery_cannot_observe_cancellation()
     {
         var catalogCache = new VbaProjectReferenceCatalogCache(
@@ -3549,6 +3809,36 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
 
         public void ReleaseFirstPlan()
             => releaseFirstPlan.TrySetResult();
+    }
+
+    private sealed class BlockingAfterFirstUriList(string uri)
+        : IReadOnlyList<string>
+    {
+        private readonly TaskCompletionSource release = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource FirstUriEnumerated { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int Count => 1;
+
+        public string this[int index]
+            => index == 0
+                ? uri
+                : throw new ArgumentOutOfRangeException(nameof(index));
+
+        public IEnumerator<string> GetEnumerator()
+        {
+            yield return uri;
+            FirstUriEnumerated.TrySetResult();
+            release.Task.GetAwaiter().GetResult();
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator()
+            => GetEnumerator();
+
+        public void Release()
+            => release.TrySetResult();
     }
 
     private sealed class ManifestDeactivationContentionObserver
@@ -4450,6 +4740,49 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
             => releaseDiscovery.TrySetResult();
     }
 
+    private sealed class BoundedCancellationCleanupDiscovery
+        : IVbaProjectReferenceCatalogDiscovery,
+          IVbaProjectReferenceCatalogCancellationCleanup
+    {
+        private readonly TaskCompletionSource completeCleanup = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource DiscoveryStarted { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource CancellationObserved { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource CleanupCompleted { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TimeSpan CancellationCleanupTimeout => TimeSpan.FromSeconds(5);
+
+        public async Task<VbaProjectReferenceCatalogDiscoveryResult> DiscoverAsync(
+            string referenceName,
+            CancellationToken cancellationToken = default)
+        {
+            DiscoveryStarted.TrySetResult();
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+            catch (OperationCanceledException)
+                when (cancellationToken.IsCancellationRequested)
+            {
+                CancellationObserved.TrySetResult();
+                await completeCleanup.Task;
+                CleanupCompleted.TrySetResult();
+                throw;
+            }
+
+            throw new InvalidOperationException("Expected cancellation.");
+        }
+
+        public void CompleteCleanup()
+            => completeCleanup.TrySetResult();
+    }
+
     private sealed class CancellationCleanupBlockingDiscovery
         : IVbaProjectReferenceCatalogDiscovery
     {
@@ -4888,6 +5221,12 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
             _ = authority;
             CommitCount++;
             SourceObservedAtCommit = catalogCache.GetCatalogSource(referenceName);
+        }
+
+        public void CatalogPersistedPreloadSettled(
+            VbaProjectReferenceCatalogRefreshBatchIdentity batch)
+        {
+            _ = batch;
         }
 
         public void CatalogRefreshSettled(

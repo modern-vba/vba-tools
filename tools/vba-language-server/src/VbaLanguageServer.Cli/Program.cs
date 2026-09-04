@@ -6,9 +6,17 @@ if (args is ["--version"] or ["-v"])
     return;
 }
 
-var vbaDevStartupState = await VbaDevReferenceListStartupState.ResolveAsync(args);
+var hasNormalCompanionlessArguments = args.Length == 0
+    || args is ["--stdio"];
+Func<CancellationToken, Task<VbaDevReferenceListStartupState>>?
+    vbaDevStartupResolver = hasNormalCompanionlessArguments
+        ? null
+        : cancellationToken =>
+            VbaDevReferenceListStartupState.ResolveAsync(
+                args,
+                cancellationToken);
 var server = VbaLanguageServerRuntime.CreateDefault(
     Console.OpenStandardInput(),
     Console.OpenStandardOutput(),
-    vbaDevStartupState);
+    vbaDevStartupResolver: vbaDevStartupResolver);
 await server.RunAsync();

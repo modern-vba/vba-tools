@@ -449,6 +449,26 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
             afterCheckpoint: null,
             cancellationToken);
 
+    /// <summary>
+    /// Waits for diagnostics carrying the exact current client version, skipping
+    /// an older versioned frame that may already be crossing the transport when
+    /// a later didChange notification is committed.
+    /// </summary>
+    public Task<JsonElement> WaitForCurrentDiagnosticsAsync(
+        string uri,
+        int currentVersion,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default)
+        => WaitForTranscriptMessageAsync(
+            $"diagnostics:{uri}:version:{currentVersion}",
+            message => IsDiagnosticsForVersion(
+                message,
+                uri,
+                currentVersion),
+            timeout ?? TimeSpan.FromSeconds(5),
+            afterCheckpoint: null,
+            cancellationToken);
+
     public ProjectDiagnosticsCheckpoint CaptureProjectDiagnosticsCheckpoint()
     {
         var directory = _projectDiagnosticsPublicationDirectory

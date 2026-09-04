@@ -28,7 +28,11 @@ export interface ProcessResult {
   stderr: string;
 }
 
-export type ProcessRunner = (file: string, args: readonly string[]) => Promise<ProcessResult>;
+export type ProcessRunner = (
+  file: string,
+  args: readonly string[],
+  signal?: AbortSignal
+) => Promise<ProcessResult>;
 
 export interface CompatibleVbaDevResolutionOptions extends VbaDevPathResolutionOptions {
   requiredContract?: RequiredVbaDevContract | undefined;
@@ -106,6 +110,10 @@ export interface CompanionExecutableResolver {
   resolve(): Promise<CompanionExecutableResolution>;
 }
 
+export interface CompanionExecutableResolutionSubscription {
+  dispose(): void;
+}
+
 export interface VbaDevSessionResolverOptions extends CompatibleVbaDevResolutionOptions {
   configuredPathProvider?: (() => string | undefined) | undefined;
   reportNotice?: ((notice: VbaDevResolutionNotice) => void) | undefined;
@@ -134,6 +142,10 @@ export function isReportedVbaDevResolutionFailure(
 export class VbaDevSessionResolver implements CompanionExecutableResolver {
   private resolved: CompanionExecutableResolution | undefined;
   private inFlight: Promise<CompanionExecutableResolution> | undefined;
+  private inFlightCancellation: AbortController | undefined;
+  private readonly resolutionListeners = new Set<(
+    resolution: CompanionExecutableResolution
+  ) => void>();
   private configuredFallbackNoticeReported = false;
   private resolutionGeneration = 0;
 
@@ -148,28 +160,46 @@ export class VbaDevSessionResolver implements CompanionExecutableResolver {
     }
 
     const generation = this.resolutionGeneration;
-    const attempt = this.resolveUncached(generation);
+    const cancellation = new AbortController();
+    const attempt = this.resolveUncached(generation, cancellation.signal);
     this.inFlight = attempt;
+    this.inFlightCancellation = cancellation;
     void attempt.then(
       (resolution) => {
         if (this.inFlight === attempt) {
           this.resolved = resolution;
           this.inFlight = undefined;
+          this.inFlightCancellation = undefined;
+          this.notifyResolutionListeners(resolution);
         }
       },
       () => {
         if (this.inFlight === attempt) {
           this.inFlight = undefined;
+          this.inFlightCancellation = undefined;
         }
       }
     );
     return attempt;
   }
 
+  public onDidResolve(
+    listener: (resolution: CompanionExecutableResolution) => void
+  ): CompanionExecutableResolutionSubscription {
+    this.resolutionListeners.add(listener);
+    return {
+      dispose: () => {
+        this.resolutionListeners.delete(listener);
+      }
+    };
+  }
+
   public invalidate(): void {
     this.resolutionGeneration += 1;
+    this.inFlightCancellation?.abort();
     this.resolved = undefined;
     this.inFlight = undefined;
+    this.inFlightCancellation = undefined;
   }
 
   public async readActiveWindowsCodePage(): Promise<number> {
@@ -192,7 +222,10 @@ export class VbaDevSessionResolver implements CompanionExecutableResolver {
     return codePage;
   }
 
-  private async resolveUncached(generation: number): Promise<CompanionExecutableResolution> {
+  private async resolveUncached(
+    generation: number,
+    signal: AbortSignal
+  ): Promise<CompanionExecutableResolution> {
     const configuredCandidate = this.options.configuredPathProvider?.()
       ?? this.options.configuredPath;
     const configuredPath = configuredCandidate?.trim().length
@@ -211,7 +244,8 @@ export class VbaDevSessionResolver implements CompanionExecutableResolver {
         const configured = await inspectCompatibleVbaDev(
           configuredPath,
           requiredContract,
-          runProcess
+          runProcess,
+          signal
         );
         const resolution = Object.freeze<CompanionExecutableResolution>({
           ...configured,
@@ -242,7 +276,8 @@ export class VbaDevSessionResolver implements CompanionExecutableResolver {
       const bundled = await inspectCompatibleVbaDev(
         bundledPath,
         requiredContract,
-        runProcess
+        runProcess,
+        signal
       );
       const configuredFailure = failures.find((failure) => failure.source === 'configured')?.message;
       const resolution = Object.freeze<CompanionExecutableResolution>({
@@ -307,6 +342,18 @@ export class VbaDevSessionResolver implements CompanionExecutableResolver {
       this.options.reportLog?.(log);
     } catch {
       // Reporting must not change executable compatibility or selection.
+    }
+  }
+
+  private notifyResolutionListeners(
+    resolution: CompanionExecutableResolution
+  ): void {
+    for (const listener of this.resolutionListeners) {
+      try {
+        listener(resolution);
+      } catch {
+        // Observers must not change executable compatibility or selection.
+      }
     }
   }
 
@@ -379,14 +426,19 @@ export async function resolveCompatibleVbaDev(
 async function inspectCompatibleVbaDev(
   executablePath: string,
   requiredContract: RequiredVbaDevContract,
-  runProcess: ProcessRunner
+  runProcess: ProcessRunner,
+  signal?: AbortSignal
 ): Promise<CompatibleVbaDev> {
   if (!path.isAbsolute(executablePath)) {
     throw new VbaDevCompatibilityError(
       `The configured VbaDev path '${executablePath}' must be an absolute path.`
     );
   }
-  const result = await runProcess(executablePath, ['capabilities', '--format', 'json']);
+  const result = await runProcess(
+    executablePath,
+    ['capabilities', '--format', 'json'],
+    signal
+  );
   let capabilities: VbaDevCapabilities;
   try {
     capabilities = parseVbaDevCapabilities(executablePath, result.stdout);
@@ -405,9 +457,13 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function runProcessWithExecFile(file: string, args: readonly string[]): Promise<ProcessResult> {
+function runProcessWithExecFile(
+  file: string,
+  args: readonly string[],
+  signal?: AbortSignal
+): Promise<ProcessResult> {
   return new Promise((resolve, reject) => {
-    execFile(file, [...args], { windowsHide: true }, (error, stdout, stderr) => {
+    execFile(file, [...args], { windowsHide: true, signal }, (error, stdout, stderr) => {
       if (error) {
         reject(error);
         return;
