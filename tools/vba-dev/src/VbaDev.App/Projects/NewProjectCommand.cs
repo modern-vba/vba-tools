@@ -527,6 +527,7 @@ public sealed class NewProjectCommand
                     + "cleanup could not be proved.",
                     ex));
                 retainedPaths.Add(Path.GetFullPath(packageSnapshot.StagingPath));
+                retainedSetConclusive = false;
             }
         }
 

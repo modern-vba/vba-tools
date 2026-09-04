@@ -726,6 +726,17 @@ root for lease, collision, ownership, and safety decisions. It is not persisted
 or exposed as a replacement for the **RequestedProjectRoot**.
 _Avoid_: displayed project path, manifest field, URI spelling
 
+**ExactFileSystemObjectOwnership**:
+The Windows-only `VbaDev` mechanism that issues an invocation-local,
+unforgeable receipt after create-only or trusted stable capture and binds it to
+both one normalized route and the exact ordinary object identity; a file receipt
+also binds length and SHA-256 content evidence. It permits only no-follow
+re-observation and same-handle deletion of that unchanged object, while the
+owning workflow retains deletion order, retry, rollback, and outcome policy.
+It is implemented wholly inside `VbaDev` and adds no dependency on another
+workspace tool.
+_Avoid_: path-based ownership, recursive cleanup, generic transaction journal
+
 **InitialProjectTarget**:
 The **ProjectRootIdentity** selected for **InitialProjectCreation**, reached
 through one **RequestedProjectRoot** and eligible only while its complete
@@ -4672,6 +4683,9 @@ Domain Expert: "No. Capture the selected repository manifest, source, and form-s
 
 Dev: "Does failure to delete a CommonModules mutation snapshot after a successful commit make the mutation fail?"
 Domain Expert: "No. After releasing its handles, retry deletion for a bounded period. If only the invocation-owned, non-authoritative snapshot workspace remains, preserve exit zero and the complete result, add `commonModulesSnapshotCleanupFailed`, and identify the retained absolute directory. Before success is established, a retained snapshot is failure or cancellation diagnostic context rather than a partial success warning; uncertainty in source mutation, manifest commit, or recovery remains command failure."
+
+Dev: "Can an `ExactFileSystemObjectOwnership` receipt authorize deletion through another hard-link path or after the object was replaced?"
+Domain Expert: "No. Bind the receipt to both its normalized route and exact object identity, and bind ordinary files to their captured length and SHA-256 evidence. Reopen without following a reparse point, preserve every foreign, replaced, changed, or unproved entry, and apply disposition only to the same verified handle. Treat file disposition as tentative until its postcondition is proved; prove exact-route restoration before reporting a rollback as retained, and fail rather than claim retention if restoration cannot be proved. Each owning workflow still decides what missing or retained state means."
 
 Dev: "Does `ProjectManifestMutationLease` coordinate an independent editor that saves `vba-project.json`?"
 Domain Expert: "No. Keep `VbaDev` independent from editor save state, but fingerprint the exact manifest bytes read inside the lease and compare them immediately before atomic replacement. An observed mismatch is a conflict and never gets overwritten: reference mutation fails unchanged, while CommonModules preserves the externally edited manifest, writes its planned recovery manifest, and reports that source files may already have changed. Do not claim protection from a non-cooperating write inside the final comparison-to-replace gap."
