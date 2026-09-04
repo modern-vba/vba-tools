@@ -119,8 +119,8 @@ internal sealed class VbaDocumentChangePipeline
         }
 
         workspace.OpenDocument(change.Uri, change.Version, change.Text, cancellationToken);
-        await ApplyAuthoritativeSourceTextAsync(change.Uri, cancellationToken);
         catalogLifecycle.ActivateProject(change.Uri);
+        await ApplyAuthoritativeSourceTextAsync(change.Uri, cancellationToken);
     }
 
     private async Task ApplyChangedDocumentAsync(
@@ -195,6 +195,7 @@ internal sealed class VbaDocumentChangePipeline
             .ToArray();
         if (workspace.CloseDocument(uri, cancellationToken))
         {
+            diagnosticsPublisher.CancelProjectValidationsForDocuments([uri]);
             await diagnosticsPublisher.PublishEmptyDiagnosticsAsync(uri, cancellationToken);
             var remainingUri = affectedProjectUris.FirstOrDefault(candidate =>
                 !VbaProjectIdentityModel.SameDocument(candidate, uri)
@@ -305,6 +306,7 @@ internal sealed class VbaDocumentChangePipeline
             .ToArray();
         if (workspace.DeleteSourceDocument(uri, cancellationToken))
         {
+            diagnosticsPublisher.CancelProjectValidationsForDocuments([uri]);
             await diagnosticsPublisher.PublishEmptyDiagnosticsAsync(uri, cancellationToken);
             var remainingUri = affectedProjectUris.FirstOrDefault(candidate =>
                 !VbaProjectIdentityModel.SameDocument(candidate, uri)
@@ -322,6 +324,7 @@ internal sealed class VbaDocumentChangePipeline
         string uri,
         CancellationToken cancellationToken)
     {
+        diagnosticsPublisher.InvalidateProjectValidationsForDocuments([uri]);
         await diagnosticsPublisher.PublishProjectDiagnosticsAsync(uri, cancellationToken);
     }
 
@@ -330,6 +333,8 @@ internal sealed class VbaDocumentChangePipeline
         IReadOnlyList<string> previouslyAffectedSourceUris,
         CancellationToken cancellationToken)
     {
+        diagnosticsPublisher.CancelProjectValidationsForDocuments(
+            previouslyAffectedSourceUris);
         if (manifestWorkspace.TryGetEffectiveManifest(
             uri,
             out var effectiveUri,

@@ -10,13 +10,16 @@ internal sealed class VbaProjectSnapshotBuilder
 {
     private readonly IVbaProjectDiskInventory diskInventory;
     private readonly VbaProjectSourceDocumentCache diskDocumentCache;
+    private readonly IVbaProjectSnapshotBuildObserver buildObserver;
 
     public VbaProjectSnapshotBuilder(
         IVbaProjectDiskInventory diskInventory,
-        VbaProjectSourceDocumentCache diskDocumentCache)
+        VbaProjectSourceDocumentCache diskDocumentCache,
+        IVbaProjectSnapshotBuildObserver buildObserver)
     {
         this.diskInventory = diskInventory;
         this.diskDocumentCache = diskDocumentCache;
+        this.buildObserver = buildObserver;
     }
 
     public VbaProjectSourceInventorySnapshot CreateInventorySnapshot(
@@ -57,6 +60,7 @@ internal sealed class VbaProjectSnapshotBuilder
     }
 
     public VbaProjectSnapshot BuildSnapshot(
+        string activeUri,
         VbaProjectResolution resolution,
         IReadOnlyDictionary<string, VbaTrackedDocument> scopedTrackedDocuments,
         IReadOnlyList<VbaProjectDiskSource> diskSources,
@@ -68,7 +72,8 @@ internal sealed class VbaProjectSnapshotBuilder
         IReadOnlyDictionary<string, VbaProjectReferenceCatalogIdentity>?
             referenceCatalogIdentities = null,
         IReadOnlyDictionary<string, string>?
-            authoritativeReferencedProjectNames = null)
+            authoritativeReferencedProjectNames = null,
+        CancellationToken cancellationToken = default)
     {
         var scopedDocuments = scopedTrackedDocuments
             .ToDictionary(pair => pair.Key, pair => pair.Value.Text, StringComparer.OrdinalIgnoreCase);
@@ -80,7 +85,7 @@ internal sealed class VbaProjectSnapshotBuilder
         var manifestContext = LanguageServerManifestResolution.Create(
             resolution,
             referenceCatalogs);
-        var semanticInventory = VbaSemanticInventory.Create(
+        var semanticInventory = VbaSemanticInventory.CreateForProjectSnapshot(
             scopedSourceDocuments,
             manifestContext.ReferenceSelection,
             referenceCatalogs,
@@ -88,7 +93,10 @@ internal sealed class VbaProjectSnapshotBuilder
             referenceCatalogSources,
             referenceCatalogIdentities,
             resolution,
-            authoritativeReferencedProjectNames);
+            authoritativeReferencedProjectNames,
+            activeUri,
+            buildObserver,
+            cancellationToken);
 
         return new VbaProjectSnapshot(
             resolution,

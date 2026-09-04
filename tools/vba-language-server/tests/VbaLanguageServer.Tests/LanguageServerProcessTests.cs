@@ -543,6 +543,97 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
+    public void Harness_launches_the_server_apphost_directly_without_a_console_host_intermediary()
+    {
+        const string executablePath = @"C:\work\vba-language-server.exe";
+        const string cacheRoot = @"C:\work\cache";
+        var startInfo = LanguageServerProcessHarness.CreateServerStartInfo(
+            executablePath,
+            cacheRoot,
+            serverArguments: ["--sample"]);
+
+        Assert.Equal(executablePath, startInfo.FileName);
+        Assert.Equal(["--sample"], startInfo.ArgumentList);
+        Assert.False(startInfo.UseShellExecute);
+        Assert.True(startInfo.CreateNoWindow);
+        Assert.True(startInfo.RedirectStandardInput);
+        Assert.True(startInfo.RedirectStandardOutput);
+        Assert.True(startInfo.RedirectStandardError);
+    }
+
+    [Fact]
+    public async Task Harness_waits_for_the_project_partition_after_local_diagnostics()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-project-diagnostics-marker-").FullName;
+        try
+        {
+            var sourceDirectory = Directory.CreateDirectory(
+                Path.Combine(projectRoot, "src", "Book1")).FullName;
+            var sourcePath = Path.Combine(sourceDirectory, "Worker.bas");
+            var uri = new Uri(sourcePath).AbsoluteUri;
+            const string text = "Attribute VB_Name = \"Worker\"\n"
+                + "Private Sub InvalidLocal(ByVal Value As Long, ByVal value As String)\n"
+                + "End Sub\n"
+                + "Public Sub Run()\n"
+                + "End Sub\n";
+            File.WriteAllText(sourcePath, text);
+            File.WriteAllText(
+                Path.Combine(projectRoot, "vba-project.json"),
+                JsonSerializer.Serialize(new
+                {
+                    schemaVersion = 1,
+                    projectName = "ProjectDiagnosticsMarker",
+                    primaryDocument = "Book1",
+                    documents = new Dictionary<string, object>
+                    {
+                        ["Book1"] = new
+                        {
+                            kind = "excel",
+                            sourcePath = "src/Book1",
+                            templatePath = "src/Book1/Book1.xlsm",
+                            binPath = "bin/Book1/Book1.xlsm",
+                            publishPath = "publish/Book1/Book1.xlsm",
+                            commonModules = Array.Empty<object>(),
+                            references = Array.Empty<object>()
+                        }
+                    }
+                }));
+            await using var process = await LanguageServerProcessHarness.StartAsync(
+                enableProjectDiagnosticsSynchronization: true);
+            await process.InitializeAsync();
+            var checkpoint = process.CaptureProjectDiagnosticsCheckpoint();
+
+            await process.SendNotificationAsync(
+                "textDocument/didOpen",
+                CreateOpenDocument(uri, text));
+            var projectDiagnostics = await process.WaitForProjectDiagnosticsSettledAsync(
+                uri,
+                expectedVersion: 1,
+                checkpoint);
+            var diagnostics = projectDiagnostics
+                .GetProperty("params")
+                .GetProperty("diagnostics")
+                .EnumerateArray()
+                .ToArray();
+
+            Assert.Contains(
+                diagnostics,
+                diagnostic => diagnostic.GetProperty("code").GetString()
+                    == "validation.duplicateCallableParameterName");
+            Assert.DoesNotContain(
+                diagnostics,
+                diagnostic => diagnostic.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList");
+            await process.ShutdownAsync(2);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Harness_retains_interleaved_notifications_and_correlates_concurrent_responses()
     {
         await using var process = await LanguageServerProcessHarness.StartAsync();
@@ -2522,7 +2613,12 @@ public sealed class LanguageServerProcessTests
             "textDocument/didOpen",
             CreateOpenDocument(uri, text));
 
-        var diagnostics = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostics = await process.WaitForDiagnosticsMatchingAsync(
+            uri,
+            diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                diagnostic.GetProperty("code").GetString()
+                    == "validation.duplicateDeclaration"),
+            "a diagnostic with code 'validation.duplicateDeclaration'");
         var duplicateLines = diagnostics
             .GetProperty("params")
             .GetProperty("diagnostics")
@@ -4916,7 +5012,12 @@ public sealed class LanguageServerProcessTests
                     new { text = unconditionalText }
                 }
             });
-        var diagnostics = await process.WaitForDiagnosticsAsync(uri);
+        var diagnostics = await process.WaitForDiagnosticsMatchingAsync(
+            uri,
+            diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                diagnostic.GetProperty("code").GetString()
+                    == "validation.duplicateDeclaration"),
+            "a diagnostic with code 'validation.duplicateDeclaration'");
         Assert.Equal(
             [4, 6],
             diagnostics
@@ -6574,7 +6675,12 @@ public sealed class LanguageServerProcessTests
             "textDocument/didOpen",
             CreateOpenDocument(uri, text));
 
-        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var notification = await process.WaitForDiagnosticsMatchingAsync(
+            uri,
+            diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                diagnostic.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList"),
+            "a diagnostic with code 'validation.incompatibleCallArgumentList'");
         var diagnostics = notification
             .GetProperty("params")
             .GetProperty("diagnostics")
@@ -6669,7 +6775,12 @@ public sealed class LanguageServerProcessTests
             "textDocument/didOpen",
             CreateOpenDocument(uri, text));
 
-        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var notification = await process.WaitForDiagnosticsMatchingAsync(
+            uri,
+            diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                diagnostic.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList"),
+            "a diagnostic with code 'validation.incompatibleCallArgumentList'");
         var diagnostic = Assert.Single(notification
             .GetProperty("params")
             .GetProperty("diagnostics")
@@ -7996,7 +8107,12 @@ public sealed class LanguageServerProcessTests
             "textDocument/didOpen",
             CreateOpenDocument(uri, text));
 
-        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var notification = await process.WaitForDiagnosticsMatchingAsync(
+            uri,
+            diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                diagnostic.GetProperty("code").GetString()
+                    == "validation.raiseEventTargetNotDeclaredInEnclosingModule"),
+            "a diagnostic with code 'validation.raiseEventTargetNotDeclaredInEnclosingModule'");
         var diagnostics = notification
             .GetProperty("params")
             .GetProperty("diagnostics")
@@ -8046,7 +8162,12 @@ public sealed class LanguageServerProcessTests
             "textDocument/didOpen",
             CreateOpenDocument(uri, text));
 
-        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var notification = await process.WaitForDiagnosticsMatchingAsync(
+            uri,
+            diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                diagnostic.GetProperty("code").GetString()
+                    == "validation.raiseEventTargetNotDeclaredInEnclosingModule"),
+            "a diagnostic with code 'validation.raiseEventTargetNotDeclaredInEnclosingModule'");
         var diagnostics = notification
             .GetProperty("params")
             .GetProperty("diagnostics")
@@ -8090,7 +8211,12 @@ public sealed class LanguageServerProcessTests
             "textDocument/didOpen",
             CreateOpenDocument(uri, text));
 
-        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var notification = await process.WaitForDiagnosticsMatchingAsync(
+            uri,
+            diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                diagnostic.GetProperty("code").GetString()
+                    == "validation.raiseEventTargetNotDeclaredInEnclosingModule"),
+            "a diagnostic with code 'validation.raiseEventTargetNotDeclaredInEnclosingModule'");
         var diagnostics = notification
             .GetProperty("params")
             .GetProperty("diagnostics")
@@ -9581,7 +9707,12 @@ public sealed class LanguageServerProcessTests
             "textDocument/didOpen",
             CreateOpenDocument(uri, text));
 
-        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var notification = await process.WaitForDiagnosticsMatchingAsync(
+            uri,
+            diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                diagnostic.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList"),
+            "a diagnostic with code 'validation.incompatibleCallArgumentList'");
         var diagnostic = Assert.Single(notification
             .GetProperty("params")
             .GetProperty("diagnostics")
@@ -9631,7 +9762,12 @@ public sealed class LanguageServerProcessTests
             "textDocument/didOpen",
             CreateOpenDocument(uri, text));
 
-        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var notification = await process.WaitForDiagnosticsMatchingAsync(
+            uri,
+            diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                diagnostic.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList"),
+            "a diagnostic with code 'validation.incompatibleCallArgumentList'");
         var diagnostic = Assert.Single(notification
             .GetProperty("params")
             .GetProperty("diagnostics")
@@ -9690,7 +9826,12 @@ public sealed class LanguageServerProcessTests
             "textDocument/didOpen",
             CreateOpenDocument(uri, text));
 
-        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var notification = await process.WaitForDiagnosticsMatchingAsync(
+            uri,
+            diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                diagnostic.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList"),
+            "a diagnostic with code 'validation.incompatibleCallArgumentList'");
         var diagnostic = Assert.Single(notification
             .GetProperty("params")
             .GetProperty("diagnostics")
@@ -10608,7 +10749,12 @@ public sealed class LanguageServerProcessTests
             "textDocument/didOpen",
             CreateOpenDocument(uri, text));
 
-        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var notification = await process.WaitForDiagnosticsMatchingAsync(
+            uri,
+            diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                diagnostic.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList"),
+            "a diagnostic with code 'validation.incompatibleCallArgumentList'");
         var diagnostic = Assert.Single(notification
             .GetProperty("params")
             .GetProperty("diagnostics")
@@ -10928,7 +11074,12 @@ public sealed class LanguageServerProcessTests
             "textDocument/didOpen",
             CreateOpenDocument(uri, text));
 
-        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var notification = await process.WaitForDiagnosticsMatchingAsync(
+            uri,
+            diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                diagnostic.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList"),
+            "a diagnostic with code 'validation.incompatibleCallArgumentList'");
         var diagnostic = Assert.Single(notification
             .GetProperty("params")
             .GetProperty("diagnostics")
@@ -10986,7 +11137,12 @@ public sealed class LanguageServerProcessTests
             "textDocument/didOpen",
             CreateOpenDocument(uri, text));
 
-        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var notification = await process.WaitForDiagnosticsMatchingAsync(
+            uri,
+            diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                diagnostic.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList"),
+            "a diagnostic with code 'validation.incompatibleCallArgumentList'");
         var diagnostic = Assert.Single(notification
             .GetProperty("params")
             .GetProperty("diagnostics")
@@ -11195,7 +11351,12 @@ public sealed class LanguageServerProcessTests
             "textDocument/didOpen",
             CreateOpenDocument(uri, text));
 
-        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var notification = await process.WaitForDiagnosticsMatchingAsync(
+            uri,
+            diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                diagnostic.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList"),
+            "a diagnostic with code 'validation.incompatibleCallArgumentList'");
         var diagnostic = Assert.Single(notification
             .GetProperty("params")
             .GetProperty("diagnostics")
@@ -11305,7 +11466,12 @@ public sealed class LanguageServerProcessTests
             "textDocument/didOpen",
             CreateOpenDocument(uri, text));
 
-        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var notification = await process.WaitForDiagnosticsMatchingAsync(
+            uri,
+            diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                diagnostic.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList"),
+            "a diagnostic with code 'validation.incompatibleCallArgumentList'");
         var diagnostic = Assert.Single(notification
             .GetProperty("params")
             .GetProperty("diagnostics")
@@ -11582,7 +11748,12 @@ public sealed class LanguageServerProcessTests
             "textDocument/didOpen",
             CreateOpenDocument(uri, text));
 
-        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var notification = await process.WaitForDiagnosticsMatchingAsync(
+            uri,
+            diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                diagnostic.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList"),
+            "a diagnostic with code 'validation.incompatibleCallArgumentList'");
         var diagnostic = Assert.Single(notification
             .GetProperty("params")
             .GetProperty("diagnostics")
@@ -11699,7 +11870,12 @@ public sealed class LanguageServerProcessTests
             "textDocument/didOpen",
             CreateOpenDocument(uri, text));
 
-        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var notification = await process.WaitForDiagnosticsMatchingAsync(
+            uri,
+            diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                diagnostic.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList"),
+            "a diagnostic with code 'validation.incompatibleCallArgumentList'");
         var diagnostic = Assert.Single(notification
             .GetProperty("params")
             .GetProperty("diagnostics")
@@ -11872,7 +12048,12 @@ public sealed class LanguageServerProcessTests
             "textDocument/didOpen",
             CreateOpenDocument(uri, text));
 
-        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var notification = await process.WaitForDiagnosticsMatchingAsync(
+            uri,
+            diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                diagnostic.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList"),
+            "a diagnostic with code 'validation.incompatibleCallArgumentList'");
         var diagnostic = Assert.Single(notification
             .GetProperty("params")
             .GetProperty("diagnostics")
@@ -12352,7 +12533,12 @@ public sealed class LanguageServerProcessTests
             "textDocument/didOpen",
             CreateOpenDocument(uri, text));
 
-        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var notification = await process.WaitForDiagnosticsMatchingAsync(
+            uri,
+            diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                diagnostic.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList"),
+            "a diagnostic with code 'validation.incompatibleCallArgumentList'");
         var diagnostic = Assert.Single(notification
             .GetProperty("params")
             .GetProperty("diagnostics")
@@ -12488,7 +12674,12 @@ public sealed class LanguageServerProcessTests
             "textDocument/didOpen",
             CreateOpenDocument(callerUri, callerText));
 
-        var notification = await process.WaitForDiagnosticsAsync(callerUri);
+        var notification = await process.WaitForDiagnosticsMatchingAsync(
+            callerUri,
+            diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                diagnostic.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList"),
+            "a diagnostic with code 'validation.incompatibleCallArgumentList'");
         Assert.Single(
             notification
                 .GetProperty("params")
@@ -12597,7 +12788,12 @@ public sealed class LanguageServerProcessTests
             "textDocument/didOpen",
             CreateOpenDocument(uri, text));
 
-        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var notification = await process.WaitForDiagnosticsMatchingAsync(
+            uri,
+            diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                diagnostic.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList"),
+            "a diagnostic with code 'validation.incompatibleCallArgumentList'");
         Assert.Single(
             notification
                 .GetProperty("params")
@@ -12829,7 +13025,12 @@ public sealed class LanguageServerProcessTests
             "textDocument/didOpen",
             CreateOpenDocument(uri, text));
 
-        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var notification = await process.WaitForDiagnosticsMatchingAsync(
+            uri,
+            diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                diagnostic.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList"),
+            "a diagnostic with code 'validation.incompatibleCallArgumentList'");
         var diagnostic = Assert.Single(notification
             .GetProperty("params")
             .GetProperty("diagnostics")
@@ -12892,7 +13093,12 @@ public sealed class LanguageServerProcessTests
             "textDocument/didOpen",
             CreateOpenDocument(uri, text));
 
-        var notification = await process.WaitForDiagnosticsAsync(uri);
+        var notification = await process.WaitForDiagnosticsMatchingAsync(
+            uri,
+            diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                diagnostic.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList"),
+            "a diagnostic with code 'validation.incompatibleCallArgumentList'");
         var diagnostic = Assert.Single(notification
             .GetProperty("params")
             .GetProperty("diagnostics")
@@ -13033,7 +13239,12 @@ public sealed class LanguageServerProcessTests
             "textDocument/didOpen",
             CreateOpenDocument(callerUri, callerText));
 
-        var notification = await process.WaitForDiagnosticsAsync(callerUri);
+        var notification = await process.WaitForDiagnosticsMatchingAsync(
+            callerUri,
+            diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                diagnostic.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList"),
+            "a diagnostic with code 'validation.incompatibleCallArgumentList'");
         var diagnostic = Assert.Single(notification
             .GetProperty("params")
             .GetProperty("diagnostics")
@@ -13102,7 +13313,12 @@ public sealed class LanguageServerProcessTests
             "textDocument/didOpen",
             CreateOpenDocument(callerUri, callerText));
 
-        var notification = await process.WaitForDiagnosticsAsync(callerUri);
+        var notification = await process.WaitForDiagnosticsMatchingAsync(
+            callerUri,
+            diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                diagnostic.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList"),
+            "a diagnostic with code 'validation.incompatibleCallArgumentList'");
         var diagnostic = Assert.Single(notification
             .GetProperty("params")
             .GetProperty("diagnostics")
@@ -13173,7 +13389,12 @@ public sealed class LanguageServerProcessTests
             "textDocument/didOpen",
             CreateOpenDocument(callerUri, callerText));
 
-        var notification = await process.WaitForDiagnosticsAsync(callerUri);
+        var notification = await process.WaitForDiagnosticsMatchingAsync(
+            callerUri,
+            diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                diagnostic.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList"),
+            "a diagnostic with code 'validation.incompatibleCallArgumentList'");
         var diagnostic = Assert.Single(notification
             .GetProperty("params")
             .GetProperty("diagnostics")
@@ -13654,7 +13875,12 @@ public sealed class LanguageServerProcessTests
             "textDocument/didOpen",
             CreateOpenDocument(callerUri, callerText));
 
-        var notification = await process.WaitForDiagnosticsAsync(callerUri);
+        var notification = await process.WaitForDiagnosticsMatchingAsync(
+            callerUri,
+            diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                diagnostic.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList"),
+            "a diagnostic with code 'validation.incompatibleCallArgumentList'");
         var diagnostic = Assert.Single(notification
             .GetProperty("params")
             .GetProperty("diagnostics")
@@ -13721,7 +13947,12 @@ public sealed class LanguageServerProcessTests
             "textDocument/didOpen",
             CreateOpenDocument(callerUri, callerText));
 
-        var notification = await process.WaitForDiagnosticsAsync(callerUri);
+        var notification = await process.WaitForDiagnosticsMatchingAsync(
+            callerUri,
+            diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                diagnostic.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList"),
+            "a diagnostic with code 'validation.incompatibleCallArgumentList'");
         var diagnostic = Assert.Single(notification
             .GetProperty("params")
             .GetProperty("diagnostics")
@@ -13785,7 +14016,12 @@ public sealed class LanguageServerProcessTests
             "textDocument/didOpen",
             CreateOpenDocument(callerUri, callerText));
 
-        var notification = await process.WaitForDiagnosticsAsync(callerUri);
+        var notification = await process.WaitForDiagnosticsMatchingAsync(
+            callerUri,
+            diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                diagnostic.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList"),
+            "a diagnostic with code 'validation.incompatibleCallArgumentList'");
         var diagnostic = Assert.Single(notification
             .GetProperty("params")
             .GetProperty("diagnostics")
@@ -15170,7 +15406,8 @@ public sealed class LanguageServerProcessTests
                         ])));
 
             await using var process = await LanguageServerProcessHarness.StartAsync(
-                referenceCatalogCacheRoot: cacheRoot);
+                referenceCatalogCacheRoot: cacheRoot,
+                enableProjectDiagnosticsSynchronization: true);
             await process.InitializeAsync();
             var uri = ToFileUri(Path.Combine(
                 projectRoot,
@@ -15190,7 +15427,8 @@ public sealed class LanguageServerProcessTests
             await process.WaitForLogTextAsync(
                 "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
 
-            var checkpoint = process.TranscriptCheckpoint;
+            var projectCheckpoint =
+                process.CaptureProjectDiagnosticsCheckpoint();
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -15198,11 +15436,11 @@ public sealed class LanguageServerProcessTests
                     textDocument = new { uri, version = 2 },
                     contentChanges = new[] { new { text } }
                 });
-            var notification = await process.WaitForMessageAsync(
-                checkpoint,
-                message => message.TryGetProperty("method", out var method)
-                    && method.GetString() == "textDocument/publishDiagnostics"
-                    && message.GetProperty("params").GetProperty("uri").GetString() == uri);
+            var notification =
+                await process.WaitForProjectDiagnosticsSettledAsync(
+                    uri,
+                    expectedVersion: 2,
+                    projectCheckpoint);
             Assert.DoesNotContain(
                 notification
                     .GetProperty("params")
@@ -15307,11 +15545,13 @@ public sealed class LanguageServerProcessTests
                     textDocument = new { uri, version = 2 },
                     contentChanges = new[] { new { text } }
                 });
-            var notification = await process.WaitForMessageAsync(
-                checkpoint,
-                message => message.TryGetProperty("method", out var method)
-                    && method.GetString() == "textDocument/publishDiagnostics"
-                    && message.GetProperty("params").GetProperty("uri").GetString() == uri);
+            var notification = await process.WaitForDiagnosticsMatchingAsync(
+                uri,
+                diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                    diagnostic.GetProperty("code").GetString()
+                        == "validation.incompatibleCallArgumentList"),
+                "a diagnostic with code 'validation.incompatibleCallArgumentList'",
+                afterCheckpoint: checkpoint);
             var diagnostic = Assert.Single(notification
                 .GetProperty("params")
                 .GetProperty("diagnostics")
@@ -15399,11 +15639,13 @@ public sealed class LanguageServerProcessTests
                     textDocument = new { uri, version = 2 },
                     contentChanges = new[] { new { text } }
                 });
-            var notification = await process.WaitForMessageAsync(
-                checkpoint,
-                message => message.TryGetProperty("method", out var method)
-                    && method.GetString() == "textDocument/publishDiagnostics"
-                    && message.GetProperty("params").GetProperty("uri").GetString() == uri);
+            var notification = await process.WaitForDiagnosticsMatchingAsync(
+                uri,
+                diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                    diagnostic.GetProperty("code").GetString()
+                        == "validation.incompatibleCallArgumentList"),
+                "a diagnostic with code 'validation.incompatibleCallArgumentList'",
+                afterCheckpoint: checkpoint);
             var diagnostic = Assert.Single(notification
                 .GetProperty("params")
                 .GetProperty("diagnostics")
@@ -15470,7 +15712,8 @@ public sealed class LanguageServerProcessTests
                         ])));
 
             await using var process = await LanguageServerProcessHarness.StartAsync(
-                referenceCatalogCacheRoot: cacheRoot);
+                referenceCatalogCacheRoot: cacheRoot,
+                enableProjectDiagnosticsSynchronization: true);
             await process.InitializeAsync();
             var uri = ToFileUri(Path.Combine(
                 projectRoot,
@@ -15491,7 +15734,8 @@ public sealed class LanguageServerProcessTests
             await process.WaitForLogTextAsync(
                 "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
 
-            var checkpoint = process.TranscriptCheckpoint;
+            var projectCheckpoint =
+                process.CaptureProjectDiagnosticsCheckpoint();
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -15499,11 +15743,11 @@ public sealed class LanguageServerProcessTests
                     textDocument = new { uri, version = 2 },
                     contentChanges = new[] { new { text } }
                 });
-            var notification = await process.WaitForMessageAsync(
-                checkpoint,
-                message => message.TryGetProperty("method", out var method)
-                    && method.GetString() == "textDocument/publishDiagnostics"
-                    && message.GetProperty("params").GetProperty("uri").GetString() == uri);
+            var notification =
+                await process.WaitForProjectDiagnosticsSettledAsync(
+                    uri,
+                    expectedVersion: 2,
+                    projectCheckpoint);
 
             Assert.DoesNotContain(
                 notification
@@ -15585,11 +15829,13 @@ public sealed class LanguageServerProcessTests
                     textDocument = new { uri, version = 2 },
                     contentChanges = new[] { new { text } }
                 });
-            var notification = await process.WaitForMessageAsync(
-                checkpoint,
-                message => message.TryGetProperty("method", out var method)
-                    && method.GetString() == "textDocument/publishDiagnostics"
-                    && message.GetProperty("params").GetProperty("uri").GetString() == uri);
+            var notification = await process.WaitForDiagnosticsMatchingAsync(
+                uri,
+                diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                    diagnostic.GetProperty("code").GetString()
+                        == "validation.incompatibleCallArgumentList"),
+                "a diagnostic with code 'validation.incompatibleCallArgumentList'",
+                afterCheckpoint: checkpoint);
             var diagnostic = Assert.Single(notification
                 .GetProperty("params")
                 .GetProperty("diagnostics")
@@ -15651,7 +15897,8 @@ public sealed class LanguageServerProcessTests
                         ])));
 
             await using var process = await LanguageServerProcessHarness.StartAsync(
-                referenceCatalogCacheRoot: cacheRoot);
+                referenceCatalogCacheRoot: cacheRoot,
+                enableProjectDiagnosticsSynchronization: true);
             await process.InitializeAsync();
             var uri = ToFileUri(Path.Combine(
                 projectRoot,
@@ -15670,7 +15917,8 @@ public sealed class LanguageServerProcessTests
             await process.WaitForLogTextAsync(
                 "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
 
-            var checkpoint = process.TranscriptCheckpoint;
+            var projectCheckpoint =
+                process.CaptureProjectDiagnosticsCheckpoint();
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -15678,11 +15926,11 @@ public sealed class LanguageServerProcessTests
                     textDocument = new { uri, version = 2 },
                     contentChanges = new[] { new { text } }
                 });
-            var notification = await process.WaitForMessageAsync(
-                checkpoint,
-                message => message.TryGetProperty("method", out var method)
-                    && method.GetString() == "textDocument/publishDiagnostics"
-                    && message.GetProperty("params").GetProperty("uri").GetString() == uri);
+            var notification =
+                await process.WaitForProjectDiagnosticsSettledAsync(
+                    uri,
+                    expectedVersion: 2,
+                    projectCheckpoint);
 
             Assert.DoesNotContain(
                 notification
@@ -15858,12 +16106,13 @@ public sealed class LanguageServerProcessTests
                     textDocument = new { uri = callerUri, version = 2 },
                     contentChanges = new[] { new { text = callerText } }
                 });
-            var notification = await process.WaitForMessageAsync(
-                checkpoint,
-                message => message.TryGetProperty("method", out var method)
-                    && method.GetString() == "textDocument/publishDiagnostics"
-                    && message.GetProperty("params").GetProperty("uri").GetString()
-                        == callerUri);
+            var notification = await process.WaitForDiagnosticsMatchingAsync(
+                callerUri,
+                diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                    diagnostic.GetProperty("code").GetString()
+                        == "validation.incompatibleCallArgumentList"),
+                "a diagnostic with code 'validation.incompatibleCallArgumentList'",
+                afterCheckpoint: checkpoint);
             var diagnostic = Assert.Single(notification
                 .GetProperty("params")
                 .GetProperty("diagnostics")
@@ -15978,11 +16227,13 @@ public sealed class LanguageServerProcessTests
                     textDocument = new { uri, version = 2 },
                     contentChanges = new[] { new { text } }
                 });
-            var notification = await process.WaitForMessageAsync(
-                checkpoint,
-                message => message.TryGetProperty("method", out var method)
-                    && method.GetString() == "textDocument/publishDiagnostics"
-                    && message.GetProperty("params").GetProperty("uri").GetString() == uri);
+            var notification = await process.WaitForDiagnosticsMatchingAsync(
+                uri,
+                diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                    diagnostic.GetProperty("code").GetString()
+                        == "validation.incompatibleCallArgumentList"),
+                "a diagnostic with code 'validation.incompatibleCallArgumentList'",
+                afterCheckpoint: checkpoint);
             var diagnostic = Assert.Single(notification
                 .GetProperty("params")
                 .GetProperty("diagnostics")
@@ -17517,7 +17768,12 @@ public sealed class LanguageServerProcessTests
                     contentChanges = new[] { new { text } }
                 });
 
-            var notification = await process.WaitForDiagnosticsAsync(uri);
+            var notification = await process.WaitForDiagnosticsMatchingAsync(
+                uri,
+                diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                    diagnostic.GetProperty("code").GetString()
+                        == "validation.moduleIdentityNameConflict"),
+                "a diagnostic with code 'validation.moduleIdentityNameConflict'");
             var diagnostic = Assert.Single(
                 notification
                     .GetProperty("params")
@@ -18079,13 +18335,16 @@ public sealed class LanguageServerProcessTests
             File.WriteAllText(sourcePath, text);
             File.WriteAllBytes(templatePath, templateBytes);
             var uri = ToFileUri(sourcePath);
-            await using var process = await LanguageServerProcessHarness.StartAsync();
+            await using var process = await LanguageServerProcessHarness.StartAsync(
+                enableProjectDiagnosticsSynchronization: true);
 
             await process.InitializeAsync();
             await process.SendNotificationAsync(
                 "textDocument/didOpen",
                 CreateOpenDocument(uri, text));
             await process.WaitForDiagnosticsAsync(uri);
+            var projectCheckpoint =
+                process.CaptureProjectDiagnosticsCheckpoint();
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -18094,7 +18353,10 @@ public sealed class LanguageServerProcessTests
                     contentChanges = new[] { new { text } }
                 });
             var unavailableAuthorityDiagnostics =
-                await process.WaitForDiagnosticsAsync(uri);
+                await process.WaitForProjectDiagnosticsSettledAsync(
+                    uri,
+                    expectedVersion: 2,
+                    projectCheckpoint);
             Assert.DoesNotContain(
                 unavailableAuthorityDiagnostics
                     .GetProperty("params")

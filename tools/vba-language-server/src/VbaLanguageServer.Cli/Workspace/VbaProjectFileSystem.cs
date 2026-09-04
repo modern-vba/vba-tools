@@ -27,7 +27,27 @@ internal interface IVbaProjectFileSystem
 
     string ReadManifestText(string path);
 
+    string ReadManifestText(
+        string path,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var text = ReadManifestText(path);
+        cancellationToken.ThrowIfCancellationRequested();
+        return text;
+    }
+
     byte[] ReadSourceBytes(string path);
+
+    byte[] ReadSourceBytes(
+        string path,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var bytes = ReadSourceBytes(path);
+        cancellationToken.ThrowIfCancellationRequested();
+        return bytes;
+    }
 
     bool PathsReferToSameEntry(string left, string right)
         => Path.GetFullPath(left).Equals(
@@ -80,8 +100,22 @@ internal sealed class SystemVbaProjectFileSystem : IVbaProjectFileSystem
     public string ReadManifestText(string path)
         => File.ReadAllText(path);
 
+    public string ReadManifestText(
+        string path,
+        CancellationToken cancellationToken)
+        => File.ReadAllTextAsync(path, cancellationToken)
+            .GetAwaiter()
+            .GetResult();
+
     public byte[] ReadSourceBytes(string path)
         => File.ReadAllBytes(path);
+
+    public byte[] ReadSourceBytes(
+        string path,
+        CancellationToken cancellationToken)
+        => File.ReadAllBytesAsync(path, cancellationToken)
+            .GetAwaiter()
+            .GetResult();
 
     public bool PathsReferToSameEntry(string left, string right)
         => Path.GetFullPath(left).Equals(

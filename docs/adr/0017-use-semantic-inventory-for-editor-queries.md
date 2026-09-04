@@ -28,6 +28,22 @@ queries this inventory for completion, hover, signature help, definition,
 references, document symbols, workspace symbols, formatting, rename, and
 semantic tokens.
 
+Inventory construction establishes `InteractiveSemanticReadiness`; it does not
+eagerly construct the project-validation diagnostic index. Project Validation
+Diagnostics are a lazy consumer of the same captured inventory and exact
+`VbaProjectSnapshot`, not a prerequisite or a second project-scope authority.
+Editor-query handlers never request that diagnostic index as a condition of
+completion, hover, signature help, symbols, definition, references, rename,
+formatting, or semantic-token execution.
+
+The project-validation lifecycle may later build the diagnostic index from the
+inventory's existing definitions and semantic resolution. Completing that
+index cannot mutate the inventory maps, occurrence shards, semantic-token
+caches, or revision identity already captured by an editor request. A
+cancelled build is not published or retained as a complete index, so a later
+applicable project revision can evaluate normally from its own captured
+inventory.
+
 The inventory also owns occurrence and semantic-token shards for the committed
 snapshot. Resolved identifier occurrences are built through document-local lazy
 shards and exposed to references, rename, formatting support, and semantic

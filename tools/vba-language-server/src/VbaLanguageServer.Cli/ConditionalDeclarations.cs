@@ -828,8 +828,10 @@ internal sealed class VbaProjectValidationDiagnosticIndex
 
     public VbaProjectValidationDiagnosticIndex(
         IReadOnlyList<VbaSourceDocument> documents,
-        VbaSemanticResolution semanticResolution)
+        VbaSemanticResolution semanticResolution,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var diagnostics = new Dictionary<
             VbaDocumentIdentity,
             List<VbaProjectValidationDiagnostic>>();
@@ -844,11 +846,13 @@ internal sealed class VbaProjectValidationDiagnosticIndex
         var declarationsWithPeers = new HashSet<VbaDefinitionIdentity>();
         for (var leftIndex = 0; leftIndex < definitions.Length; leftIndex++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var left = definitions[leftIndex];
             for (var rightIndex = leftIndex + 1;
                 rightIndex < definitions.Length;
                 rightIndex++)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 var right = definitions[rightIndex];
                 if (!VbaDeclarationRelationshipPolicy.AreDirectCollisionPeers(
                         left,
@@ -868,6 +872,7 @@ internal sealed class VbaProjectValidationDiagnosticIndex
         foreach (var declaration in definitions.Where(definition =>
             declarationsWithPeers.Contains(definition.Identity)))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             AddProjectDiagnostic(
                 diagnostics,
                 declaration.Uri,
@@ -880,11 +885,13 @@ internal sealed class VbaProjectValidationDiagnosticIndex
 
         foreach (var document in documents)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var syntaxTree = document.SyntaxTree
                 ?? VbaSyntaxTree.ParseModule(document.Uri, document.Text);
             foreach (var diagnostic in semanticResolution
                 .GetInterfaceContractDiagnostics(document))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 AddProjectDiagnostic(diagnostics, document.Uri, diagnostic);
             }
 
@@ -892,6 +899,7 @@ internal sealed class VbaProjectValidationDiagnosticIndex
                          definition.IsWithEvents
                          && !definition.IsRecoveredWithEventsVariableDeclaration))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 var eligibility = semanticResolution.GetWithEventsTypeEligibility(
                     document,
                     variable);
@@ -934,6 +942,7 @@ internal sealed class VbaProjectValidationDiagnosticIndex
                          definition.Kind is VbaSourceDefinitionKind.Procedure
                              or VbaSourceDefinitionKind.Property))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 var intrinsicAnalysis = semanticResolution
                     .AnalyzeIntrinsicHostHandler(document, handler);
                 if (intrinsicAnalysis is not null)
@@ -1056,6 +1065,7 @@ internal sealed class VbaProjectValidationDiagnosticIndex
 
             foreach (var argumentList in syntaxTree.Module.ArgumentLists)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 var isRaiseEventCall = IsRaiseEventCall(syntaxTree, argumentList);
                 if (isRaiseEventCall
                         && HasRaiseEventPlacementDiagnostic(syntaxTree, argumentList))
@@ -1114,6 +1124,7 @@ internal sealed class VbaProjectValidationDiagnosticIndex
                          token.Kind == VbaTokenKind.Keyword
                          && token.Text.Equals("RaiseEvent", StringComparison.OrdinalIgnoreCase)))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 var sourceLine = syntaxTree.SourceText.Lines[raiseEventKeyword.Range.Start.Line];
                 if (VbaLexicalFacts.IsPositionInComment(
                         sourceLine.Text,

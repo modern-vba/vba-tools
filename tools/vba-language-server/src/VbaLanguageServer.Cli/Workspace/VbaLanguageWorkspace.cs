@@ -900,16 +900,39 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
             string activeUri,
             CancellationToken cancellationToken = default)
     {
+        var capture = CaptureProjectDiagnostics(
+            activeUri,
+            cancellationToken);
+        return capture is null
+            ? null
+            : BuildProjectDiagnosticsSnapshots(
+                capture,
+                cancellationToken);
+    }
+
+    internal VbaProjectDiagnosticsCapture? CaptureProjectDiagnostics(
+        string activeUri,
+        CancellationToken cancellationToken = default)
+    {
         cancellationToken.ThrowIfCancellationRequested();
         var projectSnapshot = CreateProjectSnapshot(activeUri, cancellationToken);
-        var projectIdentityCapture = CaptureSourceTemplateProjectIdentity(
+        if (!VbaProjectIdentityModel.TryIdentifyAuthority(
+                projectSnapshot.Resolution,
+                out var authority))
+        {
+            return null;
+        }
+
+        var sourceTemplateInput = CaptureDiagnosticsSourceTemplateInput(
             projectSnapshot.Resolution,
             cancellationToken);
-        var sourceTemplateEvidence = CreateDiagnosticsEvidence(
-            projectIdentityCapture.Evidence);
+        List<(
+            WorkspaceDocumentState State,
+            AcceptedDocumentRevisionState Accepted)> captured;
+        VbaDocumentDiagnosticsOwnership[] ownership;
         lock (gate)
         {
-            var captured = new List<(
+            captured = new List<(
                 WorkspaceDocumentState State,
                 AcceptedDocumentRevisionState Accepted)>();
             foreach (var (sourceUri, sourceText) in projectSnapshot.SourceDocuments)
@@ -947,33 +970,108 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
 
             if (captured.Count == 0)
             {
-                return [];
+                return new VbaProjectDiagnosticsCapture(
+                    activeUri,
+                    authority,
+                    projectSnapshot,
+                    sourceTemplateInput,
+                    []);
             }
 
-            var ownership = captured
+            ownership = captured
                 .Select(item => new VbaDocumentDiagnosticsOwnership(
                     item.State.Analysis.Uri,
                     item.State.Version,
                     item.State.LifecycleEpoch,
                     item.State.ReservationToken))
                 .ToArray();
-            return captured
-                .Select(item => new VbaDocumentDiagnosticsSnapshot(
-                    item.State.Analysis,
-                    item.State.Version,
-                    item.State.LifecycleEpoch,
-                    item.State.ReservationToken,
-                    projectSnapshot.SemanticInventory
-                        .GetProjectValidationDiagnostics(
-                            item.State.Analysis.Uri,
-                            projectIdentityCapture.ReadResult),
-                    ownership,
-                    projectSnapshot.DiagnosticsOwnership)
-                {
-                    SourceTemplateEvidence = sourceTemplateEvidence
-                })
-                .ToArray();
         }
+
+        var documentSnapshots = captured
+            .Select(item => new VbaDocumentDiagnosticsSnapshot(
+                item.State.Analysis,
+                item.State.Version,
+                item.State.LifecycleEpoch,
+                item.State.ReservationToken,
+                [],
+                ownership,
+                projectSnapshot.DiagnosticsOwnership))
+            .ToArray();
+        return new VbaProjectDiagnosticsCapture(
+            activeUri,
+            authority,
+            projectSnapshot,
+            sourceTemplateInput,
+            documentSnapshots);
+    }
+
+    internal bool TryCaptureProjectDiagnosticsAuthority(
+        string activeUri,
+        CancellationToken cancellationToken,
+        out VbaProjectAuthorityIdentity authority)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        try
+        {
+            return VbaProjectIdentityModel.TryIdentifyAuthority(
+                ManifestWorkspace.CaptureResolution(
+                    activeUri,
+                    cancellationToken).Resolution,
+                out authority);
+        }
+        catch (VbaProjectManifestException)
+        {
+            authority = default;
+            return false;
+        }
+    }
+
+    internal IReadOnlyList<VbaDocumentDiagnosticsSnapshot>
+        BuildProjectDiagnosticsSnapshots(
+            VbaProjectDiagnosticsCapture capture,
+            CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var projectIdentityCapture = CaptureSourceTemplateProjectIdentity(
+            capture.ProjectSnapshot.Resolution,
+            cancellationToken,
+            capture.SourceTemplateInput);
+        var sourceTemplateEvidence = CreateDiagnosticsEvidence(
+            projectIdentityCapture.Evidence);
+        return capture.DocumentSnapshots
+            .Select(snapshot =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return snapshot with
+                {
+                    ProjectValidationDiagnostics = capture.ProjectSnapshot
+                        .SemanticInventory
+                        .GetProjectValidationDiagnostics(
+                            snapshot.Analysis.Uri,
+                            projectIdentityCapture.ReadResult,
+                            cancellationToken),
+                    SourceTemplateEvidence = sourceTemplateEvidence
+                };
+            })
+            .ToArray();
+    }
+
+    internal bool IsCurrentProjectDiagnosticsCapture(
+        VbaProjectDiagnosticsCapture capture)
+    {
+        if (capture.DocumentSnapshots.Count == 0)
+        {
+            return false;
+        }
+
+        var first = capture.DocumentSnapshots[0];
+        var sourceTemplateEvidence = capture.DocumentSnapshots
+            .Select(snapshot => snapshot.SourceTemplateEvidence)
+            .FirstOrDefault(evidence => evidence is not null);
+        return AreLatestDiagnosticsSnapshots(
+            first.ProjectOwnership,
+            first.ProjectSnapshotOwnership,
+            sourceTemplateEvidence);
     }
 
     internal VbaProjectDiskSourceFailure? GetDiskSourceFailure(
@@ -1065,8 +1163,10 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         IReadOnlyList<VbaDocumentDiagnosticsOwnership> ownership,
         VbaProjectSnapshotProvider.ProjectSnapshotOwnership?
             projectSnapshotOwnership,
-        VbaSourceTemplateDiagnosticsEvidence? sourceTemplateEvidence = null)
+        VbaSourceTemplateDiagnosticsEvidence? sourceTemplateEvidence = null,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (!snapshotProvider.IsCurrentProjectSnapshot(
                 projectSnapshotOwnership))
         {
@@ -1101,19 +1201,23 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                 });
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         return documentsAreCurrent
             && snapshotProvider.IsCurrentProjectSnapshot(
                 projectSnapshotOwnership)
             && IsCurrentDiagnosticsSourceTemplateEvidence(
                 projectSnapshotOwnership,
-                sourceTemplateEvidence);
+                sourceTemplateEvidence,
+                cancellationToken);
     }
 
     private bool IsCurrentDiagnosticsSourceTemplateEvidence(
         VbaProjectSnapshotProvider.ProjectSnapshotOwnership?
             projectSnapshotOwnership,
-        VbaSourceTemplateDiagnosticsEvidence? sourceTemplateEvidence)
+        VbaSourceTemplateDiagnosticsEvidence? sourceTemplateEvidence,
+        CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (sourceTemplateEvidence is null)
         {
             return true;
@@ -1131,9 +1235,10 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         try
         {
             return CreateDiagnosticsEvidence(
-                    CaptureRenameFileEvidence(
+                CaptureRenameFileEvidence(
                         sourceTemplatePath,
-                        MaximumSourceTemplateIdentityReadLength))
+                        MaximumSourceTemplateIdentityReadLength,
+                        cancellationToken))
                 == sourceTemplateEvidence;
         }
         catch (Exception ex) when (ex is IOException
@@ -1357,7 +1462,8 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
     private VbaSourceTemplateProjectIdentityCapture
         CaptureSourceTemplateProjectIdentity(
             VbaProjectResolution resolution,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            VbaSourceTemplateDiagnosticsInput? expectedInput = null)
     {
         if (resolution.Kind != VbaProjectResolutionKind.ManifestDocument)
         {
@@ -1377,18 +1483,39 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
 
         cancellationToken.ThrowIfCancellationRequested();
         var fullPath = Path.GetFullPath(sourceTemplatePath);
-        if (!projectFileSystem.TryGetSourceMetadata(fullPath, out var metadata))
+        if (expectedInput is not null
+            && !projectFileSystem.PathsReferToSameEntry(
+                fullPath,
+                expectedInput.FullPath))
+        {
+            return CreateChangedSourceTemplateIdentityCapture(expectedInput);
+        }
+
+        var sourceTemplateExists = projectFileSystem.TryGetSourceMetadata(
+            fullPath,
+            out var metadata);
+        if (expectedInput is not null
+            && (sourceTemplateExists != expectedInput.Exists
+                || (sourceTemplateExists
+                    && metadata != expectedInput.Metadata)))
+        {
+            return CreateChangedSourceTemplateIdentityCapture(expectedInput);
+        }
+
+        if (!sourceTemplateExists)
         {
             return new VbaSourceTemplateProjectIdentityCapture(
                 VbaProjectIdentityReadResult.Failed(
                     VbaProjectIdentityReadFailureKind.InvalidPackage,
                     "The containing source-template package is missing."),
-                new VbaRenameFileEvidence(
-                    fullPath,
-                    Exists: false,
-                    Metadata: null,
-                    ContentDigest: null,
-                    ReadFailure: null));
+                expectedInput is null
+                    ? new VbaRenameFileEvidence(
+                        fullPath,
+                        Exists: false,
+                        Metadata: null,
+                        ContentDigest: null,
+                        ReadFailure: null)
+                    : CreateSourceTemplateInputEvidence(expectedInput));
         }
 
         if (metadata.Length is <= 0
@@ -1408,7 +1535,11 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
 
         try
         {
-            var bytes = projectFileSystem.ReadSourceBytes(fullPath);
+            var bytes = expectedInput is null
+                ? projectFileSystem.ReadSourceBytes(fullPath)
+                : projectFileSystem.ReadSourceBytes(
+                    fullPath,
+                    cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             if (!projectFileSystem.TryGetSourceMetadata(
                     fullPath,
@@ -1421,18 +1552,21 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                         VbaProjectIdentityReadFailureKind.InvalidPackage,
                         "The containing source-template package changed while it was captured."),
                     new VbaRenameFileEvidence(
-                        fullPath,
-                        Exists: true,
-                        loadedMetadata,
+                        expectedInput?.FullPath ?? fullPath,
+                        expectedInput?.Exists ?? true,
+                        expectedInput?.Metadata ?? loadedMetadata,
                         ContentDigest: null,
                         ReadFailure: null));
             }
 
+            var contentDigest = ComputeContentDigest(
+                bytes,
+                cancellationToken);
             var evidence = new VbaRenameFileEvidence(
                 fullPath,
                 Exists: true,
                 loadedMetadata,
-                Convert.ToHexString(SHA256.HashData(bytes)),
+                contentDigest,
                 ReadFailure: null);
             return new VbaSourceTemplateProjectIdentityCapture(
                 projectIdentityReader.Read(bytes, cancellationToken),
@@ -1444,12 +1578,14 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                 VbaProjectIdentityReadResult.Failed(
                     VbaProjectIdentityReadFailureKind.InvalidPackage,
                     "The containing source-template package is missing."),
-                new VbaRenameFileEvidence(
-                    fullPath,
-                    Exists: false,
-                    Metadata: null,
-                    ContentDigest: null,
-                    ReadFailure: null));
+                expectedInput is null
+                    ? new VbaRenameFileEvidence(
+                        fullPath,
+                        Exists: false,
+                        Metadata: null,
+                        ContentDigest: null,
+                        ReadFailure: null)
+                    : CreateSourceTemplateInputEvidence(expectedInput));
         }
         catch (DirectoryNotFoundException)
         {
@@ -1457,12 +1593,14 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                 VbaProjectIdentityReadResult.Failed(
                     VbaProjectIdentityReadFailureKind.InvalidPackage,
                     "The containing source-template package is missing."),
-                new VbaRenameFileEvidence(
-                    fullPath,
-                    Exists: false,
-                    Metadata: null,
-                    ContentDigest: null,
-                    ReadFailure: null));
+                expectedInput is null
+                    ? new VbaRenameFileEvidence(
+                        fullPath,
+                        Exists: false,
+                        Metadata: null,
+                        ContentDigest: null,
+                        ReadFailure: null)
+                    : CreateSourceTemplateInputEvidence(expectedInput));
         }
         catch (Exception ex) when (ex is IOException
             or UnauthorizedAccessException)
@@ -1471,13 +1609,75 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                 VbaProjectIdentityReadResult.Failed(
                     VbaProjectIdentityReadFailureKind.InvalidPackage,
                     "The containing source-template package could not be read."),
-                new VbaRenameFileEvidence(
-                    fullPath,
-                    Exists: true,
-                    metadata,
-                    ContentDigest: null,
-                    ReadFailure: ex.Message));
+                expectedInput is null
+                    ? new VbaRenameFileEvidence(
+                        fullPath,
+                        Exists: true,
+                        metadata,
+                        ContentDigest: null,
+                        ReadFailure: ex.Message)
+                    : CreateSourceTemplateInputEvidence(expectedInput));
         }
+    }
+
+    private VbaSourceTemplateDiagnosticsInput?
+        CaptureDiagnosticsSourceTemplateInput(
+            VbaProjectResolution resolution,
+            CancellationToken cancellationToken)
+    {
+        if (resolution.Kind != VbaProjectResolutionKind.ManifestDocument
+            || resolution.SourceTemplatePath is not { } sourceTemplatePath)
+        {
+            return null;
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        var fullPath = Path.GetFullPath(sourceTemplatePath);
+        var exists = projectFileSystem.TryGetSourceMetadata(
+            fullPath,
+            out var metadata);
+        cancellationToken.ThrowIfCancellationRequested();
+        return new VbaSourceTemplateDiagnosticsInput(
+            fullPath,
+            exists,
+            exists ? metadata : null);
+    }
+
+    private static VbaSourceTemplateProjectIdentityCapture
+        CreateChangedSourceTemplateIdentityCapture(
+            VbaSourceTemplateDiagnosticsInput expectedInput)
+        => new(
+            VbaProjectIdentityReadResult.Failed(
+                VbaProjectIdentityReadFailureKind.InvalidPackage,
+                "The containing source-template package changed before its identity was read."),
+            CreateSourceTemplateInputEvidence(expectedInput));
+
+    private static VbaRenameFileEvidence CreateSourceTemplateInputEvidence(
+        VbaSourceTemplateDiagnosticsInput input)
+        => new(
+            input.FullPath,
+            input.Exists,
+            input.Metadata,
+            ContentDigest: null,
+            ReadFailure: null);
+
+    private static string ComputeContentDigest(
+        byte[] bytes,
+        CancellationToken cancellationToken)
+    {
+        const int blockLength = 1024 * 1024;
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        for (var offset = 0; offset < bytes.Length; offset += blockLength)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            hash.AppendData(
+                bytes.AsSpan(
+                    offset,
+                    Math.Min(blockLength, bytes.Length - offset)));
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return Convert.ToHexString(hash.GetHashAndReset());
     }
 
     private VbaRenameFailure? GetSourceTemplateChangeFailure(
@@ -1577,7 +1777,29 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
     private VbaRenameFileEvidence CaptureRenameFileEvidence(
         string path,
         long? maximumLength = null)
+        => CaptureRenameFileEvidence(
+            path,
+            maximumLength,
+            CancellationToken.None,
+            useCancellableRead: false);
+
+    private VbaRenameFileEvidence CaptureRenameFileEvidence(
+        string path,
+        long? maximumLength,
+        CancellationToken cancellationToken)
+        => CaptureRenameFileEvidence(
+            path,
+            maximumLength,
+            cancellationToken,
+            useCancellableRead: true);
+
+    private VbaRenameFileEvidence CaptureRenameFileEvidence(
+        string path,
+        long? maximumLength,
+        CancellationToken cancellationToken,
+        bool useCancellableRead)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var fullPath = Path.GetFullPath(path);
         if (!projectFileSystem.TryGetSourceMetadata(fullPath, out var metadata))
         {
@@ -1602,7 +1824,12 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
 
         try
         {
-            var bytes = projectFileSystem.ReadSourceBytes(fullPath);
+            var bytes = useCancellableRead
+                ? projectFileSystem.ReadSourceBytes(
+                    fullPath,
+                    cancellationToken)
+                : projectFileSystem.ReadSourceBytes(fullPath);
+            cancellationToken.ThrowIfCancellationRequested();
             if (!projectFileSystem.TryGetSourceMetadata(
                 fullPath,
                 out var loadedMetadata)
@@ -1620,7 +1847,9 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                 fullPath,
                 Exists: true,
                 Metadata: loadedMetadata,
-                ContentDigest: Convert.ToHexString(SHA256.HashData(bytes)),
+                ContentDigest: useCancellableRead
+                    ? ComputeContentDigest(bytes, cancellationToken)
+                    : Convert.ToHexString(SHA256.HashData(bytes)),
                 ReadFailure: null);
         }
         catch (FileNotFoundException)

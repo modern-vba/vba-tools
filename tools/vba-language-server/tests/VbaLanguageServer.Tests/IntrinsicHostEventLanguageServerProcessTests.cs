@@ -641,6 +641,7 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
                         }
                     ],
                     "Occurs when the form changes."));
+            var diagnosticsCheckpoint = process.TranscriptCheckpoint;
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -649,7 +650,13 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
                     contentChanges = new[] { new { text } }
                 });
 
-            var notification = await process.WaitForDiagnosticsAsync(uri);
+            var notification = await process.WaitForDiagnosticsMatchingAsync(
+                uri,
+                diagnostics => diagnostics.EnumerateArray().Any(candidate =>
+                    candidate.GetProperty("code").GetString()
+                        == "validation.eventHandlerMustBeSub"),
+                "validation.eventHandlerMustBeSub",
+                afterCheckpoint: diagnosticsCheckpoint);
             var diagnostics = notification
                 .GetProperty("params")
                 .GetProperty("diagnostics")
@@ -716,6 +723,7 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
                         }
                     ],
                     "Occurs when the form changes."));
+            var diagnosticsCheckpoint = process.TranscriptCheckpoint;
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -724,7 +732,13 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
                     contentChanges = new[] { new { text } }
                 });
 
-            var notification = await process.WaitForDiagnosticsAsync(uri);
+            var notification = await process.WaitForDiagnosticsMatchingAsync(
+                uri,
+                diagnostics => diagnostics.EnumerateArray().Any(candidate =>
+                    candidate.GetProperty("code").GetString()
+                        == "validation.incompatibleEventHandlerSignature"),
+                "validation.incompatibleEventHandlerSignature",
+                afterCheckpoint: diagnosticsCheckpoint);
             var diagnostics = notification
                 .GetProperty("params")
                 .GetProperty("diagnostics")

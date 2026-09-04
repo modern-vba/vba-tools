@@ -18,6 +18,30 @@ both diagnostic kinds together, but collectors remain separate so
 document-local validation rules can ship before project-aware diagnostics such
 as unresolved identifiers, duplicate declarations, and type mismatch.
 
+`InteractiveSemanticReadiness` is reached when one exact immutable
+`VbaProjectSnapshot` has completed source capture, projection, reference
+selection, and `VbaSemanticInventory` construction. Snapshot construction does
+not eagerly construct complete Project Validation Diagnostics. Completion,
+hover, signature help, symbols, definition, references, rename, formatting,
+and semantic tokens may read that ready inventory while project validation is
+still pending. The later validation run consumes the same inventory and exact
+snapshot revision; it neither creates a second semantic authority nor mutates
+the definitions, resolution, occurrence shards, token caches, or ownership of
+an already captured editor result.
+
+Document-local syntax and validation diagnostics remain part of the accepted
+`VbaDocumentAnalysis` and can publish immediately. Project Validation
+Diagnostics are captured for the exact project, source, manifest, reference
+selection, reference-catalog revision, and a cheap source-template
+path/existence/metadata fence, then computed through a separate
+resolved-project-authority-keyed latest-only mailbox. That cancellable
+background run reads, hashes, and parses the fenced source-template package to
+derive its exact project-identity evidence. Replacing a pending or active
+revision cancels the obsolete run. A run must finish its complete project result
+before any per-URI partition enters the separate URI-owned publication
+mailboxes; cancellation or failure therefore publishes no partial project
+result and does not make the ready inventory unavailable.
+
 Diagnostics publication is latest-only for a source URI. A committed document
 analysis may enqueue a `textDocument/publishDiagnostics` notification, but the
 publisher rechecks the captured document lifecycle epoch, reservation token,
@@ -45,8 +69,16 @@ project-aware partition fenced to its former document revision. Unchanged
 members retain their last accepted complete diagnostic sets until a fresh
 project result becomes available; the server does not clear and repopulate the
 whole project on every edit. The fresh result republishes only sets that
-changed. Delete and project departure still clear immediately. Repeated project
-invalidations are coalesced latest-only by resolved project authority.
+belong to current members as complete URI partitions; content equality is not a
+transport-suppression contract. Delete and project departure still clear
+immediately. Repeated project invalidations are coalesced latest-only by
+resolved project authority.
+Replacement also cancels obsolete validation already in progress. Collectors
+observe cancellation during project, declaration-pair, handler, and
+argument-list traversal. A cancelled or failed run releases its retained
+revision state, publishes no partition, and does not prevent a later source,
+manifest, reference-catalog, or lifecycle revision from running. That later
+input is a new revision, not an automatic retry of the failed one.
 
 Publication is also transport-decoupled from document mutation. `didChange`
 commits analysis before diagnostics serialization or transport I/O completes,
@@ -59,20 +91,24 @@ late diagnostics that were already in flight before the newer revision existed.
 
 Diagnostic codes use separate namespaces: `syntax.*` for `SyntaxDiagnostic`s
 and `validation.*` for `VbaValidationDiagnostic`s. Document-local validation can
-consume only `VbaSyntaxTree`, while future project-aware validation can consume
+consume only `VbaSyntaxTree`, while project-aware validation consumes
 `VbaProjectSnapshot`, `NameResolution`, `TypeResolution`,
 `VbaProjectReferenceSelection`, and available `VbaProjectReferenceCatalog`s
-without blocking the initial validation slice.
+from the captured ready inventory without blocking the initial validation
+slice or editor queries.
 
 Project-aware collection validates each affected immutable
-`VbaProjectSnapshot` once and partitions the result by source URI across every
-member of `SourceDocuments`. Open buffers and closed disk sources participate
-equally, for both manifest-backed and ad hoc project scopes. A change does not
-revalidate an unrelated project. Each partition is combined with that member's
-document-local diagnostics, compared with its previously accepted complete
-publishable set, and sent through the existing URI-owned latest-only mailbox
-only when the set changed. If a previously published URI's complete set becomes
-empty, the server publishes an empty diagnostics tombstone.
+`VbaProjectSnapshot` once. Every open-buffer and closed-disk member of
+`SourceDocuments` participates in name and type resolution for both
+manifest-backed and ad hoc project scopes, while complete URI partitions are
+projected only for current tracked diagnostic snapshots. A change does not
+revalidate an unrelated project. Each current partition is combined with that
+tracked member's document-local diagnostics and sent through the existing
+URI-owned latest-only mailbox. A fresh current project result may republish an
+unchanged complete set; content equality is not a transport-suppression
+contract. An empty current partition is publishable, and deletion, project
+departure, or loss of a tracked disk source publishes an immediate empty
+diagnostics tombstone.
 
 Initial diagnostic codes follow the glossary distinction between declaration
 `CallableParameter`s and call-site `CallArgument`s:

@@ -92,6 +92,7 @@ internal enum VbaInteractiveWorkClass
 
 internal enum VbaInteractiveBackgroundWorkType
 {
+    ProjectValidation,
     DiagnosticsPublication,
     Reconciliation,
     ReferenceCatalogRefresh,
@@ -649,6 +650,15 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
             executeAsync);
     }
 
+    public VbaInteractiveWorkAdmission AdmitBackground(
+        VbaInteractiveBackgroundWorkType workType,
+        VbaProjectAuthorityIdentity authority,
+        Func<CancellationToken, Task> executeAsync)
+        => AdmitBackground(
+            workType,
+            CoalescingIdentity.FromProjectAuthority(authority),
+            executeAsync);
+
     private VbaInteractiveWorkAdmission AdmitBackground(
         VbaInteractiveBackgroundWorkType workType,
         CoalescingIdentity authority,
@@ -714,6 +724,29 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
                 workType,
                 CoalescingIdentity.FromDocument(authority),
                 executeAsync);
+            return true;
+        }
+        catch (VbaInteractiveWorkQueueFullException)
+        {
+            admission = default;
+            return false;
+        }
+        catch (ObjectDisposedException)
+        {
+            admission = default;
+            return false;
+        }
+    }
+
+    public bool TryAdmitBackground(
+        VbaInteractiveBackgroundWorkType workType,
+        VbaProjectAuthorityIdentity authority,
+        Func<CancellationToken, Task> executeAsync,
+        out VbaInteractiveWorkAdmission admission)
+    {
+        try
+        {
+            admission = AdmitBackground(workType, authority, executeAsync);
             return true;
         }
         catch (VbaInteractiveWorkQueueFullException)
@@ -1219,6 +1252,8 @@ internal sealed class VbaInteractiveWorkScheduler : IAsyncDisposable
     private static string GetBackgroundMethod(VbaInteractiveBackgroundWorkType workType)
         => workType switch
         {
+            VbaInteractiveBackgroundWorkType.ProjectValidation
+                => "workspace/diagnostic",
             VbaInteractiveBackgroundWorkType.DiagnosticsPublication
                 => "textDocument/diagnostic",
             VbaInteractiveBackgroundWorkType.Reconciliation

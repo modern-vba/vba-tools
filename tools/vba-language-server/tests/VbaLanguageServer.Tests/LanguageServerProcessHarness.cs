@@ -9,6 +9,8 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
 {
     private const string ReferenceCatalogCacheRootEnvironmentVariable =
         "VBA_TOOLS_REFERENCE_CATALOG_CACHE_DIR";
+    private const string ProjectDiagnosticsPublicationDirectoryEnvironmentVariable =
+        "VBA_TOOLS_PROJECT_DIAGNOSTICS_PUBLICATION_DIRECTORY";
 
     private enum HarnessState
     {
@@ -35,6 +37,7 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
     private readonly List<string> _stderr = [];
     private readonly bool _ownsCacheRoot;
     private readonly string _cacheRoot;
+    private readonly string? _projectDiagnosticsPublicationDirectory;
     private readonly Task _stdoutPump;
     private readonly Task _stderrPump;
     private TaskCompletionSource<bool> _transcriptChanged = CreateSignal();
@@ -45,17 +48,21 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
     private bool _shutdownRequested;
     private bool _inputCompleted;
     private int _cleanupRequestId = 1_000_000;
+    private int _outputFenceRequestId = 2_000_000;
 
     private LanguageServerProcessHarness(
         Process process,
         string cacheRoot,
-        bool ownsCacheRoot)
+        bool ownsCacheRoot,
+        string? projectDiagnosticsPublicationDirectory)
     {
         _process = process;
         _stdin = process.StandardInput.BaseStream;
         _stdout = process.StandardOutput.BaseStream;
         _cacheRoot = cacheRoot;
         _ownsCacheRoot = ownsCacheRoot;
+        _projectDiagnosticsPublicationDirectory =
+            projectDiagnosticsPublicationDirectory;
         _stdoutPump = PumpStdoutAsync(_lifetime.Token);
         _stderrPump = PumpStderrAsync(_lifetime.Token);
     }
@@ -91,28 +98,74 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
     public static Task<LanguageServerProcessHarness> StartAsync(
         string? referenceCatalogCacheRoot = null,
         IReadOnlyDictionary<string, string>? environment = null,
-        IReadOnlyList<string>? serverArguments = null)
+        IReadOnlyList<string>? serverArguments = null,
+        bool enableProjectDiagnosticsSynchronization = false)
     {
-        var serverProjectPath = FindServerProjectPath();
-        return StartFromProjectAsync(
-            serverProjectPath,
+        var serverExecutablePath = FindServerExecutablePath();
+        return StartFromExecutableAsync(
+            serverExecutablePath,
             referenceCatalogCacheRoot,
             environment,
-            serverArguments);
+            serverArguments,
+            enableProjectDiagnosticsSynchronization);
     }
 
-    private static Task<LanguageServerProcessHarness> StartFromProjectAsync(
-        string serverProjectPath,
+    private static Task<LanguageServerProcessHarness> StartFromExecutableAsync(
+        string serverExecutablePath,
         string? referenceCatalogCacheRoot = null,
         IReadOnlyDictionary<string, string>? environment = null,
-        IReadOnlyList<string>? serverArguments = null)
+        IReadOnlyList<string>? serverArguments = null,
+        bool enableProjectDiagnosticsSynchronization = false)
     {
         var ownsCacheRoot = referenceCatalogCacheRoot is null;
         var cacheRoot = referenceCatalogCacheRoot
             ?? Directory.CreateTempSubdirectory("vba-ls-process-cache-").FullName;
+        var publicationDirectory = enableProjectDiagnosticsSynchronization
+            ? Directory.CreateTempSubdirectory(
+                "vba-ls-project-diagnostics-").FullName
+            : null;
+        var startInfo = CreateServerStartInfo(
+            serverExecutablePath,
+            cacheRoot,
+            environment,
+            serverArguments,
+            publicationDirectory);
+
+        try
+        {
+            var process = Process.Start(startInfo)
+                ?? throw new InvalidOperationException("Failed to start the language server process.");
+            return Task.FromResult(new LanguageServerProcessHarness(
+                process,
+                cacheRoot,
+                ownsCacheRoot,
+                publicationDirectory));
+        }
+        catch
+        {
+            if (ownsCacheRoot)
+            {
+                TryDeleteDirectory(cacheRoot);
+            }
+            if (publicationDirectory is not null)
+            {
+                TryDeleteDirectory(publicationDirectory);
+            }
+
+            throw;
+        }
+    }
+
+    internal static ProcessStartInfo CreateServerStartInfo(
+        string serverExecutablePath,
+        string cacheRoot,
+        IReadOnlyDictionary<string, string>? environment = null,
+        IReadOnlyList<string>? serverArguments = null,
+        string? projectDiagnosticsPublicationDirectory = null)
+    {
         var startInfo = new ProcessStartInfo
         {
-            FileName = "dotnet",
+            FileName = serverExecutablePath,
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -124,60 +177,62 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
             startInfo.Environment[name] = value;
         }
         startInfo.Environment[ReferenceCatalogCacheRootEnvironmentVariable] = cacheRoot;
+        if (projectDiagnosticsPublicationDirectory is not null)
+        {
+            startInfo.Environment[
+                ProjectDiagnosticsPublicationDirectoryEnvironmentVariable] =
+                    projectDiagnosticsPublicationDirectory;
+        }
 
-        startInfo.ArgumentList.Add("run");
-        startInfo.ArgumentList.Add("--no-build");
-        startInfo.ArgumentList.Add("--configuration");
-        startInfo.ArgumentList.Add(
-            typeof(LanguageServerProcessHarness).Assembly
-                .GetCustomAttribute<AssemblyConfigurationAttribute>()
-                ?.Configuration
-                ?? "Debug");
-        startInfo.ArgumentList.Add("--project");
-        startInfo.ArgumentList.Add(serverProjectPath);
         if (serverArguments is { Count: > 0 })
         {
-            startInfo.ArgumentList.Add("--");
             foreach (var argument in serverArguments)
             {
                 startInfo.ArgumentList.Add(argument);
             }
         }
 
-        try
-        {
-            var process = Process.Start(startInfo)
-                ?? throw new InvalidOperationException("Failed to start the language server process.");
-            return Task.FromResult(new LanguageServerProcessHarness(process, cacheRoot, ownsCacheRoot));
-        }
-        catch
-        {
-            if (ownsCacheRoot)
-            {
-                TryDeleteDirectory(cacheRoot);
-            }
-
-            throw;
-        }
+        return startInfo;
     }
 
-    private static string FindServerProjectPath()
+    private static string FindServerExecutablePath()
     {
+        var configuration = typeof(LanguageServerProcessHarness).Assembly
+            .GetCustomAttribute<AssemblyConfigurationAttribute>()
+            ?.Configuration
+            ?? "Debug";
         for (var directory = new DirectoryInfo(AppContext.BaseDirectory);
              directory is not null;
              directory = directory.Parent)
         {
-            var candidate = Path.Combine(
+            var projectDirectory = Path.Combine(
                 directory.FullName,
                 "tools",
                 "vba-language-server",
                 "src",
-                "VbaLanguageServer.Cli",
+                "VbaLanguageServer.Cli");
+            var projectPath = Path.Combine(
+                projectDirectory,
                 "VbaLanguageServer.Cli.csproj");
-            if (File.Exists(candidate))
+            if (!File.Exists(projectPath))
             {
-                return candidate;
+                continue;
             }
+
+            var executablePath = Path.Combine(
+                projectDirectory,
+                "bin",
+                configuration,
+                "net10.0",
+                "win-x64",
+                "vba-language-server.exe");
+            if (File.Exists(executablePath))
+            {
+                return executablePath;
+            }
+
+            throw new InvalidOperationException(
+                $"Could not locate the {configuration} vba-language-server apphost at {executablePath}.");
         }
 
         throw new InvalidOperationException(
@@ -394,6 +449,117 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
             afterCheckpoint: null,
             cancellationToken);
 
+    public ProjectDiagnosticsCheckpoint CaptureProjectDiagnosticsCheckpoint()
+    {
+        var directory = _projectDiagnosticsPublicationDirectory
+            ?? throw new InvalidOperationException(
+                "Project-diagnostics synchronization was not enabled for this harness.");
+        return new ProjectDiagnosticsCheckpoint(
+            TranscriptCheckpoint,
+            Directory.EnumerateFiles(directory, "*.completed")
+                .Select(Path.GetFileName)
+                .Where(fileName => fileName is not null)
+                .Select(fileName => fileName!)
+                .ToHashSet(StringComparer.Ordinal));
+    }
+
+    /// <summary>
+    /// Waits until project diagnostics for a fresh client version cross the
+    /// transport, then fences stdout before returning the last matching frame.
+    /// Callers must not mutate the manifest or reference catalog concurrently.
+    /// </summary>
+    public async Task<JsonElement> WaitForProjectDiagnosticsSettledAsync(
+        string uri,
+        int? expectedVersion,
+        ProjectDiagnosticsCheckpoint checkpoint,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default)
+    {
+        var directory = _projectDiagnosticsPublicationDirectory
+            ?? throw new InvalidOperationException(
+                "Project-diagnostics synchronization was not enabled for this harness.");
+        var effectiveTimeout = timeout ?? TimeSpan.FromSeconds(10);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            _operations.Token);
+        deadline.CancelAfter(effectiveTimeout);
+        try
+        {
+            await WaitForProjectDiagnosticsMarkerAsync(
+                directory,
+                uri,
+                expectedVersion,
+                checkpoint.MarkerFileNames,
+                deadline.Token);
+            await SendRequestAsync(
+                Interlocked.Increment(ref _outputFenceRequestId),
+                "vba/test/outputFence",
+                parameters: null,
+                timeout: effectiveTimeout,
+                cancellationToken: deadline.Token);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException exception)
+        {
+            throw CreateSessionException(
+                $"Timed out waiting for settled project diagnostics for '{uri}' at version {expectedVersion?.ToString() ?? "none"}.",
+                exception);
+        }
+
+        lock (_gate)
+        {
+            for (var index = _transcript.Count - 1;
+                 index >= checkpoint.TranscriptCheckpoint;
+                 index--)
+            {
+                var message = _transcript[index];
+                if (IsDiagnosticsForVersion(message, uri, expectedVersion))
+                {
+                    return message;
+                }
+            }
+        }
+
+        throw CreateSessionException(
+            $"Project diagnostics for '{uri}' crossed transport without appearing in the transcript.");
+    }
+
+    public async Task<JsonElement> WaitForDiagnosticsMatchingAsync(
+        string uri,
+        Func<JsonElement, bool> diagnosticsPredicate,
+        string expectation,
+        int? afterCheckpoint = null,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(diagnosticsPredicate);
+        ArgumentException.ThrowIfNullOrWhiteSpace(expectation);
+
+        try
+        {
+            return await WaitForTranscriptMessageAsync(
+                $"diagnostics:{uri}",
+                message => message.TryGetProperty("method", out var methodElement)
+                    && methodElement.GetString() == "textDocument/publishDiagnostics"
+                    && message.GetProperty("params").GetProperty("uri").GetString() == uri
+                    && diagnosticsPredicate(
+                        message.GetProperty("params").GetProperty("diagnostics")),
+                timeout ?? TimeSpan.FromSeconds(5),
+                afterCheckpoint,
+                cancellationToken);
+        }
+        catch (TimeoutException exception)
+        {
+            var failure = CreateSessionException(
+                $"Timed out waiting for diagnostics for '{uri}' matching {expectation}.",
+                exception);
+            throw new TimeoutException(failure.Message, exception);
+        }
+    }
+
     public async Task<JsonElement> WaitForLogMessageAsync(
         string expectedMessageFragment,
         TimeSpan? timeout = null,
@@ -555,6 +721,10 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
             if (_ownsCacheRoot)
             {
                 TryDeleteDirectory(_cacheRoot);
+            }
+            if (_projectDiagnosticsPublicationDirectory is not null)
+            {
+                TryDeleteDirectory(_projectDiagnosticsPublicationDirectory);
             }
 
             lock (_gate)
@@ -764,6 +934,67 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
         }
     }
 
+    private static async Task WaitForProjectDiagnosticsMarkerAsync(
+        string directory,
+        string uri,
+        int? expectedVersion,
+        IReadOnlySet<string> existingMarkerFileNames,
+        CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            foreach (var path in Directory.EnumerateFiles(directory, "*.completed"))
+            {
+                if (existingMarkerFileNames.Contains(Path.GetFileName(path)))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var marker = JsonSerializer.Deserialize<
+                        ProjectDiagnosticsPublicationMarker>(
+                        File.ReadAllText(path),
+                        JsonOptions);
+                    if (marker is not null
+                        && marker.Uri.Equals(uri, StringComparison.Ordinal)
+                        && marker.ClientVersion == expectedVersion)
+                    {
+                        return;
+                    }
+                }
+                catch (IOException) when (!cancellationToken.IsCancellationRequested)
+                {
+                }
+                catch (JsonException) when (!cancellationToken.IsCancellationRequested)
+                {
+                }
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(10), cancellationToken);
+        }
+    }
+
+    private static bool IsDiagnosticsForVersion(
+        JsonElement message,
+        string uri,
+        int? expectedVersion)
+    {
+        if (!message.TryGetProperty("method", out var method)
+            || method.GetString() != "textDocument/publishDiagnostics"
+            || !message.TryGetProperty("params", out var parameters)
+            || parameters.GetProperty("uri").GetString() != uri)
+        {
+            return false;
+        }
+
+        return expectedVersion is { } version
+            ? parameters.TryGetProperty("version", out var publishedVersion)
+                && publishedVersion.GetInt32() == version
+            : !parameters.TryGetProperty("version", out _);
+    }
+
     private void FaultSession(Exception exception)
     {
         TaskCompletionSource<JsonElement>[] pending;
@@ -785,6 +1016,16 @@ internal sealed class LanguageServerProcessHarness : IAsyncDisposable
 
         changed.TrySetResult(true);
     }
+
+    public readonly record struct ProjectDiagnosticsCheckpoint(
+        int TranscriptCheckpoint,
+        IReadOnlySet<string> MarkerFileNames);
+
+    private sealed record ProjectDiagnosticsPublicationMarker(
+        string Authority,
+        string Uri,
+        long Revision,
+        int? ClientVersion);
 
     private InvalidOperationException CreateSessionException(string message, Exception? innerException = null)
     {

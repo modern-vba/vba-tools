@@ -78,7 +78,11 @@ internal sealed class VbaLanguageServerRuntime
             referenceCatalogCache,
             catalogDiscovery,
             VbaProjectReferenceCatalogPersistentStore.CreateDefault());
-        var workspace = new VbaLanguageWorkspace(referenceCatalogCache);
+        var workspace = new VbaLanguageWorkspace(
+            referenceCatalogCache,
+            NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+            NullVbaDocumentAnalysisBuildObserver.Instance,
+            BlockingVbaProjectValidationBuildObserver.CreateFromEnvironment());
         var clientCapabilities = new VbaLspClientCapabilityState();
         var requestExecution = new VbaLspRequestExecution(
             transport,
@@ -94,7 +98,8 @@ internal sealed class VbaLanguageServerRuntime
             transport,
             workspace,
             catalogRefresh,
-            clientCapabilities);
+            clientCapabilities,
+            FileVbaProjectDiagnosticsPublicationObserver.CreateFromEnvironment());
         var projectReconciler =
             documentLifecycle.CreateProjectReconciler();
         return new VbaLanguageServerRuntime(
@@ -158,6 +163,9 @@ internal sealed class VbaLanguageServerRuntime
                 if (!TryGetNotification(message, out var method, out var parameters))
                 {
                     var requestMethod = GetRequestMethod(message);
+                    var validShutdownAdmission = IsValidShutdownAdmission(
+                        message,
+                        requestMethod);
                     var requestId = VbaLspRequestId.TryCreate(
                         message["id"],
                         out var parsedRequestId)
@@ -216,9 +224,12 @@ internal sealed class VbaLanguageServerRuntime
                         return;
                     }
 
-                    shutdownAdmitted |= IsValidShutdownAdmission(
-                        message,
-                        requestMethod);
+                    if (validShutdownAdmission)
+                    {
+                        documentLifecycle.Stop();
+                    }
+
+                    shutdownAdmitted |= validShutdownAdmission;
                     continue;
                 }
 
