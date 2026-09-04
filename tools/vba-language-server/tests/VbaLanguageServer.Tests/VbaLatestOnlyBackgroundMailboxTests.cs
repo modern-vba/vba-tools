@@ -1,11 +1,64 @@
 using System.Collections.Concurrent;
 using VbaLanguageServer.Lsp;
+using VbaLanguageServer.ProjectModel;
 using Xunit;
 
 namespace VbaLanguageServer.Tests;
 
 public sealed class VbaLatestOnlyBackgroundMailboxTests
 {
+    [Fact]
+    public async Task Project_authority_is_a_typed_latest_only_key()
+    {
+        await using var scheduler = new VbaInteractiveWorkScheduler(
+            options: new VbaInteractiveWorkSchedulerOptions(
+                CoalesceSupersededMutations: true,
+                MaxOwnedWork: 1));
+        var blockerStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseBlocker = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var blocker = scheduler.AdmitMutation(async cancellationToken =>
+        {
+            blockerStarted.TrySetResult();
+            await releaseBlocker.Task.WaitAsync(cancellationToken);
+        });
+        await blockerStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(VbaProjectIdentityModel.TryIdentifyAuthority(
+            new VbaProjectResolution(
+                VbaProjectResolutionKind.AdHoc,
+                "C:\\work"),
+            out var authority));
+        var executed = new ConcurrentQueue<string>();
+        var mailbox = new VbaLatestOnlyBackgroundMailbox(
+            scheduler,
+            VbaInteractiveBackgroundWorkType.ProjectValidation);
+
+        mailbox.Post(
+            authority,
+            _ =>
+            {
+                executed.Enqueue("first");
+                return Task.CompletedTask;
+            });
+        mailbox.Post(
+            authority,
+            _ =>
+            {
+                executed.Enqueue("latest");
+                return Task.CompletedTask;
+            });
+
+        releaseBlocker.TrySetResult();
+        await blocker.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+        await mailbox.WaitForIdleAsync(authority)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(["latest"], executed);
+        mailbox.Stop();
+        await scheduler.StopAsync(VbaInteractiveStopReason.Complete);
+    }
+
     [Fact]
     public async Task Execution_start_takes_the_latest_pending_work()
     {

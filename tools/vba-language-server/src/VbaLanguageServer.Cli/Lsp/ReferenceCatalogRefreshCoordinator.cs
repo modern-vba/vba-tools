@@ -22,6 +22,14 @@ internal interface IReferenceCatalogRefreshPlanObserver
     void AfterPlanReservedBeforePost(string uri, long revision);
 
     void BeforePlanCommit(string uri, long revision);
+
+    void BeforeProjectValidationRetirement(long lifecycleRevision)
+    {
+    }
+
+    void AfterManifestDeactivationBlockedOnLifecyclePlan(string uri)
+    {
+    }
 }
 
 internal sealed class NullReferenceCatalogRefreshPlanObserver
@@ -40,6 +48,14 @@ internal sealed class NullReferenceCatalogRefreshPlanObserver
     public void BeforePlanCommit(string uri, long revision)
     {
     }
+
+    public void BeforeProjectValidationRetirement(long lifecycleRevision)
+    {
+    }
+
+    public void AfterManifestDeactivationBlockedOnLifecyclePlan(string uri)
+    {
+    }
 }
 
 internal interface IReferenceCatalogLifecycle
@@ -49,6 +65,87 @@ internal interface IReferenceCatalogLifecycle
     void ApplyManifestSelectionChange(string uri, string text);
 
     void DeactivateManifest(string uri);
+
+    void AttachProjectValidationLifecycle(
+        IVbaProjectValidationLifecycleSink projectValidationLifecycle)
+    {
+    }
+}
+
+internal interface IVbaProjectValidationLifecycleSink
+{
+    void ActivateProjectDiagnostics(VbaProjectValidationLifecycleLease lease);
+
+    void InvalidateProjectDiagnostics(VbaProjectValidationLifecycleLease lease);
+
+    void RefreshProjectDiagnostics(VbaProjectValidationLifecycleLease lease);
+
+    void RetireProjectDiagnostics(VbaProjectValidationLifecycleLease lease);
+}
+
+/// <summary>
+/// Carries one revocable project-validation lifecycle interval.
+/// </summary>
+internal sealed class VbaProjectValidationLifecycleLease
+{
+    private readonly CancellationTokenSource revocationCancellation = new();
+    private int activated;
+    private int revoked;
+
+    public VbaProjectValidationLifecycleLease(
+        VbaProjectAuthorityIdentity authority,
+        long revision)
+    {
+        Authority = authority;
+        Revision = revision;
+    }
+
+    public VbaProjectAuthorityIdentity Authority { get; }
+
+    public long Revision { get; }
+
+    public bool IsActivated => Volatile.Read(ref activated) != 0;
+
+    public bool IsRevoked => Volatile.Read(ref revoked) != 0;
+
+    public CancellationToken RevocationToken => revocationCancellation.Token;
+
+    public void MarkActivated()
+        => Volatile.Write(ref activated, 1);
+
+    public void Revoke()
+    {
+        if (Interlocked.Exchange(ref revoked, 1) != 0)
+        {
+            return;
+        }
+
+        Task cancellation;
+        try
+        {
+            cancellation = revocationCancellation.CancelAsync();
+        }
+        catch (ObjectDisposedException)
+        {
+            return;
+        }
+
+        if (!cancellation.IsCompletedSuccessfully)
+        {
+            _ = ObserveRevocationAsync(cancellation);
+        }
+    }
+
+    private static async Task ObserveRevocationAsync(Task cancellation)
+    {
+        try
+        {
+            await cancellation.ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+        }
+    }
 }
 
 internal interface IReferenceCatalogRuntimeLifecycle : IReferenceCatalogLifecycle
@@ -97,7 +194,9 @@ internal sealed class VbaInteractiveReferenceCatalogMutationLane
 /// <summary>
 /// Owns project-scoped reference catalog activation, trace publication, and background refresh.
 /// </summary>
-internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRuntimeLifecycle
+internal sealed class ReferenceCatalogRefreshCoordinator
+    : IReferenceCatalogRuntimeLifecycle,
+      IVbaProjectReferenceCatalogCommitObserver
 {
     private static readonly TimeSpan ShutdownWaitTimeout = TimeSpan.FromSeconds(1);
     private readonly VbaProjectReferenceCatalogCache catalogCache;
@@ -123,12 +222,30 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
     private readonly Dictionary<
         VbaProjectAuthorityIdentity,
         ReferenceSelectionFingerprint> latestLifecycleScopeFingerprints = new();
+    private readonly Dictionary<
+        VbaProjectAuthorityIdentity,
+        IReadOnlySet<string>> latestLifecycleScopeReferenceNames = new();
+    private readonly Dictionary<
+        VbaProjectAuthorityIdentity,
+        VbaProjectValidationLifecycleLease>
+            projectValidationLifecycleLeases = new();
+    private readonly Dictionary<
+        VbaProjectReferenceCatalogRefreshBatchIdentity,
+        Dictionary<
+            VbaProjectAuthorityIdentity,
+            ProjectValidationRefreshOwnership>>
+            pendingProjectValidationRefreshes = new();
+    private readonly Dictionary<
+        VbaProjectAuthorityIdentity,
+        VbaProjectReferenceCatalogRefreshBatchIdentity>
+            latestProjectValidationRefreshBatches = new();
     private readonly CancellationTokenSource lifetimeCancellation = new();
     private VbaInteractiveWorkScheduler? scheduler;
     private VbaLatestOnlyBackgroundMailbox? lifecycleMailbox;
     private long lifecycleRevision;
     private long lifecyclePlanRevision;
     private bool stopping;
+    private IVbaProjectValidationLifecycleSink? projectValidationLifecycle;
 
     /// <summary>
     /// Creates a reference catalog lifecycle coordinator.
@@ -192,6 +309,24 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
 
         refreshService.AttachMutationLane(
             new VbaInteractiveReferenceCatalogMutationLane(interactiveScheduler));
+        refreshService.AttachCatalogCommitObserver(this);
+    }
+
+    public void AttachProjectValidationLifecycle(
+        IVbaProjectValidationLifecycleSink lifecycle)
+    {
+        ArgumentNullException.ThrowIfNull(lifecycle);
+        lock (lifecycleGate)
+        {
+            if (projectValidationLifecycle is not null
+                && !ReferenceEquals(projectValidationLifecycle, lifecycle))
+            {
+                throw new InvalidOperationException(
+                    "The project-validation lifecycle sink is already attached.");
+            }
+
+            projectValidationLifecycle = lifecycle;
+        }
     }
 
     /// <summary>
@@ -240,20 +375,32 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
 
         var removedWorkKeys =
             new HashSet<VbaProjectReferenceCatalogAutomaticWorkIdentity>();
-        lock (lifecyclePlanGate)
+        VbaProjectAuthorityIdentity[] retiredAuthorities;
+        long retirementRevision;
+        var lifecyclePlanLockTaken = Monitor.TryEnter(lifecyclePlanGate);
+        try
         {
+            if (!lifecyclePlanLockTaken)
+            {
+                planObserver.AfterManifestDeactivationBlockedOnLifecyclePlan(uri);
+                Monitor.Enter(lifecyclePlanGate, ref lifecyclePlanLockTaken);
+            }
+
             VbaLatestOnlyBackgroundMailbox? mailbox;
             lock (lifecycleGate)
             {
+                retirementRevision = ++lifecyclePlanRevision;
                 mailbox = lifecycleMailbox;
-                foreach (var authority in latestLifecycleScopeRevisions.Keys
+                retiredAuthorities = latestLifecycleScopeRevisions.Keys
                     .Concat(lifecycleStates.Keys)
                     .Where(key => key.UsesManifest(manifestDocument))
                     .Distinct()
-                    .ToArray())
+                    .ToArray();
+                foreach (var authority in retiredAuthorities)
                 {
                     latestLifecycleScopeRevisions.Remove(authority);
                     latestLifecycleScopeFingerprints.Remove(authority);
+                    latestLifecycleScopeReferenceNames.Remove(authority);
                     if (lifecycleStates.Remove(authority, out var state))
                     {
                         removedWorkKeys.Add(state.WorkKey);
@@ -263,7 +410,15 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
 
             mailbox?.Discard(manifestDocument);
         }
+        finally
+        {
+            if (lifecyclePlanLockTaken)
+            {
+                Monitor.Exit(lifecyclePlanGate);
+            }
+        }
 
+        RetireProjectValidations(retiredAuthorities, retirementRevision);
         CancelUnusedSharedWork(removedWorkKeys);
     }
 
@@ -310,6 +465,16 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
                     cancel = true;
                     latestLifecycleScopeRevisions.Clear();
                     latestLifecycleScopeFingerprints.Clear();
+                    latestLifecycleScopeReferenceNames.Clear();
+                    foreach (var lease in
+                        projectValidationLifecycleLeases.Values)
+                    {
+                        lease.Revoke();
+                    }
+
+                    projectValidationLifecycleLeases.Clear();
+                    pendingProjectValidationRefreshes.Clear();
+                    latestProjectValidationRefreshBatches.Clear();
                 }
 
                 mailbox = lifecycleMailbox;
@@ -360,12 +525,15 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
 
     private void ScheduleLifecycle(
         ReferenceCatalogRefreshPlan plan,
-        Action? beforePost)
+        Func<IReadOnlyList<VbaProjectAuthorityIdentity>>? beforePost)
     {
+        var retiredAuthorities =
+            new HashSet<VbaProjectAuthorityIdentity>();
+        ReferenceCatalogRefreshPlan scheduledPlan;
+        VbaProjectValidationLifecycleLease[] activatedLeases;
         lock (lifecyclePlanGate)
         {
             VbaLatestOnlyBackgroundMailbox mailbox;
-            ReferenceCatalogRefreshPlan scheduledPlan;
             lock (lifecycleGate)
             {
                 if (stopping)
@@ -389,13 +557,40 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
                         scopeRevision.Value;
                 }
 
+                activatedLeases = scopeRevisions
+                    .Select(scopeRevision =>
+                    {
+                        if (projectValidationLifecycleLeases.Remove(
+                                scopeRevision.Key,
+                                out var supersededLease))
+                        {
+                            supersededLease.Revoke();
+                        }
+
+                        var lease = new VbaProjectValidationLifecycleLease(
+                            scopeRevision.Key,
+                            scopeRevision.Value);
+                        projectValidationLifecycleLeases.Add(
+                            scopeRevision.Key,
+                            lease);
+                        return lease;
+                    })
+                    .ToArray();
+
                 foreach (var selection in plan.Selections)
                 {
                     latestLifecycleScopeFingerprints[selection.Authority] =
                         selection.Fingerprint;
+                    latestLifecycleScopeReferenceNames[selection.Authority] =
+                        selection.Selection.References
+                            .Select(reference => reference.Name)
+                            .ToHashSet(VbaProjectReferenceName.Comparer);
                 }
 
-                InvalidateMissingManifestScopesCore(plan.Uri, plan.Selections);
+                retiredAuthorities.UnionWith(
+                    InvalidateMissingManifestScopesCore(
+                        plan.Uri,
+                        plan.Selections));
 
                 scheduledPlan = plan with
                 {
@@ -407,7 +602,15 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
             planObserver.AfterPlanReservedBeforePost(
                 scheduledPlan.Uri,
                 scheduledPlan.Revision);
-            beforePost?.Invoke();
+            if (beforePost is not null)
+            {
+                retiredAuthorities.UnionWith(beforePost());
+            }
+
+            RetireProjectValidations(
+                retiredAuthorities,
+                scheduledPlan.Revision);
+            ActivateProjectValidations(activatedLeases);
             mailbox.Post(
                 scheduledPlan.Document.Identity,
                 cancellationToken =>
@@ -590,6 +793,267 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
         }
     }
 
+    void IVbaProjectReferenceCatalogCommitObserver.CatalogCommitAccepted(
+        VbaProjectReferenceCatalogRefreshBatchIdentity batch,
+        VbaProjectReferenceCatalogRefreshAuthorityIdentity commitAuthority)
+    {
+        IVbaProjectValidationLifecycleSink? validationLifecycle;
+        VbaProjectValidationLifecycleLease[] affectedLeases;
+        lock (lifecycleGate)
+        {
+            if (stopping)
+            {
+                return;
+            }
+
+            validationLifecycle = projectValidationLifecycle;
+            var affectedRefreshes = new List<ProjectValidationRefreshOwnership>();
+            foreach (var lifecycleLease in projectValidationLifecycleLeases)
+            {
+                var lease = lifecycleLease.Value;
+                if (!lease.IsActivated
+                    || lease.IsRevoked
+                    || !latestLifecycleScopeRevisions.TryGetValue(
+                        lifecycleLease.Key,
+                        out var lifecyclePlanRevision)
+                    || lifecyclePlanRevision != lease.Revision
+                    || !latestLifecycleScopeFingerprints.TryGetValue(
+                        lifecycleLease.Key,
+                        out var fingerprint)
+                    || (commitAuthority.Authority is { } scopedAuthority
+                        ? lifecycleLease.Key != scopedAuthority
+                        : !latestLifecycleScopeReferenceNames.TryGetValue(
+                                lifecycleLease.Key,
+                                out var referenceNames)
+                            || !referenceNames.Contains(
+                                commitAuthority.ReferenceName)))
+                {
+                    continue;
+                }
+
+                affectedRefreshes.Add(
+                    new ProjectValidationRefreshOwnership(
+                        lifecyclePlanRevision,
+                        fingerprint,
+                        lease));
+            }
+
+            affectedLeases = affectedRefreshes
+                .Select(refresh => refresh.Lease)
+                .ToArray();
+            if (affectedRefreshes.Count > 0)
+            {
+                if (!pendingProjectValidationRefreshes.TryGetValue(
+                        batch,
+                        out var pendingRefreshes))
+                {
+                    pendingRefreshes = [];
+                    pendingProjectValidationRefreshes[batch] =
+                        pendingRefreshes;
+                }
+
+                foreach (var affectedRefresh in affectedRefreshes)
+                {
+                    pendingRefreshes[affectedRefresh.Lease.Authority] =
+                        affectedRefresh;
+                    latestProjectValidationRefreshBatches[
+                        affectedRefresh.Lease.Authority] =
+                        batch;
+                }
+            }
+        }
+
+        if (validationLifecycle is null)
+        {
+            return;
+        }
+
+        foreach (var lease in affectedLeases)
+        {
+            try
+            {
+                validationLifecycle.InvalidateProjectDiagnostics(lease);
+            }
+            catch (Exception)
+            {
+            }
+        }
+    }
+
+    void IVbaProjectReferenceCatalogCommitObserver.CatalogRefreshSettled(
+        VbaProjectReferenceCatalogRefreshBatchIdentity batch)
+    {
+        IVbaProjectValidationLifecycleSink? validationLifecycle;
+        VbaProjectValidationLifecycleLease[] affectedLeases;
+        lock (lifecycleGate)
+        {
+            if (stopping
+                || !pendingProjectValidationRefreshes.Remove(
+                    batch,
+                    out var pendingRefreshes))
+            {
+                return;
+            }
+
+            affectedLeases = pendingRefreshes
+                .Where(pair => latestProjectValidationRefreshBatches
+                        .TryGetValue(pair.Key, out var latestBatch)
+                    && latestBatch == batch
+                    && latestLifecycleScopeRevisions.TryGetValue(
+                        pair.Key,
+                        out var lifecyclePlanRevision)
+                    && lifecyclePlanRevision ==
+                        pair.Value.LifecyclePlanRevision
+                    && latestLifecycleScopeFingerprints.TryGetValue(
+                        pair.Key,
+                        out var fingerprint)
+                    && fingerprint == pair.Value.Fingerprint
+                    && projectValidationLifecycleLeases.TryGetValue(
+                        pair.Key,
+                        out var currentLease)
+                    && ReferenceEquals(currentLease, pair.Value.Lease)
+                    && pair.Value.Lease.IsActivated
+                    && !pair.Value.Lease.IsRevoked)
+                .Select(pair => pair.Value.Lease)
+                .ToArray();
+            foreach (var authority in pendingRefreshes.Keys)
+            {
+                if (latestProjectValidationRefreshBatches.TryGetValue(
+                        authority,
+                        out var latestBatch)
+                    && latestBatch == batch)
+                {
+                    latestProjectValidationRefreshBatches.Remove(authority);
+                }
+            }
+
+            validationLifecycle = projectValidationLifecycle;
+        }
+
+        if (validationLifecycle is null)
+        {
+            return;
+        }
+
+        foreach (var lease in affectedLeases)
+        {
+            try
+            {
+                validationLifecycle.RefreshProjectDiagnostics(lease);
+            }
+            catch (Exception)
+            {
+            }
+        }
+    }
+
+    private void ActivateProjectValidations(
+        IReadOnlyList<VbaProjectValidationLifecycleLease> leases)
+    {
+        IVbaProjectValidationLifecycleSink? validationLifecycle;
+        lock (lifecycleGate)
+        {
+            validationLifecycle = projectValidationLifecycle;
+        }
+
+        if (validationLifecycle is null)
+        {
+            return;
+        }
+
+        foreach (var lease in leases)
+        {
+            if (lease.IsRevoked)
+            {
+                continue;
+            }
+
+            try
+            {
+                validationLifecycle.ActivateProjectDiagnostics(lease);
+                lease.MarkActivated();
+            }
+            catch (Exception)
+            {
+            }
+        }
+    }
+
+    private void RetireProjectValidations(
+        IEnumerable<VbaProjectAuthorityIdentity> authorities,
+        long lifecycleRevision)
+    {
+        var retiredAuthorities = authorities.Distinct().ToArray();
+        if (retiredAuthorities.Length == 0)
+        {
+            return;
+        }
+
+        planObserver.BeforeProjectValidationRetirement(lifecycleRevision);
+        IVbaProjectValidationLifecycleSink? validationLifecycle;
+        VbaProjectValidationLifecycleLease[] retiredLeases;
+        lock (lifecycleGate)
+        {
+            retiredAuthorities = retiredAuthorities
+                .Where(authority =>
+                    !latestLifecycleScopeRevisions.TryGetValue(
+                        authority,
+                        out var currentRevision)
+                    || currentRevision <= lifecycleRevision)
+                .ToArray();
+            retiredLeases = retiredAuthorities
+                .Select(authority =>
+                    projectValidationLifecycleLeases.Remove(
+                        authority,
+                        out var lease)
+                            ? lease
+                            : null)
+                .Where(lease => lease is not null)
+                .Select(lease => lease!)
+                .ToArray();
+            foreach (var lease in retiredLeases)
+            {
+                lease.Revoke();
+            }
+
+            foreach (var authority in retiredAuthorities)
+            {
+                latestProjectValidationRefreshBatches.Remove(authority);
+                foreach (var pendingRefreshes in
+                    pendingProjectValidationRefreshes.Values)
+                {
+                    pendingRefreshes.Remove(authority);
+                }
+            }
+
+            foreach (var emptyBatch in pendingProjectValidationRefreshes
+                .Where(pair => pair.Value.Count == 0)
+                .Select(pair => pair.Key)
+                .ToArray())
+            {
+                pendingProjectValidationRefreshes.Remove(emptyBatch);
+            }
+
+            validationLifecycle = projectValidationLifecycle;
+        }
+
+        if (validationLifecycle is null)
+        {
+            return;
+        }
+
+        foreach (var lease in retiredLeases)
+        {
+            try
+            {
+                validationLifecycle.RetireProjectDiagnostics(lease);
+            }
+            catch (Exception)
+            {
+            }
+        }
+    }
+
     private SharedReferenceCatalogWork?
         GetOrStartSharedAutomaticWork(ScheduledReferenceCatalogSelection selection)
     {
@@ -708,12 +1172,19 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
 
     private bool IsCurrentLifecycleCore(ScheduledReferenceCatalogSelection selection)
         => lifecycleStates.TryGetValue(selection.Context.Authority, out var current)
-            && latestLifecycleScopeFingerprints.TryGetValue(
+            && IsCurrentLifecycleStateCore(
                 selection.Context.Authority,
-                out var latestFingerprint)
-            && latestFingerprint == selection.State.Fingerprint
+                selection.State)
             && current.Fingerprint == selection.State.Fingerprint
             && current.Revision == selection.State.Revision;
+
+    private bool IsCurrentLifecycleStateCore(
+        VbaProjectAuthorityIdentity authority,
+        ReferenceCatalogLifecycleState state)
+        => latestLifecycleScopeFingerprints.TryGetValue(
+                authority,
+                out var latestFingerprint)
+            && latestFingerprint == state.Fingerprint;
 
     private void CancelUnusedSharedWork(
         IEnumerable<VbaProjectReferenceCatalogAutomaticWorkIdentity> workKeys)
@@ -1017,7 +1488,7 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
                 out var latestRevision)
             && latestRevision == planRevision;
 
-    private void RemoveMissingManifestScopes(
+    private IReadOnlyList<VbaProjectAuthorityIdentity> RemoveMissingManifestScopes(
         string uri,
         IReadOnlyList<VbaProjectReferenceSelectionContext> selections)
     {
@@ -1029,22 +1500,25 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
                 out var manifestDocument)
             || !manifestDocument.IsLocalFile)
         {
-            return;
+            return [];
         }
 
         var removedWorkKeys =
             new HashSet<VbaProjectReferenceCatalogAutomaticWorkIdentity>();
+        VbaProjectAuthorityIdentity[] removedAuthorities;
         lock (lifecycleGate)
         {
-            foreach (var authority in latestLifecycleScopeRevisions.Keys
+            removedAuthorities = latestLifecycleScopeRevisions.Keys
                 .Concat(lifecycleStates.Keys)
                 .Where(key => key.UsesManifest(manifestDocument))
                 .Where(key => !retainedScopes.Contains(key))
                 .Distinct()
-                .ToArray())
+                .ToArray();
+            foreach (var authority in removedAuthorities)
             {
                 latestLifecycleScopeRevisions.Remove(authority);
                 latestLifecycleScopeFingerprints.Remove(authority);
+                latestLifecycleScopeReferenceNames.Remove(authority);
                 if (lifecycleStates.Remove(authority, out var state))
                 {
                     removedWorkKeys.Add(state.WorkKey);
@@ -1053,9 +1527,10 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
         }
 
         CancelUnusedSharedWork(removedWorkKeys);
+        return removedAuthorities;
     }
 
-    private void InvalidateMissingManifestScopesCore(
+    private IReadOnlyList<VbaProjectAuthorityIdentity> InvalidateMissingManifestScopesCore(
         string uri,
         IReadOnlyList<VbaProjectReferenceSelectionContext> selections)
     {
@@ -1067,19 +1542,23 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
                 out var manifestDocument)
             || !manifestDocument.IsLocalFile)
         {
-            return;
+            return [];
         }
 
-        foreach (var authority in latestLifecycleScopeRevisions.Keys
+        var removedAuthorities = latestLifecycleScopeRevisions.Keys
             .Concat(lifecycleStates.Keys)
             .Where(key => key.UsesManifest(manifestDocument))
             .Where(key => !retainedScopes.Contains(key))
             .Distinct()
-            .ToArray())
+            .ToArray();
+        foreach (var authority in removedAuthorities)
         {
             latestLifecycleScopeRevisions.Remove(authority);
             latestLifecycleScopeFingerprints.Remove(authority);
+            latestLifecycleScopeReferenceNames.Remove(authority);
         }
+
+        return removedAuthorities;
     }
 
     private VbaProjectReferenceCatalogAutomaticWorkIdentity CreateAutomaticWorkKey(
@@ -1101,6 +1580,11 @@ internal sealed class ReferenceCatalogRefreshCoordinator : IReferenceCatalogRunt
         ReferenceSelectionFingerprint Fingerprint,
         VbaProjectReferenceCatalogAutomaticWorkIdentity WorkKey,
         long Revision);
+
+    private readonly record struct ProjectValidationRefreshOwnership(
+        long LifecyclePlanRevision,
+        ReferenceSelectionFingerprint Fingerprint,
+        VbaProjectValidationLifecycleLease Lease);
 
     private sealed record ScheduledReferenceCatalogSelection(
         string Uri,

@@ -1856,14 +1856,16 @@ state such as `NameResolution`, `TypeResolution`, `VbaProjectReferenceSelection`
 or available `VbaProjectReferenceCatalog`s. Reference-catalog availability,
 stale exposure metadata, missing host globals, and host-global assignment
 validity are not `VbaValidationDiagnostic`s in the current scope. Project-aware
-validation evaluates each affected immutable `VbaProjectSnapshot` once and
-partitions its results by source URI across every member of
-`SourceDocuments`, including open buffers and closed disk sources in both
-`WorkbookBackedProject`s and `AdHocVbaProject`s. It does not revalidate
-unrelated project scopes. Publication combines each partition with the member's
-document-local diagnostics and enqueues only URIs whose complete publishable
-diagnostic set changed; a previously published URI receives an empty tombstone
-when that complete set becomes empty. Closing an open source ends its
+validation evaluates each affected immutable `VbaProjectSnapshot` once. Every
+open-buffer and closed-disk member of `SourceDocuments` participates in name
+and type resolution in both `WorkbookBackedProject`s and `AdHocVbaProject`s,
+while publication projects complete URI partitions only for current tracked
+diagnostic snapshots. It does not revalidate unrelated project scopes.
+Publication combines each current partition with the tracked member's
+document-local diagnostics and sends it through the URI-owned latest-only
+mailbox. A fresh current result may republish an unchanged complete set;
+content equality is not a transport-suppression contract. An empty current
+partition is publishable. Closing an open source ends its
 open-buffer lifecycle and invalidates queued buffer-authoritative diagnostics.
 If the URI remains a project member with a tracked disk source, validation
 switches to a newly captured disk-authoritative source and republishes its
@@ -1871,6 +1873,30 @@ current diagnostics instead of clearing them. An empty tombstone is reserved
 for deletion, project departure, or loss of any tracked disk source; a later
 reopen starts a new open-buffer lifecycle.
 _Avoid_: SyntaxDiagnostic, parser recovery diagnostic, raw compiler error
+
+**InteractiveSemanticReadiness**:
+The state in which one exact immutable `VbaProjectSnapshot` has completed
+source capture, projection, reference selection, and `VbaSemanticInventory`
+construction and can therefore serve editor reads. It does not require the
+snapshot's project-aware `VbaValidationDiagnostic`s to have been computed or
+published. Project validation may later consume that same inventory, but it
+cannot mutate its definitions, resolution, occurrence shards, semantic-token
+caches, or revision ownership. An editor request never constructs Project
+Validation Diagnostics as a condition of reading a ready inventory.
+_Avoid_: complete diagnostics, partial semantic inventory, document analysis
+
+**ProjectValidationDiagnostics**:
+The eventually computed project-aware portion of `VbaValidationDiagnostic`s
+for one exact `ProjectDiagnosticRevision`. The background validation lifecycle
+uses the ready snapshot's existing `VbaSemanticInventory`; it does not create a
+second semantic authority. Work is keyed by `VbaProjectAuthorityIdentity`, and
+a newer source, manifest, reference-catalog, or lifecycle revision replaces
+pending work and cancels obsolete active work. If a complete obsolete result
+has already entered the separate per-URI latest-only diagnostics publisher,
+its project and document freshness fences reject every stale partition before
+transport. Cancellation or failure publishes no partial result and leaves the
+inventory usable by editor queries.
+_Avoid_: document-local diagnostics, semantic readiness, diagnostics transport
 
 **WithEventsTypeValidationDiagnostic**:
 One mutually exclusive error-severity, project-aware `VbaValidationDiagnostic`
@@ -1910,7 +1936,10 @@ _Avoid_: unresolved identifier diagnostic, incompatible call diagnostic, externa
 The snapshot-scoped freshness identity for one project-aware validation run. It
 captures the resolved project authority, source membership, every member's
 open- or disk-authoritative source revision, effective manifest and reference
-selection, and semantic reference-catalog revisions used by validation. Every
+selection, semantic reference-catalog revisions, and the source-template
+path/existence/metadata fence observed at admission. The cancellable background
+run reads, hashes, and parses that fenced package to derive the exact
+source-template project-identity evidence used by validation. Every
 per-URI fan-out partition carries this revision plus that target document's
 authority, version, lifecycle epoch, and reservation fence. Publication
 rechecks both: a stale document fence rejects that URI, while a stale
@@ -1921,10 +1950,16 @@ While that newer validation is pending, a directly changed URI immediately
 publishes its new document-local diagnostics without mixing in a project
 partition fenced to its former document revision. Unchanged project members
 retain their last accepted complete diagnostic set until the fresh project
-result replaces only changed sets. Delete and project departure still clear
-immediately. Repeated invalidations coalesce to the latest pending validation
-for the resolved project authority rather than clearing every project member on
-each edit.
+result replaces each current member's complete set. This does not imply
+content-equality suppression at the transport boundary. Delete and project
+departure still clear immediately. Repeated invalidations coalesce to the
+latest pending validation for the resolved project authority rather than
+clearing every project member on each edit. Replacing a revision also cancels
+obsolete validation already in progress. Collectors observe cancellation
+during project, declaration-pair, handler, and argument-list traversal. A
+cancelled or failed run publishes no
+partition, releases its retained revision state, and does not prevent a later
+revision from running.
 _Avoid_: document version, publish sequence, permanent project identity
 
 **DeclarationCollision**:
@@ -5213,6 +5248,9 @@ Domain Expert: "No. A `FormDesignerBlock` is not parsed into `VbaDefinition`s in
 
 Dev: "How much source does an incremental parse replace?"
 Domain Expert: "It replaces the affected `ModuleMember`, not individual expression nodes."
+
+Dev: "Must semantic highlighting wait for every project diagnostic?"
+Domain Expert: "No. `InteractiveSemanticReadiness` makes the exact immutable `VbaSemanticInventory` available first. Project Validation Diagnostics use that same snapshot through bounded latest-only background work and may update Problems later; they neither mutate the captured token result nor start Excel."
 
 Dev: "Does a later `didChange` cancel an earlier completion or hover request?"
 Domain Expert: "No. Once the earlier read captures its immutable revision, the later `didChange` receives a later `InputSequence` and may commit through the ordered lane while that read continues on the pinned revision. Only explicit `$/cancelRequest`, host abort, EOF, or terminal runtime failure signals `RequestCancellationOwnership`."

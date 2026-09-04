@@ -1,4 +1,5 @@
 using VbaLanguageServer.Diagnostics;
+using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.SourceModel;
 using VbaLanguageServer.Syntax;
 
@@ -97,6 +98,15 @@ internal sealed record VbaSourceTemplateDiagnosticsEvidence(
     bool ContentCaptured);
 
 /// <summary>
+/// Fences the cheap source-template path and metadata observed when project
+/// validation is admitted. Package bytes remain a background-only input.
+/// </summary>
+internal sealed record VbaSourceTemplateDiagnosticsInput(
+    string FullPath,
+    bool Exists,
+    VbaProjectSourceFileMetadata? Metadata);
+
+/// <summary>
 /// Captures a diagnostics publication candidate and the workspace revision that owns it.
 /// </summary>
 /// <param name="Analysis">The immutable document analysis to publish.</param>
@@ -116,6 +126,18 @@ internal sealed record VbaDocumentDiagnosticsSnapshot(
     internal VbaSourceTemplateDiagnosticsEvidence? SourceTemplateEvidence
         { get; init; }
 }
+
+/// <summary>
+/// Captures the immutable semantic and ownership input admitted for one
+/// project-validation revision. Source-template identity is read later by the
+/// cancellable background validation operation.
+/// </summary>
+internal sealed record VbaProjectDiagnosticsCapture(
+    string ActiveUri,
+    VbaProjectAuthorityIdentity Authority,
+    VbaProjectSnapshot ProjectSnapshot,
+    VbaSourceTemplateDiagnosticsInput? SourceTemplateInput,
+    IReadOnlyList<VbaDocumentDiagnosticsSnapshot> DocumentSnapshots);
 
 /// <summary>
 /// Represents one document tracked in workspace memory or project source inventory.

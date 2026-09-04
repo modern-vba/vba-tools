@@ -34,6 +34,37 @@ It reads `.bas`, `.cls`, and `.frm` files. When a workspace contains a
 `vba-project.json` manifest, project context and manifest-defined VBA project
 references are used to improve cross-file and external reference resolution.
 
+## Interactive readiness and project diagnostics
+
+For a manifest-backed source, Interactive Semantic Readiness is reached when
+the exact immutable project snapshot and its `VbaSemanticInventory` are ready
+for editor queries. Snapshot construction does not eagerly construct complete
+Project Validation Diagnostics. Completion, hover, signature help, symbols,
+definition, references, rename, formatting, and semantic tokens can therefore
+use that snapshot while project-wide validation is pending.
+
+Document-local syntax and validation diagnostics remain available directly from
+the accepted document analysis. Complete project validation runs later as
+bounded `workspace/diagnostic` work in a typed, project-authority-keyed
+latest-only mailbox. A newer source, manifest, reference-catalog, close, or
+retirement revision replaces pending work and cancels obsolete active work.
+Only a complete current result is partitioned into the separate URI-owned
+`textDocument/diagnostic` publication mailboxes; cancellation or failure
+publishes no partial batch. Unchanged documents retain their last accepted
+project diagnostics until the new complete result is ready.
+
+Each successful selected catalog commit cancels affected current validation
+without scheduling a per-commit replacement. When the shared catalog batch
+settles, it requests one validation for each still-current dirty authority; a
+failed or no-op batch with no commit requests none. Ordinary invalidation keeps
+active-URI and project-member routing for that refresh. Retirement removes the
+routing and mailbox work, so a late batch completion cannot resurrect the
+authority.
+
+Both phases consume the same immutable Semantic Inventory and exact revision
+fences. Neither editor readiness nor background project validation invokes
+`vba-dev`, launches Excel, or reads a live workbook.
+
 ## Closed source encoding
 
 Closed exported source is decoded strictly by a process-wide policy: a
@@ -159,6 +190,85 @@ Run language-server tests:
 ```text
 dotnet test tools/vba-language-server/tests/VbaLanguageServer.Tests/VbaLanguageServer.Tests.csproj -m:1 -p:UseSharedCompilation=false
 ```
+
+Run the Release performance category:
+
+```text
+dotnet test tools/vba-language-server/tests/VbaLanguageServer.Tests/VbaLanguageServer.Tests.csproj -c Release -m:1 -p:UseSharedCompilation=false --filter "Category=Performance"
+```
+
+Run the focused CommonModules cold-readiness benchmark by pointing its active
+URI at the real manifest-backed source set. Without this environment variable,
+the test reports that the benchmark was not run and returns without measuring:
+
+```text
+$env:VBA_TOOLS_COMMON_MODULES_ACTIVE_SOURCE = '<CommonModules-repository>\CommonModules\src\CommonModules\Lib_Common.bas'
+dotnet test tools/vba-language-server/tests/VbaLanguageServer.Tests/VbaLanguageServer.Tests.csproj -c Release -m:1 -p:UseSharedCompilation=false --filter "FullyQualifiedName~VbaInteractiveSemanticReadinessPerformanceTests"
+```
+
+### Semantic-readiness benchmark evidence
+
+The CommonModules cold benchmark uses a fresh Release workspace and an empty
+in-memory project-snapshot cache. Complete fixture and workspace setup before
+the timed interval. Start that interval immediately before
+`CreateProjectSnapshot(activeUri)`; stop it when the exact snapshot returns with
+a readable Semantic Inventory. Do not start Project Validation Diagnostics in
+the primary run. Record semantic-token projection from the returned inventory
+separately, and use a separate validation run to verify the eventual complete
+diagnostic result.
+
+The benchmark reports `openDocument` outside the primary interval; `capture`
+(`scopeCapture` plus `snapshotAdmission`), `diskInventory`,
+`semanticInventory`, and `storeReturn` inside it; and
+`semanticTokenProjection` separately afterward. It also verifies that the
+primary snapshot build started Project Validation zero times.
+
+The recorded comparison corpus has one manifest document definition whose
+recursive source set produces 94 `SourceDocuments` and 49,097 parsed argument
+lists. Its baseline cold snapshot was 49.907 seconds, of which 43.262 seconds
+was complete-call validation; bypassing only that pass produced 6.191 seconds.
+A conforming Windows Release result is no more than 10 seconds and at least 80
+percent faster than the baseline, so the effective ceiling is 9.9814 seconds.
+The separate repository-owned synthetic fixture supplies at least 90 documents
+and 40,000 argument lists for deterministic barrier and cancellation tests; it
+does not replace the real CommonModules timing run.
+
+For a supplemental end-to-end LSP process run, set
+`VBA_TOOLS_INTERACTIVE_ADMISSION_DIRECTORY` to an empty temporary directory.
+The server writes one `.admitted` file containing `inputSequence`, `readFence`,
+`kind`, `method`, `requestId`, and `admissionMilliseconds`, followed by one
+`.completed` file containing the same identity plus `queueMilliseconds`,
+`executionMilliseconds`, `cancelled`, and `faulted`. Keep separate phase
+records for `textDocument/didOpen`, `textDocument/semanticTokens/full`,
+`workspace/diagnostic`, and `textDocument/diagnostic`.
+
+Run the deterministic blocked-validation process case with that variable set,
+then preserve the timing directory with the verification evidence:
+
+```text
+dotnet test tools/vba-language-server/tests/VbaLanguageServer.Tests/VbaLanguageServer.Tests.csproj -c Release -m:1 -p:UseSharedCompilation=false --filter "FullyQualifiedName~VbaInteractiveWorkSchedulerProcessTests.Server_keeps_local_diagnostics_and_semantic_tokens_responsive_while_project_validation_is_blocked"
+```
+
+Record the following fields with every result:
+
+| Group | Fields |
+| --- | --- |
+| Source | Commit SHA, clean/dirty worktree, corpus path and revision |
+| Build | Command, Release configuration, target framework, runtime/SDK versions, architecture |
+| Environment | Windows version, CPU, logical cores, RAM, power mode, competing load |
+| Corpus | Manifest document count, source-document count, line count, argument-list count |
+| Cache/sample policy | Fresh-process and in-memory-cache definition, filesystem/OS-cache treatment, warm-ups, samples, aggregation, outliers |
+| Snapshot phases | `capture`, `scopeCapture`, `snapshotAdmission`, `diskInventory`, `semanticInventory`, `storeReturn`, `interactiveSemanticReadiness` |
+| Separate projections | Semantic-token projection from the returned inventory, eventual Project Validation Diagnostics |
+| Supplemental LSP phases | Initialize; `didOpen` admission/queue/execution; semantic-token admission/queue/execution/response; `workspace/diagnostic`; `textDocument/diagnostic` publication |
+| Correctness | Token revision/content assertion and final project-diagnostic equivalence |
+
+The test output uses `not measured` instead of silently omitting a field it
+cannot discover. Treat those values as provisional: before acceptance, the
+verification note must supply every field or explain why an unavailable
+observation cannot affect either performance threshold. The full methodology
+and warm/mixed-load budgets are in the
+[interactive architecture guide](../../docs/language-server-interactive-architecture.md).
 
 ### Identifier conformance data
 

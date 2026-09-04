@@ -21,6 +21,16 @@ internal interface IVbaProjectSnapshotBuildObserver
     {
     }
 
+    void BeforeBuildProjectValidation(
+        string activeUri,
+        CancellationToken cancellationToken)
+    {
+    }
+
+    void AfterBuildProjectValidation(string activeUri)
+    {
+    }
+
     void BeforeStore(long workspaceVersion, CancellationToken cancellationToken);
 }
 
@@ -333,6 +343,7 @@ internal sealed class VbaProjectSnapshotProvider
             VbaProjectResolution resolution,
             long workspaceVersion,
             long manifestVersion,
+            long referenceCatalogRevision,
             long intrinsicHostEventCatalogRevision,
             long fullInvalidationGeneration,
             long scopeInvalidationGeneration,
@@ -345,6 +356,7 @@ internal sealed class VbaProjectSnapshotProvider
             Resolution = resolution;
             WorkspaceVersion = workspaceVersion;
             ManifestVersion = manifestVersion;
+            ReferenceCatalogRevision = referenceCatalogRevision;
             IntrinsicHostEventCatalogRevision = intrinsicHostEventCatalogRevision;
             FullInvalidationGeneration = fullInvalidationGeneration;
             ScopeInvalidationGeneration = scopeInvalidationGeneration;
@@ -363,6 +375,8 @@ internal sealed class VbaProjectSnapshotProvider
         internal long WorkspaceVersion { get; }
 
         internal long ManifestVersion { get; }
+
+        internal long ReferenceCatalogRevision { get; }
 
         internal long IntrinsicHostEventCatalogRevision { get; }
 
@@ -431,7 +445,8 @@ internal sealed class VbaProjectSnapshotProvider
             ?? new VbaIntrinsicHostEventCatalogStore();
         snapshotBuilder = new VbaProjectSnapshotBuilder(
             diskInventory,
-            diskDocumentCache);
+            diskDocumentCache,
+            this.buildObserver);
     }
 
     public VbaProjectSnapshot CreateProjectSnapshot(
@@ -615,6 +630,7 @@ internal sealed class VbaProjectSnapshotProvider
                 capture.ActiveUri,
                 cancellationToken);
             var snapshot = snapshotBuilder.BuildSnapshot(
+                capture.ActiveUri,
                 capture.Resolution,
                 inventorySnapshot.Documents,
                 inventorySnapshot.DiskSources,
@@ -624,7 +640,8 @@ internal sealed class VbaProjectSnapshotProvider
                 capture.ReferenceCatalogState.Sources,
                 capture.IntrinsicHostEventCatalogState.Catalog,
                 capture.ReferenceCatalogState.Identities,
-                capture.ReferenceCatalogState.AuthoritativeProjectNames) with
+                capture.ReferenceCatalogState.AuthoritativeProjectNames,
+                cancellationToken) with
             {
                 ManifestBarrierOverrides =
                     capture.ManifestBarriers.Overrides,
@@ -635,6 +652,7 @@ internal sealed class VbaProjectSnapshotProvider
                     capture.Resolution,
                     workspaceState.Version,
                     capture.ManifestBarriers.Revision,
+                    capture.ReferenceCatalogState.Revision,
                     capture.IntrinsicHostEventCatalogState.Revision,
                     capturedInvalidation.FullGeneration,
                     capturedInvalidation.ScopeGeneration,
@@ -1756,8 +1774,21 @@ internal sealed class VbaProjectSnapshotProvider
                 ownership.ActiveDocumentIdentity,
                 ownership.WorkspaceVersion,
                 sourceRevisionHistory,
-                ownership.SourceIdentities);
+                ownership.SourceIdentities)
+            && CaptureReferenceCatalogRevision(ownership)
+                == ownership.ReferenceCatalogRevision;
     }
+
+    private long CaptureReferenceCatalogRevision(
+        ProjectSnapshotOwnership ownership)
+        => referenceCatalogCache.CaptureSelectionState(
+                ownership.Resolution.ReferenceEntries,
+                VbaProjectReferenceCatalogScopeIdentity.TryCreate(
+                    ownership.Resolution,
+                    out var catalogScope)
+                        ? catalogScope
+                        : null)
+            .Revision;
 
     private string? RegisterReconciliationScope(
         VbaIdentifiedDocument activeDocument,

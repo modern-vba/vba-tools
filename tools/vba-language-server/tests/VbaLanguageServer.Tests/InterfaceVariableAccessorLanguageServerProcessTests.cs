@@ -1872,7 +1872,12 @@ public sealed class InterfaceVariableAccessorLanguageServerProcessTests
             "textDocument/didOpen",
             CreateOpenDocument(implementationUri, implementationText));
 
-        var notification = await process.WaitForDiagnosticsAsync(implementationUri);
+        var notification = await process.WaitForDiagnosticsMatchingAsync(
+            implementationUri,
+            diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                diagnostic.GetProperty("code").GetString()
+                    == "validation.interfaceMemberNotImplemented"),
+            "validation.interfaceMemberNotImplemented");
         var fulfillmentDiagnostics = notification
             .GetProperty("params")
             .GetProperty("diagnostics")
@@ -1922,7 +1927,15 @@ public sealed class InterfaceVariableAccessorLanguageServerProcessTests
             "textDocument/didOpen",
             CreateOpenDocument(implementationUri, implementationText));
 
-        var notification = await process.WaitForDiagnosticsAsync(implementationUri);
+        var notification = await process.WaitForDiagnosticsMatchingAsync(
+            implementationUri,
+            diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                    diagnostic.GetProperty("code").GetString()
+                        == "validation.incompatibleInterfaceMemberSignature")
+                && diagnostics.EnumerateArray().Any(diagnostic =>
+                    diagnostic.GetProperty("code").GetString()
+                        == "validation.interfaceMemberNotImplemented"),
+            "both incompatibleInterfaceMemberSignature and interfaceMemberNotImplemented");
         var diagnosticCodes = notification
             .GetProperty("params")
             .GetProperty("diagnostics")

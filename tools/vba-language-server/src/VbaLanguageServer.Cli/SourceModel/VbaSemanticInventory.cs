@@ -15,7 +15,8 @@ public sealed class VbaSemanticInventory
     private readonly VbaResolutionPolicy resolutionPolicy;
     private readonly VbaSemanticResolution semanticResolution;
     private readonly VbaResolvedIdentifierOccurrenceIndex resolvedOccurrences;
-    private readonly VbaProjectValidationDiagnosticIndex projectValidationDiagnostics;
+    private readonly object projectValidationGate = new();
+    private VbaProjectValidationDiagnosticIndex? projectValidationDiagnostics;
     private readonly VbaSourceFormatter sourceFormatter;
     private readonly VbaProjectReferenceSelection? referenceSelection;
     private readonly VbaProjectReferenceCatalogSet referenceCatalogs;
@@ -34,6 +35,8 @@ public sealed class VbaSemanticInventory
         VbaDocumentIdentity,
         IReadOnlyList<int>> semanticTokenDataCache = [];
     private readonly VbaIntrinsicHostEventCatalog? intrinsicHostEventCatalog;
+    private readonly string? validationActiveUri;
+    private readonly IVbaProjectSnapshotBuildObserver? validationBuildObserver;
 
     private VbaSemanticInventory(
         IReadOnlyList<VbaSourceDocument> sourceDocuments,
@@ -46,7 +49,10 @@ public sealed class VbaSemanticInventory
             referenceCatalogIdentities,
         VbaProjectResolution? projectResolution,
         IReadOnlyDictionary<string, string> authoritativeReferencedProjectNames,
-        VbaIntrinsicHostEventCatalog? intrinsicHostEventCatalog)
+        VbaIntrinsicHostEventCatalog? intrinsicHostEventCatalog,
+        string? validationActiveUri,
+        IVbaProjectSnapshotBuildObserver? validationBuildObserver,
+        CancellationToken cancellationToken)
     {
         this.sourceDocuments = sourceDocuments;
         this.definitionCandidates = definitionCandidates;
@@ -60,6 +66,8 @@ public sealed class VbaSemanticInventory
         this.authoritativeReferencedProjectNames =
             authoritativeReferencedProjectNames;
         this.intrinsicHostEventCatalog = intrinsicHostEventCatalog;
+        this.validationActiveUri = validationActiveUri;
+        this.validationBuildObserver = validationBuildObserver;
         semanticResolution = new VbaSemanticResolution(
             definitionCandidates,
             resolutionPolicy,
@@ -68,9 +76,7 @@ public sealed class VbaSemanticInventory
         resolvedOccurrences = new VbaResolvedIdentifierOccurrenceIndex(
             sourceDocuments,
             semanticResolution.ResolveSourceTarget);
-        projectValidationDiagnostics = new VbaProjectValidationDiagnosticIndex(
-            sourceDocuments,
-            semanticResolution);
+        cancellationToken.ThrowIfCancellationRequested();
         sourceFormatter = new VbaSourceFormatter(
             semanticResolution,
             resolvedOccurrences);
@@ -91,6 +97,62 @@ public sealed class VbaSemanticInventory
         VbaProjectResolution? projectResolution = null,
         IReadOnlyDictionary<string, string>?
             authoritativeReferencedProjectNames = null)
+        => CreateCore(
+            sourceDocuments,
+            referenceSelection,
+            referenceCatalogs,
+            intrinsicHostEventCatalog,
+            referenceCatalogSources,
+            referenceCatalogIdentities,
+            projectResolution,
+            authoritativeReferencedProjectNames,
+            validationActiveUri: null,
+            validationBuildObserver: null,
+            CancellationToken.None);
+
+    internal static VbaSemanticInventory CreateForProjectSnapshot(
+        IReadOnlyDictionary<string, VbaSourceDocument> sourceDocuments,
+        VbaProjectReferenceSelection? referenceSelection,
+        VbaProjectReferenceCatalogSet? referenceCatalogs,
+        VbaIntrinsicHostEventCatalog? intrinsicHostEventCatalog,
+        IReadOnlyDictionary<string, VbaProjectReferenceCatalogSource>?
+            referenceCatalogSources,
+        IReadOnlyDictionary<string, VbaProjectReferenceCatalogIdentity>?
+            referenceCatalogIdentities,
+        VbaProjectResolution? projectResolution,
+        IReadOnlyDictionary<string, string>?
+            authoritativeReferencedProjectNames,
+        string validationActiveUri,
+        IVbaProjectSnapshotBuildObserver validationBuildObserver,
+        CancellationToken cancellationToken)
+        => CreateCore(
+            sourceDocuments,
+            referenceSelection,
+            referenceCatalogs,
+            intrinsicHostEventCatalog,
+            referenceCatalogSources,
+            referenceCatalogIdentities,
+            projectResolution,
+            authoritativeReferencedProjectNames,
+            validationActiveUri,
+            validationBuildObserver,
+            cancellationToken);
+
+    private static VbaSemanticInventory CreateCore(
+        IReadOnlyDictionary<string, VbaSourceDocument> sourceDocuments,
+        VbaProjectReferenceSelection? referenceSelection,
+        VbaProjectReferenceCatalogSet? referenceCatalogs,
+        VbaIntrinsicHostEventCatalog? intrinsicHostEventCatalog,
+        IReadOnlyDictionary<string, VbaProjectReferenceCatalogSource>?
+            referenceCatalogSources,
+        IReadOnlyDictionary<string, VbaProjectReferenceCatalogIdentity>?
+            referenceCatalogIdentities,
+        VbaProjectResolution? projectResolution,
+        IReadOnlyDictionary<string, string>?
+            authoritativeReferencedProjectNames,
+        string? validationActiveUri,
+        IVbaProjectSnapshotBuildObserver? validationBuildObserver,
+        CancellationToken cancellationToken)
     {
         var documents = FreezeList(
             sourceDocuments.Values.Select(CaptureDocument));
@@ -141,7 +203,10 @@ public sealed class VbaSemanticInventory
             capturedCatalogIdentities,
             capturedProjectResolution,
             capturedAuthoritativeReferencedProjectNames,
-            intrinsicHostEventCatalog);
+            intrinsicHostEventCatalog,
+            validationActiveUri,
+            validationBuildObserver,
+            cancellationToken);
     }
 
     /// <summary>
@@ -159,22 +224,67 @@ public sealed class VbaSemanticInventory
     internal IReadOnlyList<VbaProjectValidationDiagnostic>
         GetProjectValidationDiagnostics(
             string uri,
-            VbaProjectIdentityReadResult? projectIdentityRead = null)
+            VbaProjectIdentityReadResult? projectIdentityRead = null,
+            CancellationToken cancellationToken = default)
     {
-        var diagnostics = projectValidationDiagnostics.GetDiagnostics(uri);
+        var diagnostics = GetOrCreateProjectValidationDiagnostics(
+                cancellationToken)
+            .GetDiagnostics(uri);
         var moduleIdentityDiagnostics =
             CreateModuleIdentityNameConflictDiagnostics(
                 uri,
-                projectIdentityRead);
+                projectIdentityRead,
+                cancellationToken);
         return moduleIdentityDiagnostics.Count == 0
             ? diagnostics
             : diagnostics.Concat(moduleIdentityDiagnostics).ToArray();
     }
 
+    private VbaProjectValidationDiagnosticIndex
+        GetOrCreateProjectValidationDiagnostics(
+            CancellationToken cancellationToken)
+    {
+        lock (projectValidationGate)
+        {
+            if (projectValidationDiagnostics is not null)
+            {
+                return projectValidationDiagnostics;
+            }
+
+            if (validationBuildObserver is not null
+                && validationActiveUri is not null)
+            {
+                validationBuildObserver.BeforeBuildProjectValidation(
+                    validationActiveUri,
+                    cancellationToken);
+            }
+
+            try
+            {
+                projectValidationDiagnostics =
+                    new VbaProjectValidationDiagnosticIndex(
+                        sourceDocuments,
+                        semanticResolution,
+                        cancellationToken);
+                return projectValidationDiagnostics;
+            }
+            finally
+            {
+                if (validationBuildObserver is not null
+                    && validationActiveUri is not null)
+                {
+                    validationBuildObserver.AfterBuildProjectValidation(
+                        validationActiveUri);
+                }
+            }
+        }
+    }
+
     private IReadOnlyList<VbaProjectValidationDiagnostic>
         CreateModuleIdentityNameConflictDiagnostics(
             string uri,
-            VbaProjectIdentityReadResult? projectIdentityRead)
+            VbaProjectIdentityReadResult? projectIdentityRead,
+            CancellationToken cancellationToken)
     {
         if (projectResolution is null)
         {
@@ -190,6 +300,7 @@ public sealed class VbaSemanticInventory
             .Where(IsModuleIdentity)
             .Where(IsExplicitModuleIdentityTarget))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (GetModuleIdentityMutationAuthorityFailure(
                     target,
                     projectIdentityRead) is not null)
@@ -199,7 +310,8 @@ public sealed class VbaSemanticInventory
 
             var conflicts = FindExternalModuleIdentityNameConflicts(
                 target.Name,
-                projectIdentityRead);
+                projectIdentityRead,
+                cancellationToken);
             if (conflicts.Count == 0)
             {
                 continue;
@@ -227,7 +339,8 @@ public sealed class VbaSemanticInventory
     private IReadOnlyList<VbaRenameConflict>
         FindExternalModuleIdentityNameConflicts(
             string moduleName,
-            VbaProjectIdentityReadResult? projectIdentityRead)
+            VbaProjectIdentityReadResult? projectIdentityRead,
+            CancellationToken cancellationToken)
     {
         var conflicts = new List<VbaRenameConflict>();
         if (projectResolution?.Kind
@@ -246,6 +359,7 @@ public sealed class VbaSemanticInventory
 
         foreach (var referenceName in GetActiveReferenceNamesInSelectionOrder())
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (!TryGetCurrentReferencedProjectName(
                     referenceName,
                     out var referencedProjectName)

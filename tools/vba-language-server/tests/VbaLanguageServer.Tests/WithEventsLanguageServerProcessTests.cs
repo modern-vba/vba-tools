@@ -1277,9 +1277,9 @@ public sealed class WithEventsLanguageServerProcessTests
             await process.SendNotificationAsync(
                 "textDocument/didOpen",
                 CreateOpenDocument(workerUri, workerText));
-            await process.WaitForDiagnosticsAsync(workerUri);
             await process.WaitForLogTextAsync(
                 "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
+            var diagnosticsCheckpoint = process.TranscriptCheckpoint;
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -1287,7 +1287,13 @@ public sealed class WithEventsLanguageServerProcessTests
                     textDocument = new { uri = workerUri, version = 2 },
                     contentChanges = new[] { new { text = workerText } }
                 });
-            var workerDiagnostics = await process.WaitForDiagnosticsAsync(workerUri);
+            var workerDiagnostics = await process.WaitForDiagnosticsMatchingAsync(
+                workerUri,
+                candidateDiagnostics => candidateDiagnostics.EnumerateArray().Any(
+                    diagnostic => diagnostic.GetProperty("code").GetString()
+                        == "validation.incompatibleInterfaceMemberSignature"),
+                "validation.incompatibleInterfaceMemberSignature",
+                afterCheckpoint: diagnosticsCheckpoint);
             var diagnostics = workerDiagnostics
                 .GetProperty("params")
                 .GetProperty("diagnostics")
@@ -4112,6 +4118,7 @@ public sealed class WithEventsLanguageServerProcessTests
             await process.WaitForLogTextAsync(
                 "reference 'Second Library' source=persisted outcome=skipped "
                     + "phase=persistent-load expensiveMetadata=false");
+            var diagnosticsCheckpoint = process.TranscriptCheckpoint;
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -4120,7 +4127,13 @@ public sealed class WithEventsLanguageServerProcessTests
                     contentChanges = new[] { new { text = workerText } }
                 });
 
-            var notification = await process.WaitForDiagnosticsAsync(workerUri);
+            var notification = await process.WaitForDiagnosticsMatchingAsync(
+                workerUri,
+                diagnostics => diagnostics.EnumerateArray().Any(candidate =>
+                    candidate.GetProperty("code").GetString()
+                        == "validation.incompatibleEventHandlerSignature"),
+                "validation.incompatibleEventHandlerSignature",
+                afterCheckpoint: diagnosticsCheckpoint);
             var diagnostic = Assert.Single(
                 notification
                     .GetProperty("params")
@@ -4479,7 +4492,8 @@ public sealed class WithEventsLanguageServerProcessTests
                     catalog));
 
             await using var process = await LanguageServerProcessHarness.StartAsync(
-                referenceCatalogCacheRoot: cacheRoot);
+                referenceCatalogCacheRoot: cacheRoot,
+                enableProjectDiagnosticsSynchronization: true);
             await process.InitializeAsync();
 
             var sourcePath = Path.Combine(
@@ -4502,6 +4516,8 @@ public sealed class WithEventsLanguageServerProcessTests
             await process.WaitForDiagnosticsAsync(uri);
             await process.WaitForLogTextAsync(
                 "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
+            var projectCheckpoint =
+                process.CaptureProjectDiagnosticsCheckpoint();
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -4509,7 +4525,10 @@ public sealed class WithEventsLanguageServerProcessTests
                     textDocument = new { uri, version = 2 },
                     contentChanges = new[] { new { text } }
                 });
-            var diagnostics = await process.WaitForDiagnosticsAsync(uri);
+            var diagnostics = await process.WaitForProjectDiagnosticsSettledAsync(
+                uri,
+                expectedVersion: 2,
+                projectCheckpoint);
             Assert.DoesNotContain(
                 diagnostics
                     .GetProperty("params")
@@ -4688,6 +4707,7 @@ public sealed class WithEventsLanguageServerProcessTests
             await process.WaitForDiagnosticsAsync(uri);
             await process.WaitForLogTextAsync(
                 "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
+            var diagnosticsCheckpoint = process.TranscriptCheckpoint;
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -4696,7 +4716,13 @@ public sealed class WithEventsLanguageServerProcessTests
                     contentChanges = new[] { new { text } }
                 });
 
-            var notification = await process.WaitForDiagnosticsAsync(uri);
+            var notification = await process.WaitForDiagnosticsMatchingAsync(
+                uri,
+                diagnostics => diagnostics.EnumerateArray().Any(candidate =>
+                    candidate.GetProperty("code").GetString()
+                        == "validation.withEventsTypeMustBeAccessible"),
+                "validation.withEventsTypeMustBeAccessible",
+                afterCheckpoint: diagnosticsCheckpoint);
             var diagnostic = Assert.Single(
                 notification
                     .GetProperty("params")
@@ -4791,6 +4817,7 @@ public sealed class WithEventsLanguageServerProcessTests
             await process.WaitForDiagnosticsAsync(uri);
             await process.WaitForLogTextAsync(
                 "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
+            var diagnosticsCheckpoint = process.TranscriptCheckpoint;
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -4799,7 +4826,13 @@ public sealed class WithEventsLanguageServerProcessTests
                     contentChanges = new[] { new { text } }
                 });
 
-            var notification = await process.WaitForDiagnosticsAsync(uri);
+            var notification = await process.WaitForDiagnosticsMatchingAsync(
+                uri,
+                diagnostics => diagnostics.EnumerateArray().Any(candidate =>
+                    candidate.GetProperty("code").GetString()
+                        == "validation.withEventsTypeMustBeClass"),
+                "validation.withEventsTypeMustBeClass",
+                afterCheckpoint: diagnosticsCheckpoint);
             var diagnostic = Assert.Single(
                 notification
                     .GetProperty("params")
@@ -4898,6 +4931,7 @@ public sealed class WithEventsLanguageServerProcessTests
             await process.WaitForDiagnosticsAsync(uri);
             await process.WaitForLogTextAsync(
                 "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
+            var diagnosticsCheckpoint = process.TranscriptCheckpoint;
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -4906,7 +4940,13 @@ public sealed class WithEventsLanguageServerProcessTests
                     contentChanges = new[] { new { text } }
                 });
 
-            var notification = await process.WaitForDiagnosticsAsync(uri);
+            var notification = await process.WaitForDiagnosticsMatchingAsync(
+                uri,
+                diagnostics => diagnostics.EnumerateArray().Any(candidate =>
+                    candidate.GetProperty("code").GetString()
+                        == "validation.withEventsTypeMustExposeEvents"),
+                "validation.withEventsTypeMustExposeEvents",
+                afterCheckpoint: diagnosticsCheckpoint);
             var diagnostic = Assert.Single(
                 notification
                     .GetProperty("params")
@@ -4997,7 +5037,8 @@ public sealed class WithEventsLanguageServerProcessTests
                     catalog));
 
             await using var process = await LanguageServerProcessHarness.StartAsync(
-                referenceCatalogCacheRoot: cacheRoot);
+                referenceCatalogCacheRoot: cacheRoot,
+                enableProjectDiagnosticsSynchronization: true);
             await process.InitializeAsync();
 
             var sourcePath = Path.Combine(
@@ -5019,6 +5060,8 @@ public sealed class WithEventsLanguageServerProcessTests
             await process.WaitForDiagnosticsAsync(uri);
             await process.WaitForLogTextAsync(
                 "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
+            var projectCheckpoint =
+                process.CaptureProjectDiagnosticsCheckpoint();
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -5027,7 +5070,10 @@ public sealed class WithEventsLanguageServerProcessTests
                     contentChanges = new[] { new { text } }
                 });
 
-            var notification = await process.WaitForDiagnosticsAsync(uri);
+            var notification = await process.WaitForProjectDiagnosticsSettledAsync(
+                uri,
+                expectedVersion: 2,
+                projectCheckpoint);
             Assert.DoesNotContain(
                 notification
                     .GetProperty("params")
@@ -5111,7 +5157,8 @@ public sealed class WithEventsLanguageServerProcessTests
             MarkReferenceCatalogIndexAsStale(store, "Generated Library");
 
             await using var process = await LanguageServerProcessHarness.StartAsync(
-                referenceCatalogCacheRoot: cacheRoot);
+                referenceCatalogCacheRoot: cacheRoot,
+                enableProjectDiagnosticsSynchronization: true);
             await process.InitializeAsync();
 
             var sourcePath = Path.Combine(
@@ -5131,7 +5178,8 @@ public sealed class WithEventsLanguageServerProcessTests
             await process.WaitForLogTextAsync(
                 "source=stale-persisted outcome=stale phase=persistent-load expensiveMetadata=false");
 
-            var checkpoint = process.TranscriptCheckpoint;
+            var projectCheckpoint =
+                process.CaptureProjectDiagnosticsCheckpoint();
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -5139,11 +5187,10 @@ public sealed class WithEventsLanguageServerProcessTests
                     textDocument = new { uri, version = 2 },
                     contentChanges = new[] { new { text } }
                 });
-            var notification = await process.WaitForMessageAsync(
-                checkpoint,
-                message => message.TryGetProperty("method", out var method)
-                    && method.GetString() == "textDocument/publishDiagnostics"
-                    && message.GetProperty("params").GetProperty("uri").GetString() == uri);
+            var notification = await process.WaitForProjectDiagnosticsSettledAsync(
+                uri,
+                expectedVersion: 2,
+                projectCheckpoint);
 
             Assert.DoesNotContain(
                 notification
@@ -6939,7 +6986,8 @@ public sealed class WithEventsLanguageServerProcessTests
                     CreateGeneratedTypeLibEventCatalog(referenceName)));
 
             await using var process = await LanguageServerProcessHarness.StartAsync(
-                referenceCatalogCacheRoot: cacheRoot);
+                referenceCatalogCacheRoot: cacheRoot,
+                enableProjectDiagnosticsSynchronization: true);
             await process.InitializeAsync();
 
             var sourcePath = Path.Combine(
@@ -6965,6 +7013,8 @@ public sealed class WithEventsLanguageServerProcessTests
             await process.WaitForDiagnosticsAsync(uri);
             await process.WaitForLogTextAsync(
                 "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
+            var projectCheckpointBeforeRename =
+                process.CaptureProjectDiagnosticsCheckpoint();
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -6973,7 +7023,10 @@ public sealed class WithEventsLanguageServerProcessTests
                     contentChanges = new[] { new { text } }
                 });
             var diagnosticsBeforeRename =
-                await process.WaitForDiagnosticsAsync(uri);
+                await process.WaitForProjectDiagnosticsSettledAsync(
+                    uri,
+                    expectedVersion: 2,
+                    projectCheckpointBeforeRename);
             Assert.DoesNotContain(
                 diagnosticsBeforeRename.GetProperty("params")
                     .GetProperty("diagnostics").EnumerateArray(),
@@ -7014,6 +7067,8 @@ public sealed class WithEventsLanguageServerProcessTests
                 "publisher",
                 "source",
                 StringComparison.Ordinal);
+            var projectCheckpointAfterRename =
+                process.CaptureProjectDiagnosticsCheckpoint();
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -7022,7 +7077,10 @@ public sealed class WithEventsLanguageServerProcessTests
                     contentChanges = new[] { new { text = renamedText } }
                 });
             var diagnosticsAfterRename =
-                await process.WaitForDiagnosticsAsync(uri);
+                await process.WaitForProjectDiagnosticsSettledAsync(
+                    uri,
+                    expectedVersion: 3,
+                    projectCheckpointAfterRename);
             Assert.DoesNotContain(
                 diagnosticsAfterRename.GetProperty("params")
                     .GetProperty("diagnostics").EnumerateArray(),
@@ -7087,6 +7145,7 @@ public sealed class WithEventsLanguageServerProcessTests
             await process.SendNotificationAsync(
                 "vba/intrinsicHostEventCatalog",
                 CreateIntrinsicCatalogNotification("Change"));
+            var diagnosticsCheckpoint = process.TranscriptCheckpoint;
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -7095,7 +7154,13 @@ public sealed class WithEventsLanguageServerProcessTests
                     contentChanges = new[] { new { text = workerText } }
                 });
             var diagnosticsBeforeRename =
-                await process.WaitForDiagnosticsAsync(workerUri);
+                await process.WaitForDiagnosticsMatchingAsync(
+                    workerUri,
+                    diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                        diagnostic.GetProperty("code").GetString()
+                            == "validation.eventHandlerMustBeSub"),
+                    "validation.eventHandlerMustBeSub",
+                    afterCheckpoint: diagnosticsCheckpoint);
             Assert.Contains(
                 diagnosticsBeforeRename.GetProperty("params")
                     .GetProperty("diagnostics").EnumerateArray(),
@@ -7136,6 +7201,7 @@ public sealed class WithEventsLanguageServerProcessTests
                 "publisher",
                 "source",
                 StringComparison.Ordinal);
+            diagnosticsCheckpoint = process.TranscriptCheckpoint;
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -7144,7 +7210,13 @@ public sealed class WithEventsLanguageServerProcessTests
                     contentChanges = new[] { new { text = renamedWorkerText } }
                 });
             var diagnosticsAfterRename =
-                await process.WaitForDiagnosticsAsync(workerUri);
+                await process.WaitForDiagnosticsMatchingAsync(
+                    workerUri,
+                    diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                        diagnostic.GetProperty("code").GetString()
+                            == "validation.eventHandlerMustBeSub"),
+                    "validation.eventHandlerMustBeSub after rename",
+                    afterCheckpoint: diagnosticsCheckpoint);
             Assert.Contains(
                 diagnosticsAfterRename.GetProperty("params")
                     .GetProperty("diagnostics").EnumerateArray(),
@@ -7354,7 +7426,12 @@ public sealed class WithEventsLanguageServerProcessTests
         await process.SendNotificationAsync(
             "textDocument/didOpen",
             CreateOpenDocument(workerUri, workerText));
-        var initialDiagnostics = await process.WaitForDiagnosticsAsync(workerUri);
+        var initialDiagnostics = await process.WaitForDiagnosticsMatchingAsync(
+            workerUri,
+            diagnostics => diagnostics.EnumerateArray().Count(diagnostic =>
+                diagnostic.GetProperty("code").GetString()
+                    == "validation.eventHandlerMustBeSub") == 3,
+            "three validation.eventHandlerMustBeSub diagnostics");
         Assert.Equal(
             [3, 6, 8],
             initialDiagnostics.GetProperty("params")
@@ -7403,6 +7480,7 @@ public sealed class WithEventsLanguageServerProcessTests
             "publisher",
             "source",
             StringComparison.Ordinal);
+        var diagnosticsCheckpoint = process.TranscriptCheckpoint;
         await process.SendNotificationAsync(
             "textDocument/didChange",
             new
@@ -7410,7 +7488,13 @@ public sealed class WithEventsLanguageServerProcessTests
                 textDocument = new { uri = workerUri, version = 2 },
                 contentChanges = new[] { new { text = renamedWorkerText } }
             });
-        var renamedDiagnostics = await process.WaitForDiagnosticsAsync(workerUri);
+        var renamedDiagnostics = await process.WaitForDiagnosticsMatchingAsync(
+            workerUri,
+            diagnostics => diagnostics.EnumerateArray().Count(diagnostic =>
+                diagnostic.GetProperty("code").GetString()
+                    == "validation.eventHandlerMustBeSub") == 3,
+            "three validation.eventHandlerMustBeSub diagnostics after rename",
+            afterCheckpoint: diagnosticsCheckpoint);
         Assert.Equal(
             [3, 6, 8],
             renamedDiagnostics.GetProperty("params")

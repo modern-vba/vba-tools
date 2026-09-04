@@ -43,6 +43,2690 @@ public sealed class VbaDiagnosticsPublisherTests
     }
 
     [Fact]
+    public async Task Project_validation_does_not_block_document_open_or_editor_queries()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        const string callLine = "    result = Work(1)";
+        var text = string.Join('\n', [
+            "Public Function Work(ByVal value As Long) As Long",
+            "    Work = value",
+            "End Function",
+            "Public Sub Run()",
+            "    Dim result As Long",
+            callLine,
+            "End Sub"
+        ]);
+        var buildObserver = new BlockingProjectValidationBuildObserver();
+        await using var output = new CapturingWriteStream();
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()),
+            NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+            NullVbaDocumentAnalysisBuildObserver.Instance,
+            buildObserver);
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, output),
+            workspace);
+        publisher.AttachScheduler(scheduler);
+        var pipeline = new VbaDocumentChangePipeline(
+            workspace,
+            new RecordingReferenceCatalogLifecycle(),
+            publisher);
+
+        var opened = scheduler.AdmitMutation(
+            "textDocument/didOpen",
+            cancellationToken => pipeline.ApplyAsync(
+                new VbaTextDocumentOpenedChange(uri, 1, text),
+                cancellationToken));
+        await buildObserver.ValidationStarted.Task
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        try
+        {
+            Assert.True(opened.Completion.IsCompletedSuccessfully);
+
+            IReadOnlyList<int>? semanticTokenData = null;
+            VbaVersionedDocumentSnapshot? exactDocumentSnapshot = null;
+            var completionReady = false;
+            var hoverReady = false;
+            var signatureHelpReady = false;
+            var symbolsReady = false;
+            var definitionReady = false;
+            var referencesReady = false;
+            var prepareRenameReady = false;
+            var renameReady = false;
+            var semanticTokens = scheduler.AdmitRequest(
+                requestId: null,
+                "textDocument/semanticTokens/full",
+                cancellationToken =>
+                    ((IVbaInteractiveWorkspaceCapture)workspace)
+                        .CaptureProjectSemanticInventory(
+                            uri,
+                            cancellationToken),
+                (inventory, cancellationToken) =>
+                {
+                    var callCharacter = callLine.IndexOf(
+                        "Work",
+                        StringComparison.Ordinal);
+                    completionReady = inventory.GetCompletionResult(
+                            uri,
+                            line: 5,
+                            character: callCharacter + "Wor".Length)
+                        .Definitions
+                        .Any(definition => definition.Name == "Work");
+                    hoverReady = inventory.ResolveHover(
+                        uri,
+                        line: 5,
+                        character: callCharacter + 1) is not null;
+                    signatureHelpReady = inventory.GetSignatureHelp(
+                        uri,
+                        line: 5,
+                        character: callCharacter + "Work(".Length) is not null;
+                    symbolsReady = inventory.GetDocumentDefinitions(uri)
+                            .Count > 0
+                        && inventory.GetWorkspaceSymbols("Work").Count > 0;
+                    definitionReady = inventory.ResolveDefinition(
+                        uri,
+                        line: 5,
+                        character: callCharacter + 1) is not null;
+                    referencesReady = inventory.FindReferences(
+                            uri,
+                            line: 5,
+                            character: callCharacter + 1,
+                            cancellationToken)
+                        .Count >= 2;
+                    prepareRenameReady = inventory.PrepareRename(
+                        uri,
+                        line: 5,
+                        character: callCharacter + 1) is not null;
+                    renameReady = inventory.CreateRenamePlan(
+                        uri,
+                        line: 5,
+                        character: callCharacter + 1,
+                        "Build",
+                        cancellationToken) is not null;
+                    semanticTokenData = inventory.GetSemanticTokenData(
+                        uri,
+                        cancellationToken);
+                    exactDocumentSnapshot =
+                        ((IVbaInteractiveWorkspaceCapture)workspace)
+                            .CaptureExactDocumentSnapshot(
+                                uri,
+                                expectedVersion: 1,
+                                cancellationToken);
+                    return Task.CompletedTask;
+                });
+
+            await semanticTokens.Completion
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.NotNull(semanticTokenData);
+            Assert.NotEmpty(semanticTokenData);
+            Assert.NotNull(exactDocumentSnapshot);
+            Assert.Equal(1, exactDocumentSnapshot.Version);
+            Assert.Equal(text, exactDocumentSnapshot.Text);
+            Assert.True(exactDocumentSnapshot.IsOwnedByAnalysis);
+            var exactDocumentInventory = VbaSemanticInventory.Create(
+                new Dictionary<string, VbaSourceDocument>(StringComparer.Ordinal)
+                {
+                    [uri] = exactDocumentSnapshot.SourceDocument
+                },
+                referenceCatalogs:
+                    VbaProjectReferenceCatalogSet.CreateBundled());
+            Assert.Equal(
+                exactDocumentInventory.GetSemanticTokenData(uri),
+                semanticTokenData);
+            Assert.True(completionReady);
+            Assert.True(hoverReady);
+            Assert.True(signatureHelpReady);
+            Assert.True(symbolsReady);
+            Assert.True(definitionReady);
+            Assert.True(referencesReady);
+            Assert.True(prepareRenameReady);
+            Assert.True(renameReady);
+        }
+        finally
+        {
+            buildObserver.ReleaseValidation();
+        }
+
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task Interactive_semantic_capture_does_not_enter_project_validation()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        const string text = "Public Sub Run()\nEnd Sub\n";
+        var validationObserver = new BlockingProjectValidationBuildObserver();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()),
+            NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+            NullVbaDocumentAnalysisBuildObserver.Instance,
+            validationObserver);
+        workspace.OpenDocument(uri, 1, text);
+
+        var capture = Task.Run(() =>
+            ((IVbaInteractiveWorkspaceCapture)workspace)
+                .CaptureProjectSemanticInventory(uri));
+
+        try
+        {
+            var first = await Task.WhenAny(
+                    capture,
+                    validationObserver.ValidationStarted.Task)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Same(capture, first);
+            var inventory = await capture.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.NotEmpty(inventory.GetSemanticTokenData(uri));
+            Assert.Equal(0, validationObserver.StartCount);
+        }
+        finally
+        {
+            validationObserver.ReleaseValidation();
+            try
+            {
+                await capture.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Document_local_diagnostics_and_semantic_tokens_are_ready_while_project_validation_is_blocked()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        const string text = """
+            Public Function Work(ByVal Value As Long) As Long
+            End Function
+            Public Sub Run(ByVal item As Long, ByVal ITEM As String)
+                Dim result As Long
+                result = Work()
+            End Sub
+            """;
+        var validationObserver = new BlockingProjectValidationBuildObserver();
+        await using var output = new CapturingWriteStream();
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()),
+            NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+            NullVbaDocumentAnalysisBuildObserver.Instance,
+            validationObserver);
+        workspace.OpenDocument(uri, 1, text);
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, output),
+            workspace);
+        publisher.AttachScheduler(scheduler);
+
+        await publisher.PublishProjectDiagnosticsAsync(
+            uri,
+            CancellationToken.None);
+        await validationObserver.ValidationStarted.Task
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        try
+        {
+            var localParameters = Assert.IsType<JsonObject>(
+                Assert.Single(ReadJsonMessages(
+                    await output.WaitForMessageCountAsync(1)))["params"]);
+            var localDiagnostics = Assert.IsType<JsonArray>(
+                localParameters["diagnostics"]);
+            Assert.Contains(
+                localDiagnostics,
+                diagnostic => Assert.IsType<JsonObject>(diagnostic)["code"]
+                    ?.GetValue<string>()
+                    == "validation.duplicateCallableParameterName");
+            Assert.DoesNotContain(
+                localDiagnostics,
+                diagnostic => Assert.IsType<JsonObject>(diagnostic)["code"]
+                    ?.GetValue<string>()
+                    == "validation.incompatibleCallArgumentList");
+
+            IReadOnlyList<int>? semanticTokenData = null;
+            var semanticTokens = scheduler.AdmitRequest(
+                requestId: null,
+                "textDocument/semanticTokens/full",
+                cancellationToken =>
+                    ((IVbaInteractiveWorkspaceCapture)workspace)
+                        .CaptureProjectSemanticInventory(
+                            uri,
+                            cancellationToken),
+                (inventory, cancellationToken) =>
+                {
+                    semanticTokenData = inventory.GetSemanticTokenData(
+                        uri,
+                        cancellationToken);
+                    return Task.CompletedTask;
+                });
+            await semanticTokens.Completion
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.NotNull(semanticTokenData);
+            Assert.NotEmpty(semanticTokenData);
+        }
+        finally
+        {
+            validationObserver.ReleaseValidation();
+        }
+
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        var completedParameters = Assert.IsType<JsonObject>(
+            ReadJsonMessages(output.ReadText()).Last()["params"]);
+        Assert.Contains(
+            Assert.IsType<JsonArray>(completedParameters["diagnostics"]),
+            diagnostic => Assert.IsType<JsonObject>(diagnostic)["code"]
+                ?.GetValue<string>()
+                == "validation.incompatibleCallArgumentList");
+    }
+
+    [Fact]
+    public async Task Empty_document_local_result_clears_a_fixed_local_diagnostic_while_project_validation_is_blocked()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        const string invalidText = "Public Sub Run(ByVal item As Long, ByVal ITEM As String)\nEnd Sub\n";
+        const string validText = "Public Sub Run(ByVal item As Long)\nEnd Sub\n";
+        var validationObserver =
+            new BlockingSecondProjectValidationBuildObserver();
+        await using var output = new CapturingWriteStream();
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()),
+            NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+            NullVbaDocumentAnalysisBuildObserver.Instance,
+            validationObserver);
+        workspace.OpenDocument(uri, 1, invalidText);
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, output),
+            workspace);
+        publisher.AttachScheduler(scheduler);
+        await publisher.PublishProjectDiagnosticsAsync(
+            uri,
+            CancellationToken.None);
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        var baselineMessageCount = output.MessageCount;
+
+        Assert.True(workspace.ChangeDocument(uri, 2, validText));
+        await publisher.PublishProjectDiagnosticsAsync(
+            uri,
+            CancellationToken.None);
+        await validationObserver.SecondValidationStarted.Task
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        try
+        {
+            var localParameters = Assert.IsType<JsonObject>(
+                ReadJsonMessages(
+                        await output.WaitForMessageCountAsync(
+                            baselineMessageCount + 1))
+                    .Last()["params"]);
+            Assert.Equal(2, localParameters["version"]?.GetValue<int>());
+            Assert.Empty(Assert.IsType<JsonArray>(
+                localParameters["diagnostics"]));
+        }
+        finally
+        {
+            validationObserver.ReleaseSecondValidation();
+        }
+
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task Empty_document_local_result_clears_project_only_diagnostics_while_revalidation_is_blocked()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        const string invalidText = """
+            Public Function Work(ByVal value As Long) As Long
+            End Function
+            Public Sub Run()
+                Dim result As Long
+                result = Work()
+            End Sub
+            """;
+        const string validText = """
+            Public Function Work(ByVal value As Long) As Long
+            End Function
+            Public Sub Run()
+                Dim result As Long
+                result = Work(1)
+            End Sub
+            """;
+        var validationObserver =
+            new BlockingSecondProjectValidationBuildObserver();
+        await using var output = new CapturingWriteStream();
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()),
+            NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+            NullVbaDocumentAnalysisBuildObserver.Instance,
+            validationObserver);
+        workspace.OpenDocument(uri, 1, invalidText);
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, output),
+            workspace);
+        publisher.AttachScheduler(scheduler);
+        await publisher.PublishProjectDiagnosticsAsync(
+            uri,
+            CancellationToken.None);
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        var baselineMessages = ReadJsonMessages(output.ReadText());
+        var baselineParameters = Assert.IsType<JsonObject>(
+            baselineMessages.Last()["params"]);
+        Assert.Contains(
+            Assert.IsType<JsonArray>(baselineParameters["diagnostics"]),
+            diagnostic => Assert.IsType<JsonObject>(diagnostic)["code"]
+                ?.GetValue<string>()
+                == "validation.incompatibleCallArgumentList");
+
+        Assert.True(workspace.ChangeDocument(uri, 2, validText));
+        await publisher.PublishProjectDiagnosticsAsync(
+            uri,
+            CancellationToken.None);
+        await validationObserver.SecondValidationStarted.Task
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        try
+        {
+            var localParameters = Assert.IsType<JsonObject>(
+                ReadJsonMessages(
+                        await output.WaitForMessageCountAsync(
+                            baselineMessages.Count + 1))
+                    .Last()["params"]);
+            Assert.Equal(2, localParameters["version"]?.GetValue<int>());
+            Assert.Empty(Assert.IsType<JsonArray>(
+                localParameters["diagnostics"]));
+        }
+        finally
+        {
+            validationObserver.ReleaseSecondValidation();
+        }
+
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task Latest_clean_revision_replaces_a_superseded_clean_clear_while_revalidation_is_blocked()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        const string invalidText =
+            "Public Sub Run(ByVal item As Long, ByVal ITEM As String)\nEnd Sub\n";
+        const string firstCleanText =
+            "Public Sub FirstClean(ByVal item As Long)\nEnd Sub\n";
+        const string latestCleanText =
+            "Public Sub LatestClean(ByVal item As Long)\nEnd Sub\n";
+        var validationObserver =
+            new BlockingSecondProjectValidationBuildObserver();
+        var publicationObserver = new ArmableBlockingRevisionObserver();
+        await using var output = new CapturingWriteStream();
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()),
+            NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+            NullVbaDocumentAnalysisBuildObserver.Instance,
+            validationObserver);
+        workspace.OpenDocument(uri, 1, invalidText);
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, output),
+            workspace,
+            publicationObserver);
+        publisher.AttachScheduler(scheduler);
+        await publisher.PublishProjectDiagnosticsAsync(
+            uri,
+            CancellationToken.None);
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        var baselineMessageCount = output.MessageCount;
+        using var supersededCancellation = new CancellationTokenSource();
+        Task? supersededClear = null;
+        try
+        {
+            publicationObserver.Arm();
+            Assert.True(workspace.ChangeDocument(uri, 2, firstCleanText));
+            supersededClear = Task.Run(
+                () => publisher.PublishProjectDiagnosticsAsync(
+                    uri,
+                    supersededCancellation.Token));
+            await publicationObserver.BlockedRevision.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.True(workspace.ChangeDocument(uri, 3, latestCleanText));
+            await publisher.PublishProjectDiagnosticsAsync(
+                uri,
+                CancellationToken.None);
+            await validationObserver.SecondValidationStarted.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            supersededCancellation.Cancel();
+            publicationObserver.Release();
+            var latestParameters = Assert.IsType<JsonObject>(
+                ReadJsonMessages(
+                        await output.WaitForMessageCountAsync(
+                            baselineMessageCount + 1))
+                    .Last()["params"]);
+            Assert.Equal(3, latestParameters["version"]?.GetValue<int>());
+            Assert.Empty(Assert.IsType<JsonArray>(
+                latestParameters["diagnostics"]));
+        }
+        finally
+        {
+            publicationObserver.Release();
+            validationObserver.ReleaseSecondValidation();
+            if (supersededClear is not null
+                && !supersededClear.IsCompleted)
+            {
+                try
+                {
+                    await supersededClear.WaitAsync(TimeSpan.FromSeconds(5));
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        var completedSupersededClear = Assert.IsAssignableFrom<Task>(
+            supersededClear);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            async () => await completedSupersededClear.WaitAsync(
+                TimeSpan.FromSeconds(5)));
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task Pending_project_validation_coalesces_across_source_uris_by_project_authority()
+    {
+        const string firstUri = "file:///C:/work/First.bas";
+        const string secondUri = "file:///C:/work/Second.bas";
+        var validationObserver = new CountingProjectValidationBuildObserver();
+        var blockerStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseBlocker = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var output = new CapturingWriteStream();
+        await using var scheduler = new VbaInteractiveWorkScheduler(
+            options: new VbaInteractiveWorkSchedulerOptions(
+                CoalesceSupersededMutations: true,
+                MaxOwnedWork: 1));
+        var blocker = scheduler.AdmitMutation(async cancellationToken =>
+        {
+            blockerStarted.TrySetResult();
+            await releaseBlocker.Task.WaitAsync(cancellationToken);
+        });
+        await blockerStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()),
+            NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+            NullVbaDocumentAnalysisBuildObserver.Instance,
+            validationObserver);
+        workspace.OpenDocument(firstUri, 1, "Public Sub First()\nEnd Sub\n");
+        workspace.OpenDocument(secondUri, 1, "Public Sub Second()\nEnd Sub\n");
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, output),
+            workspace);
+        publisher.AttachScheduler(scheduler);
+
+        await publisher.PublishProjectDiagnosticsAsync(
+            firstUri,
+            CancellationToken.None);
+        await publisher.PublishProjectDiagnosticsAsync(
+            secondUri,
+            CancellationToken.None);
+
+        releaseBlocker.TrySetResult();
+        await blocker.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+        await Task.WhenAll(
+                publisher.WaitForIdleAsync(firstUri),
+                publisher.WaitForIdleAsync(secondUri))
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(1, validationObserver.StartCount);
+    }
+
+    [Fact]
+    public async Task Delayed_older_project_validation_post_cannot_replace_the_newer_pending_revision()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var validationObserver = new CountingProjectValidationBuildObserver();
+        var reservationObserver =
+            new BlockingFirstProjectValidationReservationObserver();
+        var blockerStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseBlocker = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var output = new CapturingWriteStream();
+        await using var scheduler = new VbaInteractiveWorkScheduler(
+            options: new VbaInteractiveWorkSchedulerOptions(
+                CoalesceSupersededMutations: true,
+                MaxOwnedWork: 1));
+        var blocker = scheduler.AdmitMutation(async cancellationToken =>
+        {
+            blockerStarted.TrySetResult();
+            await releaseBlocker.Task.WaitAsync(cancellationToken);
+        });
+        await blockerStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()),
+            NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+            NullVbaDocumentAnalysisBuildObserver.Instance,
+            validationObserver);
+        workspace.OpenDocument(uri, 1, "Public Sub First()\nEnd Sub\n");
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, output),
+            workspace,
+            reservationObserver);
+        publisher.AttachScheduler(scheduler);
+
+        Task? olderPublication = null;
+        try
+        {
+            olderPublication = Task.Run(
+                () => publisher.PublishProjectDiagnosticsAsync(
+                    uri,
+                    CancellationToken.None));
+            await reservationObserver.FirstReservationReached.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.True(workspace.ChangeDocument(
+                uri,
+                2,
+                "Public Sub Latest()\nEnd Sub\n"));
+            await publisher.PublishProjectDiagnosticsAsync(
+                uri,
+                CancellationToken.None);
+            Assert.Equal(2, reservationObserver.ReservationCount);
+
+            reservationObserver.ReleaseFirstReservation();
+            await olderPublication.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Equal(1, publisher.RetainedProjectValidationStateCount);
+        }
+        finally
+        {
+            reservationObserver.ReleaseFirstReservation();
+            if (olderPublication is not null)
+            {
+                await olderPublication.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+
+            releaseBlocker.TrySetResult();
+            await blocker.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(1, validationObserver.StartCount);
+        Assert.Equal(0, publisher.RetainedProjectValidationStateCount);
+    }
+
+    [Fact]
+    public async Task Wait_for_idle_observes_a_project_validation_reservation_before_its_observer_returns()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var reservationObserver =
+            new BlockingFirstProjectValidationReservationObserver();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()));
+        workspace.OpenDocument(uri, 1, "Public Sub Run()\nEnd Sub\n");
+        await using var output = new CapturingWriteStream();
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, output),
+            workspace,
+            reservationObserver);
+        publisher.AttachScheduler(scheduler);
+
+        Task? publication = null;
+        Task? idle = null;
+        try
+        {
+            publication = Task.Run(
+                () => publisher.PublishProjectDiagnosticsAsync(
+                    uri,
+                    CancellationToken.None));
+            await reservationObserver.FirstReservationReached.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            idle = publisher.WaitForIdleAsync(uri);
+            Assert.False(idle.IsCompleted);
+
+            reservationObserver.ReleaseFirstReservation();
+            await publication.WaitAsync(TimeSpan.FromSeconds(5));
+            await idle.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            reservationObserver.ReleaseFirstReservation();
+            if (publication is not null && !publication.IsCompleted)
+            {
+                try
+                {
+                    await publication.WaitAsync(TimeSpan.FromSeconds(5));
+                }
+                catch
+                {
+                }
+            }
+
+            if (idle is not null && !idle.IsCompleted)
+            {
+                try
+                {
+                    await idle.WaitAsync(TimeSpan.FromSeconds(5));
+                }
+                catch
+                {
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Wait_for_idle_observes_project_capture_that_started_before_routing_exists()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var buildObserver = new BlockingFirstProjectSnapshotBuildObserver();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()),
+            NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+            NullVbaDocumentAnalysisBuildObserver.Instance,
+            buildObserver);
+        workspace.OpenDocument(
+            uri,
+            1,
+            "Attribute VB_Name = \"Worker\"\nPublic Sub Run()\nEnd Sub\n");
+        await using var output = new CapturingWriteStream();
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, output),
+            workspace);
+        publisher.AttachScheduler(scheduler);
+
+        var publication = Task.Run(
+            () => publisher.PublishProjectDiagnosticsAsync(
+                uri,
+                CancellationToken.None));
+        await buildObserver.FirstBuildWaiting.Task
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        var idle = publisher.WaitForIdleAsync(uri);
+        try
+        {
+            Assert.False(idle.IsCompleted);
+        }
+        finally
+        {
+            buildObserver.ReleaseFirstBuild();
+            await publication.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+
+        await idle.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(1, buildObserver.ValidationStartCount);
+    }
+
+    [Fact]
+    public async Task Wait_for_idle_observes_an_inflight_capture_from_a_project_sibling()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-sibling-capture-idle-").FullName;
+        var buildObserver = new BlockingFirstProjectSnapshotBuildObserver();
+        try
+        {
+            var firstPath = Path.Combine(projectRoot, "First.bas");
+            var secondPath = Path.Combine(projectRoot, "Second.bas");
+            const string firstText = "Public Sub First()\nEnd Sub\n";
+            const string secondText = "Public Sub Second()\nEnd Sub\n";
+            File.WriteAllText(firstPath, firstText);
+            File.WriteAllText(secondPath, secondText);
+            var firstUri = new Uri(firstPath).AbsoluteUri;
+            var secondUri = new Uri(secondPath).AbsoluteUri;
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()),
+                NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+                NullVbaDocumentAnalysisBuildObserver.Instance,
+                buildObserver);
+            workspace.OpenDocument(firstUri, 1, firstText);
+            workspace.OpenDocument(secondUri, 1, secondText);
+            await using var scheduler = new VbaInteractiveWorkScheduler();
+            var publisher = new VbaDiagnosticsPublisher(
+                new LspMessageTransport(Stream.Null, Stream.Null),
+                workspace);
+            publisher.AttachScheduler(scheduler);
+
+            var publication = Task.Run(
+                () => publisher.PublishProjectDiagnosticsAsync(
+                    firstUri,
+                    CancellationToken.None));
+            await buildObserver.FirstBuildWaiting.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            var siblingIdle = publisher.WaitForIdleAsync(secondUri);
+
+            Assert.False(siblingIdle.IsCompleted);
+
+            buildObserver.ReleaseFirstBuild();
+            await publication.WaitAsync(TimeSpan.FromSeconds(5));
+            await siblingIdle.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(1, buildObserver.ValidationStartCount);
+        }
+        finally
+        {
+            buildObserver.ReleaseFirstBuild();
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Wait_for_idle_does_not_wait_for_an_unrelated_project_authority()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-authority-idle-").FullName;
+        var validationObserver =
+            new BlockingFirstCancellableProjectValidationBuildObserver();
+        try
+        {
+            var firstRoot = Directory.CreateDirectory(
+                Path.Combine(projectRoot, "First")).FullName;
+            var secondRoot = Directory.CreateDirectory(
+                Path.Combine(projectRoot, "Second")).FullName;
+            var firstPath = Path.Combine(firstRoot, "First.bas");
+            var secondPath = Path.Combine(secondRoot, "Second.bas");
+            const string firstText = "Attribute VB_Name = \"First\"\n"
+                + "Public Sub Run()\nEnd Sub\n";
+            const string secondText = "Attribute VB_Name = \"Second\"\n"
+                + "Public Sub Run()\nEnd Sub\n";
+            File.WriteAllText(firstPath, firstText);
+            File.WriteAllText(secondPath, secondText);
+            var firstUri = new Uri(firstPath).AbsoluteUri;
+            var secondUri = new Uri(secondPath).AbsoluteUri;
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()),
+                NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+                NullVbaDocumentAnalysisBuildObserver.Instance,
+                validationObserver);
+            workspace.OpenDocument(firstUri, 1, firstText);
+            workspace.OpenDocument(secondUri, 1, secondText);
+            await using var output = new CapturingWriteStream();
+            await using var scheduler = new VbaInteractiveWorkScheduler(
+                options: new VbaInteractiveWorkSchedulerOptions(
+                    CoalesceSupersededMutations: true,
+                    MaxConcurrentBulkReads: 2));
+            var publisher = new VbaDiagnosticsPublisher(
+                new LspMessageTransport(Stream.Null, output),
+                workspace);
+            publisher.AttachScheduler(scheduler);
+            await publisher.PublishProjectDiagnosticsAsync(
+                firstUri,
+                CancellationToken.None);
+            await validationObserver.FirstValidationStarted.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            try
+            {
+                await publisher.PublishProjectDiagnosticsAsync(
+                    secondUri,
+                    CancellationToken.None);
+                await publisher.WaitForIdleAsync(secondUri)
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+                Assert.Equal(2, validationObserver.StartCount);
+            }
+            finally
+            {
+                validationObserver.ReleaseFirstValidation();
+            }
+
+            await publisher.WaitForIdleAsync(firstUri)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            validationObserver.ReleaseFirstValidation();
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Wait_for_idle_observes_retired_validation_until_its_worker_is_terminal()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var validationObserver =
+            new BlockingNonCooperativeProjectValidationBuildObserver();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()),
+            NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+            NullVbaDocumentAnalysisBuildObserver.Instance,
+            validationObserver);
+        workspace.OpenDocument(
+            uri,
+            1,
+            "Attribute VB_Name = \"Worker\"\nPublic Sub Run()\nEnd Sub\n");
+        await using var output = new CapturingWriteStream();
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, output),
+            workspace);
+        publisher.AttachScheduler(scheduler);
+        try
+        {
+            await publisher.PublishProjectDiagnosticsAsync(
+                uri,
+                CancellationToken.None);
+            await validationObserver.ValidationStarted.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            publisher.CancelProjectValidationsForDocuments([uri]);
+            await validationObserver.CancellationObserved.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            var idle = publisher.WaitForIdleAsync(uri);
+            Assert.False(idle.IsCompleted);
+
+            validationObserver.ReleaseValidation();
+            await idle.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(0, publisher.RetainedProjectValidationActivityCount);
+        }
+        finally
+        {
+            validationObserver.ReleaseValidation();
+        }
+    }
+
+    [Fact]
+    public async Task Catalog_invalidation_after_currentness_acceptance_cancels_project_transport_without_aborting_scheduler()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var publicationObserver =
+            new BlockingProjectDiagnosticsTransportObserver();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()));
+        workspace.OpenDocument(
+            uri,
+            1,
+            "Attribute VB_Name = \"Worker\"\nPublic Sub Run()\nEnd Sub\n");
+        Assert.True(workspace.TryCaptureProjectDiagnosticsAuthority(
+            uri,
+            CancellationToken.None,
+            out var authority));
+        await using var output = new CapturingWriteStream();
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, output),
+            workspace,
+            publicationObserver);
+        publisher.AttachScheduler(scheduler);
+        var lease = new VbaProjectValidationLifecycleLease(
+            authority,
+            revision: 1);
+        publisher.ActivateProjectDiagnostics(lease);
+
+        try
+        {
+            await publisher.PublishProjectDiagnosticsAsync(
+                uri,
+                CancellationToken.None);
+            await publicationObserver.TransportWriteReached.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            publisher.InvalidateProjectDiagnostics(lease);
+        }
+        finally
+        {
+            publicationObserver.Release();
+            lease.Revoke();
+            publisher.RetireProjectDiagnostics(lease);
+        }
+
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Empty(ReadJsonMessages(output.ReadText()));
+        Assert.True(scheduler.IsAccepting);
+    }
+
+    [Fact]
+    public async Task New_project_revision_cancels_active_validation_and_publishes_only_latest()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        const string firstText = "Public Sub First()\nEnd Sub\n";
+        const string latestText = "Public Sub Latest()\nEnd Sub\n";
+        var validationObserver =
+            new BlockingFirstCancellableProjectValidationBuildObserver();
+        await using var output = new CapturingWriteStream();
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()),
+            NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+            NullVbaDocumentAnalysisBuildObserver.Instance,
+            validationObserver);
+        workspace.OpenDocument(uri, 1, firstText);
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, output),
+            workspace);
+        publisher.AttachScheduler(scheduler);
+
+        await publisher.PublishProjectDiagnosticsAsync(
+            uri,
+            CancellationToken.None);
+        await validationObserver.FirstValidationStarted.Task
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        try
+        {
+            Assert.True(workspace.ChangeDocument(uri, 2, latestText));
+            await publisher.PublishProjectDiagnosticsAsync(
+                uri,
+                CancellationToken.None);
+            await validationObserver.FirstValidationCancelled.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            validationObserver.ReleaseFirstValidation();
+        }
+
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        var messages = ReadJsonMessages(output.ReadText());
+        Assert.Equal(2, messages.Count);
+        Assert.All(
+            messages,
+            message => Assert.Equal(
+                2,
+                Assert.IsType<JsonObject>(message["params"])["version"]
+                    ?.GetValue<int>()));
+        Assert.Equal(2, validationObserver.StartCount);
+        Assert.True(scheduler.IsAccepting);
+    }
+
+    [Fact]
+    public async Task Identical_new_revision_supersedes_non_cooperative_validation_before_publication()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        const string text = "Attribute VB_Name = \"Worker\"\n"
+            + "Public Sub Run()\nEnd Sub\n";
+        var validationObserver =
+            new BlockingFirstAfterProjectValidationBuildObserver();
+        var publicationObserver = new CountingDiagnosticsPublicationObserver();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()),
+            NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+            NullVbaDocumentAnalysisBuildObserver.Instance,
+            validationObserver);
+        workspace.OpenDocument(uri, 1, text);
+        await using var output = new CapturingWriteStream();
+        await using var scheduler = new VbaInteractiveWorkScheduler(
+            options: new VbaInteractiveWorkSchedulerOptions(
+                CoalesceSupersededMutations: true,
+                MaxConcurrentReads: 2));
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, output),
+            workspace,
+            publicationObserver);
+        publisher.AttachScheduler(scheduler);
+        try
+        {
+            await publisher.PublishProjectDiagnosticsAsync(
+                uri,
+                CancellationToken.None);
+            await validationObserver.FirstValidationBuilt.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            await publisher.PublishProjectDiagnosticsAsync(
+                uri,
+                CancellationToken.None);
+            Assert.Equal(2, publicationObserver.ProjectReservationCount);
+
+            validationObserver.ReleaseFirstValidation();
+            await publisher.WaitForIdleAsync(uri)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Equal(1, publicationObserver.DocumentReservationCount);
+            Assert.Single(ReadJsonMessages(output.ReadText()));
+        }
+        finally
+        {
+            validationObserver.ReleaseFirstValidation();
+        }
+    }
+
+    [Fact]
+    public async Task Superseding_project_validation_does_not_wait_for_or_propagate_cancellation_callbacks()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        const string firstText = "Public Sub First()\nEnd Sub\n";
+        const string latestText = "Public Sub Latest()\nEnd Sub\n";
+        var validationObserver =
+            new BlockingThrowingCancellationCallbackProjectValidationBuildObserver();
+        await using var output = new CapturingWriteStream();
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()),
+            NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+            NullVbaDocumentAnalysisBuildObserver.Instance,
+            validationObserver);
+        workspace.OpenDocument(uri, 1, firstText);
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, output),
+            workspace);
+        publisher.AttachScheduler(scheduler);
+        Task? supersedingPublication = null;
+        try
+        {
+            await publisher.PublishProjectDiagnosticsAsync(
+                uri,
+                CancellationToken.None);
+            await validationObserver.FirstValidationStarted.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.True(workspace.ChangeDocument(uri, 2, latestText));
+            supersedingPublication = Task.Run(
+                () => publisher.PublishProjectDiagnosticsAsync(
+                    uri,
+                    CancellationToken.None));
+            await validationObserver.CancellationCallbackStarted.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            await validationObserver.CancellationObserved.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            await supersedingPublication.WaitAsync(TimeSpan.FromSeconds(1));
+            Assert.True(scheduler.IsAccepting);
+        }
+        finally
+        {
+            validationObserver.ReleaseCancellationCallback();
+            if (supersedingPublication is not null)
+            {
+                try
+                {
+                    await supersedingPublication.WaitAsync(
+                        TimeSpan.FromSeconds(5));
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        var messages = ReadJsonMessages(output.ReadText());
+        Assert.NotEmpty(messages);
+        Assert.All(
+            messages,
+            message => Assert.Equal(
+                2,
+                Assert.IsType<JsonObject>(message["params"])["version"]
+                    ?.GetValue<int>()));
+        Assert.Equal(2, validationObserver.StartCount);
+        Assert.True(scheduler.IsAccepting);
+        Assert.Equal(0, publisher.RetainedProjectValidationStateCount);
+    }
+
+    [Fact]
+    public async Task Superseded_project_publication_cancellation_does_not_abort_the_scheduler()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var publicationObserver = new ArmableBlockingRevisionObserver();
+        var failures = new List<VbaInteractiveWorkFailure>();
+        await using var output = new CapturingWriteStream();
+        await using var scheduler = new VbaInteractiveWorkScheduler(
+            failureSink: failures.Add);
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()));
+        workspace.OpenDocument(
+            uri,
+            1,
+            "Public Sub First(ByVal item As Long, ByVal ITEM As String)\nEnd Sub\n");
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, output),
+            workspace,
+            publicationObserver);
+        publisher.AttachScheduler(scheduler);
+        try
+        {
+            publicationObserver.ArmAfterNextProjectValidationRevision();
+            await publisher.PublishProjectDiagnosticsAsync(
+                uri,
+                CancellationToken.None);
+            await publicationObserver.BlockedRevision.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.True(workspace.ChangeDocument(
+                uri,
+                2,
+                "Public Sub Latest()\nEnd Sub\n"));
+            await publisher.PublishProjectDiagnosticsAsync(
+                uri,
+                CancellationToken.None);
+            publicationObserver.Release();
+
+            await publisher.WaitForIdleAsync(uri)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Empty(failures);
+            Assert.True(scheduler.IsAccepting);
+            Assert.Contains(
+                ReadJsonMessages(output.ReadText()),
+                message => Assert.IsType<JsonObject>(
+                        message["params"])["version"]
+                    ?.GetValue<int>() == 2);
+        }
+        finally
+        {
+            publicationObserver.Release();
+        }
+    }
+
+    [Fact]
+    public async Task Catalog_revision_change_rejects_captured_project_validation()
+    {
+        const string referenceName = "Validation Test Library";
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-validation-catalog-fence-").FullName;
+        try
+        {
+            var sourceRoot = Directory.CreateDirectory(
+                Path.Combine(projectRoot, "src")).FullName;
+            File.WriteAllText(
+                Path.Combine(projectRoot, "vba-project.json"),
+                $$"""
+                {
+                  "schemaVersion": 1,
+                  "projectName": "ValidationCatalogFence",
+                  "primaryDocument": "Book1",
+                  "documents": {
+                    "Book1": {
+                      "kind": "excel",
+                      "sourcePath": "src",
+                      "templatePath": "src/Book1.xlsm",
+                      "binPath": "bin/Book1.xlsm",
+                      "publishPath": "publish/Book1.xlsm",
+                      "commonModules": [],
+                      "references": [
+                        {
+                          "name": "{{referenceName}}",
+                          "requested": true
+                        }
+                      ]
+                    }
+                  }
+                }
+                """);
+            var sourcePath = Path.Combine(sourceRoot, "Worker.bas");
+            const string text = "Attribute VB_Name = \"Worker\"\n"
+                + "Public Sub Run()\nEnd Sub\n";
+            File.WriteAllText(sourcePath, text);
+            var uri = new Uri(sourcePath).AbsoluteUri;
+            var catalogCache = new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled());
+            catalogCache.StoreStaleCatalog(new VbaProjectReferenceCatalog(
+                referenceName,
+                [],
+                [
+                    new VbaProjectReferenceDefinition(
+                        referenceName,
+                        "BeforeType",
+                        VbaSourceDefinitionKind.Class,
+                        null)
+                ]));
+            var validationObserver =
+                new BlockingProjectValidationBuildObserver();
+            var workspace = new VbaLanguageWorkspace(
+                catalogCache,
+                NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+                NullVbaDocumentAnalysisBuildObserver.Instance,
+                validationObserver);
+            workspace.OpenDocument(uri, 1, text);
+            await using var output = new CapturingWriteStream();
+            await using var scheduler = new VbaInteractiveWorkScheduler();
+            var publisher = new VbaDiagnosticsPublisher(
+                new LspMessageTransport(Stream.Null, output),
+                workspace);
+            publisher.AttachScheduler(scheduler);
+
+            await publisher.PublishProjectDiagnosticsAsync(
+                uri,
+                CancellationToken.None);
+            await validationObserver.ValidationStarted.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            catalogCache.StoreStaleCatalog(new VbaProjectReferenceCatalog(
+                referenceName,
+                [],
+                [
+                    new VbaProjectReferenceDefinition(
+                        referenceName,
+                        "AfterType",
+                        VbaSourceDefinitionKind.Class,
+                        null)
+                ]));
+            validationObserver.ReleaseValidation();
+            await publisher.WaitForIdleAsync(uri)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Empty(ReadJsonMessages(output.ReadText()));
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Catalog_commit_cancels_stale_validation_before_the_batch_settles_and_refreshes_once()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-validation-catalog-commit-").FullName;
+        var discovery = new BlockingSecondSuccessfulCatalogDiscovery();
+        var validationObserver =
+            new BlockingFirstCancellableProjectValidationBuildObserver();
+        try
+        {
+            var sourceRoot = Directory.CreateDirectory(
+                Path.Combine(projectRoot, "src")).FullName;
+            var manifestPath = Path.Combine(projectRoot, "vba-project.json");
+            var manifestText = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                schemaVersion = 1,
+                projectName = "ValidationCatalogCommit",
+                primaryDocument = "Book1",
+                documents = new Dictionary<string, object>
+                {
+                    ["Book1"] = new
+                    {
+                        kind = "excel",
+                        sourcePath = "src",
+                        templatePath = "src/Book1.xlsm",
+                        binPath = "bin/Book1.xlsm",
+                        publishPath = "publish/Book1.xlsm",
+                        commonModules = Array.Empty<object>(),
+                        references = new[]
+                        {
+                            new { name = "Library A", requested = true },
+                            new { name = "Library B", requested = true }
+                        }
+                    }
+                }
+            });
+            File.WriteAllText(manifestPath, manifestText);
+            var sourcePath = Path.Combine(sourceRoot, "Worker.bas");
+            const string text = "Attribute VB_Name = \"Worker\"\n"
+                + "Public Sub Run()\nEnd Sub\n";
+            File.WriteAllText(sourcePath, text);
+            var uri = new Uri(sourcePath).AbsoluteUri;
+            var manifestUri = new Uri(manifestPath).AbsoluteUri;
+            var catalogCache = new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled());
+            var workspace = new VbaLanguageWorkspace(
+                catalogCache,
+                NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+                NullVbaDocumentAnalysisBuildObserver.Instance,
+                validationObserver);
+            workspace.OpenDocument(uri, 1, text);
+            await using var output = new CapturingWriteStream();
+            await using var scheduler = new VbaInteractiveWorkScheduler();
+            var publisher = new VbaDiagnosticsPublisher(
+                new LspMessageTransport(Stream.Null, output),
+                workspace);
+            var refreshService = new VbaProjectReferenceCatalogRefreshService(
+                catalogCache,
+                discovery,
+                persistentStore: null,
+                new InlineReferenceCatalogRefreshWorker());
+            var catalogLifecycle = new ReferenceCatalogRefreshCoordinator(
+                catalogCache,
+                refreshService,
+                new VbaProjectManifestWorkspace(),
+                new LspMessageTransport(Stream.Null, output));
+            publisher.AttachScheduler(scheduler);
+            catalogLifecycle.AttachProjectValidationLifecycle(publisher);
+            catalogLifecycle.AttachScheduler(scheduler);
+            await publisher.PublishProjectDiagnosticsAsync(
+                uri,
+                CancellationToken.None);
+            await validationObserver.FirstValidationStarted.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            catalogLifecycle.ApplyManifestSelectionChange(
+                manifestUri,
+                manifestText);
+            await discovery.SecondDiscoveryStarted.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            await validationObserver.FirstValidationCancelled.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(1, validationObserver.StartCount);
+
+            discovery.ReleaseSecondDiscovery();
+            await catalogLifecycle.WaitForIdleAsync()
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            await publisher.WaitForIdleAsync(uri)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Equal(2, validationObserver.StartCount);
+            await catalogLifecycle.StopAsync();
+            publisher.Stop();
+        }
+        finally
+        {
+            discovery.ReleaseSecondDiscovery();
+            validationObserver.ReleaseFirstValidation();
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Stop_cancels_project_validation_and_releases_revision_state()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var validationObserver =
+            new BlockingFirstCancellableProjectValidationBuildObserver();
+        await using var output = new CapturingWriteStream();
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()),
+            NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+            NullVbaDocumentAnalysisBuildObserver.Instance,
+            validationObserver);
+        workspace.OpenDocument(uri, 1, "Public Sub Run()\nEnd Sub\n");
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, output),
+            workspace);
+        publisher.AttachScheduler(scheduler);
+        await publisher.PublishProjectDiagnosticsAsync(
+            uri,
+            CancellationToken.None);
+        await validationObserver.FirstValidationStarted.Task
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        publisher.Stop();
+
+        await validationObserver.FirstValidationCancelled.Task
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(0, publisher.RetainedProjectValidationStateCount);
+        await scheduler.StopAsync(VbaInteractiveStopReason.Complete)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task Stop_does_not_wait_for_or_propagate_project_validation_cancellation_callbacks()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var validationObserver =
+            new BlockingThrowingCancellationCallbackProjectValidationBuildObserver();
+        await using var output = new CapturingWriteStream();
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()),
+            NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+            NullVbaDocumentAnalysisBuildObserver.Instance,
+            validationObserver);
+        workspace.OpenDocument(uri, 1, "Public Sub Run()\nEnd Sub\n");
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, output),
+            workspace);
+        publisher.AttachScheduler(scheduler);
+        Task? stop = null;
+        try
+        {
+            await publisher.PublishProjectDiagnosticsAsync(
+                uri,
+                CancellationToken.None);
+            await validationObserver.FirstValidationStarted.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            stop = Task.Run(publisher.Stop);
+            await validationObserver.CancellationCallbackStarted.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            await validationObserver.CancellationObserved.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            await stop.WaitAsync(TimeSpan.FromSeconds(1));
+            Assert.Equal(0, publisher.RetainedProjectValidationStateCount);
+        }
+        finally
+        {
+            validationObserver.ReleaseCancellationCallback();
+            if (stop is not null)
+            {
+                await stop.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+        }
+
+        await scheduler.StopAsync(VbaInteractiveStopReason.Complete)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(0, publisher.RetainedProjectValidationStateCount);
+    }
+
+    [Fact]
+    public async Task Stop_cannot_be_followed_by_a_stale_document_local_revision_write()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var publicationObserver =
+            new BlockingDocumentLocalSnapshotPublicationObserver();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()));
+        workspace.OpenDocument(
+            uri,
+            1,
+            "Public Sub Run(ByVal item As Long, ByVal ITEM As String)\nEnd Sub\n");
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, Stream.Null),
+            workspace,
+            publicationObserver);
+        publisher.AttachScheduler(scheduler);
+
+        var publication = Task.Run(
+            () => publisher.PublishProjectDiagnosticsAsync(
+                uri,
+                CancellationToken.None));
+        try
+        {
+            await publicationObserver.SnapshotCaptured.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            publisher.Stop();
+        }
+        finally
+        {
+            publicationObserver.Release();
+        }
+
+        await publication.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(0, publisher.RetainedDocumentLocalDiagnosticsStateCount);
+        Assert.Equal(0, publisher.RetainedProjectValidationStateCount);
+    }
+
+    [Fact]
+    public async Task Source_retirement_cannot_be_followed_by_a_stale_document_local_revision_write()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var publicationObserver =
+            new BlockingDocumentLocalSnapshotPublicationObserver();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()));
+        workspace.OpenDocument(
+            uri,
+            1,
+            "Public Sub Run(ByVal item As Long, ByVal ITEM As String)\nEnd Sub\n");
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, Stream.Null),
+            workspace,
+            publicationObserver);
+        publisher.AttachScheduler(scheduler);
+
+        var publication = Task.Run(
+            () => publisher.PublishProjectDiagnosticsAsync(
+                uri,
+                CancellationToken.None));
+        try
+        {
+            await publicationObserver.SnapshotCaptured.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.True(workspace.CloseDocument(uri, CancellationToken.None));
+            publisher.CancelProjectValidationsForDocuments([uri]);
+        }
+        finally
+        {
+            publicationObserver.Release();
+        }
+
+        await publication.WaitAsync(TimeSpan.FromSeconds(5));
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(0, publisher.RetainedDocumentLocalDiagnosticsStateCount);
+        Assert.Equal(0, publisher.RetainedProjectValidationStateCount);
+    }
+
+    [Fact]
+    public async Task Validation_failure_is_contained_and_a_later_revision_can_succeed()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var validationObserver =
+            new ThrowingFirstProjectValidationBuildObserver();
+        await using var output = new CapturingWriteStream();
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()),
+            NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+            NullVbaDocumentAnalysisBuildObserver.Instance,
+            validationObserver);
+        workspace.OpenDocument(uri, 1, "Public Sub Run()\nEnd Sub\n");
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, output),
+            workspace);
+        publisher.AttachScheduler(scheduler);
+
+        await publisher.PublishProjectDiagnosticsAsync(
+            uri,
+            CancellationToken.None);
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Empty(ReadJsonMessages(output.ReadText()));
+        Assert.True(scheduler.IsAccepting);
+        Assert.Equal(0, publisher.RetainedProjectValidationStateCount);
+
+        await publisher.PublishProjectDiagnosticsAsync(
+            uri,
+            CancellationToken.None);
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Single(ReadJsonMessages(output.ReadText()));
+        Assert.Equal(2, validationObserver.StartCount);
+        Assert.True(scheduler.IsAccepting);
+        Assert.Equal(0, publisher.RetainedProjectValidationStateCount);
+    }
+
+    [Fact]
+    public async Task Closing_the_only_source_cancels_active_project_validation()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var validationObserver =
+            new BlockingFirstCancellableProjectValidationBuildObserver();
+        await using var output = new CapturingWriteStream();
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()),
+            NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+            NullVbaDocumentAnalysisBuildObserver.Instance,
+            validationObserver);
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, output),
+            workspace);
+        publisher.AttachScheduler(scheduler);
+        var pipeline = new VbaDocumentChangePipeline(
+            workspace,
+            new RecordingReferenceCatalogLifecycle(),
+            publisher);
+        await pipeline.ApplyAsync(
+            new VbaTextDocumentOpenedChange(
+                uri,
+                1,
+                "Public Sub Run()\nEnd Sub\n"),
+            CancellationToken.None);
+        await validationObserver.FirstValidationStarted.Task
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        try
+        {
+            await pipeline.ApplyAsync(
+                new VbaTextDocumentClosedChange(uri),
+                CancellationToken.None);
+            await validationObserver.FirstValidationCancelled.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            validationObserver.ReleaseFirstValidation();
+        }
+
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        var parameters = Assert.IsType<JsonObject>(
+            Assert.Single(ReadJsonMessages(output.ReadText()))["params"]);
+        Assert.Null(parameters["version"]);
+        Assert.Empty(Assert.IsType<JsonArray>(parameters["diagnostics"]));
+        Assert.Equal(0, publisher.RetainedProjectValidationStateCount);
+    }
+
+    [Fact]
+    public async Task Accepted_change_preserves_local_revision_until_source_retirement()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var validationObserver =
+            new BlockingSecondProjectValidationBuildObserver();
+        await using var output = new CapturingWriteStream();
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()),
+            NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+            NullVbaDocumentAnalysisBuildObserver.Instance,
+            validationObserver);
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, output),
+            workspace);
+        publisher.AttachScheduler(scheduler);
+        var pipeline = new VbaDocumentChangePipeline(
+            workspace,
+            new RecordingReferenceCatalogLifecycle(),
+            publisher);
+        workspace.OpenDocument(uri, 1, "Public Sub Run()\n    ");
+        await publisher.PublishProjectDiagnosticsAsync(
+            uri,
+            CancellationToken.None);
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        var baselineMessageCount = output.MessageCount;
+
+        Assert.Equal(1, publisher.RetainedDocumentLocalDiagnosticsStateCount);
+        Assert.True(workspace.ChangeDocument(
+            uri,
+            2,
+            "Public Sub Run()\nEnd Sub\n"));
+        publisher.InvalidateProjectValidationsForDocuments([uri]);
+        Assert.Equal(1, publisher.RetainedDocumentLocalDiagnosticsStateCount);
+
+        await publisher.PublishProjectDiagnosticsAsync(
+            uri,
+            CancellationToken.None);
+        await validationObserver.SecondValidationStarted.Task
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            var messages = ReadJsonMessages(
+                await output.WaitForMessageCountAsync(
+                    baselineMessageCount + 1));
+            var localClear = Assert.IsType<JsonObject>(
+                Assert.Single(messages.Skip(baselineMessageCount))["params"]);
+            Assert.Equal(2, localClear["version"]?.GetValue<int>());
+            Assert.Empty(Assert.IsType<JsonArray>(localClear["diagnostics"]));
+
+            await pipeline.ApplyAsync(
+                new VbaTextDocumentClosedChange(uri),
+                CancellationToken.None);
+            Assert.Equal(
+                0,
+                publisher.RetainedDocumentLocalDiagnosticsStateCount);
+        }
+        finally
+        {
+            validationObserver.ReleaseSecondValidation();
+        }
+
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task Retiring_a_non_active_project_member_cancels_its_project_validation()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-validation-member-routing-").FullName;
+        try
+        {
+            var sourceRoot = Directory.CreateDirectory(
+                Path.Combine(projectRoot, "src", "Book1")).FullName;
+            File.WriteAllText(
+                Path.Combine(projectRoot, "vba-project.json"),
+                System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    schemaVersion = 1,
+                    projectName = "ValidationMemberRouting",
+                    primaryDocument = "Book1",
+                    documents = new Dictionary<string, object>
+                    {
+                        ["Book1"] = new
+                        {
+                            kind = "excel",
+                            sourcePath = "src/Book1",
+                            templatePath = "src/Book1/Book1.xlsm",
+                            binPath = "bin/Book1/Book1.xlsm",
+                            publishPath = "publish/Book1/Book1.xlsm",
+                            commonModules = Array.Empty<object>(),
+                            references = Array.Empty<object>()
+                        }
+                    }
+                }));
+            var activePath = Path.Combine(sourceRoot, "Active.bas");
+            const string activeText = "Attribute VB_Name = \"Active\"\n"
+                + "Public Sub Run()\nEnd Sub\n";
+            File.WriteAllText(activePath, activeText);
+            var siblingPath = Path.Combine(sourceRoot, "Sibling.bas");
+            const string siblingText = "Attribute VB_Name = \"Sibling\"\n"
+                + "Public Sub Help()\nEnd Sub\n";
+            File.WriteAllText(siblingPath, siblingText);
+            var activeUri = new Uri(activePath).AbsoluteUri;
+            var siblingUri = new Uri(siblingPath).AbsoluteUri;
+            var validationObserver =
+                new BlockingFirstCancellableProjectValidationBuildObserver();
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()),
+                NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+                NullVbaDocumentAnalysisBuildObserver.Instance,
+                validationObserver);
+            workspace.OpenDocument(activeUri, 1, activeText);
+            await using var output = new CapturingWriteStream();
+            await using var scheduler = new VbaInteractiveWorkScheduler();
+            var publisher = new VbaDiagnosticsPublisher(
+                new LspMessageTransport(Stream.Null, output),
+                workspace);
+            publisher.AttachScheduler(scheduler);
+            await publisher.PublishProjectDiagnosticsAsync(
+                activeUri,
+                CancellationToken.None);
+            await validationObserver.FirstValidationStarted.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            try
+            {
+                publisher.CancelProjectValidationsForDocuments([siblingUri]);
+                await validationObserver.FirstValidationCancelled.Task
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            finally
+            {
+                validationObserver.ReleaseFirstValidation();
+            }
+
+            await publisher.WaitForIdleAsync(activeUri)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(0, publisher.RetainedProjectValidationStateCount);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Project_capture_started_before_retirement_cannot_restore_retired_routing()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-retired-capture-routing-").FullName;
+        var buildObserver = new BlockingFirstProjectSnapshotBuildObserver();
+        try
+        {
+            var sourcePath = Path.Combine(projectRoot, "Worker.bas");
+            const string text = "Attribute VB_Name = \"Worker\"\n"
+                + "Public Sub Run()\nEnd Sub\n";
+            File.WriteAllText(sourcePath, text);
+            var uri = new Uri(sourcePath).AbsoluteUri;
+            Assert.True(VbaProjectIdentityModel.TryIdentifyAuthority(
+                VbaProjectResolver.Resolve(uri),
+                out var authority));
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()),
+                NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+                NullVbaDocumentAnalysisBuildObserver.Instance,
+                buildObserver);
+            workspace.OpenDocument(uri, 1, text);
+            await using var output = new CapturingWriteStream();
+            await using var scheduler = new VbaInteractiveWorkScheduler();
+            var publisher = new VbaDiagnosticsPublisher(
+                new LspMessageTransport(Stream.Null, output),
+                workspace);
+            publisher.AttachScheduler(scheduler);
+
+            var staleCapture = Task.Run(
+                () => publisher.PublishProjectDiagnosticsAsync(
+                    uri,
+                    CancellationToken.None));
+            await buildObserver.FirstBuildWaiting.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            publisher.CancelProjectValidationsForDocuments([uri]);
+            buildObserver.ReleaseFirstBuild();
+            await staleCapture.WaitAsync(TimeSpan.FromSeconds(5));
+            await publisher.WaitForIdleAsync(uri)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            var refreshLease = new VbaProjectValidationLifecycleLease(
+                authority,
+                revision: 1);
+            publisher.ActivateProjectDiagnostics(refreshLease);
+            publisher.RefreshProjectDiagnostics(refreshLease);
+            await publisher.WaitForIdleAsync(uri)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Equal(0, buildObserver.ValidationStartCount);
+        }
+        finally
+        {
+            buildObserver.ReleaseFirstBuild();
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Stale_catalog_invalidation_cannot_cancel_a_newer_project_validation_lifecycle()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var validationObserver =
+            new BlockingFirstCancellableProjectValidationBuildObserver();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()),
+            NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+            NullVbaDocumentAnalysisBuildObserver.Instance,
+            validationObserver);
+        workspace.OpenDocument(uri, 1, "Public Sub Run()\nEnd Sub\n");
+        Assert.True(workspace.TryCaptureProjectDiagnosticsAuthority(
+            uri,
+            CancellationToken.None,
+            out var authority));
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, Stream.Null),
+            workspace);
+        publisher.AttachScheduler(scheduler);
+        var staleLease = new VbaProjectValidationLifecycleLease(
+            authority,
+            revision: 1);
+        publisher.ActivateProjectDiagnostics(staleLease);
+        staleLease.Revoke();
+        var currentLease = new VbaProjectValidationLifecycleLease(
+            authority,
+            revision: 2);
+        publisher.ActivateProjectDiagnostics(currentLease);
+        await publisher.PublishProjectDiagnosticsAsync(
+            uri,
+            CancellationToken.None);
+
+        try
+        {
+            await validationObserver.FirstValidationStarted.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            publisher.InvalidateProjectDiagnostics(staleLease);
+
+            Assert.False(
+                validationObserver.FirstValidationCancellationRequested);
+            Assert.Equal(
+                1,
+                publisher.RetainedProjectValidationLifecycleStateCount);
+
+            publisher.InvalidateProjectDiagnostics(currentLease);
+            await validationObserver.FirstValidationCancelled.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(
+                1,
+                publisher.RetainedProjectValidationLifecycleStateCount);
+        }
+        finally
+        {
+            validationObserver.ReleaseFirstValidation();
+            currentLease.Revoke();
+            publisher.RetireProjectDiagnostics(currentLease);
+        }
+    }
+
+    [Fact]
+    public async Task Refresh_acquired_by_an_old_lifecycle_cannot_cross_same_authority_replacement()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var validationObserver = new CountingProjectValidationBuildObserver();
+        var routingObserver = new ArmableBlockingRoutingAcquisitionObserver();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()),
+            NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+            NullVbaDocumentAnalysisBuildObserver.Instance,
+            validationObserver);
+        workspace.OpenDocument(uri, 1, "Public Sub Run()\nEnd Sub\n");
+        Assert.True(workspace.TryCaptureProjectDiagnosticsAuthority(
+            uri,
+            CancellationToken.None,
+            out var authority));
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, Stream.Null),
+            workspace,
+            routingObserver);
+        publisher.AttachScheduler(scheduler);
+        var staleLease = new VbaProjectValidationLifecycleLease(
+            authority,
+            revision: 1);
+        publisher.ActivateProjectDiagnostics(staleLease);
+        await publisher.PublishProjectDiagnosticsAsync(
+            uri,
+            CancellationToken.None);
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(1, validationObserver.StartCount);
+        Assert.Equal(1, routingObserver.ProjectValidationReservationCount);
+
+        routingObserver.Arm();
+        var refresh = Task.Run(
+            () => publisher.RefreshProjectDiagnostics(staleLease));
+        var currentLease = new VbaProjectValidationLifecycleLease(
+            authority,
+            revision: 2);
+        try
+        {
+            await routingObserver.RoutingAcquired.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            staleLease.Revoke();
+            publisher.ActivateProjectDiagnostics(currentLease);
+        }
+        finally
+        {
+            routingObserver.Release();
+        }
+
+        await refresh.WaitAsync(TimeSpan.FromSeconds(5));
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(1, validationObserver.StartCount);
+        Assert.Equal(1, routingObserver.ProjectValidationReservationCount);
+
+        publisher.RefreshProjectDiagnostics(currentLease);
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(1, validationObserver.StartCount);
+        Assert.Equal(2, routingObserver.ProjectValidationReservationCount);
+    }
+
+    [Fact]
+    public async Task Older_retirement_cannot_remove_routing_from_a_newer_lifecycle_activation()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var validationObserver = new CountingProjectValidationBuildObserver();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()),
+            NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+            NullVbaDocumentAnalysisBuildObserver.Instance,
+            validationObserver);
+        workspace.OpenDocument(uri, 1, "Public Sub Run()\nEnd Sub\n");
+        var authority = Assert.IsType<VbaProjectDiagnosticsCapture>(
+            workspace.CaptureProjectDiagnostics(
+                uri,
+                CancellationToken.None)).Authority;
+        await using var output = new CapturingWriteStream();
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, output),
+            workspace);
+        publisher.AttachScheduler(scheduler);
+        await publisher.PublishProjectDiagnosticsAsync(
+            uri,
+            CancellationToken.None);
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(1, validationObserver.StartCount);
+
+        var olderLease = new VbaProjectValidationLifecycleLease(
+            authority,
+            revision: 1);
+        publisher.ActivateProjectDiagnostics(olderLease);
+        olderLease.Revoke();
+        var newerLease = new VbaProjectValidationLifecycleLease(
+            authority,
+            revision: 2);
+        publisher.ActivateProjectDiagnostics(newerLease);
+        publisher.RetireProjectDiagnostics(olderLease);
+        Assert.True(workspace.ChangeDocument(
+            uri,
+            2,
+            "Public Sub Latest()\nEnd Sub\n"));
+        publisher.RefreshProjectDiagnostics(newerLease);
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(2, validationObserver.StartCount);
+    }
+
+    [Fact]
+    public async Task Retired_project_lifecycle_authorities_do_not_retain_path_state()
+    {
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()));
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, Stream.Null),
+            workspace);
+        publisher.AttachScheduler(scheduler);
+
+        for (var index = 0; index < 256; index++)
+        {
+            var uri = $"file:///C:/retired-project-{index}/Worker.bas";
+            Assert.True(VbaProjectIdentityModel.TryIdentifyAuthority(
+                VbaProjectResolver.Resolve(uri),
+                out var authority));
+            var lease = new VbaProjectValidationLifecycleLease(
+                authority,
+                index + 1);
+
+            publisher.ActivateProjectDiagnostics(lease);
+            lease.Revoke();
+            publisher.RetireProjectDiagnostics(lease);
+        }
+
+        Assert.Equal(0, publisher.RetainedProjectValidationLifecycleStateCount);
+        Assert.Equal(0, publisher.RetainedProjectValidationRoutingStateCount);
+    }
+
+    [Fact]
+    public async Task Revoked_delayed_activation_cannot_restore_retired_lifecycle_state()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        Assert.True(VbaProjectIdentityModel.TryIdentifyAuthority(
+            VbaProjectResolver.Resolve(uri),
+            out var authority));
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()));
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, Stream.Null),
+            workspace);
+        publisher.AttachScheduler(scheduler);
+        var retiredLease = new VbaProjectValidationLifecycleLease(
+            authority,
+            revision: 1);
+
+        retiredLease.Revoke();
+        publisher.RetireProjectDiagnostics(retiredLease);
+        publisher.ActivateProjectDiagnostics(retiredLease);
+
+        Assert.Equal(0, publisher.RetainedProjectValidationLifecycleStateCount);
+        Assert.Equal(0, publisher.RetainedProjectValidationRoutingStateCount);
+    }
+
+    [Fact]
+    public async Task Retirement_between_refresh_lookup_and_recapture_cannot_restore_routing()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var validationObserver = new CountingProjectValidationBuildObserver();
+        var routingObserver = new ArmableBlockingRoutingAcquisitionObserver();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()),
+            NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+            NullVbaDocumentAnalysisBuildObserver.Instance,
+            validationObserver);
+        workspace.OpenDocument(uri, 1, "Public Sub Run()\nEnd Sub\n");
+        Assert.True(workspace.TryCaptureProjectDiagnosticsAuthority(
+            uri,
+            CancellationToken.None,
+            out var authority));
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, Stream.Null),
+            workspace,
+            routingObserver);
+        publisher.AttachScheduler(scheduler);
+        var lease = new VbaProjectValidationLifecycleLease(
+            authority,
+            revision: 1);
+        publisher.ActivateProjectDiagnostics(lease);
+        await publisher.PublishProjectDiagnosticsAsync(
+            uri,
+            CancellationToken.None);
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(1, validationObserver.StartCount);
+
+        Task? refresh = null;
+        try
+        {
+            routingObserver.Arm();
+            refresh = Task.Run(
+                () => publisher.RefreshProjectDiagnostics(lease));
+            await routingObserver.RoutingAcquired.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            lease.Revoke();
+            publisher.RetireProjectDiagnostics(lease);
+            routingObserver.Release();
+            await refresh.WaitAsync(TimeSpan.FromSeconds(5));
+            await publisher.WaitForIdleAsync(uri)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Equal(1, validationObserver.StartCount);
+            Assert.Equal(
+                0,
+                publisher.RetainedProjectValidationLifecycleStateCount);
+            Assert.Equal(
+                0,
+                publisher.RetainedProjectValidationRoutingStateCount);
+        }
+        finally
+        {
+            routingObserver.Release();
+            if (refresh is not null && !refresh.IsCompleted)
+            {
+                try
+                {
+                    await refresh.WaitAsync(TimeSpan.FromSeconds(5));
+                }
+                catch
+                {
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Stop_cancels_refresh_recapture_before_mailbox_reservation()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var buildObserver =
+            new ArmableBlockingProjectSnapshotCaptureObserver();
+        var publicationObserver = new CountingDiagnosticsPublicationObserver();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()),
+            NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+            NullVbaDocumentAnalysisBuildObserver.Instance,
+            buildObserver);
+        workspace.OpenDocument(uri, 1, "Public Sub Run()\nEnd Sub\n");
+        Assert.True(VbaProjectIdentityModel.TryIdentifyAuthority(
+            VbaProjectResolver.Resolve(uri),
+            out var authority));
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, Stream.Null),
+            workspace,
+            publicationObserver);
+        publisher.AttachScheduler(scheduler);
+        var lease = new VbaProjectValidationLifecycleLease(
+            authority,
+            revision: 1);
+        publisher.ActivateProjectDiagnostics(lease);
+        await publisher.PublishProjectDiagnosticsAsync(
+            uri,
+            CancellationToken.None);
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(1, buildObserver.ValidationStartCount);
+        Assert.Equal(1, publicationObserver.ProjectReservationCount);
+
+        buildObserver.Arm();
+        var refresh = Task.Run(
+            () => publisher.RefreshProjectDiagnostics(lease));
+        try
+        {
+            await buildObserver.CaptureStarted.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            var stop = Task.Run(publisher.Stop);
+            await buildObserver.CancellationCallbackStarted.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            await stop.WaitAsync(TimeSpan.FromSeconds(1));
+            await buildObserver.CaptureCancelled.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            buildObserver.ReleaseCancellationCallback();
+            await refresh.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            buildObserver.Release();
+        }
+
+        Assert.Equal(1, buildObserver.ValidationStartCount);
+        Assert.Equal(1, publicationObserver.ProjectReservationCount);
+        Assert.Equal(0, publisher.RetainedProjectValidationStateCount);
+        Assert.Equal(0, publisher.RetainedProjectValidationActivityCount);
+        Assert.Equal(0, publisher.RetainedProjectValidationLifecycleStateCount);
+        Assert.Equal(0, publisher.RetainedProjectValidationRoutingStateCount);
+    }
+
+    [Fact]
+    public async Task Lease_revocation_cancels_refresh_recapture_before_mailbox_reservation()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var buildObserver =
+            new ArmableBlockingProjectSnapshotCaptureObserver();
+        var publicationObserver = new CountingDiagnosticsPublicationObserver();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()),
+            NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+            NullVbaDocumentAnalysisBuildObserver.Instance,
+            buildObserver);
+        workspace.OpenDocument(uri, 1, "Public Sub Run()\nEnd Sub\n");
+        Assert.True(VbaProjectIdentityModel.TryIdentifyAuthority(
+            VbaProjectResolver.Resolve(uri),
+            out var authority));
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, Stream.Null),
+            workspace,
+            publicationObserver);
+        publisher.AttachScheduler(scheduler);
+        var lease = new VbaProjectValidationLifecycleLease(
+            authority,
+            revision: 1);
+        publisher.ActivateProjectDiagnostics(lease);
+        await publisher.PublishProjectDiagnosticsAsync(
+            uri,
+            CancellationToken.None);
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(1, buildObserver.ValidationStartCount);
+        Assert.Equal(1, publicationObserver.ProjectReservationCount);
+
+        buildObserver.Arm();
+        var refresh = Task.Run(
+            () => publisher.RefreshProjectDiagnostics(lease));
+        try
+        {
+            await buildObserver.CaptureStarted.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            var revoke = Task.Run(lease.Revoke);
+            await buildObserver.CancellationCallbackStarted.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            await revoke.WaitAsync(TimeSpan.FromSeconds(1));
+            await buildObserver.CaptureCancelled.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            buildObserver.ReleaseCancellationCallback();
+            await refresh.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            buildObserver.Release();
+        }
+
+        publisher.RetireProjectDiagnostics(lease);
+        Assert.Equal(1, buildObserver.ValidationStartCount);
+        Assert.Equal(1, publicationObserver.ProjectReservationCount);
+        Assert.Equal(0, publisher.RetainedProjectValidationStateCount);
+        Assert.Equal(0, publisher.RetainedProjectValidationActivityCount);
+        Assert.Equal(0, publisher.RetainedProjectValidationLifecycleStateCount);
+        Assert.Equal(0, publisher.RetainedProjectValidationRoutingStateCount);
+    }
+
+    [Fact]
+    public async Task Lease_revocation_cancels_reserved_validation_and_allows_replacement_progress()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var validationObserver =
+            new BlockingSecondCancellableProjectValidationBuildObserver();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()),
+            NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+            NullVbaDocumentAnalysisBuildObserver.Instance,
+            validationObserver);
+        workspace.OpenDocument(uri, 1, "Public Sub Run()\nEnd Sub\n");
+        Assert.True(workspace.TryCaptureProjectDiagnosticsAuthority(
+            uri,
+            CancellationToken.None,
+            out var authority));
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, Stream.Null),
+            workspace);
+        publisher.AttachScheduler(scheduler);
+        await publisher.PublishProjectDiagnosticsAsync(
+            uri,
+            CancellationToken.None);
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(workspace.ChangeDocument(
+            uri,
+            2,
+            "Public Sub Updated()\nEnd Sub\n"));
+
+        var staleLease = new VbaProjectValidationLifecycleLease(
+            authority,
+            revision: 1);
+        var currentLease = new VbaProjectValidationLifecycleLease(
+            authority,
+            revision: 2);
+        publisher.ActivateProjectDiagnostics(staleLease);
+        publisher.RefreshProjectDiagnostics(staleLease);
+        await validationObserver.SecondValidationStarted.Task
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        try
+        {
+            staleLease.Revoke();
+            publisher.ActivateProjectDiagnostics(currentLease);
+            await validationObserver.SecondValidationCancelled.Task
+                .WaitAsync(TimeSpan.FromSeconds(1));
+
+            publisher.RefreshProjectDiagnostics(currentLease);
+            await validationObserver.ThirdValidationStarted.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            await publisher.WaitForIdleAsync(uri)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            validationObserver.ReleaseSecondValidation();
+            currentLease.Revoke();
+            publisher.RetireProjectDiagnostics(currentLease);
+        }
+
+        Assert.Equal(3, validationObserver.StartCount);
+        Assert.True(scheduler.IsAccepting);
+        Assert.Equal(0, publisher.RetainedProjectValidationStateCount);
+    }
+
+    [Fact]
+    public async Task Accepted_source_change_cancels_validation_before_replacement_recapture()
+    {
+        const string uri = "file:///C:/work/Worker.bas";
+        var validationObserver =
+            new BlockingFirstCancellableProjectValidationBuildObserver();
+        var routingObserver = new ArmableBlockingRoutingAcquisitionObserver();
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()),
+            NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+            NullVbaDocumentAnalysisBuildObserver.Instance,
+            validationObserver);
+        await using var scheduler = new VbaInteractiveWorkScheduler();
+        var publisher = new VbaDiagnosticsPublisher(
+            new LspMessageTransport(Stream.Null, Stream.Null),
+            workspace,
+            routingObserver);
+        publisher.AttachScheduler(scheduler);
+        var pipeline = new VbaDocumentChangePipeline(
+            workspace,
+            new RecordingReferenceCatalogLifecycle(),
+            publisher);
+        await pipeline.ApplyAsync(
+            new VbaTextDocumentOpenedChange(
+                uri,
+                1,
+                "Public Sub First()\nEnd Sub\n"),
+            CancellationToken.None);
+        await validationObserver.FirstValidationStarted.Task
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        try
+        {
+            routingObserver.Arm();
+            var change = Task.Run(
+                () => pipeline.ApplyAsync(
+                        new VbaTextDocumentChangedChange(
+                            uri,
+                            2,
+                            "Public Sub Latest()\nEnd Sub\n"),
+                        CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult());
+            await routingObserver.RoutingAcquired.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            await validationObserver.FirstValidationCancelled.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.False(change.IsCompleted);
+
+            routingObserver.Release();
+            await change.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            routingObserver.Release();
+            validationObserver.ReleaseFirstValidation();
+        }
+
+        await publisher.WaitForIdleAsync(uri)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(2, validationObserver.StartCount);
+    }
+
+    [Fact]
+    public async Task Retirement_after_authority_resolution_rejects_the_unbound_attempt_and_keeps_sibling_idle_pending()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-authority-routing-attempt-").FullName;
+        var authorityObserver =
+            new ArmableBlockingAuthorityResolutionObserver();
+        var validationObserver = new CountingProjectValidationBuildObserver();
+        try
+        {
+            var firstPath = Path.Combine(projectRoot, "First.bas");
+            var secondPath = Path.Combine(projectRoot, "Second.bas");
+            const string firstText = "Attribute VB_Name = \"First\"\n"
+                + "Public Sub FirstRun()\nEnd Sub\n";
+            const string secondText = "Attribute VB_Name = \"Second\"\n"
+                + "Public Sub SecondRun()\nEnd Sub\n";
+            File.WriteAllText(firstPath, firstText);
+            File.WriteAllText(secondPath, secondText);
+            var firstUri = new Uri(firstPath).AbsoluteUri;
+            var secondUri = new Uri(secondPath).AbsoluteUri;
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()),
+                NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+                NullVbaDocumentAnalysisBuildObserver.Instance,
+                validationObserver);
+            workspace.OpenDocument(firstUri, 1, firstText);
+            workspace.OpenDocument(secondUri, 1, secondText);
+            Assert.True(workspace.TryCaptureProjectDiagnosticsAuthority(
+                firstUri,
+                CancellationToken.None,
+                out var authority));
+            await using var scheduler = new VbaInteractiveWorkScheduler();
+            var publisher = new VbaDiagnosticsPublisher(
+                new LspMessageTransport(Stream.Null, Stream.Null),
+                workspace,
+                authorityObserver);
+            publisher.AttachScheduler(scheduler);
+            var lease = new VbaProjectValidationLifecycleLease(
+                authority,
+                revision: 1);
+            publisher.ActivateProjectDiagnostics(lease);
+            await publisher.PublishProjectDiagnosticsAsync(
+                firstUri,
+                CancellationToken.None);
+            await publisher.WaitForIdleAsync(firstUri)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(1, validationObserver.StartCount);
+
+            authorityObserver.Arm();
+            var staleAttempt = Task.Run(
+                () => publisher.PublishProjectDiagnosticsAsync(
+                    firstUri,
+                    CancellationToken.None));
+            await authorityObserver.AuthorityResolved.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            lease.Revoke();
+            publisher.RetireProjectDiagnostics(lease);
+            var siblingIdle = publisher.WaitForIdleAsync(secondUri);
+            Assert.False(siblingIdle.IsCompleted);
+
+            authorityObserver.Release();
+            await staleAttempt.WaitAsync(TimeSpan.FromSeconds(5));
+            await siblingIdle.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Equal(1, validationObserver.StartCount);
+            Assert.Equal(0, publisher.RetainedProjectValidationRoutingStateCount);
+            Assert.Equal(0, publisher.RetainedProjectValidationActivityCount);
+        }
+        finally
+        {
+            authorityObserver.Release();
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Source_invalidation_cancels_known_validation_before_manifest_authority_resolution()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-invalidation-manifest-barrier-").FullName;
+        var fileSystem = new ArmableBlockingManifestResolutionFileSystem();
+        var validationObserver =
+            new BlockingFirstCancellableProjectValidationBuildObserver();
+        try
+        {
+            var sourceRoot = Directory.CreateDirectory(
+                Path.Combine(projectRoot, "src", "Book1")).FullName;
+            File.WriteAllText(
+                Path.Combine(projectRoot, "vba-project.json"),
+                System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    schemaVersion = 1,
+                    projectName = "InvalidationBarrier",
+                    primaryDocument = "Book1",
+                    documents = new Dictionary<string, object>
+                    {
+                        ["Book1"] = new
+                        {
+                            kind = "excel",
+                            sourcePath = "src/Book1",
+                            templatePath = "src/Book1/Book1.xlsm",
+                            binPath = "bin/Book1/Book1.xlsm",
+                            publishPath = "publish/Book1/Book1.xlsm",
+                            commonModules = Array.Empty<object>(),
+                            references = Array.Empty<object>()
+                        }
+                    }
+                }));
+            var sourcePath = Path.Combine(sourceRoot, "Worker.bas");
+            const string text = "Attribute VB_Name = \"Worker\"\n"
+                + "Public Sub Run()\nEnd Sub\n";
+            File.WriteAllText(sourcePath, text);
+            var uri = new Uri(sourcePath).AbsoluteUri;
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()),
+                NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+                NullVbaDocumentAnalysisBuildObserver.Instance,
+                validationObserver,
+                fileSystem);
+            workspace.OpenDocument(uri, 1, text);
+            await using var scheduler = new VbaInteractiveWorkScheduler();
+            var publisher = new VbaDiagnosticsPublisher(
+                new LspMessageTransport(Stream.Null, Stream.Null),
+                workspace);
+            publisher.AttachScheduler(scheduler);
+            await publisher.PublishProjectDiagnosticsAsync(
+                uri,
+                CancellationToken.None);
+            await validationObserver.FirstValidationStarted.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            fileSystem.Arm();
+            var invalidation = Task.Run(
+                () => publisher.InvalidateProjectValidationsForDocuments(
+                    [uri]));
+            await fileSystem.ManifestReadStarted.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            await validationObserver.FirstValidationCancelled.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.False(invalidation.IsCompleted);
+
+            fileSystem.Release();
+            await invalidation.WaitAsync(TimeSpan.FromSeconds(5));
+            validationObserver.ReleaseFirstValidation();
+            await publisher.WaitForIdleAsync(uri)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(0, publisher.RetainedProjectValidationActivityCount);
+        }
+        finally
+        {
+            fileSystem.Release();
+            validationObserver.ReleaseFirstValidation();
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Stop_cancels_pre_routing_manifest_resolution_and_rejects_later_capture_begin()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-stop-manifest-resolution-").FullName;
+        var fileSystem = new ArmableBlockingManifestResolutionFileSystem();
+        try
+        {
+            var sourceRoot = Directory.CreateDirectory(
+                Path.Combine(projectRoot, "src", "Book1")).FullName;
+            File.WriteAllText(
+                Path.Combine(projectRoot, "vba-project.json"),
+                System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    schemaVersion = 1,
+                    projectName = "StopBarrier",
+                    primaryDocument = "Book1",
+                    documents = new Dictionary<string, object>
+                    {
+                        ["Book1"] = new
+                        {
+                            kind = "excel",
+                            sourcePath = "src/Book1",
+                            templatePath = "src/Book1/Book1.xlsm",
+                            binPath = "bin/Book1/Book1.xlsm",
+                            publishPath = "publish/Book1/Book1.xlsm",
+                            commonModules = Array.Empty<object>(),
+                            references = Array.Empty<object>()
+                        }
+                    }
+                }));
+            var sourcePath = Path.Combine(sourceRoot, "Worker.bas");
+            const string text = "Attribute VB_Name = \"Worker\"\n"
+                + "Public Sub Run()\nEnd Sub\n";
+            File.WriteAllText(sourcePath, text);
+            var uri = new Uri(sourcePath).AbsoluteUri;
+            var validationObserver =
+                new CountingProjectValidationBuildObserver();
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()),
+                NullVbaProjectReferenceCatalogLifecycleObserver.Instance,
+                NullVbaDocumentAnalysisBuildObserver.Instance,
+                validationObserver,
+                fileSystem);
+            workspace.OpenDocument(uri, 1, text);
+            await using var scheduler = new VbaInteractiveWorkScheduler();
+            var publisher = new VbaDiagnosticsPublisher(
+                new LspMessageTransport(Stream.Null, Stream.Null),
+                workspace);
+            publisher.AttachScheduler(scheduler);
+
+            fileSystem.Arm();
+            var publication = Task.Run(
+                () => publisher.PublishProjectDiagnosticsAsync(
+                    uri,
+                    CancellationToken.None));
+            await fileSystem.ManifestReadStarted.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            publisher.Stop();
+            await fileSystem.ManifestReadCancelled.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            await publication.WaitAsync(TimeSpan.FromSeconds(5));
+            var blockedReadsAfterStop = fileSystem.BlockedReadCount;
+
+            await publisher.PublishProjectDiagnosticsAsync(
+                uri,
+                CancellationToken.None);
+
+            Assert.Equal(blockedReadsAfterStop, fileSystem.BlockedReadCount);
+            Assert.Equal(0, validationObserver.StartCount);
+            Assert.Equal(0, publisher.RetainedProjectValidationActivityCount);
+            Assert.Equal(0, publisher.RetainedProjectValidationRoutingStateCount);
+        }
+        finally
+        {
+            fileSystem.Release();
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Diagnostics_publication_uses_the_bounded_background_scheduler()
     {
         const string uri = "file:///C:/work/Worker.bas";
@@ -166,12 +2850,6 @@ public sealed class VbaDiagnosticsPublisherTests
             options: new VbaInteractiveWorkSchedulerOptions(
                 CoalesceSupersededMutations: true,
                 MaxOwnedWork: 1));
-        var blocker = scheduler.AdmitMutation(async cancellationToken =>
-        {
-            blockerStarted.TrySetResult();
-            await releaseBlocker.Task.WaitAsync(cancellationToken);
-        });
-        await blockerStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         var workspace = new VbaLanguageWorkspace(
             new VbaProjectReferenceCatalogCache(
                 VbaProjectReferenceCatalogSet.CreateBundled()));
@@ -181,27 +2859,67 @@ public sealed class VbaDiagnosticsPublisherTests
             workspace,
             observer);
         publisher.AttachScheduler(scheduler);
+        Task? blockerCompletion = null;
+        Task? first = null;
+        try
+        {
+            var blocker = scheduler.AdmitMutation(async cancellationToken =>
+            {
+                blockerStarted.TrySetResult();
+                await releaseBlocker.Task.WaitAsync(cancellationToken);
+            });
+            blockerCompletion = blocker.Completion;
+            await blockerStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        var first = Task.Run(
-            () => publisher.PublishEmptyDiagnosticsAsync(
+            first = Task.Run(
+                () => publisher.PublishEmptyDiagnosticsAsync(
+                    uri,
+                    CancellationToken.None));
+            await observer.FirstRevisionReserved.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            await publisher.PublishEmptyDiagnosticsAsync(
                 uri,
-                CancellationToken.None));
-        await observer.FirstRevisionReserved.Task
-            .WaitAsync(TimeSpan.FromSeconds(5));
-        await publisher.PublishEmptyDiagnosticsAsync(
-            uri,
-            CancellationToken.None);
-        observer.ReleaseFirstRevision();
-        await first.WaitAsync(TimeSpan.FromSeconds(5));
+                CancellationToken.None);
+            observer.ReleaseFirstRevision();
+            await first.WaitAsync(TimeSpan.FromSeconds(5));
 
-        releaseBlocker.TrySetResult();
-        await blocker.Completion.WaitAsync(TimeSpan.FromSeconds(5));
-        await publisher.WaitForIdleAsync(uri)
-            .WaitAsync(TimeSpan.FromSeconds(2));
-        Assert.Equal(1, output.MessageCount);
+            releaseBlocker.TrySetResult();
+            await blockerCompletion.WaitAsync(TimeSpan.FromSeconds(5));
+            await publisher.WaitForIdleAsync(uri)
+                .WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(1, output.MessageCount);
 
-        await scheduler.StopAsync(VbaInteractiveStopReason.Complete)
-            .WaitAsync(TimeSpan.FromSeconds(5));
+            await scheduler.StopAsync(VbaInteractiveStopReason.Complete)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            observer.ReleaseFirstRevision();
+            releaseBlocker.TrySetResult();
+            if (first is not null && !first.IsCompleted)
+            {
+                try
+                {
+                    await first.WaitAsync(TimeSpan.FromSeconds(5));
+                }
+                catch
+                {
+                }
+            }
+
+            if (blockerCompletion is not null
+                && !blockerCompletion.IsCompleted)
+            {
+                try
+                {
+                    await blockerCompletion.WaitAsync(
+                        TimeSpan.FromSeconds(5));
+                }
+                catch
+                {
+                }
+            }
+        }
     }
 
     [Fact]
@@ -218,12 +2936,6 @@ public sealed class VbaDiagnosticsPublisherTests
             options: new VbaInteractiveWorkSchedulerOptions(
                 CoalesceSupersededMutations: true,
                 MaxOwnedWork: 1));
-        var blocker = scheduler.AdmitMutation(async cancellationToken =>
-        {
-            blockerStarted.TrySetResult();
-            await releaseBlocker.Task.WaitAsync(cancellationToken);
-        });
-        await blockerStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         var workspace = new VbaLanguageWorkspace(
             new VbaProjectReferenceCatalogCache(
                 VbaProjectReferenceCatalogSet.CreateBundled()));
@@ -235,38 +2947,79 @@ public sealed class VbaDiagnosticsPublisherTests
             workspace,
             observer);
         publisher.AttachScheduler(scheduler);
+        Task? blockerCompletion = null;
+        Task? staleBatch = null;
+        try
+        {
+            var blocker = scheduler.AdmitMutation(async cancellationToken =>
+            {
+                blockerStarted.TrySetResult();
+                await releaseBlocker.Task.WaitAsync(cancellationToken);
+            });
+            blockerCompletion = blocker.Completion;
+            await blockerStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        var staleBatch = Task.Run(
-            () => publisher.PublishProjectDiagnosticsAsync(
+            staleBatch = Task.Run(
+                () => publisher.PublishProjectDiagnosticsAsync(
+                    firstUri,
+                    CancellationToken.None));
+            releaseBlocker.TrySetResult();
+            await blockerCompletion.WaitAsync(TimeSpan.FromSeconds(5));
+            var firstReservedUri = await observer.FirstRevisionReserved.Task
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            var closingUri = string.Equals(
+                firstReservedUri,
                 firstUri,
-                CancellationToken.None));
-        var firstReservedUri = await observer.FirstRevisionReserved.Task
-            .WaitAsync(TimeSpan.FromSeconds(5));
-        var closingUri = string.Equals(
-            firstReservedUri,
-            firstUri,
-            StringComparison.OrdinalIgnoreCase)
-                ? secondUri
-                : firstUri;
-        Assert.True(workspace.CloseDocument(closingUri));
-        await publisher.PublishEmptyDiagnosticsAsync(
-            closingUri,
-            CancellationToken.None);
+                StringComparison.OrdinalIgnoreCase)
+                    ? secondUri
+                    : firstUri;
+            Assert.True(workspace.CloseDocument(closingUri));
+            await publisher.PublishEmptyDiagnosticsAsync(
+                closingUri,
+                CancellationToken.None);
 
-        observer.ReleaseFirstRevision();
-        await staleBatch.WaitAsync(TimeSpan.FromSeconds(5));
-        releaseBlocker.TrySetResult();
-        await blocker.Completion.WaitAsync(TimeSpan.FromSeconds(5));
-        await Task.WhenAll(
-                publisher.WaitForIdleAsync(firstUri),
-                publisher.WaitForIdleAsync(secondUri))
-            .WaitAsync(TimeSpan.FromSeconds(5));
+            observer.ReleaseFirstRevision();
+            await staleBatch.WaitAsync(TimeSpan.FromSeconds(5));
+            await Task.WhenAll(
+                    publisher.WaitForIdleAsync(firstUri),
+                    publisher.WaitForIdleAsync(secondUri))
+                .WaitAsync(TimeSpan.FromSeconds(5));
 
-        var notification = Assert.Single(ReadJsonMessages(output.ReadText()));
-        var parameters = Assert.IsType<JsonObject>(notification["params"]);
-        Assert.Equal(closingUri, parameters["uri"]?.GetValue<string>());
-        Assert.Null(parameters["version"]);
-        Assert.Empty(Assert.IsType<JsonArray>(parameters["diagnostics"]));
+            var notification = Assert.Single(
+                ReadJsonMessages(output.ReadText()));
+            var parameters = Assert.IsType<JsonObject>(notification["params"]);
+            Assert.Equal(closingUri, parameters["uri"]?.GetValue<string>());
+            Assert.Null(parameters["version"]);
+            Assert.Empty(Assert.IsType<JsonArray>(parameters["diagnostics"]));
+        }
+        finally
+        {
+            observer.ReleaseFirstRevision();
+            releaseBlocker.TrySetResult();
+            if (staleBatch is not null && !staleBatch.IsCompleted)
+            {
+                try
+                {
+                    await staleBatch.WaitAsync(TimeSpan.FromSeconds(5));
+                }
+                catch
+                {
+                }
+            }
+
+            if (blockerCompletion is not null
+                && !blockerCompletion.IsCompleted)
+            {
+                try
+                {
+                    await blockerCompletion.WaitAsync(
+                        TimeSpan.FromSeconds(5));
+                }
+                catch
+                {
+                }
+            }
+        }
     }
 
     [Fact]
@@ -1935,6 +4688,242 @@ public sealed class VbaDiagnosticsPublisherTests
             => releaseFirstRevision.TrySetResult();
     }
 
+    private sealed class ArmableBlockingRevisionObserver
+        : IVbaDiagnosticsPublicationObserver
+    {
+        private readonly TaskCompletionSource release = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int armed;
+        private int armAfterProjectValidationRevision;
+        private int claimed;
+
+        public TaskCompletionSource BlockedRevision { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void AfterRevisionReserved(string uri, long revision)
+        {
+            if (Volatile.Read(ref armed) == 0
+                || Interlocked.Exchange(ref claimed, 1) != 0)
+            {
+                return;
+            }
+
+            BlockedRevision.TrySetResult();
+            release.Task.GetAwaiter().GetResult();
+        }
+
+        public void AfterProjectValidationRevisionReserved(
+            VbaProjectAuthorityIdentity authority,
+            long revision)
+        {
+            if (Interlocked.Exchange(
+                    ref armAfterProjectValidationRevision,
+                    0) != 0)
+            {
+                Volatile.Write(ref armed, 1);
+            }
+        }
+
+        public void Arm()
+            => Volatile.Write(ref armed, 1);
+
+        public void ArmAfterNextProjectValidationRevision()
+            => Volatile.Write(ref armAfterProjectValidationRevision, 1);
+
+        public void Release()
+            => release.TrySetResult();
+    }
+
+    private sealed class BlockingDocumentLocalSnapshotPublicationObserver
+        : IVbaDiagnosticsPublicationObserver
+    {
+        private readonly TaskCompletionSource release = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource SnapshotCaptured { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void AfterRevisionReserved(string uri, long revision)
+        {
+        }
+
+        public void AfterDocumentLocalDiagnosticsSnapshotCaptured(
+            string uri,
+            int? clientVersion)
+        {
+            SnapshotCaptured.TrySetResult();
+            release.Task.GetAwaiter().GetResult();
+        }
+
+        public void Release()
+            => release.TrySetResult();
+    }
+
+    private sealed class BlockingProjectDiagnosticsTransportObserver
+        : IVbaDiagnosticsPublicationObserver
+    {
+        private readonly TaskCompletionSource release =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource TransportWriteReached { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void AfterRevisionReserved(string uri, long revision)
+        {
+        }
+
+        public void BeforeProjectDiagnosticsTransportWrite(
+            VbaProjectAuthorityIdentity authority,
+            string uri,
+            long revision)
+        {
+            _ = authority;
+            _ = uri;
+            _ = revision;
+            TransportWriteReached.TrySetResult();
+            release.Task.GetAwaiter().GetResult();
+        }
+
+        public void Release()
+            => release.TrySetResult();
+    }
+
+    private sealed class ArmableBlockingRoutingAcquisitionObserver
+        : IVbaDiagnosticsPublicationObserver
+    {
+        private readonly TaskCompletionSource release = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int armed;
+        private int claimed;
+        private int projectValidationReservationCount;
+
+        public TaskCompletionSource RoutingAcquired { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int ProjectValidationReservationCount =>
+            Volatile.Read(ref projectValidationReservationCount);
+
+        public void AfterRevisionReserved(string uri, long revision)
+        {
+        }
+
+        public void AfterProjectValidationRevisionReserved(
+            VbaProjectAuthorityIdentity authority,
+            long revision)
+            => Interlocked.Increment(
+                ref projectValidationReservationCount);
+
+        public void AfterProjectValidationRoutingAcquired(
+            VbaProjectAuthorityIdentity authority)
+        {
+            if (Volatile.Read(ref armed) == 0
+                || Interlocked.Exchange(ref claimed, 1) != 0)
+            {
+                return;
+            }
+
+            RoutingAcquired.TrySetResult();
+            release.Task.GetAwaiter().GetResult();
+        }
+
+        public void Arm()
+            => Volatile.Write(ref armed, 1);
+
+        public void Release()
+            => release.TrySetResult();
+    }
+
+    private sealed class ArmableBlockingAuthorityResolutionObserver
+        : IVbaDiagnosticsPublicationObserver
+    {
+        private readonly TaskCompletionSource release = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int armed;
+        private int claimed;
+
+        public TaskCompletionSource AuthorityResolved { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void AfterRevisionReserved(string uri, long revision)
+        {
+        }
+
+        public void AfterProjectValidationAuthorityResolved(
+            VbaProjectAuthorityIdentity authority)
+        {
+            if (Volatile.Read(ref armed) == 0
+                || Interlocked.Exchange(ref claimed, 1) != 0)
+            {
+                return;
+            }
+
+            AuthorityResolved.TrySetResult();
+            release.Task.GetAwaiter().GetResult();
+        }
+
+        public void Arm()
+            => Volatile.Write(ref armed, 1);
+
+        public void Release()
+            => release.TrySetResult();
+    }
+
+    private sealed class BlockingFirstProjectValidationReservationObserver
+        : IVbaDiagnosticsPublicationObserver
+    {
+        private readonly TaskCompletionSource firstReservationReached = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource releaseFirstReservation = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int reservationCount;
+
+        public TaskCompletionSource FirstReservationReached
+            => firstReservationReached;
+
+        public int ReservationCount => Volatile.Read(ref reservationCount);
+
+        public void AfterRevisionReserved(string uri, long revision)
+        {
+        }
+
+        public void AfterProjectValidationRevisionReserved(
+            VbaProjectAuthorityIdentity authority,
+            long revision)
+        {
+            if (Interlocked.Increment(ref reservationCount) != 1)
+            {
+                return;
+            }
+
+            firstReservationReached.TrySetResult();
+            releaseFirstReservation.Task.GetAwaiter().GetResult();
+        }
+
+        public void ReleaseFirstReservation()
+            => releaseFirstReservation.TrySetResult();
+    }
+
+    private sealed class CountingDiagnosticsPublicationObserver
+        : IVbaDiagnosticsPublicationObserver
+    {
+        private int documentReservationCount;
+        private int projectReservationCount;
+
+        public int DocumentReservationCount =>
+            Volatile.Read(ref documentReservationCount);
+
+        public int ProjectReservationCount =>
+            Volatile.Read(ref projectReservationCount);
+
+        public void AfterRevisionReserved(string uri, long revision)
+            => Interlocked.Increment(ref documentReservationCount);
+
+        public void AfterProjectValidationRevisionReserved(
+            VbaProjectAuthorityIdentity authority,
+            long revision)
+            => Interlocked.Increment(ref projectReservationCount);
+    }
+
     private sealed class ThrowingPublicationObserver
         : IVbaDiagnosticsPublicationObserver
     {
@@ -2126,14 +5115,163 @@ public sealed class VbaDiagnosticsPublisherTests
         }
     }
 
+    private sealed class ArmableBlockingManifestResolutionFileSystem
+        : IVbaProjectFileSystem
+    {
+        private readonly IVbaProjectFileSystem inner =
+            SystemVbaProjectFileSystem.Instance;
+        private readonly TaskCompletionSource release = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int armed;
+        private int claimed;
+        private int blockedReadCount;
+
+        public TaskCompletionSource ManifestReadStarted { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource ManifestReadCancelled { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int BlockedReadCount => Volatile.Read(ref blockedReadCount);
+
+        public bool FileExists(string path)
+            => inner.FileExists(path);
+
+        public bool DirectoryExists(string path)
+            => inner.DirectoryExists(path);
+
+        public IEnumerable<string> EnumerateSourceFiles(
+            string rootPath,
+            string searchPattern,
+            SearchOption searchOption)
+            => inner.EnumerateSourceFiles(
+                rootPath,
+                searchPattern,
+                searchOption);
+
+        public bool TryGetSourceMetadata(
+            string path,
+            out VbaProjectSourceFileMetadata metadata)
+            => inner.TryGetSourceMetadata(path, out metadata);
+
+        public string ReadManifestText(string path)
+            => inner.ReadManifestText(path);
+
+        public string ReadManifestText(
+            string path,
+            CancellationToken cancellationToken)
+        {
+            if (Volatile.Read(ref armed) == 0
+                || Interlocked.Exchange(ref claimed, 1) != 0)
+            {
+                return inner.ReadManifestText(path, cancellationToken);
+            }
+
+            Interlocked.Increment(ref blockedReadCount);
+            ManifestReadStarted.TrySetResult();
+            try
+            {
+                release.Task.WaitAsync(cancellationToken)
+                    .GetAwaiter()
+                    .GetResult();
+            }
+            catch (OperationCanceledException)
+            {
+                ManifestReadCancelled.TrySetResult();
+                throw;
+            }
+
+            return inner.ReadManifestText(path, cancellationToken);
+        }
+
+        public byte[] ReadSourceBytes(string path)
+            => inner.ReadSourceBytes(path);
+
+        public byte[] ReadSourceBytes(
+            string path,
+            CancellationToken cancellationToken)
+            => inner.ReadSourceBytes(path, cancellationToken);
+
+        public bool PathsReferToSameEntry(string left, string right)
+            => inner.PathsReferToSameEntry(left, right);
+
+        public void Arm()
+            => Volatile.Write(ref armed, 1);
+
+        public void Release()
+            => release.TrySetResult();
+    }
+
+    private sealed class BlockingSecondSuccessfulCatalogDiscovery
+        : IVbaProjectReferenceCatalogDiscovery
+    {
+        private readonly TaskCompletionSource releaseSecondDiscovery = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int discoveryCount;
+
+        public TaskCompletionSource SecondDiscoveryStarted { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<VbaProjectReferenceCatalogDiscoveryResult> DiscoverAsync(
+            string referenceName,
+            CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.Increment(ref discoveryCount) == 2)
+            {
+                SecondDiscoveryStarted.TrySetResult();
+                await releaseSecondDiscovery.Task.WaitAsync(cancellationToken);
+            }
+
+            return VbaProjectReferenceCatalogDiscoveryResult.Success(
+                new VbaProjectReferenceCatalogIdentity(
+                    referenceName,
+                    "{55555555-5555-5555-5555-555555555555}",
+                    1,
+                    0,
+                    0,
+                    $@"C:\TypeLibs\{referenceName}.tlb"),
+                new VbaProjectReferenceCatalog(
+                    referenceName,
+                    [],
+                    [
+                        new VbaProjectReferenceDefinition(
+                            referenceName,
+                            $"{referenceName.Replace(" ", "", StringComparison.Ordinal)}Type",
+                            VbaSourceDefinitionKind.Class)
+                    ]));
+        }
+
+        public void ReleaseSecondDiscovery()
+            => releaseSecondDiscovery.TrySetResult();
+    }
+
+    private sealed class InlineReferenceCatalogRefreshWorker
+        : IVbaProjectReferenceCatalogRefreshWorker
+    {
+        public Task<VbaProjectReferenceCatalogDiscoveryResult> DiscoverAsync(
+            IVbaProjectReferenceCatalogDiscovery discovery,
+            string referenceName,
+            CancellationToken cancellationToken)
+            => discovery.DiscoverAsync(referenceName, cancellationToken);
+    }
+
     private sealed class BlockingFirstProjectSnapshotBuildObserver
         : IVbaProjectSnapshotBuildObserver
     {
         private readonly ManualResetEventSlim release = new();
         private int observedBuilds;
+        private int validationStartCount;
 
         public TaskCompletionSource FirstBuildWaiting { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int ValidationStartCount =>
+            Volatile.Read(ref validationStartCount);
+
+        public void BeforeBuildProjectValidation(
+            string activeUri,
+            CancellationToken cancellationToken)
+            => Interlocked.Increment(ref validationStartCount);
 
         public void BeforeStore(
             long workspaceVersion,
@@ -2150,6 +5288,426 @@ public sealed class VbaDiagnosticsPublisherTests
 
         public void ReleaseFirstBuild()
             => release.Set();
+    }
+
+    private sealed class ArmableBlockingProjectSnapshotCaptureObserver
+        : IVbaProjectSnapshotBuildObserver
+    {
+        private readonly ManualResetEventSlim continueCapture = new();
+        private readonly ManualResetEventSlim releaseCancellationCallback =
+            new();
+        private int armed;
+        private int claimed;
+        private int validationStartCount;
+
+        public TaskCompletionSource CaptureStarted { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource CaptureCancelled { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource CancellationCallbackStarted { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int ValidationStartCount =>
+            Volatile.Read(ref validationStartCount);
+
+        public void BeforeCapture(
+            string activeUri,
+            CancellationToken cancellationToken)
+        {
+            if (Volatile.Read(ref armed) == 0
+                || Interlocked.Exchange(ref claimed, 1) != 0)
+            {
+                return;
+            }
+
+            using var cancellationRegistration = cancellationToken.Register(
+                () =>
+                {
+                    CancellationCallbackStarted.TrySetResult();
+                    continueCapture.Set();
+                    releaseCancellationCallback.Wait();
+                });
+            CaptureStarted.TrySetResult();
+            try
+            {
+                continueCapture.Wait();
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+            catch (OperationCanceledException)
+            {
+                CaptureCancelled.TrySetResult();
+                throw;
+            }
+        }
+
+        public void BeforeBuildProjectValidation(
+            string activeUri,
+            CancellationToken cancellationToken)
+            => Interlocked.Increment(ref validationStartCount);
+
+        public void BeforeStore(
+            long workspaceVersion,
+            CancellationToken cancellationToken)
+        {
+        }
+
+        public void Arm()
+            => Volatile.Write(ref armed, 1);
+
+        public void ReleaseCancellationCallback()
+            => releaseCancellationCallback.Set();
+
+        public void Release()
+        {
+            continueCapture.Set();
+            releaseCancellationCallback.Set();
+        }
+    }
+
+    private sealed class BlockingProjectValidationBuildObserver
+        : IVbaProjectSnapshotBuildObserver
+    {
+        private readonly ManualResetEventSlim release = new();
+        private int startCount;
+
+        public TaskCompletionSource ValidationStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int StartCount => Volatile.Read(ref startCount);
+
+        public void BeforeBuildProjectValidation(
+            string activeUri,
+            CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref startCount);
+            ValidationStarted.TrySetResult();
+            release.Wait(cancellationToken);
+        }
+
+        public void BeforeStore(
+            long workspaceVersion,
+            CancellationToken cancellationToken)
+        {
+        }
+
+        public void ReleaseValidation()
+            => release.Set();
+    }
+
+    private sealed class BlockingFirstAfterProjectValidationBuildObserver
+        : IVbaProjectSnapshotBuildObserver
+    {
+        private readonly ManualResetEventSlim release = new();
+        private int completedBuilds;
+
+        public TaskCompletionSource FirstValidationBuilt { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void AfterBuildProjectValidation(string activeUri)
+        {
+            if (Interlocked.Increment(ref completedBuilds) != 1)
+            {
+                return;
+            }
+
+            FirstValidationBuilt.TrySetResult();
+            release.Wait();
+        }
+
+        public void BeforeStore(
+            long workspaceVersion,
+            CancellationToken cancellationToken)
+        {
+        }
+
+        public void ReleaseFirstValidation()
+            => release.Set();
+    }
+
+    private sealed class CountingProjectValidationBuildObserver
+        : IVbaProjectSnapshotBuildObserver
+    {
+        private int startCount;
+
+        public int StartCount => Volatile.Read(ref startCount);
+
+        public void BeforeBuildProjectValidation(
+            string activeUri,
+            CancellationToken cancellationToken)
+            => Interlocked.Increment(ref startCount);
+
+        public void BeforeStore(
+            long workspaceVersion,
+            CancellationToken cancellationToken)
+        {
+        }
+    }
+
+    private sealed class BlockingSecondProjectValidationBuildObserver
+        : IVbaProjectSnapshotBuildObserver
+    {
+        private readonly TaskCompletionSource releaseSecondValidation = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int startCount;
+
+        public TaskCompletionSource SecondValidationStarted { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void BeforeBuildProjectValidation(
+            string activeUri,
+            CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref startCount) != 2)
+            {
+                return;
+            }
+
+            SecondValidationStarted.TrySetResult();
+            releaseSecondValidation.Task
+                .WaitAsync(cancellationToken)
+                .GetAwaiter()
+                .GetResult();
+        }
+
+        public void BeforeStore(
+            long workspaceVersion,
+            CancellationToken cancellationToken)
+        {
+        }
+
+        public void ReleaseSecondValidation()
+            => releaseSecondValidation.TrySetResult();
+    }
+
+    private sealed class BlockingSecondCancellableProjectValidationBuildObserver
+        : IVbaProjectSnapshotBuildObserver
+    {
+        private readonly ManualResetEventSlim releaseSecondValidation = new();
+        private int startCount;
+
+        public TaskCompletionSource SecondValidationStarted { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource SecondValidationCancelled { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource ThirdValidationStarted { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int StartCount => Volatile.Read(ref startCount);
+
+        public void BeforeBuildProjectValidation(
+            string activeUri,
+            CancellationToken cancellationToken)
+        {
+            var current = Interlocked.Increment(ref startCount);
+            if (current == 3)
+            {
+                ThirdValidationStarted.TrySetResult();
+                return;
+            }
+
+            if (current != 2)
+            {
+                return;
+            }
+
+            SecondValidationStarted.TrySetResult();
+            try
+            {
+                releaseSecondValidation.Wait(cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                SecondValidationCancelled.TrySetResult();
+                throw;
+            }
+        }
+
+        public void BeforeStore(
+            long workspaceVersion,
+            CancellationToken cancellationToken)
+        {
+        }
+
+        public void ReleaseSecondValidation()
+            => releaseSecondValidation.Set();
+    }
+
+    private sealed class BlockingFirstCancellableProjectValidationBuildObserver
+        : IVbaProjectSnapshotBuildObserver
+    {
+        private readonly ManualResetEventSlim release = new();
+        private int startCount;
+        private CancellationToken firstValidationCancellationToken;
+
+        public TaskCompletionSource FirstValidationStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource FirstValidationCancelled { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int StartCount => Volatile.Read(ref startCount);
+
+        public bool FirstValidationCancellationRequested
+            => firstValidationCancellationToken.IsCancellationRequested;
+
+        public void BeforeBuildProjectValidation(
+            string activeUri,
+            CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref startCount) != 1)
+            {
+                return;
+            }
+
+            firstValidationCancellationToken = cancellationToken;
+            FirstValidationStarted.TrySetResult();
+            try
+            {
+                release.Wait(cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                FirstValidationCancelled.TrySetResult();
+                throw;
+            }
+        }
+
+        public void BeforeStore(
+            long workspaceVersion,
+            CancellationToken cancellationToken)
+        {
+        }
+
+        public void ReleaseFirstValidation()
+            => release.Set();
+    }
+
+    private sealed class BlockingNonCooperativeProjectValidationBuildObserver
+        : IVbaProjectSnapshotBuildObserver
+    {
+        private readonly ManualResetEventSlim release = new();
+        private int started;
+
+        public TaskCompletionSource ValidationStarted { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource CancellationObserved { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void BeforeBuildProjectValidation(
+            string activeUri,
+            CancellationToken cancellationToken)
+        {
+            if (Interlocked.Exchange(ref started, 1) != 0)
+            {
+                return;
+            }
+
+            using var cancellationRegistration = cancellationToken.Register(
+                () => CancellationObserved.TrySetResult());
+            ValidationStarted.TrySetResult();
+            release.Wait();
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
+        public void BeforeStore(
+            long workspaceVersion,
+            CancellationToken cancellationToken)
+        {
+        }
+
+        public void ReleaseValidation()
+            => release.Set();
+    }
+
+    private sealed class BlockingThrowingCancellationCallbackProjectValidationBuildObserver
+        : IVbaProjectSnapshotBuildObserver
+    {
+        private readonly ManualResetEventSlim releaseCancellationCallback = new();
+        private int startCount;
+
+        public TaskCompletionSource FirstValidationStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource CancellationCallbackStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource CancellationObserved { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int StartCount => Volatile.Read(ref startCount);
+
+        public void BeforeBuildProjectValidation(
+            string activeUri,
+            CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref startCount) != 1)
+            {
+                return;
+            }
+
+            using var registration = cancellationToken.Register(() =>
+            {
+                CancellationCallbackStarted.TrySetResult();
+                releaseCancellationCallback.Wait();
+                throw new InvalidOperationException(
+                    "Injected cancellation-callback failure.");
+            });
+            FirstValidationStarted.TrySetResult();
+            try
+            {
+                while (!cancellationToken.IsCancellationRequested)
+                {
+                    Thread.Yield();
+                }
+
+                CancellationObserved.TrySetResult();
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+            catch (OperationCanceledException)
+            {
+                CancellationObserved.TrySetResult();
+                throw;
+            }
+        }
+
+        public void BeforeStore(
+            long workspaceVersion,
+            CancellationToken cancellationToken)
+        {
+        }
+
+        public void ReleaseCancellationCallback()
+            => releaseCancellationCallback.Set();
+    }
+
+    private sealed class ThrowingFirstProjectValidationBuildObserver
+        : IVbaProjectSnapshotBuildObserver
+    {
+        private int startCount;
+
+        public int StartCount => Volatile.Read(ref startCount);
+
+        public void BeforeBuildProjectValidation(
+            string activeUri,
+            CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref startCount) == 1)
+            {
+                throw new InvalidOperationException(
+                    "Injected project-validation failure.");
+            }
+        }
+
+        public void BeforeStore(
+            long workspaceVersion,
+            CancellationToken cancellationToken)
+        {
+        }
     }
 
     private sealed class BlockingNextDocumentAnalysisBuildObserver

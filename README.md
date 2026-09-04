@@ -35,6 +35,28 @@ build, test, publish, export, and validate Excel macro workbooks from a
 
 ---
 
+## Editor readiness and project diagnostics
+
+When you open or change a manifest-backed VBA source, semantic highlighting
+and the other editor language features become available from one exact,
+immutable project snapshot. They do not wait for every project-wide validation
+rule to finish. Document-local syntax and validation problems can appear
+immediately; project-wide problems, including incompatible call arguments, may
+update shortly afterward.
+
+Only a complete result for the latest applicable source, manifest, and
+reference-catalog revision is published. A newer edit replaces obsolete
+background validation, while unchanged files keep their last accepted Problems
+until the newer complete result is ready. This editor path does not launch
+Excel or automate a live workbook.
+
+Each successful selected catalog commit cancels affected validation without
+starting a full pass for that individual commit. One latest pass is requested
+after the shared catalog batch settles. Project retirement removes its refresh
+routing, so late background completion cannot restore obsolete work.
+
+---
+
 ## Getting Started
 
 ### 1 - Install the extension
@@ -726,6 +748,8 @@ cannot influence executable selection.
 | Problem | Check |
 | --- | --- |
 | Language features do not start | VBA Tools currently supports Windows only. Open the VBA Tools output channel and check whether the bundled language server launched. |
+| Semantic highlighting appears before every project problem has updated | This is expected. Highlighting and editor queries use the ready immutable project snapshot, while complete project-wide validation settles in bounded background work. |
+| Semantic highlighting remains unavailable after opening a source | Open the VBA Tools output channel and enable `vbaLanguageServer.trace.server` if more detail is needed. Editor readiness does not wait for Excel, a workbook, or project-wide diagnostics. |
 | Workbook commands fail before opening Excel | Run `VBA Tools: Doctor`, review the `Project automation` section, and confirm that the workspace contains `vba-project.json`. |
 | Excel or a dialog appears during build, test, publish, import, export, project creation, Host Event discovery, reference probing, or project Doctor | This is an automation-isolation failure, not expected behavior. Preserve the VBA Tools Output failure, including any PID, HWND, desktop, class, title, and phase evidence, and report it. The command does not fall back to visible Excel. |
 | F5 cannot establish VBE debugging | Run `VBA Tools: Doctor` and review the `VBE debugging` checks and remediation in the VBA Tools output channel. |

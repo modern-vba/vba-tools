@@ -349,9 +349,15 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
 
     public VbaProjectManifestResolutionCapture CaptureResolution(
         string activeUri)
+        => CaptureResolution(activeUri, CancellationToken.None);
+
+    internal VbaProjectManifestResolutionCapture CaptureResolution(
+        string activeUri,
+        CancellationToken cancellationToken)
     {
         while (true)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             long capturedVersion;
             long capturedRetentionGeneration;
             Dictionary<VbaDocumentIdentity, ManifestState> stateSnapshot;
@@ -386,7 +392,9 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
                 capturedRetentionGeneration,
                 stateSnapshot,
                 reconciliationRevisionSnapshot,
-                lastKnownGoodSnapshot);
+                lastKnownGoodSnapshot,
+                cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
             var barriers = CreateBarrierSnapshot(
                 activeUri,
                 resolution,
@@ -1145,6 +1153,7 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
                     capturedVersion,
                     capturedRetentionGeneration,
                     capturedReconciliationRevision,
+                    CancellationToken.None,
                     out var effectiveManifest,
                     out var validationError,
                     out _))
@@ -1383,7 +1392,8 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
             stateSnapshot,
         IReadOnlyDictionary<VbaDocumentIdentity, long> revisionSnapshot,
         IReadOnlyDictionary<VbaDocumentIdentity, EffectiveManifest>
-            lastKnownGoodSnapshot)
+            lastKnownGoodSnapshot,
+        CancellationToken cancellationToken)
     {
         var activePath = VbaProjectResolver.TryGetLocalPath(activeUri);
         if (activePath is null)
@@ -1411,6 +1421,7 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
                     capturedVersion,
                     capturedRetentionGeneration,
                     capturedReconciliationRevision,
+                    cancellationToken,
                     out var effectiveManifest,
                     out var validationError,
                     out var recordedNewInvalidManifest))
@@ -1637,6 +1648,7 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
         long capturedVersion,
         long capturedRetentionGeneration,
         long capturedReconciliationRevision,
+        CancellationToken cancellationToken,
         out EffectiveManifest effectiveManifest,
         out VbaProjectManifestException? validationError,
         out bool recordedNewInvalidManifest)
@@ -1671,6 +1683,7 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
 
         if (fileSystem.FileExists(manifestPath))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             string? observedText = null;
             try
             {
@@ -1679,6 +1692,7 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
                     capturedVersion,
                     capturedRetentionGeneration,
                     capturedReconciliationRevision,
+                    cancellationToken,
                     out observedText);
                 return true;
             }
@@ -1721,6 +1735,7 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
                 capturedVersion,
                 capturedRetentionGeneration,
                 capturedReconciliationRevision,
+                CancellationToken.None,
                 out _);
         }
         catch (VbaProjectManifestException)
@@ -1734,11 +1749,14 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
         long capturedVersion,
         long capturedRetentionGeneration,
         long capturedReconciliationRevision,
+        CancellationToken cancellationToken,
         out string text)
     {
         try
         {
-            text = fileSystem.ReadManifestText(manifestPath);
+            text = fileSystem.ReadManifestText(
+                manifestPath,
+                cancellationToken);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

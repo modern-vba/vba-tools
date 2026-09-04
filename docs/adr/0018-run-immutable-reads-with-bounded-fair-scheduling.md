@@ -48,8 +48,9 @@ catalog wait, or arbitrary live-workspace callback. The internal classes are:
 - normal: definition, document symbols, workspace symbols, prepare rename, and
   semantic tokens;
 - bulk: references, rename, and formatting;
-- background: latest-only diagnostics, reconciliation, reference-catalog
-  refresh admission, and reference-catalog publication.
+- background: project validation (`workspace/diagnostic`), latest-only
+  diagnostics publication (`textDocument/diagnostic`), reconciliation,
+  reference-catalog refresh admission, and reference-catalog publication.
 
 The queue has both a physical bounded channel and a logical owned-work limit.
 Read concurrency and bulk concurrency have independent limits. Production
@@ -104,14 +105,49 @@ remain current. Superseding any project-wide semantic input invalidates every
 partition from the older validation run; a target URI's unchanged local version
 does not make its old project result publishable.
 
-Project-aware validation itself uses a resolved-project-authority-keyed
-latest-only mailbox before per-URI publication fan-out. Repeated edits replace
-the pending project validation input rather than enqueueing every intermediate
-snapshot. A directly changed URI may independently send its latest
-document-local diagnostics without an obsolete project partition. Unchanged
-members keep their last accepted displayed sets until the fresh project result
-fans out only changed sets; project invalidation does not enqueue mass empty
-publications. Delete and project departure remain immediate clearing events.
+Project-aware validation itself uses a typed
+`VbaProjectAuthorityIdentity`-keyed latest-only mailbox before per-URI
+publication fan-out. Capture on the ordered lane records the exact immutable
+snapshot, source membership and revisions, manifest and reference selection,
+reference-catalog revision, and a cheap source-template
+path/existence/metadata fence. It neither reads the source-template package nor
+constructs complete Project Validation Diagnostics. The background
+`workspace/diagnostic` operation reads, hashes, and parses the fenced package
+under cancellation before evaluating that captured snapshot's already-ready
+`VbaSemanticInventory` under the scheduler's bounded background capacity. Only
+a complete current result with exact source-template evidence is partitioned
+into the separate URI-owned `textDocument/diagnostic` publication mailboxes.
+
+Repeated edits replace the pending project-validation input and cancel an
+obsolete active run rather than enqueueing every intermediate snapshot.
+Cancellation is observed during project, declaration-pair, handler, and
+argument-list traversal. A cancelled or failed run publishes no partial
+partition, releases its revision ownership, and cannot terminate the runtime;
+a later input may run normally. A directly changed URI may independently send
+its latest document-local diagnostics without an obsolete project partition.
+Unchanged members keep their last accepted displayed sets until the fresh
+project result fans out complete current URI partitions; content equality is
+not a transport-suppression contract. Project invalidation does not enqueue
+mass empty publications. Delete and project departure remain immediate clearing
+events.
+
+Each successful selected reference-catalog commit immediately invalidates and
+cancels affected current project validation, but it does not enqueue a
+replacement pass for that individual commit. The shared automatic catalog batch
+records its dirty project authorities. When that batch settles, the coordinator
+requests exactly one replacement validation for each still-current dirty
+authority. A failed or no-op batch with no commit requests none. The capture
+sees the best committed catalog revision, including an unchanged
+last-known-good revision after a failed refresh. Sequential catalog revisions
+therefore replace or cancel obsolete validation under the same typed authority
+instead of multiplying publishable full-project runs.
+
+Ordinary invalidation retains the authority's active URI and project-member
+routing so the settle-time refresh can run. Retirement removes that routing,
+discards pending mailbox work, and prevents a late catalog completion from
+resurrecting the authority; only a new document/project lifecycle may establish
+new routing. Shutdown first cancels and stops project-validation ownership,
+then stops per-URI publication ownership before the scheduler drains or aborts.
 
 Reference-catalog discovery remains on its dedicated low-impact worker because
 TypeLib COM calls may not cooperate with cancellation. The scheduler fairly
@@ -183,6 +219,22 @@ reconciliation load. Mutation admission p95 must remain at or below 5
 milliseconds. Warm completion, hover, and signature help must remain at or
 below 50 milliseconds p95 and 100 milliseconds p99. Guarded Enter must remain
 at or below 100 milliseconds p95 and 150 milliseconds p99.
+
+The separate cold manifest-backed readiness benchmark starts with a fresh
+Release workspace and no in-memory project snapshot. Its baseline-compatible
+interval begins immediately before `CreateProjectSnapshot(activeUri)` and ends
+when that call returns the exact snapshot with its ready
+`VbaSemanticInventory`; the benchmark does not start Project Validation.
+Semantic-token projection and the supplemental LSP process flow are recorded
+separately. Against the recorded CommonModules baseline of 49.907 seconds for
+94 source documents and 49,097 argument lists, that interval must be no more
+than 10 seconds and at least 80 percent faster, which makes the effective
+ceiling 9.9814 seconds. Evidence records the commit, build and runtime, machine
+and power state, corpus identity and counts, cache definition, sample policy,
+capture, disk-inventory, semantic-build, and store/return phases, and separate
+`workspace/diagnostic`, `textDocument/diagnostic`, and
+`textDocument/semanticTokens/full` scheduler measurements. The architecture
+guide defines the reusable evidence fields.
 
 This decision extends and partially supersedes ADR 0013's serial-default
 execution decision. ADR 0013's input sequence, read fence, cancellation

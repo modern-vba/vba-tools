@@ -201,6 +201,58 @@ and owns safe member-local definition reuse. The internal
 `VbaSemanticTokenLegend` owns protocol token metadata. Neither Module creates
 an alternate project-scope query authority.
 
+### Interactive Semantic Readiness and project diagnostics
+
+`InteractiveSemanticReadiness` means that one exact immutable
+`VbaProjectSnapshot` has completed source capture, projection, reference
+selection, and `VbaSemanticInventory` construction. The snapshot is then ready
+for completion, hover, signature help, symbols, definition, references, rename,
+formatting, and semantic-token capture. Building the inventory does not eagerly
+construct its Project Validation Diagnostics. In particular,
+`textDocument/semanticTokens/full` can capture and return exact token data while
+complete-call validation for that same snapshot is still running.
+
+Document-local syntax and validation diagnostics remain in the accepted
+`VbaDocumentAnalysis` and can enter URI publication immediately. Project-wide
+collection has a separate two-stage lifecycle:
+
+1. The ordered lane captures the exact snapshot, source membership and
+   revisions, manifest and reference selection, reference-catalog revision,
+   and a cheap source-template path/existence/metadata fence into one
+   `ProjectDiagnosticRevision`. It does not read, hash, or parse the workbook
+   package.
+2. A typed `VbaProjectAuthorityIdentity` latest-only mailbox reads the fenced
+   source-template bytes and derives exact project-identity evidence, then runs
+   the bounded `workspace/diagnostic` validation against the snapshot's
+   existing `VbaSemanticInventory`. Both phases observe cancellation. Only
+   after the complete current result exists does it partition by URI and post
+   complete current sets to the separate `textDocument/diagnostic` publication
+   mailboxes. Content equality is not a transport-suppression contract.
+
+A newer source, manifest, catalog, close, or retirement state replaces pending
+work and cancels obsolete active validation for that authority. Collectors
+observe cancellation through project, declaration-pair, handler, and
+argument-list traversal. Cancellation or failure publishes no partial batch,
+releases revision ownership, and leaves both the ready inventory and the last
+accepted diagnostics for unchanged members intact. A later input can run
+normally. Every partition still passes both the exact project fence and its
+target document fence immediately before transport.
+
+Each successful selected reference-catalog commit immediately invalidates and
+cancels every affected current project validation. It schedules no per-commit
+replacement. The shared catalog batch instead records dirty authorities and,
+when it settles, requests exactly one new diagnostic capture for each
+still-current dirty authority. A failed or no-op batch with no commit requests
+none. Each capture reads the best committed catalog revision, including a
+retained last-known-good revision after refresh failure. Restored tabs and
+sequential catalog revisions therefore replace obsolete validation work rather
+than multiplying full-project runs that can no longer publish.
+
+Invalidation retains active-URI and project-member routing for that final
+refresh. Retirement removes both routes and discards the authority's mailbox
+work. A late catalog settle cannot reactivate a retired authority; only a new
+document/project lifecycle can establish fresh routing.
+
 ### Interactive work scheduler
 
 `VbaInteractiveWorkScheduler` owns mutation ordering, immutable request
@@ -219,8 +271,9 @@ retain response ownership even when responses finish out of order, and
 Latency-critical reads reserve capacity ahead of normal, bulk, and background
 work. Deterministic aging prevents starvation.
 `VbaLatestOnlyBackgroundMailbox` owns pending replacement, active authority,
-ready FIFO, capacity retry, and stop behavior for advisory diagnostics and
-catalog refresh-start work. It takes the latest delegate at execution start
+ready FIFO, capacity retry, and stop behavior for project validation,
+diagnostics publication, and catalog refresh-start work. It takes the latest
+delegate at execution start
 without allowing a full queue to block the mutation lane. Diagnostics serialize
 revision reservation and mailbox posting in producer order, while revision
 freshness remains in the producer Module. Concurrent producers therefore
@@ -391,9 +444,15 @@ An ordinary open-document edit follows these stages:
 5. The workspace commits through compare-and-commit only if version, lifecycle
    epoch, and reservation token still identify the accepted head.
 6. Only project scopes containing that source are invalidated.
-7. Diagnostics capture the committed analysis and are admitted to their
-   latest-only background mailbox. The mutation never awaits diagnostics
-   transport.
+7. Document-local diagnostics can enter URI publication immediately. Project
+   diagnostics capture only their exact snapshot and revision ownership on the
+   ordered lane; they do not construct the complete project diagnostic index.
+8. The project-authority mailbox runs complete validation later as bounded
+   `workspace/diagnostic` work against the ready inventory. A superseding
+   revision replaces pending work and cancels obsolete active work.
+9. A complete current result is partitioned by URI and admitted to the separate
+   latest-only `textDocument/diagnostic` publication mailboxes. The mutation
+   never awaits project validation or diagnostics transport.
 
 The member path does not create a full-length masked source and does not clone
 every shifted suffix collection. It remains an optimization: boundary edits,
@@ -419,6 +478,7 @@ discarding fresh peer scopes from the same plan.
 | Bounded concurrent immutable reads | `VBA_TOOLS_INTERACTIVE_SERIAL_WORKER=1` rollback mode | Execute captured reads serially with the same visible results |
 | Background catalog preload/discovery | Cache miss, cancellation, ambiguity, or refresh failure | Continue with bundled or last-known-good committed catalogs |
 | Exact-version guarded Enter | Requested revision is stale, pending, closed, or mixed | Return no insertion plan and let native Enter behavior continue |
+| Background Project Validation Diagnostics | A run is superseded, cancelled, closed, retired, or fails before a complete result exists | Publish no partition, release the run, retain the ready Semantic Inventory and last accepted unchanged-member diagnostics, and allow later current input to run |
 | Latest-only diagnostics publication | Queue pressure or a superseding revision/close tombstone | Retain or retry only the latest queued authority state. A superseded queued publication is skipped; a versioned publication already in transport may finish and is rejected by version-aware clients if a newer revision has arrived. |
 | Cached project snapshot | Manifest, selected catalog revision, source membership, or affected source revision changed | Construct a new immutable snapshot for that project scope |
 
@@ -426,6 +486,78 @@ Fallbacks preserve correctness and availability; they are not alternate
 feature-owned coordination paths.
 
 ## Performance verification
+
+### Cold manifest-backed semantic readiness
+
+The primary cold benchmark uses a fresh Release workspace with no in-memory
+project snapshot. Fixture and workspace setup complete before the timed
+interval. The interval starts immediately before the baseline-compatible
+`CreateProjectSnapshot(activeUri)` call and stops when that call returns the
+exact `VbaProjectSnapshot` with a readable `VbaSemanticInventory`. The primary
+run does not start Project Validation Diagnostics. Semantic-token projection is
+timed separately from the returned inventory, and a separate validation run
+checks the eventual complete diagnostic contract.
+
+The snapshot observer reports `capture` as `scopeCapture` plus
+`snapshotAdmission`, followed by `diskInventory`, `semanticInventory`, and
+`storeReturn`; their outer interval is `interactiveSemanticReadiness`.
+`openDocument` is reported but remains outside that baseline-compatible
+interval, and `semanticTokenProjection` is reported after it. The run must also
+report a zero Project Validation build count for the primary interval.
+
+The recorded CommonModules diagnosis supplies this comparison baseline:
+
+| Evidence | Recorded value |
+| --- | ---: |
+| Manifest document definitions | 1 |
+| `VbaProjectSnapshot.SourceDocuments` | 94 |
+| Parsed argument lists | 49,097 |
+| Cold project snapshot | 49.907 s |
+| Complete-call validation phase | 43.262 s |
+| Diagnostic-bypass project snapshot | 6.191 s |
+
+The 94 count is the recursive exported-source membership of the one manifest
+document source set, not 94 top-level entries in `vba-project.json`. A passing
+Windows Release run records a cold semantic-readiness interval no greater than
+10 seconds and at least 80 percent faster than 49.907 seconds. Because the
+percentage requirement is stricter, the effective ceiling is 9.9814 seconds.
+The implementation may not exclude source files, suppress eventual
+diagnostics, or weaken revision fences, and the benchmark may not include a
+prebuilt snapshot.
+
+An accompanying end-to-end process run is supplemental evidence and records
+initialization, `didOpen`, and `textDocument/semanticTokens/full` response time. Set
+`VBA_TOOLS_INTERACTIVE_ADMISSION_DIRECTORY` to an empty temporary directory to
+capture scheduler phase files. Each `.admitted` file records `inputSequence`,
+`readFence`, `kind`, `method`, `requestId`, and `admissionMilliseconds`; each
+`.completed` file records the same identity plus `queueMilliseconds`,
+`executionMilliseconds`, `cancelled`, and `faulted`. Preserve and report the
+records for `textDocument/didOpen`, `textDocument/semanticTokens/full`,
+`workspace/diagnostic`, and `textDocument/diagnostic` separately. Project
+validation completion is evidence of eventual diagnostics, not part of the
+semantic-readiness interval.
+
+Every accepted benchmark report fills these fields. The test output may use
+`not measured` rather than silently omitting an observation it cannot discover,
+but that output is provisional: the verification note must supply every field
+required for acceptance or explicitly explain why an unavailable observation
+does not affect the two performance thresholds.
+
+| Field | Required record |
+| --- | --- |
+| Source revision | Commit SHA and whether the worktree was clean |
+| Build | Release command, target framework, runtime and SDK versions, architecture |
+| Environment | Windows version, CPU, logical-core count, RAM, power mode, and competing-load notes |
+| Corpus | Repository/path, corpus revision, manifest document count, `SourceDocuments` count, line count, and argument-list count |
+| Cold-cache definition | Fresh process and empty in-memory workspace; state explicitly whether filesystem/OS caches were controlled |
+| Samples | Warm-up policy, measured-run count, individual values, aggregation, and outlier policy |
+| Timing source | Stopwatch boundary, process observation, and scheduler timing-directory path |
+| Snapshot phases | `capture`, `scopeCapture`, `snapshotAdmission`, `diskInventory`, `semanticInventory`, `storeReturn`, and `interactiveSemanticReadiness` |
+| Separate projections | Semantic-token projection from the returned inventory and eventual Project Validation Diagnostics |
+| Supplemental LSP phases | Initialize; `didOpen` admission/queue/execution; semantic-token admission/queue/execution/response; `workspace/diagnostic`; `textDocument/diagnostic` publication |
+| Correctness | Semantic-token revision/content assertion and final project-diagnostic equivalence result |
+
+### Warm and mixed-load budgets
 
 Release benchmarks exercise latency-critical requests while bulk references,
 diagnostics, catalog work, and reconciliation are present. They report
@@ -451,6 +583,12 @@ pin exact-version behavior, cancellation races, output framing, latest-only
 diagnostics, watcher-first freshness, affected-project invalidation,
 scope retirement and stale-scan rejection, nested manifest ownership,
 segmented-suffix behavior, serial rollback equivalence, and
-last-known-good-catalog behavior. Performance results are accepted only from
+last-known-good-catalog behavior. The repository-owned manifest-backed large
+project fixture contains at least 90 source documents and 40,000 argument lists
+without using the external CommonModules checkout. Controllable validation
+barriers verify semantic-token readiness at that scale. Across the deterministic
+workspace, scheduler, and process suites, barriers and counters rather than
+wall-clock timing prove coalescing, cancellation, failure recovery, and clean
+shutdown. Performance results are accepted only from
 Release runs with the full syntax, language-server, process, packaging,
 extension, Extension Host, and guarded Enter regression suites.

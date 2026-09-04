@@ -245,6 +245,12 @@ internal readonly struct VbaProjectReferenceCatalogRefreshAuthorityIdentity
 
     internal bool IsInitialized => referenceName is not null;
 
+    internal VbaProjectAuthorityIdentity? Authority => authority;
+
+    internal string ReferenceName => referenceName
+        ?? throw new InvalidOperationException(
+            "The reference refresh authority is not initialized.");
+
     internal static VbaProjectReferenceCatalogRefreshAuthorityIdentity Create(
         VbaProjectReferenceCatalogScopeIdentity? scope,
         string referenceName)
@@ -304,6 +310,19 @@ internal readonly record struct VbaProjectReferenceCatalogAutomaticWorkIdentity
         ReferenceSelectionFingerprint fingerprint,
         VbaProjectAuthorityIdentity? authority)
         => new(fingerprint, authority);
+}
+
+internal readonly record struct VbaProjectReferenceCatalogRefreshBatchIdentity(
+    long Value);
+
+internal interface IVbaProjectReferenceCatalogCommitObserver
+{
+    void CatalogCommitAccepted(
+        VbaProjectReferenceCatalogRefreshBatchIdentity batch,
+        VbaProjectReferenceCatalogRefreshAuthorityIdentity authority);
+
+    void CatalogRefreshSettled(
+        VbaProjectReferenceCatalogRefreshBatchIdentity batch);
 }
 
 internal sealed record VbaProjectReferenceCatalogRefreshContext(
@@ -1558,6 +1577,9 @@ public sealed class VbaProjectReferenceCatalogRefreshService
     private readonly object mutationLaneGate = new();
     private IVbaProjectReferenceCatalogMutationLane mutationLane =
         InlineVbaProjectReferenceCatalogMutationLane.Instance;
+    private IVbaProjectReferenceCatalogCommitObserver?
+        catalogCommitObserver;
+    private long nextRefreshBatchIdentity;
 
     internal bool UsesContextSpecificDiscovery =>
         discovery is IVbaProjectReferenceCatalogContextDiscoveryFactory contextFactory
@@ -1642,6 +1664,23 @@ public sealed class VbaProjectReferenceCatalogRefreshService
         }
     }
 
+    internal void AttachCatalogCommitObserver(
+        IVbaProjectReferenceCatalogCommitObserver observer)
+    {
+        ArgumentNullException.ThrowIfNull(observer);
+        lock (mutationLaneGate)
+        {
+            if (catalogCommitObserver is not null
+                && !ReferenceEquals(catalogCommitObserver, observer))
+            {
+                throw new InvalidOperationException(
+                    "The reference catalog refresh service is already attached to another commit observer.");
+            }
+
+            catalogCommitObserver = observer;
+        }
+    }
+
     /// <summary>
     /// Discovers generated catalogs for selected references that have not been resolved yet.
     /// </summary>
@@ -1715,6 +1754,47 @@ public sealed class VbaProjectReferenceCatalogRefreshService
         VbaProjectReferenceCatalogRefreshContext? refreshContext,
         CancellationToken cancellationToken)
     {
+        IVbaProjectReferenceCatalogCommitObserver? commitObserver;
+        lock (mutationLaneGate)
+        {
+            commitObserver = catalogCommitObserver;
+        }
+
+        var batch = new VbaProjectReferenceCatalogRefreshBatchIdentity(
+            Interlocked.Increment(ref nextRefreshBatchIdentity));
+        try
+        {
+            return await RefreshBatchCoreAsync(
+                selection,
+                waitForExistingOwners,
+                persistedPreloadCompleted,
+                refreshContext,
+                batch,
+                commitObserver,
+                cancellationToken);
+        }
+        finally
+        {
+            try
+            {
+                commitObserver?.CatalogRefreshSettled(batch);
+            }
+            catch (Exception)
+            {
+                // A downstream settlement failure must not corrupt refresh ownership.
+            }
+        }
+    }
+
+    private async Task<IReadOnlyList<VbaProjectReferenceCatalogRefreshResult>> RefreshBatchCoreAsync(
+        VbaProjectReferenceSelection selection,
+        bool waitForExistingOwners,
+        Action<IReadOnlyList<VbaProjectReferenceCatalogRefreshResult>>? persistedPreloadCompleted,
+        VbaProjectReferenceCatalogRefreshContext? refreshContext,
+        VbaProjectReferenceCatalogRefreshBatchIdentity batch,
+        IVbaProjectReferenceCatalogCommitObserver? commitObserver,
+        CancellationToken cancellationToken)
+    {
         if (refreshContext?.IsCurrent?.Invoke() == false)
         {
             return [];
@@ -1743,6 +1823,8 @@ public sealed class VbaProjectReferenceCatalogRefreshService
             ownedSelection,
             refreshContext?.Scope,
             refreshContext?.IsCurrent,
+            batch,
+            commitObserver,
             cancellationToken);
         results.AddRange(persistedPreloadResults);
         persistedPreloadCompleted?.Invoke(persistedPreloadResults);
@@ -1757,6 +1839,8 @@ public sealed class VbaProjectReferenceCatalogRefreshService
             activeDiscovery,
             refreshContext?.Scope,
             refreshContext?.IsCurrent,
+            batch,
+            commitObserver,
             cancellationToken));
         return results;
     }
@@ -1772,6 +1856,8 @@ public sealed class VbaProjectReferenceCatalogRefreshService
         IVbaProjectReferenceCatalogDiscovery activeDiscovery,
         VbaProjectReferenceCatalogScopeIdentity? scope,
         Func<bool>? commitGuard,
+        VbaProjectReferenceCatalogRefreshBatchIdentity batch,
+        IVbaProjectReferenceCatalogCommitObserver? commitObserver,
         CancellationToken cancellationToken = default)
     {
         var results = new List<VbaProjectReferenceCatalogRefreshResult>();
@@ -1818,7 +1904,10 @@ public sealed class VbaProjectReferenceCatalogRefreshService
                     VbaProjectReferenceCatalogRefreshAuthorityIdentity.Create(
                         scope,
                         referenceName),
+                    batch,
+                    commitObserver,
                     () => reservation.StoreDiscoveryResult(referenceName, discoveryResult),
+                    discoveryResult.HasUsableCatalog,
                     commitGuard,
                     cancellationToken);
                 if (!committed)
@@ -1867,6 +1956,8 @@ public sealed class VbaProjectReferenceCatalogRefreshService
         VbaProjectReferenceSelection selection,
         VbaProjectReferenceCatalogScopeIdentity? scope,
         Func<bool>? commitGuard,
+        VbaProjectReferenceCatalogRefreshBatchIdentity batch,
+        IVbaProjectReferenceCatalogCommitObserver? commitObserver,
         CancellationToken cancellationToken = default)
     {
         if (persistentStore is null)
@@ -1931,10 +2022,13 @@ public sealed class VbaProjectReferenceCatalogRefreshService
                     VbaProjectReferenceCatalogRefreshAuthorityIdentity.Create(
                         scope,
                         referenceName),
+                    batch,
+                    commitObserver,
                     () => cache.StorePersistedCatalog(
                         loadResult.Entry,
                         scope,
                         identityAuthoritative: true),
+                    invalidatesProjectValidation: true,
                     commitGuard,
                     cancellationToken);
                 if (!committed)
@@ -1965,9 +2059,12 @@ public sealed class VbaProjectReferenceCatalogRefreshService
                     VbaProjectReferenceCatalogRefreshAuthorityIdentity.Create(
                         scope,
                         referenceName),
+                    batch,
+                    commitObserver,
                     () => cache.StoreStaleCatalog(
                         loadResult.Entry.Catalog,
                         scope),
+                    invalidatesProjectValidation: true,
                     commitGuard,
                     cancellationToken);
                 if (!committed)
@@ -2033,7 +2130,10 @@ public sealed class VbaProjectReferenceCatalogRefreshService
 
     private async Task<bool> CommitCatalogMutationAsync(
         VbaProjectReferenceCatalogRefreshAuthorityIdentity authority,
+        VbaProjectReferenceCatalogRefreshBatchIdentity batch,
+        IVbaProjectReferenceCatalogCommitObserver? commitObserver,
         Action commit,
+        bool invalidatesProjectValidation,
         Func<bool>? commitGuard,
         CancellationToken cancellationToken)
     {
@@ -2051,6 +2151,19 @@ public sealed class VbaProjectReferenceCatalogRefreshService
                 if (commitGuard?.Invoke() == false)
                 {
                     return;
+                }
+
+                try
+                {
+                    if (invalidatesProjectValidation)
+                    {
+                        commitObserver?.CatalogCommitAccepted(batch, authority);
+                    }
+                }
+                catch (Exception)
+                {
+                    // A downstream invalidation failure must not corrupt
+                    // refresh ownership or prevent the accepted catalog commit.
                 }
 
                 commit();

@@ -173,6 +173,7 @@ public sealed class SourceInterfaceCallableContractLanguageServerProcessTests
             await process.WaitForDiagnosticsAsync(uri);
             await process.WaitForLogTextAsync(
                 "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
+            var diagnosticsCheckpoint = process.TranscriptCheckpoint;
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -181,7 +182,13 @@ public sealed class SourceInterfaceCallableContractLanguageServerProcessTests
                     contentChanges = new[] { new { text } }
                 });
 
-            var notification = await process.WaitForDiagnosticsAsync(uri);
+            var notification = await process.WaitForDiagnosticsMatchingAsync(
+                uri,
+                diagnostics => diagnostics.EnumerateArray().Any(candidate =>
+                    candidate.GetProperty("code").GetString()
+                        == "validation.interfaceMemberNotImplemented"),
+                "validation.interfaceMemberNotImplemented",
+                afterCheckpoint: diagnosticsCheckpoint);
             var diagnostic = Assert.Single(
                 notification
                     .GetProperty("params")
@@ -381,7 +388,8 @@ public sealed class SourceInterfaceCallableContractLanguageServerProcessTests
                     catalog));
 
             await using var process = await LanguageServerProcessHarness.StartAsync(
-                referenceCatalogCacheRoot: cacheRoot);
+                referenceCatalogCacheRoot: cacheRoot,
+                enableProjectDiagnosticsSynchronization: true);
             await process.InitializeAsync(new
             {
                 textDocument = new
@@ -425,6 +433,8 @@ public sealed class SourceInterfaceCallableContractLanguageServerProcessTests
             await process.WaitForLogTextAsync(
                 "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
             var checkpoint = process.TranscriptCheckpoint;
+            var projectCheckpoint =
+                process.CaptureProjectDiagnosticsCheckpoint();
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -432,12 +442,18 @@ public sealed class SourceInterfaceCallableContractLanguageServerProcessTests
                     textDocument = new { uri = workerUri, version = 2 },
                     contentChanges = new[] { new { text = workerText } }
                 });
-            var notification = await process.WaitForMessageAsync(
-                checkpoint,
-                message => message.TryGetProperty("method", out var method)
-                    && method.GetString() == "textDocument/publishDiagnostics"
-                    && message.GetProperty("params").GetProperty("uri").GetString()
-                        == workerUri);
+            var notification = expectsMismatch
+                ? await process.WaitForDiagnosticsMatchingAsync(
+                    workerUri,
+                    diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                        diagnostic.GetProperty("code").GetString()
+                            == "validation.incompatibleInterfaceMemberSignature"),
+                    "validation.incompatibleInterfaceMemberSignature",
+                    afterCheckpoint: checkpoint)
+                : await process.WaitForProjectDiagnosticsSettledAsync(
+                    workerUri,
+                    expectedVersion: 2,
+                    projectCheckpoint);
             var diagnostics = notification.GetProperty("params")
                 .GetProperty("diagnostics")
                 .EnumerateArray()
@@ -535,7 +551,8 @@ public sealed class SourceInterfaceCallableContractLanguageServerProcessTests
                     catalog));
 
             await using var process = await LanguageServerProcessHarness.StartAsync(
-                referenceCatalogCacheRoot: cacheRoot);
+                referenceCatalogCacheRoot: cacheRoot,
+                enableProjectDiagnosticsSynchronization: true);
             await process.InitializeAsync();
 
             var workerPath = Path.Combine(
@@ -595,7 +612,8 @@ public sealed class SourceInterfaceCallableContractLanguageServerProcessTests
                 "Private Sub IRunner_Run(ByVal value As Long)",
                 "End Sub"
             ]);
-            var checkpoint = process.TranscriptCheckpoint;
+            var projectCheckpoint =
+                process.CaptureProjectDiagnosticsCheckpoint();
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -603,12 +621,11 @@ public sealed class SourceInterfaceCallableContractLanguageServerProcessTests
                     textDocument = new { uri = workerUri, version = 3 },
                     contentChanges = new[] { new { text = workerText } }
                 });
-            var notification = await process.WaitForMessageAsync(
-                checkpoint,
-                message => message.TryGetProperty("method", out var method)
-                    && method.GetString() == "textDocument/publishDiagnostics"
-                    && message.GetProperty("params").GetProperty("uri").GetString()
-                        == workerUri);
+            var notification =
+                await process.WaitForProjectDiagnosticsSettledAsync(
+                    workerUri,
+                    expectedVersion: 3,
+                    projectCheckpoint);
             Assert.DoesNotContain(
                 notification.GetProperty("params")
                     .GetProperty("diagnostics")
@@ -673,7 +690,8 @@ public sealed class SourceInterfaceCallableContractLanguageServerProcessTests
                     catalog));
 
             await using var process = await LanguageServerProcessHarness.StartAsync(
-                referenceCatalogCacheRoot: cacheRoot);
+                referenceCatalogCacheRoot: cacheRoot,
+                enableProjectDiagnosticsSynchronization: true);
             await process.InitializeAsync();
 
             var workerPath = Path.Combine(
@@ -733,7 +751,8 @@ public sealed class SourceInterfaceCallableContractLanguageServerProcessTests
                 "Private Function IReader_Read() As Long",
                 "End Function"
             ]);
-            var checkpoint = process.TranscriptCheckpoint;
+            var projectCheckpoint =
+                process.CaptureProjectDiagnosticsCheckpoint();
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -741,12 +760,11 @@ public sealed class SourceInterfaceCallableContractLanguageServerProcessTests
                     textDocument = new { uri = workerUri, version = 3 },
                     contentChanges = new[] { new { text = workerText } }
                 });
-            var notification = await process.WaitForMessageAsync(
-                checkpoint,
-                message => message.TryGetProperty("method", out var method)
-                    && method.GetString() == "textDocument/publishDiagnostics"
-                    && message.GetProperty("params").GetProperty("uri").GetString()
-                        == workerUri);
+            var notification =
+                await process.WaitForProjectDiagnosticsSettledAsync(
+                    workerUri,
+                    expectedVersion: 3,
+                    projectCheckpoint);
             Assert.DoesNotContain(
                 notification.GetProperty("params")
                     .GetProperty("diagnostics")
@@ -874,12 +892,13 @@ public sealed class SourceInterfaceCallableContractLanguageServerProcessTests
                     textDocument = new { uri, version = 3 },
                     contentChanges = new[] { new { text } }
                 });
-            var notification = await process.WaitForMessageAsync(
-                checkpoint,
-                message => message.TryGetProperty("method", out var method)
-                    && method.GetString() == "textDocument/publishDiagnostics"
-                    && message.GetProperty("params").GetProperty("uri").GetString()
-                        == uri);
+            var notification = await process.WaitForDiagnosticsMatchingAsync(
+                uri,
+                diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                    diagnostic.GetProperty("code").GetString()
+                        == "validation.incompatibleInterfaceMemberSignature"),
+                "validation.incompatibleInterfaceMemberSignature",
+                afterCheckpoint: checkpoint);
             Assert.Contains(
                 notification.GetProperty("params")
                     .GetProperty("diagnostics")
@@ -941,7 +960,8 @@ public sealed class SourceInterfaceCallableContractLanguageServerProcessTests
                     catalog));
 
             await using var process = await LanguageServerProcessHarness.StartAsync(
-                referenceCatalogCacheRoot: cacheRoot);
+                referenceCatalogCacheRoot: cacheRoot,
+                enableProjectDiagnosticsSynchronization: true);
             await process.InitializeAsync();
 
             var sourcePath = Path.Combine(
@@ -993,7 +1013,8 @@ public sealed class SourceInterfaceCallableContractLanguageServerProcessTests
                 "Private Function IArray_Values() As String()",
                 "End Function"
             ]);
-            var checkpoint = process.TranscriptCheckpoint;
+            var projectCheckpoint =
+                process.CaptureProjectDiagnosticsCheckpoint();
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -1001,12 +1022,11 @@ public sealed class SourceInterfaceCallableContractLanguageServerProcessTests
                     textDocument = new { uri, version = 3 },
                     contentChanges = new[] { new { text } }
                 });
-            var notification = await process.WaitForMessageAsync(
-                checkpoint,
-                message => message.TryGetProperty("method", out var method)
-                    && method.GetString() == "textDocument/publishDiagnostics"
-                    && message.GetProperty("params").GetProperty("uri").GetString()
-                        == uri);
+            var notification =
+                await process.WaitForProjectDiagnosticsSettledAsync(
+                    uri,
+                    expectedVersion: 3,
+                    projectCheckpoint);
             Assert.DoesNotContain(
                 notification.GetProperty("params")
                     .GetProperty("diagnostics")
@@ -1072,7 +1092,8 @@ public sealed class SourceInterfaceCallableContractLanguageServerProcessTests
                     catalog));
 
             await using var process = await LanguageServerProcessHarness.StartAsync(
-                referenceCatalogCacheRoot: cacheRoot);
+                referenceCatalogCacheRoot: cacheRoot,
+                enableProjectDiagnosticsSynchronization: true);
             await process.InitializeAsync();
 
             var workerPath = Path.Combine(
@@ -1094,7 +1115,8 @@ public sealed class SourceInterfaceCallableContractLanguageServerProcessTests
                 CreateOpenDocument(workerUri, workerText));
             await process.WaitForLogTextAsync(
                 "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
-            var checkpoint = process.TranscriptCheckpoint;
+            var projectCheckpoint =
+                process.CaptureProjectDiagnosticsCheckpoint();
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -1102,12 +1124,11 @@ public sealed class SourceInterfaceCallableContractLanguageServerProcessTests
                     textDocument = new { uri = workerUri, version = 2 },
                     contentChanges = new[] { new { text = workerText } }
                 });
-            var notification = await process.WaitForMessageAsync(
-                checkpoint,
-                message => message.TryGetProperty("method", out var method)
-                    && method.GetString() == "textDocument/publishDiagnostics"
-                    && message.GetProperty("params").GetProperty("uri").GetString()
-                        == workerUri);
+            var notification =
+                await process.WaitForProjectDiagnosticsSettledAsync(
+                    workerUri,
+                    expectedVersion: 2,
+                    projectCheckpoint);
             Assert.DoesNotContain(
                 notification.GetProperty("params")
                     .GetProperty("diagnostics")
@@ -1174,7 +1195,8 @@ public sealed class SourceInterfaceCallableContractLanguageServerProcessTests
                     catalog));
 
             await using var process = await LanguageServerProcessHarness.StartAsync(
-                referenceCatalogCacheRoot: cacheRoot);
+                referenceCatalogCacheRoot: cacheRoot,
+                enableProjectDiagnosticsSynchronization: true);
             await process.InitializeAsync();
 
             var workerPath = Path.Combine(
@@ -1196,7 +1218,8 @@ public sealed class SourceInterfaceCallableContractLanguageServerProcessTests
                 CreateOpenDocument(workerUri, workerText));
             await process.WaitForLogTextAsync(
                 "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
-            var checkpoint = process.TranscriptCheckpoint;
+            var projectCheckpoint =
+                process.CaptureProjectDiagnosticsCheckpoint();
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -1204,12 +1227,11 @@ public sealed class SourceInterfaceCallableContractLanguageServerProcessTests
                     textDocument = new { uri = workerUri, version = 2 },
                     contentChanges = new[] { new { text = workerText } }
                 });
-            var notification = await process.WaitForMessageAsync(
-                checkpoint,
-                message => message.TryGetProperty("method", out var method)
-                    && method.GetString() == "textDocument/publishDiagnostics"
-                    && message.GetProperty("params").GetProperty("uri").GetString()
-                        == workerUri);
+            var notification =
+                await process.WaitForProjectDiagnosticsSettledAsync(
+                    workerUri,
+                    expectedVersion: 2,
+                    projectCheckpoint);
             Assert.DoesNotContain(
                 notification.GetProperty("params")
                     .GetProperty("diagnostics")
@@ -1271,7 +1293,8 @@ public sealed class SourceInterfaceCallableContractLanguageServerProcessTests
                     catalog));
 
             await using var process = await LanguageServerProcessHarness.StartAsync(
-                referenceCatalogCacheRoot: cacheRoot);
+                referenceCatalogCacheRoot: cacheRoot,
+                enableProjectDiagnosticsSynchronization: true);
             await process.InitializeAsync();
 
             var sourcePath = Path.Combine(
@@ -1326,7 +1349,8 @@ public sealed class SourceInterfaceCallableContractLanguageServerProcessTests
                 "Private Sub IRunner_Run(ByVal value As Long, ByVal extra As String)",
                 "End Sub"
             ]);
-            var checkpoint = process.TranscriptCheckpoint;
+            var projectCheckpoint =
+                process.CaptureProjectDiagnosticsCheckpoint();
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -1334,12 +1358,11 @@ public sealed class SourceInterfaceCallableContractLanguageServerProcessTests
                     textDocument = new { uri, version = 3 },
                     contentChanges = new[] { new { text } }
                 });
-            var notification = await process.WaitForMessageAsync(
-                checkpoint,
-                message => message.TryGetProperty("method", out var method)
-                    && method.GetString() == "textDocument/publishDiagnostics"
-                    && message.GetProperty("params").GetProperty("uri").GetString()
-                        == uri);
+            var notification =
+                await process.WaitForProjectDiagnosticsSettledAsync(
+                    uri,
+                    expectedVersion: 3,
+                    projectCheckpoint);
             Assert.DoesNotContain(
                 notification.GetProperty("params")
                     .GetProperty("diagnostics")

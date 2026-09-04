@@ -23,6 +23,8 @@ internal sealed class VbaLatestOnlyBackgroundMailbox
     private readonly Action<string>? authorityStateChanged;
     private readonly Action<VbaDocumentIdentity>?
         documentAuthorityStateChanged;
+    private readonly Action<VbaProjectAuthorityIdentity>?
+        projectAuthorityStateChanged;
     private bool stopped;
 
     /// <summary>
@@ -34,7 +36,9 @@ internal sealed class VbaLatestOnlyBackgroundMailbox
         IEqualityComparer<string>? authorityComparer = null,
         Action<string>? authorityStateChanged = null,
         Action<VbaDocumentIdentity>?
-            documentAuthorityStateChanged = null)
+            documentAuthorityStateChanged = null,
+        Action<VbaProjectAuthorityIdentity>?
+            projectAuthorityStateChanged = null)
     {
         ArgumentNullException.ThrowIfNull(scheduler);
         var comparer = authorityComparer ?? StringComparer.OrdinalIgnoreCase;
@@ -43,6 +47,8 @@ internal sealed class VbaLatestOnlyBackgroundMailbox
         this.authorityStateChanged = authorityStateChanged;
         this.documentAuthorityStateChanged =
             documentAuthorityStateChanged;
+        this.projectAuthorityStateChanged =
+            projectAuthorityStateChanged;
         var authorityIdentityComparer =
             new AuthorityIdentityComparer(comparer);
         pending = new Dictionary<AuthorityIdentity, PendingWork>(
@@ -79,6 +85,15 @@ internal sealed class VbaLatestOnlyBackgroundMailbox
         Action? onTerminal = null)
         => Post(
             AuthorityIdentity.FromDocument(authority),
+            executeAsync,
+            onTerminal);
+
+    public void Post(
+        VbaProjectAuthorityIdentity authority,
+        Func<CancellationToken, Task> executeAsync,
+        Action? onTerminal = null)
+        => Post(
+            AuthorityIdentity.FromProjectAuthority(authority),
             executeAsync,
             onTerminal);
 
@@ -127,6 +142,9 @@ internal sealed class VbaLatestOnlyBackgroundMailbox
     public void Discard(VbaDocumentIdentity authority)
         => Discard(AuthorityIdentity.FromDocument(authority));
 
+    public void Discard(VbaProjectAuthorityIdentity authority)
+        => Discard(AuthorityIdentity.FromProjectAuthority(authority));
+
     private void Discard(AuthorityIdentity authority)
     {
         PendingWork? discarded;
@@ -154,6 +172,9 @@ internal sealed class VbaLatestOnlyBackgroundMailbox
     public bool IsIdle(VbaDocumentIdentity authority)
         => IsIdle(AuthorityIdentity.FromDocument(authority));
 
+    public bool IsIdle(VbaProjectAuthorityIdentity authority)
+        => IsIdle(AuthorityIdentity.FromProjectAuthority(authority));
+
     private bool IsIdle(AuthorityIdentity authority)
     {
         lock (gate)
@@ -173,6 +194,9 @@ internal sealed class VbaLatestOnlyBackgroundMailbox
 
     public Task WaitForIdleAsync(VbaDocumentIdentity authority)
         => WaitForIdleAsync(AuthorityIdentity.FromDocument(authority));
+
+    public Task WaitForIdleAsync(VbaProjectAuthorityIdentity authority)
+        => WaitForIdleAsync(AuthorityIdentity.FromProjectAuthority(authority));
 
     private Task WaitForIdleAsync(AuthorityIdentity authority)
     {
@@ -285,21 +309,40 @@ internal sealed class VbaLatestOnlyBackgroundMailbox
             return;
         }
 
-        var admitted = authorityKey.TryGetDocument(out var documentAuthority)
-            ? scheduler.TryAdmitBackground(
+        bool admitted;
+        VbaInteractiveWorkAdmission admission;
+        if (authorityKey.TryGetDocument(out var documentAuthority))
+        {
+            admitted = scheduler.TryAdmitBackground(
                 workType,
                 documentAuthority,
                 cancellationToken => ExecuteLatestAsync(
                     authorityKey,
                     cancellationToken),
-                out var admission)
-            : scheduler.TryAdmitBackground(
+                out admission);
+        }
+        else if (authorityKey.TryGetProjectAuthority(
+            out var projectAuthority))
+        {
+            admitted = scheduler.TryAdmitBackground(
+                workType,
+                projectAuthority,
+                cancellationToken => ExecuteLatestAsync(
+                    authorityKey,
+                    cancellationToken),
+                out admission);
+        }
+        else
+        {
+            admitted = scheduler.TryAdmitBackground(
                 workType,
                 authorityKey.Text,
                 cancellationToken => ExecuteLatestAsync(
                     authorityKey,
                     cancellationToken),
                 out admission);
+        }
+
         if (!admitted)
         {
             var schedulerAccepting = scheduler.IsAccepting;
@@ -511,6 +554,12 @@ internal sealed class VbaLatestOnlyBackgroundMailbox
                 documentAuthorityStateChanged?.Invoke(
                     documentAuthority);
             }
+            else if (authorityKey.TryGetProjectAuthority(
+                out var projectAuthority))
+            {
+                projectAuthorityStateChanged?.Invoke(
+                    projectAuthority);
+            }
         }
         catch (Exception)
         {
@@ -546,13 +595,19 @@ internal sealed class VbaLatestOnlyBackgroundMailbox
     {
         private readonly string? text;
         private readonly VbaDocumentIdentity document;
+        private readonly VbaProjectAuthorityIdentity projectAuthority;
+        private readonly bool isProjectAuthority;
 
         private AuthorityIdentity(
             string? text,
-            VbaDocumentIdentity document)
+            VbaDocumentIdentity document,
+            VbaProjectAuthorityIdentity projectAuthority,
+            bool isProjectAuthority)
         {
             this.text = text;
             this.document = document;
+            this.projectAuthority = projectAuthority;
+            this.isProjectAuthority = isProjectAuthority;
         }
 
         internal string Text
@@ -561,11 +616,23 @@ internal sealed class VbaLatestOnlyBackgroundMailbox
                     "A document authority has no text key.");
 
         internal static AuthorityIdentity FromText(string text)
-            => new(text, default);
+            => new(text, default, default, isProjectAuthority: false);
 
         internal static AuthorityIdentity FromDocument(
             VbaDocumentIdentity document)
-            => new(text: null, document);
+            => new(
+                text: null,
+                document,
+                default,
+                isProjectAuthority: false);
+
+        internal static AuthorityIdentity FromProjectAuthority(
+            VbaProjectAuthorityIdentity projectAuthority)
+            => new(
+                text: null,
+                default,
+                projectAuthority,
+                isProjectAuthority: true);
 
         internal bool TryGetText(out string value)
         {
@@ -577,7 +644,14 @@ internal sealed class VbaLatestOnlyBackgroundMailbox
             out VbaDocumentIdentity value)
         {
             value = document;
-            return text is null;
+            return text is null && !isProjectAuthority;
+        }
+
+        internal bool TryGetProjectAuthority(
+            out VbaProjectAuthorityIdentity value)
+        {
+            value = projectAuthority;
+            return isProjectAuthority;
         }
     }
 
@@ -592,13 +666,21 @@ internal sealed class VbaLatestOnlyBackgroundMailbox
                 : !right.TryGetText(out _)
                     && left.TryGetDocument(out var leftDocument)
                     && right.TryGetDocument(out var rightDocument)
-                    && leftDocument == rightDocument;
+                    ? leftDocument == rightDocument
+                    : !right.TryGetText(out _)
+                        && left.TryGetProjectAuthority(
+                            out var leftProjectAuthority)
+                        && right.TryGetProjectAuthority(
+                            out var rightProjectAuthority)
+                        && leftProjectAuthority == rightProjectAuthority;
 
         public int GetHashCode(AuthorityIdentity identity)
             => identity.TryGetText(out var text)
                 ? HashCode.Combine(0, textComparer.GetHashCode(text))
                 : identity.TryGetDocument(out var document)
                     ? HashCode.Combine(1, document.GetHashCode())
-                    : 0;
+                    : identity.TryGetProjectAuthority(out var projectAuthority)
+                        ? HashCode.Combine(2, projectAuthority.GetHashCode())
+                        : 0;
     }
 }

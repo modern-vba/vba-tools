@@ -107,6 +107,234 @@ public sealed class VbaInteractiveWorkSchedulerProcessTests
     }
 
     [Fact]
+    public async Task Server_keeps_local_diagnostics_and_semantic_tokens_responsive_while_project_validation_is_blocked()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-project-validation-gate-").FullName;
+        var sourceDirectory = Directory.CreateDirectory(
+            Path.Combine(projectRoot, "src", "Book1")).FullName;
+        var sourcePath = Path.Combine(
+            sourceDirectory,
+            "ResponsiveProjectValidationSource.bas");
+        var uri = new Uri(sourcePath).AbsoluteUri;
+        var startedFile = Path.Combine(projectRoot, "started");
+        var releaseFile = Path.Combine(projectRoot, "release");
+        try
+        {
+            File.WriteAllText(
+                Path.Combine(projectRoot, "vba-project.json"),
+                JsonSerializer.Serialize(new
+                {
+                    schemaVersion = 1,
+                    projectName = "ResponsiveProjectValidation",
+                    primaryDocument = "Book1",
+                    documents = new Dictionary<string, object>
+                    {
+                        ["Book1"] = new
+                        {
+                            kind = "excel",
+                            sourcePath = "src/Book1",
+                            templatePath = "src/Book1/Book1.xlsm",
+                            binPath = "bin/Book1/Book1.xlsm",
+                            publishPath = "publish/Book1/Book1.xlsm",
+                            commonModules = Array.Empty<object>(),
+                            references = Array.Empty<object>()
+                        }
+                    }
+                }));
+            var text = string.Join('\n', [
+                "Attribute VB_Name = \"ResponsiveProjectValidationSource\"",
+                "Option Explicit",
+                "Private Sub InvalidLocal(ByVal Value As Long, ByVal value As String)",
+                "End Sub",
+                "Private Function RequiresValue(ByVal Key As String) As Long",
+                "End Function",
+                "Public Sub Run()",
+                "    Dim result As Long",
+                "    result = RequiresValue()",
+                "End Sub"
+            ]);
+            File.WriteAllText(sourcePath, text);
+            await using var process = await LanguageServerProcessHarness.StartAsync(
+                environment: new Dictionary<string, string>
+                {
+                    ["VBA_TOOLS_PROJECT_VALIDATION_STARTED_FILE"] = startedFile,
+                    ["VBA_TOOLS_PROJECT_VALIDATION_RELEASE_FILE"] = releaseFile
+                });
+            try
+            {
+                await process.InitializeAsync();
+                await process.SendNotificationAsync(
+                    "textDocument/didOpen",
+                    CreateOpenDocument(uri, text));
+                Assert.Equal(
+                    uri,
+                    await WaitForFileTextAsync(
+                        startedFile,
+                        TimeSpan.FromSeconds(5)));
+
+                var localNotification = await process.WaitForDiagnosticsAsync(
+                        uri,
+                        TimeSpan.FromSeconds(5))
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+                var localDiagnostics = localNotification
+                    .GetProperty("params")
+                    .GetProperty("diagnostics")
+                    .EnumerateArray()
+                    .ToArray();
+                Assert.Contains(
+                    localDiagnostics,
+                    diagnostic => diagnostic.GetProperty("code").GetString()
+                        == "validation.duplicateCallableParameterName");
+                Assert.Contains(
+                    localDiagnostics,
+                    diagnostic => diagnostic.GetProperty("code").GetString()
+                        == "syntax.moduleIdentityMetadataMalformed");
+                Assert.DoesNotContain(
+                    localDiagnostics,
+                    diagnostic => diagnostic.GetProperty("code").GetString()
+                        == "validation.incompatibleCallArgumentList");
+
+                var semanticTokens = await process.SendRequestAsync(
+                        2,
+                        "textDocument/semanticTokens/full",
+                        new
+                        {
+                            textDocument = new { uri }
+                        },
+                        timeout: TimeSpan.FromSeconds(5))
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+                var tokenData = semanticTokens
+                    .GetProperty("result")
+                    .GetProperty("data")
+                    .EnumerateArray()
+                    .Select(value => value.GetInt32())
+                    .ToArray();
+                Assert.NotEmpty(tokenData);
+
+                File.WriteAllText(releaseFile, "release");
+                var projectNotification = await process.WaitForDiagnosticsAsync(
+                    uri,
+                    TimeSpan.FromSeconds(5));
+                Assert.Contains(
+                    projectNotification
+                        .GetProperty("params")
+                        .GetProperty("diagnostics")
+                        .EnumerateArray(),
+                    diagnostic => diagnostic.GetProperty("code").GetString()
+                        == "validation.incompatibleCallArgumentList");
+
+                var completedSemanticTokens = await process.SendRequestAsync(
+                    3,
+                    "textDocument/semanticTokens/full",
+                    new
+                    {
+                        textDocument = new { uri }
+                    });
+                Assert.Equal(
+                    tokenData,
+                    completedSemanticTokens
+                        .GetProperty("result")
+                        .GetProperty("data")
+                        .EnumerateArray()
+                        .Select(value => value.GetInt32())
+                        .ToArray());
+
+                await process.ShutdownAsync(4);
+            }
+            finally
+            {
+                File.WriteAllText(releaseFile, "release");
+            }
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Server_cancels_blocked_project_validation_before_responding_to_shutdown()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-project-validation-shutdown-").FullName;
+        var sourceDirectory = Directory.CreateDirectory(
+            Path.Combine(projectRoot, "src", "Book1")).FullName;
+        var sourcePath = Path.Combine(sourceDirectory, "Worker.bas");
+        var uri = new Uri(sourcePath).AbsoluteUri;
+        var startedFile = Path.Combine(projectRoot, "started");
+        var releaseFile = Path.Combine(projectRoot, "release");
+        try
+        {
+            File.WriteAllText(
+                Path.Combine(projectRoot, "vba-project.json"),
+                JsonSerializer.Serialize(new
+                {
+                    schemaVersion = 1,
+                    projectName = "ProjectValidationShutdown",
+                    primaryDocument = "Book1",
+                    documents = new Dictionary<string, object>
+                    {
+                        ["Book1"] = new
+                        {
+                            kind = "excel",
+                            sourcePath = "src/Book1",
+                            templatePath = "src/Book1/Book1.xlsm",
+                            binPath = "bin/Book1/Book1.xlsm",
+                            publishPath = "publish/Book1/Book1.xlsm",
+                            commonModules = Array.Empty<object>(),
+                            references = Array.Empty<object>()
+                        }
+                    }
+                }));
+            var text = string.Join('\n', [
+                "Attribute VB_Name = \"Worker\"",
+                "Option Explicit",
+                "Public Sub Run()",
+                "End Sub"
+            ]);
+            File.WriteAllText(sourcePath, text);
+            await using var process = await LanguageServerProcessHarness.StartAsync(
+                environment: new Dictionary<string, string>
+                {
+                    ["VBA_TOOLS_PROJECT_VALIDATION_STARTED_FILE"] = startedFile,
+                    ["VBA_TOOLS_PROJECT_VALIDATION_RELEASE_FILE"] = releaseFile
+                });
+            try
+            {
+                await process.InitializeAsync();
+                await process.SendNotificationAsync(
+                    "textDocument/didOpen",
+                    CreateOpenDocument(uri, text));
+                Assert.Equal(
+                    uri,
+                    await WaitForFileTextAsync(
+                        startedFile,
+                        TimeSpan.FromSeconds(5)));
+
+                var shutdownResponse = await process.ShutdownAsync(2)
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+
+                Assert.Equal(
+                    System.Text.Json.JsonValueKind.Null,
+                    shutdownResponse.GetProperty("result").ValueKind);
+                Assert.False(File.Exists(releaseFile));
+                Assert.Equal(
+                    0,
+                    await process.WaitForProcessExitAsync(TimeSpan.FromSeconds(5)));
+            }
+            finally
+            {
+                File.WriteAllText(releaseFile, "release");
+            }
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Intrinsic_catalog_notification_advances_the_next_editor_read_fence()
     {
         var projectRoot = Directory.CreateTempSubdirectory(
@@ -1144,6 +1372,28 @@ public sealed class VbaInteractiveWorkSchedulerProcessTests
         }
 
         await created.Task.WaitAsync(timeout);
+    }
+
+    private static async Task<string> WaitForFileTextAsync(
+        string path,
+        TimeSpan timeout)
+    {
+        using var cancellation = new CancellationTokenSource(timeout);
+        while (true)
+        {
+            try
+            {
+                if (File.Exists(path))
+                {
+                    return File.ReadAllText(path);
+                }
+            }
+            catch (IOException) when (!cancellation.IsCancellationRequested)
+            {
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(10), cancellation.Token);
+        }
     }
 
     private static async Task<string> WaitForMatchingFileCreatedAsync(
