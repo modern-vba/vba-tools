@@ -1,5 +1,6 @@
 using System.Text;
 using VbaDev.App.CommonModules;
+using VbaDev.App.FileSystem;
 using VbaDev.App.Projects;
 using VbaDev.Domain;
 using VbaDev.Infrastructure.Projects;
@@ -389,6 +390,68 @@ public sealed class CommonModulesReconciliationTests
     }
 
     [Fact]
+    public async Task AddPropagatesFatalSnapshotCleanupAfterManifestCommit()
+    {
+        using var temp = TempDirectory.Create();
+        var (root, repository) = CreateProject(temp);
+        WritePackageModule(repository, "Feature.bas", "repository feature");
+        WriteManifest(repository, "Feature.bas");
+        var observer = new FatalSnapshotCleanupObserver();
+        var transaction = CreateTransaction(
+            temp,
+            new CommonModulesSourceMutationWriter(beforeOperation: _ => observer.Enabled = true),
+            observer);
+
+        var error = await Assert.ThrowsAsync<ExactFileSystemObjectOwnership.RollbackException>(() =>
+            transaction.AddAsync(
+                ResolveContext(root),
+                ["Feature"],
+                force: false,
+                CancellationToken.None));
+
+        Assert.Same(observer.Failure, error);
+        Assert.Equal(
+            "repository feature",
+            ReadBody(Path.Combine(root, "src", "Book1", "common-modules", "Feature.bas")));
+        Assert.Equal(
+            new InstalledCommonModule("Feature", "Feature.bas", true, false, false),
+            Assert.Single(LoadInstalled(root)));
+        Assert.Empty(Directory.EnumerateFiles(root, "vba-project.failed-*.json"));
+    }
+
+    [Fact]
+    public async Task UpdatePropagatesFatalSnapshotCleanupAfterManifestCommit()
+    {
+        using var temp = TempDirectory.Create();
+        var (root, repository) = CreateProject(temp);
+        WritePackageModule(repository, "Feature.bas", "repository feature");
+        WriteManifest(repository, "Feature.bas");
+        var sourcePath = Path.Combine(root, "src", "Book1", "Feature.bas");
+        WriteModule(sourcePath, "Feature", "local feature");
+        SetInstalled(root, new InstalledCommonModule(
+            "Feature",
+            "Feature.bas",
+            Requested: true,
+            TestOnly: false,
+            Orphaned: true));
+        var observer = new FatalSnapshotCleanupObserver();
+        var transaction = CreateTransaction(
+            temp,
+            new CommonModulesSourceMutationWriter(beforeOperation: _ => observer.Enabled = true),
+            observer);
+
+        var error = await Assert.ThrowsAsync<ExactFileSystemObjectOwnership.RollbackException>(() =>
+            transaction.UpdateAsync(ResolveProject(root), CancellationToken.None));
+
+        Assert.Same(observer.Failure, error);
+        Assert.Equal("repository feature", ReadBody(sourcePath));
+        Assert.Equal(
+            new InstalledCommonModule("Feature", "Feature.bas", true, false, false),
+            Assert.Single(LoadInstalled(root)));
+        Assert.Empty(Directory.EnumerateFiles(root, "vba-project.failed-*.json"));
+    }
+
+    [Fact]
     public async Task SnapshotCleanupRunsOnlyAfterTheManifestCommitBoundary()
     {
         using var temp = TempDirectory.Create();
@@ -504,10 +567,20 @@ public sealed class CommonModulesReconciliationTests
 
     private static CommonModulesInstallationTransaction CreateTransaction(
         TempDirectory temp,
-        CommonModulesSourceMutationWriter writer)
+        CommonModulesSourceMutationWriter writer,
+        ICommonModulesPackageSnapshotCleanupObserver? cleanupObserver = null)
     {
         var manifestReader = new CommonModulesManifestReader();
         var atomicWriter = new ProjectManifestAtomicWriter();
+        var packageReader = new CommonModulesPackageReader(manifestReader);
+        var snapshotScratch = temp.CreateDirectory("snapshot-scratch-" + Guid.NewGuid().ToString("N"));
+        var snapshotFactory = cleanupObserver is null
+            ? new CommonModulesPackageSnapshotFactory(packageReader, snapshotScratch)
+            : new CommonModulesPackageSnapshotFactory(
+                packageReader,
+                snapshotScratch,
+                beforeLiveStabilityProof: null,
+                cleanupObserver);
         return new CommonModulesInstallationTransaction(
             manifestReader,
             new ProjectManifestEditor(atomicWriter),
@@ -516,9 +589,7 @@ public sealed class CommonModulesReconciliationTests
                 atomicWriter,
                 new ProjectManifestMutationLeaseProvider()),
             pathIdentityResolver: null,
-            packageSnapshotFactory: new CommonModulesPackageSnapshotFactory(
-                new CommonModulesPackageReader(manifestReader),
-                temp.CreateDirectory("snapshot-scratch-" + Guid.NewGuid().ToString("N"))),
+            packageSnapshotFactory: snapshotFactory,
             sourceMutationWriter: writer);
     }
 
@@ -579,6 +650,22 @@ public sealed class CommonModulesReconciliationTests
 
     private static string ProjectManifestPath(string root)
         => Path.Combine(root, ProjectManifest.ManifestFileName);
+
+    private sealed class FatalSnapshotCleanupObserver : ICommonModulesPackageSnapshotCleanupObserver
+    {
+        public bool Enabled { get; set; }
+
+        public ExactFileSystemObjectOwnership.RollbackException? Failure { get; private set; }
+
+        public void OnProofComplete(string path)
+        {
+            if (Enabled)
+            {
+                Failure ??= new ExactFileSystemObjectOwnership.RollbackException(path);
+                throw Failure;
+            }
+        }
+    }
 
     private sealed class SnapshotObservingAtomicWriter(
         IProjectManifestAtomicWriter inner,

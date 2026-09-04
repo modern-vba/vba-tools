@@ -1,3 +1,4 @@
+using VbaDev.App.FileSystem;
 using VbaDev.App.Projects;
 using VbaDev.App.References;
 using VbaDev.App.Workbooks;
@@ -158,6 +159,10 @@ public sealed class CommonModulesInstallationTransaction
             var outcomeCleanup = CleanupSnapshot(transactionSnapshot);
             return CreateCompletion(outcome.Result, outcome.Warnings, outcomeCleanup);
         }
+        catch (ExactFileSystemObjectOwnership.RollbackException)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             var cleanup = CleanupSnapshot(transactionSnapshot);
@@ -189,6 +194,10 @@ public sealed class CommonModulesInstallationTransaction
 
             return plan;
         }
+        catch (ExactFileSystemObjectOwnership.RollbackException)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             var cleanup = CleanupSnapshot(snapshot);
@@ -212,6 +221,10 @@ public sealed class CommonModulesInstallationTransaction
             }
 
             return entries;
+        }
+        catch (ExactFileSystemObjectOwnership.RollbackException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -412,6 +425,10 @@ public sealed class CommonModulesInstallationTransaction
             cleanup ??= CleanupSnapshot(packageSnapshot);
             throw AddSnapshotFailureContext(sourceFailure, cleanup);
         }
+        catch (ExactFileSystemObjectOwnership.RollbackException)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             cleanup ??= CleanupSnapshot(packageSnapshot);
@@ -557,6 +574,10 @@ public sealed class CommonModulesInstallationTransaction
             var outcomeCleanup = CleanupSnapshot(transactionSnapshot);
             return CreateCompletion(outcome.Result, outcome.Warnings, outcomeCleanup);
         }
+        catch (ExactFileSystemObjectOwnership.RollbackException)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             var cleanup = CleanupSnapshot(transactionSnapshot);
@@ -650,15 +671,19 @@ public sealed class CommonModulesInstallationTransaction
         {
             return snapshot.Cleanup();
         }
-        catch (Exception ex) when (ex is IOException
-                                   or UnauthorizedAccessException
-                                   or InvalidOperationException)
+        catch (Exception ex) when (IsRetainableSnapshotCleanupFailure(ex))
         {
             return new CommonModulesPackageSnapshotCleanupResult(
                 Deleted: false,
                 RetainedPath: Path.GetFullPath(snapshot.StagingPath));
         }
     }
+
+    internal static bool IsRetainableSnapshotCleanupFailure(Exception exception)
+        => exception is not ExactFileSystemObjectOwnership.RollbackException
+           && exception is IOException
+               or UnauthorizedAccessException
+               or InvalidOperationException;
 
     private static Exception AddSnapshotFailureContext(
         Exception failure,
@@ -852,6 +877,10 @@ public sealed class CommonModulesInstallationTransaction
                 ex);
             cleanup ??= CleanupSnapshot(packageSnapshot);
             throw AddSnapshotFailureContext(sourceFailure, cleanup);
+        }
+        catch (ExactFileSystemObjectOwnership.RollbackException)
+        {
+            throw;
         }
         catch (Exception ex)
         {

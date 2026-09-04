@@ -1,11 +1,27 @@
+using System.ComponentModel;
+using System.Runtime.InteropServices;
 using System.Text;
 using VbaDev.App.CommonModules;
+using VbaDev.App.FileSystem;
 using Xunit;
 
 namespace VbaDev.Tests;
 
 public sealed class CommonModulesPackageSnapshotTests
 {
+    [Fact]
+    public void SnapshotCleanupFailureClassificationNeverTreatsOwnershipRollbackAsRetention()
+    {
+        Assert.False(CommonModulesInstallationTransaction.IsRetainableSnapshotCleanupFailure(
+            new ExactFileSystemObjectOwnership.RollbackException("C:\\owned")));
+        Assert.True(CommonModulesInstallationTransaction.IsRetainableSnapshotCleanupFailure(
+            new IOException("ordinary cleanup failure")));
+        Assert.True(CommonModulesInstallationTransaction.IsRetainableSnapshotCleanupFailure(
+            new UnauthorizedAccessException("ordinary cleanup failure")));
+        Assert.True(CommonModulesInstallationTransaction.IsRetainableSnapshotCleanupFailure(
+            new InvalidOperationException("ordinary cleanup failure")));
+    }
+
     [Fact]
     public void CaptureFixesTheCompletePackageAndPlansOnlyFromCapturedBytes()
     {
@@ -316,6 +332,47 @@ public sealed class CommonModulesPackageSnapshotTests
     }
 
     [Fact]
+    public void CleanupNeverDeletesThroughAHardLinkRaceAfterFileProof()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        var repository = temp.CreateDirectory("common_modules_repo");
+        WriteManifest(repository, ("Feature.bas", "optional", string.Empty));
+        WriteSource(repository, "Feature.bas", "feature generation one");
+        var scratchRoot = temp.CreateDirectory("scratch");
+        var observer = new HardLinkAfterProofCleanupObserver("Feature.bas");
+        var snapshot = new CommonModulesPackageSnapshotFactory(
+            new CommonModulesPackageReader(new CommonModulesManifestReader()),
+            scratchRoot,
+            beforeLiveStabilityProof: null,
+            observer)
+            .Capture(repository, CancellationToken.None);
+        var featurePath = Path.Combine(snapshot.StagingPath, "Feature.bas");
+
+        var cleanup = snapshot.Cleanup();
+
+        if (observer.HardLinkWasCreated)
+        {
+            Assert.False(cleanup.Deleted);
+            Assert.True(cleanup.IsConclusive);
+            Assert.Contains(featurePath, cleanup.RetainedEntryPaths);
+            Assert.True(File.Exists(featurePath));
+            Assert.True(File.Exists(observer.HardLinkPath));
+        }
+        else
+        {
+            Assert.Equal(32, observer.HardLinkError);
+            Assert.True(cleanup.Deleted);
+            Assert.False(Directory.Exists(snapshot.StagingPath));
+            Assert.False(File.Exists(observer.HardLinkPath));
+        }
+    }
+
+    [Fact]
     public void CleanupDirectoryProofHandleBlocksDeleteAndRenameUntilExactDisposition()
     {
         if (!OperatingSystem.IsWindows())
@@ -378,6 +435,105 @@ public sealed class CommonModulesPackageSnapshotTests
         Assert.False(File.Exists(Path.Combine(
             snapshot.StagingPath,
             CommonModulesManifestReader.ManifestFileName)));
+    }
+
+    [Fact]
+    public void CleanupPreservesAHardLinkedOwnedStagingFile()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        var repository = temp.CreateDirectory("common_modules_repo");
+        WriteManifest(repository, ("Feature.bas", "optional", string.Empty));
+        WriteSource(repository, "Feature.bas", "feature generation one");
+        var scratchRoot = temp.CreateDirectory("scratch");
+        var snapshot = new CommonModulesPackageSnapshotFactory(
+            new CommonModulesPackageReader(new CommonModulesManifestReader()),
+            scratchRoot)
+            .Capture(repository, CancellationToken.None);
+        var featurePath = Path.Combine(snapshot.StagingPath, "Feature.bas");
+        var aliasPath = Path.Combine(temp.Path, "Feature-hardlink.bas");
+        Assert.True(
+            CreateHardLink(aliasPath, featurePath, IntPtr.Zero),
+            new Win32Exception(Marshal.GetLastWin32Error()).Message);
+
+        var cleanup = snapshot.Cleanup();
+
+        Assert.False(cleanup.Deleted);
+        Assert.True(cleanup.IsConclusive);
+        Assert.Equal(snapshot.StagingPath, cleanup.RetainedPath);
+        Assert.Contains(featurePath, cleanup.RetainedEntryPaths);
+        Assert.True(File.Exists(featurePath));
+        Assert.True(File.Exists(aliasPath));
+        Assert.Equal(File.ReadAllBytes(featurePath), File.ReadAllBytes(aliasPath));
+    }
+
+    [Fact]
+    public void CleanupPreservesAReplacementForTheOwnedStagingDirectory()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        var repository = temp.CreateDirectory("common_modules_repo");
+        WriteManifest(repository, ("Feature.bas", "optional", string.Empty));
+        WriteSource(repository, "Feature.bas", "feature generation one");
+        var scratchRoot = temp.CreateDirectory("scratch");
+        var snapshot = new CommonModulesPackageSnapshotFactory(
+            new CommonModulesPackageReader(new CommonModulesManifestReader()),
+            scratchRoot)
+            .Capture(repository, CancellationToken.None);
+        Directory.Delete(snapshot.StagingPath, recursive: true);
+        Directory.CreateDirectory(snapshot.StagingPath);
+        var foreignPath = Path.Combine(snapshot.StagingPath, "foreign.txt");
+        File.WriteAllText(foreignPath, "foreign");
+
+        var cleanup = snapshot.Cleanup();
+
+        Assert.False(cleanup.Deleted);
+        Assert.True(cleanup.IsConclusive);
+        Assert.Equal(snapshot.StagingPath, cleanup.RetainedPath);
+        Assert.Contains(snapshot.StagingPath, cleanup.RetainedEntryPaths);
+        Assert.True(File.Exists(foreignPath));
+    }
+
+    [Fact]
+    public void CleanupPreservesAReparsePointReplacementForTheOwnedStagingDirectory()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        var repository = temp.CreateDirectory("common_modules_repo");
+        WriteManifest(repository, ("Feature.bas", "optional", string.Empty));
+        WriteSource(repository, "Feature.bas", "feature generation one");
+        var scratchRoot = temp.CreateDirectory("scratch");
+        var snapshot = new CommonModulesPackageSnapshotFactory(
+            new CommonModulesPackageReader(new CommonModulesManifestReader()),
+            scratchRoot)
+            .Capture(repository, CancellationToken.None);
+        Directory.Delete(snapshot.StagingPath, recursive: true);
+        var sentinelDirectory = temp.CreateDirectory("sentinel-directory");
+        var sentinelPath = Path.Combine(sentinelDirectory, "sentinel.txt");
+        File.WriteAllText(sentinelPath, "sentinel");
+        Directory.CreateSymbolicLink(snapshot.StagingPath, sentinelDirectory);
+
+        var cleanup = snapshot.Cleanup();
+
+        Assert.False(cleanup.Deleted);
+        Assert.True(cleanup.IsConclusive);
+        Assert.Equal(snapshot.StagingPath, cleanup.RetainedPath);
+        Assert.Contains(snapshot.StagingPath, cleanup.RetainedEntryPaths);
+        Assert.True(
+            File.GetAttributes(snapshot.StagingPath).HasFlag(FileAttributes.ReparsePoint));
+        Assert.Equal("sentinel", File.ReadAllText(sentinelPath));
     }
 
     [Fact]
@@ -463,6 +619,29 @@ public sealed class CommonModulesPackageSnapshotTests
         Assert.True(cleanup.IsConclusive);
     }
 
+    [Fact]
+    public void CaptureFailsBeforeCreatingScratchOnAnUnsupportedPlatform()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        var repository = temp.CreateDirectory("common_modules_repo");
+        WriteManifest(repository, ("Feature.bas", "optional", string.Empty));
+        WriteSource(repository, "Feature.bas", "feature generation one");
+        var scratchRoot = Path.Combine(temp.Path, "scratch-not-created");
+        var factory = new CommonModulesPackageSnapshotFactory(
+            new CommonModulesPackageReader(new CommonModulesManifestReader()),
+            scratchRoot);
+
+        Assert.Throws<PlatformNotSupportedException>(
+            () => factory.Capture(repository, CancellationToken.None));
+
+        Assert.False(Directory.Exists(scratchRoot));
+    }
+
     private static void WriteManifest(
         string repository,
         params (string ModuleFile, string Categories, string Dependencies)[] rows)
@@ -536,6 +715,34 @@ public sealed class CommonModulesPackageSnapshotTests
         }
     }
 
+    private sealed class HardLinkAfterProofCleanupObserver(string fileName)
+        : ICommonModulesPackageSnapshotCleanupObserver
+    {
+        public bool HardLinkWasCreated { get; private set; }
+
+        public int HardLinkError { get; private set; }
+
+        public string? HardLinkPath { get; private set; }
+
+        public void OnProofComplete(string path)
+        {
+            if (!Path.GetFileName(path).Equals(fileName, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            HardLinkPath = path + ".hardlink";
+            HardLinkWasCreated = CreateHardLink(
+                HardLinkPath,
+                path,
+                IntPtr.Zero);
+            if (!HardLinkWasCreated)
+            {
+                HardLinkError = Marshal.GetLastWin32Error();
+            }
+        }
+    }
+
     private sealed class DirectoryMutationAttemptCleanupObserver
         : ICommonModulesPackageSnapshotCleanupObserver
     {
@@ -587,4 +794,15 @@ public sealed class CommonModulesPackageSnapshotTests
         {
         }
     }
+
+    [DllImport(
+        "kernel32.dll",
+        EntryPoint = "CreateHardLinkW",
+        SetLastError = true,
+        CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CreateHardLink(
+        string fileName,
+        string existingFileName,
+        IntPtr securityAttributes);
 }
