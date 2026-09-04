@@ -1,38 +1,34 @@
-using System.Diagnostics;
 using System.Text.Json;
+using VbaLanguageServer.Processes;
 
 namespace VbaLanguageServer.SourceModel;
-
-internal sealed record VbaDevReferenceListProcessResult(
-    int ExitCode,
-    string StandardOutput,
-    string StandardError);
-
-internal delegate Task<VbaDevReferenceListProcessResult> VbaDevReferenceListProcessRunner(
-    string executablePath,
-    IReadOnlyList<string> arguments,
-    CancellationToken cancellationToken);
 
 internal sealed class VbaDevReferenceListCatalogDiscoveryFactory
     : IVbaProjectReferenceCatalogDiscovery,
       IVbaProjectReferenceCatalogDiscoveryBatchFactory,
-      IVbaProjectReferenceCatalogContextDiscoveryFactory
+      IVbaProjectReferenceCatalogContextDiscoveryFactory,
+      IVbaProjectReferenceCatalogCancellationCleanup
 {
     private readonly IVbaProjectReferenceCatalogDiscovery registryDiscovery;
-    private readonly string executablePath;
-    private readonly VbaDevReferenceListProcessRunner processRunner;
+    private readonly VbaDevProcessInvocationRunner processRunner;
+
+    TimeSpan IVbaProjectReferenceCatalogCancellationCleanup.CancellationCleanupTimeout =>
+        VbaDevProcessInvocation.DefaultCancellationCleanupTimeout;
 
     public VbaDevReferenceListCatalogDiscoveryFactory(
         IVbaProjectReferenceCatalogDiscovery registryDiscovery,
         string executablePath)
-        : this(registryDiscovery, executablePath, RunProcessAsync)
+        : this(
+            registryDiscovery,
+            executablePath,
+            new VbaDevProcessInvocation(executablePath).RunAsync)
     {
     }
 
     internal VbaDevReferenceListCatalogDiscoveryFactory(
         IVbaProjectReferenceCatalogDiscovery registryDiscovery,
         string executablePath,
-        VbaDevReferenceListProcessRunner processRunner)
+        VbaDevProcessInvocationRunner processRunner)
     {
         ArgumentNullException.ThrowIfNull(registryDiscovery);
         ArgumentException.ThrowIfNullOrWhiteSpace(executablePath);
@@ -45,7 +41,6 @@ internal sealed class VbaDevReferenceListCatalogDiscoveryFactory
         }
 
         this.registryDiscovery = registryDiscovery;
-        this.executablePath = executablePath;
         this.processRunner = processRunner;
     }
 
@@ -63,7 +58,6 @@ internal sealed class VbaDevReferenceListCatalogDiscoveryFactory
             VbaProjectReferenceCatalogRefreshContext context)
         => new VbaDevReferenceListCatalogDiscovery(
             CreateRegistryBatchDiscovery(),
-            executablePath,
             context,
             processRunner);
 
@@ -71,86 +65,23 @@ internal sealed class VbaDevReferenceListCatalogDiscoveryFactory
         => registryDiscovery is IVbaProjectReferenceCatalogDiscoveryBatchFactory batchFactory
             ? batchFactory.CreateBatchDiscovery()
             : registryDiscovery;
-
-    private static async Task<VbaDevReferenceListProcessResult> RunProcessAsync(
-        string executablePath,
-        IReadOnlyList<string> arguments,
-        CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = executablePath,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-        foreach (var argument in arguments)
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
-
-        using var process = new Process { StartInfo = startInfo };
-        if (!process.Start())
-        {
-            throw new InvalidOperationException(
-                $"VbaDev at '{executablePath}' could not be started for reference catalog resolution.");
-        }
-
-        var standardOutput = process.StandardOutput.ReadToEndAsync();
-        var standardError = process.StandardError.ReadToEndAsync();
-        try
-        {
-            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            try
-            {
-                if (!process.HasExited)
-                {
-                    process.Kill(entireProcessTree: true);
-                }
-
-                await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
-                await Task.WhenAll(standardOutput, standardError).ConfigureAwait(false);
-            }
-            catch (Exception exception) when (exception is InvalidOperationException
-                or System.ComponentModel.Win32Exception
-                or IOException)
-            {
-                // Cancellation remains authoritative even if the owned process already exited.
-            }
-
-            throw;
-        }
-
-        return new VbaDevReferenceListProcessResult(
-            process.ExitCode,
-            await standardOutput.ConfigureAwait(false),
-            await standardError.ConfigureAwait(false));
-    }
 }
 
 internal sealed class VbaDevReferenceListCatalogDiscovery
     : IVbaProjectReferenceCatalogDiscovery
 {
     private readonly IVbaProjectReferenceCatalogDiscovery registryDiscovery;
-    private readonly string executablePath;
     private readonly VbaProjectReferenceCatalogRefreshContext context;
-    private readonly VbaDevReferenceListProcessRunner processRunner;
+    private readonly VbaDevProcessInvocationRunner processRunner;
     private readonly object invocationGate = new();
     private Task<VbaDevReferenceListInvocationResult>? invocation;
 
     public VbaDevReferenceListCatalogDiscovery(
         IVbaProjectReferenceCatalogDiscovery registryDiscovery,
-        string executablePath,
         VbaProjectReferenceCatalogRefreshContext context,
-        VbaDevReferenceListProcessRunner processRunner)
+        VbaDevProcessInvocationRunner processRunner)
     {
         this.registryDiscovery = registryDiscovery;
-        this.executablePath = executablePath;
         this.context = context;
         this.processRunner = processRunner;
     }
@@ -168,7 +99,6 @@ internal sealed class VbaDevReferenceListCatalogDiscovery
         }
 
         var invocationResult = await GetInvocationAsync(cancellationToken)
-            .WaitAsync(cancellationToken)
             .ConfigureAwait(false);
         if (!invocationResult.IsTrusted)
         {
@@ -239,7 +169,6 @@ internal sealed class VbaDevReferenceListCatalogDiscovery
         try
         {
             var processResult = await processRunner(
-                    executablePath,
                     arguments,
                     cancellationToken)
                 .ConfigureAwait(false);
@@ -329,7 +258,7 @@ internal static class VbaDevReferenceListContract
         StringComparer.Ordinal);
 
     public static VbaDevReferenceListInvocationResult Parse(
-        VbaDevReferenceListProcessResult processResult,
+        VbaDevProcessInvocationResult processResult,
         string expectedProjectPath,
         string expectedDocumentName,
         IReadOnlyList<VbaProjectReference> expectedReferences)

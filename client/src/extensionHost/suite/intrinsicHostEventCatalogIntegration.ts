@@ -48,12 +48,28 @@ interface IntrinsicHostEventCatalogTestApi {
       readonly method: string;
       readonly parameters: unknown;
     }[];
+    readonly pendingInvocationCount: number;
   };
   completeInvocation(index: number, result: HostEventCatalogRunResult): void;
   restartLanguageClient(): Promise<void>;
 }
 
+interface CompanionExecutableTestApi {
+  snapshot(): {
+    readonly invocations: readonly {
+      readonly file: string;
+      readonly args: readonly string[];
+    }[];
+    readonly pendingInvocationCount: number;
+  };
+  completeInvocation(index: number, result: {
+    readonly stdout: string;
+    readonly stderr: string;
+  }): void;
+}
+
 interface VbaToolsExtensionHostTestApi {
+  readonly companionExecutable: CompanionExecutableTestApi;
   readonly intrinsicHostEventCatalog: IntrinsicHostEventCatalogTestApi;
 }
 
@@ -77,11 +93,44 @@ async function runTrustedActivationTest(): Promise<void> {
   );
   assert.ok(extension, 'The VBA Tools development extension must be available.');
 
-  const api = await extension.activate();
+  const api = await withTimeout(extension.activate(), 10_000);
+  const companion = api.companionExecutable;
   const catalog = api.intrinsicHostEventCatalog;
 
   assert.equal(catalog.actualWorkspaceTrusted, true);
   assert.equal(catalog.effectiveWorkspaceTrusted, true);
+  assert.deepEqual(
+    companion.snapshot().invocations.map((invocation) => invocation.args),
+    [['capabilities', '--format', 'json']]
+  );
+  assert.equal(companion.snapshot().pendingInvocationCount, 1);
+  assert.deepEqual(catalog.snapshot().invocations, []);
+
+  const formUri = Uri.file(path.join(
+    fixtureRoot,
+    'src',
+    'Book01',
+    'ProbeForm.frm'
+  ));
+  const formDocument = await workspace.openTextDocument(formUri);
+  const acceptedVersion = formDocument.version;
+  const semanticTokens = await withTimeout(commands.executeCommand<unknown>(
+    '_provideDocumentSemanticTokens',
+    formUri
+  ));
+  assert.ok(semanticTokenDataLength(semanticTokens) > 0);
+  assert.equal(formDocument.version, acceptedVersion);
+  assert.deepEqual(catalog.snapshot().invocations, []);
+  console.log(
+    'PASS semantic highlighting starts while companion resolution remains blocked'
+  );
+
+  companion.completeInvocation(0, await compatibleCapabilitiesResult(
+    extension.extensionPath
+  ));
+  await waitFor(() => catalog.snapshot().invocations.length === 1);
+  assert.equal(companion.snapshot().pendingInvocationCount, 0);
+  assert.equal(catalog.snapshot().pendingInvocationCount, 1);
   assert.deepEqual(catalog.snapshot().invocations, [{
     trigger: 'activation',
     args: ['host-event', 'list', '--format', 'json']
@@ -91,13 +140,6 @@ async function runTrustedActivationTest(): Promise<void> {
     ['started']
   );
 
-  const formUri = Uri.file(path.join(
-    fixtureRoot,
-    'src',
-    'Book01',
-    'ProbeForm.frm'
-  ));
-  const formDocument = await workspace.openTextDocument(formUri);
   const symbols = await withTimeout(commands.executeCommand<
     readonly DocumentSymbol[] | readonly SymbolInformation[] | undefined
   >('vscode.executeDocumentSymbolProvider', formUri));
@@ -108,30 +150,16 @@ async function runTrustedActivationTest(): Promise<void> {
     'PASS trusted 15-document activation starts one nonblocking environment acquisition'
   );
 
-  catalog.completeInvocation(0, {
-    exitCode: 1,
-    stdout: '',
-    stderr: 'synthetic environment discovery failure',
-    cancelled: false
-  });
+  catalog.completeInvocation(0, successfulCatalogResult);
   await waitFor(() => catalog.snapshot().transitions.some((transition) =>
-    transition.kind === 'unavailable' && transition.trigger === 'activation'
+    transition.kind === 'committed' && transition.trigger === 'activation'
   ));
   await waitFor(() => catalog.snapshot().notifications.length === 1);
-  assert.deepEqual(
-    catalog.snapshot().notifications.map((notification) => ({
-      method: notification.method,
-      parameters: notification.parameters
-    })),
-    [{
-      method: 'vba/intrinsicHostEventCatalog',
-      parameters: {
-        schemaVersion: '1.0',
-        revision: 1,
-        catalog: null
-      }
-    }]
-  );
+  assert.deepEqual(notificationSummaries(catalog), [
+    { revision: 1, available: true }
+  ]);
+  assert.equal(catalog.snapshot().pendingInvocationCount, 0);
+  await waitForCompletion(formUri, 'UserForm_Initialize');
 
   for (const [templatePath, bytes] of templateSnapshots) {
     await writeFile(templatePath, bytes);
@@ -139,7 +167,7 @@ async function runTrustedActivationTest(): Promise<void> {
   await delay(1_250);
   assert.equal(catalog.snapshot().invocations.length, 1);
   console.log(
-    'PASS startup failure and fifteen template changes start no watcher or per-document fallback'
+    'PASS startup success and fifteen template changes start no watcher or per-document fallback'
   );
 
   const refresh = commands.executeCommand('vbaTools.userFormEvents.refresh');
@@ -148,13 +176,15 @@ async function runTrustedActivationTest(): Promise<void> {
     trigger: 'explicitRefresh',
     args: ['host-event', 'list', '--format', 'json']
   });
+  assert.equal(catalog.snapshot().pendingInvocationCount, 1);
   catalog.completeInvocation(1, successfulCatalogResult);
   await withTimeout(refresh);
   await waitFor(() => catalog.snapshot().notifications.length === 2);
   assert.deepEqual(notificationSummaries(catalog), [
-    { revision: 1, available: false },
+    { revision: 1, available: true },
     { revision: 2, available: true }
   ]);
+  assert.equal(catalog.snapshot().pendingInvocationCount, 0);
   await waitForCompletion(formUri, 'UserForm_Initialize');
   console.log(
     'PASS explicit environment refresh needs no document chooser and publishes the catalog'
@@ -163,7 +193,7 @@ async function runTrustedActivationTest(): Promise<void> {
   await withTimeout(catalog.restartLanguageClient(), 10_000);
   await waitFor(() => catalog.snapshot().notifications.length === 3, 10_000);
   assert.deepEqual(notificationSummaries(catalog), [
-    { revision: 1, available: false },
+    { revision: 1, available: true },
     { revision: 2, available: true },
     { revision: 2, available: true }
   ]);
@@ -185,6 +215,7 @@ async function runUntrustedActivationTest(): Promise<void> {
   assert.ok(extension, 'The VBA Tools development extension must be available.');
 
   const api = await extension.activate();
+  const companion = api.companionExecutable;
   const catalog = api.intrinsicHostEventCatalog;
   assert.equal(catalog.actualWorkspaceTrusted, false);
   assert.equal(catalog.effectiveWorkspaceTrusted, false);
@@ -192,8 +223,11 @@ async function runUntrustedActivationTest(): Promise<void> {
   assert.deepEqual(catalog.snapshot(), {
     invocations: [],
     transitions: [],
-    notifications: []
+    notifications: [],
+    pendingInvocationCount: 0
   });
+  assert.deepEqual(companion.snapshot().invocations, []);
+  assert.equal(companion.snapshot().pendingInvocationCount, 0);
 
   const fixtureRoot = requiredFixtureRoot();
   const formUri = Uri.file(path.join(
@@ -210,6 +244,56 @@ async function runUntrustedActivationTest(): Promise<void> {
   console.log(
     'PASS untrusted activation starts no catalog acquisition while language assistance remains available'
   );
+}
+
+async function compatibleCapabilitiesResult(
+  extensionPath: string
+): Promise<{ readonly stdout: string; readonly stderr: string }> {
+  const contract = JSON.parse(await readFile(
+    path.join(extensionPath, 'vba-dev-contract.json'),
+    'utf8'
+  )) as {
+    readonly contractVersion: string;
+    readonly featureVersions: Readonly<Record<string, string>>;
+    readonly commandSchemaVersions: Readonly<Record<string, string>>;
+  };
+  return {
+    stdout: JSON.stringify({
+      toolVersion: 'extension-host-test',
+      contractVersion: contract.contractVersion,
+      featureVersions: contract.featureVersions,
+      activeWindowsCodePage: 932,
+      commands: Object.fromEntries(Object.entries(
+        contract.commandSchemaVersions
+      ).map(([command, outputSchemaVersion]) => [
+        command,
+        { outputSchemaVersion }
+      ]))
+    }),
+    stderr: ''
+  };
+}
+
+function semanticTokenDataLength(value: unknown): number {
+  if (Array.isArray(value)) {
+    return value.length;
+  }
+  if (ArrayBuffer.isView(value)) {
+    return value.byteLength;
+  }
+  if (typeof value === 'object' && value !== null) {
+    if ('byteLength' in value
+        && typeof (value as { readonly byteLength: unknown }).byteLength === 'number') {
+      return (value as { readonly byteLength: number }).byteLength;
+    }
+    if ('data' in value) {
+      return semanticTokenDataLength((value as { readonly data: unknown }).data);
+    }
+    if ('buffer' in value) {
+      return semanticTokenDataLength((value as { readonly buffer: unknown }).buffer);
+    }
+  }
+  return 0;
 }
 
 function requiredFixtureRoot(): string {

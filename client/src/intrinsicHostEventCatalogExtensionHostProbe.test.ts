@@ -48,3 +48,31 @@ test('Extension Host catalog probe exposes controlled trusted and actual untrust
   assert.equal(untrusted.actualWorkspaceTrusted, false);
   assert.equal(untrusted.effectiveWorkspaceTrusted, false);
 });
+
+test('Extension Host companion probe releases a pending invocation when its process signal aborts', async () => {
+  const probe = IntrinsicHostEventCatalogExtensionHostProbe.fromEnvironment({
+    VBA_TOOLS_EXTENSION_HOST_TEST: '1',
+    VBA_TOOLS_INTRINSIC_HOST_EVENT_CATALOG_TEST_MODE: 'controlled-trusted',
+    VBA_TOOLS_COMPANION_RESOLUTION_TEST: '1'
+  }, true, true);
+  assert.ok(probe);
+  const controller = new AbortController();
+
+  const invocation = probe.runCompanionProcess(
+    String.raw`C:\vba-tools\vba-dev.exe`,
+    ['capabilities', '--format', 'json'],
+    controller.signal
+  );
+  assert.equal(
+    probe.createCompanionApi().snapshot().pendingInvocationCount,
+    1
+  );
+
+  controller.abort();
+
+  await assert.rejects(invocation, { name: 'AbortError' });
+  assert.equal(
+    probe.createCompanionApi().snapshot().pendingInvocationCount,
+    0
+  );
+});

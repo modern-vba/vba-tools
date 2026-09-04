@@ -262,6 +262,39 @@ test('an invalidated in-flight VbaDev resolution cannot replace the fresh resolu
   assert.equal(pinnedResolution, freshResolution);
 });
 
+test('invalidating an in-flight VbaDev resolution requests process cancellation', async () => {
+  const extensionRoot = path.resolve(__dirname, '..', '..');
+  const configuredPath = path.join('D:', 'tools', 'vba-dev.exe');
+  let observedSignal: AbortSignal | undefined;
+  let signalStarted: (() => void) | undefined;
+  let release: (() => void) | undefined;
+  const started = new Promise<void>((resolve) => {
+    signalStarted = resolve;
+  });
+  const mayFinish = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const resolver = new VbaDevSessionResolver({
+    extensionRoot,
+    configuredPath,
+    requiredContract,
+    runProcess: async (_file, _args, signal) => {
+      observedSignal = signal;
+      signalStarted?.();
+      await mayFinish;
+      return { stdout: compatibleCapabilities(), stderr: '' };
+    }
+  });
+
+  const staleResolution = resolver.resolve();
+  await started;
+  resolver.invalidate();
+
+  assert.equal(observedSignal?.aborted, true);
+  release?.();
+  await staleResolution;
+});
+
 test('an invalidated in-flight VbaDev resolution cannot report stale output or notices', async () => {
   const extensionRoot = path.resolve(__dirname, '..', '..');
   const firstConfiguredPath = path.join('D:', 'missing', 'vba-dev.exe');

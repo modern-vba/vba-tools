@@ -1544,6 +1544,37 @@ public sealed class VbaLanguageWorkspaceTests
     }
 
     [Fact]
+    public void RootlessNonFileScopeDoesNotFaultALaterFileDocumentMutation()
+    {
+        const string untitledUri = "untitled:Untitled-1";
+        var fileUri = new Uri(Path.Combine(
+            Path.GetTempPath(),
+            $"vba-language-server-{Guid.NewGuid():N}.bas")).AbsoluteUri;
+        var workspace = new VbaLanguageWorkspace(
+            new VbaProjectReferenceCatalogCache(
+                VbaProjectReferenceCatalogSet.CreateBundled()));
+        workspace.OpenDocument(
+            untitledUri,
+            version: 1,
+            "Public Sub Unsaved()\nEnd Sub\n");
+        _ = workspace.CreateProjectSnapshot(untitledUri);
+
+        workspace.OpenDocument(
+            fileUri,
+            version: 1,
+            "Public Sub Initial()\nEnd Sub\n");
+        var changed = workspace.ChangeDocument(
+            fileUri,
+            version: 2,
+            "Public Sub Changed()\nEnd Sub\n");
+
+        Assert.True(changed);
+        Assert.Equal(
+            "Public Sub Changed()\nEnd Sub\n",
+            workspace.GetDocumentText(fileUri));
+    }
+
+    [Fact]
     public void WatchedDeletePreservesOpenBufferUntilCloseAndReloadClearsExclusion()
     {
         var projectRoot = Directory.CreateTempSubdirectory("vba-ls-delete-authority-").FullName;

@@ -300,6 +300,7 @@
     "test": "npm run test:extension && npm run test:devtool && npm run test:debug-adapter && npm run test:language-server && npm run test:packaging",
     "test:extension": "npm run compile && node client/out/testRunner.js",
     "test:extension-host": "npm run publish:devtool && npm run publish:debug-adapter && npm run publish:language-server && npm run compile && node client/out/extensionHost/runTests.js",
+    "measure:semantic-readiness": "npm run publish:devtool && npm run publish:language-server && npm run compile && node client/out/extensionHost/semanticReadinessPerformanceRun.js",
     "test:compatibility": "npm run compile && node --test --test-isolation=none client/out/devtool.test.js client/out/debugAdapter.test.js client/out/distributionManifest.test.js client/out/extensionContributions.test.js client/out/vscodeDebugIntegration.test.js",
     "verify:guarded-enter": "npm run test:extension && npm run test:extension-host && npm run test:packaging",
     "test:devtool": "dotnet test tools/vba-dev/tests/VbaDev.Tests/VbaDev.Tests.csproj -m:1 -p:UseSharedCompilation=false",

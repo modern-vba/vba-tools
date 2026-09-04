@@ -40,9 +40,11 @@ build, test, publish, export, and validate Excel macro workbooks from a
 When you open or change a manifest-backed VBA source, semantic highlighting
 and the other editor language features become available from one exact,
 immutable project snapshot. They do not wait for every project-wide validation
-rule to finish. Document-local syntax and validation problems can appear
-immediately; project-wide problems, including incompatible call arguments, may
-update shortly afterward.
+rule, companion capability inspection, CLI-backed reference refresh, or
+UserForm Event discovery to finish. The extension starts and initializes the
+language client first. Document-local syntax and validation problems can appear
+immediately; project-wide problems and companion-backed metadata may update
+shortly afterward.
 
 Only a complete result for the latest applicable source, manifest, and
 reference-catalog revision is published. A newer edit replaces obsolete
@@ -551,14 +553,16 @@ and publish apply those references to generated workbooks.
 ## Host Events
 
 In a trusted workspace, activation starts at most one asynchronous
-environment-scoped UserForm Event discovery. `vba-dev host-event list --format
-json` owns one hidden Excel process, creates one unsaved blank workbook and one
-temporary empty UserForm, reads the installed built-in UserForm Event surface,
-and closes without saving. The process uses an invocation-scoped private
-desktop, so Excel, the blank workbook, and any unexpected UI are not shown on
-the interactive desktop. It never opens, copies, imports, scans, or falls back
-to a project source template. Language-server startup and editor requests do
-not wait for Excel.
+environment-scoped UserForm Event discovery after the language client is
+operational. It uses the same validated, session-pinned `vba-dev` resolution as
+commands and reference discovery. `vba-dev host-event list --format json` owns
+one hidden Excel process, creates one unsaved blank workbook and one temporary
+empty UserForm, reads the installed built-in UserForm Event surface, and closes
+without saving. The process uses an invocation-scoped private desktop, so
+Excel, the blank workbook, and any unexpected UI are not shown on the
+interactive desktop. It never opens, copies, imports, scans, or falls back to a
+project source template. Language-client startup and editor requests do not
+wait for companion resolution or Excel.
 
 The resulting current catalog is shared by every authoritative `.frm`
 `FormModule`, including ad-hoc forms, by source kind rather than workbook
@@ -718,7 +722,9 @@ VBA Tools keeps source viewing and language assistance available in Restricted
 Mode, but blocks managed `vba-dev`, Microsoft Excel/VBIDE, Doctor,
 `vba-debug-adapter`, Test Explorer, debugging, and vba-dev terminal launches.
 A blocked invocation starts no managed process, changes no project, and adds no
-command entry to VBA Tools Output.
+command entry to VBA Tools Output. The language client still starts without
+resolving a companion executable, so semantic highlighting does not require
+Workspace Trust.
 
 `VBA Tools: Create Excel VBA Project` remains visible and offers **Manage
 Workspace Trust** and **Open Empty Window**. Other blocked commands offer
@@ -750,6 +756,7 @@ cannot influence executable selection.
 | Language features do not start | VBA Tools currently supports Windows only. Open the VBA Tools output channel and check whether the bundled language server launched. |
 | Semantic highlighting appears before every project problem has updated | This is expected. Highlighting and editor queries use the ready immutable project snapshot, while complete project-wide validation settles in bounded background work. |
 | Semantic highlighting remains unavailable after opening a source | Open the VBA Tools output channel and enable `vbaLanguageServer.trace.server` if more detail is needed. Editor readiness does not wait for Excel, a workbook, or project-wide diagnostics. |
+| `vba-dev capabilities` is delayed or companion-backed metadata is still unavailable | Semantic highlighting should still start. Companion resolution, CLI-backed reference refresh, and UserForm Event discovery run only after the language client is operational. Review VBA Tools Output for the configured and bundled candidate results and correct `vbaTools.devtool.path` if needed. A later successful managed command publishes that same session-pinned resolution to the running language server without another lifecycle probe; reloading the window starts a new automatic attempt. |
 | Workbook commands fail before opening Excel | Run `VBA Tools: Doctor`, review the `Project automation` section, and confirm that the workspace contains `vba-project.json`. |
 | Excel or a dialog appears during build, test, publish, import, export, project creation, Host Event discovery, reference probing, or project Doctor | This is an automation-isolation failure, not expected behavior. Preserve the VBA Tools Output failure, including any PID, HWND, desktop, class, title, and phase evidence, and report it. The command does not fall back to visible Excel. |
 | F5 cannot establish VBE debugging | Run `VBA Tools: Doctor` and review the `VBE debugging` checks and remediation in the VBA Tools output channel. |

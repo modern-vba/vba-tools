@@ -201,6 +201,39 @@ and owns safe member-local definition reuse. The internal
 `VbaSemanticTokenLegend` owns protocol token metadata. Neither Module creates
 an alternate project-scope query authority.
 
+### Startup readiness boundaries
+
+Extension activation starts and initializes the language client before it
+resolves or validates `vba-dev`, starts Excel, or acquires UserForm Event
+metadata. `initialize`, restored-document `didOpen`, and the first
+`textDocument/semanticTokens/full` request therefore need only the language
+server and source snapshot path. `InteractiveSemanticReadiness` is independent
+from `CompanionExecutableReadiness`, project reference refresh completion, and
+the current intrinsic Host Event catalog.
+
+After the language client is operational, a trusted window starts the one
+session `CompanionExecutableResolution` in the background. The same resolver
+owns configured-to-bundled fallback, actionable warnings, and the effective
+absolute path used by commands, Doctor, UserForm Event discovery, and
+language-server reference discovery. A successful resolution is sent through
+the closed schema-`1.0` `vba/companionExecutable` notification with the
+validated `reference list` output schema version. The language server pins the
+first valid path, rejects a later replacement, and schedules latest-only
+background refresh for every still-active project authority. Notification
+application itself is non-coalescing background scheduler work: it creates no
+ordered barrier behind an active read and does not fence a later
+higher-priority editor request. No reload or restart is required. A client
+restart replays the pinned resolution without probing again.
+
+A standalone language server can receive one absolute `--vba-dev` path along
+with stdio selection. It starts the protocol loop first and validates that path
+asynchronously. Until validation succeeds, or if the executable is missing,
+changed, incompatible, cancelled, or fails, registry-only fail-closed discovery
+remains active and source language assistance continues. Restricted Mode does
+not read companion-path settings or resolve, validate, or launch a managed
+process; it still starts the language client and provides safe source language
+assistance.
+
 ### Interactive Semantic Readiness and project diagnostics
 
 `InteractiveSemanticReadiness` means that one exact immutable
@@ -253,6 +286,37 @@ refresh. Retirement removes both routes and discards the authority's mailbox
 work. A late catalog settle cannot reactivate a retired authority; only a new
 document/project lifecycle can establish fresh routing.
 
+The extension owns one resolver for every managed consumer in the window. A
+total capability-resolution failure starts no automatic lifecycle retry and
+does not establish a pin. If a later managed command succeeds after the
+installation or setting is corrected, the resolver sends that exact frozen
+resolution to the existing language-server lifecycle, which publishes it
+without running another capability probe.
+
+### Companion process invocation
+
+Side-effect-free companion capability inspection and background CLI-backed
+reference discovery use one language-server-local `VbaDevProcessInvocation`.
+The session-pinned absolute executable is fixed outside each command caller;
+the caller supplies only its ordered arguments and interprets its own JSON
+contract after the one-shot process result completes.
+
+The process Module starts stdout and stderr drain together, returns nonzero exit
+without inventing command meaning, and owns the cancellation race. Cancellation
+after start while exit or either stream drain remains pending requests one
+process-tree termination and waits without the cancelled token for exit and
+complete stream drain within a bounded cleanup deadline before returning the
+authoritative cancellation. Reference-catalog shutdown extends its producer
+wait by the process Module's declared cleanup budget, and batch discovery
+awaits the shared invocation through cancellation instead of detaching a
+per-reference waiter. Missing that deadline is a lifecycle failure. Interactive
+editor requests neither invoke this
+Module nor wait for it. Debug-adapter Job ownership and stdin-based cooperative
+cancellation remain separate Seams. This lifecycle adds a dependency only from
+the language server to the public `vba-dev` process contract and adds no reverse
+dependency to `VbaDev`. The pre-existing parser reference from `VbaDev` to a
+language-server-owned project is a separate migration tracked by issue 361.
+
 ### Interactive work scheduler
 
 `VbaInteractiveWorkScheduler` owns mutation ordering, immutable request
@@ -269,7 +333,12 @@ retain response ownership even when responses finish out of order, and
 `LspMessageTransport` serializes complete output frames.
 
 Latency-critical reads reserve capacity ahead of normal, bulk, and background
-work. Deterministic aging prevents starvation.
+work. Deterministic aging prevents starvation. Companion notification capture
+pins the first valid path in input order, then explicitly dispatches only the
+prepared refresh application on the bounded executor before its synchronous
+prefix runs; a late companion refresh therefore cannot occupy the scheduler
+pump while editor work arrives. Other background work keeps its ordinary
+scheduler dispatch-start ordering.
 `VbaLatestOnlyBackgroundMailbox` owns pending replacement, active authority,
 ready FIFO, capacity retry, and stop behavior for project validation,
 diagnostics publication, and catalog refresh-start work. It takes the latest
@@ -289,6 +358,14 @@ unavailable state. This transport version is independent from the `host-event
 list --format json` CLI schema and from source, workspace, project, or document
 revisions.
 
+The automatic acquisition is scheduled once per trusted extension activation,
+only after the language client is operational. It joins the same pinned
+`CompanionExecutableResolution` used by every extension consumer, so a delayed
+capability probe delays only the managed `host-event list` process, not language
+client startup or semantic requests. An explicit refresh uses the existing
+catalog lifecycle and current pinned resolver state. No automatic retry starts
+after failure.
+
 Admission parses the complete nested schema before mutation scheduling. Because
 the catalog is environment-wide, pending notifications are ranked by their
 single revision and the ordered lane retains only the greatest queued revision.
@@ -298,11 +375,11 @@ manifest-backed and ad-hoc project snapshot and diagnostic inventory. The
 payload carries no project, document, source-template, component,
 `VbaProjectName`, fingerprint, or source-association context.
 
-After language-client start or restart, the extension replays the latest
-current in-session catalog without running discovery again. It persists no
-catalog across extension activations. Every authoritative `.frm` `FormModule`
-binds the current catalog by source kind; no manifest or template association
-is required.
+After language-client start or restart, the extension replays both the pinned
+companion selection and latest current in-session Event catalog without running
+either discovery again. It persists no catalog across extension activations.
+Every authoritative `.frm` `FormModule` binds the current catalog by source
+kind; no manifest or template association is required.
 
 A current catalog provides authoritative built-in UserForm Event evidence. An
 unavailable catalog supplies no advisory replacement and is indeterminate, not
@@ -463,6 +540,11 @@ Reference-catalog preload and discovery are project-lifecycle background work,
 not source-edit work. Interactive requests read the best committed catalog and
 never await discovery. A catalog commit re-enters the ordered mutation lane and
 invalidates only scopes whose selected reference state changed.
+Before `CompanionExecutableReadiness`, registry discovery remains available and
+context-specific CLI work is absent. A successful late pin forces one
+latest-only refresh of each active authority even when its selection fingerprint
+has not changed; normal lifecycle and stale-generation fences govern every
+result.
 Refresh-start plans fence each selected `VbaProjectAuthorityIdentity`,
 independently of the typed manifest-document identity used as the mailbox
 authority. Manifest replacement, document removal, and deactivation invalidate
@@ -476,6 +558,7 @@ discarding fresh peer scopes from the same plan.
 | Direct `ModuleMember` source-window parse | Recovery, boundary/header/terminator change, invalid window, cross-member conditional compilation, or shape mismatch | Full-module parse |
 | Watcher-fed scoped source invalidation | Source relationship is unknown or a watcher reports a structural change | Rebuild the affected project scope |
 | Bounded concurrent immutable reads | `VBA_TOOLS_INTERACTIVE_SERIAL_WORKER=1` rollback mode | Execute captured reads serially with the same visible results |
+| Background companion resolution or publication | Missing, changed, incompatible, cancelled, delayed, stale-generation, or failed candidate | Keep language assistance operational with registry-only discovery; publish no path and let a later explicit command or new activation use the resolver's established policy |
 | Background catalog preload/discovery | Cache miss, cancellation, ambiguity, or refresh failure | Continue with bundled or last-known-good committed catalogs |
 | Exact-version guarded Enter | Requested revision is stale, pending, closed, or mixed | Return no insertion plan and let native Enter behavior continue |
 | Background Project Validation Diagnostics | A run is superseded, cancelled, closed, retired, or fails before a complete result exists | Publish no partition, release the run, retain the ready Semantic Inventory and last accepted unchanged-member diagnostics, and allow later current input to run |
@@ -486,6 +569,38 @@ Fallbacks preserve correctness and availability; they are not alternate
 feature-owned coordination paths.
 
 ## Performance verification
+
+### Restored-editor activation readiness
+
+The Windows Release end-to-end activation run restores one real
+CommonModules editor as the first VBA document and holds the companion
+`capabilities --format json` invocation behind a deterministic barrier. It
+records extension activation, language-client start and initialization,
+`didOpen`, the first `textDocument/semanticTokens/full` request, and the first
+exact nonempty token response. That response must arrive within 30 seconds and
+before the barrier is released. The measurement therefore proves that
+`CompanionExecutableReadiness`, CLI-backed reference discovery, and UserForm
+Event acquisition are not hidden prerequisites for semantic highlighting.
+Its semantic snapshot boundary is the request-identity-matched scheduler
+`.captured` record emitted after immutable read capture returns, not the earlier
+admission record.
+
+After the timed semantic assertion, the measurement releases capability
+inspection, awaits activation, records companion notification completion, and
+completes the automatic UserForm Event acquisition successfully so teardown
+retains no pending probe. Deterministic language-server lifecycle tests, rather
+than this wall-clock report, prove that the late pin forces the corresponding
+latest-only active-project reference refresh through settlement. The Extension
+Host test proves the same blocked-probe ordering followed by successful
+automatic UserForm Event publication. A separate Restricted Mode run reaches
+the safe semantic path with no companion invocation at all.
+
+The accepted report identifies the source and corpus revision, exact restored
+file, line and document counts, build configuration, Windows and hardware
+details, cache state, competing load, timing source, and the five timed phases
+through the semantic-token response. It states whether OS filesystem caches
+were controlled and records the post-assertion barrier release and managed-work
+settlement separately from that latency interval.
 
 ### Cold manifest-backed semantic readiness
 
@@ -529,7 +644,9 @@ An accompanying end-to-end process run is supplemental evidence and records
 initialization, `didOpen`, and `textDocument/semanticTokens/full` response time. Set
 `VBA_TOOLS_INTERACTIVE_ADMISSION_DIRECTORY` to an empty temporary directory to
 capture scheduler phase files. Each `.admitted` file records `inputSequence`,
-`readFence`, `kind`, `method`, `requestId`, and `admissionMilliseconds`; each
+`readFence`, `kind`, `method`, `requestId`, and `admissionMilliseconds`. Each
+successfully captured immutable read writes a `.captured` file with the same
+identity and `captureMilliseconds` after its capture callback returns. Each
 `.completed` file records the same identity plus `queueMilliseconds`,
 `executionMilliseconds`, `cancelled`, and `faulted`. Preserve and report the
 records for `textDocument/didOpen`, `textDocument/semanticTokens/full`,
@@ -552,9 +669,10 @@ does not affect the two performance thresholds.
 | Cold-cache definition | Fresh process and empty in-memory workspace; state explicitly whether filesystem/OS caches were controlled |
 | Samples | Warm-up policy, measured-run count, individual values, aggregation, and outlier policy |
 | Timing source | Stopwatch boundary, process observation, and scheduler timing-directory path |
+| Extension activation phases | Activation start; language-server process start; initialize; restored-document `didOpen`; one exactly correlated semantic-token request and nonempty response; then separately companion barrier release, `vba/companionExecutable` completion, and successful automatic UserForm Event publication |
 | Snapshot phases | `capture`, `scopeCapture`, `snapshotAdmission`, `diskInventory`, `semanticInventory`, `storeReturn`, and `interactiveSemanticReadiness` |
 | Separate projections | Semantic-token projection from the returned inventory and eventual Project Validation Diagnostics |
-| Supplemental LSP phases | Initialize; `didOpen` admission/queue/execution; semantic-token admission/queue/execution/response; `workspace/diagnostic`; `textDocument/diagnostic` publication |
+| Supplemental LSP phases | Initialize; `didOpen` admission/queue/execution; semantic-token admission/capture/queue/execution/response; `workspace/diagnostic`; `textDocument/diagnostic` publication |
 | Correctness | Semantic-token revision/content assertion and final project-diagnostic equivalence result |
 
 ### Warm and mixed-load budgets

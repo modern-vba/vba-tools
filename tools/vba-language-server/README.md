@@ -89,6 +89,32 @@ building, testing, publishing, exporting, CommonModules updates, and project
 reference manifest edits stay in `vba-dev`; the language server owns editor
 language features.
 
+The VS Code extension starts and initializes the language client before it
+resolves `vba-dev`. After the client is operational in a trusted window, the
+extension sends the first validated session path through the closed
+`vba/companionExecutable` schema-`1.0` notification. The server pins that path
+one way, rejects malformed or replacement notifications, and applies accepted
+notifications as non-coalescing background scheduler work. That work creates no
+ordered barrier behind an active read and does not fence a later higher-priority
+editor request. It starts latest-only background reference refresh for active
+projects. Interactive requests remain available with registry-only discovery
+before the notification and after any companion failure.
+
+For standalone use, pass one absolute companion path together with stdio:
+
+```text
+vba-language-server --stdio --vba-dev C:\absolute\path\to\vba-dev.exe
+```
+
+The protocol loop starts before the server asynchronously validates that
+candidate with `vba-dev capabilities --format json` and requires `reference
+list` output schema `1.0`. It never searches `PATH`, infers a sibling
+executable, or substitutes a failed candidate. Both capability inspection and
+CLI-backed reference discovery use the language-server-local one-shot process
+lifecycle. This adds no reverse dependency to `vba-dev`; the pre-existing
+language-server-owned parser reference remains a separate migration tracked by
+issue 361.
+
 The VS Code extension owns one environment-scoped UserForm Event catalog. It
 sends `vba/intrinsicHostEventCatalog` schema `1.0` notifications containing a
 monotonically increasing revision and either one complete catalog or `null` to
@@ -208,6 +234,23 @@ dotnet test tools/vba-language-server/tests/VbaLanguageServer.Tests/VbaLanguageS
 
 ### Semantic-readiness benchmark evidence
 
+The Windows Release Extension Host end-to-end check restores one real
+CommonModules editor, blocks companion capability inspection behind a
+deterministic barrier, and requires the first exact nonempty semantic-token
+response within 30 seconds before releasing that barrier. Record activation,
+language-server process start, initialize, `didOpen`, and one exactly correlated
+semantic-token request, successful immutable snapshot capture, and response.
+The snapshot boundary comes from the request's identity-matched `.captured`
+record, never from its earlier scheduler admission. The report must also
+identify the source and corpus revision, exact restored file, document and line
+counts, Windows and hardware details, cache state, and competing load. After
+the timed assertion, release the barrier, await activation and
+companion-notification completion, publish one successful automatic UserForm
+Event catalog, and prove no test probe remains pending. Deterministic
+language-server tests separately prove that the late pin's latest-only
+active-project reference refresh settles. The Restricted Mode variant invokes
+no managed process.
+
 The CommonModules cold benchmark uses a fresh Release workspace and an empty
 in-memory project-snapshot cache. Complete fixture and workspace setup before
 the timed interval. Start that interval immediately before
@@ -236,11 +279,14 @@ does not replace the real CommonModules timing run.
 For a supplemental end-to-end LSP process run, set
 `VBA_TOOLS_INTERACTIVE_ADMISSION_DIRECTORY` to an empty temporary directory.
 The server writes one `.admitted` file containing `inputSequence`, `readFence`,
-`kind`, `method`, `requestId`, and `admissionMilliseconds`, followed by one
-`.completed` file containing the same identity plus `queueMilliseconds`,
-`executionMilliseconds`, `cancelled`, and `faulted`. Keep separate phase
-records for `textDocument/didOpen`, `textDocument/semanticTokens/full`,
-`workspace/diagnostic`, and `textDocument/diagnostic`.
+`kind`, `method`, `requestId`, and `admissionMilliseconds`. A successfully
+captured immutable read also writes one `.captured` file with that exact
+identity and `captureMilliseconds`; this is emitted only after the capture
+callback returns. One `.completed` file contains the same identity plus
+`queueMilliseconds`, `executionMilliseconds`, `cancelled`, and `faulted`. Keep
+separate phase records for `textDocument/didOpen`,
+`textDocument/semanticTokens/full`, `workspace/diagnostic`, and
+`textDocument/diagnostic`.
 
 Run the deterministic blocked-validation process case with that variable set,
 then preserve the timing directory with the verification evidence:
@@ -260,7 +306,7 @@ Record the following fields with every result:
 | Cache/sample policy | Fresh-process and in-memory-cache definition, filesystem/OS-cache treatment, warm-ups, samples, aggregation, outliers |
 | Snapshot phases | `capture`, `scopeCapture`, `snapshotAdmission`, `diskInventory`, `semanticInventory`, `storeReturn`, `interactiveSemanticReadiness` |
 | Separate projections | Semantic-token projection from the returned inventory, eventual Project Validation Diagnostics |
-| Supplemental LSP phases | Initialize; `didOpen` admission/queue/execution; semantic-token admission/queue/execution/response; `workspace/diagnostic`; `textDocument/diagnostic` publication |
+| Supplemental LSP phases | Initialize; `didOpen` admission/queue/execution; semantic-token admission/capture/queue/execution/response; `workspace/diagnostic`; `textDocument/diagnostic` publication |
 | Correctness | Token revision/content assertion and final project-diagnostic equivalence |
 
 The test output uses `not measured` instead of silently omitting a field it

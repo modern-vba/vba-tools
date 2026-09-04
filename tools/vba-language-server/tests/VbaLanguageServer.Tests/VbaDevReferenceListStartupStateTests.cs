@@ -1,4 +1,5 @@
 using VbaLanguageServer.Lsp;
+using VbaLanguageServer.Processes;
 using VbaLanguageServer.SourceModel;
 using Xunit;
 
@@ -10,14 +11,14 @@ public sealed class VbaDevReferenceListStartupStateTests
     public async Task Supplied_absolute_executable_is_validated_once_and_pinned_exactly()
     {
         var executablePath = Path.GetFullPath(Path.Combine("tools", "vba-dev.exe"));
-        var calls = new List<(string File, IReadOnlyList<string> Arguments)>();
+        var calls = new List<IReadOnlyList<string>>();
 
         var state = await VbaDevReferenceListStartupState.ResolveAsync(
             ["--vba-dev", executablePath],
-            (file, arguments, _) =>
+            (arguments, _) =>
             {
-                calls.Add((file, arguments));
-                return Task.FromResult(new VbaDevCapabilitiesProcessResult(
+                calls.Add(arguments);
+                return Task.FromResult(new VbaDevProcessInvocationResult(
                     0,
                     """
                     {
@@ -35,8 +36,33 @@ public sealed class VbaDevReferenceListStartupStateTests
         Assert.Equal(executablePath, state.ExecutablePath);
         Assert.Null(state.WarningMessage);
         var call = Assert.Single(calls);
-        Assert.Equal(executablePath, call.File);
-        Assert.Equal(["capabilities", "--format", "json"], call.Arguments);
+        Assert.Equal(["capabilities", "--format", "json"], call);
+    }
+
+    [Fact]
+    public async Task Stdio_transport_argument_can_precede_or_follow_the_companion_pair()
+    {
+        var executablePath = Path.GetFullPath(Path.Combine("tools", "vba-dev.exe"));
+        var argumentSets = new[]
+        {
+            new[] { "--stdio", "--vba-dev", executablePath },
+            new[] { "--vba-dev", executablePath, "--stdio" }
+        };
+
+        foreach (var arguments in argumentSets)
+        {
+            var state = await VbaDevReferenceListStartupState.ResolveAsync(
+                arguments,
+                (_, _) => Task.FromResult(new VbaDevProcessInvocationResult(
+                    0,
+                    """
+                    {"commands":{"reference list":{"outputSchemaVersion":"1.0"}}}
+                    """,
+                    "")));
+
+            Assert.True(state.IsAvailable);
+            Assert.Equal(executablePath, state.ExecutablePath);
+        }
     }
 
     public static IEnumerable<object[]> InvalidStartupArguments()
@@ -46,6 +72,7 @@ public sealed class VbaDevReferenceListStartupStateTests
         yield return [new[] { "--vba-dev" }];
         yield return [new[] { "--vba-dev", "vba-dev.exe" }];
         yield return [new[] { "--other", executablePath }];
+        yield return [new[] { "--stdio", "--stdio", "--vba-dev", executablePath }];
         yield return [new[] { "--vba-dev", executablePath, "--vba-dev", executablePath }];
     }
 
@@ -58,7 +85,7 @@ public sealed class VbaDevReferenceListStartupStateTests
 
         var state = await VbaDevReferenceListStartupState.ResolveAsync(
             arguments,
-            (_, _, _) =>
+            (_, _) =>
             {
                 processCalls++;
                 throw new InvalidOperationException("The process must not start.");
@@ -78,6 +105,9 @@ public sealed class VbaDevReferenceListStartupStateTests
         yield return [0, """{"commands":{}}"""];
         yield return [0, """{"commands":{"reference list":{}}}"""];
         yield return [0, """{"commands":{"reference list":{"outputSchemaVersion":"0.9"}}}"""];
+        yield return [0, """{"commands":{"reference list":{"outputSchemaVersion":"1.0"}},"commands":{"reference list":{"outputSchemaVersion":"1.0"}}}"""];
+        yield return [0, """{"commands":{"reference list":{"outputSchemaVersion":"0.9"},"reference list":{"outputSchemaVersion":"1.0"}}}"""];
+        yield return [0, """{"commands":{"reference list":{"outputSchemaVersion":"0.9","outputSchemaVersion":"1.0"}}}"""];
     }
 
     [Theory]
@@ -91,10 +121,10 @@ public sealed class VbaDevReferenceListStartupStateTests
 
         var state = await VbaDevReferenceListStartupState.ResolveAsync(
             ["--vba-dev", executablePath],
-            (_, _, _) =>
+            (_, _) =>
             {
                 processCalls++;
-                return Task.FromResult(new VbaDevCapabilitiesProcessResult(
+                return Task.FromResult(new VbaDevProcessInvocationResult(
                     exitCode,
                     standardOutput,
                     "probe error"));
@@ -114,7 +144,7 @@ public sealed class VbaDevReferenceListStartupStateTests
 
         var state = await VbaDevReferenceListStartupState.ResolveAsync(
             ["--vba-dev", executablePath],
-            (_, _, _) =>
+            (_, _) =>
             {
                 processCalls++;
                 throw new FileNotFoundException("The executable does not exist.");
@@ -142,8 +172,8 @@ public sealed class VbaDevReferenceListStartupStateTests
                 null,
                 "CLI-backed reference catalog resolution is disabled."));
 
-        Assert.IsType<VbaDevReferenceListCatalogDiscoveryFactory>(available);
-        Assert.Same(registryDiscovery, unavailable);
+        Assert.True(available.IsCompanionPinned);
+        Assert.False(unavailable.IsCompanionPinned);
     }
 
     private sealed class StubRegistryDiscovery : IVbaProjectReferenceCatalogDiscovery

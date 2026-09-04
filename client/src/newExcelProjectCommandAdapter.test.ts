@@ -16,7 +16,7 @@ test('extension activation owns one guided Excel project coordinator and invalid
   );
   assert.match(
     extensionSource,
-    /invalidateManagedToolingState: \(\) => \{\s*vbaDevResolver\.invalidate\(\);\s*backgroundVbaDevResolver\.invalidate\(\);\s*newExcelProjectCommand\.invalidatePreflight\(\);\s*\}/
+    /invalidateManagedToolingState: \(\) => \{\s*vbaDevResolver\.invalidate\(\);\s*newExcelProjectCommand\.invalidatePreflight\(\);\s*\}/
   );
   assert.match(
     extensionSource,

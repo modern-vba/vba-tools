@@ -1231,13 +1231,28 @@ export async function runGuardedEnterFeasibilityTests(): Promise<void> {
           }
         };
       });
+      let awaySelectionObserved = false;
+      const selectionSubscription = window.onDidChangeTextEditorSelection((event) => {
+        if (
+          event.textEditor === editor
+          && event.selections.length === 1
+          && event.selections[0].isEmpty
+          && event.selections[0].active.isEqual(end)
+        ) {
+          awaySelectionObserved = true;
+        }
+      });
 
       try {
         await executeGuardedEnter();
         await waitFor(() => request !== undefined);
         const nativeCursor = new Position(1, 0);
         editor.selection = new Selection(end, end);
-        await delay(0);
+        await waitFor(
+          () => awaySelectionObserved,
+          5_000,
+          () => `current selection: ${formatPosition(editor.selection.active)}`
+        );
         editor.selection = new Selection(nativeCursor, nativeCursor);
 
         assert.ok(request);
@@ -1252,6 +1267,7 @@ export async function runGuardedEnterFeasibilityTests(): Promise<void> {
         assert.equal(document.getText(), `${originalText}${lineEnding}`);
         assert.equal(document.getText().includes('End Sub'), false);
       } finally {
+        selectionSubscription.dispose();
         provider.dispose();
         await commands.executeCommand('workbench.action.closeActiveEditor');
       }

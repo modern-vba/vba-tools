@@ -1,17 +1,7 @@
-using System.Diagnostics;
 using System.Text.Json;
+using VbaLanguageServer.Processes;
 
 namespace VbaLanguageServer.Lsp;
-
-internal sealed record VbaDevCapabilitiesProcessResult(
-    int ExitCode,
-    string StandardOutput,
-    string StandardError);
-
-internal delegate Task<VbaDevCapabilitiesProcessResult> VbaDevCapabilitiesProcessRunner(
-    string executablePath,
-    IReadOnlyList<string> arguments,
-    CancellationToken cancellationToken);
 
 internal sealed record VbaDevReferenceListStartupState(
     string? ExecutablePath,
@@ -24,35 +14,53 @@ internal sealed record VbaDevReferenceListStartupState(
 
     public bool IsAvailable => ExecutablePath is not null;
 
-    public static Task<VbaDevReferenceListStartupState> ResolveAsync(
+    public static async Task<VbaDevReferenceListStartupState> ResolveAsync(
         IReadOnlyList<string> arguments,
         CancellationToken cancellationToken = default)
-        => ResolveAsync(arguments, RunProcessAsync, cancellationToken);
+    {
+        if (!TryGetExecutablePath(arguments, out var executablePath))
+        {
+            return InvalidStartupArguments();
+        }
+
+        var process = new VbaDevProcessInvocation(executablePath);
+        return await ResolveValidatedExecutableAsync(
+                executablePath,
+                process.RunAsync,
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
 
     public static async Task<VbaDevReferenceListStartupState> ResolveAsync(
         IReadOnlyList<string> arguments,
-        VbaDevCapabilitiesProcessRunner runProcess,
+        VbaDevProcessInvocationRunner runProcess,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(arguments);
         ArgumentNullException.ThrowIfNull(runProcess);
 
-        if (arguments.Count != 2
-            || !arguments[0].Equals("--vba-dev", StringComparison.Ordinal)
-            || string.IsNullOrWhiteSpace(arguments[1])
-            || !Path.IsPathFullyQualified(arguments[1]))
+        if (!TryGetExecutablePath(arguments, out var executablePath))
         {
-            return Unavailable(
-                "VBA Language Server did not receive one absolute --vba-dev executable path.");
+            return InvalidStartupArguments();
         }
 
-        var executablePath = arguments[1];
+        return await ResolveValidatedExecutableAsync(
+                executablePath,
+                runProcess,
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private static async Task<VbaDevReferenceListStartupState> ResolveValidatedExecutableAsync(
+        string executablePath,
+        VbaDevProcessInvocationRunner runProcess,
+        CancellationToken cancellationToken)
+    {
         try
         {
             var result = await runProcess(
-                executablePath,
                 CapabilitiesArguments,
-                cancellationToken);
+                cancellationToken).ConfigureAwait(false);
             if (result.ExitCode != 0)
             {
                 return Unavailable(
@@ -75,48 +83,86 @@ internal sealed record VbaDevReferenceListStartupState(
         }
     }
 
+    private static bool TryGetExecutablePath(
+        IReadOnlyList<string> arguments,
+        out string executablePath)
+    {
+        ArgumentNullException.ThrowIfNull(arguments);
+        executablePath = "";
+        var stdioSeen = false;
+        var executableSeen = false;
+        for (var index = 0; index < arguments.Count; index++)
+        {
+            var argument = arguments[index];
+            if (argument.Equals("--stdio", StringComparison.Ordinal))
+            {
+                if (stdioSeen)
+                {
+                    return false;
+                }
+
+                stdioSeen = true;
+                continue;
+            }
+
+            if (!argument.Equals("--vba-dev", StringComparison.Ordinal)
+                || executableSeen
+                || index + 1 >= arguments.Count
+                || string.IsNullOrWhiteSpace(arguments[index + 1])
+                || !Path.IsPathFullyQualified(arguments[index + 1]))
+            {
+                return false;
+            }
+
+            executablePath = arguments[++index];
+            executableSeen = true;
+        }
+
+        return executableSeen;
+    }
+
+    private static VbaDevReferenceListStartupState InvalidStartupArguments()
+        => Unavailable(
+            "VBA Language Server did not receive one absolute --vba-dev executable path.");
+
     private static bool HasRequiredReferenceListCapability(JsonElement root)
         => root.ValueKind == JsonValueKind.Object
-            && root.TryGetProperty("commands", out var commands)
+            && TryGetUniqueProperty(root, "commands", out var commands)
             && commands.ValueKind == JsonValueKind.Object
-            && commands.TryGetProperty("reference list", out var referenceList)
+            && TryGetUniqueProperty(commands, "reference list", out var referenceList)
             && referenceList.ValueKind == JsonValueKind.Object
-            && referenceList.TryGetProperty("outputSchemaVersion", out var schemaVersion)
+            && TryGetUniqueProperty(
+                referenceList,
+                "outputSchemaVersion",
+                out var schemaVersion)
             && schemaVersion.ValueKind == JsonValueKind.String
             && schemaVersion.GetString() == RequiredSchemaVersion;
 
-    private static async Task<VbaDevCapabilitiesProcessResult> RunProcessAsync(
-        string executablePath,
-        IReadOnlyList<string> arguments,
-        CancellationToken cancellationToken)
+    private static bool TryGetUniqueProperty(
+        JsonElement element,
+        string propertyName,
+        out JsonElement value)
     {
-        var startInfo = new ProcessStartInfo
+        value = default;
+        var found = false;
+        foreach (var property in element.EnumerateObject())
         {
-            FileName = executablePath,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-        foreach (var argument in arguments)
-        {
-            startInfo.ArgumentList.Add(argument);
+            if (!property.Name.Equals(propertyName, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (found)
+            {
+                value = default;
+                return false;
+            }
+
+            value = property.Value;
+            found = true;
         }
 
-        using var process = new Process { StartInfo = startInfo };
-        if (!process.Start())
-        {
-            throw new InvalidOperationException(
-                $"VbaDev at '{executablePath}' could not be started.");
-        }
-
-        var standardOutput = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        var standardError = process.StandardError.ReadToEndAsync(cancellationToken);
-        await process.WaitForExitAsync(cancellationToken);
-        return new VbaDevCapabilitiesProcessResult(
-            process.ExitCode,
-            await standardOutput,
-            await standardError);
+        return found;
     }
 
     private static VbaDevReferenceListStartupState Unavailable(string reason)

@@ -39,13 +39,6 @@ export type ManagedToolingCommandOperations = Readonly<Record<
   ManagedToolingCommandOperation
 >>;
 
-export async function resolveCompanionExecutableForLanguageActivation<T>(
-  isTrusted: boolean,
-  resolve: () => PromiseLike<T>
-): Promise<T | undefined> {
-  return isTrusted ? resolve() : undefined;
-}
-
 export interface ManagedToolingWorkspaceTrustGateOptions {
   isTrusted: () => boolean;
   invalidateManagedToolingState: () => void;

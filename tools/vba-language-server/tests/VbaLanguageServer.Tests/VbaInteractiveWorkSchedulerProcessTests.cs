@@ -673,7 +673,7 @@ public sealed class VbaInteractiveWorkSchedulerProcessTests
                     {
                         textDocument = new { uri }
                     });
-                await WaitForMatchingFileCreatedAsync(
+                var newReadAdmissionPath = await WaitForMatchingFileCreatedAsync(
                     admissionDirectory,
                     fileName => fileName.EndsWith("-number-3.admitted", StringComparison.Ordinal),
                     TimeSpan.FromSeconds(5));
@@ -683,6 +683,23 @@ public sealed class VbaInteractiveWorkSchedulerProcessTests
                         "-mutation-textDocument_didChange-none.completed",
                         StringComparison.Ordinal),
                     TimeSpan.FromSeconds(5));
+                var newReadCapturePath = await WaitForMatchingFileCreatedAsync(
+                    admissionDirectory,
+                    fileName => fileName.EndsWith(
+                        "-request-textDocument_documentSymbol-number-3.captured",
+                        StringComparison.Ordinal),
+                    TimeSpan.FromSeconds(5));
+
+                Assert.Equal(
+                    ReadTimingValue(newReadAdmissionPath, "inputSequence"),
+                    ReadTimingValue(newReadCapturePath, "inputSequence"));
+                Assert.Equal(
+                    ReadTimingValue(newReadAdmissionPath, "readFence"),
+                    ReadTimingValue(newReadCapturePath, "readFence"));
+                Assert.Contains("requestId=number:3", File.ReadLines(newReadCapturePath));
+                Assert.Contains(
+                    File.ReadLines(newReadCapturePath),
+                    line => line.StartsWith("captureMilliseconds=", StringComparison.Ordinal));
 
                 Assert.False(File.Exists(cancelledFile));
                 File.WriteAllText(releaseFile, "release");

@@ -34,22 +34,28 @@ public sealed class VbaProjectManifestWorkspaceConcurrencyTests
         var activeUri = new Uri(Path.Combine(root, "Module1.bas")).AbsoluteUri;
         var fileSystem = new BlockingManifestFileSystem();
         var workspace = new VbaProjectManifestWorkspace(fileSystem);
-        var openTask = Task.Run(
+        var openTask = Task.Factory.StartNew(
             () => workspace.OpenManifest(
                 manifestUri,
                 documentVersion: 1,
-                "{ invalid"));
-        await fileSystem.ReadStarted.Task.WaitAsync(
-            TimeSpan.FromSeconds(2));
+                "{ invalid"),
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
 
         try
         {
-            var barriers = await Task.Run(
+            await fileSystem.ReadStarted.Task.WaitAsync(
+                TimeSpan.FromSeconds(2));
+            var barriers = await Task.Factory.StartNew(
                     () => workspace.CaptureScopeBarriers(
                         activeUri,
                         new VbaProjectResolution(
                             VbaProjectResolutionKind.AdHoc,
-                            root)))
+                            root)),
+                    CancellationToken.None,
+                    TaskCreationOptions.LongRunning,
+                    TaskScheduler.Default)
                 .WaitAsync(TimeSpan.FromSeconds(2));
 
             Assert.Equal(0, barriers.Revision);

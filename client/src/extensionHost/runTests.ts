@@ -41,6 +41,22 @@ async function main(): Promise<void> {
   const hostEventCatalogFixtureRoot = await createHostEventCatalogFixture();
 
   try {
+    // Keep the real-companion regression suite independent from the two
+    // controlled lifecycle hosts that follow. Their process teardown must not
+    // consume the guarded Enter command's intentional 100 ms fail-closed budget.
+    await runTests({
+      extensionDevelopmentPath,
+      extensionTestsPath,
+      vscodeExecutablePath: runtime.vscodeExecutablePath,
+      version: runtime.version,
+      launchArgs: createExtensionHostLaunchArgs(userDataPath, fixtureRoot),
+      extensionTestsEnv: {
+        VBA_TOOLS_EXTENSION_HOST_TEST: '1',
+        VBA_TOOLS_EXTENSION_HOST_FIXTURE_ROOT: fixtureRoot,
+        VBA_TOOLS_EXTENSION_HOST_MUTATION_FIXTURE_ROOT: mutationFixtureRoot,
+        VBA_TOOLS_INTRINSIC_HOST_EVENT_CATALOG_TEST_MODE: 'controlled-trusted'
+      }
+    });
     await runTests({
       extensionDevelopmentPath,
       extensionTestsPath: hostEventCatalogTestsPath,
@@ -53,7 +69,8 @@ async function main(): Promise<void> {
       extensionTestsEnv: {
         VBA_TOOLS_EXTENSION_HOST_TEST: '1',
         VBA_TOOLS_EXTENSION_HOST_FIXTURE_ROOT: hostEventCatalogFixtureRoot,
-        VBA_TOOLS_INTRINSIC_HOST_EVENT_CATALOG_TEST_MODE: 'controlled-trusted'
+        VBA_TOOLS_INTRINSIC_HOST_EVENT_CATALOG_TEST_MODE: 'controlled-trusted',
+        VBA_TOOLS_COMPANION_RESOLUTION_TEST: '1'
       }
     });
     const restrictedModeVscodeExecutablePath = runtime.vscodeExecutablePath ??
@@ -70,20 +87,8 @@ async function main(): Promise<void> {
       extensionTestsEnvironment: {
         VBA_TOOLS_EXTENSION_HOST_TEST: '1',
         VBA_TOOLS_EXTENSION_HOST_FIXTURE_ROOT: hostEventCatalogFixtureRoot,
-        VBA_TOOLS_INTRINSIC_HOST_EVENT_CATALOG_TEST_MODE: 'actual-untrusted'
-      }
-    });
-    await runTests({
-      extensionDevelopmentPath,
-      extensionTestsPath,
-      vscodeExecutablePath: runtime.vscodeExecutablePath,
-      version: runtime.version,
-      launchArgs: createExtensionHostLaunchArgs(userDataPath, fixtureRoot),
-      extensionTestsEnv: {
-        VBA_TOOLS_EXTENSION_HOST_TEST: '1',
-        VBA_TOOLS_EXTENSION_HOST_FIXTURE_ROOT: fixtureRoot,
-        VBA_TOOLS_EXTENSION_HOST_MUTATION_FIXTURE_ROOT: mutationFixtureRoot,
-        VBA_TOOLS_INTRINSIC_HOST_EVENT_CATALOG_TEST_MODE: 'controlled-trusted'
+        VBA_TOOLS_INTRINSIC_HOST_EVENT_CATALOG_TEST_MODE: 'actual-untrusted',
+        VBA_TOOLS_COMPANION_RESOLUTION_TEST: '1'
       }
     });
   } finally {

@@ -150,11 +150,15 @@ test('restricted activation keeps language assistance safe without eager managed
   );
   assert.match(
     extensionSource,
-    /resolveCompanionExecutableForLanguageActivation\(\s*isWorkspaceTrusted\(\),\s*\(\) => vbaDevResolver\.resolve\(\)/
+    /new CompanionExecutableLanguageServerLifecycle\(\{\s*isTrusted: isWorkspaceTrusted,\s*resolveCompanion: \(\) => vbaDevResolver\.resolve\(\),\s*observeCompanionResolution: \(listener\) => vbaDevResolver\.onDidResolve\(listener\)/
   );
   assert.match(
     extensionSource,
-    /createVbaLanguageServerOptions\(\{[\s\S]*?vbaDevExecutablePath: initialVbaDevResolution\?\.executablePath/
+    /reportResolutionError: \(error\) => \{[\s\S]*?reportUnreportedVbaDevResolutionFailure\(outputChannel, error\);[\s\S]*?reportPublicationError: \(error\) => outputChannel\?\.appendLine\(/
+  );
+  assert.doesNotMatch(
+    extensionSource,
+    /createVbaLanguageServerOptions\(\{[\s\S]*?vbaDevExecutablePath:/
   );
 });
 
@@ -166,7 +170,11 @@ test('extension wires Workspace Trust into every non-palette managed launch surf
 
   assert.match(
     extensionSource,
-    /invalidateManagedToolingState: \(\) => \{\s*vbaDevResolver\.invalidate\(\);\s*backgroundVbaDevResolver\.invalidate\(\);\s*newExcelProjectCommand\.invalidatePreflight\(\);\s*\}/
+    /invalidateManagedToolingState: \(\) => \{\s*vbaDevResolver\.invalidate\(\);\s*newExcelProjectCommand\.invalidatePreflight\(\);\s*\}/
+  );
+  assert.equal(
+    extensionSource.match(/new VbaDevSessionResolver\(/gu)?.length,
+    1
   );
   assert.match(
     extensionSource,
@@ -268,16 +276,15 @@ test('environment UserForm Event activation is nonblocking and has no document w
     'utf8'
   );
 
-  assert.match(extensionSource, /if \(isWorkspaceTrusted\(\)\) \{\s*void lifecycle\.activate\(\);\s*\}/);
   assert.match(
     extensionSource,
-    /workspace\.onDidGrantWorkspaceTrust\(\(\) => \{\s*if \(isWorkspaceTrusted\(\)\) \{\s*void lifecycle\.activate\(\);\s*\}\s*\}\)/
+    /startUserFormEventCatalog: \(\) => \{\s*void lifecycle\.activate\(\);\s*\}/
   );
-  assert.equal(extensionSource.match(/lifecycle\.activate\(\)/gu)?.length, 2);
+  assert.equal(extensionSource.match(/void lifecycle\.activate\(\)/gu)?.length, 1);
   assert.doesNotMatch(extensionSource, /await lifecycle\.activate\(\)/);
-  assert.ok(
-    extensionSource.indexOf('void lifecycle.activate();') <
-      extensionSource.indexOf('await client?.start();')
+  assert.match(
+    extensionSource,
+    /const observeCompanionReadiness = \(isRunning: boolean\): void => \{\s*companionLifecycle\.observeLanguageClientRunning\(isRunning\);\s*if \(isRunning\) \{\s*companionLifecycle\.activateTrustedServices\(\);/
   );
   assert.doesNotMatch(extensionSource, /HostClassProjectionWatcherRegistry/);
   assert.doesNotMatch(extensionSource, /hostClassWatchers|hostWorkspace/);

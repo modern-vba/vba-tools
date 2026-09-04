@@ -122,6 +122,11 @@ internal interface IVbaProjectReferenceCatalogDiscoveryBatchFactory
     IVbaProjectReferenceCatalogDiscovery CreateBatchDiscovery();
 }
 
+internal interface IVbaProjectReferenceCatalogCancellationCleanup
+{
+    TimeSpan CancellationCleanupTimeout { get; }
+}
+
 internal sealed record VbaProjectReferenceCatalogIdentityKey(
     string Guid,
     int MajorVersion,
@@ -321,6 +326,9 @@ internal interface IVbaProjectReferenceCatalogCommitObserver
         VbaProjectReferenceCatalogRefreshBatchIdentity batch,
         VbaProjectReferenceCatalogRefreshAuthorityIdentity authority);
 
+    void CatalogPersistedPreloadSettled(
+        VbaProjectReferenceCatalogRefreshBatchIdentity batch);
+
     void CatalogRefreshSettled(
         VbaProjectReferenceCatalogRefreshBatchIdentity batch);
 }
@@ -347,7 +355,8 @@ internal sealed class BlockingReferenceCatalogDiscoveryHook
     : IVbaProjectReferenceCatalogDiscovery,
       IVbaProjectReferenceCatalogDiscoveryBatchFactory,
       IVbaProjectReferenceCatalogIdentityDiscovery,
-      IVbaProjectReferenceCatalogContextDiscoveryFactory
+      IVbaProjectReferenceCatalogContextDiscoveryFactory,
+      IVbaProjectReferenceCatalogCancellationCleanup
 {
     /// <summary>
     /// The environment variable containing the file written when discovery reaches the hook.
@@ -366,6 +375,11 @@ internal sealed class BlockingReferenceCatalogDiscoveryHook
     bool IVbaProjectReferenceCatalogContextDiscoveryFactory.UsesContextSpecificResolution =>
         inner is IVbaProjectReferenceCatalogContextDiscoveryFactory contextFactory
         && contextFactory.UsesContextSpecificResolution;
+
+    TimeSpan IVbaProjectReferenceCatalogCancellationCleanup.CancellationCleanupTimeout =>
+        inner is IVbaProjectReferenceCatalogCancellationCleanup cancellationCleanup
+            ? cancellationCleanup.CancellationCleanupTimeout
+            : TimeSpan.Zero;
 
     private BlockingReferenceCatalogDiscoveryHook(
         IVbaProjectReferenceCatalogDiscovery inner,
@@ -1585,6 +1599,11 @@ public sealed class VbaProjectReferenceCatalogRefreshService
         discovery is IVbaProjectReferenceCatalogContextDiscoveryFactory contextFactory
         && contextFactory.UsesContextSpecificResolution;
 
+    internal TimeSpan CancellationCleanupTimeout =>
+        discovery is IVbaProjectReferenceCatalogCancellationCleanup cancellationCleanup
+            ? cancellationCleanup.CancellationCleanupTimeout
+            : TimeSpan.Zero;
+
     /// <summary>
     /// Creates a catalog refresh service.
     /// </summary>
@@ -1827,7 +1846,9 @@ public sealed class VbaProjectReferenceCatalogRefreshService
             commitObserver,
             cancellationToken);
         results.AddRange(persistedPreloadResults);
+        NotifyCatalogPersistedPreloadSettled(commitObserver, batch);
         persistedPreloadCompleted?.Invoke(persistedPreloadResults);
+
         cancellationToken.ThrowIfCancellationRequested();
         var activeDiscovery = refreshContext is not null
             && discovery is IVbaProjectReferenceCatalogContextDiscoveryFactory contextFactory
@@ -1944,6 +1965,20 @@ public sealed class VbaProjectReferenceCatalogRefreshService
         finally
         {
             reservation.ReleaseRemaining();
+        }
+    }
+
+    private static void NotifyCatalogPersistedPreloadSettled(
+        IVbaProjectReferenceCatalogCommitObserver? commitObserver,
+        VbaProjectReferenceCatalogRefreshBatchIdentity batch)
+    {
+        try
+        {
+            commitObserver?.CatalogPersistedPreloadSettled(batch);
+        }
+        catch (Exception)
+        {
+            // A downstream settlement failure must not corrupt refresh ownership.
         }
     }
 

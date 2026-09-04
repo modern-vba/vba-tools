@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
 using System.Text.Json;
+using VbaLanguageServer.Processes;
 using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.SourceModel;
 using VbaTools.TypeLibRegistry;
@@ -160,7 +161,7 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
         const string selectedGuid = "22222222-2222-2222-2222-222222222222";
         var projectPath = Path.GetFullPath(Path.Combine("projects", "Sample"));
         var executablePath = Path.GetFullPath(Path.Combine("tools", "vba-dev.exe"));
-        var processCalls = new List<(string File, IReadOnlyList<string> Arguments)>();
+        var processCalls = new List<IReadOnlyList<string>>();
         var registryCatalog = new TypeLibRegistryCatalog(
             complete: true,
             names:
@@ -193,10 +194,10 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
                                 [])
                         ]))),
             executablePath,
-            (file, arguments, _) =>
+            (arguments, _) =>
             {
-                processCalls.Add((file, arguments));
-                return Task.FromResult(new VbaDevReferenceListProcessResult(
+                processCalls.Add(arguments);
+                return Task.FromResult(new VbaDevProcessInvocationResult(
                     0,
                     JsonSerializer.Serialize(new
                     {
@@ -236,7 +237,6 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
 
         Assert.True(Assert.Single(results).DiscoveryResult.HasUsableCatalog);
         var call = Assert.Single(processCalls);
-        Assert.Equal(executablePath, call.File);
         Assert.Equal(
             [
                 "reference",
@@ -248,12 +248,73 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
                 "--format",
                 "json"
             ],
-            call.Arguments);
+            call);
         Assert.Equal(selectedGuid, cache.Identities[referenceName].Guid);
         Assert.Equal(1, registryReader.ReadCount);
         Assert.Contains(
             cache.Current.GetActiveDefinitions(selection),
             definition => definition.Name == "ResolvedType");
+    }
+
+    [Fact]
+    public async Task CancellingPinnedCliDiscoveryWaitsForInvocationCleanup()
+    {
+        const string referenceName = "Ambiguous Library";
+        var projectPath = Path.GetFullPath(Path.Combine("projects", "Cancellation"));
+        var invocationCompletion =
+            new TaskCompletionSource<VbaDevProcessInvocationResult>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancellationObserved = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseCleanup = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var cleanupCompleted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var cancellation = new CancellationTokenSource();
+        var registryDiscovery = new InlineCatalogDiscovery(
+            VbaProjectReferenceCatalogDiscoveryResult.Ambiguous(
+                referenceName,
+                []));
+        var factory = new VbaDevReferenceListCatalogDiscoveryFactory(
+            registryDiscovery,
+            Path.GetFullPath(Path.Combine("tools", "vba-dev.exe")),
+            (arguments, cancellationToken) =>
+            {
+                cancellationToken.Register(() =>
+                {
+                    cancellationObserved.TrySetResult();
+                    releaseCleanup.Task.GetAwaiter().GetResult();
+                    cleanupCompleted.TrySetResult();
+                    invocationCompletion.TrySetCanceled(cancellationToken);
+                });
+                return invocationCompletion.Task;
+            });
+        var selection = VbaProjectReferenceSelection.Create(
+            ProjectDocument.ExcelKind,
+            [new VbaProjectReference(referenceName)]);
+        var context = new VbaProjectReferenceCatalogRefreshContext(
+            projectPath,
+            "Book1",
+            selection);
+        var discovery = ((IVbaProjectReferenceCatalogContextDiscoveryFactory)factory)
+            .CreateContextDiscovery(context);
+
+        var result = discovery.DiscoverAsync(referenceName, cancellation.Token);
+        var cancel = Task.Run(cancellation.Cancel);
+        await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        try
+        {
+            Assert.False(result.IsCompleted);
+        }
+        finally
+        {
+            releaseCleanup.TrySetResult();
+        }
+
+        await cancel.WaitAsync(TimeSpan.FromSeconds(5));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => result);
+        Assert.True(cleanupCompleted.Task.IsCompletedSuccessfully);
     }
 
     [Fact]
@@ -306,10 +367,10 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
                                 [])
                         ]))),
             executablePath,
-            (_, _, _) =>
+            (_, _) =>
             {
                 Interlocked.Increment(ref processCallCount);
-                return Task.FromResult(new VbaDevReferenceListProcessResult(
+                return Task.FromResult(new VbaDevProcessInvocationResult(
                     7,
                     JsonSerializer.Serialize(new
                     {
@@ -400,7 +461,7 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
                 new FakeTypeLibRegistryCatalogReader(registryCatalog),
                 new FakeTypeLibCatalogMetadataReader(new TypeLibCatalogMetadata("Missing", []))),
             executablePath,
-            (_, _, _) =>
+            (_, _) =>
             {
                 Interlocked.Increment(ref processCalls);
                 throw new FileNotFoundException("The pinned executable disappeared.", executablePath);
@@ -568,7 +629,7 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
                 new FakeTypeLibRegistryCatalogReader(registryCatalog),
                 new FakeTypeLibCatalogMetadataReader(new TypeLibCatalogMetadata("Unavailable", []))),
             Path.GetFullPath(@"C:\tools\vba-dev.exe"),
-            (_, _, _) => Task.FromResult(new VbaDevReferenceListProcessResult(
+            (_, _) => Task.FromResult(new VbaDevProcessInvocationResult(
                 3,
                 JsonSerializer.Serialize(new
                 {
@@ -785,7 +846,7 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
                     new FakeTypeLibCatalogMetadataReader(
                         new TypeLibCatalogMetadata("Registry", []))),
                 Path.GetFullPath(@"C:\tools\vba-dev.exe"),
-                (_, _, _) =>
+                (_, _) =>
                 {
                     Interlocked.Increment(ref processCalls);
                     throw new InvalidOperationException("The CLI must not run.");

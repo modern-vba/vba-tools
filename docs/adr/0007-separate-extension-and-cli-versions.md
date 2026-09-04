@@ -81,16 +81,36 @@ entry is the active gate; a reload, deactivation, or process loss associated
 with removing trust remains abrupt caller loss under each command's existing
 recovery contract rather than a fabricated cooperative cancellation.
 
-The extension supplies the exact resolved absolute `vba-dev.exe` path to the
-language server through `--vba-dev`. The language server independently runs
-side-effect-free capability inspection against that path once at startup and
-requires `reference list` JSON schema `1.0`. This second validation supports
-standalone server startup and detects a supplied executable that changed after
-extension validation; it is not repeated for each catalog refresh. Failure
-disables CLI-backed reference resolution and records a warning, while the
-language server continues with registry-only, fail-closed discovery. It does
-not re-resolve or replace the tool from `PATH`, VS Code settings, or its own
-installation directory.
+The extension starts and initializes the language client before resolving
+`vba-dev`. Once the client is operational in a trusted window, the extension
+publishes its session-pinned validated absolute path and the required
+`reference list` JSON schema version through the closed
+`vba/companionExecutable` notification. The language server accepts and pins
+the first valid notification, then refreshes active project references in
+latest-only background work. It rejects any malformed, incompatible, or
+replacement notification without weakening registry-only discovery. No editor
+request waits for companion resolution or the resulting refresh.
+
+A total resolution failure is not a session pin and is not cached. The
+lifecycle starts no automatic retry, but the shared resolver may be invoked by
+a later managed command after the installation or setting is corrected. When
+that invocation succeeds, the resolver publishes the exact same frozen
+resolution object to the existing language-server lifecycle; the lifecycle
+then sends the first notification without starting a second capability probe.
+
+A standalone language server may instead receive the absolute path through
+`--vba-dev`. It starts its stdio protocol loop before independently validating
+that path with the side-effect-free capabilities command and requiring
+`reference list` JSON schema `1.0`; validation is not repeated for each catalog
+refresh. A missing, changed, incompatible, cancelled, or failed candidate
+records a warning and keeps CLI-backed reference resolution disabled while
+safe registry-only language assistance continues. The server does not resolve
+or replace the tool from `PATH`, VS Code settings, or its own installation
+directory. These paths add only consumer dependencies on the public CLI process
+contract and add no reverse dependency to `VbaDev`. The pre-existing parser
+reference from `VbaDev` to a language-server-owned project is a separate
+migration tracked by issue 361; after that migration, `VbaDev` must not depend
+on extension-, language-server-, or debug-adapter-owned Modules.
 
 ADR 0027 adds a third independently versioned component and contract for
 `vba-debug-adapter.exe`. The extension validates an explicit

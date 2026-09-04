@@ -9,6 +9,7 @@ using Xunit.Abstractions;
 
 namespace VbaLanguageServer.Tests;
 
+[Collection(VbaDocumentAnalysisPerformanceTestCollection.Name)]
 public sealed class VbaInteractiveWorkSchedulerTests
 {
     [Fact]
@@ -935,6 +936,50 @@ public sealed class VbaInteractiveWorkSchedulerTests
         Assert.Equal(admitted.InputSequence, completed.InputSequence);
         Assert.True(completed.QueueTime >= TimeSpan.Zero);
         Assert.True(completed.ExecutionTime >= TimeSpan.Zero);
+    }
+
+    [Fact]
+    public async Task Scheduler_records_successful_snapshot_capture_with_the_request_identity()
+    {
+        var timingSink = new RecordingTimingSink();
+        var captureStarted = CreateSignal();
+        using var releaseCapture = new ManualResetEventSlim(initialState: false);
+        var requestId = new VbaLspRequestId(VbaLspRequestIdKind.Number, "27");
+        await using var scheduler = new VbaInteractiveWorkScheduler(timingSink);
+
+        var admission = scheduler.AdmitRequest(
+            requestId,
+            "textDocument/semanticTokens/full",
+            _ =>
+            {
+                captureStarted.TrySetResult();
+                releaseCapture.Wait();
+                return 42;
+            },
+            (snapshot, _) =>
+            {
+                Assert.Equal(42, snapshot);
+                return Task.CompletedTask;
+            });
+        try
+        {
+            await captureStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Empty(timingSink.Captured);
+        }
+        finally
+        {
+            releaseCapture.Set();
+        }
+
+        await admission.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var captured = Assert.Single(timingSink.Captured);
+        Assert.Equal(admission.InputSequence, captured.InputSequence);
+        Assert.Equal(admission.ReadFence, captured.ReadFence);
+        Assert.Equal(VbaInteractiveWorkKind.Request, captured.Kind);
+        Assert.Equal("textDocument/semanticTokens/full", captured.Method);
+        Assert.Equal(requestId, captured.RequestId);
+        Assert.True(captured.CaptureTime >= TimeSpan.Zero);
     }
 
     [Fact]
@@ -2088,10 +2133,15 @@ public sealed class VbaInteractiveWorkSchedulerTests
     {
         public List<VbaInteractiveWorkAdmissionTiming> Admitted { get; } = [];
 
+        public List<VbaInteractiveWorkCaptureTiming> Captured { get; } = [];
+
         public List<VbaInteractiveWorkCompletionTiming> Completed { get; } = [];
 
         public void RecordAdmission(VbaInteractiveWorkAdmissionTiming timing)
             => Admitted.Add(timing);
+
+        public void RecordCapture(VbaInteractiveWorkCaptureTiming timing)
+            => Captured.Add(timing);
 
         public void RecordCompletion(VbaInteractiveWorkCompletionTiming timing)
             => Completed.Add(timing);
