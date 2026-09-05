@@ -2,6 +2,7 @@ using VbaDev.Infrastructure.FileSystem;
 using System.Text;
 using VbaDev.App.Build;
 using VbaDev.App.Testing;
+using VbaDev.App.Workbooks;
 using Xunit;
 
 namespace VbaDev.Tests;
@@ -118,7 +119,8 @@ public sealed class SnapshotTestExecutionWorkspaceTests
         var workspacePath = Path.Combine(scratchRoot, Guid.NewGuid().ToString("N"));
         var sourcePath = Path.Combine(workspacePath, "source");
         Directory.CreateDirectory(sourcePath);
-        using var sourceCapture = new BuildSourceSnapshotCapture(sourcePath, []);
+        using var sourceCapture = new BuildSourceSnapshotCapture(
+            sourcePath, [], new AdmittedVbaSourceSet(VbaSourceAdmissionIntent.Build, 65001, []), sourcePath);
         var outsideWorkbookPath = Path.Combine(temp.Path, "Book1.xlsm");
 
         var error = Assert.Throws<InvalidOperationException>(() =>
@@ -145,7 +147,8 @@ public sealed class SnapshotTestExecutionWorkspaceTests
         var outsideSourcePath = temp.CreateDirectory("outside-source");
         var outsideSentinel = Path.Combine(outsideSourcePath, "sentinel.txt");
         File.WriteAllText(outsideSentinel, "keep", Encoding.UTF8);
-        var sourceCapture = new BuildSourceSnapshotCapture(outsideSourcePath, []);
+        var sourceCapture = new BuildSourceSnapshotCapture(
+            outsideSourcePath, [], new AdmittedVbaSourceSet(VbaSourceAdmissionIntent.Build, 65001, []), outsideSourcePath);
         var workbookPath = Path.Combine(workspacePath, "Book1.xlsm");
 
         var error = Assert.Throws<InvalidOperationException>(() =>
@@ -255,6 +258,6 @@ public sealed class SnapshotTestExecutionWorkspaceTests
             string scratchRoot,
             string sourceSnapshotPath,
             CancellationToken cancellationToken)
-            => new(outsideSourcePath, []);
+            => new(outsideSourcePath, [], new AdmittedVbaSourceSet(VbaSourceAdmissionIntent.Build, 65001, []), sourceSnapshotPath);
     }
 }

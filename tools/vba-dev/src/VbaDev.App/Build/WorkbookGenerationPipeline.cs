@@ -333,7 +333,7 @@ public sealed class WorkbookGenerationPipeline
             ThrowIfCanceled(
                 cancellationToken,
                 new WorkbookAutomationStage(WorkbookAutomationStageKind.ExcelStartup));
-            importSourceSet = sourceInput is AdmittedWorkbookGenerationSourceInput admitted
+            importSourceSet = sourceInput is IAdmittedWorkbookGenerationSourceInput admitted
                 ? importSourceSetFactory.Create(admitted.Admission)
                 : importSourceSetFactory.Create(sourceInput.SourceFiles);
             sourcePreflight = namePreflight.InspectSourcePhase(importSourceSet.SourceFiles);

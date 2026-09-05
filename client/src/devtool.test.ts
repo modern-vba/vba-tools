@@ -666,7 +666,7 @@ test('Packaged VbaDev contract requires snapshot build and environment Host Even
 
   assert.equal(
     contract.featureVersions?.['build.sourceSnapshot'],
-    '1.0'
+    '2.0'
   );
   assert.equal(contract.featureVersions?.['hostEvent.list'], '1.0');
   assert.equal(contract.commandSchemaVersions['host-event list'], '1.0');
@@ -775,7 +775,7 @@ test('VbaDev compatibility rejects a missing required source snapshot feature', 
   const requiredSnapshotContract = {
     contractVersion: '1.0',
     featureVersions: {
-      'test.sourceSnapshot': '1.0'
+      'test.sourceSnapshot': '2.0'
     },
     commandSchemaVersions: {
       test: '1.2'
@@ -814,7 +814,7 @@ test('VbaDev compatibility rejects snapshot encoding capability without an activ
           toolVersion: '0.1.0',
           contractVersion: '1.0',
           featureVersions: {
-            'test.sourceSnapshot': '1.0',
+            'test.sourceSnapshot': '2.0',
             'sourceSnapshot.activeWindowsCodePage': '1.0'
           },
           commands: {
@@ -826,7 +826,7 @@ test('VbaDev compatibility rejects snapshot encoding capability without an activ
       requiredContract: {
         contractVersion: '1.0',
         featureVersions: {
-          'test.sourceSnapshot': '1.0',
+          'test.sourceSnapshot': '2.0',
           'sourceSnapshot.activeWindowsCodePage': '1.0'
         },
         commandSchemaVersions: {

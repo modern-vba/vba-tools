@@ -773,6 +773,7 @@ export async function activate(
     controller: createVscodeTestControllerAdapter(testController),
     extensionRoot: context.extensionPath,
     vbaDevResolver,
+    get configuredDebugAdapterPath() { return getConfiguredDebugAdapterPath(); },
     workspaceRoots: workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [],
     findProjectManifests,
     readTextFile,

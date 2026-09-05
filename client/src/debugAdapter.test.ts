@@ -12,13 +12,13 @@ import {
 
 const requiredContract: RequiredVbaDebugAdapterContract = {
   contractVersion: '1.0',
-  protocolVersion: '1.1',
+  protocolVersion: '2.0',
   transports: ['stdio'],
   sessionIdFormat: 'lowercase-hex-32',
   commands: ['cleanup', 'doctor'],
   commandSchemaVersions: { doctor: '1.0' },
   featureVersions: { 'doctor.stdinCancellation': '1.0' },
-  requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '1.0' }
+  requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0' }
 };
 
 test('the extension contract requires Doctor stdin cancellation 1.0', () => {

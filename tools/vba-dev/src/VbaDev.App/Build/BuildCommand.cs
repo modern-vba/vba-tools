@@ -104,7 +104,7 @@ public sealed class BuildCommand
     internal Task<CommandResult> RunCapturedSnapshotAsync(
         ResolvedProjectContext context,
         string sourceSnapshotPath,
-        IReadOnlyList<VbaSourceFile> sourceFiles,
+        AdmittedVbaSourceSet admission,
         string outputPath,
         CancellationToken cancellationToken)
     {
@@ -115,7 +115,7 @@ public sealed class BuildCommand
         return outputCommand.RunWithOwnedSourceAsync(
             context,
             WorkbookOutputProfile.Build,
-            () => new BorrowedWorkbookGenerationSourceInput(sourceFiles),
+            () => new AdmittedWorkbookGenerationSourceInput(admission),
             () => validatedPaths.OutputPath,
             cancellationToken);
     }

@@ -6,10 +6,21 @@ namespace VbaDebugAdapter.Build;
 
 public sealed class TransportedDebugSourceSnapshotValidator
 {
+    private static readonly byte[][] SupportedUnicodePreambles =
+    [
+        [0xef, 0xbb, 0xbf],
+        [0xff, 0xfe],
+        [0xfe, 0xff]
+    ];
+
     private static readonly byte[][] UnsupportedUnicodePreambles =
     [
         [0xff, 0xfe, 0x00, 0x00],
-        [0x00, 0x00, 0xfe, 0xff]
+        [0x00, 0x00, 0xfe, 0xff],
+        [0x2b, 0x2f, 0x76, 0x38],
+        [0x2b, 0x2f, 0x76, 0x39],
+        [0x2b, 0x2f, 0x76, 0x2b],
+        [0x2b, 0x2f, 0x76, 0x2f]
     ];
 
     private readonly int activeWindowsCodePage;
@@ -37,7 +48,7 @@ public sealed class TransportedDebugSourceSnapshotValidator
         TransportedDebugSourceSnapshot snapshot)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
-        if (snapshot.SchemaVersion != 1)
+        if (snapshot.SchemaVersion != 2)
         {
             throw new InvalidOperationException(
                 $"Unsupported transported source snapshot schema version {snapshot.SchemaVersion}.");
@@ -273,8 +284,22 @@ public sealed class TransportedDebugSourceSnapshotValidator
             throw new InvalidOperationException(
                 $"Declared encoding {encodingToken} does not support the transported Unicode BOM.");
         }
+        if (bytes.Length != 0 &&
+            !SupportedUnicodePreambles.Any(preamble => bytes.AsSpan().StartsWith(preamble)) &&
+            SupportedUnicodePreambles.Concat(UnsupportedUnicodePreambles).Any(preamble =>
+                bytes.Length < preamble.Length && preamble.AsSpan().StartsWith(bytes)))
+        {
+            throw new InvalidOperationException(
+                $"Declared encoding {encodingToken} does not support a truncated Unicode BOM.");
+        }
         if (encodingToken == "utf8")
         {
+            if (activeWindowsCodePage != 65001)
+            {
+                throw new InvalidOperationException(
+                    $"Declared encoding utf8 does not match the canonical active Windows " +
+                    $"encoding for code page {activeWindowsCodePage}.");
+            }
             RequirePreamble(bytes, [], encodingToken);
             return (new UTF8Encoding(false, true), 0);
         }

@@ -108,7 +108,7 @@ public sealed class VbaDebugAdapterCommandLine
             var capabilities = new AdapterCapabilities(
                 ToolVersion,
                 "1.0",
-                "1.1",
+                "2.0",
                 ["stdio"],
                 "lowercase-hex-32",
                 ["cleanup", "doctor"],
@@ -122,7 +122,7 @@ public sealed class VbaDebugAdapterCommandLine
                 },
                 new Dictionary<string, string>(StringComparer.Ordinal)
                 {
-                    ["build.sourceSnapshot"] = "1.0"
+                    ["build.sourceSnapshot"] = "2.0"
                 });
             await WriteLineAsync(
                 standardOutput,
@@ -260,7 +260,7 @@ public sealed class VbaDebugAdapterCommandLine
                 await WriteLineAsync(
                     standardError,
                     "The supplied vba-dev executable is incompatible; " +
-                    "it must advertise build.sourceSnapshot 1.0.").ConfigureAwait(false);
+                    "it must advertise build.sourceSnapshot 2.0.").ConfigureAwait(false);
                 return 1;
             }
 
@@ -445,7 +445,7 @@ public sealed class VbaDebugAdapterCommandLine
                    featureVersions.ValueKind == JsonValueKind.Object &&
                    featureVersions.TryGetProperty("build.sourceSnapshot", out var version) &&
                    version.ValueKind == JsonValueKind.String &&
-                   string.Equals(version.GetString(), "1.0", StringComparison.Ordinal);
+                   string.Equals(version.GetString(), "2.0", StringComparison.Ordinal);
         }
         catch (JsonException)
         {

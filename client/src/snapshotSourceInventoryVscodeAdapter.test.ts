@@ -78,3 +78,27 @@ test('one VS Code snapshot adapter reads changed invocation state for every capt
     bytes: new TextEncoder().encode('later text')
   }]);
 });
+
+test('a preflight-fixed code page bypasses a second capability read during source capture', async () => {
+  const sourceSetPath = path.resolve('snapshot');
+  const sourcePath = path.join(sourceSetPath, 'Dirty.bas');
+  let hostCodePageReads = 0;
+  const adapter = createSnapshotSourceInventoryVscodeAdapter({
+    getActiveWindowsCodePage: () => { hostCodePageReads += 1; return 932; },
+    getOpenTextDocuments: () => [{
+      uriScheme: 'file', uriPath: sourcePath, fileName: sourcePath, isDirty: true,
+      encoding: 'utf8', getText: () => 'é'
+    }],
+    findSourceFiles: async () => [],
+    readFile: async () => { throw new Error('Dirty sources must not read disk.'); },
+    encodeText: async text => new TextEncoder().encode(text),
+    decodeText: async bytes => new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  });
+
+  const inventory = await adapter(sourceSetPath, undefined, 65001);
+
+  assert.equal(hostCodePageReads, 0);
+  assert.equal(inventory.activeWindowsCodePage, 65001);
+  assert.equal(inventory.entries[0].encoding, 'utf8');
+  assert.deepEqual(inventory.entries[0].bytes, new TextEncoder().encode('é'));
+});

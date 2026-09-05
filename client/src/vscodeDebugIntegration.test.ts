@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { execFile } from 'node:child_process';
 
 import {
   VbaDevCapabilities,
@@ -21,7 +23,7 @@ import {
 
 test('VBA debug provider normalizes an empty F5 configuration before variable substitution', () => {
   let hostWasTouched = false;
-  const integration = new VscodeDebugIntegration({
+  const integration = fixtureIntegration({
     extensionRoot: path.resolve(__dirname, '..', '..'),
     getConfiguredDevToolPath: () => undefined,
     debugConfigurationHost: {
@@ -69,18 +71,379 @@ test('VBA debug provider checks Workspace Trust before resolving substituted con
   assert.equal(configurationResolutions, 0);
 });
 
+test('an old adapter protocol blocks F5 before source capture', async () => {
+  const projectRoot = path.resolve('BookProject');
+  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'DebugModule.bas');
+  let captures = 0;
+  const integration = fixtureIntegration({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    getConfiguredDevToolPath: () => undefined,
+    vbaDevResolver: {
+      resolve: async () => ({
+        executablePath: path.resolve('vba-dev.exe'),
+        bundledPath: path.resolve('vba-dev.exe'),
+        source: 'bundled',
+        capabilities: compatibleCapabilities()
+      })
+    },
+    capabilitiesProcess: async file => ({
+      stdout: JSON.stringify(file.endsWith('vba-dev.exe') ? compatibleCapabilities()
+        : { ...compatibleDebugAdapterCapabilities(), protocolVersion: '1.1' }),
+      stderr: ''
+    }),
+    requiredDebugAdapterContract: { ...requiredDebugAdapterContract(), protocolVersion: '2.0' },
+    debugConfigurationHost: {
+      workspaceRoots: [projectRoot],
+      getActiveEditor: () => ({ uriPath: sourcePath, line: 0, character: 0 }),
+      getSourceBreakpoints: () => [],
+      findProjectManifests: async () => [path.join(projectRoot, 'vba-project.json')],
+      readTextFile: async () => JSON.stringify({
+        schemaVersion: 1, projectName: 'BookProject', primaryDocument: 'Book1',
+        documents: {
+          Book1: {
+            kind: 'excel', sourcePath: 'src/Book1', templatePath: 'src/Book1/Book1.xlsm',
+            binPath: 'bin/Book1.xlsm', publishPath: 'publish/Book1.xlsm',
+            commonModules: [], references: []
+          }
+        }
+      }),
+      captureSourceInventory: async () => {
+        captures += 1;
+        throw new Error('Source capture must not begin.');
+      }
+    }
+  });
+
+  await assert.rejects(integration.resolveDebugConfiguration({}), /protocolVersion 1\.1.*requires 2\.0/);
+  assert.equal(captures, 0);
+});
+
+test('snapshot startup rejects mutually old provider and extension requirements before capture', async () => {
+  let captures = 0;
+  const oldFeatures = {
+    'build.sourceSnapshot': '1.0', 'test.sourceSnapshot': '1.0', 'sourceSnapshot.activeWindowsCodePage': '1.0'
+  };
+  const integration = fixtureIntegration({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    getConfiguredDevToolPath: () => undefined,
+    requiredContract: { ...requiredContract(), featureVersions: oldFeatures },
+    requiredDebugAdapterContract: {
+      ...requiredDebugAdapterContract(), protocolVersion: '1.1',
+      requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '1.0' }
+    },
+    vbaDevResolver: { resolve: async () => ({
+      executablePath: path.resolve('vba-dev.exe'), bundledPath: path.resolve('vba-dev.exe'),
+      source: 'bundled', capabilities: { ...compatibleCapabilities(), featureVersions: oldFeatures }
+    }) },
+    capabilitiesProcess: async file => ({ stdout: JSON.stringify(file.endsWith('vba-dev.exe')
+      ? { ...compatibleCapabilities(), featureVersions: oldFeatures }
+      : { ...compatibleDebugAdapterCapabilities(), protocolVersion: '1.1',
+        requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '1.0' } }), stderr: '' }),
+    debugConfigurationHost: { ...snapshotDebugHost(), captureSourceInventory: async () => {
+      captures += 1;
+      return snapshotDebugHost().captureSourceInventory();
+    } }
+  });
+
+  await assert.rejects(integration.resolveDebugConfiguration({}), /snapshot.*requires|snapshot.*incompatible/i);
+  assert.equal(captures, 0);
+});
+
+test('F5 cancellation aborts owned CLI capability inspection before source capture', async () => {
+  await assertCancelledProviderInspection('cli');
+});
+
+for (const mismatch of ['cliBuild', 'cliTest', 'cliAcp', 'adapterProtocol', 'adapterBuild'] as const) {
+  test(`snapshot startup rejects the ${mismatch} mixed-version matrix row`, async () => {
+    for (const alterRequirement of [false, true]) {
+      let captures = 0;
+      const cli = compatibleCapabilities();
+      const adapter = compatibleDebugAdapterCapabilities();
+      const requiredCli = requiredContract();
+      const requiredAdapter = requiredDebugAdapterContract();
+      const cliTarget = alterRequirement ? requiredCli : cli;
+      const adapterTarget = alterRequirement ? requiredAdapter : adapter;
+      if (mismatch === 'cliBuild') { cliTarget.featureVersions!['build.sourceSnapshot'] = '1.0'; }
+      if (mismatch === 'cliTest') { cliTarget.featureVersions!['test.sourceSnapshot'] = '1.0'; }
+      if (mismatch === 'cliAcp') { cliTarget.featureVersions!['sourceSnapshot.activeWindowsCodePage'] = '0.9'; }
+      if (mismatch === 'adapterProtocol') { adapterTarget.protocolVersion = '1.1'; }
+      if (mismatch === 'adapterBuild') { adapterTarget.requiredVbaDevFeatureVersions['build.sourceSnapshot'] = '1.0'; }
+      const integration = fixtureIntegration({
+        extensionRoot: path.resolve(__dirname, '..', '..'),
+        getConfiguredDevToolPath: () => undefined,
+        requiredContract: requiredCli,
+        requiredDebugAdapterContract: requiredAdapter,
+        vbaDevResolver: { resolve: async () => ({
+          executablePath: path.resolve('vba-dev.exe'), bundledPath: path.resolve('vba-dev.exe'),
+          source: 'bundled', capabilities: cli
+        }) },
+        vbaDebugAdapterResolver: { resolve: async () => ({
+          executablePath: path.resolve('vba-debug-adapter.exe'), capabilities: adapter
+        }) },
+        capabilitiesProcess: async () => ({ stdout: JSON.stringify(cli), stderr: '' }),
+        debugConfigurationHost: { ...snapshotDebugHost(), captureSourceInventory: async () => {
+          captures += 1;
+          return snapshotDebugHost().captureSourceInventory();
+        } }
+      });
+      await assert.rejects(integration.resolveDebugConfiguration({}));
+      assert.equal(captures, 0, `${mismatch}, alterRequirement=${alterRequirement}`);
+    }
+  });
+}
+
+test('F5 cancellation aborts owned adapter capability inspection before source capture', async () => {
+  await assertCancelledProviderInspection('adapter');
+});
+
+for (const lifecycle of ['release', 'shutdown'] as const) {
+  for (const provider of ['cli', 'adapter'] as const) {
+    test(`descriptor ${lifecycle} aborts its owned ${provider} capability inspection`, async () => {
+      await assertCancelledProviderInspection(provider, lifecycle);
+    });
+  }
+}
+
+test('F5 cancellation abandons only its wait for the shared CLI resolver', async () => {
+  const listeners = new Set<() => void>();
+  const token = {
+    isCancellationRequested: false,
+    onCancellationRequested: (listener: () => void) => {
+      listeners.add(listener);
+      return { dispose: () => { listeners.delete(listener); } };
+    }
+  };
+  const resolution = {
+    executablePath: path.resolve('vba-dev.exe'), bundledPath: path.resolve('vba-dev.exe'),
+    source: 'bundled' as const, capabilities: compatibleCapabilities()
+  };
+  let release: ((value: typeof resolution) => void) | undefined;
+  const shared = new Promise<typeof resolution>(resolve => { release = resolve; });
+  let inspections = 0;
+  let captures = 0;
+  const integration = fixtureIntegration({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    getConfiguredDevToolPath: () => undefined,
+    vbaDevResolver: { resolve: () => shared },
+    capabilitiesProcess: async () => { inspections += 1; throw new Error('Unexpected inspection.'); },
+    debugConfigurationHost: { ...snapshotDebugHost(), captureSourceInventory: async () => {
+      captures += 1; throw new Error('Unexpected capture.');
+    } }
+  });
+  const messages: string[] = [];
+  const provider = createVbaDebugConfigurationProvider(integration, message => messages.push(message));
+  const pending = provider.resolveDebugConfigurationWithSubstitutedVariables({}, undefined, token);
+  token.isCancellationRequested = true;
+  for (const listener of [...listeners]) { listener(); }
+  let deadline: NodeJS.Timeout | undefined;
+  try {
+    assert.equal(await Promise.race([pending.then(() => true), new Promise<boolean>(resolve => {
+      deadline = setTimeout(() => resolve(false), 1000);
+    })]), true);
+    release?.(resolution);
+    assert.equal(await shared, resolution, 'Other consumers retain the shared resolution.');
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(inspections, 0);
+    assert.equal(captures, 0);
+    assert.deepEqual(messages, []);
+  } finally {
+    if (deadline !== undefined) { clearTimeout(deadline); }
+    release?.(resolution);
+    await pending;
+  }
+});
+
+async function assertCancelledProviderInspection(
+  heldProvider: 'cli' | 'adapter',
+  lifecycle: 'f5' | 'release' | 'shutdown' = 'f5'
+): Promise<void> {
+  const listeners = new Set<() => void>();
+  const cancellationToken = {
+    isCancellationRequested: false,
+    onCancellationRequested: (listener: () => void) => {
+      listeners.add(listener);
+      return { dispose: () => { listeners.delete(listener); } };
+    }
+  };
+  let child: ReturnType<typeof execFile> | undefined;
+  let capturedSignal: AbortSignal | undefined;
+  let signalStarted: (() => void) | undefined;
+  const started = new Promise<void>(resolve => { signalStarted = resolve; });
+  let captures = 0;
+  const messages: string[] = [];
+  const integration = fixtureIntegration({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    getConfiguredDevToolPath: () => undefined,
+    vbaDevResolver: { resolve: async () => ({
+      executablePath: path.resolve('vba-dev.exe'), bundledPath: path.resolve('vba-dev.exe'),
+      source: 'bundled', capabilities: compatibleCapabilities()
+    }) },
+    capabilitiesProcess: async (file, _args, signal) => {
+      if ((file.endsWith('vba-dev.exe') ? 'cli' : 'adapter') !== heldProvider) {
+        return { stdout: JSON.stringify(compatibleCapabilities()), stderr: '' };
+      }
+      capturedSignal = signal;
+      return new Promise((resolve, reject) => {
+        child = execFile(process.execPath,
+          ['-e', 'process.stdout.write("ready"); setInterval(() => {}, 1000);'],
+          { windowsHide: true, signal }, (error, stdout, stderr) => {
+            if (error) { reject(error); } else { resolve({ stdout, stderr }); }
+          });
+        child.stdout?.once('data', () => signalStarted?.());
+      });
+    },
+    debugConfigurationHost: {
+      ...snapshotDebugHost(),
+      captureSourceInventory: async () => { captures += 1; throw new Error('Unexpected capture.'); }
+    }
+  });
+  const provider = createVbaDebugConfigurationProvider(integration, message => messages.push(message));
+  const pending = lifecycle === 'f5'
+    ? provider.resolveDebugConfigurationWithSubstitutedVariables({}, undefined, cancellationToken)
+    : integration.createDebugAdapterExecutable({ id: 'held-descriptor', stop: () => undefined });
+  let deadline: NodeJS.Timeout | undefined;
+  try {
+    await started;
+    if (lifecycle === 'f5') {
+      cancellationToken.isCancellationRequested = true;
+      for (const listener of [...listeners]) { listener(); }
+    } else {
+      integration.releaseSession('unrelated-session');
+      assert.equal(capturedSignal?.aborted, false, 'An unrelated release cannot cancel this invocation.');
+      if (lifecycle === 'release') { integration.releaseSession('held-descriptor'); }
+      else { await integration.shutdown(); }
+    }
+    const outcome = await Promise.race([
+      pending.then(value => ({ settled: true, value })),
+      new Promise<{ settled: false }>(resolve => { deadline = setTimeout(() => resolve({ settled: false }), 1000); })
+    ]);
+    assert.equal(outcome.settled, true, 'Cancellation must settle the capability barrier promptly.');
+    assert.equal(await pending, undefined, 'No adapter descriptor or captured configuration may escape cancellation.');
+    assert.equal(capturedSignal?.aborted, true, 'The invocation-owned child must receive cancellation.');
+    assert.equal(captures, 0);
+    assert.deepEqual(messages, []);
+  } finally {
+    if (deadline !== undefined) { clearTimeout(deadline); }
+    child?.kill();
+    await pending;
+  }
+}
+
+test('F5 keeps the pre-capture provider pair when settings change before adapter startup', async () => {
+  const originalCli = path.resolve('original-vba-dev.exe');
+  const originalAdapter = path.resolve('original-adapter.exe');
+  let cliPath = originalCli;
+  let adapterPath = originalAdapter;
+  const integration = fixtureIntegration({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    getConfiguredDevToolPath: () => undefined,
+    vbaDevResolver: {
+      resolve: async () => ({
+        executablePath: cliPath, bundledPath: cliPath, source: 'bundled',
+        capabilities: compatibleCapabilities()
+      })
+    },
+    vbaDebugAdapterResolver: {
+      resolve: async () => ({ executablePath: adapterPath, capabilities: compatibleDebugAdapterCapabilities() })
+    },
+    debugConfigurationHost: snapshotDebugHost(),
+    createDebugSessionId: () => '0123456789abcdef0123456789abcdef'
+  });
+  const captured = await integration.resolveDebugConfiguration({});
+  const configuration = integration.prepareDebugConfigurationForRestart(captured);
+  cliPath = path.resolve('later-vba-dev.exe');
+  adapterPath = path.resolve('later-adapter.exe');
+
+  const descriptor = await integration.createDebugAdapterExecutable({
+    id: 'session-pinned', configuration, stop: () => undefined
+  });
+
+  assert.equal(descriptor?.command, originalAdapter);
+  assert.equal(descriptor?.args[2], originalCli);
+});
+
+test('Restart rejects a changed pinned adapter protocol before recapturing source', async () => {
+  const cliPath = path.resolve('vba-dev.exe');
+  const adapterPath = path.resolve('vba-debug-adapter.exe');
+  let protocolVersion = '2.0';
+  let captures = 0;
+  const host = snapshotDebugHost();
+  const integration = fixtureIntegration({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    getConfiguredDevToolPath: () => undefined,
+    requiredContract: requiredContract(),
+    requiredDebugAdapterContract: { ...requiredDebugAdapterContract(), protocolVersion: '2.0' },
+    vbaDevResolver: {
+      resolve: async () => ({
+        executablePath: cliPath, bundledPath: cliPath, source: 'bundled', capabilities: compatibleCapabilities()
+      })
+    },
+    vbaDebugAdapterResolver: {
+      resolve: async () => ({ executablePath: adapterPath, capabilities: compatibleDebugAdapterCapabilities() })
+    },
+    capabilitiesProcess: async file => ({
+      stdout: JSON.stringify(file === cliPath ? compatibleCapabilities()
+        : { ...compatibleDebugAdapterCapabilities(), protocolVersion }), stderr: ''
+    }),
+    debugConfigurationHost: {
+      ...host,
+      captureSourceInventory: async () => { captures += 1; return host.captureSourceInventory(); }
+    }
+  });
+  const configuration = integration.prepareDebugConfigurationForRestart(
+    await integration.resolveDebugConfiguration({}));
+  protocolVersion = '1.1';
+
+  await assert.rejects(integration.captureBoundRestartConfiguration(configuration), /protocolVersion 1\.1.*requires 2\.0/);
+  assert.equal(captures, 1);
+});
+
+test('F5 captures with the freshly inspected pinned CLI code page instead of cached capabilities', async () => {
+  const cliPath = path.resolve('vba-dev.exe');
+  const host = snapshotDebugHost();
+  let capturedCodePage: number | undefined;
+  const integration = fixtureIntegration({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    getConfiguredDevToolPath: () => undefined,
+    requiredContract: requiredContract(),
+    requiredDebugAdapterContract: requiredDebugAdapterContract(),
+    vbaDevResolver: {
+      resolve: async () => ({
+        executablePath: cliPath, bundledPath: cliPath, source: 'bundled',
+        capabilities: { ...compatibleCapabilities(), activeWindowsCodePage: 932 }
+      })
+    },
+    capabilitiesProcess: async file => ({
+      stdout: JSON.stringify(file === cliPath
+        ? { ...compatibleCapabilities(), activeWindowsCodePage: 65001 }
+        : compatibleDebugAdapterCapabilities()), stderr: ''
+    }),
+    debugConfigurationHost: {
+      ...host,
+      captureSourceInventory: async (_sourceSetPath: string, _token?: unknown, activeCodePage?: number) => {
+        capturedCodePage = activeCodePage;
+        return host.captureSourceInventory();
+      }
+    }
+  });
+
+  await integration.resolveDebugConfiguration({});
+
+  assert.equal(capturedCodePage, 65001);
+});
+
 test('VBA debug provider aborts before adapter startup when inventory capture fails', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const manifestPath = path.join(projectRoot, 'vba-project.json');
   const sourcePath = path.join(projectRoot, 'src', 'Book1', 'DebugModule.bas');
   let adapterResolutionAttempts = 0;
-  const integration = new VscodeDebugIntegration({
+  const integration = fixtureIntegration({
     extensionRoot: path.resolve(__dirname, '..', '..'),
     getConfiguredDevToolPath: () => undefined,
     vbaDebugAdapterResolver: {
       resolve: async () => {
         adapterResolutionAttempts += 1;
-        throw new Error('Adapter must not start after capture failure.');
+        return { executablePath: path.resolve('vba-debug-adapter.exe'), capabilities: compatibleDebugAdapterCapabilities() };
       }
     },
     debugConfigurationHost: {
@@ -123,7 +486,7 @@ test('VBA debug provider aborts before adapter startup when inventory capture fa
   });
 
   assert.equal(result, undefined);
-  assert.equal(adapterResolutionAttempts, 0);
+  assert.equal(adapterResolutionAttempts, 1);
   assert.deepEqual(messages, ['Immutable inventory capture failed.']);
 });
 
@@ -135,7 +498,7 @@ test('VBA debug provider exposes the post-substitution result to tests and abort
     project: path.join('C:', 'resolved', 'BookProject'),
     document: 'Book1',
     sourceSnapshot: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: []
     }
   };
@@ -201,7 +564,7 @@ test('VBA debug provider binds the resolved standalone-adapter launch for restar
     project: path.join(workspaceFolder, 'BookProject'),
     document: 'Book1',
     sourceSnapshot: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: []
     }
   };
@@ -417,7 +780,7 @@ test('VBA debug startup pins independent adapter and CLI paths with a canonical 
   const adapterPath = path.join('D:', 'tools', 'vba-debug-adapter.exe');
   let cliResolutions = 0;
   let adapterResolutions = 0;
-  const integration = new VscodeDebugIntegration({
+  const integration = fixtureIntegration({
     extensionRoot,
     getConfiguredDevToolPath: () => undefined,
     vbaDevResolver: {
@@ -466,7 +829,7 @@ test('VBA debug startup pins independent adapter and CLI paths with a canonical 
 test('VBA debug adapter startup checks Workspace Trust before resolving either executable', async () => {
   let cliResolutions = 0;
   let adapterResolutions = 0;
-  const integration = new VscodeDebugIntegration({
+  const integration = fixtureIntegration({
     extensionRoot: path.resolve(__dirname, '..', '..'),
     getConfiguredDevToolPath: () => undefined,
     requireTrustedWorkspace: async () => false,
@@ -499,7 +862,7 @@ test('VBA debug startup strictly resolves the configured standalone adapter', as
   const cliPath = path.join('D:', 'tools', 'vba-dev.exe');
   const adapterPath = path.join('D:', 'tools', 'vba-debug-adapter.exe');
   const capabilityCalls: Array<{ file: string; args: readonly string[] }> = [];
-  const integration = new VscodeDebugIntegration({
+  const integration = fixtureIntegration({
     extensionRoot,
     getConfiguredDevToolPath: () => undefined,
     getConfiguredDebugAdapterPath: () => adapterPath,
@@ -512,6 +875,9 @@ test('VBA debug startup strictly resolves the configured standalone adapter', as
       })
     },
     capabilitiesProcess: async (file, args) => {
+      if (file === cliPath) {
+        return { stdout: JSON.stringify(compatibleCapabilities()), stderr: '' };
+      }
       capabilityCalls.push({ file, args });
       return {
         stdout: JSON.stringify(compatibleDebugAdapterCapabilities()),
@@ -555,7 +921,7 @@ test('VBA debug startup always resolves the bundled standalone adapter instead o
     'vba-debug-adapter.exe'
   );
   const capabilityCalls: Array<{ file: string; args: readonly string[] }> = [];
-  const integration = new VscodeDebugIntegration({
+  const integration = fixtureIntegration({
     extensionRoot,
     getConfiguredDevToolPath: () => undefined,
     vbaDevResolver: {
@@ -567,6 +933,9 @@ test('VBA debug startup always resolves the bundled standalone adapter instead o
       })
     },
     capabilitiesProcess: async (file, args) => {
+      if (file === cliPath) {
+        return { stdout: JSON.stringify(compatibleCapabilities()), stderr: '' };
+      }
       capabilityCalls.push({ file, args });
       return {
         stdout: JSON.stringify(compatibleDebugAdapterCapabilities()),
@@ -601,7 +970,7 @@ test('VBA debug startup always resolves the bundled standalone adapter instead o
 
 test('VBA debug startup rejects a second session until the active session terminates', async () => {
   let capabilityCallCount = 0;
-  const integration = new VscodeDebugIntegration({
+  const integration = fixtureIntegration({
     extensionRoot: path.resolve(__dirname, '..', '..'),
     getConfiguredDevToolPath: () => path.join('D:', 'tools', 'vba-dev.exe'),
     vbaDebugAdapterResolver: {
@@ -660,7 +1029,7 @@ test('only the owning VBA debug session release cancels its pending restart prep
       }
     }
   });
-  const integration = new VscodeDebugIntegration({
+  const integration = fixtureIntegration({
     extensionRoot: path.resolve(__dirname, '..', '..'),
     getConfiguredDevToolPath: () => path.join('D:', 'tools', 'vba-dev.exe'),
     vbaDebugAdapterResolver: {
@@ -699,7 +1068,7 @@ test('only the owning VBA debug session release cancels its pending restart prep
     module: 'DebugModule',
     procedure: 'RunTarget',
     __vbaDebugWorkbookFileName: 'Book1.xlsm',
-    sourceSnapshot: { schemaVersion: 1, sources: [] }
+    sourceSnapshot: { schemaVersion: 2, sources: [] }
   });
   await integration.createDebugAdapterExecutable({
     id: 'session-1',
@@ -752,7 +1121,7 @@ test('VBA debug startup reuses the session-pinned CLI with the standalone adapte
     },
     requiredContract: requiredContract()
   });
-  const integration = new VscodeDebugIntegration({
+  const integration = fixtureIntegration({
     extensionRoot: path.resolve(__dirname, '..', '..'),
     getConfiguredDevToolPath: () => undefined,
     vbaDevResolver,
@@ -813,7 +1182,7 @@ test('unexpected VBA debug adapter exit invokes cleanup with only its generated 
   const adapterPath = path.join('D:', 'tools', 'vba-debug-adapter.exe');
   const adapterSessionId = '0123456789abcdef0123456789abcdef';
   const cleanupCalls: Array<{ file: string; args: readonly string[] }> = [];
-  const integration = new VscodeDebugIntegration({
+  const integration = fixtureIntegration({
     extensionRoot: path.resolve(__dirname, '..', '..'),
     getConfiguredDevToolPath: () => undefined,
     vbaDevResolver: {
@@ -857,7 +1226,7 @@ test('adapter cleanup identity survives an active shutdown attempt until confirm
   const adapterPath = path.join('D:', 'tools', 'vba-debug-adapter.exe');
   const adapterSessionId = '0123456789abcdef0123456789abcdef';
   let cleanupAttempts = 0;
-  const integration = new VscodeDebugIntegration({
+  const integration = fixtureIntegration({
     extensionRoot: path.resolve(__dirname, '..', '..'),
     getConfiguredDevToolPath: () => undefined,
     vbaDevResolver: {
@@ -908,7 +1277,7 @@ test('VBA debug integration shutdown cancels bound restart capture before cleanu
   const captureStarted = new Promise<void>((resolve) => {
     notifyCaptureStarted = resolve;
   });
-  const integration = new VscodeDebugIntegration({
+  const integration = fixtureIntegration({
     extensionRoot: path.resolve(__dirname, '..', '..'),
     getConfiguredDevToolPath: () => undefined,
     vbaDevResolver: {
@@ -971,7 +1340,7 @@ test('VBA debug integration shutdown cancels bound restart capture before cleanu
     module: 'DebugModule',
     procedure: 'RunTarget',
     __vbaDebugWorkbookFileName: 'Book1.xlsm',
-    sourceSnapshot: { schemaVersion: 1, sources: [] }
+    sourceSnapshot: { schemaVersion: 2, sources: [] }
   });
   await integration.createDebugAdapterExecutable({
     id: 'vscode-session-1',
@@ -996,7 +1365,7 @@ test('VBA debug integration shutdown stops its owned session before cleanup', as
   const adapterPath = path.join('D:', 'tools', 'vba-debug-adapter.exe');
   const adapterSessionId = '0123456789abcdef0123456789abcdef';
   const events: string[] = [];
-  const integration = new VscodeDebugIntegration({
+  const integration = fixtureIntegration({
     extensionRoot: path.resolve(__dirname, '..', '..'),
     getConfiguredDevToolPath: () => undefined,
     vbaDevResolver: {
@@ -1041,7 +1410,7 @@ test('VBA debug integration shutdown invalidates an in-flight adapter reservatio
     finishDevtoolResolution = resolve;
   });
   let adapterResolutionCalls = 0;
-  const integration = new VscodeDebugIntegration({
+  const integration = fixtureIntegration({
     extensionRoot: path.resolve(__dirname, '..', '..'),
     getConfiguredDevToolPath: () => undefined,
     vbaDevResolver: {
@@ -1074,17 +1443,29 @@ test('VBA debug integration shutdown invalidates an in-flight adapter reservatio
   await devtoolResolutionStarted;
 
   await integration.shutdown();
-  finishDevtoolResolution();
-
-  assert.equal(await executable, undefined);
-  assert.equal(adapterResolutionCalls, 0);
+  let deadline: NodeJS.Timeout | undefined;
+  try {
+    const settled = await Promise.race([
+      executable.then(value => ({ completed: true, value })),
+      new Promise<{ completed: false }>(resolve => {
+        deadline = setTimeout(() => resolve({ completed: false }), 1000);
+      })
+    ]);
+    assert.equal(settled.completed, true, 'Shutdown must not wait for another consumer\'s shared resolver.');
+    assert.equal(await executable, undefined);
+    assert.equal(adapterResolutionCalls, 0);
+  } finally {
+    if (deadline !== undefined) { clearTimeout(deadline); }
+    finishDevtoolResolution();
+    await executable;
+  }
 });
 
 test('VBA debug startup suppresses an already reported resolution failure and releases the session', async () => {
   const executablePath = path.join('D:', 'tools', 'vba-dev.exe');
   const adapterPath = path.join('D:', 'tools', 'vba-debug-adapter.exe');
   let attempts = 0;
-  const integration = new VscodeDebugIntegration({
+  const integration = fixtureIntegration({
     extensionRoot: path.resolve(__dirname, '..', '..'),
     getConfiguredDevToolPath: () => undefined,
     vbaDevResolver: {
@@ -1138,7 +1519,7 @@ test('VBA debug startup releases its session reservation after standalone adapte
   let compatible = false;
   const executablePath = path.join('D:', 'tools', 'vba-dev.exe');
   const adapterPath = path.join('D:', 'tools', 'vba-debug-adapter.exe');
-  const integration = new VscodeDebugIntegration({
+  const integration = fixtureIntegration({
     extensionRoot: path.resolve(__dirname, '..', '..'),
     getConfiguredDevToolPath: () => undefined,
     vbaDevResolver: {
@@ -1178,7 +1559,11 @@ function compatibleCapabilities(): VbaDevCapabilities {
   return {
     toolVersion: '0.1.0',
     contractVersion: '1.0',
-    commands: {}
+    commands: {},
+    activeWindowsCodePage: 65001,
+    featureVersions: {
+      'build.sourceSnapshot': '2.0', 'test.sourceSnapshot': '2.0', 'sourceSnapshot.activeWindowsCodePage': '1.0'
+    }
   };
 }
 
@@ -1186,13 +1571,13 @@ function compatibleDebugAdapterCapabilities() {
   return {
     toolVersion: '0.1.0',
     contractVersion: '1.0',
-    protocolVersion: '1.1',
+    protocolVersion: '2.0',
     transports: ['stdio'],
     sessionIdFormat: 'lowercase-hex-32',
     commands: ['cleanup', 'doctor'],
     commandSchemaVersions: { doctor: '1.0' },
     featureVersions: { 'doctor.stdinCancellation': '1.0' },
-    requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '1.0' }
+    requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0' }
   };
 }
 
@@ -1204,6 +1589,63 @@ function requiredDebugAdapterContract() {
 function requiredContract() {
   return {
     contractVersion: '1.0',
+    featureVersions: {
+      'build.sourceSnapshot': '2.0', 'test.sourceSnapshot': '2.0', 'sourceSnapshot.activeWindowsCodePage': '1.0'
+    },
     commandSchemaVersions: {}
   };
+}
+
+function snapshotDebugHost() {
+  const projectRoot = path.resolve('BookProject');
+  const sourceSetPath = path.join(projectRoot, 'src', 'Book1');
+  const sourcePath = path.join(sourceSetPath, 'DebugModule.bas');
+  return {
+    workspaceRoots: [projectRoot],
+    getActiveEditor: () => ({ uriPath: sourcePath, line: 2, character: 0 }),
+    getSourceBreakpoints: () => [],
+    findProjectManifests: async () => [path.join(projectRoot, 'vba-project.json')],
+    readTextFile: async () => JSON.stringify({
+      schemaVersion: 1, projectName: 'BookProject', primaryDocument: 'Book1',
+      documents: {
+        Book1: {
+          kind: 'excel', sourcePath: 'src/Book1', templatePath: 'src/Book1/Book1.xlsm',
+          binPath: 'bin/Book1.xlsm', publishPath: 'publish/Book1.xlsm',
+          commonModules: [], references: []
+        }
+      }
+    }),
+    captureSourceInventory: async () => ({
+      sourceSetPath, activeWindowsCodePage: 65001,
+      entries: [{
+        relativePath: 'DebugModule.bas', sourceUri: pathToFileURL(sourcePath).href, encoding: 'utf8',
+        bytes: Buffer.from('Attribute VB_Name = "DebugModule"\nPublic Sub RunTarget()\nEnd Sub\n')
+      }]
+    })
+  };
+}
+
+function fixtureIntegration(options: ConstructorParameters<typeof VscodeDebugIntegration>[0]): VscodeDebugIntegration {
+  return new VscodeDebugIntegration({
+    requiredContract: requiredContract(),
+    requiredDebugAdapterContract: {
+      contractVersion: '1.0', protocolVersion: '2.0', transports: ['stdio'],
+      sessionIdFormat: 'lowercase-hex-32', commands: ['cleanup', 'doctor'],
+      commandSchemaVersions: { doctor: '1.0' }, featureVersions: { 'doctor.stdinCancellation': '1.0' },
+      requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0' }
+    },
+    capabilitiesProcess: async file => ({
+      stdout: JSON.stringify(file.endsWith('vba-dev.exe') ? {
+        toolVersion: '0.1.0', contractVersion: '1.0', commands: {}, activeWindowsCodePage: 65001,
+        featureVersions: { 'build.sourceSnapshot': '2.0', 'test.sourceSnapshot': '2.0', 'sourceSnapshot.activeWindowsCodePage': '1.0' }
+      } : {
+        toolVersion: '0.1.0', contractVersion: '1.0', protocolVersion: '2.0', transports: ['stdio'],
+        sessionIdFormat: 'lowercase-hex-32', commands: ['cleanup', 'doctor'],
+        commandSchemaVersions: { doctor: '1.0' }, featureVersions: { 'doctor.stdinCancellation': '1.0' },
+        requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0' }
+      }),
+      stderr: ''
+    }),
+    ...options
+  });
 }

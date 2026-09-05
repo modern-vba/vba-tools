@@ -1,4 +1,5 @@
 import * as path from 'node:path';
+import { SnapshotProviderOptions, resolveSnapshotProviders, snapshotActiveWindowsCodePage } from './snapshotProviders';
 
 import {
   CompanionExecutableResolver,
@@ -79,7 +80,7 @@ export interface TestControllerAdapter {
   createTestRun(request: TestRunRequestLike): TestRunLike;
 }
 
-export interface WorkbookBackedTestExplorerOptions {
+export interface WorkbookBackedTestExplorerOptions extends SnapshotProviderOptions {
   controller: TestControllerAdapter;
   extensionRoot: string;
   configuredDevToolPath?: string | undefined;
@@ -109,7 +110,8 @@ export interface CallerOwnedSourceSnapshot {
 
 export type CaptureSourceSnapshot = (
   sourceSetPath: string,
-  cancellationToken: CommandCancellationToken
+  cancellationToken: CommandCancellationToken,
+  activeWindowsCodePage?: number
 ) => Promise<CallerOwnedSourceSnapshot>;
 
 export interface WorkbookBackedTestExplorer {
@@ -221,16 +223,31 @@ async function runTests(
   const run = options.controller.createTestRun(request);
   try {
     const items = nodeIndex.selectedRunnableItems(request);
+    let invocationOptions = options;
     try {
-      await options.vbaDevResolver?.resolve();
+      if (runOptions.noBuild) {
+        await options.vbaDevResolver?.resolve();
+      } else {
+        const providers = await resolveSnapshotProviders({ ...options, cancellationToken: token });
+        const activeCodePage = snapshotActiveWindowsCodePage(providers);
+        invocationOptions = {
+          ...options,
+          vbaDevResolver: { resolve: async () => providers.vbaDev },
+          captureSourceSnapshot: (sourceSetPath, token) => options.captureSourceSnapshot(sourceSetPath, token, activeCodePage)
+        };
+      }
     } catch (error) {
-      if (!isReportedVbaDevResolutionFailure(error)) {
+      if (runOptions.noBuild && !isReportedVbaDevResolutionFailure(error)) {
         throw error;
       }
-
       const errorItem = items[0];
       if (errorItem !== undefined) {
-        run.errored(errorItem, noCompatibleVbaDevMessage);
+        if (token.isCancellationRequested) {
+          run.cancelled(errorItem);
+        } else {
+          run.errored(errorItem, isReportedVbaDevResolutionFailure(error)
+            ? noCompatibleVbaDevMessage : error instanceof Error ? error.message : String(error));
+        }
       }
       return;
     }
@@ -240,7 +257,7 @@ async function runTests(
     });
     for (const selection of selections) {
       await runTestItem(
-        options,
+        invocationOptions,
         nodeIndex,
         run,
         selection.item,

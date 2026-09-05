@@ -404,7 +404,7 @@ Use build when you want a generated workbook for manual inspection or when a
 project has no unit tests. Close the target workbook before building so Excel
 can replace the generated output.
 
-An ordinary saved-source build captures the selected source files and form
+Build captures the selected source files and form
 sidecars once. A supported UTF-8, UTF-16 LE, or UTF-16 BE BOM identifies the
 source encoding; files without a BOM use only the active Windows ANSI code page
 captured for that build. To use UTF-8 on a machine whose active code page is not
@@ -413,8 +413,23 @@ code page. All decoded text must still round-trip losslessly through the VBE's
 active code page. Invalid input fails before Excel starts and leaves the prior
 build output unchanged; build never rewrites source bytes to convert them.
 Changes made after capture apply to a later build. These rules also apply to
-the ordinary build stage of `vba-dev test`; source snapshots used by debugging
-and editor tests retain their separate encoding support.
+the build stage of `vba-dev test` and to source snapshots used by debugging and
+editor tests.
+
+Snapshot encoding v2 uses the active Windows code page for every file without
+a BOM, even when its bytes also happen to be valid UTF-8. For an unsaved editor,
+choose a supported BOM encoding (`UTF-8 with BOM`, `UTF-16 LE`, or `UTF-16 BE`)
+or the active Windows code page. Unsaved UTF-8 without BOM is supported only
+when that code page is 65001. Clean files and form sidecars keep their exact disk
+bytes; snapshot capture never saves or converts the project source. Text must
+still be representable in the VBE's active code page.
+
+Update VBA Tools and its bundled tools together. A separately configured
+`vba-dev` or debug adapter must support the same snapshot v2 requirements.
+Snapshot test and debug startup check both tools before capturing source or
+creating temporary workbooks. An incompatible adapter override fails without
+fallback; an incompatible `vba-dev` override keeps the existing warning and
+compatible bundled-tool fallback.
 
 ### Debug in the VBE
 

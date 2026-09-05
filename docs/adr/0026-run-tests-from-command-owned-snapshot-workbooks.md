@@ -19,16 +19,24 @@ capture. Pathless documents cannot participate. These are producer rules;
 `vba-dev test` receives only the completed directory and has no editor-state
 dependency.
 
-Dirty source is limited to UTF-8 with or without BOM, BOM-marked UTF-16 LE or
+Issue #344 aligns `build.sourceSnapshot` and `test.sourceSnapshot` at `2.0`
+with adapter protocol `2.0` and DAP source-snapshot schema `2`. Before producing
+a test snapshot, the extension independently validates both providers and pins
+the chosen compatible CLI path for capture and invocation. Ordinary/no-build
+commands do not acquire an adapter dependency. `VbaDev` advertises only its
+own caller-neutral capabilities and accepts no consumer validation proof.
+
+Dirty source is limited to BOM-marked UTF-8, BOM-marked UTF-16 LE or
 BE, and the operation-fixed active Windows ANSI code page without BOM. The
 workflow reads that code page directly from `GetACP` once; ACP 65001 is UTF-8,
-and another dirty legacy encoding is accepted only when it equals the fixed
+and any dirty encoding without a BOM is accepted only when it equals the fixed
 ACP. Every clean and dirty text source must strict-decode and re-encode to its
 original bytes before Excel starts. Detection checks a recognized BOM first,
-then strict UTF-8, then the strict fixed ACP. Clean source retains its exact disk
+then only the strict fixed ACP for bytes without a BOM. BOM-less UTF-8 requires
+ACP 65001. Clean source retains its exact disk
 bytes, `.frx` remains binary-only, and snapshot capture and transport do not
 rewrite either. `VbaDev` derives a separate invocation-internal ACP import copy
-under ADR 0027 without replacement characters or lossy conversion. A decode,
+under ADR 0027 and ADR 0037 without replacement characters or lossy conversion. A decode,
 source byte-round-trip, or ACP text-round-trip failure is a command error before
 build rather than an optional source-location warning.
 `VbaDev` fixes the accepted input in invocation-internal scratch but never
@@ -91,13 +99,16 @@ Snapshot input remains a client-neutral explicit contract rather than implicit
 VS Code integration. Test-result identity and outcome remain workbook-owned,
 and the existing machine-readable result schema remains in force. Snapshot
 paths preserve their original `DocumentSourceSet`-relative layout. `VbaDev`
-parses the invocation-fixed snapshot bytes to calculate the declaration-name
+uses the admitted snapshot's existing syntax facts to calculate the declaration-name
 range for the code that actually ran, but emits the corresponding persistent
 source URI derived from that relative path rather than an internal snapshot or
 workspace URI. If that mapping is unsafe, missing, or ambiguous, it omits the
 optional location and reports the existing non-failing source-location warning.
 Encoding validity is no longer optional at this point because snapshot input
-passed the shared pre-Excel validation.
+passed VbaDev's independent pre-Excel admission. Build preflight, ACP import
+projection, test execution input, and snapshot result locations share those
+immutable facts without another source read, ACP acquisition, or decode.
+Ordinary/no-build result-location lookup remains outside this migration.
 
 The VS Code caller records the selected document's source/project revision when
 it creates the snapshot. Later edits do not cancel the immutable command or

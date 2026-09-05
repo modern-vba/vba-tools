@@ -40,8 +40,8 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             new(
                 "Module1.bas",
                 sourceUri,
-                "utf8",
-                Convert.ToBase64String(Encoding.UTF8.GetBytes(
+                "utf8bom",
+                Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
                     "Attribute VB_Name = \"Module1\"\r\n" +
                     "Public Sub Run()\r\n" +
                     "    Debug.Print \"frozen\"\r\n" +
@@ -57,7 +57,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             "Book1.xlsm",
             "Module1",
             "Run",
-            new TransportedDebugSourceSnapshot(1, sources)
+            new TransportedDebugSourceSnapshot(2, sources)
             {
                 ActiveSource = new TransportedDebugSourcePosition(sourceUri, 2, 4),
                 Breakpoints = breakpoints
@@ -323,13 +323,13 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             ? "Attribute VB_Name = \"Module1\"\r\nPublic Sub Other()\r\nEnd Sub\r\n"
             : "Attribute VB_Name = \"Module1\"\r\nPublic Sub Run()\r\n\r\nEnd Sub\r\n";
         var snapshot = new TransportedDebugSourceSnapshot(
-            1,
+            2,
             [
                 new TransportedDebugSource(
                     "Module1.bas",
                     sourceUri,
-                    "utf8",
-                    Convert.ToBase64String(Encoding.UTF8.GetBytes(content)))
+                    "utf8bom",
+                    Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(content)))
             ])
         {
             Breakpoints = invalidEvidence == "unmappable-breakpoint"
@@ -785,7 +785,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             new TransportedDebugSourceSnapshotValidator(932),
             builder,
             new RecordingVbeDebugSessionFactory(events, visibleSession));
-        var sourceBytes = Encoding.UTF8.GetBytes(
+        var sourceBytes = DebugSnapshotTestEncoding.Utf8BomBytes(
             "Attribute VB_Name = \"Module1\"\r\nPublic Sub Run()\r\nEnd Sub\r\n");
 
         try
@@ -801,12 +801,12 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
                     "Module1",
                     "Run",
                     new TransportedDebugSourceSnapshot(
-                        1,
+                        2,
                         [
                             new TransportedDebugSource(
                                 "Module1.bas",
                                 "file:///C:/persistent/Module1.bas",
-                                "utf8",
+                                "utf8bom",
                                 Convert.ToBase64String(sourceBytes))
                         ])),
                 CancellationToken.None,
@@ -863,13 +863,13 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
                     "Module1",
                     "Run",
                     new TransportedDebugSourceSnapshot(
-                        1,
+                        2,
                         [
                             new TransportedDebugSource(
                                 "Module1.bas",
                                 "file:///C:/persistent/Module1.bas",
-                                "utf8",
-                                Convert.ToBase64String(Encoding.UTF8.GetBytes(
+                                "utf8bom",
+                                Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
                                     "Attribute VB_Name = \"Module1\"\r\n" +
                                     "Public Sub Run()\r\nEnd Sub\r\n")))
                         ])),
@@ -911,7 +911,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
                 new VbaDevSnapshotBuildResult(generationCapability)),
             new RecordingVbeDebugSessionFactory(events, visibleSession));
         var snapshot = new TransportedDebugSourceSnapshot(
-            1,
+            2,
             [
                 Source("B.bas", "ModuleB", "Other"),
                 Source("a.bas", "ModuleA", "Run"),
@@ -950,8 +950,8 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             => new(
                 relativePath,
                 $"file:///C:/persistent/{relativePath}",
-                "utf8",
-                Convert.ToBase64String(Encoding.UTF8.GetBytes(
+                "utf8bom",
+                Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
                     $"Attribute VB_Name = \"{moduleName}\"\r\n" +
                     $"Public Sub {procedureName}()\r\nEnd Sub\r\n")));
     }
@@ -972,13 +972,13 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
                 events,
                 new RecordingVbeDebugSession(events)));
         var snapshot = new TransportedDebugSourceSnapshot(
-            1,
+            2,
             [
                 new TransportedDebugSource(
                     "nested/Module1.bas",
                     "file:///C:/persistent/Elsewhere.bas",
-                    "utf8",
-                    Convert.ToBase64String(Encoding.UTF8.GetBytes(
+                    "utf8bom",
+                    Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
                         "Attribute VB_Name = \"Module1\"\r\n" +
                         "Public Sub Run()\r\nEnd Sub\r\n")))
             ]);
@@ -1016,15 +1016,15 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
                 new VbaDevSnapshotBuildResult(generationCapability)),
             new RecordingVbeDebugSessionFactory(events, visibleSession));
         const string sourceUri = "file:///C:/persistent/Module1.bas";
-        var sourceBytes = Encoding.UTF8.GetBytes(
+        var sourceBytes = DebugSnapshotTestEncoding.Utf8BomBytes(
             "Attribute VB_Name = \"Module1\"\r\nPublic Sub Run()\r\n    Debug.Print \"run\"\r\nEnd Sub\r\n");
         var transportedSnapshot = new TransportedDebugSourceSnapshot(
-            1,
+            2,
             [
                 new TransportedDebugSource(
                     "Module1.bas",
                     sourceUri,
-                    "utf8",
+                    "utf8bom",
                     Convert.ToBase64String(sourceBytes))
             ])
         {
@@ -1071,13 +1071,13 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             new RecordingVbeDebugSessionFactory(events, visibleSession));
         const string sourceUri = "file:///C:/persistent/Module1.bas";
         var transportedSnapshot = new TransportedDebugSourceSnapshot(
-            1,
+            2,
             [
                 new TransportedDebugSource(
                     "Module1.bas",
                     sourceUri,
-                    "utf8",
-                    Convert.ToBase64String(Encoding.UTF8.GetBytes(
+                    "utf8bom",
+                    Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
                         "Attribute VB_Name = \"Module1\"\r\n" +
                         "Public Sub Run()\r\n" +
                         "    Debug.Print \"break\"\r\n" +
@@ -1133,7 +1133,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             compilationSettingsReader: new ThrowingCompilationSettingsReader(),
             compilationEnvironmentFactory: new DebugCompilationEnvironmentFactory(),
             conditionalCompilationPreflight: new DebugConditionalCompilationPreflight());
-        var sourceBytes = Encoding.UTF8.GetBytes(string.Join('\n',
+        var sourceBytes = DebugSnapshotTestEncoding.Utf8BomBytes(string.Join('\n',
         [
             "Attribute VB_Name = \"Module1\"",
             "#If VBA7 Then",
@@ -1156,12 +1156,12 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
                         "Module1",
                         "Run",
                         new TransportedDebugSourceSnapshot(
-                            1,
+                            2,
                             [
                                 new TransportedDebugSource(
                                     "Module1.bas",
                                     "file:///C:/persistent/Module1.bas",
-                                    "utf8",
+                                    "utf8bom",
                                     Convert.ToBase64String(sourceBytes))
                             ])),
                     CancellationToken.None));
@@ -1198,7 +1198,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             compilationSettingsReader: new ConstantCompilationSettingsReader(settings),
             compilationEnvironmentFactory: new DebugCompilationEnvironmentFactory(),
             conditionalCompilationPreflight: new DebugConditionalCompilationPreflight());
-        var sourceBytes = Encoding.UTF8.GetBytes(string.Join('\n',
+        var sourceBytes = DebugSnapshotTestEncoding.Utf8BomBytes(string.Join('\n',
         [
             "Attribute VB_Name = \"Module1\"",
             "#If VBA7 Then",
@@ -1222,12 +1222,12 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
                     "Module1",
                     "LegacyTarget",
                     new TransportedDebugSourceSnapshot(
-                        1,
+                        2,
                         [
                             new TransportedDebugSource(
                                 "Module1.bas",
                                 "file:///C:/persistent/Module1.bas",
-                                "utf8",
+                                "utf8bom",
                                 Convert.ToBase64String(sourceBytes))
                         ])),
                 restartBinding: null,
@@ -1257,13 +1257,13 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             "Module1",
             "Run",
             new TransportedDebugSourceSnapshot(
-                1,
+                2,
                 [
                     new TransportedDebugSource(
                         "Module1.bas",
                         sourceUri,
-                        "utf8",
-                        Convert.ToBase64String(Encoding.UTF8.GetBytes(
+                        "utf8bom",
+                        Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
                             "Attribute VB_Name = \"Module1\"\r\n" +
                             "Public Sub Run()\r\n" +
                             "End Sub\r\n")))

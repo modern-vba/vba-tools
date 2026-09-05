@@ -16,7 +16,7 @@ vba-dev --version
 `vba-dev capabilities --format json` reports the same three-part SemVer as
 `toolVersion`, independently from the VS Code extension version. Snapshot-aware
 callers can require the `build.sourceSnapshot` or `test.sourceSnapshot` feature
-version `1.0` before supplying those command inputs. Windows snapshot producers
+version `2.0` before supplying those command inputs. Windows snapshot producers
 can also require `sourceSnapshot.activeWindowsCodePage` version `1.0` and read
 the accompanying positive `activeWindowsCodePage` value captured from `GetACP`.
 Managed callers can require `invocation.stdinCancellation` version `1.0` before
@@ -335,9 +335,12 @@ Changes after capture cannot affect the current build. This does not guarantee
 an atomic snapshot of concurrent authoring changes: an unreadable selected file
 fails capture, and build neither retries nor rewrites source files. Empty source
 sets remain valid. The ordinary build stage of `test` uses these same rules;
-Publish shares this admission with its own exclusion rules; source-snapshot
-inputs and Doctor retain their separate paths. Snapshot capability versions
-remain `1.0`.
+Publish shares this admission with its own exclusion rules. Snapshot Build/Test
+uses the same BOM-or-ACP admission for the complete caller-owned inventory and
+advertises both snapshot features as `2.0`; the command contract and
+`sourceSnapshot.activeWindowsCodePage` remain `1.0`. Doctor keeps its separate
+path. VbaDev independently admits bytes supplied by any caller; it neither
+requires nor reads an adapter, extension, editor state, or consumer proof.
 
 Before Excel starts, build stages every selected source, requires its authoritative exported module identity, and reports all case-insensitive source conflicts. In the disposable workbook it checks the actual project, retained-component, and active-reference namespaces, removes replaceable components, normalizes references, then checks the final protected and VBE-adopted reference identities again. Any authority gap or conflict fails before source import, save, or atomic output replacement and preserves the source template and previous output. Build-before-test uses this same profile and preflight.
 
@@ -371,7 +374,7 @@ starts only the execution process. The default output format is `text`. Use
 
 Supplying `--source-snapshot` builds and tests a same-filename workbook inside a unique command-owned workspace without reading persistent source or touching the manifest bin workbook. It cannot be combined with `--no-build`, and `test` does not accept `--output`. Snapshot declaration ranges come from the fixed snapshot bytes while emitted locations use the corresponding persistent source URIs. The command releases its owned Excel processes before removing the workspace; a post-release deletion failure is warning-only and reports the retained absolute path without changing test outcomes, exit status, or the complete NDJSON 1.2 batch.
 
-The snapshot supplies only the complete VBA source inventory. The selected project and document, template, references, test selector, and output format still come from the project manifest and the ordinary `test` options.
+The snapshot supplies only the complete VBA source inventory. The selected project and document, template, references, test selector, and output format still come from the project manifest and the ordinary `test` options. Snapshot test locations reuse the same admitted syntax as the build without another file read, encoding decision, or ACP acquisition. Ordinary/no-build location lookup is unchanged.
 
 `--timeout-seconds` changes only the test macro execution deadline. When omitted, `test` uses `commandDefaults.test.executionTimeoutSeconds`, then a built-in 600-second default. Every value must be positive whole seconds; workbook open/save and cleanup retain their independent deadlines.
 
@@ -459,7 +462,7 @@ Import fixes the active Windows ANSI code page once. A UTF-8, UTF-16 LE, or UTF-
 
 Close the target workbook before import and keep it closed until the command finishes. Import holds the original target against writes and deletion while processing a private copy. Before flushing any component, it requires authoritative incoming module identities and compares them case-insensitively with the copy's actual `VBProject.Name`, active `Reference.Name` values, and retained document-module names. Existing standard modules, class modules, and forms are then replaced; document modules such as `ThisWorkbook` and worksheet modules remain. The target is atomically replaced only after source-mirror cleanup, imported-component verification, private workbook save, and release of the owned Excel process succeed. Any earlier failure or cancellation leaves the target bytes unchanged. If private artifacts cannot be removed, the error reports their retained paths.
 
-These encoding rules apply to explicit `import`, ordinary saved-source `build` including the ordinary build stage of `test`, and included `publish` sources. Snapshot build and test, and Doctor retain their existing source-decoding behavior. Snapshot capability contracts remain version `1.0`.
+These encoding rules apply to explicit `import`, ordinary and snapshot `build` and `test`, and included `publish` sources. Snapshot Build/Test capabilities are version `2.0`; the command contract and active-code-page capability remain `1.0`. Doctor retains its existing source-decoding behavior.
 
 Unlike `build`, `import` does not add, remove, or normalize manifest-defined references, does not resolve CommonModules dependencies, does not interpret `'#ExcludePublish`, and does not validate whether the workbook compiles.
 

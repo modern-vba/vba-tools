@@ -97,7 +97,7 @@ export async function runDebugConfigurationIntegrationTests(): Promise<void> {
     assert.equal(String(configuration.project).toLowerCase(), fixtureRoot.toLowerCase());
     assert.equal(configuration.document, 'Book1');
     assert.equal(configuration.__vbaDebugWorkbookFileName, 'Book1.xlsm');
-    assert.equal(snapshot.schemaVersion, 1);
+    assert.equal(snapshot.schemaVersion, 2);
     assert.equal(snapshot.sources.length, 2);
     const sourcesByRelativePath = new Map(snapshot.sources.map((source) => [
       source.relativePath.toLowerCase(),
@@ -106,10 +106,11 @@ export async function runDebugConfigurationIntegrationTests(): Promise<void> {
     const dirtySource = sourcesByRelativePath.get('debugmodule.bas');
     assert.ok(dirtySource);
     assert.equal(fileURLToPath(dirtySource.sourceUri!).toLowerCase(), sourcePath.toLowerCase());
-    assert.equal(dirtySource.encoding, 'utf8');
+    assert.equal(sourceDocument.encoding, 'utf8bom');
+    assert.equal(dirtySource.encoding, 'utf8bom');
     assert.deepEqual(
       Buffer.from(dirtySource.contentBase64, 'base64'),
-      Buffer.from(sourceDocument.getText(), 'utf8')
+      Buffer.from(`\ufeff${sourceDocument.getText()}`, 'utf8')
     );
     assert.match(sourceDocument.getText(), /captured without saving/);
     const encodedSource = sourcesByRelativePath.get('encodedmodule.bas');

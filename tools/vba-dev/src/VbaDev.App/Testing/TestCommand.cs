@@ -186,7 +186,7 @@ public sealed class TestCommand
                 var buildResult = await buildCommand.RunCapturedSnapshotAsync(
                         context,
                         snapshotWorkspace.SourceSnapshotPath,
-                        snapshotWorkspace.SourceFiles,
+                        snapshotWorkspace.Admission,
                         snapshotWorkspace.WorkbookPath,
                         cancellationToken)
                     .ConfigureAwait(false);
@@ -198,7 +198,6 @@ public sealed class TestCommand
                 successfulBuildStandardError = buildResult.StandardError;
 
                 workbookPath = snapshotWorkspace.WorkbookPath;
-                sourceLocationPath = snapshotWorkspace.SourceSnapshotPath;
             }
             else if (request.BuildFirst)
             {
@@ -242,7 +241,8 @@ public sealed class TestCommand
                     context.DocumentSourceSetPath,
                     results)
                 : sourceLocator.LocateSnapshot(
-                    sourceLocationPath,
+                    snapshotWorkspace!.Admission,
+                    snapshotWorkspace.SourceRootPath,
                     context.DocumentSourceSetPath,
                     results);
             var testRun = TestRun.FromResults(

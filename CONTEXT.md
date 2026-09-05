@@ -138,15 +138,18 @@ _Avoid_: language-client readiness, semantic readiness, language-server startup 
 **VbaDebugAdapterContract**:
 The extension-owned compatibility requirement stored as
 `vba-debug-adapter-contract.json`, independent from `vba-dev-contract.json`.
-Its initial capability contract requires adapter contract `1.0`, DAP extension
-protocol `1.1`, stdio transport, lowercase-hex-32 session IDs, cleanup and
+Its capability contract requires adapter contract `1.0`, DAP extension
+protocol `2.0`, DAP source-snapshot schema `2`, stdio transport, lowercase-hex-32 session IDs, cleanup and
 Doctor commands, Doctor schema `1.0`, and required VbaDev feature
-`build.sourceSnapshot` version `1.0`, plus adapter feature
+`build.sourceSnapshot` version `2.0`, plus adapter feature
 `doctor.stdinCancellation` version `1.0`. `VbaDev` advertises that build primitive
 under `featureVersions` and does not advertise a debug-adapter protocol. The
 adapter validates only the feature version it consumes rather than the CLI tool
 version or complete project-command contract. Both capability inspections are
-side-effect free.
+side-effect free. The extension validates both providers before snapshot capture,
+temporary artifacts, or invocation and pins the chosen compatible paths.
+The CLI command contract remains `1.0`; its Build and Test snapshot features
+are `2.0`, while `sourceSnapshot.activeWindowsCodePage` remains `1.0`.
 _Avoid_: vba-dev contract, package version, Doctor readiness
 
 **VbeDebugLaunch**:
@@ -346,22 +349,25 @@ be read fails capture.
 _Avoid_: dirty-file overlay, active-editor-only snapshot, untitled source identity
 
 **SnapshotSourceEncoding**:
-The strict text-byte contract shared by debug and test source snapshots. Its
-initial supported forms are UTF-8 with or without BOM, BOM-marked UTF-16 LE or
-BE, and the operation-fixed active Windows ANSI code page without BOM. The
+The v2 strict text-byte contract independently implemented by debug and test
+snapshot producers and consumers. Supported forms are BOM-marked UTF-8,
+UTF-16 LE or BE, and the operation-fixed active Windows ANSI code page without BOM. The
 Windows snapshot workflow reads that code page directly from `GetACP` once at
 operation start rather than inferring UI language, current culture, console
 encoding, or `.NET Encoding.Default`; ACP 65001 is canonical UTF-8. Byte
-detection checks a recognized BOM first, then strict UTF-8, then the strict
-fixed ACP. Dirty legacy text is supported only when its editor code page equals
-that ACP. Every text source must pass strict decode and exact re-encoding to its
+detection checks a recognized BOM first; all BOM-less bytes use only the strict
+fixed ACP, even when also valid as UTF-8. BOM-less dirty text is supported only
+when its editor code page equals that ACP; `utf8` requires ACP 65001.
+Every text source must pass strict decode and exact re-encoding to its
 original bytes before snapshot build or test starts Excel; clean source retains
 those exact bytes, and `.frx` remains unvalidated binary content. Snapshot
 capture and transport do not rewrite those bytes. `VbaDev` separately derives a
 `VbeImportSourceSet` in the operation-fixed ACP without guessing, replacement
 characters, or a lossy conversion. DAP text entries identify the captured form
 as `utf8`, `utf8bom`, `utf16le`, `utf16be`, or
-`windows-<decimal-code-page>`.
+`windows-<decimal-code-page>`. ACP 65001 uses `utf8`, never `windows-65001`.
+Transport validation is adapter-owned; no decoding proof or editor state is
+accepted by VbaDev in place of its own byte admission and lossless ACP projection.
 _Avoid_: arbitrary editor encoding, lossy fallback, treating VBE import bytes as snapshot bytes
 
 **BuildSourceSnapshot**:
@@ -390,18 +396,16 @@ source and sidecars; dirty editor text follows `SnapshotSourceEncoding`.
 _Avoid_: debug session, source overlay, implicit editor integration
 
 **VbeImportSourceSet**:
-The invocation-owned VBE-facing mirror derived from admitted ordinary Build, Publish, or
-`ExplicitWorkbookImport` facts, or from other `DocumentSourceSet` and
-`BuildSourceSnapshot` materialization paths, before
+The invocation-owned VBE-facing mirror derived from admitted ordinary Build, Publish,
+`ExplicitWorkbookImport`, or `BuildSourceSnapshot` facts before
 `VBComponents.Import`; text components strictly
 round-trip through the operation-fixed active Windows ANSI code page while
 `.frx` sidecars retain their exact bytes and relative pairing. An
 unrepresentable or best-fit-only character fails before Excel starts, and the
 mirror never changes caller-owned bytes and is removed with command scratch.
-For `ExplicitImport`, ordinary Build, and Publish, it consumes the admission's Unicode,
+For `ExplicitImport`, ordinary Build, Publish, and snapshot Build/Test, it consumes the admission's Unicode,
 fixed ACP, and captured sidecar bytes without calling `GetACP`, choosing a source encoding,
-or rereading caller files. Snapshot materialization retains its
-existing UTF-8-first admission behavior until its own migration slice.
+or rereading caller files.
 _Avoid_: source snapshot, persistent source conversion, lossy staging file
 
 **VbeImportVerification**:
@@ -432,6 +436,9 @@ _Avoid_: case-insensitive line comparison, component recasing, source formatting
 The command-owned temporary directory created only by
 `vba-dev test --source-snapshot`. It contains the invocation-fixed source and a
 test workbook whose file name matches the manifest-defined bin workbook. The
+same VbaDev-owned admission supplies build/import facts and snapshot test result
+locations; the locator uses existing syntax and relative provenance without
+another disk read, decoding decision, or ACP acquisition. The
 test command consumes and removes it after releasing owned Excel processes on
 success, failed assertions, command failure, and cancellation; it never owns the
 caller's snapshot directory or mutates persistent bin output. Failure to prove
@@ -752,8 +759,8 @@ _Avoid_: path-only import, ad hoc import, project import
 
 **VbaSourceAdmission**:
 The internal sealed module that captures source authority for one explicit
-import, ordinary saved-source Build, or Publish invocation. Its closed
-`ExplicitImport`, `Build`, and `Publish` intents fix `GetACP` once,
+import, ordinary saved-source Build, Publish, or snapshot Build/Test invocation.
+Its closed intents fix `GetACP` once,
 fix one recursive inventory, and read each selected text source and matching
 `.frx` once without retries or a closing stability check. Recognized UTF-8,
 UTF-16 LE, and UTF-16 BE BOMs select strict decoders; BOM-less source uses only
@@ -771,12 +778,13 @@ exclusion bypasses import eligibility, ACP projection, and sidecar capture;
 included CommonModules ignore that marker. Included sources share the admitted
 facts and ordering; an empty effective Publish source set is valid. Later
 authoring changes belong to the next invocation, without new locks or retries.
-Issue #335 introduced explicit import and #339 adds ordinary Build, including
-the Build stage reused by ordinary Test; #340 adds Publish. Snapshot inputs, test execution
-and result-location authority, Doctor, and language-server admission remain on
-their existing paths.
-Snapshot capability versions remain `1.0`; later rollout is governed by
-ADR 0037.
+Issue #335 introduced explicit import, #339 adds ordinary Build including the
+stage reused by ordinary Test, #340 adds Publish, and #344 adds snapshot
+Build/Test. A snapshot's admitted bytes and syntax also supply its test
+execution input and result-location ranges without rereading caller files or
+reacquiring ACP. Ordinary/no-build result-location authority and Doctor remain
+on their existing paths; language-server admission is independently owned.
+Snapshot feature versions are `2.0`; staged rollout is governed by ADR 0037.
 _Avoid_: public extension point, caller-composed decoding profile, mutable source cache
 
 **WorkbookMaterializationNamePreflight**:
@@ -4095,7 +4103,7 @@ Dev: "What should guided creation do when neither the configured nor bundled `vb
 Domain Expert: "Stop before environment preflight or project input and report one actionable error with Open Settings and Show Output. Do not search PATH, download another tool, run with an incompatible executable, or retry automatically. A compatible bundled fallback remains visible and session-pinned; a complete resolution failure creates no reusable preflight state."
 
 Dev: "Should the debug adapter require the complete `vba-dev` command contract or a particular CLI release?"
-Domain Expert: "No. Its independent contract requires only `featureVersions[\"build.sourceSnapshot\"] == \"1.0\"` from the supplied CLI. `vba-dev-contract.json` does not carry the adapter protocol, and the adapter's protocol, transport, session-ID form, cleanup command, and Doctor schema belong to `vba-debug-adapter-contract.json`."
+Domain Expert: "No. Its independent contract requires only `featureVersions[\"build.sourceSnapshot\"] == \"2.0\"` from the supplied CLI. `vba-dev-contract.json` does not carry the adapter protocol, and the adapter's protocol, transport, session-ID form, cleanup command, and Doctor schema belong to `vba-debug-adapter-contract.json`."
 
 Dev: "Can `VbaLaunchConfiguration` specify only a module without a procedure?"
 Domain Expert: "No. Module and procedure are specified together or both inferred from the active source position captured in `DebugSourceSnapshot`. Project and document may independently narrow the selection."

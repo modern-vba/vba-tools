@@ -37,6 +37,7 @@ export type ProcessRunner = (
 export interface CompatibleVbaDevResolutionOptions extends VbaDevPathResolutionOptions {
   requiredContract?: RequiredVbaDevContract | undefined;
   runProcess?: ProcessRunner | undefined;
+  signal?: AbortSignal | undefined;
 }
 
 export interface CompatibleVbaDev {
@@ -226,6 +227,7 @@ export class VbaDevSessionResolver implements CompanionExecutableResolver {
     generation: number,
     signal: AbortSignal
   ): Promise<CompanionExecutableResolution> {
+    signal = this.options.signal === undefined ? signal : AbortSignal.any([signal, this.options.signal]);
     const configuredCandidate = this.options.configuredPathProvider?.()
       ?? this.options.configuredPath;
     const configuredPath = configuredCandidate?.trim().length
@@ -420,7 +422,7 @@ export async function resolveCompatibleVbaDev(
   const executablePath = resolveVbaDevPath(options);
   const requiredContract = options.requiredContract ?? loadRequiredVbaDevContract(options.extensionRoot);
   const runProcess = options.runProcess ?? runProcessWithExecFile;
-  return inspectCompatibleVbaDev(executablePath, requiredContract, runProcess);
+  return inspectCompatibleVbaDev(executablePath, requiredContract, runProcess, options.signal);
 }
 
 async function inspectCompatibleVbaDev(

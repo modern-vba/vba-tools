@@ -150,7 +150,7 @@ public sealed class VbaDevSnapshotWorkbookBuilder : IVbaDebugWorkbookBuilder
                 "The debug workbook file name must be a path-free .xlsm file name.",
                 nameof(request));
         }
-        if (request.SourceSnapshot.SchemaVersion != 1)
+        if (request.SourceSnapshot.SchemaVersion != 2)
         {
             throw new ArgumentException(
                 $"Unsupported source snapshot schema version {request.SourceSnapshot.SchemaVersion}.",

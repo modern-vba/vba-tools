@@ -9,19 +9,6 @@ namespace VbaDev.App.Testing;
 /// </summary>
 public sealed class TestProcedureSourceLocator
 {
-    private readonly Func<int> getActiveCodePage;
-
-    public TestProcedureSourceLocator()
-        : this(ActiveWindowsAnsiCodePage.Get)
-    {
-    }
-
-    internal TestProcedureSourceLocator(Func<int> getActiveCodePage)
-    {
-        this.getActiveCodePage = getActiveCodePage
-            ?? throw new ArgumentNullException(nameof(getActiveCodePage));
-    }
-
     /// <summary>
     /// Adds a source location to each result whose module and procedure resolve uniquely.
     /// </summary>
@@ -51,19 +38,18 @@ public sealed class TestProcedureSourceLocator
             static (_, bytes) => TestSourceFileTextReader.Decode(bytes));
 
     internal IReadOnlyList<TestResultRecord> LocateSnapshot(
-        string parsedSourceSetPath,
+        AdmittedVbaSourceSet admission,
+        string capturedSourceRoot,
         string locationSourceSetPath,
         IReadOnlyList<TestResultRecord> results)
     {
-        var activeCodePage = getActiveCodePage();
-        return LocateCore(
-            parsedSourceSetPath,
-            locationSourceSetPath,
-            results,
-            (sourcePath, bytes) => VbeImportSourceSet.DecodeSourceText(
-                bytes,
-                activeCodePage,
-                sourcePath));
+        var modules = admission.Sources.Select(source => new ParsedTestModule(
+            TryMapPersistentUri(capturedSourceRoot, locationSourceSetPath, source.SourcePath),
+            source.Syntax)).ToArray();
+        return results.Select(result => result with
+        {
+            Location = Resolve(modules, result.Category, result.TestName)
+        }).ToArray();
     }
 
     private static IReadOnlyList<TestResultRecord> LocateCore(
@@ -116,7 +102,7 @@ public sealed class TestProcedureSourceLocator
             }
             catch (InvalidOperationException)
             {
-                // Snapshot decoding is strict, but location metadata must remain non-failing.
+                // Source navigation remains optional when parsing cannot establish a location.
                 return results;
             }
         }

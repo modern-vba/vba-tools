@@ -85,9 +85,9 @@ Expected capabilities:
   when that explicit override is invalid;
 - obtain CLI `toolVersion`, `contractVersion`, and per-command schema versions
   from `vba-dev capabilities --format json`;
-- require CLI feature `build.sourceSnapshot` version `1.0` for the debug adapter
+- require CLI feature `build.sourceSnapshot` version `2.0` for the debug adapter
   without coupling it to the CLI tool version or complete command contract;
-- validate adapter contract `1.0`, protocol `1.1`, stdio transport,
+- validate adapter contract `1.0`, protocol `2.0`, DAP source-snapshot schema `2`, stdio transport,
   lowercase-hex-32 session IDs, cleanup and Doctor commands, and Doctor schema
   `1.0` from its side-effect-free capability response;
 - bind Restart preparation to the adapter session, canonical project, manifest
