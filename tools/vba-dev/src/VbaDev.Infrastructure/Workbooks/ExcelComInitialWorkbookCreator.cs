@@ -51,11 +51,7 @@ internal interface IExcelComInitialWorkbookLifecycle
 /// </summary>
 public sealed class ExcelComInitialWorkbookCreator : IReceiptInitialWorkbookCreator
 {
-    private const int XlOpenXmlWorkbookMacroEnabled = 52;
-    private const int XlWbatWorksheet = -4167;
-    private static readonly TimeSpan DispatcherAbandonmentObservation =
-        TimeSpan.FromMilliseconds(100);
-    private readonly IStaComDispatcherFactory dispatcherFactory;
+    private readonly AutomationExcelProcessRuntime runtime;
     private readonly IExcelComInitialWorkbookLifecycle lifecycle;
     private readonly WorkbookAutomationTimeouts timeouts;
     private readonly IInitialWorkbookArtifactGuard artifactGuard;
@@ -99,7 +95,7 @@ public sealed class ExcelComInitialWorkbookCreator : IReceiptInitialWorkbookCrea
         WorkbookAutomationTimeouts timeouts,
         IInitialWorkbookArtifactGuard artifactGuard)
     {
-        this.dispatcherFactory = dispatcherFactory;
+        runtime = new AutomationExcelProcessRuntime(dispatcherFactory);
         this.lifecycle = lifecycle;
         this.timeouts = timeouts;
         this.artifactGuard = artifactGuard;
@@ -146,165 +142,40 @@ public sealed class ExcelComInitialWorkbookCreator : IReceiptInitialWorkbookCrea
         var absoluteWorkbookPath = Path.GetFullPath(workbookPath);
         using var staging = artifactGuard.CreateStagingArtifact();
 
-        OwnedExcelTerminationController? candidateTerminationController = null;
-        IStaComDispatcher? candidateDispatcher = null;
-        WorkbookAutomationStageExecutor? candidateStageExecutor = null;
-        try
-        {
-            candidateTerminationController = new OwnedExcelTerminationController();
-            candidateDispatcher = dispatcherFactory.Create();
-            candidateStageExecutor = new WorkbookAutomationStageExecutor(
-                () => candidateTerminationController.HasAttachedProcessExited,
-                candidateTerminationController.RequestForcedTermination,
-                getOwnedProcessCompletion: () =>
-                    candidateTerminationController.AttachedProcessCompletion,
-                captureAutomationStage:
-                    candidateTerminationController.CaptureAutomationStage,
-                describeIsolationEvidence:
-                    candidateTerminationController.DescribeIsolationEvidence);
-        }
-        catch (Exception setupError)
-        {
-            var setupDispatcherError = candidateDispatcher is null
-                ? null
-                : await DisposeDispatcherAsync(
-                        candidateDispatcher,
-                        allowAbandonment: false)
-                    .ConfigureAwait(false);
-            candidateTerminationController?.Dispose();
-            var artifactCleanup = TryDeleteStaging(staging);
-            if (!artifactCleanup.RemovedOrAbsent)
-            {
-                var setupArtifactError = artifactCleanup.Failure
-                    ?? new InvalidOperationException(
-                        "The staging artifact changed during initial workbook setup.");
-                throw new InitialWorkbookArtifactRetainedException(
-                    staging.WorkbookPath,
-                    expectedArtifact: null,
-                    artifactCleanup.TargetChanged,
-                    setupDispatcherError is null
-                        ? new AggregateException(setupError, setupArtifactError)
-                        : new AggregateException(
-                            setupError,
-                            setupDispatcherError,
-                            setupArtifactError));
-            }
-
-            if (setupDispatcherError is not null)
-            {
-                throw new AggregateException(setupError, setupDispatcherError);
-            }
-
-            ExceptionDispatchInfo.Capture(setupError).Throw();
-        }
-
-        using var terminationController = candidateTerminationController
-            ?? throw new InvalidOperationException(
-                "Initial workbook automation ownership was not initialized.");
-        var dispatcher = candidateDispatcher
-            ?? throw new InvalidOperationException(
-                "Initial workbook automation dispatcher was not initialized.");
-        var stageExecutor = candidateStageExecutor
-            ?? throw new InvalidOperationException(
-                "Initial workbook automation stage executor was not initialized.");
-        object? host = null;
-        IExcelComInitialWorkbookSession? session = null;
-        IReadOnlyList<string>? selectableReferences = null;
         InitialWorkbookArtifactEvidence? stagingEvidence = null;
-        var stagingWorkbookMayHaveBeenCreated = false;
-        Exception? operationError = null;
-
-        try
+        var outcome = await runtime.RunInitialWorkbookAsync(
+            Path.GetFileName(absoluteWorkbookPath),
+            lifecycle,
+            timeouts,
+            async (session, token) =>
+            {
+                var beforeSave = await session.EstablishAndReadBaselineAsync(token).ConfigureAwait(false);
+                var references = InitialWorkbookBaselineContract.ValidateExact(beforeSave);
+                var afterSave = await session.SaveAndReadBaselineAsync(
+                    staging.WorkbookPath,
+                    () => stagingEvidence = artifactGuard.Capture(staging),
+                    token).ConfigureAwait(false);
+                InitialWorkbookBaselineContract.ValidateExact(afterSave);
+                InitialWorkbookBaselineContract.ValidateUnchanged(beforeSave, afterSave);
+                return references;
+            },
+            cancellationToken).ConfigureAwait(false);
+        var evidence = outcome.Evidence;
+        var operationError = evidence.OperationFailure;
+        var cleanupError = evidence.CleanupFailure;
+        if (!evidence.DispatcherRetired)
         {
-            await stageExecutor.ExecuteAsync(
-                new WorkbookAutomationStage(WorkbookAutomationStageKind.ExcelStartup),
-                timeouts.ExcelStartup,
-                timeouts.ProcessCleanup,
-                cancellationToken,
-                stageCancellation => dispatcher.InvokeAsync(
-                    () =>
-                    {
-                        host = lifecycle.Start(
-                            terminationController,
-                            stageCancellation);
-                        return true;
-                    },
-                    stageCancellation)).ConfigureAwait(false);
-
-            InitialWorkbookBaselineSnapshot? beforeSave = null;
-            await stageExecutor.ExecuteAsync(
-                new WorkbookAutomationStage(
-                    WorkbookAutomationStageKind.WorkbookOpen,
-                    Path.GetFileName(absoluteWorkbookPath)),
-                timeouts.WorkbookOpen,
-                timeouts.ProcessCleanup,
-                cancellationToken,
-                stageCancellation => dispatcher.InvokeAsync(
-                    () =>
-                    {
-                        session = lifecycle.CreateWorkbook(host!, XlWbatWorksheet);
-                        host = null;
-                        beforeSave = session.EstablishAndReadBaseline();
-                        return true;
-                    },
-                    stageCancellation)).ConfigureAwait(false);
-
-            selectableReferences = InitialWorkbookBaselineContract.ValidateExact(beforeSave!);
-
-            InitialWorkbookBaselineSnapshot? afterSave = null;
-            await stageExecutor.ExecuteAsync(
-                new WorkbookAutomationStage(
-                    WorkbookAutomationStageKind.WorkbookSave,
-                    Path.GetFileName(absoluteWorkbookPath)),
-                timeouts.WorkbookSave,
-                timeouts.ProcessCleanup,
-                cancellationToken,
-                    stageCancellation => dispatcher.InvokeAsync(
-                    () =>
-                    {
-                        stagingWorkbookMayHaveBeenCreated = true;
-                        session!.Save(
-                            staging.WorkbookPath,
-                            XlOpenXmlWorkbookMacroEnabled);
-                        stagingEvidence = artifactGuard.Capture(staging);
-                        afterSave = session.ReadBaseline();
-                        return true;
-                    },
-                    stageCancellation)).ConfigureAwait(false);
-
-            InitialWorkbookBaselineContract.ValidateExact(afterSave!);
-            InitialWorkbookBaselineContract.ValidateUnchanged(beforeSave!, afterSave!);
-        }
-        catch (Exception exception)
-        {
-            operationError = exception;
+            cleanupError = new WorkbookAutomationCleanupException(
+                "The initial-workbook STA dispatcher retirement could not be proved.",
+                CombineErrors(cleanupError, evidence.DispatcherFailure));
         }
 
-        var cleanupError = await CleanupAsync(
-            dispatcher,
-            terminationController,
-            host,
-            session,
-            stageExecutor,
-            operationError).ConfigureAwait(false);
-        var dispatcherError = await DisposeDispatcherAsync(
-            dispatcher,
-            stageExecutor.HasAbandonedOperation).ConfigureAwait(false);
-        if (dispatcherError is not null)
-        {
-            cleanupError = cleanupError is null
-                ? dispatcherError
-                : new AggregateException(cleanupError, dispatcherError);
-        }
-
-        if (terminationController.HasAttachedProcessExited &&
-            (cleanupError is null ||
-             !WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(cleanupError)))
+        if (evidence.ProcessReleaseVerified && evidence.DispatcherRetired)
         {
             try
             {
-                // A saved observation grants no deletion authority until the
-                // producer is released and strict completion proves its facts.
+                // Failed or cancelled work may still grant cleanup authority,
+                // but only after both native process and STA release are proved.
                 artifactGuard.CompleteCapture(staging);
             }
             catch (Exception exception)
@@ -321,9 +192,7 @@ public sealed class ExcelComInitialWorkbookCreator : IReceiptInitialWorkbookCrea
             {
                 var terminalError = CombineErrors(operationError, cleanupError)
                     ?? new InvalidOperationException(
-                        stagingWorkbookMayHaveBeenCreated
-                            ? "Initial workbook creation failed after the staging workbook save began."
-                            : "Initial workbook creation failed after staging was allocated.");
+                        "Initial workbook creation failed after staging was allocated.");
                 var artifactError = artifactCleanup.Failure
                     ?? new InvalidOperationException(
                         "The staging workbook no longer names the exact object and bytes created by Excel.");
@@ -358,6 +227,7 @@ public sealed class ExcelComInitialWorkbookCreator : IReceiptInitialWorkbookCrea
             ExceptionDispatchInfo.Capture(operationError).Throw();
         }
 
+        var selectableReferences = outcome.GetReleasedResult();
         InitialWorkbookMaterializedArtifact? finalArtifact = null;
         Exception? materializationError = null;
         try
@@ -453,149 +323,6 @@ public sealed class ExcelComInitialWorkbookCreator : IReceiptInitialWorkbookCrea
         }
 
         return second is null ? first : new AggregateException(first, second);
-    }
-
-    private async Task<Exception?> CleanupAsync(
-        IStaComDispatcher dispatcher,
-        OwnedExcelTerminationController terminationController,
-        object? host,
-        IExcelComInitialWorkbookSession? session,
-        WorkbookAutomationStageExecutor stageExecutor,
-        Exception? operationError)
-    {
-        var cleanupStage = new WorkbookAutomationStage(
-            WorkbookAutomationStageKind.ProcessCleanup);
-        terminationController.CaptureAutomationStage(cleanupStage);
-        if (stageExecutor.HasAbandonedOperation ||
-            terminationController.HasAttachedProcessExited ||
-            (host is null && session is null))
-        {
-            return await CleanupOwnedProcessOnlyAsync(
-                terminationController,
-                timeouts.ProcessCleanup).ConfigureAwait(false);
-        }
-
-        terminationController.RequestForcedTermination(timeouts.ProcessCleanup);
-        Exception? cooperativeCleanupError = null;
-        try
-        {
-            var cleanupTask = dispatcher.InvokeAsync(
-                () =>
-                {
-                    if (session is not null)
-                    {
-                        lifecycle.DisposeSession(session, timeouts.ProcessCleanup);
-                    }
-                    else
-                    {
-                        lifecycle.DisposeHost(host!, timeouts.ProcessCleanup);
-                    }
-
-                    return true;
-                },
-                CancellationToken.None);
-            var completed = await Task.WhenAny(
-                cleanupTask,
-                Task.Delay(
-                    timeouts.ProcessCleanup +
-                    PrivateDesktopOwnedExcelProcessControl.ForcedCleanupObservationAllowance))
-                .ConfigureAwait(false);
-            if (completed != cleanupTask)
-            {
-                stageExecutor.MarkOperationAbandoned();
-                WorkbookAutomationStageExecutor.ObserveFault(cleanupTask);
-                cooperativeCleanupError = new WorkbookAutomationTimeoutException(
-                    cleanupStage,
-                    timeouts.ProcessCleanup,
-                    isolationDiagnostics:
-                        terminationController.DescribeIsolationEvidence());
-            }
-            else
-            {
-                await cleanupTask.ConfigureAwait(false);
-            }
-        }
-        catch (Exception exception)
-        {
-            cooperativeCleanupError = exception;
-        }
-
-        var ownershipError = await CleanupOwnedProcessOnlyAsync(
-            terminationController,
-            timeouts.ProcessCleanup).ConfigureAwait(false);
-        if (cooperativeCleanupError is null)
-        {
-            return ownershipError;
-        }
-
-        if (ownershipError is null &&
-            ReleasedAutomationCleanupPolicy.CanPreservePrimaryFailure(
-                operationError,
-                cooperativeCleanupError))
-        {
-            return null;
-        }
-
-        return ownershipError is null
-            ? cooperativeCleanupError
-            : new AggregateException(cooperativeCleanupError, ownershipError);
-    }
-
-    private static async Task<Exception?> CleanupOwnedProcessOnlyAsync(
-        OwnedExcelTerminationController terminationController,
-        TimeSpan cleanupGrace)
-    {
-        try
-        {
-            terminationController.RequestForcedTermination(cleanupGrace);
-            await terminationController.ObserveCleanupWithinAsync(
-                PrivateDesktopOwnedExcelProcessControl.ForcedCleanupObservationAllowance)
-                .ConfigureAwait(false);
-            return null;
-        }
-        catch (WorkbookAutomationReleasedProcessCleanupException exception)
-        {
-            return exception;
-        }
-        catch (Exception exception)
-        {
-            return new WorkbookAutomationCleanupException(
-                "The initial workbook could not verify exact owned-process release.",
-                exception);
-        }
-    }
-
-    private static async Task<Exception?> DisposeDispatcherAsync(
-        IStaComDispatcher dispatcher,
-        bool allowAbandonment)
-    {
-        try
-        {
-            var disposalTask = dispatcher.DisposeAsync().AsTask();
-            if (!allowAbandonment)
-            {
-                await disposalTask.ConfigureAwait(false);
-                return null;
-            }
-
-            var completed = await Task.WhenAny(
-                disposalTask,
-                Task.Delay(DispatcherAbandonmentObservation)).ConfigureAwait(false);
-            if (completed == disposalTask)
-            {
-                await disposalTask.ConfigureAwait(false);
-            }
-            else
-            {
-                WorkbookAutomationStageExecutor.ObserveFault(disposalTask);
-            }
-
-            return null;
-        }
-        catch (Exception exception)
-        {
-            return exception;
-        }
     }
 
     private sealed class ExcelComInitialWorkbookLifecycle

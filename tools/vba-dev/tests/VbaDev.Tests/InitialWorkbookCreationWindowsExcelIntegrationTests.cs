@@ -1,10 +1,11 @@
-using VbaDev.Infrastructure.FileSystem;
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Xml.Linq;
 using VbaDev.App.FileSystem;
 using VbaDev.App.Workbooks;
 using VbaDev.Domain;
+using VbaDev.Infrastructure.Debugging;
+using VbaDev.Infrastructure.FileSystem;
 using VbaDev.Infrastructure.Workbooks;
 using Xunit;
 
@@ -13,6 +14,78 @@ namespace VbaDev.Tests;
 [Collection(WindowsExcelIntegrationCollection.Name)]
 public sealed class InitialWorkbookCreationWindowsExcelIntegrationTests
 {
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
+    public async Task RealInitialWorkbookPostSaveCancellationReleasesOwnedExcelAndCleansStaging()
+    {
+        using var temp = TempDirectory.Create();
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var workbookPath = Path.Combine(temp.Path, "CancelledInitialWorkbook.xlsm");
+        var initialProcesses = CaptureExcelProcessIds();
+        var lifecycle = new PostSaveObservedNativeInitialWorkbookLifecycle(cancellation.Cancel);
+        var creator = new ExcelComInitialWorkbookCreator(
+            new StaComDispatcherFactory(),
+            lifecycle,
+            WorkbookAutomationTimeouts.Default,
+            new InitialWorkbookArtifactGuard());
+
+        try
+        {
+            var failure = await Record.ExceptionAsync(() =>
+                creator.CreateInitialWorkbookAsync(workbookPath, cancellation.Token));
+
+            Assert.True(lifecycle.SavedBaselineObserved);
+            Assert.True(lifecycle.SavedWorkbookExisted);
+            Assert.IsAssignableFrom<OperationCanceledException>(failure);
+            Assert.NotNull(lifecycle.SavedWorkbookPath);
+            Assert.False(File.Exists(workbookPath));
+            Assert.False(File.Exists(lifecycle.SavedWorkbookPath));
+            Assert.False(Directory.Exists(Path.GetDirectoryName(lifecycle.SavedWorkbookPath)!));
+        }
+        finally
+        {
+            await WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20));
+            Assert.True(initialProcesses.SetEquals(CaptureExcelProcessIds()));
+        }
+    }
+
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
+    public async Task RealInitialWorkbookPostSaveFailureReleasesOwnedExcelAndCleansStaging()
+    {
+        using var temp = TempDirectory.Create();
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var workbookPath = Path.Combine(temp.Path, "FailedInitialWorkbook.xlsm");
+        var initialProcesses = CaptureExcelProcessIds();
+        var injectedFailure = new InvalidOperationException("Injected post-save baseline failure.");
+        var lifecycle = new PostSaveObservedNativeInitialWorkbookLifecycle(() => throw injectedFailure);
+        var creator = new ExcelComInitialWorkbookCreator(
+            new StaComDispatcherFactory(),
+            lifecycle,
+            WorkbookAutomationTimeouts.Default,
+            new InitialWorkbookArtifactGuard());
+
+        try
+        {
+            var failure = await Record.ExceptionAsync(() =>
+                creator.CreateInitialWorkbookAsync(workbookPath, cancellation.Token));
+
+            Assert.True(lifecycle.SavedBaselineObserved);
+            Assert.True(lifecycle.SavedWorkbookExisted);
+            Assert.IsAssignableFrom<InvalidOperationException>(failure);
+            Assert.Contains(injectedFailure.Message, failure.ToString(), StringComparison.Ordinal);
+            Assert.NotNull(lifecycle.SavedWorkbookPath);
+            Assert.False(File.Exists(workbookPath));
+            Assert.False(File.Exists(lifecycle.SavedWorkbookPath));
+            Assert.False(Directory.Exists(Path.GetDirectoryName(lifecycle.SavedWorkbookPath)!));
+        }
+        finally
+        {
+            await WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20));
+            Assert.True(initialProcesses.SetEquals(CaptureExcelProcessIds()));
+        }
+    }
+
     [WindowsExcelIntegrationFact]
     [Trait("Category", "WindowsExcelIntegration")]
     public async Task RealExcelReturnsTheInvocationsCreateOnlyReceiptForProjectRollback()
@@ -76,6 +149,73 @@ public sealed class InitialWorkbookCreationWindowsExcelIntegrationTests
             reference.Contains("Excel", StringComparison.OrdinalIgnoreCase) &&
             reference.Contains("Object Library", StringComparison.OrdinalIgnoreCase));
         Assert.Equal(["Sheet1"], ReadWorksheetNames(workbookPath));
+    }
+
+    private sealed class PostSaveObservedNativeInitialWorkbookLifecycle(Action afterSavedBaseline)
+        : IExcelComInitialWorkbookLifecycle
+    {
+        public string? SavedWorkbookPath { get; private set; }
+
+        public bool SavedWorkbookExisted { get; private set; }
+
+        public bool SavedBaselineObserved { get; private set; }
+
+        public object Start(
+            OwnedExcelTerminationController terminationController,
+            CancellationToken cancellationToken)
+            => ExcelComWorkbookSession.StartOwnedForGeneration(
+                terminationController,
+                cancellationToken);
+
+        public IExcelComInitialWorkbookSession CreateWorkbook(object host, int template)
+            => new PostSaveObservedNativeInitialWorkbookSession(
+                new ExcelComInitialWorkbookSession(
+                    ExcelComWorkbookSession.CreateOwnedForGeneration(
+                        (ExcelComWorkbookSession.ExcelComHostObjects)host,
+                        template)),
+                workbookPath =>
+                {
+                    SavedWorkbookPath = workbookPath;
+                    SavedWorkbookExisted = File.Exists(workbookPath);
+                },
+                () =>
+                {
+                    SavedBaselineObserved = true;
+                    afterSavedBaseline();
+                });
+
+        public void DisposeHost(object host, TimeSpan cleanupGrace)
+            => ExcelComWorkbookSession.DisposeOwnedGenerationHost(
+                (ExcelComWorkbookSession.ExcelComHostObjects)host,
+                cleanupGrace);
+
+        public void DisposeSession(IExcelComInitialWorkbookSession session, TimeSpan cleanupGrace)
+            => ((PostSaveObservedNativeInitialWorkbookSession)session).NativeSession
+                .DisposeOwnedGeneration(cleanupGrace);
+    }
+
+    private sealed class PostSaveObservedNativeInitialWorkbookSession(
+        ExcelComInitialWorkbookSession nativeSession,
+        Action<string> afterSave,
+        Action afterSavedBaseline) : IExcelComInitialWorkbookSession
+    {
+        public ExcelComInitialWorkbookSession NativeSession => nativeSession;
+
+        public InitialWorkbookBaselineSnapshot EstablishAndReadBaseline()
+            => nativeSession.EstablishAndReadBaseline();
+
+        public void Save(string workbookPath, int fileFormat)
+        {
+            nativeSession.Save(workbookPath, fileFormat);
+            afterSave(workbookPath);
+        }
+
+        public InitialWorkbookBaselineSnapshot ReadBaseline()
+        {
+            var baseline = nativeSession.ReadBaseline();
+            afterSavedBaseline();
+            return baseline;
+        }
     }
 
     private static IReadOnlyList<string> ReadWorksheetNames(string workbookPath)

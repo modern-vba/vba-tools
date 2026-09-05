@@ -12,6 +12,52 @@ namespace VbaDev.Tests;
 public sealed class ExcelComInitialWorkbookCreatorTests
 {
     [Fact]
+    public async Task DispatcherRetirementFailureRetainsSavedWorkbookAndWithholdsFinalArtifact()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        using var savedWorkbook = new SavedWorkbookWriter();
+        var workbookPath = Path.Combine(temp.Path, "UnretiredDispatcher.xlsm");
+        var lifecycle = new RecordingInitialWorkbookLifecycle(
+            CreateExactBaseline("Visual Basic For Applications"))
+        {
+            DuringSave = savedWorkbook.Save,
+            DuringDispose = savedWorkbook.ReleaseWriter
+        };
+        var dispatcher = new RetirementBlockedStaComDispatcher();
+        var creator = new ExcelComInitialWorkbookCreator(
+            new FixedStaComDispatcherFactory(dispatcher),
+            lifecycle,
+            WorkbookAutomationTimeouts.Default with { ProcessCleanup = TimeSpan.FromMilliseconds(20) },
+            new InitialWorkbookArtifactGuard());
+        var creation = creator.CreateInitialWorkbookAsync(workbookPath, CancellationToken.None);
+        try
+        {
+            await dispatcher.RetirementStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.True(lifecycle.Owner.HasExited);
+
+            var observed = await Record.ExceptionAsync(() => creation.WaitAsync(TimeSpan.FromSeconds(5)));
+
+            var failure = Assert.IsType<InitialWorkbookArtifactRetainedException>(observed);
+            Assert.Contains(EnumerateFailures(failure), error => error is WorkbookAutomationCleanupException);
+            Assert.Contains("dispatcher", failure.ToString(), StringComparison.OrdinalIgnoreCase);
+            Assert.False(failure.TargetChanged);
+            Assert.Equal(savedWorkbook.Path, failure.WorkbookPath);
+            Assert.Equal(savedWorkbook.Bytes, File.ReadAllBytes(savedWorkbook.Path!));
+            Assert.False(File.Exists(workbookPath));
+        }
+        finally
+        {
+            dispatcher.AllowRetirement.TrySetResult();
+            _ = await Record.ExceptionAsync(() => creation.WaitAsync(TimeSpan.FromSeconds(5)));
+        }
+    }
+
+    [Fact]
     public async Task CreationPreservesSavedBytesWhileExcelRetainsItsWriterUntilRelease()
     {
         if (!OperatingSystem.IsWindows())
@@ -61,6 +107,40 @@ public sealed class ExcelComInitialWorkbookCreatorTests
                 }
             }
         }
+    }
+
+    [Fact]
+    public async Task ProcessExitAfterTheSavedStageWithholdsSuccessAndCleansProvedStaging()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        using var savedWorkbook = new SavedWorkbookWriter();
+        var workbookPath = Path.Combine(temp.Path, "LostAfterSave.xlsm");
+        RecordingInitialWorkbookLifecycle? lifecycle = null;
+        lifecycle = new RecordingInitialWorkbookLifecycle(
+            CreateExactBaseline("Visual Basic For Applications"))
+        {
+            DuringSave = path =>
+            {
+                savedWorkbook.Save(path);
+                savedWorkbook.ReleaseWriter();
+                lifecycle!.Owner.ExitAfterNextObservation = true;
+            }
+        };
+        var creator = CreateCreator(lifecycle, artifactGuard: new InitialWorkbookArtifactGuard());
+
+        var failure = await Assert.ThrowsAsync<WorkbookAutomationProcessLostException>(() =>
+            creator.CreateInitialWorkbookAsync(workbookPath, CancellationToken.None));
+
+        Assert.Equal(WorkbookAutomationStageKind.WorkbookSave, failure.Stage.Kind);
+        Assert.True(lifecycle.Owner.HasExited);
+        Assert.DoesNotContain("dispose-session", lifecycle.Events);
+        Assert.False(Directory.Exists(Path.GetDirectoryName(savedWorkbook.Path)!));
+        Assert.False(File.Exists(workbookPath));
     }
 
     [Theory]
@@ -174,6 +254,41 @@ public sealed class ExcelComInitialWorkbookCreatorTests
         Assert.Equal("synthetic dispatcher construction failure", error.Message);
         Assert.Equal(1, artifactGuard.CleanupCalls);
         Assert.Equal(0, artifactGuard.MaterializationCalls);
+    }
+
+    [Fact]
+    public async Task MixedCleanupEvidenceCannotAuthorizePendingWorkbookCleanup()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        using var savedWorkbook = new SavedWorkbookWriter();
+        var workbookPath = Path.Combine(temp.Path, "UnprovedMixedCleanup.xlsm");
+        var unprovedCleanup = new WorkbookAutomationCleanupException("synthetic unproved native cleanup");
+        var releasedCleanup = new WorkbookAutomationReleasedProcessCleanupException(
+            "synthetic post-release disposal failure");
+        var lifecycle = new RecordingInitialWorkbookLifecycle(
+            CreateExactBaseline("Visual Basic For Applications"))
+        {
+            DuringSave = savedWorkbook.Save,
+            DuringDispose = savedWorkbook.ReleaseWriter,
+            DisposeError = unprovedCleanup
+        };
+        lifecycle.Owner.DisposalError = releasedCleanup;
+        var creator = CreateCreator(lifecycle, artifactGuard: new InitialWorkbookArtifactGuard());
+
+        var failure = await Assert.ThrowsAsync<InitialWorkbookArtifactRetainedException>(() =>
+            creator.CreateInitialWorkbookAsync(workbookPath, CancellationToken.None));
+
+        Assert.True(lifecycle.Owner.HasExited);
+        Assert.Contains(unprovedCleanup, EnumerateFailures(failure));
+        Assert.Contains(releasedCleanup, EnumerateFailures(failure));
+        Assert.False(failure.TargetChanged);
+        Assert.Equal(savedWorkbook.Bytes, File.ReadAllBytes(savedWorkbook.Path!));
+        Assert.False(File.Exists(workbookPath));
     }
 
     [Fact]
@@ -644,6 +759,32 @@ public sealed class ExcelComInitialWorkbookCreatorTests
         public IStaComDispatcher Create() => new ImmediateStaComDispatcher();
     }
 
+    private sealed class FixedStaComDispatcherFactory(IStaComDispatcher dispatcher) : IStaComDispatcherFactory
+    {
+        public IStaComDispatcher Create() => dispatcher;
+    }
+
+    private sealed class RetirementBlockedStaComDispatcher : IStaComDispatcher
+    {
+        internal TaskCompletionSource RetirementStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource AllowRetirement { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task<T> InvokeAsync<T>(Func<T> operation, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(operation());
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            RetirementStarted.TrySetResult();
+            return new ValueTask(AllowRetirement.Task);
+        }
+    }
+
     private sealed class ThrowingStaComDispatcherFactory : IStaComDispatcherFactory
     {
         public IStaComDispatcher Create()
@@ -771,13 +912,30 @@ public sealed class ExcelComInitialWorkbookCreatorTests
         private readonly TaskCompletionSource completion =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public bool HasExited => completion.Task.IsCompletedSuccessfully;
+        public bool HasExited
+        {
+            get
+            {
+                var hasExited = completion.Task.IsCompletedSuccessfully;
+                if (ExitAfterNextObservation)
+                {
+                    ExitAfterNextObservation = false;
+                    Complete();
+                }
+
+                return hasExited;
+            }
+        }
+
+        public bool ExitAfterNextObservation { get; set; }
 
         public Task Completion => completion.Task;
 
         public int DisposeCalls { get; private set; }
 
         public Exception? TerminationError { get; set; }
+
+        public Exception? DisposalError { get; set; }
 
         public void Complete() => completion.TrySetResult();
 
@@ -795,7 +953,9 @@ public sealed class ExcelComInitialWorkbookCreatorTests
         public ValueTask DisposeAsync()
         {
             DisposeCalls++;
-            return ValueTask.CompletedTask;
+            return DisposalError is null
+                ? ValueTask.CompletedTask
+                : ValueTask.FromException(DisposalError);
         }
     }
 

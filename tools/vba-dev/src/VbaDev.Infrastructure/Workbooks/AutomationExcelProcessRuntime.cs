@@ -62,6 +62,39 @@ internal sealed class AutomationExcelProcessRuntime
             timeouts, lifecycle.Start, lifecycle.DisposeHost, operation, cancellationToken,
             ProcessScenario.ReferenceProbe);
 
+    internal Task<AutomationExcelProcessOutcome<TResult>> RunInitialWorkbookAsync<TResult>(
+        string workbookName,
+        IExcelComInitialWorkbookLifecycle lifecycle,
+        WorkbookAutomationTimeouts timeouts,
+        Func<InitialWorkbookAutomationSession, CancellationToken, Task<TResult>> operation,
+        CancellationToken cancellationToken)
+    {
+        IExcelComInitialWorkbookSession? session = null;
+        return RunProcessAsync(
+            timeouts,
+            lifecycle.Start,
+            (host, grace) =>
+            {
+                if (session is null)
+                {
+                    lifecycle.DisposeHost(host, grace);
+                }
+                else
+                {
+                    lifecycle.DisposeSession(session, grace);
+                }
+            },
+            (execution, token) => operation(
+                new InitialWorkbookAutomationSession(
+                    execution,
+                    host => session = lifecycle.CreateWorkbook(host, template: -4167),
+                    workbookName,
+                    timeouts),
+                token),
+            cancellationToken,
+            ProcessScenario.InitialWorkbook);
+    }
+
     /// <summary>
     /// Executes one workbook scenario and returns its terminal release evidence.
     /// </summary>
@@ -274,7 +307,7 @@ internal sealed class AutomationExcelProcessRuntime
             WorkbookAutomationStageKind.ProcessCleanup);
         terminationController.CaptureAutomationStage(cleanupStage);
         if (stageExecutor.HasAbandonedOperation
-            || (scenario == ProcessScenario.ReferenceProbe
+            || (scenario != ProcessScenario.Workbook
                 && terminationController.HasAttachedProcessExited))
         {
             return await CleanupOwnedProcessOnlyAsync(
@@ -323,7 +356,7 @@ internal sealed class AutomationExcelProcessRuntime
         }
         catch (Exception ex)
         {
-            cooperativeCleanupError = scenario == ProcessScenario.ReferenceProbe
+            cooperativeCleanupError = scenario != ProcessScenario.Workbook
                 ? ex
                 : new WorkbookAutomationReleasedProcessCleanupException(
                     "Cooperative workbook automation cleanup failed.",
@@ -347,6 +380,13 @@ internal sealed class AutomationExcelProcessRuntime
             // commonly rejects Close/Quit. Exact process-tree release is sufficient cleanup
             // evidence, so preserve the stage-specific terminal result.
             return null;
+        }
+
+        if (scenario == ProcessScenario.InitialWorkbook && ownershipCleanupError is not null)
+        {
+            // Preserve the initial creator's independent cleanup facts. A
+            // released-process wrapper must not conceal a cooperative proof failure.
+            return new AggregateException(cooperativeCleanupError, ownershipCleanupError);
         }
 
         return ownershipCleanupError is null
@@ -475,7 +515,7 @@ internal sealed class AutomationExcelProcessRuntime
                 isolationDiagnostics);
         }
 
-        return scenario == ProcessScenario.ReferenceProbe ? error : new InvalidOperationException(
+        return scenario != ProcessScenario.Workbook ? error : new InvalidOperationException(
             $"Workbook automation failed during {stage.Description}: {error.Message}",
             error);
     }
@@ -511,7 +551,46 @@ internal sealed class AutomationExcelProcessRuntime
     private enum ProcessScenario
     {
         Workbook,
-        ReferenceProbe
+        ReferenceProbe,
+        InitialWorkbook
+    }
+
+    internal sealed class InitialWorkbookAutomationSession(
+        AutomationExcelProcessSession execution,
+        Func<object, IExcelComInitialWorkbookSession> createWorkbook,
+        string workbookName,
+        WorkbookAutomationTimeouts timeouts)
+    {
+        private IExcelComInitialWorkbookSession? session;
+
+        internal Task<InitialWorkbookBaselineSnapshot> EstablishAndReadBaselineAsync(
+            CancellationToken cancellationToken)
+            => execution.ExecuteAsync(
+                new WorkbookAutomationStage(WorkbookAutomationStageKind.WorkbookOpen, workbookName),
+                timeouts.WorkbookOpen,
+                cancellationToken,
+                host =>
+                {
+                    session = createWorkbook(host);
+                    return session.EstablishAndReadBaseline();
+                });
+
+        internal Task<InitialWorkbookBaselineSnapshot> SaveAndReadBaselineAsync(
+            string workbookPath,
+            Action savedWorkbookObserver,
+            CancellationToken cancellationToken)
+            => execution.ExecuteAsync(
+                new WorkbookAutomationStage(WorkbookAutomationStageKind.WorkbookSave, workbookName),
+                timeouts.WorkbookSave,
+                cancellationToken,
+                _ =>
+                {
+                    var workbook = session ?? throw new InvalidOperationException(
+                        "The initial workbook baseline was not established before saving.");
+                    workbook.Save(workbookPath, fileFormat: 52);
+                    savedWorkbookObserver();
+                    return workbook.ReadBaseline();
+                });
     }
 
     internal sealed class AutomationExcelProcessSession(
