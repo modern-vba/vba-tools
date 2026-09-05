@@ -1,3 +1,6 @@
+using System.ComponentModel;
+using VbaDev.App.FileSystem;
+
 namespace VbaDev.App.CommonModules;
 
 /// <summary>
@@ -71,21 +74,18 @@ internal sealed class CommonModulesSourceMutationWriter
     private readonly Action<int>? beforeOperation;
     private readonly Action<int>? beforeCommitment;
     private readonly Action<int>? afterTemporaryFileFlushed;
-    private readonly Action<FileStream, ReadOnlyMemory<byte>> persistTemporaryFile;
-    private readonly Action<string> deleteTemporaryFile;
+    private readonly Action<string, long>? onTemporaryBytesWritten;
 
     internal CommonModulesSourceMutationWriter(
         Action<int>? beforeOperation = null,
         Action<int>? beforeCommitment = null,
         Action<int>? afterTemporaryFileFlushed = null,
-        Action<FileStream, ReadOnlyMemory<byte>>? persistTemporaryFile = null,
-        Action<string>? deleteTemporaryFile = null)
+        Action<string, long>? onTemporaryBytesWritten = null)
     {
         this.beforeOperation = beforeOperation;
         this.beforeCommitment = beforeCommitment;
         this.afterTemporaryFileFlushed = afterTemporaryFileFlushed;
-        this.persistTemporaryFile = persistTemporaryFile ?? PersistTemporaryFile;
-        this.deleteTemporaryFile = deleteTemporaryFile ?? File.Delete;
+        this.onTemporaryBytesWritten = onTemporaryBytesWritten;
     }
 
     public CommonModulesSourceMutationResult Execute(
@@ -100,11 +100,26 @@ internal sealed class CommonModulesSourceMutationWriter
         }
 
         var verificationPaths = GetVerificationPaths(mutations);
+        using var ownership = ExactFileSystemObjectOwnership.Open();
+        var deletionReceipts = new ExactFileSystemObjectOwnership.FileReceipt?[mutations.Count];
         try
         {
-            foreach (var mutation in mutations)
+            for (var index = 0; index < mutations.Count; index++)
             {
+                var mutation = mutations[index];
                 EnsurePrecondition(mutation);
+                if (mutation.DesiredBytes is null && !mutation.VerificationOnly)
+                {
+                    var capture = ownership.CaptureTrustedStableFile(mutation.ObservedPath);
+                    if (!mutation.Expected.Exists
+                        || !capture.Bytes.AsSpan().SequenceEqual(mutation.Expected.Bytes))
+                    {
+                        throw new IOException(
+                            $"CommonModules source deletion target changed after planning: {mutation.ObservedPath}");
+                    }
+
+                    deletionReceipts[index] = capture.Receipt;
+                }
             }
         }
         catch (Exception ex) when (IsSourceMutationFailure(ex))
@@ -148,7 +163,7 @@ internal sealed class CommonModulesSourceMutationWriter
                     sourceMutationCommitted = true;
                 }
 
-                Apply(mutation, index, CrossCommitmentBoundary);
+                Apply(mutation, index, CrossCommitmentBoundary, ownership, deletionReceipts[index]);
             }
             catch (OperationCanceledException) when (!sourceMutationCommitted)
             {
@@ -173,20 +188,30 @@ internal sealed class CommonModulesSourceMutationWriter
     private void Apply(
         CommonModulesSourceFileMutation mutation,
         int index,
-        Action crossCommitmentBoundary)
+        Action crossCommitmentBoundary,
+        ExactFileSystemObjectOwnership ownership,
+        ExactFileSystemObjectOwnership.FileReceipt? deletionReceipt)
     {
         if (mutation.DesiredBytes is null)
         {
             EnsurePrecondition(mutation);
-            crossCommitmentBoundary();
-            File.Delete(mutation.ObservedPath);
+            var deletion = ownership.TryDelete(
+                deletionReceipt ?? throw new IOException("CommonModules source deletion has no trusted capture."),
+                onDispositionStarting: _ => crossCommitmentBoundary());
+            if (!deletion.Removed)
+            {
+                throw new IOException(
+                    $"CommonModules source deletion could not be proven: {mutation.ObservedPath}");
+            }
             return;
         }
 
         var targetDirectory = Path.GetDirectoryName(mutation.TargetPath)!;
-        var temporaryPath = WriteFlushedTemporaryFile(
+        var temporary = WriteFlushedTemporaryFile(
+            ownership,
             mutation.TargetPath,
             mutation.DesiredBytes);
+        var temporaryTransferred = false;
         try
         {
             afterTemporaryFileFlushed?.Invoke(index);
@@ -195,9 +220,10 @@ internal sealed class CommonModulesSourceMutationWriter
             if (mutation.Expected.Exists)
             {
                 File.Replace(
-                    temporaryPath,
+                    temporary.Route,
                     mutation.ObservedPath,
                     destinationBackupFileName: null);
+                temporaryTransferred = true;
                 if (!Path.GetFullPath(mutation.ObservedPath).Equals(
                         Path.GetFullPath(mutation.TargetPath),
                         StringComparison.Ordinal))
@@ -215,16 +241,21 @@ internal sealed class CommonModulesSourceMutationWriter
             else
             {
                 Directory.CreateDirectory(targetDirectory);
-                File.Move(temporaryPath, mutation.TargetPath, overwrite: false);
+                File.Move(temporary.Route, mutation.TargetPath, overwrite: false);
+                temporaryTransferred = true;
             }
         }
         catch (Exception operationException)
         {
-            DeleteTemporaryFileAfterFailure(temporaryPath, operationException);
+            if (!temporaryTransferred)
+            {
+                DeleteTemporaryFileAfterFailure(ownership, temporary, operationException);
+            }
+
             throw;
         }
-
-        DeleteTemporaryFile(temporaryPath);
+        // Successful replacement or placement transfers the staging object to
+        // durable source. Its old receipt never authorizes source cleanup.
     }
 
     private static void EnsurePrecondition(CommonModulesSourceFileMutation mutation)
@@ -306,46 +337,39 @@ internal sealed class CommonModulesSourceMutationWriter
                && observed.Equals(target, StringComparison.OrdinalIgnoreCase);
     }
 
-    private string WriteFlushedTemporaryFile(
+    private ExactFileSystemObjectOwnership.FileReceipt WriteFlushedTemporaryFile(
+        ExactFileSystemObjectOwnership ownership,
         string targetPath,
         ReadOnlyMemory<byte> bytes)
     {
         var directory = FindExistingStagingDirectory(targetPath);
         for (var attempt = 0; attempt < 16; attempt++)
         {
-            var temporaryPath = Path.Combine(
-                directory,
-                $"{Path.GetFileName(targetPath)}.vba-dev.{Guid.NewGuid():N}.tmp");
-            FileStream stream;
+            var temporaryName = $"{Path.GetFileName(targetPath)}.vba-dev.{Guid.NewGuid():N}.tmp";
+            var fileCreated = false;
             try
             {
-                stream = new FileStream(
-                    temporaryPath,
-                    FileMode.CreateNew,
-                    FileAccess.Write,
-                    FileShare.None,
-                    bufferSize: 4096,
-                    FileOptions.WriteThrough);
+                return ownership.CreateOnlyFile(
+                    directory,
+                    temporaryName,
+                    bytes.Span,
+                    onFileCreated: _ => fileCreated = true,
+                    onBytesWritten: onTemporaryBytesWritten);
             }
-            catch (IOException) when (File.Exists(temporaryPath))
+            catch (Win32Exception exception) when (
+                !fileCreated && exception.NativeErrorCode is 80 or 183)
             {
                 // A staging-name collision never authorizes replacement.
                 continue;
             }
-
-            try
+            catch (ExactFileSystemObjectOwnership.FileCreationCleanupException exception)
             {
-                using (stream)
-                {
-                    persistTemporaryFile(stream, bytes);
-                }
-
-                return temporaryPath;
-            }
-            catch (Exception persistenceException)
-            {
-                DeleteTemporaryFileAfterFailure(temporaryPath, persistenceException);
-                throw;
+                // The creator has already attempted same-handle partial-file
+                // cleanup. Do not retry, re-capture, or claim proven retention.
+                throw new CommonModulesTemporaryFileException(
+                    exception.Route,
+                    $"CommonModules source staging cleanup could not be proven: {exception.Route}. {exception.Message}",
+                    exception);
             }
         }
 
@@ -365,45 +389,26 @@ internal sealed class CommonModulesSourceMutationWriter
             $"No existing staging directory was found for CommonModules source target: {targetPath}");
     }
 
-    private static void PersistTemporaryFile(
-        FileStream stream,
-        ReadOnlyMemory<byte> bytes)
-    {
-        stream.Write(bytes.Span);
-        stream.Flush(flushToDisk: true);
-    }
-
-    private void DeleteTemporaryFileAfterFailure(
-        string temporaryPath,
+    private static void DeleteTemporaryFileAfterFailure(
+        ExactFileSystemObjectOwnership ownership,
+        ExactFileSystemObjectOwnership.FileReceipt temporary,
         Exception operationException)
     {
         try
         {
-            DeleteTemporaryFile(temporaryPath);
+            var deletion = ownership.TryDelete(temporary);
+            if (!deletion.Removed)
+            {
+                throw new IOException("The unchanged staging object could not be proven removed.");
+            }
         }
-        catch (CommonModulesTemporaryFileException cleanupException)
+        catch (Exception cleanupException) when (IsSourceMutationFailure(cleanupException))
         {
             throw new CommonModulesTemporaryFileException(
-                temporaryPath,
-                $"CommonModules source staging failed ({operationException.Message}) and its owned temporary file was retained: "
-                + $"{Path.GetFullPath(temporaryPath)}",
+                temporary.Route,
+                $"CommonModules source staging failed ({operationException.Message}) and cleanup could not be proven: "
+                + $"{temporary.Route}. {cleanupException.Message}",
                 new AggregateException(operationException, cleanupException));
-        }
-    }
-
-    private void DeleteTemporaryFile(string temporaryPath)
-    {
-        try
-        {
-            deleteTemporaryFile(temporaryPath);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            throw new CommonModulesTemporaryFileException(
-                temporaryPath,
-                $"The owned CommonModules source staging file could not be removed: "
-                + Path.GetFullPath(temporaryPath),
-                ex);
         }
     }
 
@@ -458,6 +463,8 @@ internal sealed class CommonModulesSourceMutationWriter
     private static bool IsSourceMutationFailure(Exception exception)
         => exception is IOException
             or UnauthorizedAccessException
+            or Win32Exception
+            or ExactFileSystemObjectOwnership.RollbackException
             or CommonModulesSourceMutationException;
 
     private static bool PathExists(string path)

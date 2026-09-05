@@ -1,3 +1,5 @@
+using System.ComponentModel;
+using System.Runtime.InteropServices;
 using VbaDev.App.CommonModules;
 using Xunit;
 
@@ -5,6 +7,34 @@ namespace VbaDev.Tests;
 
 public sealed class CommonModulesSourceMutationWriterTests
 {
+    [Fact]
+    public void ExistingHardLinkedSidecarIsRejectedBeforeSourceDeletionBegins()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        var target = Path.Combine(temp.Path, "Form.frx");
+        var alias = Path.Combine(temp.Path, "other.frx");
+        File.WriteAllBytes(target, [1]);
+        Assert.True(
+            CreateHardLink(alias, target, IntPtr.Zero),
+            new Win32Exception(Marshal.GetLastWin32Error()).Message);
+
+        var error = Assert.Throws<CommonModulesSourceMutationException>(() =>
+            new CommonModulesSourceMutationWriter().Execute(
+                [new CommonModulesSourceFileMutation(
+                    target, target, CommonModulesExpectedFile.Present([1]), DesiredBytes: null)],
+                CancellationToken.None));
+
+        Assert.False(error.SourceMutationCommitted);
+        Assert.Equal([1], File.ReadAllBytes(target));
+        Assert.Equal([1], File.ReadAllBytes(alias));
+        Assert.Equal([Path.GetFullPath(target)], error.ManualVerificationPaths);
+    }
+
     [Fact]
     public void PreflightConflictBeforeFirstMutationPreservesEveryTarget()
     {
@@ -112,6 +142,32 @@ public sealed class CommonModulesSourceMutationWriterTests
     }
 
     [Fact]
+    public void StagingCleanupRejectsContentThatNoLongerMatchesTheCreatedFile()
+    {
+        using var temp = TempDirectory.Create();
+        var target = Path.Combine(temp.Path, "Feature.bas");
+        File.WriteAllBytes(target, [1]);
+        string? temporaryPath = null;
+        var writer = new CommonModulesSourceMutationWriter(afterTemporaryFileFlushed: _ =>
+        {
+            temporaryPath = Assert.Single(Directory.EnumerateFiles(temp.Path, "*.vba-dev.*.tmp"));
+            File.WriteAllBytes(temporaryPath, [99]);
+            throw new IOException("staging failed");
+        });
+
+        var error = Assert.Throws<CommonModulesSourceMutationException>(() =>
+            writer.Execute([Replace(target, [1], [2])], CancellationToken.None));
+
+        Assert.False(error.SourceMutationCommitted);
+        Assert.Equal([1], File.ReadAllBytes(target));
+        Assert.NotNull(temporaryPath);
+        Assert.True(File.Exists(temporaryPath));
+        Assert.Equal([99], File.ReadAllBytes(temporaryPath));
+        Assert.Contains(Path.GetFullPath(temporaryPath), error.ManualVerificationPaths);
+        Assert.Contains("staging failed", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TemporaryWriteFailureIsNotRetriedAndCleansTheOwnedFile()
     {
         using var temp = TempDirectory.Create();
@@ -119,18 +175,40 @@ public sealed class CommonModulesSourceMutationWriterTests
         File.WriteAllBytes(target, [1]);
         var writeAttempts = 0;
         var writer = new CommonModulesSourceMutationWriter(
-            persistTemporaryFile: (stream, _) =>
+            onTemporaryBytesWritten: (_, _) =>
             {
                 writeAttempts++;
-                stream.WriteByte(99);
                 throw new IOException("write failed");
             });
+
+        var error = Assert.Throws<CommonModulesSourceMutationException>(() =>
+            writer.Execute([Replace(target, [1], new byte[65537])], CancellationToken.None));
+
+        Assert.False(error.SourceMutationCommitted);
+        Assert.Equal(1, writeAttempts);
+        Assert.Equal([1], File.ReadAllBytes(target));
+        Assert.Empty(Directory.EnumerateFiles(temp.Path, "*.vba-dev.*.tmp"));
+    }
+
+    [Fact]
+    public void NativeWriteFailureWithCollisionErrorCodeIsNotRetriedAsANameCollision()
+    {
+        using var temp = TempDirectory.Create();
+        var target = Path.Combine(temp.Path, "Feature.bas");
+        File.WriteAllBytes(target, [1]);
+        var writeAttempts = 0;
+        var writer = new CommonModulesSourceMutationWriter(onTemporaryBytesWritten: (_, _) =>
+        {
+            writeAttempts++;
+            throw new Win32Exception(183, "native write failed");
+        });
 
         var error = Assert.Throws<CommonModulesSourceMutationException>(() =>
             writer.Execute([Replace(target, [1], [2])], CancellationToken.None));
 
         Assert.False(error.SourceMutationCommitted);
         Assert.Equal(1, writeAttempts);
+        Assert.Contains("native write failed", error.Message, StringComparison.Ordinal);
         Assert.Equal([1], File.ReadAllBytes(target));
         Assert.Empty(Directory.EnumerateFiles(temp.Path, "*.vba-dev.*.tmp"));
     }
@@ -141,21 +219,36 @@ public sealed class CommonModulesSourceMutationWriterTests
         using var temp = TempDirectory.Create();
         var target = Path.Combine(temp.Path, "Feature.bas");
         File.WriteAllBytes(target, [1]);
+        string? temporaryPath = null;
         var writer = new CommonModulesSourceMutationWriter(
-            persistTemporaryFile: (_, _) => throw new IOException("write failed"),
-            deleteTemporaryFile: _ => throw new IOException("cleanup failed"));
+            onTemporaryBytesWritten: (path, _) =>
+            {
+                temporaryPath = path;
+                File.SetAttributes(path, FileAttributes.ReadOnly);
+                throw new IOException("write failed");
+            });
 
-        var error = Assert.Throws<CommonModulesSourceMutationException>(() =>
-            writer.Execute([Replace(target, [1], [2])], CancellationToken.None));
+        try
+        {
+            var error = Assert.Throws<CommonModulesSourceMutationException>(() =>
+                writer.Execute([Replace(target, [1], new byte[65537])], CancellationToken.None));
 
-        Assert.False(error.SourceMutationCommitted);
-        var retained = Assert.Single(error.ManualVerificationPaths, path =>
-            path.Contains(".vba-dev.", StringComparison.Ordinal)
-            && path.EndsWith(".tmp", StringComparison.Ordinal));
-        Assert.True(File.Exists(retained));
-        Assert.Contains("write failed", error.Message, StringComparison.Ordinal);
-        Assert.Contains(retained, error.Message, StringComparison.Ordinal);
-        File.Delete(retained);
+            Assert.False(error.SourceMutationCommitted);
+            var retained = Assert.Single(error.ManualVerificationPaths, path =>
+                path.Contains(".vba-dev.", StringComparison.Ordinal)
+                && path.EndsWith(".tmp", StringComparison.Ordinal));
+            Assert.True(File.Exists(retained));
+            Assert.Contains("write failed", error.Message, StringComparison.Ordinal);
+            Assert.Contains(retained, error.Message, StringComparison.Ordinal);
+            Assert.Equal(65536, new FileInfo(retained).Length);
+        }
+        finally
+        {
+            if (temporaryPath is not null && File.Exists(temporaryPath))
+            {
+                File.SetAttributes(temporaryPath, FileAttributes.Normal);
+            }
+        }
     }
 
     [Fact]
@@ -234,4 +327,8 @@ public sealed class CommonModulesSourceMutationWriterTests
             path,
             CommonModulesExpectedFile.Present(expected),
             desired);
+
+    [DllImport("kernel32.dll", EntryPoint = "CreateHardLinkW", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CreateHardLink(string fileName, string existingFileName, IntPtr securityAttributes);
 }
