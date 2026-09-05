@@ -13,8 +13,9 @@ VBIDE, a workbook, or a project:
 vba-dev --version
 ```
 
-`vba-dev capabilities --format json` reports the same three-part SemVer as
-`toolVersion`, independently from the VS Code extension version. Snapshot-aware
+`vba-dev capabilities --format json` (or `vba-dev capabilities -f json`)
+reports the same three-part SemVer as `toolVersion`, independently from the VS
+Code extension version. Snapshot-aware
 callers can require the `build.sourceSnapshot` or `test.sourceSnapshot` feature
 version `2.0` before supplying those command inputs. Windows snapshot producers
 can also require `sourceSnapshot.activeWindowsCodePage` version `1.0` and read
