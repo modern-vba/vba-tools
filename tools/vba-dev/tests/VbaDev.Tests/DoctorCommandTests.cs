@@ -1,4 +1,5 @@
 using VbaDev.App.Build;
+using VbaDev.App.CommonModules;
 using VbaDev.App.Diagnostics;
 using VbaDev.App.Projects;
 using VbaDev.App.References;
@@ -1333,7 +1334,6 @@ public sealed class DoctorCommandTests
             automation,
             _ => stagedWorkbook,
             deletedWorkbooks.Add,
-            new WorkbookSourcePlanner(() => 65001),
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(resolver)),
             new VbeImportSourceSetFactory(() => 65001),
@@ -1402,7 +1402,6 @@ public sealed class DoctorCommandTests
             automation,
             _ => stagedWorkbook,
             deletedWorkbooks.Add,
-            new WorkbookSourcePlanner(() => 65001),
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(
                     new FakeVbaProjectReferenceResolver())),
@@ -1509,7 +1508,6 @@ public sealed class DoctorCommandTests
                 return stagedWorkbook;
             },
             deletedWorkbooks.Add,
-            new WorkbookSourcePlanner(() => 65001),
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(
                     registryResolver,
@@ -1605,7 +1603,6 @@ public sealed class DoctorCommandTests
             automation,
             _ => stagedWorkbook,
             deletedWorkbooks.Add,
-            new WorkbookSourcePlanner(() => 65001),
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(
                     new FakeVbaProjectReferenceResolver(resolvedReference))),
@@ -1655,6 +1652,47 @@ public sealed class DoctorCommandTests
     }
 
     [Fact]
+    public async Task DoctorProfilesKeepCapturedSourceAfterTheFirstProfileIsPrepared()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateDoctorProjectWithoutRepository(temp);
+        var sourcePath = Path.Combine(root, "src", "Book1", "Observed.bas");
+        const string original = "Attribute VB_Name = \"Observed\"\r\nPublic Sub Run()\r\n    Debug.Print \"captured\"\r\nEnd Sub\r\n";
+        File.WriteAllText(sourcePath, original, new UTF8Encoding(true));
+        var observedProfiles = new List<string>();
+        var automation = new SuccessfulEnvironmentWorkbookAutomation();
+        var materializationPort = new ExcelProjectMaterializationDiagnosticPort(
+            automation,
+            _ => Path.Combine(temp.Path, "staged-Book1.xlsm"),
+            _ => { },
+            new WorkbookReferenceNormalizer(
+                new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),
+            new VbeImportSourceSetFactory(
+                () => 65001,
+                sourceSet =>
+                {
+                    observedProfiles.Add(File.ReadAllText(Assert.Single(sourceSet.SourceFiles).SourcePath));
+                    if (observedProfiles.Count == 1)
+                    {
+                        File.WriteAllText(sourcePath, original.Replace("captured", "later"), new UTF8Encoding(true));
+                    }
+                }),
+            new WorkbookMaterializationNamePreflight());
+        var application = CommandLineTestFactory.Create(
+            root,
+            new FakeEnvironmentDiagnosticPort(),
+            projectMaterializationDiagnosticPort: materializationPort);
+
+        var result = await application.RunAsync(["doctor", "--format", "json"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(2, observedProfiles.Count);
+        Assert.All(observedProfiles, text => Assert.Equal(original, text));
+        Assert.Contains("later", File.ReadAllText(sourcePath), StringComparison.Ordinal);
+        Assert.Equal(1, automation.RunCount);
+    }
+
+    [Fact]
     public async Task DoctorPreservesStaticIdentityFailuresWhenTheTemplateIsMissing()
     {
         using var temp = TempDirectory.Create();
@@ -1671,7 +1709,6 @@ public sealed class DoctorCommandTests
             automation,
             _ => throw new InvalidOperationException("The missing template must not be staged."),
             _ => throw new InvalidOperationException("No staged workbook should exist."),
-            new WorkbookSourcePlanner(),
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(
                     new FakeVbaProjectReferenceResolver())),
@@ -1705,7 +1742,7 @@ public sealed class DoctorCommandTests
         }
 
         Assert.Equal(0, automation.RunCount);
-        Assert.Equal(2, profileCaptures);
+        Assert.Equal(0, profileCaptures);
     }
 
     [Fact]
@@ -1720,7 +1757,6 @@ public sealed class DoctorCommandTests
             automation,
             _ => throw new InvalidOperationException("Cancellation must prevent workbook staging."),
             _ => throw new InvalidOperationException("No staged workbook should exist."),
-            new WorkbookSourcePlanner(() => 65001),
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(
                     new FakeVbaProjectReferenceResolver())),
@@ -1763,7 +1799,6 @@ public sealed class DoctorCommandTests
                 deleteAttempts++;
                 throw new IOException("The staged workbook remained locked.");
             },
-            new WorkbookSourcePlanner(() => 65001),
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(
                     new FakeVbaProjectReferenceResolver())),
@@ -1803,7 +1838,6 @@ public sealed class DoctorCommandTests
                     stagingDirectory);
             },
             _ => deleteAttempts++,
-            new WorkbookSourcePlanner(() => 65001),
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(
                     new FakeVbaProjectReferenceResolver())),
@@ -1840,7 +1874,6 @@ public sealed class DoctorCommandTests
             new RecordingEnvironmentWorkbookAutomation(),
             _ => throw new InvalidOperationException("The missing template must not be staged."),
             _ => throw new InvalidOperationException("No staged workbook should exist."),
-            new WorkbookSourcePlanner(() => 65001),
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(
                     new FakeVbaProjectReferenceResolver())),
@@ -2430,6 +2463,150 @@ public sealed class DoctorCommandTests
         Assert.Contains("[WARN] CommonModules (Book1/Base)", result.StandardOutput, StringComparison.Ordinal);
         Assert.Contains("unreachable", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DoctorComparesCommonModulesAgainstCapturedDocumentBytes(bool changeSidecar)
+    {
+        using var temp = TempDirectory.Create();
+        var (root, commonRepo) = CreateDoctorProject(temp);
+        var sourceSet = Path.Combine(root, "src", "Book1");
+        WriteManifest(commonRepo, ("Dialog.frm", "optional", ""));
+        WriteModule(commonRepo, "Dialog.frm", "captured");
+        WriteModule(sourceSet, "Dialog.frm", "captured");
+        WriteBytes(Path.Combine(commonRepo, "Dialog.frx"), [1, 2, 3]);
+        var sourcePath = Path.Combine(sourceSet, "Dialog.frm");
+        var sidecarPath = Path.Combine(sourceSet, "Dialog.frx");
+        WriteBytes(sidecarPath, [1, 2, 3]);
+        AddInstalledCommonModules(root, new InstalledCommonModule("Dialog", "Dialog.frm", Requested: true, TestOnly: false));
+        var reads = new List<string>();
+        var acpReads = 0;
+        var sourceAdmission = new VbaSourceAdmission(
+            () => { acpReads++; return 932; },
+            readAllBytes: path =>
+            {
+                reads.Add(path);
+                var bytes = File.ReadAllBytes(path);
+                if (path == sidecarPath)
+                {
+                    if (changeSidecar)
+                    {
+                        File.WriteAllBytes(sidecarPath, [9, 8, 7]);
+                    }
+                    else
+                    {
+                        WriteModule(sourceSet, "Dialog.frm", "later");
+                    }
+                }
+                return bytes;
+            });
+        var result = await CreateSourceInspectionDoctor(sourceAdmission).RunAsync(
+            new DoctorCommandRequest(root, root, Format: DoctorOutputFormat.Json), CancellationToken.None);
+
+        Assert.True(result.ExitCode == 0, result.StandardOutput + result.StandardError);
+        using var output = JsonDocument.Parse(result.StandardOutput);
+        Assert.DoesNotContain(output.RootElement.GetProperty("checks").EnumerateArray(),
+            check => check.GetProperty("id").GetString() == "project.commonModules.Book1.Dialog.repositorySource");
+        Assert.Equal(1, acpReads);
+        Assert.Equal([sourcePath, sidecarPath], reads);
+        Assert.False(File.ReadAllBytes(Path.Combine(commonRepo, changeSidecar ? "Dialog.frx" : "Dialog.frm"))
+            .SequenceEqual(File.ReadAllBytes(changeSidecar ? sidecarPath : sourcePath)));
+    }
+
+    [Fact]
+    public async Task DoctorSourceLayoutUsesCapturedInventoryAfterLaterFilesAppear()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateDoctorProjectWithoutRepository(temp);
+        var sourceSet = Path.Combine(root, "src", "Book1");
+        WriteModule(sourceSet, "Dialog.frm", "captured");
+        var sidecarPath = Path.Combine(sourceSet, "Dialog.frx");
+        WriteBytes(sidecarPath, [1, 2, 3]);
+        AddInstalledCommonModules(root, new InstalledCommonModule("Dialog", "Dialog.frm", Requested: true, TestOnly: false));
+        var inventories = 0;
+        var reads = new List<string>();
+        var admission = new VbaSourceAdmission(
+            () => 932,
+            path => { inventories++; return Directory.GetFiles(path, "*", SearchOption.AllDirectories); },
+            path =>
+            {
+                reads.Add(path);
+                var bytes = File.ReadAllBytes(path);
+                if (path == sidecarPath)
+                {
+                    WriteModule(Path.Combine(sourceSet, "later"), "Dialog.frm", "later duplicate");
+                    WriteBytes(Path.Combine(sourceSet, "loose", "Dialog.frx"), [4, 5, 6]);
+                }
+                return bytes;
+            });
+
+        var result = await CreateSourceInspectionDoctor(admission).RunAsync(
+            new DoctorCommandRequest(root, root, Format: DoctorOutputFormat.Json), CancellationToken.None);
+
+        Assert.True(result.ExitCode == 0, result.StandardOutput + result.StandardError);
+        using var output = JsonDocument.Parse(result.StandardOutput);
+        Assert.DoesNotContain(output.RootElement.GetProperty("checks").EnumerateArray(),
+            check => check.GetProperty("id").GetString()!.StartsWith("project.sourceLayout.", StringComparison.Ordinal));
+        Assert.Equal(1, inventories);
+        Assert.Equal(2, reads.Count);
+        Assert.True(File.Exists(Path.Combine(sourceSet, "later", "Dialog.frm")));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DoctorCommonModuleReadFailureRemainsIncompleteWithoutRereading(bool failSidecar)
+    {
+        using var temp = TempDirectory.Create();
+        var (root, commonRepo) = CreateDoctorProject(temp);
+        var sourceSet = Path.Combine(root, "src", "Book1");
+        WriteManifest(commonRepo, ("Dialog.frm", "optional", ""));
+        WriteModule(commonRepo, "Dialog.frm", "unchanged");
+        WriteModule(sourceSet, "Dialog.frm", "unchanged");
+        WriteBytes(Path.Combine(commonRepo, "Dialog.frx"), [1, 2, 3]);
+        WriteBytes(Path.Combine(sourceSet, "Dialog.frx"), [1, 2, 3]);
+        AddInstalledCommonModules(root, new InstalledCommonModule("Dialog", "Dialog.frm", Requested: true, TestOnly: true));
+        var failedPath = Path.Combine(sourceSet, failSidecar ? "Dialog.frx" : "Dialog.frm");
+        var original = File.ReadAllBytes(failedPath);
+        var failedReads = 0;
+        var admission = new VbaSourceAdmission(() => 932, readAllBytes: path =>
+        {
+            if (path == failedPath)
+            {
+                failedReads++;
+                throw new IOException("The captured CommonModule read failed.");
+            }
+            return File.ReadAllBytes(path);
+        });
+        var automation = new SuccessfulEnvironmentWorkbookAutomation();
+
+        var result = await CreateSourceInspectionDoctor(admission, automation).RunAsync(
+            new DoctorCommandRequest(root, root, Format: DoctorOutputFormat.Json), CancellationToken.None);
+
+        Assert.Equal(1, result.ExitCode);
+        using var output = JsonDocument.Parse(result.StandardOutput);
+        Assert.False(output.RootElement.GetProperty("complete").GetBoolean());
+        var checks = output.RootElement.GetProperty("checks").EnumerateArray().ToArray();
+        var failure = Assert.Single(checks, check => check.GetProperty("id").GetString() == "doctor.infrastructure");
+        Assert.Equal("unverified", failure.GetProperty("status").GetString());
+        Assert.Contains("The captured CommonModule read failed.", failure.GetProperty("message").GetString(), StringComparison.Ordinal);
+        Assert.DoesNotContain(checks, check => check.GetProperty("id").GetString()!.StartsWith(
+            "project.workbookMaterialization/", StringComparison.Ordinal));
+        Assert.Equal(1, failedReads);
+        Assert.Equal(0, automation.RunCount);
+        Assert.Equal(original, File.ReadAllBytes(failedPath));
+    }
+
+    private static DoctorCommand CreateSourceInspectionDoctor(
+        VbaSourceAdmission admission, SuccessfulEnvironmentWorkbookAutomation? automation = null)
+        => new(new DoctorDiagnosticPipeline(
+            new ProjectContextResolver(new JsonProjectManifestStore()),
+            [new ProjectConfigurationDiagnosticProvider(), new CommonModulesDiagnosticProvider(new CommonModulesManifestReader())],
+            [],
+            new ExcelProjectMaterializationDiagnosticPort(
+                automation ?? new SuccessfulEnvironmentWorkbookAutomation(), path => path, _ => { }),
+            new FakeEnvironmentDiagnosticPort(), admission), new DoctorReportRenderer());
 
     [Fact]
     public void DoctorWarnsForCommonModulesSourceDrift()

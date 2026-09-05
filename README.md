@@ -167,6 +167,14 @@ owned fixture state to check visible Excel/VBE startup, native breakpoint and
 break-mode commands, process ownership, and cleanup without changing persistent
 project files.
 
+Project Doctor captures each document's source and matching form sidecars once
+under one Windows ACP for the run. Source layout, CommonModules drift, and the
+Build/Publish readiness profiles use that same evidence even if files change
+after capture. Publish exclusions do not suppress Build findings. Source
+decoding follows supported BOMs or, without a BOM, the captured ACP; there is
+no BOM-less UTF-8 guess. Doctor inspects unsaved disposable workbook copies
+without importing source, saving workbooks, or changing caller files.
+
 Complete output from both diagnostics, including every VBE check and any
 remediation details, is written under the two labels in the VBA Tools output
 channel. VBA Tools shows at most one blocking notification and keeps the full

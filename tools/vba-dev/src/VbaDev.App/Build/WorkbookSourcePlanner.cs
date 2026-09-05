@@ -51,7 +51,7 @@ public sealed class WorkbookSourcePlanner
         return OrderAdmittedSources(context, admission);
     }
 
-    private static AdmittedWorkbookGenerationSourceInput OrderAdmittedSources(
+    internal static AdmittedWorkbookGenerationSourceInput OrderAdmittedSources(
         ResolvedProjectContext context,
         AdmittedVbaSourceSet admission)
     {

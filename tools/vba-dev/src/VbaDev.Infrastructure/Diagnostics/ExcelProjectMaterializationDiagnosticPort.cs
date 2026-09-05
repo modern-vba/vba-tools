@@ -12,12 +12,11 @@ namespace VbaDev.Infrastructure.Diagnostics;
 /// Verifies disposable copies of project templates in dedicated owned Excel processes.
 /// </summary>
 public sealed class ExcelProjectMaterializationDiagnosticPort
-    : IProjectMaterializationDiagnosticPort
+    : IProjectMaterializationDiagnosticPort, IDoctorSourceMaterializationDiagnosticPort
 {
     private readonly IWorkbookGenerationAutomation workbookAutomation;
     private readonly Func<string, string> stageTemplateWorkbook;
     private readonly Action<string> deleteStagedWorkbook;
-    private readonly WorkbookSourcePlanner sourcePlanner;
     private readonly WorkbookReferenceNormalizer referenceNormalizer;
     private readonly VbeImportSourceSetFactory importSourceSetFactory;
     private readonly WorkbookMaterializationNamePreflight namePreflight;
@@ -30,7 +29,6 @@ public sealed class ExcelProjectMaterializationDiagnosticPort
             new ExcelComWorkbookBuildAutomation(),
             StageTemplateWorkbook,
             DeleteStagedWorkbook,
-            new WorkbookSourcePlanner(),
             CreateProductionReferenceNormalizer(),
             new VbeImportSourceSetFactory(),
             new WorkbookMaterializationNamePreflight())
@@ -45,7 +43,6 @@ public sealed class ExcelProjectMaterializationDiagnosticPort
             workbookAutomation,
             stageTemplateWorkbook,
             deleteStagedWorkbook,
-            new WorkbookSourcePlanner(),
             CreateProductionReferenceNormalizer(),
             new VbeImportSourceSetFactory(),
             new WorkbookMaterializationNamePreflight())
@@ -56,7 +53,6 @@ public sealed class ExcelProjectMaterializationDiagnosticPort
         IWorkbookGenerationAutomation workbookAutomation,
         Func<string, string> stageTemplateWorkbook,
         Action<string> deleteStagedWorkbook,
-        WorkbookSourcePlanner sourcePlanner,
         WorkbookReferenceNormalizer referenceNormalizer,
         VbeImportSourceSetFactory importSourceSetFactory,
         WorkbookMaterializationNamePreflight namePreflight)
@@ -64,7 +60,6 @@ public sealed class ExcelProjectMaterializationDiagnosticPort
         this.workbookAutomation = workbookAutomation;
         this.stageTemplateWorkbook = stageTemplateWorkbook;
         this.deleteStagedWorkbook = deleteStagedWorkbook;
-        this.sourcePlanner = sourcePlanner;
         this.referenceNormalizer = referenceNormalizer;
         this.importSourceSetFactory = importSourceSetFactory;
         this.namePreflight = namePreflight;
@@ -74,13 +69,28 @@ public sealed class ExcelProjectMaterializationDiagnosticPort
     public async Task<ProjectMaterializationDiagnosticRun> RunAsync(
         ResolvedProject project,
         CancellationToken cancellationToken)
+        => await RunWithSourcesAsync(
+            project,
+            DoctorProjectSourceInspection.Capture(project, new VbaSourceAdmission(ActiveWindowsAnsiCodePage.Get), cancellationToken),
+            cancellationToken).ConfigureAwait(false);
+
+    Task<ProjectMaterializationDiagnosticRun> IDoctorSourceMaterializationDiagnosticPort.RunAsync(
+        ResolvedProject project,
+        DoctorProjectSourceInspection sources,
+        CancellationToken cancellationToken)
+        => RunWithSourcesAsync(project, sources, cancellationToken);
+
+    private async Task<ProjectMaterializationDiagnosticRun> RunWithSourcesAsync(
+        ResolvedProject project,
+        DoctorProjectSourceInspection sources,
+        CancellationToken cancellationToken)
     {
         var results = new List<DiagnosticResult>();
         foreach (var (documentName, document) in project.Manifest.Documents
                      .OrderBy(item => item.Key, StringComparer.OrdinalIgnoreCase))
         {
             var context = CreateContext(project, documentName, document);
-            var profiles = PrepareProfiles(context, cancellationToken);
+            var profiles = PrepareProfiles(context, sources.GetDocument(documentName), cancellationToken);
             var templatePath = project.ResolvePath(document.TemplatePath);
             if (!File.Exists(templatePath))
             {
@@ -314,6 +324,7 @@ public sealed class ExcelProjectMaterializationDiagnosticPort
 
     private ProfileEvaluation[] PrepareProfiles(
         ResolvedProjectContext context,
+        CapturedDoctorSourceSet sources,
         CancellationToken cancellationToken)
     {
         var profiles = new List<ProfileEvaluation>();
@@ -322,12 +333,12 @@ public sealed class ExcelProjectMaterializationDiagnosticPort
             profiles.Add(PrepareProfile(
                 context,
                 "build",
-                sourcePlanner.ResolveBuildSourceFilesForPreflight,
+                () => sources.AdmitBuild(cancellationToken),
                 cancellationToken));
             profiles.Add(PrepareProfile(
                 context,
                 "publish",
-                sourcePlanner.ResolvePublishSourceFilesForPreflight,
+                () => sources.AdmitPublish(context.Document.CommonModules, cancellationToken),
                 cancellationToken));
             return profiles.ToArray();
         }
@@ -360,14 +371,15 @@ public sealed class ExcelProjectMaterializationDiagnosticPort
     private ProfileEvaluation PrepareProfile(
         ResolvedProjectContext context,
         string profileName,
-        Func<ResolvedProjectContext, IReadOnlyList<VbaSourceFile>> resolveSources,
+        Func<AdmittedVbaSourceSet> admitSources,
         CancellationToken cancellationToken)
     {
         var profile = new ProfileEvaluation(context.DocumentName, profileName);
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            profile.SourceSet = importSourceSetFactory.Create(resolveSources(context));
+            var ordered = WorkbookSourcePlanner.OrderAdmittedSources(context, admitSources());
+            profile.SourceSet = importSourceSetFactory.Create(ordered.Admission);
             profile.SourcePreflight = namePreflight.InspectSourcePhase(
                 profile.SourceSet.SourceFiles);
             if (profile.SourcePreflight.HasFailures)

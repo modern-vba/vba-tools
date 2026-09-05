@@ -8,7 +8,7 @@ namespace VbaDev.App.Diagnostics;
 /// <summary>
 /// Adds CommonModules repository, dependency, and source drift diagnostics.
 /// </summary>
-public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticProvider
+public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticProvider, IDoctorSourceDiagnosticProvider
 {
     private readonly CommonModulesPackageReader commonModulesPackageReader;
 
@@ -25,13 +25,22 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
 
     /// <inheritdoc />
     public void AddDiagnostics(List<DiagnosticResult> results, ResolvedProject project)
+        => AddDiagnostics(results, project, null);
+
+    void IDoctorSourceDiagnosticProvider.AddDiagnostics(
+        List<DiagnosticResult> results, ResolvedProject project, DoctorProjectSourceInspection sources)
+        => AddDiagnostics(results, project, sources);
+
+    private void AddDiagnostics(
+        List<DiagnosticResult> results, ResolvedProject project, DoctorProjectSourceInspection? sources)
     {
         foreach (var (documentName, document) in project.Manifest.Documents.OrderBy(item => item.Key, StringComparer.OrdinalIgnoreCase))
         {
             var sourceSetPath = project.ResolvePath(document.SourcePath);
+            var inventory = sources?.GetInventory(documentName);
             foreach (var module in document.CommonModules)
             {
-                AddStoredSourceDiagnostic(results, documentName, module, sourceSetPath);
+                AddStoredSourceDiagnostic(results, documentName, module, sourceSetPath, inventory);
             }
         }
 
@@ -65,7 +74,8 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
         var entriesByFile = entries.ToDictionary(entry => entry.ModuleFile, StringComparer.OrdinalIgnoreCase);
         foreach (var (documentName, document) in project.Manifest.Documents.OrderBy(item => item.Key, StringComparer.OrdinalIgnoreCase))
         {
-            AddDocumentRepositoryDiagnostics(results, project, documentName, document, entries, entriesByFile);
+            AddDocumentRepositoryDiagnostics(results, project, documentName, document, entries, entriesByFile,
+                sources?.GetDocument(documentName));
         }
     }
 
@@ -73,9 +83,12 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
         List<DiagnosticResult> results,
         string documentName,
         InstalledCommonModule module,
-        string sourceSetPath)
+        string sourceSetPath,
+        IReadOnlyList<string>? inventory)
     {
-        var sourceMatches = DocumentSourceSetLayout.FindSourceMatches(sourceSetPath, module.ModuleFile);
+        var sourceMatches = inventory is null
+            ? DocumentSourceSetLayout.FindSourceMatches(sourceSetPath, module.ModuleFile)
+            : DocumentSourceSetLayout.FindSourceMatches(inventory, module.ModuleFile);
         if (sourceMatches.Count == 0)
         {
             results.Add(DiagnosticResult.Fail(
@@ -100,7 +113,8 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
         string documentName,
         ProjectDocument document,
         IReadOnlyList<CommonModuleManifestEntry> entries,
-        IReadOnlyDictionary<string, CommonModuleManifestEntry> entriesByFile)
+        IReadOnlyDictionary<string, CommonModuleManifestEntry> entriesByFile,
+        CapturedDoctorSourceSet? sources)
     {
         var installedByName = document.CommonModules.ToDictionary(
             module => module.Name,
@@ -181,7 +195,7 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
                     "Installed dependency entry is unreachable from requested CommonModules roots."));
             }
 
-            AddSourceDriftDiagnostic(results, documentName, module, sourceSetPath, project.CommonModulesRepositoryPath!, entry);
+            AddSourceDriftDiagnostic(results, documentName, module, sourceSetPath, project.CommonModulesRepositoryPath!, entry, sources);
         }
     }
 
@@ -243,9 +257,12 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
         InstalledCommonModule module,
         string sourceSetPath,
         string commonModulesRepositoryPath,
-        CommonModuleManifestEntry entry)
+        CommonModuleManifestEntry entry,
+        CapturedDoctorSourceSet? sources)
     {
-        var sourceMatches = DocumentSourceSetLayout.FindSourceMatches(sourceSetPath, module.ModuleFile);
+        var sourceMatches = sources is null
+            ? DocumentSourceSetLayout.FindSourceMatches(sourceSetPath, module.ModuleFile)
+            : DocumentSourceSetLayout.FindSourceMatches(sources.InventoryPaths, module.ModuleFile);
         var repositoryPath = Path.Combine(commonModulesRepositoryPath, entry.ModuleFile);
         if (sourceMatches.Count != 1)
         {
@@ -262,7 +279,9 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
         }
 
         var sourcePath = sourceMatches[0];
-        var sourceSidecarPath = DocumentSourceSetLayout.ResolveExistingSidecarPath(sourcePath);
+        var sourceSidecarPath = sources is null
+            ? DocumentSourceSetLayout.ResolveExistingSidecarPath(sourcePath)
+            : DocumentSourceSetLayout.ResolveExistingSidecarPath(sourcePath, sources.InventoryPaths);
         var repositorySidecarPath = DocumentSourceSetLayout.ResolveExistingSidecarPath(repositoryPath);
         var hasDifferentFormSidecar = false;
         if (DocumentSourceSetLayout.IsFormFile(sourcePath) &&
@@ -270,10 +289,10 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
         {
             hasDifferentFormSidecar = sourceSidecarPath is null || repositorySidecarPath is null
                 ? sourceSidecarPath != repositorySidecarPath
-                : !File.ReadAllBytes(sourceSidecarPath).SequenceEqual(File.ReadAllBytes(repositorySidecarPath));
+                : !ReadDocumentBytes(sourceSidecarPath, sources).SequenceEqual(File.ReadAllBytes(repositorySidecarPath));
         }
 
-        if (!File.ReadAllBytes(sourcePath).SequenceEqual(File.ReadAllBytes(repositoryPath)) ||
+        if (!ReadDocumentBytes(sourcePath, sources).SequenceEqual(File.ReadAllBytes(repositoryPath)) ||
             hasDifferentFormSidecar)
         {
             results.Add(DiagnosticResult.Warn(
@@ -282,6 +301,9 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
                 $"Source file differs from CommonModulesRepository: {sourcePath}."));
         }
     }
+
+    private static IReadOnlyList<byte> ReadDocumentBytes(string path, CapturedDoctorSourceSet? sources)
+        => sources is null ? File.ReadAllBytes(path) : sources.GetOriginalBytes(path);
 
     private static string CommonModulesCheckId(
         string documentName,
