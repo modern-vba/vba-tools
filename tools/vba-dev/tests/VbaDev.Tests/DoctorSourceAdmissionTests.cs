@@ -77,6 +77,13 @@ public sealed class DoctorSourceAdmissionTests
         Assert.All(inventories.Values, count => Assert.Equal(1, count));
         Assert.Equal(2, reads.Count);
         Assert.All(reads.Values, count => Assert.Equal(1, count));
+        Assert.Equal(2, automation.OpenedWorkbooks.Count);
+        Assert.Equal(
+            ["staged-First.xlsm", "staged-Second.xlsm"],
+            automation.OpenedWorkbooks
+                .Select(path => Path.GetFileName(path)!)
+                .Order(StringComparer.Ordinal)
+                .ToArray());
         Assert.Empty(automation.ImportedSources);
         Assert.Equal(0, automation.SaveCalls);
         foreach (var sourcePath in reads.Keys)

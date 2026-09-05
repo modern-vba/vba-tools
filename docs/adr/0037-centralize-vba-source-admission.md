@@ -11,7 +11,8 @@ workbook-backed command model. Issue #339 extends that boundary to ordinary
 saved-source Build; issue #340 adds Publish, #344 adds snapshot Build/Test, and
 #345 adds project Doctor. Issue #350 makes the exact admission paired with a
 successfully materialized test workbook the sole authority for built-test
-source locations.
+source locations. Issue #351 routes Doctor's observational workbook inspection
+through `WorkbookMaterializer` without changing source admission.
 Source ownership, VBE import
 verification, and owned Excel-process lifecycle contracts remain accepted.
 
@@ -179,6 +180,13 @@ layout and installed CommonModules drift diagnostics also use this captured
 document evidence. The external CommonModules repository remains an independent
 package authority, not part of the document capture.
 
+The Doctor pipeline passes each existing `CapturedDoctorSourceSet` to the
+diagnostic adapter. The adapter constructs one `ProjectInspectionIntent` for
+the document, and `WorkbookMaterializer.InspectAsync` derives its Build and
+Publish admissions from that capture. Neither the adapter nor the materializer
+recaptures the inventory, rereads source or sidecars, or makes another ACP or
+encoding decision.
+
 Build includes every source. Publish keeps ordinary Publish's filename-collision,
 manifest test-only, and local-marker ordering. Doctor captures test-only bytes
 for Build, but a read, decoding, or admission failure in an excluded test-only
@@ -197,12 +205,18 @@ Cancellation does not publish a partial capture. This is fixed-input ownership,
 not concurrent-editor protection: no retry, closing check, new lock, or fence is
 introduced, and later author edits belong to the next run.
 
-Each document still uses one disposable template inspection for the prepared
-profiles. Existing component removal and reference normalization are confined
-to that unsaved copy; Doctor never imports sources, saves a workbook, commits
-output, or mutates durable caller files. Check IDs, schema `1.0`, formats, and
-exit semantics remain unchanged. Environment-only Doctor performs no project
-capture and obtains no source ACP.
+For each document with an available source template and at least one profile
+that passes source preparation, `InspectAsync` owns exactly one disposable
+source-template copy and one Excel automation session shared by the viable
+profiles. Existing component removal, reference normalization, and final live
+authority inspection are confined to that unsaved copy. The inspection path
+never imports or verifies source, saves a workbook, opens an output transaction,
+commits output, or mutates durable caller files. The materializer closes the
+session and removes the copy under its existing cleanup policy; unconfirmed
+cleanup makes the inspection incomplete. The adapter maps the returned profile
+evidence to the existing Doctor diagnostics. Check IDs, schema `1.0`, formats,
+and exit semantics remain unchanged. Environment-only Doctor performs no
+project capture and obtains no source ACP.
 
 ## Rollout boundary
 
@@ -241,9 +255,13 @@ admitted facts without rereading persistent source, redetecting encoding, or
 accepting consumer proof. Issue #349 adds the distinct closed
 `WorkbookMaterializationIntent.ExplicitImport`; it consumes the same immutable
 explicit-import admission without source reinspection and retains the existing
-target guard and one-shot commitment contract described above. Doctor retains
-its disposable inspection path until issue #351. This staged boundary does not
-create a second generic materialization pipeline.
+target guard and one-shot commitment contract described above. Issue #351
+moves Doctor's observational workbook mechanism to the separate
+`WorkbookMaterializer.InspectAsync(ProjectInspectionIntent)` path. It consumes
+the already-captured per-document source, owns at most one disposable copy and
+session per document, and exposes profile evidence rather than a materialized
+artifact. It is not a fifth write intent or a second generic materialization
+pipeline.
 
 The coordinated compatibility matrix is:
 
@@ -329,6 +347,9 @@ the same corpus without changing its ownership.
 - Ordinary Build, Publish, snapshot Build/Test, and Doctor share admitted
   authority without a second source inventory, ACP decision, or authoring-file
   read downstream.
+- Doctor's `ProjectInspectionIntent` shares one disposable copy and Excel
+  session across the viable Build and Publish profiles for a document, without
+  import, save, output transaction, or commitment.
 - Ordinary and snapshot built tests derive optional locations only from an
   immutable `ExecutedSourceIndex` copied from the exact admission paired with
   their committed workbook; no-build omits locations without source inspection.
@@ -345,5 +366,7 @@ the same corpus without changing its ownership.
   guard-release-to-commit gap.
 - This adds no source re-inventory or reread, authoring lock, target
   compare-and-swap, retry, or rollback of competing external changes.
+- `WorkbookMaterializer` and Doctor inspection remain wholly inside `VbaDev`;
+  they add no dependency on another product or reverse product dependency.
 - Other source workflows keep their released behavior during the staged
   rollout; extending admission requires an explicit follow-up change.

@@ -3,35 +3,23 @@ using VbaDev.App.Diagnostics;
 using VbaDev.App.Projects;
 using VbaDev.App.References;
 using VbaDev.App.Workbooks;
-using VbaDev.Infrastructure.Projects;
 using VbaDev.Infrastructure.Workbooks;
 
 namespace VbaDev.Infrastructure.Diagnostics;
 
 /// <summary>
-/// Verifies disposable copies of project templates in dedicated owned Excel processes.
+/// Projects WorkbookMaterializer inspection results into Doctor diagnostics.
 /// </summary>
 public sealed class ExcelProjectMaterializationDiagnosticPort
-    : IProjectMaterializationDiagnosticPort, IDoctorSourceMaterializationDiagnosticPort
+    : IProjectMaterializationDiagnosticPort
 {
-    private readonly IWorkbookGenerationAutomation workbookAutomation;
-    private readonly Func<string, string> stageTemplateWorkbook;
-    private readonly Action<string> deleteStagedWorkbook;
-    private readonly WorkbookReferenceNormalizer referenceNormalizer;
-    private readonly VbeImportSourceSetFactory importSourceSetFactory;
-    private readonly WorkbookMaterializationNamePreflight namePreflight;
+    private readonly WorkbookMaterializer materializer;
 
     /// <summary>
     /// Creates the production project materialization adapter.
     /// </summary>
     public ExcelProjectMaterializationDiagnosticPort()
-        : this(
-            new ExcelComWorkbookGenerationAutomation(),
-            StageTemplateWorkbook,
-            DeleteStagedWorkbook,
-            CreateProductionReferenceNormalizer(),
-            new VbeImportSourceSetFactory(),
-            new WorkbookMaterializationNamePreflight())
+        : this(CreateProductionMaterializer())
     {
     }
 
@@ -56,25 +44,25 @@ public sealed class ExcelProjectMaterializationDiagnosticPort
         WorkbookReferenceNormalizer referenceNormalizer,
         VbeImportSourceSetFactory importSourceSetFactory,
         WorkbookMaterializationNamePreflight namePreflight)
+        : this(new WorkbookMaterializer(
+            new WorkbookSourcePlanner(),
+            workbookAutomation,
+            referenceNormalizer,
+            new WorkbookOutputTransactionFactory(),
+            importSourceSetFactory,
+            inspectionWorkbookStager: stageTemplateWorkbook,
+            inspectionWorkbookDeleter: deleteStagedWorkbook,
+            namePreflight: namePreflight))
     {
-        this.workbookAutomation = workbookAutomation;
-        this.stageTemplateWorkbook = stageTemplateWorkbook;
-        this.deleteStagedWorkbook = deleteStagedWorkbook;
-        this.referenceNormalizer = referenceNormalizer;
-        this.importSourceSetFactory = importSourceSetFactory;
-        this.namePreflight = namePreflight;
+    }
+
+    internal ExcelProjectMaterializationDiagnosticPort(WorkbookMaterializer materializer)
+    {
+        this.materializer = materializer;
     }
 
     /// <inheritdoc />
-    public async Task<ProjectMaterializationDiagnosticRun> RunAsync(
-        ResolvedProject project,
-        CancellationToken cancellationToken)
-        => await RunWithSourcesAsync(
-            project,
-            DoctorProjectSourceInspection.Capture(project, new VbaSourceAdmission(ActiveWindowsAnsiCodePage.Get), cancellationToken),
-            cancellationToken).ConfigureAwait(false);
-
-    Task<ProjectMaterializationDiagnosticRun> IDoctorSourceMaterializationDiagnosticPort.RunAsync(
+    public Task<ProjectMaterializationDiagnosticRun> RunAsync(
         ResolvedProject project,
         DoctorProjectSourceInspection sources,
         CancellationToken cancellationToken)
@@ -89,343 +77,58 @@ public sealed class ExcelProjectMaterializationDiagnosticPort
         foreach (var (documentName, document) in project.Manifest.Documents
                      .OrderBy(item => item.Key, StringComparer.OrdinalIgnoreCase))
         {
-            var context = CreateContext(project, documentName, document);
-            var profiles = PrepareProfiles(context, sources.GetDocument(documentName), cancellationToken);
-            var templatePath = project.ResolvePath(document.TemplatePath);
-            if (!File.Exists(templatePath))
+            var inspection = await materializer.InspectAsync(
+                    new ProjectInspectionIntent(
+                        CreateContext(project, documentName, document),
+                        sources.GetDocument(documentName)),
+                    cancellationToken)
+                .ConfigureAwait(false);
+            results.AddRange(inspection.Profiles.Select(profile =>
+                ToDiagnosticResult(documentName, profile)));
+            if (!inspection.Complete)
             {
-                foreach (var profile in profiles)
-                {
-                    profile.Result ??= DiagnosticResult.Skip(
-                            profile.CheckId,
-                            profile.CheckName,
-                            $"The source template does not exist: {templatePath}.");
-                    results.Add(profile.Result);
-                }
-
-                CleanupDocument(stagedWorkbookPath: null, profiles);
-                continue;
-            }
-
-            string? stagedWorkbookPath = null;
-            try
-            {
-                var activeProfiles = profiles
-                    .Where(profile => profile.SourceSet is not null)
-                    .ToArray();
-                if (activeProfiles.Length > 0)
-                {
-                    stagedWorkbookPath = stageTemplateWorkbook(templatePath);
-                    await workbookAutomation.RunAsync(
-                        stagedWorkbookPath,
-                        WorkbookAutomationTimeouts.Default,
-                        async (session, operationCancellationToken) =>
-                        {
-                            var projectName = await session
-                                .GetProjectNameAsync(operationCancellationToken)
-                                .ConfigureAwait(false);
-                            var modules = await session
-                                .GetModulesAsync(operationCancellationToken)
-                                .ConfigureAwait(false);
-                            var retainedModules = modules
-                                .Where(module => !module.Kind.IsImportable())
-                                .ToArray();
-                            var activeReferences = await session
-                                .GetReferencesAsync(operationCancellationToken)
-                                .ConfigureAwait(false);
-                            var desiredReferenceNames = document.References
-                                .Select(reference => reference.Name)
-                                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-                            var referencesKnownToRemain = activeReferences
-                                .Where(reference =>
-                                    !reference.IsRemovable ||
-                                    desiredReferenceNames.Contains(reference.Name))
-                                .ToArray();
-                            foreach (var profile in activeProfiles)
-                            {
-                                var initialLivePreflight = namePreflight.InspectLivePhase(
-                                    profile.SourceSet!.SourceFiles,
-                                    retainedModules,
-                                    projectName,
-                                    referencesKnownToRemain);
-                                if (!initialLivePreflight.HasFailures)
-                                {
-                                    continue;
-                                }
-
-                                try
-                                {
-                                    namePreflight.ThrowIfFailed(
-                                        profile.SourcePreflight!,
-                                        initialLivePreflight);
-                                }
-                                catch (InvalidOperationException exception)
-                                {
-                                    profile.Result = DiagnosticResult.Fail(
-                                        profile.CheckId,
-                                        profile.CheckName,
-                                        exception.Message);
-                                }
-                            }
-
-                            var profilesRequiringFinalInspection = activeProfiles
-                                .Where(profile => profile.Result is null)
-                                .ToArray();
-                            if (profilesRequiringFinalInspection.Length == 0)
-                            {
-                                return true;
-                            }
-
-                            foreach (var module in modules.Where(module => module.Kind.IsImportable()))
-                            {
-                                await session
-                                    .RemoveModuleAsync(module.Name, operationCancellationToken)
-                                    .ConfigureAwait(false);
-                            }
-
-                            await referenceNormalizer.NormalizeAsync(
-                                    session,
-                                    documentName,
-                                    document.References,
-                                    operationCancellationToken)
-                                .ConfigureAwait(false);
-                            var finalProjectName = await session
-                                .GetProjectNameAsync(operationCancellationToken)
-                                .ConfigureAwait(false);
-                            var finalModules = await session
-                                .GetModulesAsync(operationCancellationToken)
-                                .ConfigureAwait(false);
-                            var finalReferences = await session
-                                .GetReferencesAsync(operationCancellationToken)
-                                .ConfigureAwait(false);
-                            foreach (var profile in profilesRequiringFinalInspection)
-                            {
-                                try
-                                {
-                                    var livePreflight = namePreflight.InspectLivePhase(
-                                        profile.SourceSet!.SourceFiles,
-                                        finalModules,
-                                        finalProjectName,
-                                        finalReferences);
-                                    namePreflight.ThrowIfFailed(
-                                        profile.SourcePreflight!,
-                                        livePreflight);
-                                    profile.Result = DiagnosticResult.Pass(
-                                        profile.CheckId,
-                                        profile.CheckName,
-                                        "The profile is conflict-free on a disposable template copy.");
-                                }
-                                catch (InvalidOperationException exception)
-                                {
-                                    profile.Result = DiagnosticResult.Fail(
-                                        profile.CheckId,
-                                        profile.CheckName,
-                                        exception.Message);
-                                }
-                            }
-
-                            return true;
-                        },
-                        cancellationToken).ConfigureAwait(false);
-                }
-            }
-            catch (WorkbookAutomationTimeoutException exception)
-            {
-                SetActiveProfileResults(
-                    profiles,
-                    profile => DiagnosticResult.Unverified(
-                        profile.CheckId,
-                        profile.CheckName,
-                        exception.Message));
-            }
-            catch (WorkbookAutomationCanceledException exception)
-            {
-                SetActiveProfileResults(
-                    profiles,
-                    profile => DiagnosticResult.Unverified(
-                        profile.CheckId,
-                        profile.CheckName,
-                        exception.Message));
-                AddProfileResults(results, profiles);
                 return new ProjectMaterializationDiagnosticRun(
                     results,
                     Complete: false,
-                    Canceled: true);
+                    inspection.Canceled);
             }
-            catch (WorkbookAutomationCleanupException exception)
-            {
-                SetActiveProfileResults(
-                    profiles,
-                    profile => DiagnosticResult.Unverified(
-                        profile.CheckId,
-                        profile.CheckName,
-                        exception.Message));
-                AddProfileResults(results, profiles);
-                return new ProjectMaterializationDiagnosticRun(
-                    results,
-                    Complete: false);
-            }
-            catch (Exception exception)
-            {
-                SetActiveProfileResults(
-                    profiles,
-                    profile => DiagnosticResult.Fail(
-                        profile.CheckId,
-                        profile.CheckName,
-                        $"The disposable template could not be materialized: {exception.Message}"));
-            }
-            finally
-            {
-                CleanupDocument(stagedWorkbookPath, profiles);
-            }
-
-            AddProfileResults(results, profiles);
         }
 
         return new ProjectMaterializationDiagnosticRun(results);
     }
 
-    private void CleanupDocument(
-        string? stagedWorkbookPath,
-        IReadOnlyList<ProfileEvaluation> profiles)
+    private static DiagnosticResult ToDiagnosticResult(
+        string documentName,
+        ProjectInspectionProfileResult profile)
     {
-        var cleanupErrors = new List<Exception>();
-        foreach (var profile in profiles)
+        var profileName = profile.Profile switch
         {
-            try
-            {
-                profile.Dispose();
-            }
-            catch (Exception cleanupError)
-            {
-                cleanupErrors.Add(cleanupError);
-            }
-        }
-
-        if (stagedWorkbookPath is not null)
+            ProjectInspectionProfile.Build => "build",
+            ProjectInspectionProfile.Publish => "publish",
+            _ => throw new ArgumentOutOfRangeException(nameof(profile), profile.Profile, null)
+        };
+        var checkId = $"project.workbookMaterialization/{documentName}/{profileName}";
+        var checkName = $"Workbook materialization ({documentName}/{profileName})";
+        return profile.Status switch
         {
-            try
-            {
-                deleteStagedWorkbook(stagedWorkbookPath);
-            }
-            catch (Exception cleanupError)
-            {
-                cleanupErrors.Add(cleanupError);
-            }
-        }
-
-        if (cleanupErrors.Count > 0)
-        {
-            throw new InvalidOperationException(
-                "Workbook materialization temporary resources could not be fully removed.",
-                new AggregateException(cleanupErrors));
-        }
-    }
-
-    private ProfileEvaluation[] PrepareProfiles(
-        ResolvedProjectContext context,
-        CapturedDoctorSourceSet sources,
-        CancellationToken cancellationToken)
-    {
-        var profiles = new List<ProfileEvaluation>();
-        try
-        {
-            profiles.Add(PrepareProfile(
-                context,
-                "build",
-                () => sources.AdmitBuild(cancellationToken),
-                cancellationToken));
-            profiles.Add(PrepareProfile(
-                context,
-                "publish",
-                () => sources.AdmitPublish(context.Document.CommonModules, cancellationToken),
-                cancellationToken));
-            return profiles.ToArray();
-        }
-        catch (Exception preparationError)
-        {
-            var cleanupErrors = new List<Exception>();
-            foreach (var profile in profiles)
-            {
-                try
-                {
-                    profile.Dispose();
-                }
-                catch (Exception cleanupError)
-                {
-                    cleanupErrors.Add(cleanupError);
-                }
-            }
-
-            if (cleanupErrors.Count > 0)
-            {
-                throw new InvalidOperationException(
-                    "Workbook materialization profile preparation failed and its temporary sources could not be fully removed.",
-                    new AggregateException([preparationError, .. cleanupErrors]));
-            }
-
-            throw;
-        }
-    }
-
-    private ProfileEvaluation PrepareProfile(
-        ResolvedProjectContext context,
-        string profileName,
-        Func<AdmittedVbaSourceSet> admitSources,
-        CancellationToken cancellationToken)
-    {
-        var profile = new ProfileEvaluation(context.DocumentName, profileName);
-        try
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var ordered = WorkbookSourcePlanner.OrderAdmittedSources(context, admitSources());
-            profile.SourceSet = importSourceSetFactory.Create(ordered.Admission);
-            profile.SourcePreflight = namePreflight.InspectSourcePhase(
-                profile.SourceSet.SourceFiles);
-            if (profile.SourcePreflight.HasFailures)
-            {
-                namePreflight.ThrowIfFailed(profile.SourcePreflight);
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            profile.Dispose();
-            throw;
-        }
-        catch (Exception exception)
-        {
-            profile.Dispose();
-            profile.Result = DiagnosticResult.Fail(
-                profile.CheckId,
-                profile.CheckName,
-                exception.Message);
-        }
-
-        return profile;
-    }
-
-    private static void SetActiveProfileResults(
-        IReadOnlyList<ProfileEvaluation> profiles,
-        Func<ProfileEvaluation, DiagnosticResult> createResult)
-    {
-        foreach (var profile in profiles.Where(profile =>
-                     profile.SourceSet is not null && profile.Result is null))
-        {
-            profile.Result = createResult(profile);
-        }
-    }
-
-    private static void AddProfileResults(
-        List<DiagnosticResult> results,
-        IReadOnlyList<ProfileEvaluation> profiles)
-    {
-        foreach (var profile in profiles)
-        {
-            results.Add(profile.Result ?? DiagnosticResult.Fail(
-                profile.CheckId,
-                profile.CheckName,
-                "Workbook materialization diagnostics returned incomplete profile evidence."));
-        }
+            ProjectInspectionStatus.Pass => DiagnosticResult.Pass(
+                checkId,
+                checkName,
+                profile.Message),
+            ProjectInspectionStatus.Fail => DiagnosticResult.Fail(
+                checkId,
+                checkName,
+                profile.Message),
+            ProjectInspectionStatus.Unverified => DiagnosticResult.Unverified(
+                checkId,
+                checkName,
+                profile.Message),
+            ProjectInspectionStatus.Skip => DiagnosticResult.Skip(
+                checkId,
+                checkName,
+                profile.Message),
+            _ => throw new ArgumentOutOfRangeException(nameof(profile), profile.Status, null)
+        };
     }
 
     private static ResolvedProjectContext CreateContext(
@@ -444,90 +147,16 @@ public sealed class ExcelProjectMaterializationDiagnosticPort
             project.ResolvePath(document.PublishPath),
             project.CommonModulesRepositoryPath);
 
+    private static WorkbookMaterializer CreateProductionMaterializer()
+        => new(
+            new WorkbookSourcePlanner(),
+            new ExcelComWorkbookGenerationAutomation(),
+            CreateProductionReferenceNormalizer(),
+            new WorkbookOutputTransactionFactory());
+
     private static WorkbookReferenceNormalizer CreateProductionReferenceNormalizer()
         => new(new VbaProjectReferencePlanner(
             new RegistryVbaProjectReferenceResolver(),
             new VbaProjectReferenceAmbiguityProbe(
                 new ExcelComVbaProjectReferenceProbeAutomation())));
-
-    private static string StageTemplateWorkbook(string templatePath)
-    {
-        var directory = Path.Combine(
-            Path.GetTempPath(),
-            $"vba-dev-doctor-{Guid.NewGuid():N}");
-        return StageTemplateWorkbook(templatePath, directory);
-    }
-
-    internal static string StageTemplateWorkbook(
-        string templatePath,
-        string directory)
-    {
-        var stagedWorkbookPath = Path.Combine(
-            directory,
-            Path.GetFileName(templatePath));
-        try
-        {
-            Directory.CreateDirectory(directory);
-            File.Copy(templatePath, stagedWorkbookPath);
-            return stagedWorkbookPath;
-        }
-        catch (Exception stagingError)
-        {
-            try
-            {
-                if (Directory.Exists(directory))
-                {
-                    Directory.Delete(directory, recursive: true);
-                }
-            }
-            catch (Exception cleanupError)
-            {
-                throw new InvalidOperationException(
-                    $"{stagingError.Message} The failed Doctor staging directory could not be removed: '{directory}'.",
-                    new AggregateException(stagingError, cleanupError));
-            }
-
-            throw;
-        }
-    }
-
-    private static void DeleteStagedWorkbook(string stagedWorkbookPath)
-    {
-        if (File.Exists(stagedWorkbookPath))
-        {
-            File.Delete(stagedWorkbookPath);
-        }
-
-        var directory = Path.GetDirectoryName(stagedWorkbookPath);
-        if (directory is not null && Directory.Exists(directory))
-        {
-            Directory.Delete(directory);
-        }
-    }
-
-    private sealed class ProfileEvaluation : IDisposable
-    {
-        public ProfileEvaluation(string documentName, string profileName)
-        {
-            CheckId = $"project.workbookMaterialization/{documentName}/{profileName}";
-            CheckName = $"Workbook materialization ({documentName}/{profileName})";
-        }
-
-        public string CheckId { get; }
-
-        public string CheckName { get; }
-
-        public VbeImportSourceSet? SourceSet { get; set; }
-
-        public WorkbookMaterializationNamePreflightReport? SourcePreflight { get; set; }
-
-        public DiagnosticResult? Result { get; set; }
-
-        public void Dispose()
-        {
-            SourceSet?.Dispose();
-            SourceSet = null;
-            SourcePreflight = null;
-        }
-    }
 }

@@ -1,6 +1,8 @@
 using System.Reflection;
 using VbaDev.App.Build;
+using VbaDev.App.Diagnostics;
 using VbaDev.App.Workbooks;
+using VbaDev.Infrastructure.Diagnostics;
 using Xunit;
 
 namespace VbaDev.Tests;
@@ -12,6 +14,29 @@ public sealed class WorkbookMaterializerContractTests
         BindingFlags.Public |
         BindingFlags.NonPublic |
         BindingFlags.DeclaredOnly;
+
+    [Fact]
+    public void DoctorMaterializationRequiresTheCaptureOwnedByDoctor()
+    {
+        var runMethod = Assert.Single(
+            typeof(IProjectMaterializationDiagnosticPort).GetMethods(),
+            method => method.Name == "RunAsync");
+
+        Assert.Collection(
+            runMethod.GetParameters(),
+            parameter => Assert.Equal(typeof(VbaDev.App.Projects.ResolvedProject), parameter.ParameterType),
+            parameter => Assert.Equal(typeof(DoctorProjectSourceInspection), parameter.ParameterType),
+            parameter => Assert.Equal(typeof(CancellationToken), parameter.ParameterType));
+        Assert.DoesNotContain(
+            typeof(ExcelProjectMaterializationDiagnosticPort).GetMethods(
+                DeclaredInstanceMembers),
+            method => method.Name == "RunAsync" && method.GetParameters().Length == 2);
+
+        var materializerField = Assert.Single(
+            typeof(ExcelProjectMaterializationDiagnosticPort).GetFields(
+                DeclaredInstanceMembers));
+        Assert.Equal("VbaDev.App.Build.WorkbookMaterializer", materializerField.FieldType.FullName);
+    }
 
     [Fact]
     public void WorkbookOutputsUseExactlyFourDataOnlyClosedIntentsAndOneProductionEntrypoint()

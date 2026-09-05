@@ -121,9 +121,9 @@ public sealed class DoctorDiagnosticPipeline
                     Canceled: true);
             }
 
-            var materializationRun = projectMaterializationDiagnosticPort is IDoctorSourceMaterializationDiagnosticPort sourcePort
-                ? await sourcePort.RunAsync(project, sources, cancellationToken).ConfigureAwait(false)
-                : await projectMaterializationDiagnosticPort.RunAsync(project, cancellationToken).ConfigureAwait(false);
+            var materializationRun = await projectMaterializationDiagnosticPort
+                .RunAsync(project, sources, cancellationToken)
+                .ConfigureAwait(false);
             results.AddRange(materializationRun.Results);
             if (!materializationRun.Complete)
             {

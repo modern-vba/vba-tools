@@ -27,9 +27,7 @@ public static class ToolingCompositionRoot
     public static ToolingApplicationComposition CreateApplicationComposition()
         => CreateApplicationComposition(
             Directory.GetCurrentDirectory(),
-            environmentDiagnosticPort: new ExcelEnvironmentDiagnosticPort(),
-            projectMaterializationDiagnosticPort:
-                new ExcelProjectMaterializationDiagnosticPort());
+            environmentDiagnosticPort: new ExcelEnvironmentDiagnosticPort());
 
     /// <summary>
     /// Creates shell-neutral application services with optional test or host-specific adapter overrides.
@@ -101,6 +99,12 @@ public static class ToolingCompositionRoot
             projectContextResolver,
             referencePlanner);
         var generationAutomation = workbookGenerationAutomation ?? new ExcelComWorkbookGenerationAutomation();
+        var sourcePlanner = new WorkbookSourcePlanner();
+        var materializer = new WorkbookMaterializer(
+            sourcePlanner,
+            generationAutomation,
+            new WorkbookReferenceNormalizer(referencePlanner),
+            new WorkbookOutputTransactionFactory());
         IReadOnlyList<IDoctorProjectDiagnosticProvider> staticProjectDiagnosticProviders =
         [
             new ProjectConfigurationDiagnosticProvider(),
@@ -115,7 +119,7 @@ public static class ToolingCompositionRoot
             staticProjectDiagnosticProviders,
             [new VbaProjectReferenceDiagnosticProvider(referencePlanner)],
             projectMaterializationDiagnosticPort ??
-                new DisabledProjectMaterializationDiagnosticPort(),
+                new ExcelProjectMaterializationDiagnosticPort(materializer),
             environmentDiagnosticPort ?? new SkippedEnvironmentDiagnosticPort());
         var doctorCommand = new DoctorCommand(
             doctorPipeline,
@@ -128,12 +132,6 @@ public static class ToolingCompositionRoot
             referencePlanner,
             mutationLeaseProvider,
             pathIdentityResolver);
-        var sourcePlanner = new WorkbookSourcePlanner();
-        var materializer = new WorkbookMaterializer(
-            sourcePlanner,
-            generationAutomation,
-            new WorkbookReferenceNormalizer(referencePlanner),
-            new WorkbookOutputTransactionFactory());
         var workbookOutputCommand = new WorkbookOutputCommand(materializer);
         var buildCommand = new BuildCommand(workbookOutputCommand, pathIdentityResolver);
         var publishCommand = new PublishCommand(workbookOutputCommand);

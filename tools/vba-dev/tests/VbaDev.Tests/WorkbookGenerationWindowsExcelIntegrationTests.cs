@@ -11,9 +11,9 @@ using VbaDev.App.Projects;
 using VbaDev.App.References;
 using VbaDev.App.Testing;
 using VbaDev.App.Workbooks;
+using VbaDev.Composition;
 using VbaDev.Domain;
 using VbaDev.Infrastructure.Debugging;
-using VbaDev.Infrastructure.Diagnostics;
 using VbaDev.Infrastructure.Projects;
 using VbaDev.Infrastructure.Workbooks;
 using Xunit;
@@ -1408,25 +1408,29 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
             File.WriteAllBytes(fixture.Context.PublishDocumentPath, Encoding.ASCII.GetBytes("existing-publish-output"));
             var callerBytes = Directory.GetFiles(fixture.Context.ProjectRoot, "*", SearchOption.AllDirectories)
                 .ToDictionary(path => path, File.ReadAllBytes, StringComparer.Ordinal);
-            var project = new ProjectContextResolver(new JsonProjectManifestStore()).ResolveProject(
-                new(fixture.Context.ProjectRoot, null, fixture.Context.ProjectRoot));
+            var composition = ToolingCompositionRoot.CreateApplicationComposition(
+                fixture.Context.ProjectRoot,
+                environmentDiagnosticPort: new FakeEnvironmentDiagnosticPort());
 
-            var result = await new ExcelProjectMaterializationDiagnosticPort().RunAsync(project, cancellation.Token);
+            var result = await composition.DoctorCommand.RunAsync(
+                new DoctorCommandRequest(
+                    fixture.Context.ProjectRoot,
+                    fixture.Context.ProjectRoot,
+                    Format: DoctorOutputFormat.Json),
+                cancellation.Token);
 
-            Assert.True(result.Complete);
-            Assert.False(result.Canceled);
-            Assert.Collection(
-                result.Results,
-                check =>
-                {
-                    Assert.Equal("project.workbookMaterialization/AdmissionBook/build", check.Id);
-                    Assert.True(check.Status == DiagnosticStatus.Pass, $"{check.Id}: {check.Status}: {check.Message}");
-                },
-                check =>
-                {
-                    Assert.Equal("project.workbookMaterialization/AdmissionBook/publish", check.Id);
-                    Assert.True(check.Status == DiagnosticStatus.Pass, $"{check.Id}: {check.Status}: {check.Message}");
-                });
+            Assert.Equal(0, result.ExitCode);
+            using var report = JsonDocument.Parse(result.StandardOutput);
+            Assert.True(report.RootElement.GetProperty("complete").GetBoolean());
+            var checks = report.RootElement.GetProperty("checks").EnumerateArray().ToArray();
+            foreach (var profile in new[] { "build", "publish" })
+            {
+                var check = Assert.Single(
+                    checks,
+                    candidate => candidate.GetProperty("id").GetString() ==
+                        $"project.workbookMaterialization/AdmissionBook/{profile}");
+                Assert.Equal("pass", check.GetProperty("status").GetString());
+            }
             Assert.Equal(
                 callerBytes.Keys.Order(StringComparer.Ordinal),
                 Directory.GetFiles(fixture.Context.ProjectRoot, "*", SearchOption.AllDirectories).Order(StringComparer.Ordinal));

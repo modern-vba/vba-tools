@@ -16,7 +16,9 @@ internal sealed class WorkbookMaterializer
     private readonly IWorkbookOutputTransactionFactory transactionFactory;
     private readonly VbeImportSourceSetFactory importSourceSetFactory;
     private readonly WorkbookAutomationTimeouts baseTimeouts;
-    private readonly WorkbookMaterializationNamePreflight namePreflight = new();
+    private readonly Func<string, string> inspectionWorkbookStager;
+    private readonly Action<string> inspectionWorkbookDeleter;
+    private readonly WorkbookMaterializationNamePreflight namePreflight;
     private readonly WorkbookMaterializationOutputValidator outputValidator = new();
 
     /// <summary>
@@ -73,7 +75,10 @@ internal sealed class WorkbookMaterializer
         WorkbookReferenceNormalizer referenceNormalizer,
         IWorkbookOutputTransactionFactory transactionFactory,
         VbeImportSourceSetFactory importSourceSetFactory,
-        WorkbookAutomationTimeouts? baseTimeouts = null)
+        WorkbookAutomationTimeouts? baseTimeouts = null,
+        Func<string, string>? inspectionWorkbookStager = null,
+        Action<string>? inspectionWorkbookDeleter = null,
+        WorkbookMaterializationNamePreflight? namePreflight = null)
     {
         this.sourcePlanner = sourcePlanner;
         this.workbookGenerationAutomation = workbookGenerationAutomation;
@@ -81,6 +86,9 @@ internal sealed class WorkbookMaterializer
         this.transactionFactory = transactionFactory;
         this.importSourceSetFactory = importSourceSetFactory;
         this.baseTimeouts = baseTimeouts ?? WorkbookAutomationTimeouts.Default;
+        this.inspectionWorkbookStager = inspectionWorkbookStager ?? StageInspectionWorkbook;
+        this.inspectionWorkbookDeleter = inspectionWorkbookDeleter ?? DeleteInspectionWorkbook;
+        this.namePreflight = namePreflight ?? new WorkbookMaterializationNamePreflight();
     }
 
     internal Task<WorkbookMaterializationResult> MaterializeAsync(
@@ -99,6 +107,237 @@ internal sealed class WorkbookMaterializer
             plan.NormalizeReferences,
             plan.GuardExistingTarget,
             cancellationToken);
+    }
+
+    internal async Task<ProjectInspectionResult> InspectAsync(
+        ProjectInspectionIntent intent,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(intent);
+        var context = intent.Context;
+        using var buildProfile = PrepareInspectionProfile(
+            context,
+            ProjectInspectionProfile.Build,
+            () => intent.SourceCapture.AdmitBuild(cancellationToken),
+            cancellationToken);
+        using var publishProfile = PrepareInspectionProfile(
+            context,
+            ProjectInspectionProfile.Publish,
+            () => intent.SourceCapture.AdmitPublish(
+                context.Document.CommonModules,
+                cancellationToken),
+            cancellationToken);
+        var profiles = new[] { buildProfile, publishProfile };
+        var activeProfiles = profiles
+            .Where(profile => profile.SourceSet is not null)
+            .ToArray();
+        if (activeProfiles.Length == 0)
+        {
+            return CompleteInspection(
+                profiles,
+                new ProjectInspectionResult(profiles.Select(GetInspectionResult).ToArray()),
+                stagedWorkbookPath: null);
+        }
+
+        string? stagedWorkbookPath = null;
+        try
+        {
+            if (!File.Exists(context.TemplateDocumentPath))
+            {
+                SetPendingInspectionResults(
+                    profiles,
+                    profile => new ProjectInspectionProfileResult(
+                        profile.Profile,
+                        ProjectInspectionStatus.Skip,
+                        $"The source template does not exist: {context.TemplateDocumentPath}."));
+                return CompleteInspection(
+                    profiles,
+                    new ProjectInspectionResult(profiles.Select(GetInspectionResult).ToArray()),
+                    stagedWorkbookPath);
+            }
+
+            stagedWorkbookPath = inspectionWorkbookStager(context.TemplateDocumentPath);
+            await workbookGenerationAutomation.RunAsync(
+                stagedWorkbookPath,
+                ResolveTimeouts(context),
+                async (session, operationCancellationToken) =>
+                {
+                    var projectName = await session
+                        .GetProjectNameAsync(operationCancellationToken)
+                        .ConfigureAwait(false);
+                    var modules = await session
+                        .GetModulesAsync(operationCancellationToken)
+                        .ConfigureAwait(false);
+                    var retainedModules = modules
+                        .Where(module => !module.Kind.IsImportable())
+                        .ToArray();
+                    var activeReferences = await session
+                        .GetReferencesAsync(operationCancellationToken)
+                        .ConfigureAwait(false);
+                    var desiredReferenceNames = context.Document.References
+                        .Select(reference => reference.Name)
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    var referencesKnownToRemain = activeReferences
+                        .Where(reference =>
+                            !reference.IsRemovable ||
+                            desiredReferenceNames.Contains(reference.Name))
+                        .ToArray();
+
+                    foreach (var profile in activeProfiles)
+                    {
+                        var initialLivePreflight = namePreflight.InspectLivePhase(
+                            profile.SourceSet!.SourceFiles,
+                            retainedModules,
+                            projectName,
+                            referencesKnownToRemain);
+                        try
+                        {
+                            namePreflight.ThrowIfFailed(
+                                profile.SourcePreflight!,
+                                initialLivePreflight);
+                        }
+                        catch (InvalidOperationException exception)
+                        {
+                            profile.Result = new ProjectInspectionProfileResult(
+                                profile.Profile,
+                                ProjectInspectionStatus.Fail,
+                                exception.Message);
+                        }
+                    }
+
+                    var profilesRequiringFinalInspection = activeProfiles
+                        .Where(profile => profile.Result is null)
+                        .ToArray();
+                    if (profilesRequiringFinalInspection.Length == 0)
+                    {
+                        return true;
+                    }
+
+                    foreach (var module in modules.Where(module => module.Kind.IsImportable()))
+                    {
+                        await session
+                            .RemoveModuleAsync(module.Name, operationCancellationToken)
+                            .ConfigureAwait(false);
+                    }
+
+                    await referenceNormalizer.NormalizeAsync(
+                            session,
+                            context.DocumentName,
+                            context.Document.References,
+                            operationCancellationToken)
+                        .ConfigureAwait(false);
+                    var finalProjectName = await session
+                        .GetProjectNameAsync(operationCancellationToken)
+                        .ConfigureAwait(false);
+                    var finalModules = await session
+                        .GetModulesAsync(operationCancellationToken)
+                        .ConfigureAwait(false);
+                    var finalReferences = await session
+                        .GetReferencesAsync(operationCancellationToken)
+                        .ConfigureAwait(false);
+                    foreach (var profile in profilesRequiringFinalInspection)
+                    {
+                        var finalLivePreflight = namePreflight.InspectLivePhase(
+                            profile.SourceSet!.SourceFiles,
+                            finalModules,
+                            finalProjectName,
+                            finalReferences);
+                        try
+                        {
+                            namePreflight.ThrowIfFailed(
+                                profile.SourcePreflight!,
+                                finalLivePreflight);
+                        }
+                        catch (InvalidOperationException exception)
+                        {
+                            profile.Result = new ProjectInspectionProfileResult(
+                                profile.Profile,
+                                ProjectInspectionStatus.Fail,
+                                exception.Message);
+                        }
+                    }
+
+                    return true;
+                },
+                cancellationToken).ConfigureAwait(false);
+
+            return CompleteInspection(
+                profiles,
+                new ProjectInspectionResult(profiles.Select(GetInspectionResult).ToArray()),
+                stagedWorkbookPath);
+        }
+        catch (WorkbookAutomationTimeoutException exception)
+        {
+            SetPendingInspectionResults(
+                profiles,
+                profile => new ProjectInspectionProfileResult(
+                    profile.Profile,
+                    ProjectInspectionStatus.Unverified,
+                    exception.Message));
+            return CompleteInspection(
+                profiles,
+                new ProjectInspectionResult(profiles.Select(GetInspectionResult).ToArray()),
+                stagedWorkbookPath);
+        }
+        catch (WorkbookAutomationCanceledException exception)
+        {
+            SetPendingInspectionResults(
+                profiles,
+                profile => new ProjectInspectionProfileResult(
+                    profile.Profile,
+                    ProjectInspectionStatus.Unverified,
+                    exception.Message));
+            return CompleteInspection(
+                profiles,
+                new ProjectInspectionResult(
+                    profiles.Select(GetInspectionResult).ToArray(),
+                    Complete: false,
+                    Canceled: true),
+                stagedWorkbookPath);
+        }
+        catch (WorkbookAutomationCleanupException exception)
+        {
+            SetPendingInspectionResults(
+                profiles,
+                profile => new ProjectInspectionProfileResult(
+                    profile.Profile,
+                    ProjectInspectionStatus.Unverified,
+                    exception.Message));
+            return CompleteInspection(
+                profiles,
+                new ProjectInspectionResult(
+                    profiles.Select(GetInspectionResult).ToArray(),
+                    Complete: false),
+                stagedWorkbookPath);
+        }
+        catch (InspectionStagingCleanupException exception)
+        {
+            SetPendingInspectionResults(
+                profiles,
+                profile => new ProjectInspectionProfileResult(
+                    profile.Profile,
+                    ProjectInspectionStatus.Fail,
+                    $"The disposable template could not be materialized: {exception.Message}"));
+            return CompleteInspection(
+                profiles,
+                new ProjectInspectionResult(
+                    profiles.Select(GetInspectionResult).ToArray(),
+                    Complete: false),
+                stagedWorkbookPath);
+        }
+        catch (Exception exception)
+        {
+            SetPendingInspectionResults(
+                profiles,
+                profile => new ProjectInspectionProfileResult(
+                    profile.Profile,
+                    ProjectInspectionStatus.Fail,
+                    $"The disposable template could not be materialized: {exception.Message}"));
+            return CompleteInspection(
+                profiles,
+                new ProjectInspectionResult(profiles.Select(GetInspectionResult).ToArray()),
+                stagedWorkbookPath);
+        }
     }
 
     private WorkbookMaterializationPlan CreatePlan(
@@ -160,6 +399,215 @@ internal sealed class WorkbookMaterializer
                 ? TimeSpan.FromSeconds(saveSeconds)
                 : baseTimeouts.WorkbookSave
         };
+    }
+
+    private InspectionProfile PrepareInspectionProfile(
+        ResolvedProjectContext context,
+        ProjectInspectionProfile profile,
+        Func<AdmittedVbaSourceSet> admitSources,
+        CancellationToken cancellationToken)
+    {
+        var result = new InspectionProfile(profile);
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var ordered = WorkbookSourcePlanner.OrderAdmittedSources(
+                context,
+                admitSources());
+            result.SourceSet = importSourceSetFactory.Create(ordered.Admission);
+            result.SourcePreflight = namePreflight.InspectSourcePhase(
+                result.SourceSet.SourceFiles);
+            namePreflight.ThrowIfFailed(result.SourcePreflight);
+        }
+        catch (OperationCanceledException)
+        {
+            result.Dispose();
+            throw;
+        }
+        catch (Exception exception)
+        {
+            try
+            {
+                result.Dispose();
+            }
+            catch (Exception cleanupError)
+            {
+                result.CleanupEvidence = cleanupError.Message;
+            }
+
+            result.Result = new ProjectInspectionProfileResult(
+                profile,
+                ProjectInspectionStatus.Fail,
+                exception.Message);
+        }
+
+        return result;
+    }
+
+    private static ProjectInspectionProfileResult GetInspectionResult(
+        InspectionProfile profile)
+        => profile.Result ?? new ProjectInspectionProfileResult(
+            profile.Profile,
+            ProjectInspectionStatus.Pass,
+            "The profile is conflict-free on a disposable template copy.");
+
+    private static void SetPendingInspectionResults(
+        IReadOnlyList<InspectionProfile> profiles,
+        Func<InspectionProfile, ProjectInspectionProfileResult> createResult)
+    {
+        foreach (var profile in profiles.Where(profile =>
+                     profile.SourceSet is not null && profile.Result is null))
+        {
+            profile.Result = createResult(profile);
+        }
+    }
+
+    private ProjectInspectionResult CompleteInspection(
+        IReadOnlyList<InspectionProfile> profiles,
+        ProjectInspectionResult result,
+        string? stagedWorkbookPath)
+    {
+        var sharedCleanupEvidence = new List<string>();
+        if (stagedWorkbookPath is not null)
+        {
+            try
+            {
+                inspectionWorkbookDeleter(stagedWorkbookPath);
+            }
+            catch (Exception cleanupError)
+            {
+                var absolutePath = Path.GetFullPath(stagedWorkbookPath);
+                sharedCleanupEvidence.Add(
+                    $"Disposable workbook cleanup could not be confirmed: {cleanupError.Message} " +
+                    $"The staging workbook may have been retained at the absolute path '{absolutePath}'.");
+            }
+        }
+
+        var profileCleanupEvidence = new Dictionary<InspectionProfile, IReadOnlyList<string>>();
+        foreach (var profile in profiles)
+        {
+            var evidence = new List<string>();
+            if (profile.CleanupEvidence is not null)
+            {
+                evidence.Add(profile.CleanupEvidence);
+            }
+
+            try
+            {
+                profile.Dispose();
+            }
+            catch (Exception cleanupError)
+            {
+                evidence.Add(cleanupError.Message);
+            }
+
+            if (evidence.Count > 0)
+            {
+                profileCleanupEvidence.Add(profile, evidence);
+            }
+        }
+
+        if (sharedCleanupEvidence.Count == 0 && profileCleanupEvidence.Count == 0)
+        {
+            return result;
+        }
+
+        foreach (var profile in profiles)
+        {
+            var cleanupEvidence = sharedCleanupEvidence
+                .Concat(profileCleanupEvidence.GetValueOrDefault(profile) ?? [])
+                .ToArray();
+            if (cleanupEvidence.Length == 0)
+            {
+                continue;
+            }
+
+            ApplyInspectionCleanupEvidence(profile, cleanupEvidence);
+        }
+
+        return new ProjectInspectionResult(
+            profiles.Select(GetInspectionResult).ToArray(),
+            Complete: false,
+            result.Canceled);
+    }
+
+    private static void ApplyInspectionCleanupEvidence(
+        InspectionProfile profile,
+        IReadOnlyList<string> cleanupEvidence)
+    {
+        var cleanupMessage = string.Join(" ", cleanupEvidence);
+        if (profile.Result is null)
+        {
+            profile.Result = new ProjectInspectionProfileResult(
+                profile.Profile,
+                ProjectInspectionStatus.Unverified,
+                cleanupMessage);
+        }
+        else
+        {
+            profile.Result = profile.Result with
+            {
+                Status = profile.Result.Status == ProjectInspectionStatus.Fail
+                    ? ProjectInspectionStatus.Fail
+                    : ProjectInspectionStatus.Unverified,
+                Message = $"{profile.Result.Message} {cleanupMessage}"
+            };
+        }
+    }
+
+    internal static string StageInspectionWorkbook(string templateWorkbookPath)
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            $"vba-dev-doctor-{Guid.NewGuid():N}");
+        return StageInspectionWorkbook(templateWorkbookPath, directory);
+    }
+
+    internal static string StageInspectionWorkbook(
+        string templateWorkbookPath,
+        string directory)
+    {
+        var stagedWorkbookPath = Path.Combine(
+            directory,
+            Path.GetFileName(templateWorkbookPath));
+        try
+        {
+            Directory.CreateDirectory(directory);
+            File.Copy(templateWorkbookPath, stagedWorkbookPath);
+            return stagedWorkbookPath;
+        }
+        catch (Exception stagingError)
+        {
+            try
+            {
+                if (Directory.Exists(directory))
+                {
+                    Directory.Delete(directory, recursive: true);
+                }
+            }
+            catch (Exception cleanupError)
+            {
+                throw new InspectionStagingCleanupException(
+                    $"{stagingError.Message} The failed Doctor staging directory could not be removed: '{directory}'.",
+                    new AggregateException(stagingError, cleanupError));
+            }
+
+            throw;
+        }
+    }
+
+    private static void DeleteInspectionWorkbook(string stagedWorkbookPath)
+    {
+        if (File.Exists(stagedWorkbookPath))
+        {
+            File.Delete(stagedWorkbookPath);
+        }
+
+        var directory = Path.GetDirectoryName(stagedWorkbookPath);
+        if (directory is not null && Directory.Exists(directory))
+        {
+            Directory.Delete(directory);
+        }
     }
 
     private async Task<WorkbookMaterializationResult> MaterializeCoreAsync(
@@ -462,6 +910,31 @@ internal sealed class WorkbookMaterializer
         IReadOnlyList<string> OutputWarnings,
         VbeImportVerificationReport VerificationReport,
         int ImportedSourceCount);
+
+    private sealed class InspectionProfile(ProjectInspectionProfile profile) : IDisposable
+    {
+        internal ProjectInspectionProfile Profile { get; } = profile;
+
+        internal VbeImportSourceSet? SourceSet { get; set; }
+
+        internal WorkbookMaterializationNamePreflightReport? SourcePreflight { get; set; }
+
+        internal ProjectInspectionProfileResult? Result { get; set; }
+
+        internal string? CleanupEvidence { get; set; }
+
+        public void Dispose()
+        {
+            var sourceSet = SourceSet;
+            SourceSet = null;
+            SourcePreflight = null;
+            sourceSet?.Dispose();
+        }
+    }
+
+    private sealed class InspectionStagingCleanupException(
+        string message,
+        Exception innerException) : Exception(message, innerException);
 
     private sealed record WorkbookMaterializationPlan(
         string DocumentName,

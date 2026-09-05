@@ -860,12 +860,13 @@ save and output commitment. This is not compile verification.
 _Avoid_: reference resolution, compile check, CommonModules consistency check
 
 **WorkbookMaterializer**:
-The internal sealed VbaDev operation owner for one closed
+The internal sealed VbaDev operation owner for the four closed write intents
 `WorkbookMaterializationIntent.ProjectBuild`,
 `WorkbookMaterializationIntent.Publish`,
 `WorkbookMaterializationIntent.SourceSnapshotBuild`, or
-`WorkbookMaterializationIntent.ExplicitImport` intent. `ProjectBuild` and
-`Publish` select their manifest-owned admitted sources. `SourceSnapshotBuild`
+`WorkbookMaterializationIntent.ExplicitImport`, and for the separate
+observational `ProjectInspectionIntent` used by project Doctor. `ProjectBuild`
+and `Publish` select their manifest-owned admitted sources. `SourceSnapshotBuild`
 consumes a command-owned `BuildSourceSnapshotCapture` and its immutable
 `VbaSourceAdmission` facts without rereading the persistent
 `DocumentSourceSet`, redetecting source encoding, or accepting consumer proof.
@@ -886,8 +887,22 @@ execution; public Build command output is unchanged. `TestCommand` owns
 subsequent execution and `SnapshotTestExecutionWorkspace` owns post-result
 artifact cleanup.
 
-Failure or cancellation before commitment disposes invocation-owned staging and
-does not replace the previous output. Commitment is attempted once.
+`InspectAsync(ProjectInspectionIntent)` consumes the `CapturedDoctorSourceSet`
+already fixed for one document by the Doctor pipeline and derives independent
+Build and Publish profiles without recapturing, rereading, or redetecting the
+encoding of caller source. If either profile can continue past source
+preflight and the source template is available, the materializer owns exactly
+one disposable source-template copy and one Excel automation session for that
+document and shares them across the viable profiles. Component removal,
+reference normalization, and final live authority inspection occur only in
+that unsaved copy. Inspection performs no source import or verification,
+workbook save, output transaction, or durable commit; after the session closes,
+the materializer removes its copy and reports any unconfirmed cleanup as
+incomplete inspection evidence.
+
+For write intents, failure or cancellation before commitment disposes
+invocation-owned staging and does not replace the previous output. Commitment
+is attempted once.
 `ExplicitImport` alone retains its existing read-only `FileShare.Read` target
 guard from target staging through owned Excel-process release, saved-staging
 validation, and the final cancellation fence, then releases it only for the
@@ -1344,8 +1359,10 @@ not diagnose native VBE debugging. Project Doctor uses one run-fixed ACP and one
 captured inventory, source, and paired-sidecar authority per document for source
 layout, installed CommonModules drift, and independent Build/Publish profiles.
 Failures remain attached to the affected facts or incomplete run, without
-rereads or fallback. It inspects disposable template copies without source
-import, workbook save, output commitment, or durable caller mutation.
+rereads or fallback. The Doctor adapter passes each existing capture to
+`WorkbookMaterializer.InspectAsync`, which owns at most one disposable copy and
+one Excel session per document and performs no source import, workbook save,
+output commitment, or durable caller mutation.
 Environment-only Doctor does not capture project sources or source ACP.
 _Avoid_: build, test run, repair command
 
@@ -5463,13 +5480,13 @@ Dev: "Should `WorkbookMaterializer` add general target locking, compare-and-swap
 Domain Expert: "No. Explicit import retains only its existing read-only `FileShare.Read` guard from target staging through Excel processing, owned-process release, saved-staging validation, and the final cancellation fence, then releases it for the synchronous atomic commit. That guard rejects writes during its protected interval but is not a compare-and-swap guarantee across the final release-to-commit gap. No intent reinspects admitted source, retries, adopts competing writes, or rolls back competing external changes. Keep the destination closed."
 
 Dev: "Does issue #347 move snapshot Build, explicit import, and Doctor into `WorkbookMaterializer`?"
-Domain Expert: "No. Issue #347 closes only ordinary `ProjectBuild` and `Publish`. At that boundary, snapshot Build, explicit import, and Doctor remained independently owned until their #348, #349, and #351 slices. Issue #348 subsequently migrated snapshot Build and the build stage of snapshot Test through `WorkbookMaterializationIntent.SourceSnapshotBuild`; issue #349 migrated explicit import through the distinct `WorkbookMaterializationIntent.ExplicitImport`. Doctor remains independently owned until issue #351."
+Domain Expert: "No. Issue #347 closes only ordinary `ProjectBuild` and `Publish`. At that boundary, snapshot Build, explicit import, and Doctor remained independently owned until their #348, #349, and #351 slices. Issue #348 subsequently migrated snapshot Build and the build stage of snapshot Test through `WorkbookMaterializationIntent.SourceSnapshotBuild`; issue #349 migrated explicit import through the distinct `WorkbookMaterializationIntent.ExplicitImport`; issue #351 migrated Doctor's observational workbook path through `InspectAsync(ProjectInspectionIntent)` without adding a fifth write intent."
 
 Dev: "Should a test-only or `'#ExcludePublish` module with a conflicting `ModuleIdentity` block `publish`?"
 Domain Expert: "No. `WorkbookMaterializationNamePreflight` evaluates the effective source set selected for that output profile. Build and build-before-test include test source and may fail, while publish ignores name defects confined to excluded source; Language Server validation and Doctor may still report project-source health independently. Structural failures that prevent the command from selecting a trustworthy flat source set remain command failures."
 
 Dev: "Should `vba-dev doctor` estimate materialization name compatibility from the manifest and registry alone?"
-Domain Expert: "No. For each document, use one disposable source-template copy to remove replaceable old components, normalize references, and inspect the actual final project, active-reference, and retained-component authority without importing or saving source. Evaluate build and publish source profiles separately; an authority gap or conflict fails the affected profile, while native VBE debugging remains the independent adapter Doctor's concern."
+Domain Expert: "No. Pass the document source already captured by the Doctor run to `WorkbookMaterializer.InspectAsync`. For each document with a viable profile, use one shared disposable source-template copy and Excel session to remove replaceable old components, normalize references, and inspect the actual final project, active-reference, and retained-component authority without importing, saving, or committing source. Evaluate build and publish source profiles separately; an authority gap or conflict fails the affected profile, while native VBE debugging remains the independent adapter Doctor's concern."
 
 Dev: "Should a name preflight stop at the first invalid source or namespace conflict?"
 Domain Expert: "No. Collect every conflict that the established authority can prove and fail the command once with a deterministic complete report. Group a source-to-source collision once, order groups by effective exported-source order, then list source or retained-component conflicts, the containing project, and active references; invalid source metadata prevents that document's Excel phase but does not stop Doctor from running independent diagnostics or checking other documents."

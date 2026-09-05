@@ -1,5 +1,6 @@
 using System.Text;
 using VbaDev.App.Build;
+using VbaDev.App.Projects;
 using VbaDev.App.References;
 using VbaDev.App.Workbooks;
 using VbaDev.Domain;
@@ -9,6 +10,389 @@ namespace VbaDev.Tests;
 
 public sealed class WorkbookMaterializerTests
 {
+    [Fact]
+    public async Task ProjectInspectionUsesOneDisposableSessionWithoutWritingAWorkbook()
+    {
+        using var temp = TempDirectory.Create();
+        var fixture = CreateProjectInspectionFixture(
+            temp,
+            [("Runtime.bas", "Attribute VB_Name = \"Runtime\"\r\n")]);
+        var events = new List<string>();
+        var materializer = CreatePipeline(
+            new RecordingWorkbookGenerationAutomation(events)
+            {
+                OnImport = _ => events.Add("import")
+            },
+            new ForbiddenTransactionFactory());
+
+        var result = await materializer.InspectAsync(
+            fixture.Intent,
+            CancellationToken.None);
+
+        Assert.Collection(
+            result.Profiles,
+            profile =>
+            {
+                Assert.Equal(ProjectInspectionProfile.Build, profile.Profile);
+                Assert.Equal(ProjectInspectionStatus.Pass, profile.Status);
+            },
+            profile =>
+            {
+                Assert.Equal(ProjectInspectionProfile.Publish, profile.Profile);
+                Assert.Equal(ProjectInspectionStatus.Pass, profile.Status);
+            });
+        Assert.Equal(1, events.Count(item => item == "open"));
+        Assert.DoesNotContain("import", events);
+        Assert.DoesNotContain("verify", events);
+        Assert.DoesNotContain("save", events);
+        Assert.Equal("original-workbook", File.ReadAllText(fixture.TemplatePath, Encoding.UTF8));
+        Assert.False(Directory.Exists(Path.GetDirectoryName(
+            fixture.Intent.Context.BinDocumentPath)));
+        Assert.False(Directory.Exists(Path.GetDirectoryName(
+            fixture.Intent.Context.PublishDocumentPath)));
+    }
+
+    [Fact]
+    public async Task ProjectInspectionKeepsBuildAndPublishSourceFailuresIndependent()
+    {
+        using var temp = TempDirectory.Create();
+        var fixture = CreateProjectInspectionFixture(
+            temp,
+            [
+                ("Runtime.bas", "Attribute VB_Name = \"CollisionName\"\r\n"),
+                ("TestOnly.bas", "Attribute VB_Name = \"collisionname\"\r\n")
+            ],
+            manifest => manifest.Documents["Book1"].CommonModules.Add(
+                new InstalledCommonModule(
+                    "TestOnly",
+                    "TestOnly.bas",
+                    Requested: true,
+                    TestOnly: true)));
+        var events = new List<string>();
+        var materializer = CreatePipeline(
+            new RecordingWorkbookGenerationAutomation(events),
+            new ForbiddenTransactionFactory());
+
+        var result = await materializer.InspectAsync(
+            fixture.Intent,
+            CancellationToken.None);
+
+        Assert.Collection(
+            result.Profiles,
+            build =>
+            {
+                Assert.Equal(ProjectInspectionProfile.Build, build.Profile);
+                Assert.Equal(ProjectInspectionStatus.Fail, build.Status);
+                Assert.Contains("CollisionName", build.Message, StringComparison.OrdinalIgnoreCase);
+            },
+            publish =>
+            {
+                Assert.Equal(ProjectInspectionProfile.Publish, publish.Profile);
+                Assert.Equal(ProjectInspectionStatus.Pass, publish.Status);
+            });
+        Assert.Equal(1, events.Count(item => item == "open"));
+        Assert.DoesNotContain("verify", events);
+        Assert.DoesNotContain("save", events);
+    }
+
+    [Fact]
+    public async Task ProjectInspectionPreservesProfileEvidenceWhenDisposableCleanupIsUncertain()
+    {
+        using var temp = TempDirectory.Create();
+        var fixture = CreateProjectInspectionFixture(
+            temp,
+            [
+                ("Runtime.bas", "Attribute VB_Name = \"CollisionName\"\r\n"),
+                ("TestOnly.bas", "Attribute VB_Name = \"collisionname\"\r\n")
+            ],
+            manifest => manifest.Documents["Book1"].CommonModules.Add(
+                new InstalledCommonModule(
+                    "TestOnly",
+                    "TestOnly.bas",
+                    Requested: true,
+                    TestOnly: true)));
+        var stagedWorkbookPath = Path.Combine(temp.Path, "retained", "Book1.xlsm");
+        var events = new List<string>();
+        var materializer = CreatePipeline(
+            new RecordingWorkbookGenerationAutomation(events),
+            new ForbiddenTransactionFactory(),
+            inspectionWorkbookStager: templatePath =>
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(stagedWorkbookPath)!);
+                File.Copy(templatePath, stagedWorkbookPath);
+                return stagedWorkbookPath;
+            },
+            inspectionWorkbookDeleter: _ =>
+                throw new IOException("The staged workbook remained locked."));
+
+        try
+        {
+            var result = await materializer.InspectAsync(
+                fixture.Intent,
+                CancellationToken.None);
+
+            Assert.False(result.Complete);
+            Assert.False(result.Canceled);
+            Assert.Collection(
+                result.Profiles,
+                build =>
+                {
+                    Assert.Equal(ProjectInspectionProfile.Build, build.Profile);
+                    Assert.Equal(ProjectInspectionStatus.Fail, build.Status);
+                    Assert.Contains("CollisionName", build.Message, StringComparison.OrdinalIgnoreCase);
+                },
+                publish =>
+                {
+                    Assert.Equal(ProjectInspectionProfile.Publish, publish.Profile);
+                    Assert.Equal(ProjectInspectionStatus.Unverified, publish.Status);
+                    Assert.Contains(stagedWorkbookPath, publish.Message, StringComparison.Ordinal);
+                });
+            Assert.True(File.Exists(stagedWorkbookPath));
+            Assert.Equal("original-workbook", File.ReadAllText(fixture.TemplatePath, Encoding.UTF8));
+        }
+        finally
+        {
+            if (Directory.Exists(Path.GetDirectoryName(stagedWorkbookPath)))
+            {
+                Directory.Delete(Path.GetDirectoryName(stagedWorkbookPath)!, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ProjectInspectionPreservesSourceFailureWhenItsMirrorCleanupIsUncertain()
+    {
+        using var temp = TempDirectory.Create();
+        var fixture = CreateProjectInspectionFixture(
+            temp,
+            [
+                ("Runtime.bas", "Attribute VB_Name = \"CollisionName\"\r\n"),
+                ("TestOnly.bas", "Attribute VB_Name = \"collisionname\"\r\n")
+            ],
+            manifest => manifest.Documents["Book1"].CommonModules.Add(
+                new InstalledCommonModule(
+                    "TestOnly",
+                    "TestOnly.bas",
+                    Requested: true,
+                    TestOnly: true)));
+        var events = new List<string>();
+        var sourceStagingPaths = new List<string>();
+        FileStream? lockedSource = null;
+        var materializer = CreatePipeline(
+            new RecordingWorkbookGenerationAutomation(events),
+            new ForbiddenTransactionFactory(),
+            new VbeImportSourceSetFactory(
+                () => throw new InvalidOperationException("Inspection requested ACP again."),
+                sourceSet =>
+                {
+                    sourceStagingPaths.Add(sourceSet.StagingPath);
+                    if (sourceStagingPaths.Count == 1)
+                    {
+                        lockedSource = File.Open(
+                            sourceSet.SourceFiles[0].SourcePath,
+                            FileMode.Open,
+                            FileAccess.Read,
+                            FileShare.None);
+                    }
+                }));
+
+        try
+        {
+            var result = await materializer.InspectAsync(
+                fixture.Intent,
+                CancellationToken.None);
+
+            Assert.False(result.Complete);
+            Assert.False(result.Canceled);
+            Assert.Collection(
+                result.Profiles,
+                build =>
+                {
+                    Assert.Equal(ProjectInspectionProfile.Build, build.Profile);
+                    Assert.Equal(ProjectInspectionStatus.Fail, build.Status);
+                    Assert.Contains("CollisionName", build.Message, StringComparison.OrdinalIgnoreCase);
+                    Assert.Contains(sourceStagingPaths[0], build.Message, StringComparison.Ordinal);
+                },
+                publish =>
+                {
+                    Assert.Equal(ProjectInspectionProfile.Publish, publish.Profile);
+                    Assert.Equal(ProjectInspectionStatus.Pass, publish.Status);
+                    Assert.DoesNotContain(sourceStagingPaths[0], publish.Message, StringComparison.Ordinal);
+                });
+            Assert.Equal(2, sourceStagingPaths.Count);
+            Assert.True(Directory.Exists(sourceStagingPaths[0]));
+            Assert.False(Directory.Exists(sourceStagingPaths[1]));
+            Assert.Equal(1, events.Count(item => item == "open"));
+            Assert.Equal("original-workbook", File.ReadAllText(fixture.TemplatePath, Encoding.UTF8));
+        }
+        finally
+        {
+            lockedSource?.Dispose();
+            foreach (var stagingPath in sourceStagingPaths.Where(Directory.Exists))
+            {
+                Directory.Delete(stagingPath, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ProjectInspectionIsIncompleteWhenFailedWorkbookStagingCannotBeRemoved()
+    {
+        using var temp = TempDirectory.Create();
+        var fixture = CreateProjectInspectionFixture(
+            temp,
+            [("Runtime.bas", "Attribute VB_Name = \"Runtime\"\r\n")]);
+        var stagingDirectory = Path.Combine(temp.Path, "retained-doctor-stage");
+        var stagedWorkbookPath = Path.Combine(
+            stagingDirectory,
+            Path.GetFileName(fixture.TemplatePath));
+        Directory.CreateDirectory(stagingDirectory);
+        File.WriteAllText(stagedWorkbookPath, "retained-stage", Encoding.UTF8);
+        var sourceStagingPaths = new List<string>();
+        var events = new List<string>();
+        var deleteAttempts = 0;
+        using var lockedWorkbook = File.Open(
+            stagedWorkbookPath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.None);
+        var materializer = CreatePipeline(
+            new RecordingWorkbookGenerationAutomation(events),
+            new ForbiddenTransactionFactory(),
+            new VbeImportSourceSetFactory(
+                () => throw new InvalidOperationException("Inspection requested ACP again."),
+                sourceSet => sourceStagingPaths.Add(sourceSet.StagingPath)),
+            inspectionWorkbookStager: templatePath =>
+                WorkbookMaterializer.StageInspectionWorkbook(
+                    templatePath,
+                    stagingDirectory),
+            inspectionWorkbookDeleter: _ => deleteAttempts++);
+
+        var result = await materializer.InspectAsync(
+            fixture.Intent,
+            CancellationToken.None);
+
+        Assert.False(result.Complete);
+        Assert.False(result.Canceled);
+        Assert.All(result.Profiles, profile =>
+        {
+            Assert.Equal(ProjectInspectionStatus.Fail, profile.Status);
+            Assert.Contains("could not be removed", profile.Message, StringComparison.Ordinal);
+            Assert.Contains(stagingDirectory, profile.Message, StringComparison.Ordinal);
+        });
+        Assert.Empty(events);
+        Assert.Equal(0, deleteAttempts);
+        Assert.True(File.Exists(stagedWorkbookPath));
+        Assert.Equal(2, sourceStagingPaths.Count);
+        Assert.All(sourceStagingPaths, path => Assert.False(Directory.Exists(path)));
+        Assert.Equal("original-workbook", File.ReadAllText(fixture.TemplatePath, Encoding.UTF8));
+    }
+
+    [Fact]
+    public async Task ProjectInspectionReturnsIncompleteEvidenceWhenExcelCleanupIsUncertain()
+    {
+        using var temp = TempDirectory.Create();
+        var fixture = CreateProjectInspectionFixture(
+            temp,
+            [("Runtime.bas", "Attribute VB_Name = \"Runtime\"\r\n")]);
+        var events = new List<string>();
+        var sourceStagingPaths = new List<string>();
+        var automation = new RecordingWorkbookGenerationAutomation(events)
+        {
+            AfterOperationError = new WorkbookAutomationCleanupException(
+                "The owned Excel process release could not be proved.")
+        };
+        var materializer = CreatePipeline(
+            automation,
+            new ForbiddenTransactionFactory(),
+            new VbeImportSourceSetFactory(
+                () => throw new InvalidOperationException("Inspection requested ACP again."),
+                sourceSet => sourceStagingPaths.Add(sourceSet.StagingPath)));
+
+        var result = await materializer.InspectAsync(
+            fixture.Intent,
+            CancellationToken.None);
+
+        Assert.False(result.Complete);
+        Assert.False(result.Canceled);
+        Assert.All(result.Profiles, profile =>
+        {
+            Assert.Equal(ProjectInspectionStatus.Unverified, profile.Status);
+            Assert.Contains("release could not be proved", profile.Message, StringComparison.Ordinal);
+        });
+        var stagedWorkbookPath = Assert.Single(automation.OpenedWorkbooks);
+        Assert.False(File.Exists(stagedWorkbookPath));
+        Assert.Equal(2, sourceStagingPaths.Count);
+        Assert.All(sourceStagingPaths, path => Assert.False(Directory.Exists(path)));
+        Assert.Equal("original-workbook", File.ReadAllText(fixture.TemplatePath, Encoding.UTF8));
+        Assert.DoesNotContain("import", events);
+        Assert.DoesNotContain("verify", events);
+        Assert.DoesNotContain("save", events);
+    }
+
+    [Fact]
+    public async Task ProjectInspectionPreservesConclusiveFailureWhenAutomationIsCanceled()
+    {
+        using var temp = TempDirectory.Create();
+        using var cancellation = new CancellationTokenSource();
+        var fixture = CreateProjectInspectionFixture(
+            temp,
+            [
+                ("Runtime.bas", "Attribute VB_Name = \"CollisionName\"\r\n"),
+                ("TestOnly.bas", "Attribute VB_Name = \"collisionname\"\r\n")
+            ],
+            manifest => manifest.Documents["Book1"].CommonModules.Add(
+                new InstalledCommonModule(
+                    "TestOnly",
+                    "TestOnly.bas",
+                    Requested: true,
+                    TestOnly: true)));
+        var events = new List<string>();
+        var sourceStagingPaths = new List<string>();
+        var automation = new RecordingWorkbookGenerationAutomation(events)
+        {
+            BeforeReturn = cancellation.Cancel,
+            AfterOperationError = new WorkbookAutomationCanceledException(
+                new WorkbookAutomationStage(WorkbookAutomationStageKind.ProcessCleanup),
+                cancellation.Token)
+        };
+        var materializer = CreatePipeline(
+            automation,
+            new ForbiddenTransactionFactory(),
+            new VbeImportSourceSetFactory(
+                () => throw new InvalidOperationException("Inspection requested ACP again."),
+                sourceSet => sourceStagingPaths.Add(sourceSet.StagingPath)));
+
+        var result = await materializer.InspectAsync(
+            fixture.Intent,
+            cancellation.Token);
+
+        Assert.False(result.Complete);
+        Assert.True(result.Canceled);
+        Assert.Collection(
+            result.Profiles,
+            build =>
+            {
+                Assert.Equal(ProjectInspectionProfile.Build, build.Profile);
+                Assert.Equal(ProjectInspectionStatus.Fail, build.Status);
+                Assert.Contains("CollisionName", build.Message, StringComparison.OrdinalIgnoreCase);
+            },
+            publish =>
+            {
+                Assert.Equal(ProjectInspectionProfile.Publish, publish.Profile);
+                Assert.Equal(ProjectInspectionStatus.Unverified, publish.Status);
+                Assert.Contains("cancelled", publish.Message, StringComparison.OrdinalIgnoreCase);
+            });
+        var stagedWorkbookPath = Assert.Single(automation.OpenedWorkbooks);
+        Assert.False(File.Exists(stagedWorkbookPath));
+        Assert.Equal(2, sourceStagingPaths.Count);
+        Assert.All(sourceStagingPaths, path => Assert.False(Directory.Exists(path)));
+        Assert.Equal("original-workbook", File.ReadAllText(fixture.TemplatePath, Encoding.UTF8));
+        Assert.DoesNotContain("import", events);
+        Assert.DoesNotContain("verify", events);
+        Assert.DoesNotContain("save", events);
+    }
+
     [Fact]
     public async Task GenerationUsesOneOwnedSessionAndCommitsOnlyAfterCleanupIsProved()
     {
@@ -1164,7 +1548,9 @@ public sealed class WorkbookMaterializerTests
         IWorkbookGenerationAutomation automation,
         IWorkbookOutputTransactionFactory? transactionFactory = null,
         VbeImportSourceSetFactory? importSourceSetFactory = null,
-        WorkbookAutomationTimeouts? baseTimeouts = null)
+        WorkbookAutomationTimeouts? baseTimeouts = null,
+        Func<string, string>? inspectionWorkbookStager = null,
+        Action<string>? inspectionWorkbookDeleter = null)
         => new(
             new WorkbookSourcePlanner(() => 65001),
             automation,
@@ -1173,12 +1559,64 @@ public sealed class WorkbookMaterializerTests
             transactionFactory ?? new WorkbookOutputTransactionFactory(),
             importSourceSetFactory ?? new VbeImportSourceSetFactory(
                 () => throw new InvalidOperationException("Import mirror requested ACP again.")),
-            baseTimeouts);
+            baseTimeouts,
+            inspectionWorkbookStager,
+            inspectionWorkbookDeleter);
+
+    private static ProjectInspectionFixture CreateProjectInspectionFixture(
+        TempDirectory temp,
+        IReadOnlyList<(string FileName, string Content)> sources,
+        Action<ProjectManifest>? configureManifest = null)
+    {
+        var projectRoot = temp.CreateDirectory($"Project-{Guid.NewGuid():N}");
+        var sourceDirectory = Path.Combine(projectRoot, "src", "Book1");
+        var templatePath = Path.Combine(sourceDirectory, "Book1.xlsm");
+        Directory.CreateDirectory(sourceDirectory);
+        File.WriteAllText(templatePath, "original-workbook", Encoding.UTF8);
+        foreach (var source in sources)
+        {
+            File.WriteAllText(
+                Path.Combine(sourceDirectory, source.FileName),
+                source.Content,
+                new UTF8Encoding(false));
+        }
+
+        var manifest = ProjectManifest.CreateDefault(
+            "Project",
+            "Book1",
+            projectRoot,
+            commonModulesRepositoryPath: null);
+        configureManifest?.Invoke(manifest);
+        var document = manifest.Documents["Book1"];
+        var context = new ResolvedProjectContext(
+            projectRoot,
+            Path.Combine(projectRoot, ProjectManifest.ManifestFileName),
+            manifest,
+            "Book1",
+            document,
+            sourceDirectory,
+            templatePath,
+            Path.Combine(projectRoot, "bin", "Book1.xlsm"),
+            Path.Combine(projectRoot, "publish", "Book1.xlsm"),
+            CommonModulesRepositoryPath: null);
+        var sourceCapture = new VbaSourceAdmission(() => 65001)
+            .BeginDoctorRun()
+            .CaptureDocument(sourceDirectory);
+        return new ProjectInspectionFixture(
+            new ProjectInspectionIntent(context, sourceCapture),
+            templatePath);
+    }
+
+    private sealed record ProjectInspectionFixture(
+        ProjectInspectionIntent Intent,
+        string TemplatePath);
 
     private sealed class RecordingWorkbookGenerationAutomation(
         List<string> events) : IWorkbookGenerationAutomation
     {
         public Action? BeforeReturn { get; init; }
+
+        public Exception? AfterOperationError { get; init; }
 
         public Action<VbeImportSourceFile>? OnImport { get; init; }
 
@@ -1191,6 +1629,8 @@ public sealed class WorkbookMaterializerTests
         { get; init; }
 
         public WorkbookAutomationTimeouts? Timeouts { get; private set; }
+
+        public List<string> OpenedWorkbooks { get; } = [];
 
         public List<ResolvedVbaProjectReference> AddedReferences { get; } = [];
 
@@ -1216,6 +1656,7 @@ public sealed class WorkbookMaterializerTests
             CancellationToken cancellationToken)
         {
             events.Add("open");
+            OpenedWorkbooks.Add(workbookPath);
             Timeouts = timeouts;
             var result = await operation(
                 new RecordingWorkbookGenerationSession(
@@ -1234,6 +1675,11 @@ public sealed class WorkbookMaterializerTests
                     OnReferenceProbe),
                 cancellationToken);
             BeforeReturn?.Invoke();
+            if (AfterOperationError is not null)
+            {
+                throw AfterOperationError;
+            }
+
             return result;
         }
     }
@@ -1404,6 +1850,15 @@ public sealed class WorkbookMaterializerTests
                 templateWorkbookPath,
                 targetWorkbookPath);
         }
+    }
+
+    private sealed class ForbiddenTransactionFactory : IWorkbookOutputTransactionFactory
+    {
+        public IWorkbookOutputTransaction Create(
+            string templateWorkbookPath,
+            string targetWorkbookPath)
+            => throw new InvalidOperationException(
+                "Project inspection must not create a committable output transaction.");
     }
 
     private sealed class ThrowingWorkbookGenerationAutomation(

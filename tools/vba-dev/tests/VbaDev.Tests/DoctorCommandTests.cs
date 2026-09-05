@@ -1191,6 +1191,56 @@ public sealed class DoctorCommandTests
     }
 
     [Fact]
+    public async Task DefaultCompositionRoutesDoctorThroughTheSharedWorkbookMaterializer()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateDoctorProjectWithoutRepository(temp);
+        var sourcePath = Path.Combine(root, "src", "Book1", "Runtime.bas");
+        var templatePath = Path.Combine(root, "src", "Book1", "Book1.xlsm");
+        var binPath = Path.Combine(root, "bin", "Book1.xlsm");
+        var publishPath = Path.Combine(root, "publish", "Book1.xlsm");
+        File.WriteAllText(
+            sourcePath,
+            "Attribute VB_Name = \"Runtime\"\r\n",
+            new UTF8Encoding(false));
+        File.WriteAllText(binPath, "existing-bin", Encoding.UTF8);
+        File.WriteAllText(publishPath, "existing-publish", Encoding.UTF8);
+        var sourceBytes = File.ReadAllBytes(sourcePath);
+        var templateBytes = File.ReadAllBytes(templatePath);
+        var binBytes = File.ReadAllBytes(binPath);
+        var publishBytes = File.ReadAllBytes(publishPath);
+        var automation = new SuccessfulEnvironmentWorkbookAutomation();
+        var composition = ToolingCompositionRoot.CreateApplicationComposition(
+            root,
+            environmentDiagnosticPort: new FakeEnvironmentDiagnosticPort(),
+            workbookGenerationAutomation: automation,
+            vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver());
+        var application = VbaDevCommandLine.Create(composition);
+
+        var result = await application.RunAsync(["doctor", "--format", "json"]);
+
+        Assert.Equal(0, result.ExitCode);
+        using var output = JsonDocument.Parse(result.StandardOutput);
+        var checks = output.RootElement.GetProperty("checks").EnumerateArray().ToArray();
+        foreach (var profile in new[] { "build", "publish" })
+        {
+            var check = Assert.Single(
+                checks,
+                candidate => candidate.GetProperty("id").GetString() ==
+                    $"project.workbookMaterialization/Book1/{profile}");
+            Assert.Equal("pass", check.GetProperty("status").GetString());
+        }
+
+        Assert.Equal(1, automation.RunCount);
+        Assert.NotEqual(templatePath, automation.WorkbookPath);
+        Assert.False(File.Exists(automation.WorkbookPath));
+        Assert.Equal(sourceBytes, File.ReadAllBytes(sourcePath));
+        Assert.Equal(templateBytes, File.ReadAllBytes(templatePath));
+        Assert.Equal(binBytes, File.ReadAllBytes(binPath));
+        Assert.Equal(publishBytes, File.ReadAllBytes(publishPath));
+    }
+
+    [Fact]
     public async Task DoctorEvaluatesBuildAndPublishNamePreflightProfilesIndependently()
     {
         using var temp = TempDirectory.Create();
@@ -1833,7 +1883,7 @@ public sealed class DoctorCommandTests
             templatePath =>
             {
                 File.Delete(templatePath);
-                return ExcelProjectMaterializationDiagnosticPort.StageTemplateWorkbook(
+                return WorkbookMaterializer.StageInspectionWorkbook(
                     templatePath,
                     stagingDirectory);
             },
@@ -1903,6 +1953,27 @@ public sealed class DoctorCommandTests
                 ["doctor", "--format", "json"]);
 
             Assert.Equal(1, result.ExitCode);
+            using var output = JsonDocument.Parse(result.StandardOutput);
+            Assert.False(output.RootElement.GetProperty("complete").GetBoolean());
+            var checks = output.RootElement.GetProperty("checks").EnumerateArray().ToArray();
+            var build = Assert.Single(
+                checks,
+                candidate => candidate.GetProperty("id").GetString() ==
+                    "project.workbookMaterialization/Book1/build");
+            Assert.Equal("unverified", build.GetProperty("status").GetString());
+            Assert.Contains(
+                stagingPaths[0],
+                build.GetProperty("message").GetString(),
+                StringComparison.Ordinal);
+            var publish = Assert.Single(
+                checks,
+                candidate => candidate.GetProperty("id").GetString() ==
+                    "project.workbookMaterialization/Book1/publish");
+            Assert.Equal("skipped", publish.GetProperty("status").GetString());
+            Assert.DoesNotContain(
+                stagingPaths[0],
+                publish.GetProperty("message").GetString(),
+                StringComparison.Ordinal);
             Assert.Equal(2, stagingPaths.Count);
             Assert.True(Directory.Exists(stagingPaths[0]));
             Assert.False(Directory.Exists(stagingPaths[1]));
@@ -2917,7 +2988,9 @@ public sealed class DoctorCommandTests
                         "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
                         3,
                         0)),
-                vbaProjectReferenceAmbiguityProbe: probe));
+                vbaProjectReferenceAmbiguityProbe: probe,
+                projectMaterializationDiagnosticPort:
+                    new DisabledProjectMaterializationDiagnosticPort()));
 
         var result = application.Run(["doctor"]);
 

@@ -12,6 +12,7 @@ public sealed class DisabledProjectMaterializationDiagnosticPort
     /// <inheritdoc />
     public Task<ProjectMaterializationDiagnosticRun> RunAsync(
         ResolvedProject project,
+        DoctorProjectSourceInspection sources,
         CancellationToken cancellationToken)
         => Task.FromResult(new ProjectMaterializationDiagnosticRun([]));
 }
