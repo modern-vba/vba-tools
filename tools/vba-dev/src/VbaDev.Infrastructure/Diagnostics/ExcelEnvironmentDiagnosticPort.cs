@@ -20,7 +20,7 @@ public sealed class ExcelEnvironmentDiagnosticPort : IEnvironmentDiagnosticPort
     /// </summary>
     public ExcelEnvironmentDiagnosticPort()
         : this(
-            new ExcelComWorkbookBuildAutomation(),
+            new ExcelComWorkbookGenerationAutomation(),
             ExcelBootstrapWorkbookFile.Create,
             ExcelBootstrapWorkbookFile.Delete,
             OperatingSystem.IsWindows)

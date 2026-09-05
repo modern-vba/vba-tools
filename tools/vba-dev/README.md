@@ -348,7 +348,14 @@ same BOM-or-ACP admission and shares one captured source authority across its
 source diagnostics and Build/Publish profiles. VbaDev independently admits bytes supplied by any caller; it neither
 requires nor reads an adapter, extension, editor state, or consumer proof.
 
-Before Excel starts, build stages every selected source, requires its authoritative exported module identity, and reports all case-insensitive source conflicts. In the disposable workbook it checks the actual project, retained-component, and active-reference namespaces, removes replaceable components, normalizes references, then checks the final protected and VBE-adopted reference identities again. Any authority gap or conflict fails before source import, save, or atomic output replacement and preserves the source template and previous output. Build-before-test uses this same profile and preflight.
+Before Excel starts, build stages every selected source, requires its authoritative exported module identity, and reports all case-insensitive source conflicts. In the disposable workbook it checks the actual project, retained-component, and active-reference namespaces, removes replaceable components, normalizes references, then checks the prepared protected and VBE-adopted reference identities before import. After imported components are verified, it re-enumerates the actual project, retained-component, and active-reference authority. A gap or conflict introduced by import fails before save or output commitment and preserves the source template and previous output. Build-before-test uses this same profile and preflight.
+
+After the owned Excel process has been released, the saved staging workbook must
+be readable and non-empty before the destination is replaced. This is not an
+Excel reopen, workbook-format validation, or compile check. Failure or
+cancellation before commitment preserves the previous output. VbaDev does not
+lock, compare-and-swap, retry, or roll back concurrent external destination
+changes; keep the destination closed while the command runs.
 
 Supplying `--source-snapshot` and `--output` together instead builds from that complete recursive source inventory without reading the persistent document source set. Snapshot builds preserve caller bytes in invocation scratch, reject filesystem-canonical output aliases to caller or manifest-owned inputs and outputs, and atomically replace only the selected caller output. Neither option is valid by itself.
 
@@ -401,7 +408,7 @@ Options:
 
 `publish` creates the publish workbook from the source template, normalizes manifest-defined VBA project references, recursively imports publishable source files, and writes the selected document's publish output. It uses the same flat file-name ordering and duplicate-source failure behavior as `build`. Publish excludes installed CommonModules whose project-manifest entries record `testOnly: true` and project-local source files whose first scanned lines contain `'#ExcludePublish`. Build and publish do not read the current CommonModules repository; they continue to trust retained manifest entries and sources when `orphaned` is `true`, while `doctor` owns repository consistency checks.
 
-Publish runs the same two-phase namespace preflight as build over only that publishable source profile. Identity defects confined to excluded `testOnly` or `'#ExcludePublish` source do not block publish, while duplicate flat file names and other structural profile-selection failures still do.
+Publish runs the same source and repeated live-authority checks as build over only that publishable source profile, including the post-import authority and released saved-staging gates. Identity defects confined to excluded `testOnly` or `'#ExcludePublish` source do not block publish, while duplicate flat file names and other structural profile-selection failures still do.
 
 Publish fixes ACP and one recursive inventory before selection, using the same
 supported-BOM and BOM-less ACP rules as [build](#build). Flat filename collisions

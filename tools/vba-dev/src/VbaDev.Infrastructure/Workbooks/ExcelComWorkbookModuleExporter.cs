@@ -14,7 +14,7 @@ public sealed class ExcelComWorkbookModuleExporter : IWorkbookModuleExporter
     /// Creates an exporter backed by the strongly owned Excel generation lifecycle.
     /// </summary>
     public ExcelComWorkbookModuleExporter()
-        : this(new ExcelComWorkbookBuildAutomation())
+        : this(new ExcelComWorkbookGenerationAutomation())
     {
     }
 

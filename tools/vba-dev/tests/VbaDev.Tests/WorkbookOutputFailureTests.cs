@@ -164,6 +164,114 @@ public sealed class WorkbookOutputFailureTests
         Assert.Empty(EnumerateOwnedStaging(project.SelectedOutputDirectory(commandName)));
     }
 
+    [Theory]
+    [InlineData("build", "project", "containing project 'Local'")]
+    [InlineData("build", "module", "actual retained component identity at index 0 is incomplete")]
+    [InlineData("build", "reference", "active reference 'Local'")]
+    [InlineData("publish", "project", "containing project 'Local'")]
+    [InlineData("publish", "module", "actual retained component identity at index 0 is incomplete")]
+    [InlineData("publish", "reference", "active reference 'Local'")]
+    public async Task FinalAuthorityChangedByImportPreventsSaveAndCommit(
+        string commandName,
+        string changedAuthority,
+        string expectedConflict)
+    {
+        using var temp = TempDirectory.Create();
+        var project = CreateProject(temp);
+        var automation = new ImportChangingWorkbookAuthorityAutomation(changedAuthority);
+        var command = CreateCommand(project.Context, automation);
+
+        var result = await RunAsync(
+            commandName,
+            command,
+            project.Context,
+            CancellationToken.None);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Contains(
+            expectedConflict,
+            result.StandardError,
+            StringComparison.Ordinal);
+        Assert.Equal(0, automation.SaveCalls);
+        Assert.Equal(
+            "previous-bin",
+            File.ReadAllText(project.Context.BinDocumentPath, Encoding.UTF8));
+        Assert.Equal(
+            "previous-publish",
+            File.ReadAllText(project.Context.PublishDocumentPath, Encoding.UTF8));
+        Assert.Empty(EnumerateOwnedStaging(project.SelectedOutputDirectory(commandName)));
+    }
+
+    [Theory]
+    [InlineData("build", "Built")]
+    [InlineData("publish", "Published")]
+    public async Task VerifiedImportedComponentIsExcludedFromRetainedAuthorityAndResultStaysStable(
+        string commandName,
+        string completedVerb)
+    {
+        using var temp = TempDirectory.Create();
+        var project = CreateProject(temp);
+        var automation = new ImportChangingWorkbookAuthorityAutomation("valid");
+        var command = CreateCommand(project.Context, automation);
+
+        var result = await RunAsync(
+            commandName,
+            command,
+            project.Context,
+            CancellationToken.None);
+
+        var selectedOutputPath = commandName == "build"
+            ? project.Context.BinDocumentPath
+            : project.Context.PublishDocumentPath;
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(
+            $"{completedVerb} {selectedOutputPath}{Environment.NewLine}" +
+            $"Imported 1 source files.{Environment.NewLine}",
+            result.StandardOutput);
+        Assert.Empty(result.StandardError);
+        Assert.Equal(1, automation.SaveCalls);
+        Assert.Equal("new-template", File.ReadAllText(selectedOutputPath, Encoding.UTF8));
+        Assert.Empty(EnumerateOwnedStaging(project.SelectedOutputDirectory(commandName)));
+    }
+
+    [Theory]
+    [InlineData("build", "empty", "saved staging workbook is empty")]
+    [InlineData("build", "missing", "saved staging workbook could not be read")]
+    [InlineData("publish", "empty", "saved staging workbook is empty")]
+    [InlineData("publish", "missing", "saved staging workbook could not be read")]
+    public async Task InvalidSavedStagingPreventsCommitAndPreservesPreviousOutput(
+        string commandName,
+        string invalidation,
+        string expectedError)
+    {
+        using var temp = TempDirectory.Create();
+        var project = CreateProject(temp);
+        var command = CreateCommand(
+            project.Context,
+            new InvalidatingSavedStagingAutomation(invalidation));
+
+        var result = await RunAsync(
+            commandName,
+            command,
+            project.Context,
+            CancellationToken.None);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Contains(
+            expectedError,
+            result.StandardError,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(
+            "previous-bin",
+            File.ReadAllText(project.Context.BinDocumentPath, Encoding.UTF8));
+        Assert.Equal(
+            "previous-publish",
+            File.ReadAllText(project.Context.PublishDocumentPath, Encoding.UTF8));
+        Assert.Empty(EnumerateOwnedStaging(project.SelectedOutputDirectory(commandName)));
+    }
+
     [Fact]
     public async Task PublishUsesItsIncludedCaptureWhenTheAuthoringSourceChangesBeforeStaging()
     {
@@ -247,11 +355,11 @@ public sealed class WorkbookOutputFailureTests
             Path.Combine(sourceDirectory, "Runtime.bas"),
             "Attribute VB_Name = \"Runtime\"",
             Encoding.UTF8);
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         var application = CommandLineTestFactory.Create(
             root,
             environmentDiagnosticPort: new ThrowingEnvironmentDiagnosticPort(),
-            workbookBuildAutomation: automation);
+            workbookGenerationAutomation: automation);
 
         var result = application.Run([commandName]);
 
@@ -270,7 +378,7 @@ public sealed class WorkbookOutputFailureTests
         var automation = new BlockingOpenWorkbookAutomation();
         var application = CommandLineTestFactory.Create(
             project.Context.ProjectRoot,
-            workbookBuildAutomation: automation);
+            workbookGenerationAutomation: automation);
         using var cancellation = new CancellationTokenSource();
         var invocation = Task.Run(
             () => application.RunAsync([commandName], cancellation.Token));
@@ -295,13 +403,14 @@ public sealed class WorkbookOutputFailureTests
         VbeImportSourceSetFactory? importSourceSetFactory = null,
         WorkbookSourcePlanner? sourcePlanner = null)
     {
-        var pipeline = new WorkbookGenerationPipeline(
+        var pipeline = new WorkbookMaterializer(
+            sourcePlanner ?? new WorkbookSourcePlanner(),
             automation,
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),
             transactionFactory ?? new WorkbookOutputTransactionFactory(),
             importSourceSetFactory ?? new VbeImportSourceSetFactory());
-        return new WorkbookOutputCommand(sourcePlanner ?? new WorkbookSourcePlanner(), pipeline);
+        return new WorkbookOutputCommand(pipeline);
     }
 
     private static Task<VbaDev.App.Cli.CommandResult> RunAsync(
@@ -380,6 +489,118 @@ public sealed class WorkbookOutputFailureTests
         }
     }
 
+    private sealed class ImportChangingWorkbookAuthorityAutomation(string changedAuthority)
+        : IWorkbookGenerationAutomation
+    {
+        public string ChangedAuthority { get; } = changedAuthority;
+
+        public int SaveCalls { get; private set; }
+
+        public Task<TResult> RunAsync<TResult>(
+            string workbookPath,
+            WorkbookAutomationTimeouts timeouts,
+            Func<IWorkbookGenerationSession, CancellationToken, Task<TResult>> operation,
+            CancellationToken cancellationToken)
+            => operation(new ImportChangingWorkbookAuthoritySession(this), cancellationToken);
+
+        private sealed class ImportChangingWorkbookAuthoritySession(
+            ImportChangingWorkbookAuthorityAutomation owner) : IWorkbookGenerationSession
+        {
+            private bool imported;
+
+            public Task<string> GetProjectNameAsync(CancellationToken cancellationToken)
+                => Task.FromResult(imported && owner.ChangedAuthority == "project"
+                    ? "Local"
+                    : "VbaProject");
+
+            public Task<IReadOnlyList<WorkbookModule>> GetModulesAsync(
+                CancellationToken cancellationToken)
+            {
+                if (owner.ChangedAuthority == "valid")
+                {
+                    return Task.FromResult<IReadOnlyList<WorkbookModule>>(imported
+                        ?
+                        [
+                            new WorkbookModule("Local", WorkbookModuleKind.StandardModule),
+                            new WorkbookModule("ThisWorkbook", WorkbookModuleKind.Document)
+                        ]
+                        : [new WorkbookModule("ThisWorkbook", WorkbookModuleKind.Document)]);
+                }
+
+                return Task.FromResult<IReadOnlyList<WorkbookModule>>(
+                    imported && owner.ChangedAuthority == "module"
+                        ? [new WorkbookModule(" ", WorkbookModuleKind.Document)]
+                        : []);
+            }
+
+            public Task<IReadOnlyList<WorkbookReference>> GetReferencesAsync(
+                CancellationToken cancellationToken)
+                => Task.FromResult<IReadOnlyList<WorkbookReference>>(
+                    imported && owner.ChangedAuthority == "reference"
+                        ? [new WorkbookReference("ChangedReference", true, "Local")]
+                        : []);
+
+            public Task<bool> RemoveReferenceAsync(
+                string referenceName,
+                CancellationToken cancellationToken)
+                => Task.FromResult(true);
+
+            public Task AddReferenceAsync(
+                ResolvedVbaProjectReference reference,
+                CancellationToken cancellationToken)
+                => Task.CompletedTask;
+
+            public Task RemoveModuleAsync(
+                string moduleName,
+                CancellationToken cancellationToken)
+                => Task.CompletedTask;
+
+            public Task ImportModuleAsync(
+                VbeImportSourceFile sourceFile,
+                CancellationToken cancellationToken)
+            {
+                imported = true;
+                return Task.CompletedTask;
+            }
+
+            public Task<VbeImportVerificationReport> VerifyAsync(
+                CancellationToken cancellationToken)
+                => Task.FromResult(VbeImportVerificationReport.Empty);
+
+            public Task SaveAsync(CancellationToken cancellationToken)
+            {
+                owner.SaveCalls++;
+                return Task.CompletedTask;
+            }
+        }
+    }
+
+    private sealed class InvalidatingSavedStagingAutomation(string invalidation)
+        : IWorkbookGenerationAutomation
+    {
+        public async Task<TResult> RunAsync<TResult>(
+            string workbookPath,
+            WorkbookAutomationTimeouts timeouts,
+            Func<IWorkbookGenerationSession, CancellationToken, Task<TResult>> operation,
+            CancellationToken cancellationToken)
+        {
+            var result = await operation(
+                    new EmptyWorkbookGenerationSession(),
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (invalidation == "missing")
+            {
+                File.Delete(workbookPath);
+            }
+            else
+            {
+                File.WriteAllBytes(workbookPath, []);
+            }
+
+            return result;
+        }
+    }
+
     private sealed class EmptyWorkbookGenerationSession : IWorkbookGenerationSession
     {
         public Task<string> GetProjectNameAsync(CancellationToken cancellationToken)
@@ -449,29 +670,23 @@ public sealed class WorkbookOutputFailureTests
             => throw new InvalidOperationException("Doctor must not run during build or publish.");
     }
 
-    private sealed class BlockingOpenWorkbookAutomation : IWorkbookBuildAutomation
+    private sealed class BlockingOpenWorkbookAutomation : IWorkbookGenerationAutomation
     {
         public TaskCompletionSource OpenStarted { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
         public bool ReceivedCancellationTokenCanBeCanceled { get; private set; }
 
-        public IWorkbookBuildSession OpenWorkbook(string workbookPath)
-            => throw new InvalidOperationException("The cancellable workbook-open overload was not used.");
-
-        public IWorkbookBuildSession OpenWorkbook(
+        public async Task<TResult> RunAsync<TResult>(
             string workbookPath,
+            WorkbookAutomationTimeouts timeouts,
+            Func<IWorkbookGenerationSession, CancellationToken, Task<TResult>> operation,
             CancellationToken cancellationToken)
         {
             ReceivedCancellationTokenCanBeCanceled = cancellationToken.CanBeCanceled;
             OpenStarted.TrySetResult();
-            if (!cancellationToken.WaitHandle.WaitOne(TimeSpan.FromSeconds(5)))
-            {
-                throw new TimeoutException("The CLI did not forward invocation cancellation.");
-            }
-
-            cancellationToken.ThrowIfCancellationRequested();
-            throw new InvalidOperationException("Cancellation was expected to stop workbook open.");
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            throw new InvalidOperationException("Cancellation was expected to stop workbook generation.");
         }
     }
 }

@@ -4,19 +4,19 @@ using VbaDev.Infrastructure.Debugging;
 
 namespace VbaDev.Infrastructure.Workbooks;
 
-public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGenerationAutomation
+public sealed class ExcelComWorkbookGenerationAutomation : IWorkbookGenerationAutomation
 {
     private readonly AutomationExcelProcessRuntime generationRuntime;
 
     /// <summary>
     /// Creates the production Excel COM workbook automation adapter.
     /// </summary>
-    public ExcelComWorkbookBuildAutomation()
+    public ExcelComWorkbookGenerationAutomation()
         : this(new AutomationExcelProcessRuntime())
     {
     }
 
-    internal ExcelComWorkbookBuildAutomation(
+    internal ExcelComWorkbookGenerationAutomation(
         IStaComDispatcherFactory generationDispatcherFactory,
         IExcelComWorkbookGenerationLifecycle generationLifecycle)
         : this(new AutomationExcelProcessRuntime(
@@ -25,7 +25,7 @@ public sealed partial class ExcelComWorkbookBuildAutomation : IWorkbookGeneratio
     {
     }
 
-    private ExcelComWorkbookBuildAutomation(AutomationExcelProcessRuntime generationRuntime)
+    private ExcelComWorkbookGenerationAutomation(AutomationExcelProcessRuntime generationRuntime)
     {
         this.generationRuntime = generationRuntime;
     }

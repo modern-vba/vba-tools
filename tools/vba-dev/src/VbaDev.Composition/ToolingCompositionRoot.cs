@@ -37,7 +37,7 @@ public static class ToolingCompositionRoot
     /// <param name="workingDirectory">The working directory used by path and project resolution.</param>
     /// <param name="environmentDiagnosticPort">The optional environment diagnostics adapter.</param>
     /// <param name="initialWorkbookCreator">The optional initial workbook creator adapter.</param>
-    /// <param name="workbookBuildAutomation">The optional workbook build automation adapter.</param>
+    /// <param name="workbookGenerationAutomation">The optional workbook generation automation adapter.</param>
     /// <param name="workbookTestRunner">The optional workbook test runner adapter.</param>
     /// <param name="workbookModuleExporter">The optional workbook module exporter adapter.</param>
     /// <param name="vbaProjectReferenceResolver">The optional VBA project reference resolver adapter.</param>
@@ -50,7 +50,7 @@ public static class ToolingCompositionRoot
         string workingDirectory,
         IEnvironmentDiagnosticPort? environmentDiagnosticPort = null,
         IInitialWorkbookCreator? initialWorkbookCreator = null,
-        IWorkbookBuildAutomation? workbookBuildAutomation = null,
+        IWorkbookGenerationAutomation? workbookGenerationAutomation = null,
         IWorkbookTestRunner? workbookTestRunner = null,
         IWorkbookModuleExporter? workbookModuleExporter = null,
         IVbaProjectReferenceResolver? vbaProjectReferenceResolver = null,
@@ -100,7 +100,7 @@ public static class ToolingCompositionRoot
         var referenceCompletionService = new VbaProjectReferenceCompletionService(
             projectContextResolver,
             referencePlanner);
-        var buildAutomation = workbookBuildAutomation ?? new ExcelComWorkbookBuildAutomation();
+        var generationAutomation = workbookGenerationAutomation ?? new ExcelComWorkbookGenerationAutomation();
         IReadOnlyList<IDoctorProjectDiagnosticProvider> staticProjectDiagnosticProviders =
         [
             new ProjectConfigurationDiagnosticProvider(),
@@ -129,10 +129,12 @@ public static class ToolingCompositionRoot
             mutationLeaseProvider,
             pathIdentityResolver);
         var sourcePlanner = new WorkbookSourcePlanner();
-        var generationPipeline = CreateWorkbookGenerationPipeline(
-            buildAutomation,
-            new WorkbookReferenceNormalizer(referencePlanner));
-        var workbookOutputCommand = new WorkbookOutputCommand(sourcePlanner, generationPipeline);
+        var materializer = new WorkbookMaterializer(
+            sourcePlanner,
+            generationAutomation,
+            new WorkbookReferenceNormalizer(referencePlanner),
+            new WorkbookOutputTransactionFactory());
+        var workbookOutputCommand = new WorkbookOutputCommand(materializer);
         var buildCommand = new BuildCommand(workbookOutputCommand, pathIdentityResolver);
         var publishCommand = new PublishCommand(workbookOutputCommand);
         var testCommand = new TestCommand(
@@ -144,7 +146,7 @@ public static class ToolingCompositionRoot
         var exportCommand = new ExportCommand(
             workbookModuleExporter ?? new ExcelComWorkbookModuleExporter(),
             exportDestinationFileOperations ?? new ExportDestinationFileOperations());
-        var importCommand = new ImportCommand(buildAutomation);
+        var importCommand = new ImportCommand(generationAutomation);
         var hostEventListCommand = new HostEventListCommand(
             hostEventCatalogAutomation ?? new ExcelComHostEventCatalogAutomation());
         return new ToolingApplicationComposition(
@@ -164,12 +166,6 @@ public static class ToolingCompositionRoot
             workingDirectory);
     }
 
-    private static WorkbookGenerationPipeline CreateWorkbookGenerationPipeline(
-        IWorkbookBuildAutomation buildAutomation,
-        WorkbookReferenceNormalizer referenceNormalizer)
-        => buildAutomation is IWorkbookGenerationAutomation generationAutomation
-            ? new WorkbookGenerationPipeline(generationAutomation, referenceNormalizer)
-            : new WorkbookGenerationPipeline(buildAutomation, referenceNormalizer);
 }
 
 /// <summary>

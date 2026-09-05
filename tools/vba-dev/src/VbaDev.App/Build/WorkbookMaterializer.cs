@@ -1,43 +1,33 @@
 using System.Runtime.ExceptionServices;
+using VbaDev.App.Projects;
 using VbaDev.App.Workbooks;
 using VbaDev.Domain;
 
 namespace VbaDev.App.Build;
 
 /// <summary>
-/// Generates workbook outputs by copying a template, normalizing references, and importing VBA source files.
+/// Materializes closed workbook output intents through one owned staging workflow.
 /// </summary>
-public sealed class WorkbookGenerationPipeline
+internal sealed class WorkbookMaterializer
 {
+    private readonly WorkbookSourcePlanner sourcePlanner;
     private readonly IWorkbookGenerationAutomation workbookGenerationAutomation;
     private readonly WorkbookReferenceNormalizer referenceNormalizer;
     private readonly IWorkbookOutputTransactionFactory transactionFactory;
     private readonly VbeImportSourceSetFactory importSourceSetFactory;
     private readonly WorkbookMaterializationNamePreflight namePreflight = new();
+    private readonly WorkbookMaterializationOutputValidator outputValidator = new();
 
     /// <summary>
-    /// Creates the workbook generation pipeline.
+    /// Creates the workbook materializer.
     /// </summary>
-    /// <param name="workbookBuildAutomation">The workbook automation port used to edit VBA projects.</param>
+    /// <param name="workbookGenerationAutomation">The workbook automation port used to edit VBA projects.</param>
     /// <param name="referenceNormalizer">The service that reconciles workbook references with manifest references.</param>
-    public WorkbookGenerationPipeline(
-        IWorkbookBuildAutomation workbookBuildAutomation,
-        WorkbookReferenceNormalizer referenceNormalizer)
-        : this(
-            new SynchronousWorkbookGenerationAutomation(workbookBuildAutomation),
-            referenceNormalizer,
-            new WorkbookOutputTransactionFactory(),
-            new VbeImportSourceSetFactory())
-    {
-    }
-
-    /// <summary>
-    /// Creates the pipeline over a strongly owned workbook generation adapter.
-    /// </summary>
-    public WorkbookGenerationPipeline(
+    internal WorkbookMaterializer(
         IWorkbookGenerationAutomation workbookGenerationAutomation,
         WorkbookReferenceNormalizer referenceNormalizer)
         : this(
+            new WorkbookSourcePlanner(),
             workbookGenerationAutomation,
             referenceNormalizer,
             new WorkbookOutputTransactionFactory(),
@@ -46,13 +36,15 @@ public sealed class WorkbookGenerationPipeline
     }
 
     /// <summary>
-    /// Creates the pipeline with an explicit atomic output transaction factory.
+    /// Creates the materializer with explicit collaborators.
     /// </summary>
-    public WorkbookGenerationPipeline(
+    internal WorkbookMaterializer(
+        WorkbookSourcePlanner sourcePlanner,
         IWorkbookGenerationAutomation workbookGenerationAutomation,
         WorkbookReferenceNormalizer referenceNormalizer,
         IWorkbookOutputTransactionFactory transactionFactory)
         : this(
+            sourcePlanner,
             workbookGenerationAutomation,
             referenceNormalizer,
             transactionFactory,
@@ -60,83 +52,92 @@ public sealed class WorkbookGenerationPipeline
     {
     }
 
-    internal WorkbookGenerationPipeline(
+    internal WorkbookMaterializer(
+        IWorkbookGenerationAutomation workbookGenerationAutomation,
+        WorkbookReferenceNormalizer referenceNormalizer,
+        IWorkbookOutputTransactionFactory transactionFactory,
+        VbeImportSourceSetFactory importSourceSetFactory)
+        : this(
+            new WorkbookSourcePlanner(),
+            workbookGenerationAutomation,
+            referenceNormalizer,
+            transactionFactory,
+            importSourceSetFactory)
+    {
+    }
+
+    internal WorkbookMaterializer(
+        WorkbookSourcePlanner sourcePlanner,
         IWorkbookGenerationAutomation workbookGenerationAutomation,
         WorkbookReferenceNormalizer referenceNormalizer,
         IWorkbookOutputTransactionFactory transactionFactory,
         VbeImportSourceSetFactory importSourceSetFactory)
     {
+        this.sourcePlanner = sourcePlanner;
         this.workbookGenerationAutomation = workbookGenerationAutomation;
         this.referenceNormalizer = referenceNormalizer;
         this.transactionFactory = transactionFactory;
         this.importSourceSetFactory = importSourceSetFactory;
     }
 
-    /// <summary>
-    /// Generates a target workbook from a template with the supplied references and source files.
-    /// </summary>
-    /// <param name="documentName">The manifest document name used in warnings.</param>
-    /// <param name="templateWorkbookPath">The workbook template to copy before import.</param>
-    /// <param name="targetWorkbookPath">The final workbook path to replace atomically where possible.</param>
-    /// <param name="desiredReferences">The manifest references that should remain in the workbook.</param>
-    /// <param name="sourceFiles">The VBA source files to import after removing importable modules.</param>
-    /// <returns>The generation warnings produced while preserving protected workbook references.</returns>
-    public WorkbookGenerationResult Generate(
-        string documentName,
-        string templateWorkbookPath,
-        string targetWorkbookPath,
-        IReadOnlyList<VbaProjectReference> desiredReferences,
-        IReadOnlyList<VbaSourceFile> sourceFiles)
-        => Generate(
-            documentName,
-            templateWorkbookPath,
-            targetWorkbookPath,
-            desiredReferences,
-            sourceFiles,
-            CancellationToken.None);
-
-    /// <summary>
-    /// Generates a target workbook while retaining the previous completed output until atomic replacement.
-    /// </summary>
-    public WorkbookGenerationResult Generate(
-        string documentName,
-        string templateWorkbookPath,
-        string targetWorkbookPath,
-        IReadOnlyList<VbaProjectReference> desiredReferences,
-        IReadOnlyList<VbaSourceFile> sourceFiles,
+    internal Task<WorkbookMaterializationResult> MaterializeAsync(
+        WorkbookMaterializationIntent intent,
         CancellationToken cancellationToken)
-        => GenerateAsync(
-                documentName,
-                templateWorkbookPath,
-                targetWorkbookPath,
-                desiredReferences,
-                sourceFiles,
-                WorkbookAutomationTimeouts.Default,
-                cancellationToken)
-            .GetAwaiter()
-            .GetResult();
+    {
+        ArgumentNullException.ThrowIfNull(intent);
+        var context = intent switch
+        {
+            WorkbookMaterializationIntent.ProjectBuild build => build.Context,
+            WorkbookMaterializationIntent.Publish publish => publish.Context,
+            _ => throw new ArgumentOutOfRangeException(nameof(intent), intent, null)
+        };
+        var targetWorkbookPath = intent switch
+        {
+            WorkbookMaterializationIntent.ProjectBuild => context.BinDocumentPath,
+            WorkbookMaterializationIntent.Publish => context.PublishDocumentPath,
+            _ => throw new ArgumentOutOfRangeException(nameof(intent), intent, null)
+        };
+        var timeouts = WorkbookAutomationTimeouts.Default with
+        {
+            WorkbookOpen = CommandDefaultResolver.ResolveWorkbookOpenTimeout(context.Manifest),
+            WorkbookSave = CommandDefaultResolver.ResolveWorkbookSaveTimeout(context.Manifest)
+        };
+        var sourceInput = intent switch
+        {
+            WorkbookMaterializationIntent.ProjectBuild =>
+                sourcePlanner.CaptureBuildSourceInput(context, cancellationToken),
+            WorkbookMaterializationIntent.Publish =>
+                sourcePlanner.CapturePublishSourceInput(context, cancellationToken),
+            _ => throw new ArgumentOutOfRangeException(nameof(intent), intent, null)
+        };
+        return MaterializeCoreAsync(
+            context.DocumentName,
+            context.TemplateDocumentPath,
+            targetWorkbookPath,
+            context.Document.References,
+            sourceInput,
+            timeouts,
+            cancellationToken);
+    }
 
-    /// <summary>
-    /// Generates and atomically commits a workbook through one bounded owned Excel process.
-    /// </summary>
-    public Task<WorkbookGenerationResult> GenerateAsync(
+    internal Task<WorkbookMaterializationResult> MaterializeCapturedSnapshotCompatibilityAsync(
         string documentName,
         string templateWorkbookPath,
         string targetWorkbookPath,
         IReadOnlyList<VbaProjectReference> desiredReferences,
-        IReadOnlyList<VbaSourceFile> sourceFiles,
+        IWorkbookGenerationSourceInput sourceInput,
         WorkbookAutomationTimeouts timeouts,
         CancellationToken cancellationToken)
-        => GenerateAsync(
+        => MaterializeCoreAsync(
             documentName,
             templateWorkbookPath,
             targetWorkbookPath,
             desiredReferences,
-            new BorrowedWorkbookGenerationSourceInput(sourceFiles),
+            sourceInput,
             timeouts,
             cancellationToken);
 
-    internal async Task<WorkbookGenerationResult> GenerateAsync(
+    private async Task<WorkbookMaterializationResult> MaterializeCoreAsync(
         string documentName,
         string templateWorkbookPath,
         string targetWorkbookPath,
@@ -231,12 +232,36 @@ public sealed class WorkbookGenerationPipeline
                         .ConfigureAwait(false)
                         ?? throw new InvalidOperationException(
                             "Workbook generation verification returned no verification report.");
+                    var committedProjectName = await session
+                        .GetProjectNameAsync(operationCancellationToken)
+                        .ConfigureAwait(false);
+                    var committedModules = await session
+                        .GetModulesAsync(operationCancellationToken)
+                        .ConfigureAwait(false);
+                    var importedComponentNames = importSourceSet.SourceFiles
+                        .Select(sourceFile => sourceFile.ImportVerification.ComponentName)
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    var committedRetainedModules = committedModules
+                        .Where(component => !importedComponentNames.Contains(component.Name))
+                        .ToArray();
+                    var committedReferences = await session
+                        .GetReferencesAsync(operationCancellationToken)
+                        .ConfigureAwait(false);
+                    var committedLivePreflight = namePreflight.InspectLivePhase(
+                        importSourceSet.SourceFiles,
+                        committedRetainedModules,
+                        committedProjectName,
+                        committedReferences);
+                    namePreflight.ThrowIfFailed(sourcePreflight, committedLivePreflight);
                     await session.SaveAsync(operationCancellationToken).ConfigureAwait(false);
                     return new WorkbookGenerationSessionResult(
                         result,
-                        verificationReport);
+                        verificationReport,
+                        importSourceSet.SourceFiles.Count);
                 },
                 cancellationToken).ConfigureAwait(false);
+
+            outputValidator.Validate(transaction.StagingWorkbookPath);
 
             var completedImportSourceSet = importSourceSet;
             importSourceSet = null;
@@ -265,7 +290,9 @@ public sealed class WorkbookGenerationPipeline
             completedTransaction.Dispose();
 
             // Commit is the success boundary. A later cancellation cannot turn replaced output into cancellation.
-            return new WorkbookGenerationResult(
+            return new WorkbookMaterializationResult(
+                Path.GetFullPath(targetWorkbookPath),
+                sessionResult.ImportedSourceCount,
                 sessionResult.OutputWarnings,
                 sessionResult.VerificationReport);
         }
@@ -389,16 +416,8 @@ public sealed class WorkbookGenerationPipeline
 
     private sealed record WorkbookGenerationSessionResult(
         IReadOnlyList<string> OutputWarnings,
-        VbeImportVerificationReport VerificationReport);
-
-    /// <summary>
-    /// Contains non-fatal warnings emitted while generating a workbook.
-    /// </summary>
-    /// <param name="Warnings">Existing warnings that should be included in command output.</param>
-    /// <param name="VerificationReport">Recasing warnings that should be emitted on standard error.</param>
-    public sealed record WorkbookGenerationResult(
-        IReadOnlyList<string> Warnings,
-        VbeImportVerificationReport VerificationReport);
+        VbeImportVerificationReport VerificationReport,
+        int ImportedSourceCount);
 
     private static void ThrowIfCanceled(
         CancellationToken cancellationToken,
