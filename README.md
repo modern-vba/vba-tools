@@ -404,6 +404,18 @@ Use build when you want a generated workbook for manual inspection or when a
 project has no unit tests. Close the target workbook before building so Excel
 can replace the generated output.
 
+An ordinary saved-source build captures the selected source files and form
+sidecars once. A supported UTF-8, UTF-16 LE, or UTF-16 BE BOM identifies the
+source encoding; files without a BOM use only the active Windows ANSI code page
+captured for that build. To use UTF-8 on a machine whose active code page is not
+65001, save the source with a UTF-8 BOM or convert it to that machine's active
+code page. All decoded text must still round-trip losslessly through the VBE's
+active code page. Invalid input fails before Excel starts and leaves the prior
+build output unchanged; build never rewrites source bytes to convert them.
+Changes made after capture apply to a later build. These rules also apply to
+the ordinary build stage of `vba-dev test`; source snapshots used by debugging
+and editor tests retain their separate encoding support.
+
 ### Debug in the VBE
 
 With the cursor in a parameterless public `Sub` in a standard module, press F5

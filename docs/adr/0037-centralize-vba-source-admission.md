@@ -7,8 +7,9 @@ status: accepted
 This decision introduces the source-admission boundary through the
 `ExplicitWorkbookImport` slice in issue #335. For explicit import, it supersedes
 the shared UTF-8-first source-decoding rule in ADR 0027 and the tool-local
-workbook-backed command model. Source ownership, VBE import verification, and
-owned Excel-process lifecycle contracts remain accepted.
+workbook-backed command model. Issue #339 extends that boundary to ordinary
+saved-source Build. Source ownership, VBE import verification, and owned
+Excel-process lifecycle contracts remain accepted.
 
 ## Explicit import admission
 
@@ -65,11 +66,48 @@ the synchronous atomic replacement. This protects the processing interval;
 it is not a persistent compare-and-swap guarantee across the final
 guard-release-to-replacement gap.
 
+## Ordinary Build admission
+
+Ordinary manifest-selected Build uses the closed `Build` intent of the same
+admission module. One invocation fixes ACP, the effective recursive source
+inventory, source bytes, and matching sidecars before source-only preflight or
+Excel startup. Identity, kind, syntax, Unicode, encoding provenance, and VBE
+projection consume those admitted facts; neither later checks nor import reopen
+the authoring sources. The VBE mirror uses the admitted ACP without another
+`GetACP` call and retains captured sidecar bytes exactly.
+
+Build retains its existing source-selection rules: installed CommonModules in
+manifest order, including test-only and orphaned entries, followed by remaining
+sources in case-insensitive filename order. A manifest entry whose source is
+absent does not add a new Build failure; Doctor retains its consistency checks.
+An empty Build source set remains valid, unlike ExplicitImport's empty-input
+rejection. Template and source-directory admission remain Build responsibilities.
+
+BOM-less Build source now uses only the captured ACP, including ACP 65001 as
+the canonical UTF-8 case. Supported BOMs, strict byte reproduction, and lossless
+VBE projection use the same rules as explicit import. Malformed source or a
+non-lossless projection fails before Excel and preserves existing output.
+
+Later edits, deletions, or additions to authoring paths cannot change the
+current admitted build. This is fixed-input ownership, not an atomic snapshot
+of concurrent authoring activity: a selected file that cannot be read fails
+capture. There is no retry, repeated inventory, closing stability check, or
+new authoring lock. Existing workbook staging, verification, cleanup, and output
+commitment remain unchanged, including cancellation before commitment and the
+authoritative successful result after commitment.
+
+Ordinary Test with BuildFirst already invokes ordinary BuildCommand, so its
+build stage receives the same admitted Build behavior. This does not introduce
+shared admission for test execution or result-location lookup, nor does it
+change `--no-build` navigation. It does not add a parallel legacy Build route.
+
 ## Rollout boundary
 
-Issue #335 changes only `ExplicitImport`. Ordinary build, publish,
-build-before-test, snapshot build and test, and Doctor retain their existing
-UTF-8-first decoding and capture paths until their own migration slices.
+Issue #335 introduced `ExplicitImport`; issue #339 adds ordinary Build and the
+ordinary Build stage reused by Test. Publish, snapshot build and test, and
+Doctor retain their existing UTF-8-first decoding and capture paths until
+their own migration slices. Test execution and result-location authority also
+remain on their existing paths.
 Their existing `VbeImportSourceSet` entry point remains responsible for that
 legacy admission behavior. The language server and snapshot producers also
 retain their current contracts. This decision does not claim that every
@@ -101,6 +139,8 @@ the same corpus without changing its ownership.
   have a supported BOM or be converted to that ACP by its author.
 - Explicit-import preflight, projection, verification, and diagnostics share
   one captured source authority even if caller files change afterward.
+- Ordinary Build shares the same admitted authority without adding a second
+  source inventory, ACP decision, or authoring-file read downstream.
 - The previous target survives failures during source admission, workbook
   mutation, verification, save, and owned-process release.
 - Other source workflows keep their released behavior during the staged

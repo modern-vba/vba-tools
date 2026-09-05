@@ -34,6 +34,9 @@ public sealed class VbeImportSourceSetFactory
     public VbeImportSourceSet Create(IReadOnlyList<VbaSourceFile> sourceFiles)
         => NotifyCreated(VbeImportSourceSet.Create(sourceFiles, getActiveCodePage()));
 
+    internal VbeImportSourceSet Create(AdmittedVbaSourceSet admission)
+        => NotifyCreated(VbeImportSourceSet.Create(admission));
+
     internal VbeImportSourceSet CreateExplicitImport(string sourceDirectory)
         => NotifyCreated(VbeImportSourceSet.Create(
             new VbaSourceAdmission(getActiveCodePage).Admit(

@@ -380,17 +380,18 @@ source and sidecars; dirty editor text follows `SnapshotSourceEncoding`.
 _Avoid_: debug session, source overlay, implicit editor integration
 
 **VbeImportSourceSet**:
-The invocation-owned VBE-facing mirror derived from a `DocumentSourceSet` or
-`BuildSourceSnapshot`, or from admitted `ExplicitWorkbookImport` facts, before
+The invocation-owned VBE-facing mirror derived from admitted ordinary Build or
+`ExplicitWorkbookImport` facts, or from other `DocumentSourceSet` and
+`BuildSourceSnapshot` materialization paths, before
 `VBComponents.Import`; text components strictly
 round-trip through the operation-fixed active Windows ANSI code page while
 `.frx` sidecars retain their exact bytes and relative pairing. An
 unrepresentable or best-fit-only character fails before Excel starts, and the
 mirror never changes caller-owned bytes and is removed with command scratch.
-For `ExplicitImport`, it consumes the admission's Unicode, fixed ACP, and
-captured sidecar bytes without calling `GetACP`, choosing a source encoding,
-or rereading caller files. Other materialization paths retain their existing
-UTF-8-first admission behavior until their own migration slices.
+For `ExplicitImport` and ordinary Build, it consumes the admission's Unicode,
+fixed ACP, and captured sidecar bytes without calling `GetACP`, choosing a source encoding,
+or rereading caller files. Publish and snapshot materialization retain their
+existing UTF-8-first admission behavior until their own migration slices.
 _Avoid_: source snapshot, persistent source conversion, lossy staging file
 
 **VbeImportVerification**:
@@ -741,7 +742,8 @@ _Avoid_: path-only import, ad hoc import, project import
 
 **VbaSourceAdmission**:
 The internal sealed module that captures source authority for one explicit
-import invocation. Its closed `ExplicitImport` intent fixes `GetACP` once,
+import or ordinary saved-source Build invocation. Its closed `ExplicitImport`
+and `Build` intents fix `GetACP` once,
 fixes one recursive inventory, and reads each selected text source and matching
 `.frx` once without retries or a closing stability check. Recognized UTF-8,
 UTF-16 LE, and UTF-16 BE BOMs select strict decoders; BOM-less source uses only
@@ -750,8 +752,12 @@ BOM-less UTF-8. Malformed or unsupported BOMs, strict-decoding failures, and
 inexact byte round trips fail closed. Immutable original bytes, Unicode,
 module identity and kind, syntax facts, deterministic order, sidecars, and
 provenance are shared by preflight, projection, verification, and diagnostics.
-Issue #335 introduces only explicit import: ordinary build, publish, snapshot,
-test, Doctor, and language-server admission remain on their existing paths.
+Build preserves CommonModules manifest order followed by remaining filenames,
+includes test-only and orphaned entries, and permits an empty source set.
+Issue #335 introduced explicit import and #339 adds ordinary Build, including
+the Build stage reused by ordinary Test. Publish, snapshot inputs, test execution
+and result-location authority, Doctor, and language-server admission remain on
+their existing paths.
 Snapshot capability versions remain `1.0`; later rollout is governed by
 ADR 0037.
 _Avoid_: public extension point, caller-composed decoding profile, mutable source cache
