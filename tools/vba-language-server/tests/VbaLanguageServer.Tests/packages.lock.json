@@ -101,9 +101,9 @@
       "vba-language-server": {
         "type": "Project",
         "dependencies": {
-          "OpenMcdf": "[3.1.4, )",
           "VbaDev.Domain": "[0.1.0, )",
           "VbaTools.ContentLengthFraming": "[1.0.0, )",
+          "VbaTools.ProjectMetadata": "[1.0.0, )",
           "VbaTools.Syntax": "[1.0.0, )",
           "VbaTools.TypeLibRegistry": "[0.1.0, )"
         }
@@ -116,6 +116,13 @@
       },
       "vbatools.contentlengthframing": {
         "type": "Project"
+      },
+      "vbatools.projectmetadata": {
+        "type": "Project",
+        "dependencies": {
+          "OpenMcdf": "[3.1.4, )",
+          "VbaTools.Syntax": "[1.0.0, )"
+        }
       },
       "vbatools.syntax": {
         "type": "Project"

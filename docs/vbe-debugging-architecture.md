@@ -72,6 +72,16 @@ those products. Other consumers may use an explicitly public VbaDev-owned
 non-command library, but command orchestration always uses the public process
 contract.
 
+The language server and debug adapter also consume the product-neutral
+`VbaTools.ProjectMetadata` foundation described in ADR 0040. One reader accepts
+caller-fixed package bytes and supplies immutable project and compilation
+facts under the same strict workbook topology, LCID, LCIDINVOKE, and LIBFLAGS
+rules. Its private implementation owns CFB and MS-OVBA parsing. The debug
+adapter still owns .xlsm file I/O and sharing, settings and setup-failure
+projection, and the exact VBA-part identity comparison around workbook open.
+The language server's whole-package identity and content fence remain separate;
+the metadata foundation performs neither file capture nor lifecycle checks.
+
 UserForm Event discovery is a separate extension-owned lifecycle and never runs
 through the debug adapter. Trusted activation asynchronously invokes the
 environment-scoped `vba-dev host-event list --format json` at most once, using

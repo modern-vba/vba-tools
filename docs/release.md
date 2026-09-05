@@ -253,8 +253,8 @@ After generation:
 ## Local Verification
 
 Run the normal client, C# devtool, debug-adapter, language-server, neutral
-syntax-core, cross-product integration, architecture-boundary, and packaging
-suite during development:
+syntax-core and project-metadata, cross-product integration,
+architecture-boundary, and packaging suites during development:
 
 ```powershell
 npm test
@@ -267,8 +267,9 @@ npm run verify:release
 ```
 
 This runs the client, Extension Host, C# unit, language-server, explicit neutral
-syntax core, cross-product integration, architecture-boundary, packaging, and
-compatibility suites, then republishes all three bundled executables and
+syntax-core and project-metadata, cross-product integration,
+architecture-boundary, packaging, and compatibility suites, then republishes
+all three bundled executables and
 verifies the planned VSIX. It intentionally does not opt in to real Excel
 automation; the real-Excel cross-product case is skipped.
 
@@ -278,6 +279,10 @@ product-neutral foundations into their consumers, including build-only
 references, assembly references, linked compile source, and product-contract
 imports. The neutral parser suite runs through `npm run test:syntax-core` from
 `tools/vba-syntax/tests/VbaTools.Syntax.Tests`.
+The strict package-metadata conformance suite runs independently through
+`npm run test:project-metadata` from
+`tools/vba-project-metadata/tests/VbaTools.ProjectMetadata.Tests`; products
+consume only its production module, not that test assembly or its helpers.
 
 After branch-level `npm test` and `npm run verify:release` pass, integrate the
 release preparation through the workflow in `CONTRIBUTING.md`. Use the normal

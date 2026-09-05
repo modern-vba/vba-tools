@@ -35,6 +35,17 @@ test('VbaDev cannot reference a language-server project', async (t) => {
     /VbaDev\.Domain\.csproj.*ProjectReference.*VbaLanguageServer\.Cli\.csproj/s);
 });
 
+test('project metadata remains a foundation even for build-order-only consumer references', async (t) => {
+  const metadata = 'tools/vba-project-metadata/src/VbaTools.ProjectMetadata/Metadata.csproj';
+  const root = await repository(t, {
+    [metadata]: projectReference(metadata, serverProject, 'ReferenceOutputAssembly="false"'),
+    [serverProject]: '<Project />'
+  });
+
+  await assert.rejects(verifyDependencyBoundaries({ root }),
+    /VbaTools\.ProjectMetadata must not depend on VbaLanguageServer/);
+});
+
 test('production and test owners cannot restore reverse or foundation-to-consumer references', async (t) => {
   for (const [from, to] of [
     ['tools/vba-dev/tests/VbaDev.Tests/Test.csproj', 'tools/vba-debug-adapter/tests/VbaDebugAdapter.Tests/Test.csproj'],

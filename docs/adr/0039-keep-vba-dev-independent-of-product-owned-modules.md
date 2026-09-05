@@ -46,6 +46,11 @@ owns its final private placement in the neutral workbook metadata reader.
 Moving syntax ownership does not broaden syntax into OOXML, CFB, or MS-OVBA
 metadata parsing.
 
+ADR 0040 completes that follow-up: `VbaTools.ProjectMetadata`, located outside
+the executable product trees, owns the private decompressor and shared strict
+package metadata reader. It is an explicitly designated neutral foundation,
+not a language-server or debug-adapter implementation dependency in disguise.
+
 A **CrossProductConformanceFixture** is a repository-neutral, data-only input:
 byte payloads, declarative metadata, and expected classifications or failures.
 Each product owns its loader, assertions, and lifecycle tests. `VbaDev` test

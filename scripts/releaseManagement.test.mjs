@@ -139,6 +139,8 @@ test('repository pins the release toolchain commands dependency updates and cura
     'tools/vba-language-server/src/VbaLanguageServer.Cli/VbaLanguageServer.Cli.csproj',
     'tools/vba-syntax/src/VbaTools.Syntax/VbaTools.Syntax.csproj',
     'tools/vba-syntax/tests/VbaTools.Syntax.Tests/VbaTools.Syntax.Tests.csproj',
+    'tools/vba-project-metadata/src/VbaTools.ProjectMetadata/VbaTools.ProjectMetadata.csproj',
+    'tools/vba-project-metadata/tests/VbaTools.ProjectMetadata.Tests/VbaTools.ProjectMetadata.Tests.csproj',
     'tools/vba-integration-tests/tests/VbaTools.Integration.Tests/VbaTools.Integration.Tests.csproj',
     'tools/vba-language-server/tests/VbaLanguageServer.Tests/VbaLanguageServer.Tests.csproj',
     'tools/vba-protocol-framing/src/VbaTools.ContentLengthFraming/VbaTools.ContentLengthFraming.csproj'
@@ -154,6 +156,7 @@ test('repository pins the release toolchain commands dependency updates and cura
     'tools/vba-debug-adapter/Directory.Build.props',
     'tools/vba-language-server/Directory.Build.props',
     'tools/vba-syntax/Directory.Build.props',
+    'tools/vba-project-metadata/Directory.Build.props',
     'tools/vba-integration-tests/Directory.Build.props',
     'tools/vba-protocol-framing/Directory.Build.props'
   ]) {

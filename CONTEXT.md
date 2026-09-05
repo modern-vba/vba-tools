@@ -1266,6 +1266,23 @@ _Avoid_: ProjectManifest.projectName, document name, workbook basename
 The immutable, request-scoped result of statically reading one exact captured source-template package. It binds the whole-package content identity to the `PROJECTNAME` value decoded with `PROJECTCODEPAGE` from the MS-OVBA directory stream inside the unique OPC `vbaProject.bin` part and its CFB `VBA` storage. It starts neither Excel nor VBIDE, persists no cache, and never falls back to a manifest label, document or file name, generated workbook, reference qualifier, or environment Event catalog metadata. Missing, unreadable, malformed, encrypted, subject to unsupported protection, otherwise unsupported, or changed evidence is unavailable; a manifest-backed module Rename then fails with `analysisIncomplete`, and an unconditional final content fence prevents an edit when the package changes after capture.
 _Avoid_: environment Event catalog, cached project name, manifest identity
 
+**VbaProjectPackageMetadata**:
+The product-neutral immutable facts read from one caller-fixed supported
+macro-enabled workbook package: project name, declared code page, system kind,
+case-insensitive project constants, and the exact VBA project part content
+identity. One bounded reader owns strict OPC topology, CFB VBA/dir access,
+private MS-OVBA decompression, and project-information validation for both the
+language server and debug adapter. LCID and LCIDINVOKE are 0x0409, LIBFLAGS is
+zero, and constant names have the supported 255-character limit. PROJECTNAME
+retains its separate 1..128 encoded-byte rule and supported non-identifier
+values. The module performs no filesystem I/O, source recapture, content fence,
+or product-specific error projection; cancellation is authoritative before
+admission and result publication. The language server owns its whole-package
+identity and final fence, while the debug adapter owns file sharing and the
+generated/opened-workbook comparison. Neither substitutes a part digest for a
+whole-package identity. There is no product-selectable parsing policy.
+_Avoid_: source snapshot, filesystem identity, syntax parser, debug settings DTO
+
 **VbaDocumentIdentity**:
 The opaque equality identity of one language-server source document, represented
 by a canonical local full path for a file URI or by the stable normalized URI
