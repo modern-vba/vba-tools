@@ -13,6 +13,7 @@ public sealed class WorkbookSourcePlanner
     private const int PublishMarkerScanLineLimit = 32;
     private const string PublishExclusionMarker = "'#ExcludePublish";
     private readonly Func<int> getActiveCodePage;
+    private readonly VbaSourceAdmission sourceAdmission;
 
     /// <summary>
     /// Creates a source planner that uses the active Windows code page for strict marker decoding.
@@ -26,6 +27,31 @@ public sealed class WorkbookSourcePlanner
     {
         this.getActiveCodePage = getActiveCodePage
             ?? throw new ArgumentNullException(nameof(getActiveCodePage));
+        sourceAdmission = new VbaSourceAdmission(getActiveCodePage);
+    }
+
+    internal WorkbookSourcePlanner(VbaSourceAdmission sourceAdmission)
+        : this(ActiveWindowsAnsiCodePage.Get)
+    {
+        this.sourceAdmission = sourceAdmission ?? throw new ArgumentNullException(nameof(sourceAdmission));
+    }
+
+    internal AdmittedWorkbookGenerationSourceInput CaptureBuildSourceInput(
+        ResolvedProjectContext context,
+        CancellationToken cancellationToken)
+    {
+        ValidateSourcePaths(context, requireTemplate: true);
+        var admission = sourceAdmission.Admit(context.DocumentSourceSetPath, VbaSourceAdmissionIntent.Build, cancellationToken);
+        var sourcesByName = admission.Sources.ToDictionary(source => source.FileName, StringComparer.OrdinalIgnoreCase);
+        var ordered = OrderSourceFiles(
+            context,
+            admission.Sources.Select(source => new VbaSourceFile(source.SourcePath, source.Kind, source.BinaryPath)),
+            includeCommonModule: _ => true,
+            selectProjectLocalSource: source => source);
+        return new(new AdmittedVbaSourceSet(
+            admission.Intent,
+            admission.ActiveCodePage,
+            ordered.Select(source => sourcesByName[source.FileName])));
     }
 
     /// <summary>
@@ -86,6 +112,18 @@ public sealed class WorkbookSourcePlanner
         Func<InstalledCommonModule, bool> includeCommonModule,
         Func<VbaSourceFile, VbaSourceFile?> selectProjectLocalSource)
     {
+        ValidateSourcePaths(context, requireTemplate);
+        var discoveredSourceFiles = DocumentSourceSetLayout
+            .EnumerateVbaSourceFiles(context.DocumentSourceSetPath)
+            .ToArray();
+
+        DocumentSourceSetLayout.ThrowIfDuplicateSourceFileNames(context.DocumentSourceSetPath, discoveredSourceFiles);
+
+        return OrderSourceFiles(context, discoveredSourceFiles, includeCommonModule, selectProjectLocalSource);
+    }
+
+    private static void ValidateSourcePaths(ResolvedProjectContext context, bool requireTemplate)
+    {
         if (requireTemplate && !File.Exists(context.TemplateDocumentPath))
         {
             throw new BuildCommandException($"Template workbook was not found: {context.TemplateDocumentPath}");
@@ -95,13 +133,14 @@ public sealed class WorkbookSourcePlanner
         {
             throw new BuildCommandException($"Document source set was not found: {context.DocumentSourceSetPath}");
         }
+    }
 
-        var discoveredSourceFiles = DocumentSourceSetLayout
-            .EnumerateVbaSourceFiles(context.DocumentSourceSetPath)
-            .ToArray();
-
-        DocumentSourceSetLayout.ThrowIfDuplicateSourceFileNames(context.DocumentSourceSetPath, discoveredSourceFiles);
-
+    private static IReadOnlyList<VbaSourceFile> OrderSourceFiles(
+        ResolvedProjectContext context,
+        IEnumerable<VbaSourceFile> discoveredSourceFiles,
+        Func<InstalledCommonModule, bool> includeCommonModule,
+        Func<VbaSourceFile, VbaSourceFile?> selectProjectLocalSource)
+    {
         var sourceFilesByName = discoveredSourceFiles
             .ToDictionary(source => source.FileName, StringComparer.OrdinalIgnoreCase);
 

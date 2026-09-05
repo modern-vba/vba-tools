@@ -45,8 +45,9 @@ public sealed class WorkbookOutputCommand
         => RunAsyncCore(
             context,
             profile,
-            () => new BorrowedWorkbookGenerationSourceInput(
-                profile.ResolveSourceFiles(sourcePlanner, context)),
+            () => ReferenceEquals(profile, WorkbookOutputProfile.Build)
+                ? sourcePlanner.CaptureBuildSourceInput(context, cancellationToken)
+                : new BorrowedWorkbookGenerationSourceInput(profile.ResolveSourceFiles(sourcePlanner, context)),
             () => profile.ResolveTargetDocumentPath(context),
             cancellationToken);
 

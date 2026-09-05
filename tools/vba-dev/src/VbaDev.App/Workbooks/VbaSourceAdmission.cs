@@ -6,11 +6,12 @@ namespace VbaDev.App.Workbooks;
 
 internal enum VbaSourceAdmissionIntent
 {
-    ExplicitImport
+    ExplicitImport,
+    Build
 }
 
 /// <summary>
-/// Captures one explicit import's authoring bytes and immutable source facts.
+/// Captures one operation's authoring bytes and immutable source facts.
 /// </summary>
 internal sealed class VbaSourceAdmission
 {
@@ -47,14 +48,19 @@ internal sealed class VbaSourceAdmission
         this.readAllBytes = readAllBytes ?? File.ReadAllBytes;
     }
 
-    internal AdmittedVbaSourceSet Admit(string sourceDirectory, VbaSourceAdmissionIntent intent)
+    internal AdmittedVbaSourceSet Admit(
+        string sourceDirectory,
+        VbaSourceAdmissionIntent intent,
+        CancellationToken cancellationToken = default)
     {
-        if (intent != VbaSourceAdmissionIntent.ExplicitImport)
+        if (intent is not VbaSourceAdmissionIntent.ExplicitImport and not VbaSourceAdmissionIntent.Build)
         {
             throw new ArgumentOutOfRangeException(nameof(intent));
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         var activeCodePage = getActiveCodePage();
+        cancellationToken.ThrowIfCancellationRequested();
         var encoding = CreateStrictActiveEncoding(activeCodePage);
         var root = Path.GetFullPath(sourceDirectory);
         if (File.Exists(root))
@@ -67,7 +73,9 @@ internal sealed class VbaSourceAdmission
             throw new InvalidOperationException($"Import source directory was not found: {root}");
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         var paths = inventory(root).Select(Path.GetFullPath).ToArray();
+        cancellationToken.ThrowIfCancellationRequested();
         var sidecars = paths
             .Where(path => Path.GetExtension(path).Equals(".frx", StringComparison.OrdinalIgnoreCase))
             .ToLookup(SidecarIdentity, StringComparer.OrdinalIgnoreCase);
@@ -82,7 +90,7 @@ internal sealed class VbaSourceAdmission
                         .FirstOrDefault()
                     : null))
             .ToArray();
-        if (sources.Length == 0)
+        if (sources.Length == 0 && intent == VbaSourceAdmissionIntent.ExplicitImport)
         {
             throw new InvalidOperationException($"No importable VBA source files were found in: {root}");
         }
@@ -91,7 +99,9 @@ internal sealed class VbaSourceAdmission
         var admitted = new List<AdmittedVbaSource>(sources.Length);
         foreach (var source in sources.OrderBy(source => source.FileName, StringComparer.OrdinalIgnoreCase))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var bytes = ImmutableArray.CreateRange(readAllBytes(source.SourcePath));
+            cancellationToken.ThrowIfCancellationRequested();
             var decoded = Decode(bytes, encoding, activeCodePage, source.SourcePath);
             var text = decoded.Text;
             var syntax = VbaSyntaxTree.ParseModule(new Uri(source.SourcePath).AbsoluteUri, text);
@@ -103,9 +113,11 @@ internal sealed class VbaSourceAdmission
                     $"VBA source '{source.SourcePath}' declares component kind '{projectedKind}' instead of expected '{source.Kind}'.");
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             var binaryBytes = source.BinaryPath is null
                 ? (ImmutableArray<byte>?)null
                 : ImmutableArray.CreateRange(readAllBytes(source.BinaryPath));
+            cancellationToken.ThrowIfCancellationRequested();
             admitted.Add(new AdmittedVbaSource(
                 source.SourcePath,
                 source.Kind,
@@ -119,6 +131,7 @@ internal sealed class VbaSourceAdmission
                 VbeModuleIdentityMetadataReader.Read(text, source.Kind)));
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         return new AdmittedVbaSourceSet(intent, activeCodePage, admitted);
     }
 

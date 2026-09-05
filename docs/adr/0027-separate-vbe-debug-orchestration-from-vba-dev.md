@@ -112,14 +112,17 @@ BOM-less UTF-8, then the strict fixed ACP; a byte sequence valid as both uses
 UTF-8 rather than failing as ambiguous. DAP text entries additionally have
 their declared encoding token revalidated before materialization.
 
-ADR 0037 supersedes that source-decoding rule only for `ExplicitWorkbookImport`
-in issue #335. Its internal `VbaSourceAdmission` fixes ACP and one inventory,
+ADR 0037 supersedes that source-decoding rule for `ExplicitWorkbookImport`
+in issue #335 and ordinary saved-source Build in issue #339. Its internal
+`VbaSourceAdmission` fixes ACP and one inventory,
 reads each selected text source and sidecar once, and admits BOM-marked Unicode
 or BOM-less fixed-ACP text without a UTF-8 probe. Preflight, projection,
 verification, and diagnostics share the immutable admitted facts. Its
 `VbeImportSourceSet` consumes those facts without obtaining ACP again, detecting
-an encoding, or rereading caller files. Ordinary, snapshot, and Doctor paths
-retain their existing behavior, and snapshot capabilities remain version `1.0`.
+an encoding, or rereading caller files. Ordinary Test's existing BuildFirst call
+uses that same Build stage. Publish, snapshot inputs, test execution/result
+locations, and Doctor retain their existing behavior, and snapshot capabilities
+remain version `1.0`.
 
 Every path must decode and re-encode to its original bytes before deriving its
 VBE mirror. `VbaDev` then strict-encodes
@@ -133,10 +136,11 @@ base name. The original `DocumentSourceSet`, caller-owned
 invocation owns and removes only the staged import copy with its other internal
 scratch.
 
-After importing each component and before saving the workbook, `VbaDev` derives
-the reusable `VbaCodeModuleProjection` from the strict-decoded Unicode source
-and verifies the imported component name, component kind, line count, and every
-projected `CodeModule` line exactly. The projection excludes export-only
+Before import, `VbaDev` derives the reusable `VbaCodeModuleProjection` from the
+strict-decoded Unicode source. After importing each component and before saving
+the workbook, it uses that projection to verify the imported component name,
+component kind, line count, and every projected `CodeModule` line exactly.
+The projection excludes export-only
 serialization records: a class module's `VERSION` and `BEGIN`/`END` header,
 `Attribute` records, a UserForm's designer block, and the synthetic physical
 line that only represents a terminal newline. It also models the one known

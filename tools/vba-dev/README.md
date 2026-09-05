@@ -320,6 +320,24 @@ Options:
 
 `build` creates the bin workbook from the source template, normalizes manifest-defined VBA project references, recursively imports source files, and writes the selected document's bin output. Project-local source files are imported after CommonModules dependency ordering, sorted by extension-including exported file name. Duplicate `.bas`, `.cls`, or `.frm` file names fail before source import. `.frx` files are not imported or validated independently.
 
+An ordinary saved-source build fixes the active Windows ANSI code page and one
+recursive source inventory, then captures each selected source and matching
+form sidecar once. A supported UTF-8, UTF-16 LE, or UTF-16 BE BOM selects that
+strict decoder; BOM-less source uses only the fixed ACP, including UTF-8 when
+ACP is 65001. There is no BOM-less UTF-8 probe. On another ACP, UTF-8 source
+needs a BOM or author-controlled conversion to that ACP. Malformed or unsupported
+BOMs, invalid bytes, inexact byte round trips, and non-lossless VBE projection
+fail before Excel starts and preserve the previous output.
+
+Preflight, import, and verification use the same captured Unicode, identity,
+encoding provenance, and sidecar bytes without reopening authoring files.
+Changes after capture cannot affect the current build. This does not guarantee
+an atomic snapshot of concurrent authoring changes: an unreadable selected file
+fails capture, and build neither retries nor rewrites source files. Empty source
+sets remain valid. The ordinary build stage of `test` uses these same rules;
+Publish, source-snapshot inputs, and Doctor retain their separate admission
+paths. Snapshot capability versions remain `1.0`.
+
 Before Excel starts, build stages every selected source, requires its authoritative exported module identity, and reports all case-insensitive source conflicts. In the disposable workbook it checks the actual project, retained-component, and active-reference namespaces, removes replaceable components, normalizes references, then checks the final protected and VBE-adopted reference identities again. Any authority gap or conflict fails before source import, save, or atomic output replacement and preserves the source template and previous output. Build-before-test uses this same profile and preflight.
 
 Supplying `--source-snapshot` and `--output` together instead builds from that complete recursive source inventory without reading the persistent document source set. Snapshot builds preserve caller bytes in invocation scratch, reject filesystem-canonical output aliases to caller or manifest-owned inputs and outputs, and atomically replace only the selected caller output. Neither option is valid by itself.
@@ -421,7 +439,7 @@ Import fixes the active Windows ANSI code page once. A UTF-8, UTF-16 LE, or UTF-
 
 Close the target workbook before import and keep it closed until the command finishes. Import holds the original target against writes and deletion while processing a private copy. Before flushing any component, it requires authoritative incoming module identities and compares them case-insensitively with the copy's actual `VBProject.Name`, active `Reference.Name` values, and retained document-module names. Existing standard modules, class modules, and forms are then replaced; document modules such as `ThisWorkbook` and worksheet modules remain. The target is atomically replaced only after source-mirror cleanup, imported-component verification, private workbook save, and release of the owned Excel process succeed. Any earlier failure or cancellation leaves the target bytes unchanged. If private artifacts cannot be removed, the error reports their retained paths.
 
-These encoding rules apply to explicit `import`. Ordinary build, publish, snapshot build and test, and Doctor retain their existing source-decoding behavior. Snapshot capability contracts remain version `1.0`.
+These encoding rules apply to explicit `import` and ordinary saved-source `build`, including the ordinary build stage of `test`. Publish, snapshot build and test, and Doctor retain their existing source-decoding behavior. Snapshot capability contracts remain version `1.0`.
 
 Unlike `build`, `import` does not add, remove, or normalize manifest-defined references, does not resolve CommonModules dependencies, does not interpret `'#ExcludePublish`, and does not validate whether the workbook compiles.
 
