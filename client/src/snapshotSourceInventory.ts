@@ -55,12 +55,14 @@ export interface MaterializedCallerOwnedSourceSnapshot {
 
 export type SnapshotSourceInventoryCapture = (
   sourceSetPath: string,
-  cancellationToken?: SnapshotCaptureCancellationToken | undefined
+  cancellationToken?: SnapshotCaptureCancellationToken | undefined,
+  activeWindowsCodePage?: number
 ) => Promise<SnapshotSourceInventory>;
 
 export type CallerOwnedSourceSnapshotCapture = (
   sourceSetPath: string,
-  cancellationToken?: SnapshotCaptureCancellationToken | undefined
+  cancellationToken?: SnapshotCaptureCancellationToken | undefined,
+  activeWindowsCodePage?: number
 ) => Promise<MaterializedCallerOwnedSourceSnapshot>;
 
 interface CapturedDirtySource {
@@ -164,9 +166,10 @@ export function createCallerOwnedSourceSnapshotCapture(
 ): CallerOwnedSourceSnapshotCapture {
   return async (
     sourceSetPath,
-    cancellationToken = uncancelledSnapshotCaptureToken
+    cancellationToken = uncancelledSnapshotCaptureToken,
+    activeWindowsCodePage
   ) => materializeSnapshotSourceInventory(
-    await captureSourceInventory(sourceSetPath, cancellationToken),
+    await captureSourceInventory(sourceSetPath, cancellationToken, activeWindowsCodePage),
     host,
     cancellationToken);
 }
@@ -281,10 +284,8 @@ async function readCleanSource(
     return { bytes };
   }
 
+  rejectUnsupportedPreamble(bytes, filePath);
   const bom = detectBom(bytes);
-  if (bom === 'utf32le' || bom === 'utf32be') {
-    throw new Error(`Clean VBA source uses unsupported UTF-32 encoding: ${filePath}`);
-  }
   if (bom !== undefined) {
     const encoding = bom === 'utf8' ? 'utf8bom' : bom;
     if (await hasExactRoundTrip(host, bytes, encoding)) {
@@ -293,17 +294,12 @@ async function readCleanSource(
     throw new Error(`Clean VBA source could not round-trip its recognized ${encoding} bytes: ${filePath}`);
   }
 
-  if (await hasExactRoundTrip(host, bytes, 'utf8')) {
-    return { bytes, encoding: 'utf8' };
-  }
-
   const activeEncoding = activeCodePageEditorEncoding(activeWindowsCodePage);
   if (
     activeEncoding !== undefined
-    && activeEncoding !== 'utf8'
     && await hasExactRoundTrip(host, bytes, activeEncoding)
   ) {
-    return { bytes, encoding: `windows-${activeWindowsCodePage}` };
+    return { bytes, encoding: activeWindowsCodePage === 65001 ? 'utf8' : `windows-${activeWindowsCodePage}` };
   }
 
   throw new Error(`Clean VBA source could not round-trip its original bytes: ${filePath}`);
@@ -391,6 +387,7 @@ function validateDirtyEncodingBytes(
   bytes: Uint8Array
 ): void {
   const encoding = source.encoding.toLowerCase();
+  rejectUnsupportedPreamble(bytes, source.filePath);
   const bom = detectBom(bytes);
   if (encoding === 'utf8' && bom !== undefined) {
     throw new Error(
@@ -414,17 +411,29 @@ function validateDirtyEncodingBytes(
   }
 }
 
+function rejectUnsupportedPreamble(bytes: Uint8Array, filePath: string): void {
+  const unsupported = [
+    [0xff, 0xfe, 0x00, 0x00], [0x00, 0x00, 0xfe, 0xff],
+    [0x2b, 0x2f, 0x76, 0x38], [0x2b, 0x2f, 0x76, 0x39],
+    [0x2b, 0x2f, 0x76, 0x2b], [0x2b, 0x2f, 0x76, 0x2f]
+  ];
+  if (unsupported.some(preamble => preamble.every((value, index) => bytes[index] === value))) {
+    throw new Error(`VBA source uses an unsupported UTF-32 or UTF-7 signature: ${filePath}`);
+  }
+  const supported = [[0xef, 0xbb, 0xbf], [0xff, 0xfe], [0xfe, 0xff]];
+  const hasSupportedBom = supported.some(preamble => preamble.every((value, index) => bytes[index] === value));
+  if (bytes.length > 0 && !hasSupportedBom
+      && [...supported, ...unsupported].some(preamble => bytes.length < preamble.length
+        && bytes.every((value, index) => preamble[index] === value))) {
+    throw new Error(`VBA source has a truncated Unicode signature: ${filePath}`);
+  }
+}
+
 function detectBom(
   bytes: Uint8Array
-): 'utf8' | 'utf16le' | 'utf16be' | 'utf32le' | 'utf32be' | undefined {
+): 'utf8' | 'utf16le' | 'utf16be' | undefined {
   if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
     return 'utf8';
-  }
-  if (bytes[0] === 0xff && bytes[1] === 0xfe && bytes[2] === 0x00 && bytes[3] === 0x00) {
-    return 'utf32le';
-  }
-  if (bytes[0] === 0x00 && bytes[1] === 0x00 && bytes[2] === 0xfe && bytes[3] === 0xff) {
-    return 'utf32be';
   }
   if (bytes[0] === 0xff && bytes[1] === 0xfe) {
     return 'utf16le';
@@ -440,6 +449,10 @@ function validateDirtyEditorEncoding(
   activeWindowsCodePage: number
 ): void {
   const encoding = source.encoding.toLowerCase();
+  if (encoding === 'utf8' && activeWindowsCodePage !== 65001) {
+    throw new Error(
+      `Dirty VBA source editor encoding 'utf8' does not match active Windows code page ${activeWindowsCodePage}: ${source.filePath}`);
+  }
   if (
     encoding === 'utf8'
     || encoding === 'utf8bom'

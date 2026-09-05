@@ -166,7 +166,8 @@ public sealed class TestCommandTests
         var sourcePath = Path.Combine(snapshotPath, "Encoded.bas");
         var source = "Attribute VB_Name = \"Test_Café\"\r\nPublic Sub Test_Passes()\r\nEnd Sub\r\n";
         File.WriteAllBytes(sourcePath, Encoding.GetEncoding(1252).GetBytes(source));
-        var locator = new TestProcedureSourceLocator(() => 1252);
+        var admission = new VbaSourceAdmission(() => 1252).Admit(snapshotPath, VbaSourceAdmissionIntent.Build);
+        var locator = new TestProcedureSourceLocator();
         var result = new TestResultRecord(
             "Book1",
             "Test_Café",
@@ -175,6 +176,7 @@ public sealed class TestCommandTests
             "");
 
         var located = Assert.Single(locator.LocateSnapshot(
+            admission,
             snapshotPath,
             persistentPath,
             [result]));

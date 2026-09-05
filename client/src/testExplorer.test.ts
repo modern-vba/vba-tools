@@ -39,6 +39,29 @@ test('Test Explorer excludes standalone VBA files outside project manifests', as
   assert.deepEqual(controller.items, []);
 });
 
+test('snapshot Test rejects an old adapter before capture or CLI invocation', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const controller = new FakeTestController();
+  let captures = 0;
+  const calls: Array<{ file: string; args: readonly string[] }> = [];
+  const explorer = createExplorer(controller, {
+    manifests: new Map([[path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]]),
+    calls,
+    adapterProtocol: '1.1',
+    captureSourceSnapshot: async () => {
+      captures += 1;
+      return { directoryPath: path.join('C:', 'temp', 'snapshot'), cleanup: async () => ({}) };
+    }
+  });
+  await explorer.refresh();
+
+  await explorer.run({ include: [controller.items[0]] }, uncancelledToken());
+
+  assert.equal(captures, 0);
+  assert.equal(calls.some(call => call.args[0] === 'test'), false);
+  assert.ok(controller.runs[0].events.some(event => event.startsWith('errored:')));
+});
+
 test('Running a project node invokes vba-dev test ndjson with explicit project root', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const calls: Array<{ file: string; args: readonly string[] }> = [];
@@ -2065,6 +2088,7 @@ function createExplorer(
     errorMessages?: string[];
     vbaDevResolver?: Parameters<typeof createWorkbookBackedTestExplorer>[0]['vbaDevResolver'];
     requireTrustedWorkspace?: () => Promise<boolean>;
+    adapterProtocol?: string;
   }
 ) {
   const calls = options.calls ?? [];
@@ -2073,8 +2097,15 @@ function createExplorer(
     captureSourceSnapshot?: TestCaptureSourceSnapshot;
   } = {
     controller,
-    extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
+    extensionRoot: path.resolve(__dirname, '..', '..'),
     configuredDevToolPath: path.join('D:', 'tools', 'vba-dev.exe'),
+    configuredDebugAdapterPath: path.join('D:', 'tools', 'vba-debug-adapter.exe'),
+    requiredDebugAdapterContract: {
+      contractVersion: '1.0', protocolVersion: '2.0', transports: ['stdio'],
+      sessionIdFormat: 'lowercase-hex-32', commands: ['cleanup', 'doctor'],
+      commandSchemaVersions: { doctor: '1.0' }, featureVersions: { 'doctor.stdinCancellation': '1.0' },
+      requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0' }
+    },
     vbaDevResolver: options.vbaDevResolver,
     requireTrustedWorkspace: options.requireTrustedWorkspace,
     workspaceRoots: [path.join('C:', 'work')],
@@ -2088,13 +2119,27 @@ function createExplorer(
       return manifest;
     }),
     capabilitiesProcess: async (file, args) => {
+      if (file.endsWith('vba-debug-adapter.exe')) {
+        return {
+          stdout: JSON.stringify({
+            toolVersion: '0.1.0', contractVersion: '1.0', protocolVersion: options.adapterProtocol ?? '2.0',
+            transports: ['stdio'], sessionIdFormat: 'lowercase-hex-32', commands: ['cleanup', 'doctor'],
+            commandSchemaVersions: { doctor: '1.0' }, featureVersions: { 'doctor.stdinCancellation': '1.0' },
+            requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0' }
+          }),
+          stderr: ''
+        };
+      }
       calls.push({ file, args });
       return {
         stdout: JSON.stringify({
           toolVersion: '0.1.0',
           contractVersion: '1.0',
           featureVersions: {
-            'test.sourceSnapshot': '1.0'
+            'test.sourceSnapshot': '2.0',
+            'build.sourceSnapshot': '2.0',
+            'sourceSnapshot.activeWindowsCodePage': '1.0',
+            ...(options.vbaDevResolver === undefined ? {} : { 'invocation.stdinCancellation': '1.0' })
           },
           activeWindowsCodePage: 932,
           commands: {
@@ -2112,7 +2157,9 @@ function createExplorer(
     requiredContract: {
       contractVersion: '1.0',
       featureVersions: {
-        'test.sourceSnapshot': '1.0'
+        'test.sourceSnapshot': '2.0',
+        'build.sourceSnapshot': '2.0',
+        'sourceSnapshot.activeWindowsCodePage': '1.0'
       },
       commandSchemaVersions: {
         test: '1.2'

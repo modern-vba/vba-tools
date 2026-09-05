@@ -1,6 +1,6 @@
 {
   "contractVersion": "1.0",
-  "protocolVersion": "1.1",
+  "protocolVersion": "2.0",
   "transports": [
     "stdio"
   ],
@@ -16,6 +16,6 @@
     "doctor.stdinCancellation": "1.0"
   },
   "requiredVbaDevFeatureVersions": {
-    "build.sourceSnapshot": "1.0"
+    "build.sourceSnapshot": "2.0"
   }
 }

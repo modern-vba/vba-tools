@@ -45,7 +45,7 @@ test('F5 from one active exported VBA source resolves a zero-configuration sourc
     document: 'Book1',
     __vbaDebugWorkbookFileName: 'Book1.xlsm',
     sourceSnapshot: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [transportedTextSource(path.dirname(sourcePath), sourcePath, sourceText)],
       activeSource: {
         sourceUri: pathToFileURL(sourcePath).href,
@@ -64,7 +64,7 @@ test('F5 transports an unsaved captured source as persistent base64 bytes', asyn
   const sourcePath = path.join(sourceSetPath, 'DebugModule.bas');
   const sourceUri = pathToFileURL(sourcePath).href;
   const bytes = new TextEncoder().encode('Public Sub RunTarget()\r\nEnd Sub\r\n');
-  const integration = new VscodeDebugIntegration({
+  const integration = fixtureIntegration({
     extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
     getConfiguredDevToolPath: () => undefined,
     debugConfigurationHost: {
@@ -96,7 +96,7 @@ test('F5 transports an unsaved captured source as persistent base64 bytes', asyn
     document: 'Book1',
     __vbaDebugWorkbookFileName: 'Book1.xlsm',
     sourceSnapshot: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [{
         relativePath: 'DebugModule.bas',
         sourceUri,
@@ -114,7 +114,7 @@ test('debug launch refuses a host without immutable source inventory capture', a
   const manifestPath = path.join(projectRoot, 'vba-project.json');
   const sourcePath = path.join(projectRoot, 'src', 'Book1', 'DebugModule.bas');
   let sourceHostWasTouched = false;
-  const integration = new VscodeDebugIntegration({
+  const integration = fixtureIntegration({
     extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
     getConfiguredDevToolPath: () => undefined,
     debugConfigurationHost: {
@@ -166,7 +166,7 @@ test('transported snapshot paths use portable raw UTF-16 ordinal order', async (
   const nestedSourcePath = path.join(sourceSetPath, 'a', 'b.bas');
   const dottedISourcePath = path.join(sourceSetPath, 'İ.bas');
   const jSourcePath = path.join(sourceSetPath, 'j.bas');
-  const integration = new VscodeDebugIntegration({
+  const integration = fixtureIntegration({
     extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
     getConfiguredDevToolPath: () => undefined,
     debugConfigurationHost: {
@@ -238,7 +238,7 @@ test('source snapshots use UTF-16 ordinal canonical path order across punctuatio
   const configuration = await integration.resolveDebugConfiguration({});
 
   assert.deepEqual(configuration.sourceSnapshot, {
-    schemaVersion: 1,
+    schemaVersion: 2,
     sources: [
       transportedTextSource(
         path.dirname(digitSource),
@@ -303,7 +303,7 @@ test('a saved launch narrows project and document and resolves an explicit proce
     procedure: 'RunTarget',
     __vbaDebugWorkbookFileName: 'Book2.xlsm',
     sourceSnapshot: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [transportedTextSource(
         path.dirname(selectedSource),
         selectedSource,
@@ -357,7 +357,7 @@ test('a saved launch rejects module and procedure unless both selectors are supp
 
 test('a saved launch rejects invalid project and document selectors instead of treating them as omitted', async () => {
   let hostWasTouched = false;
-  const integration = new VscodeDebugIntegration({
+  const integration = fixtureIntegration({
     extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
     getConfiguredDevToolPath: () => undefined,
     debugConfigurationHost: {
@@ -413,7 +413,7 @@ test('debug launch captures only the selected document source inventory', async 
   const configuration = await integration.resolveDebugConfiguration({});
 
   assert.deepEqual(configuration.sourceSnapshot, {
-    schemaVersion: 1,
+    schemaVersion: 2,
     sources: [transportedTextSource(
       path.dirname(activeSource),
       activeSource,
@@ -460,7 +460,7 @@ test('debug launch captures one invocation-time selection and source position', 
     'manifest:1'
   ]);
   assert.deepEqual(configuration.sourceSnapshot, {
-    schemaVersion: 1,
+    schemaVersion: 2,
     sources: [transportedTextSource(
       path.dirname(sourcePath),
       sourcePath,
@@ -576,7 +576,7 @@ test('debug restart captures unsaved bytes from the bound document after the act
     module: 'DebugModule',
     procedure: 'RunTarget',
     __vbaDebugWorkbookFileName: 'Book1.xlsm',
-    sourceSnapshot: { schemaVersion: 1, sources: [] }
+    sourceSnapshot: { schemaVersion: 2, sources: [] }
   }, workspaceRoot);
   const restartPreparation = configuration.__vbaRestartPreparation as {
     protocolVersion: number;
@@ -637,7 +637,7 @@ test('each bound debug recapture captures fresh bytes from its original document
     name: 'VBA: Active Procedure',
     project: projectRoot,
     document: 'Book1',
-    sourceSnapshot: { schemaVersion: 1, sources: [] }
+    sourceSnapshot: { schemaVersion: 2, sources: [] }
   };
 
   const first = await recaptureBoundVbaDebugConfiguration(host, boundConfiguration);
@@ -691,7 +691,7 @@ test('debug restart preparation notifies the bound adapter session with the next
     module: 'DebugModule',
     procedure: 'RunTarget',
     __vbaDebugWorkbookFileName: 'Book1.xlsm',
-    sourceSnapshot: { schemaVersion: 1, sources: [] }
+    sourceSnapshot: { schemaVersion: 2, sources: [] }
   });
   const marker = configuration.__vbaRestartPreparation as {
     protocolVersion: number;
@@ -785,7 +785,7 @@ test('debug restart notification failure does not leave preparation state busy',
     module: 'DebugModule',
     procedure: 'RunTarget',
     __vbaDebugWorkbookFileName: 'Book1.xlsm',
-    sourceSnapshot: { schemaVersion: 1, sources: [] }
+    sourceSnapshot: { schemaVersion: 2, sources: [] }
   }, workspaceRoot);
   await integration.createDebugAdapterExecutable({
     id: 'vscode-session-1',
@@ -873,7 +873,7 @@ test('debug restart preparation ignores fresh arguments and the active editor af
     module: 'OldModule',
     procedure: 'OldTarget',
     __vbaDebugWorkbookFileName: 'OldBook.xlsm',
-    sourceSnapshot: { schemaVersion: 1, sources: [] }
+    sourceSnapshot: { schemaVersion: 2, sources: [] }
   }, workspaceRoot);
   const freshConfiguration = integration.prepareDebugConfigurationForRestart({
     type: 'vba',
@@ -884,7 +884,7 @@ test('debug restart preparation ignores fresh arguments and the active editor af
     module: 'FreshModule',
     procedure: 'FreshTarget',
     __vbaDebugWorkbookFileName: 'FreshBook.xlsm',
-    sourceSnapshot: { schemaVersion: 1, sources: [] }
+    sourceSnapshot: { schemaVersion: 2, sources: [] }
   }, workspaceRoot);
   const oldMarker = (
     oldConfiguration.__vbaRestartPreparation as { id: string }
@@ -954,7 +954,7 @@ test('debug restart preparation fails closed before adapter binding', async () =
     name: 'VBA: Old Procedure',
     project: oldProjectRoot,
     document: 'OldBook',
-    sourceSnapshot: { schemaVersion: 1, sources: [] }
+    sourceSnapshot: { schemaVersion: 2, sources: [] }
   }, workspaceRoot);
   const preparationId = (
     oldConfiguration.__vbaRestartPreparation as { id: string }
@@ -1003,7 +1003,7 @@ test('debug restart preparation rejects a marker borrowed from another project',
     name: 'VBA: Marker Procedure',
     project: markerProjectRoot,
     document: 'MarkerBook',
-    sourceSnapshot: { schemaVersion: 1, sources: [] }
+    sourceSnapshot: { schemaVersion: 2, sources: [] }
   }, workspaceRoot);
   const marker = markerConfiguration.__vbaRestartPreparation as {
     protocolVersion: number;
@@ -1015,7 +1015,7 @@ test('debug restart preparation rejects a marker borrowed from another project',
     name: 'VBA: Fresh Procedure',
     project: freshProjectRoot,
     document: 'FreshBook',
-    sourceSnapshot: { schemaVersion: 1, sources: [] },
+    sourceSnapshot: { schemaVersion: 2, sources: [] },
     __vbaRestartPreparation: marker
   };
   const notifications: Array<{ command: string; arguments: Record<string, unknown> }> = [];
@@ -1071,7 +1071,7 @@ test('debug disconnect cancels the bound snapshot capture', async () => {
     module: 'DebugModule',
     procedure: 'RunTarget',
     __vbaDebugWorkbookFileName: 'Book1.xlsm',
-    sourceSnapshot: { schemaVersion: 1, sources: [] }
+    sourceSnapshot: { schemaVersion: 2, sources: [] }
   }, workspaceRoot);
   const preparationId = (
     configuration.__vbaRestartPreparation as { id: string }
@@ -1153,7 +1153,7 @@ test('debug concurrent restart does not send an unbound preparation result', asy
     module: 'DebugModule',
     procedure: 'RunTarget',
     __vbaDebugWorkbookFileName: 'Book1.xlsm',
-    sourceSnapshot: { schemaVersion: 1, sources: [] }
+    sourceSnapshot: { schemaVersion: 2, sources: [] }
   }, workspaceRoot);
   const preparationId = (
     configuration.__vbaRestartPreparation as { id: string }
@@ -1237,7 +1237,7 @@ test('debug restart remains busy until the adapter restart response completes re
     module: 'DebugModule',
     procedure: 'RunTarget',
     __vbaDebugWorkbookFileName: 'Book1.xlsm',
-    sourceSnapshot: { schemaVersion: 1, sources: [] }
+    sourceSnapshot: { schemaVersion: 2, sources: [] }
   }, workspaceRoot);
   await integration.createDebugAdapterExecutable({
     id: 'vscode-session-1',
@@ -1313,7 +1313,7 @@ test('debug restart capture failure reports only restart failure with bound sess
     module: 'DebugModule',
     procedure: 'RunTarget',
     __vbaDebugWorkbookFileName: 'Book1.xlsm',
-    sourceSnapshot: { schemaVersion: 1, sources: [] }
+    sourceSnapshot: { schemaVersion: 2, sources: [] }
   }, workspaceRoot);
   const preparationId = (
     configuration.__vbaRestartPreparation as { id: string }
@@ -1384,7 +1384,7 @@ test('debug launch freezes one enabled ordinary BAS breakpoint from the captured
     'breakpoints:1'
   ]);
   assert.deepEqual(configuration.sourceSnapshot, {
-    schemaVersion: 1,
+    schemaVersion: 2,
     sources: [transportedTextSource(path.dirname(sourcePath), sourcePath, sourceText)],
     activeSource: {
       sourceUri: pathToFileURL(sourcePath).href,
@@ -1699,7 +1699,7 @@ test('an explicit procedure pair uses active source membership to narrow omitted
   assert.equal(configuration.project, selectedRoot);
   assert.equal(configuration.document, 'Book2');
   assert.deepEqual(configuration.sourceSnapshot, {
-    schemaVersion: 1,
+    schemaVersion: 2,
     sources: [transportedTextSource(
       path.dirname(selectedSource),
       selectedSource,
@@ -1741,7 +1741,7 @@ test('source snapshots transport exact CP932 and UTF-16 bytes with encoding meta
   const configuration = await integration.resolveDebugConfiguration({});
 
   assert.deepEqual(configuration.sourceSnapshot, {
-    schemaVersion: 1,
+    schemaVersion: 2,
     sources: [
       {
         relativePath: 'Cp932.bas',
@@ -1767,7 +1767,7 @@ test('source snapshots transport exact CP932 and UTF-16 bytes with encoding meta
 
 test('unsupported launch fields and request modes fail closed before project discovery or capture', async () => {
   let hostTouched = false;
-  const integration = new VscodeDebugIntegration({
+  const integration = fixtureIntegration({
     extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
     getConfiguredDevToolPath: () => undefined,
     debugConfigurationHost: {
@@ -1847,7 +1847,7 @@ function createIntegration(options: {
     cancellationToken?: VbaDebugCancellationToken
   ) => Promise<SnapshotSourceInventory>;
 }): VscodeDebugIntegration {
-  return new VscodeDebugIntegration({
+  return fixtureIntegration({
     extensionRoot: path.join('C:', 'extensions', 'vba-tools'),
     getConfiguredDevToolPath: () => undefined,
     ...(options.adapterSessionId === undefined
@@ -1868,13 +1868,13 @@ function createIntegration(options: {
               capabilities: {
                 toolVersion: '0.1.0',
                 contractVersion: '1.0',
-                protocolVersion: '1.1',
+                protocolVersion: '2.0',
                 transports: ['stdio'],
                 sessionIdFormat: 'lowercase-hex-32',
                 commands: ['cleanup', 'doctor'],
                 commandSchemaVersions: { doctor: '1.0' },
                 featureVersions: { 'doctor.stdinCancellation': '1.0' },
-                requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '1.0' }
+                requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0' }
               }
             })
           }
@@ -1979,4 +1979,49 @@ function isWithin(filePath: string, directoryPath: string): boolean {
     && relative !== '..'
     && !relative.startsWith(`..${path.sep}`)
     && !path.isAbsolute(relative);
+}
+
+function fixtureIntegration(options: ConstructorParameters<typeof VscodeDebugIntegration>[0]): VscodeDebugIntegration {
+  return new VscodeDebugIntegration({
+    requiredContract: {
+      contractVersion: '1.0', commandSchemaVersions: {},
+      featureVersions: { 'build.sourceSnapshot': '2.0', 'test.sourceSnapshot': '2.0', 'sourceSnapshot.activeWindowsCodePage': '1.0' }
+    },
+    requiredDebugAdapterContract: {
+      contractVersion: '1.0', protocolVersion: '2.0', transports: ['stdio'],
+      sessionIdFormat: 'lowercase-hex-32', commands: ['cleanup', 'doctor'],
+      commandSchemaVersions: { doctor: '1.0' }, featureVersions: { 'doctor.stdinCancellation': '1.0' },
+      requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0' }
+    },
+    vbaDevResolver: {
+      resolve: async () => ({
+        executablePath: path.resolve('vba-dev.exe'), bundledPath: path.resolve('vba-dev.exe'), source: 'bundled',
+        capabilities: { toolVersion: '0.1.0', contractVersion: '1.0', commands: {}, activeWindowsCodePage: 65001 }
+      })
+    },
+    vbaDebugAdapterResolver: {
+      resolve: async () => ({
+        executablePath: path.resolve('vba-debug-adapter.exe'),
+        capabilities: {
+          toolVersion: '0.1.0', contractVersion: '1.0', protocolVersion: '2.0', transports: ['stdio'],
+          sessionIdFormat: 'lowercase-hex-32', commands: ['cleanup', 'doctor'],
+          commandSchemaVersions: { doctor: '1.0' }, featureVersions: { 'doctor.stdinCancellation': '1.0' },
+          requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0' }
+        }
+      })
+    },
+    capabilitiesProcess: async file => ({
+      stdout: JSON.stringify(file.endsWith('vba-dev.exe') ? {
+        toolVersion: '0.1.0', contractVersion: '1.0', commands: {}, activeWindowsCodePage: 65001,
+        featureVersions: { 'build.sourceSnapshot': '2.0', 'test.sourceSnapshot': '2.0', 'sourceSnapshot.activeWindowsCodePage': '1.0' }
+      } : {
+        toolVersion: '0.1.0', contractVersion: '1.0', protocolVersion: '2.0', transports: ['stdio'],
+        sessionIdFormat: 'lowercase-hex-32', commands: ['cleanup', 'doctor'],
+        commandSchemaVersions: { doctor: '1.0' }, featureVersions: { 'doctor.stdinCancellation': '1.0' },
+        requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0' }
+      }),
+      stderr: ''
+    }),
+    ...options
+  });
 }

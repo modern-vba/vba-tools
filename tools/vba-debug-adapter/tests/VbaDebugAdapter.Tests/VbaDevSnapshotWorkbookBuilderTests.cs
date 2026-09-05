@@ -27,7 +27,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
         };
         var builder = new VbaDevSnapshotWorkbookBuilder(process);
         const string sessionId = "0123456789abcdef0123456789abcdef";
-        var sourceBytes = System.Text.Encoding.UTF8.GetBytes(
+        var sourceBytes = DebugSnapshotTestEncoding.Utf8BomBytes(
             "Attribute VB_Name = \"DebugModule\"\r\nPublic Sub RunTarget()\r\nEnd Sub\r\n");
 
         try
@@ -42,12 +42,12 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                     "Book1",
                     "Book1.xlsm",
                     new TransportedDebugSourceSnapshot(
-                        1,
+                        2,
                         [
                             new TransportedDebugSource(
                                 "nested/DebugModule.bas",
                                 "file:///C:/work/BookProject/src/Book1/nested/DebugModule.bas",
-                                "utf8",
+                                "utf8bom",
                                 Convert.ToBase64String(sourceBytes))
                         ])),
                 CancellationToken.None);
@@ -103,13 +103,13 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
             new RecordingBuildProcess());
         const string sessionId = "0123456789abcdef0123456789abcdef";
         var snapshot = new TransportedDebugSourceSnapshot(
-            1,
+            2,
             [
                 new TransportedDebugSource(
                     "Module1.bas",
                     "file:///C:/persistent/Module1.bas",
-                    "utf8",
-                    Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(
+                    "utf8bom",
+                    Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
                         "Attribute VB_Name = \"Module1\"\r\n")))
             ]);
 
@@ -189,13 +189,13 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                 "Book1",
                 "Book1.xlsm",
                 new TransportedDebugSourceSnapshot(
-                    1,
+                    2,
                     [
                         new TransportedDebugSource(
                             "Module1.bas",
                             "file:///C:/persistent/Module1.bas",
-                            "utf8",
-                            Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(
+                            "utf8bom",
+                            Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
                                 "Attribute VB_Name = \"Module1\"\r\n")))
                     ])),
             CancellationToken.None);
@@ -258,13 +258,13 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                     "Book1",
                     "Book1.xlsm",
                     new TransportedDebugSourceSnapshot(
-                        1,
+                        2,
                         [
                             new TransportedDebugSource(
                                 "Module1.bas",
                                 "file:///C:/persistent/Module1.bas",
-                                "utf8",
-                                Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(
+                                "utf8bom",
+                                Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
                                     "Attribute VB_Name = \"Module1\"\r\n")))
                         ])),
                 CancellationToken.None);
@@ -332,13 +332,13 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                 "Book1",
                 "Book1.xlsm",
                 new TransportedDebugSourceSnapshot(
-                    1,
+                    2,
                     [
                         new TransportedDebugSource(
                             "Module1.bas",
                             "file:///C:/persistent/Module1.bas",
-                            "utf8",
-                            Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(
+                            "utf8bom",
+                            Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
                                 "Attribute VB_Name = \"Module1\"\r\n")))
                     ])),
             CancellationToken.None));
@@ -382,13 +382,13 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                     "Book1",
                     "Book1.xlsm",
                     new TransportedDebugSourceSnapshot(
-                        1,
+                        2,
                         [
                             new TransportedDebugSource(
                                 "Module1.bas",
                                 "file:///C:/persistent/Module1.bas",
-                                "utf8",
-                                Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(
+                                "utf8bom",
+                                Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
                                     "Attribute VB_Name = \"Module1\"\r\n")))
                         ])),
                 CancellationToken.None);
@@ -435,13 +435,13 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                 "Book1",
                 "Book1.xlsm",
                 new TransportedDebugSourceSnapshot(
-                    1,
+                    2,
                     [
                         new TransportedDebugSource(
                             "Module1.bas",
                             "file:///C:/persistent/Module1.bas",
-                            "utf8",
-                            Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(
+                            "utf8bom",
+                            Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
                                 "Attribute VB_Name = \"Module1\"\r\n")))
                     ])),
             CancellationToken.None));
@@ -480,17 +480,17 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                         "Book1",
                         "Book1.xlsm",
                         new TransportedDebugSourceSnapshot(
-                            1,
+                            2,
                             [
                                 new TransportedDebugSource(
                                     "Module1.bas",
                                     "file:///C:/persistent/Module1.bas",
-                                    "utf8",
-                                    Convert.ToBase64String([0xff]))
+                                    "utf8bom",
+                                    Convert.ToBase64String([0xef, 0xbb, 0xbf, 0xff]))
                             ])),
                     CancellationToken.None));
 
-            Assert.Contains("utf8", exception.Message, StringComparison.Ordinal);
+            Assert.Contains("utf8bom", exception.Message, StringComparison.Ordinal);
             Assert.Empty(process.Invocations);
             Assert.False(Directory.Exists(Path.Combine(
                 workspaceRoot,
@@ -542,13 +542,13 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                         "Book1",
                         "Book1.xlsm",
                         new TransportedDebugSourceSnapshot(
-                            1,
+                            2,
                             [
                                 new TransportedDebugSource(
                                     "Module1.bas",
                                     "file:///C:/persistent/Module1.bas",
-                                    "utf8",
-                                    Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(
+                                    "utf8bom",
+                                    Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
                                         "Attribute VB_Name = \"Module1\"\r\n")))
                             ])),
                     CancellationToken.None));
@@ -603,13 +603,13 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                         "Book1",
                         "Book1.xlsm",
                         new TransportedDebugSourceSnapshot(
-                            1,
+                            2,
                             [
                                 new TransportedDebugSource(
                                     "Module1.bas",
                                     "file:///C:/persistent/Module1.bas",
-                                    "utf8",
-                                    Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(
+                                    "utf8bom",
+                                    Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
                                         "Attribute VB_Name = \"Module1\"\r\n")))
                             ])),
                     CancellationToken.None));
@@ -647,7 +647,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
         var builder = new VbaDevSnapshotWorkbookBuilder(
             new RecordingBuildProcess());
         const string sessionId = "0123456789abcdef0123456789abcdef";
-        var formBytes = System.Text.Encoding.UTF8.GetBytes(
+        var formBytes = DebugSnapshotTestEncoding.Utf8BomBytes(
             "VERSION 5.00\r\nBegin VB.UserForm Dialog\r\nEnd\r\n");
         byte[] sidecarBytes = [0x00, 0xff, 0x10, 0x80, 0x0d, 0x0a, 0x7f];
 
@@ -663,12 +663,12 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                     "Book1",
                     "Book1.xlsm",
                     new TransportedDebugSourceSnapshot(
-                        1,
+                        2,
                         [
                             new TransportedDebugSource(
                                 "forms/Dialog.frm",
                                 "file:///C:/persistent/forms/Dialog.frm",
-                                "utf8",
+                                "utf8bom",
                                 Convert.ToBase64String(formBytes)),
                             new TransportedDebugSource(
                                 "forms/Dialog.frx",
@@ -703,7 +703,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
         Directory.CreateDirectory(projectRoot);
         Directory.CreateDirectory(Path.GetDirectoryName(vbaDevPath)!);
         await File.WriteAllBytesAsync(vbaDevPath, []);
-        var originalSource = System.Text.Encoding.UTF8.GetBytes(
+        var originalSource = DebugSnapshotTestEncoding.Utf8BomBytes(
             "Attribute VB_Name = \"Module1\"\r\n");
         var process = new SourceMutationBuildProcess();
         var builder = new VbaDevSnapshotWorkbookBuilder(
@@ -720,12 +720,12 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                 "Book1",
                 "Book1.xlsm",
                 new TransportedDebugSourceSnapshot(
-                    1,
+                    2,
                     [
                         new TransportedDebugSource(
                             "Module1.bas",
                             "file:///C:/persistent/Module1.bas",
-                            "utf8",
+                            "utf8bom",
                             Convert.ToBase64String(originalSource))
                     ])),
             CancellationToken.None));
@@ -776,13 +776,13 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                     "Book1",
                     "Book1.xlsm",
                     new TransportedDebugSourceSnapshot(
-                        1,
+                        2,
                         [
                             new TransportedDebugSource(
                                 "Module1.bas",
                                 "file:///C:/persistent/Module1.bas",
-                                "utf8",
-                                Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(
+                                "utf8bom",
+                                Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
                                     "Attribute VB_Name = \"Module1\"\r\n")))
                         ])),
                 CancellationToken.None);
@@ -810,13 +810,13 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
         var sourceUri = "file:///C:/persistent/" +
             relativePath.Replace(" ", "%20", StringComparison.Ordinal);
         var snapshot = new TransportedDebugSourceSnapshot(
-            1,
+            2,
             [
                 new TransportedDebugSource(
                     relativePath,
                     sourceUri,
-                    "utf8",
-                    Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(
+                    "utf8bom",
+                    Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
                         "Attribute VB_Name = \"Module1\"\r\n")))
             ]);
 
@@ -853,13 +853,13 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                     "Book1",
                     "Book1.xlsm",
                     new TransportedDebugSourceSnapshot(
-                        1,
+                        2,
                         [
                             new TransportedDebugSource(
                                 "Module1.bas",
                                 "file:///C:/persistent/Module1.bas",
-                                "utf8",
-                                Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(
+                                "utf8bom",
+                                Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
                                     "Attribute VB_Name = \"Module1\"\r\n")))
                         ])),
                 cancellation.Token);

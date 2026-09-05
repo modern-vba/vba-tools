@@ -29,18 +29,24 @@ a path already read remains part of the snapshot. Ordinary `vba-dev build`
 remains disk-only.
 
 Clean source and `.frx` sidecars retain their exact disk bytes. Dirty editor
-source is limited initially to UTF-8 with or without BOM, BOM-marked UTF-16 LE
+source is limited to BOM-marked UTF-8, BOM-marked UTF-16 LE
 or BE, and the operation-fixed active Windows ANSI code page without BOM. The
 producer reads that code page directly from `GetACP` once rather than inferring
-language or culture; ACP 65001 is UTF-8. A dirty legacy source encoding is
+language or culture; ACP 65001 is canonical `utf8`, never `windows-65001`.
+A dirty source encoding without a BOM is
 accepted only when its code page equals that ACP. Every clean and dirty text
 source must strict-decode and re-encode to its original bytes before Excel
 starts. Snapshot capture fails instead of silently changing encoding,
 substituting characters, or guessing. Detection checks a recognized BOM first,
-then strict UTF-8, then the strict fixed ACP. The captured bytes remain
+then only the strict fixed ACP for bytes without a BOM; BOM-less UTF-8 is
+supported only when ACP is 65001. The captured bytes remain
 authoritative and unchanged. Before `VBComponents.Import`, `VbaDev` derives a
 separate invocation-internal ACP import copy under the contract settled by ADR
-0027; `.frx` remains binary-only.
+0027 and the admitted-source boundary in ADR 0037; `.frx` remains binary-only.
+Issue #344 coordinates Build/Test snapshot features `2.0`, adapter protocol
+`2.0`, and DAP source-snapshot schema `2` in one release-ready slice. The
+extension validates both providers before capture and pins their compatible
+paths; each downstream product independently validates its own boundary.
 
 The extension transports source and sidecar bytes to the separate adapter as
 base64 DAP fields with safe source-set-relative paths. Text source also carries

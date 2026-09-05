@@ -11,6 +11,91 @@ import {
   materializeSnapshotSourceInventory
 } from './snapshotSourceInventory';
 
+test('clean BOMless ambiguous UTF-8 bytes use only the fixed ACP 1252', async () => {
+  const sourceSetPath = path.resolve('snapshot');
+  const sourcePath = path.join(sourceSetPath, 'Ambiguous.bas');
+  const bytes = Uint8Array.from([0xc3, 0xa9]);
+  const decoded: Array<{ encoding: string; text: string }> = [];
+  const inventory = await captureSnapshotSourceInventory(sourceSetPath, {
+    getActiveWindowsCodePage: () => 1252,
+    getOpenTextDocuments: () => [],
+    findSourceFiles: async () => [sourcePath],
+    readFile: async () => bytes,
+    decodeText: async (input, encoding) => {
+      const text = new TextDecoder(encoding === 'windows1252' ? 'windows-1252' : 'utf-8', { fatal: true }).decode(input);
+      decoded.push({ encoding, text });
+      return text;
+    },
+    encodeText: async (text, encoding) => encoding === 'windows1252'
+      ? Uint8Array.from([...text].map(character => character.charCodeAt(0))) : new TextEncoder().encode(text)
+  });
+
+  assert.equal(inventory.entries[0].encoding, 'windows-1252');
+  assert.deepEqual(inventory.entries[0].bytes, bytes);
+  assert.deepEqual(decoded, [{ encoding: 'windows1252', text: 'Ã©' }]);
+});
+
+test('dirty BOMless UTF-8 requires ACP 65001 even for ASCII or empty text', async () => {
+  const sourceSetPath = path.resolve('snapshot');
+  const sourcePath = path.join(sourceSetPath, 'Dirty.bas');
+  for (const activeCodePage of [932, 1252]) {
+    for (const text of ['', 'ASCII', 'é']) {
+      await assert.rejects(captureSnapshotSourceInventory(sourceSetPath, {
+        getActiveWindowsCodePage: () => activeCodePage,
+        getOpenTextDocuments: () => [{
+          uriScheme: 'file', uriPath: sourcePath, fileName: sourcePath, isDirty: true,
+          encoding: 'utf8', getText: () => text
+        }],
+        findSourceFiles: async () => [],
+        readFile: async () => { throw new Error('Dirty source must not read disk.'); },
+        encodeText: async value => new TextEncoder().encode(value),
+        decodeText: async bytes => new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+      }), /utf8.*does not match active Windows code page/);
+    }
+  }
+});
+
+test('unsupported and truncated Unicode signatures never fall through to the ACP codec', async () => {
+  const sourceSetPath = path.resolve('snapshot');
+  const sourcePath = path.join(sourceSetPath, 'Malformed.bas');
+  for (const bytes of [
+    [0x2b, 0x2f, 0x76, 0x38], [0x2b, 0x2f, 0x76, 0x39],
+    [0x2b, 0x2f, 0x76, 0x2b], [0x2b, 0x2f, 0x76, 0x2f],
+    [0xef], [0xef, 0xbb], [0xff], [0xfe], [0x00, 0x00, 0xfe]
+  ].map(value => Uint8Array.from(value))) {
+    let codecCalls = 0;
+    await assert.rejects(captureSnapshotSourceInventory(sourceSetPath, {
+      getActiveWindowsCodePage: () => 1252,
+      getOpenTextDocuments: () => [],
+      findSourceFiles: async () => [sourcePath],
+      readFile: async () => bytes,
+      encodeText: async () => { codecCalls += 1; return bytes; },
+      decodeText: async () => { codecCalls += 1; return 'permissive codec'; }
+    }), /unsupported|truncated/i);
+    assert.equal(codecCalls, 0);
+  }
+});
+
+test('dirty produced bytes reject unsupported and truncated signatures before decoding', async () => {
+  const sourceSetPath = path.resolve('snapshot');
+  const sourcePath = path.join(sourceSetPath, 'Dirty.bas');
+  for (const text of ['+', '+/', '+/v', '+/v8-', '+/v9-', '+/v+-', '+/v/-']) {
+    let decodes = 0;
+    await assert.rejects(captureSnapshotSourceInventory(sourceSetPath, {
+      getActiveWindowsCodePage: () => 65001,
+      getOpenTextDocuments: () => [{
+        uriScheme: 'file', uriPath: sourcePath, fileName: sourcePath, isDirty: true,
+        encoding: 'utf8', getText: () => text
+      }],
+      findSourceFiles: async () => [],
+      readFile: async () => { throw new Error('Dirty sources must not read disk.'); },
+      encodeText: async value => new TextEncoder().encode(value),
+      decodeText: async bytes => { decodes += 1; return new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+    }), /unsupported|truncated/i);
+    assert.equal(decodes, 0);
+  }
+});
+
 test('snapshot inventory overlays capture-start dirty source including a file absent from disk', async () => {
   const sourceSetPath = path.join('C:', 'work', 'BookProject', 'src', 'Book1');
   const cleanPath = path.join(sourceSetPath, 'Clean.bas');
@@ -34,7 +119,7 @@ test('snapshot inventory overlays capture-start dirty source including a file ab
     }
   });
   const host: SnapshotSourceInventoryHost = {
-    getActiveWindowsCodePage: () => 932,
+    getActiveWindowsCodePage: () => 65001,
     getOpenTextDocuments: () => [
       dirtyDocument(dirtyPath, 'dirty'),
       dirtyDocument(addedPath, 'added')
@@ -284,7 +369,7 @@ test('dirty Unicode source preserves the editor encoding and enforces its BOM po
     encoding: string,
     overrideBytes?: Uint8Array
   ): SnapshotSourceInventoryHost => ({
-    getActiveWindowsCodePage: () => 932,
+    getActiveWindowsCodePage: () => encoding === 'utf8' ? 65001 : 932,
     getOpenTextDocuments: () => [{
       uriScheme: 'file',
       uriPath: sourcePath,
@@ -351,14 +436,14 @@ test('dirty source rejects lossy substitution in an otherwise supported editor e
 test('clean text source strictly round-trips exact bytes while frx sidecars remain binary', async () => {
   const sourceSetPath = path.join('C:', 'work', 'BookProject', 'src', 'Book1');
   const files = new Map<string, Uint8Array>([
-    [path.join(sourceSetPath, 'Utf8.bas'), Uint8Array.from([0x41])],
+    [path.join(sourceSetPath, 'Ascii.bas'), Uint8Array.from([0x41])],
     [path.join(sourceSetPath, 'Utf8Bom.cls'), Uint8Array.from([0xef, 0xbb, 0xbf, 0x41])],
     [path.join(sourceSetPath, 'Utf16.frm'), Uint8Array.from([0xff, 0xfe, 0x41, 0x00])],
     [path.join(sourceSetPath, 'Utf16.frx'), Uint8Array.from([0xff, 0x00, 0x81, 0xfe])],
     [path.join(sourceSetPath, 'Legacy.bas'), Uint8Array.from([0x82, 0xa0])]
   ]);
   const encodeText = async (text: string, encoding: string): Promise<Uint8Array> => {
-    if (text === 'A' && encoding === 'utf8') {
+    if (text === 'A' && encoding === 'shiftjis') {
       return Uint8Array.from([0x41]);
     }
     if (text === 'A' && encoding === 'utf8bom') {
@@ -373,7 +458,7 @@ test('clean text source strictly round-trips exact bytes while frx sidecars rema
     throw new Error(`Unencodable fixture: ${encoding} ${text}`);
   };
   const decodeText = async (bytes: Uint8Array, encoding: string): Promise<string> => {
-    if (encoding === 'utf8' && bytes.length === 1 && bytes[0] === 0x41) {
+    if (encoding === 'shiftjis' && bytes.length === 1 && bytes[0] === 0x41) {
       return 'A';
     }
     if (

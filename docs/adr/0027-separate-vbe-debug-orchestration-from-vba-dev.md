@@ -47,15 +47,18 @@ other manifest-owned configuration still come from the project.
 The snapshot producer copies clean source and `.frx` sidecars as their exact
 disk bytes. For dirty editor source, it encodes the current editor text using
 that document's current editor encoding, including the corresponding BOM
-policy, without saving the persistent file. The initial supported forms are
-UTF-8 with or without BOM, BOM-marked UTF-16 LE or BE, and the
+policy, without saving the persistent file. The v2 supported forms are
+BOM-marked UTF-8, BOM-marked UTF-16 LE or BE, and the
 operation-fixed active Windows ANSI code page without BOM. The extension reads
 that code page directly from `GetACP` once at capture start instead of inferring
-language or culture; ACP 65001 is canonical UTF-8. A dirty legacy editor
-encoding is accepted only when its code page equals that ACP. Every clean and
+language or culture; ACP 65001 is canonical `utf8`, never `windows-65001`.
+A dirty editor
+encoding without a BOM is accepted only when its code page equals that ACP.
+Every clean and
 dirty text source must strict-decode and re-encode to its original bytes before
-Excel starts. Detection checks a recognized BOM first, then strict UTF-8, then
-the strict fixed ACP. An unsupported encoding, unrepresentable character, or
+Excel starts. Detection checks a recognized BOM first, then only the strict
+fixed ACP for bytes without a BOM; BOM-less UTF-8 requires ACP 65001.
+An unsupported encoding, unrepresentable character, or
 round-trip difference fails snapshot capture; there is no implicit encoding
 change, replacement-character, or lossy fallback. `.frx` remains binary-only,
 and the accepted snapshot bytes remain authoritative and unchanged.
@@ -107,13 +110,15 @@ Every `VbaDev` path that reaches `VBComponents.Import`, including ordinary and
 snapshot build, publish, build-before-test, snapshot test, and explicit import,
 creates an invocation-internal `VbeImportSourceSet`. For ordinary
 `DocumentSourceSet` and materialized snapshot files, `VbaDev` fixes `GetACP`
-once for the operation, recognizes a supported BOM first, then tries strict
-BOM-less UTF-8, then the strict fixed ACP; a byte sequence valid as both uses
-UTF-8 rather than failing as ambiguous. DAP text entries additionally have
-their declared encoding token revalidated before materialization.
+once for the operation and recognizes a supported BOM first; every BOM-less
+source uses only the strict fixed ACP, even when also valid as UTF-8. The
+adapter separately revalidates DAP text encoding tokens, BOM policy, byte
+reproduction, and the ACP relationship before materialization. Its result is
+not a validation proof accepted by VbaDev.
 
-ADR 0037 supersedes that source-decoding rule for `ExplicitWorkbookImport`
-in issue #335, ordinary saved-source Build in issue #339, and Publish in issue #340. Its internal
+ADR 0037 supersedes the historical UTF-8-first source-decoding rule for `ExplicitWorkbookImport`
+in issue #335, ordinary saved-source Build in issue #339, Publish in issue #340,
+and snapshot Build/Test in issue #344. Its internal
 `VbaSourceAdmission` fixes ACP and one inventory,
 reads each selected text source and sidecar once, and admits BOM-marked Unicode
 or BOM-less fixed-ACP text without a UTF-8 probe. Preflight, projection,
@@ -123,9 +128,10 @@ an encoding, or rereading caller files. Ordinary Test's existing BuildFirst call
 uses that same Build stage. Publish excludes manifest test-only inputs before
 reading them and strictly decodes complete project-local sources before marker
 selection; proved marker exclusions need not pass later import eligibility or
-ACP projection. Snapshot inputs, test execution/result
-locations, and Doctor retain their existing behavior, and snapshot capabilities
-remain version `1.0`.
+ACP projection. Snapshot test execution input and result locations share the
+same admitted snapshot facts without reacquiring ACP, decoding, or reading
+source again. Ordinary/no-build result locations and Doctor retain their
+existing behavior. Snapshot Build and Test feature versions are `2.0`.
 
 Every included source must decode and re-encode to its original bytes before deriving its
 VBE mirror. `VbaDev` then strict-encodes
@@ -276,12 +282,13 @@ the bundled `vba-dev.exe`. It exposes `capabilities --format json` for its own
 contract and `--stdio` for DAP transport. `--stdio` requires a `--session`
 argument. The extension-owned `vba-debug-adapter-contract.json` requires a
 capability response containing `toolVersion`, adapter `contractVersion: "1.0"`,
-`protocolVersion: "1.1"`, `transports: ["stdio"]`,
+`protocolVersion: "2.0"`, `transports: ["stdio"]`,
 `sessionIdFormat: "lowercase-hex-32"`, `commands: ["cleanup", "doctor"]`,
 `commandSchemaVersions: { "doctor": "1.0" }`,
 `featureVersions: { "doctor.stdinCancellation": "1.0" }`, and
-`requiredVbaDevFeatureVersions: { "build.sourceSnapshot": "1.0" }`. The
-extension validates that response independently from `vba-dev` before launch.
+`requiredVbaDevFeatureVersions: { "build.sourceSnapshot": "2.0" }`. The
+extension validates that response independently from `vba-dev` before snapshot
+capture, temporary artifact creation, or launch.
 The adapter is an internal extension companion rather than a user-facing
 project command, requires neither a machine-wide .NET runtime nor PATH
 installation, and is Windows-only while Excel/VBIDE automation is the supported
@@ -289,7 +296,12 @@ host.
 
 `vba-dev-contract.json` and the corresponding capabilities response remove
 `debugAdapterProtocolVersion` and instead advertise
-`featureVersions: { "build.sourceSnapshot": "1.0" }`. That feature version
+`featureVersions: { "build.sourceSnapshot": "2.0", "test.sourceSnapshot": "2.0" }`.
+The command contract stays `1.0`, as does `sourceSnapshot.activeWindowsCodePage`.
+The adapter protocol is `2.0` and DAP `sourceSnapshot` schema is `2`.
+Issue #344 cuts over all providers, consumers, extension requirements, and
+packaging in one release-ready slice, without an incompatible intermediate
+main or package state. That Build feature version
 covers the paired snapshot input/output options, byte and inventory semantics,
 pre-Excel output safety, atomic replacement, cancellation, and owned-process
 release consumed by the adapter. The adapter validates only that feature
@@ -346,7 +358,7 @@ After side-effect-free capability validation, the extension starts
 `vba-debug-adapter --stdio --vba-dev <absolute-path> --session <session-id>`.
 The adapter does not read VS Code settings or discover the CLI. It validates the
 supplied CLI's capabilities once before accepting Excel-dependent launch work
-and requires `featureVersions["build.sourceSnapshot"] == "1.0"`. One debug
+and requires `featureVersions["build.sourceSnapshot"] == "2.0"`. One debug
 session pins both resolved paths and its session ID; configuration changes apply
 only to a later session.
 

@@ -20,6 +20,7 @@ internal sealed class BorrowedWorkbookGenerationSourceInput(
 internal sealed class BuildSourceSnapshotCaptureFactory
 {
     private readonly string scratchRoot;
+    private readonly VbaSourceAdmission admission;
 
     public BuildSourceSnapshotCaptureFactory()
         : this(Path.Combine(Path.GetTempPath(), "vba-dev-build-source-snapshot"))
@@ -27,9 +28,15 @@ internal sealed class BuildSourceSnapshotCaptureFactory
     }
 
     internal BuildSourceSnapshotCaptureFactory(string scratchRoot)
+        : this(scratchRoot, new VbaSourceAdmission(ActiveWindowsAnsiCodePage.Get))
+    {
+    }
+
+    internal BuildSourceSnapshotCaptureFactory(string scratchRoot, VbaSourceAdmission admission)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(scratchRoot);
         this.scratchRoot = Path.GetFullPath(scratchRoot);
+        this.admission = admission ?? throw new ArgumentNullException(nameof(admission));
     }
 
     public BuildSourceSnapshotCapture Create(
@@ -45,15 +52,8 @@ internal sealed class BuildSourceSnapshotCaptureFactory
                 $"Build source snapshot directory was not found: {snapshotPath}");
         }
 
-        var sourceFiles = DocumentSourceSetLayout
-            .EnumerateVbaSourceFiles(snapshotPath)
-            .OrderBy(source => source.FileName, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(source => source.FileName, StringComparer.Ordinal)
-            .ThenBy(source => source.SourcePath, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(source => source.SourcePath, StringComparer.Ordinal)
-            .ToArray();
-        DocumentSourceSetLayout.ThrowIfDuplicateSourceFileNames(snapshotPath, sourceFiles);
-        var inventory = sourceFiles
+        var admitted = admission.Admit(snapshotPath, VbaSourceAdmissionIntent.Build, cancellationToken);
+        var inventory = admitted.Sources
             .Select(source => new SnapshotSourceInventoryEntry(
                 source,
                 GetSafeRelativePath(snapshotPath, source.SourcePath),
@@ -72,13 +72,13 @@ internal sealed class BuildSourceSnapshotCaptureFactory
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var capturedSourcePath = CopyExact(
-                    entry.Source.SourcePath,
+                    entry.Source.OriginalBytes.AsSpan(),
                     stagingPath,
                     entry.RelativeSourcePath);
                 var capturedBinaryPath = entry.RelativeBinaryPath is null
                     ? null
                     : CopyExact(
-                        entry.Source.BinaryPath!,
+                        entry.Source.BinaryBytes!.Value.AsSpan(),
                         stagingPath,
                         entry.RelativeBinaryPath);
                 capturedSources.Add(new VbaSourceFile(
@@ -86,16 +86,15 @@ internal sealed class BuildSourceSnapshotCaptureFactory
                     entry.Source.Kind,
                     capturedBinaryPath)
                 {
-                    ExpectedUnicodeText = entry.Source.ExpectedUnicodeText,
-                    ExpectedUnicodeTextSourcePath = entry.Source.ExpectedUnicodeTextSourcePath,
                     DiagnosticSourcePath = entry.Source.DiagnosticSourcePath
-                        ?? entry.Source.SourcePath
                 });
             }
 
             return new BuildSourceSnapshotCapture(
                 stagingPath,
-                capturedSources.AsReadOnly());
+                capturedSources.AsReadOnly(),
+                admitted,
+                snapshotPath);
         }
         catch (Exception captureError)
         {
@@ -115,13 +114,13 @@ internal sealed class BuildSourceSnapshotCaptureFactory
     }
 
     private static string CopyExact(
-        string sourcePath,
+        ReadOnlySpan<byte> bytes,
         string stagingPath,
         string relativePath)
     {
         var targetPath = Path.Combine(stagingPath, relativePath);
         Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
-        File.WriteAllBytes(targetPath, File.ReadAllBytes(sourcePath));
+        File.WriteAllBytes(targetPath, bytes);
         return targetPath;
     }
 
@@ -158,26 +157,34 @@ internal sealed class BuildSourceSnapshotCaptureFactory
     }
 
     private sealed record SnapshotSourceInventoryEntry(
-        VbaSourceFile Source,
+        AdmittedVbaSource Source,
         string RelativeSourcePath,
         string? RelativeBinaryPath);
 }
 
-internal sealed class BuildSourceSnapshotCapture : IWorkbookGenerationSourceInput
+internal sealed class BuildSourceSnapshotCapture : IAdmittedWorkbookGenerationSourceInput
 {
     private int disposed;
 
     internal BuildSourceSnapshotCapture(
         string stagingPath,
-        IReadOnlyList<VbaSourceFile> sourceFiles)
+        IReadOnlyList<VbaSourceFile> sourceFiles,
+        AdmittedVbaSourceSet admission,
+        string sourceRootPath)
     {
         StagingPath = stagingPath;
         SourceFiles = sourceFiles;
+        Admission = admission;
+        SourceRootPath = sourceRootPath;
     }
 
     public string StagingPath { get; }
 
     public IReadOnlyList<VbaSourceFile> SourceFiles { get; }
+
+    public AdmittedVbaSourceSet Admission { get; }
+
+    internal string SourceRootPath { get; }
 
     public void Dispose()
     {

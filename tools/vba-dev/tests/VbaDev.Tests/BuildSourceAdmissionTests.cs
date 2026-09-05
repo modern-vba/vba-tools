@@ -14,6 +14,35 @@ namespace VbaDev.Tests;
 public sealed class BuildSourceAdmissionTests
 {
     [Fact]
+    public async Task SnapshotBuildUsesTheActiveCodePageForAmbiguousBomlessSource()
+    {
+        using var temp = TempDirectory.Create();
+        var context = CreateContext(temp.Path);
+        var snapshotPath = temp.CreateDirectory("snapshot");
+        var sourcePath = Path.Combine(snapshotPath, "Module1.bas");
+        var originalBytes = new UTF8Encoding(false, true).GetBytes(
+            "Attribute VB_Name = \"Module1\"\r\n' caf\u00e9\r\n");
+        File.WriteAllBytes(sourcePath, originalBytes);
+        var automation = new FakeWorkbookBuildAutomation();
+        var command = new BuildCommand(
+            CreateOutputCommand(automation, 1252),
+            new BuildSourceSnapshotCaptureFactory(
+                temp.CreateDirectory("scratch"), new VbaSourceAdmission(() => 1252)),
+            new BuildSourceSnapshotOutputSafetyValidator(new FileSystemPathIdentityResolver()));
+        var outputPath = Path.Combine(temp.Path, "output", "Book1.xlsm");
+
+        var result = await command.RunSnapshotAsync(context, snapshotPath, outputPath, CancellationToken.None);
+
+        Assert.Equal(0, result.ExitCode);
+        var imported = Assert.Single(automation.ImportedSources);
+        Assert.Contains("' caf\u00c3\u00a9", imported.ImportVerification.CodeModuleLines);
+        Assert.Equal("windows-1252", imported.ImportVerification.OriginalEncoding);
+        Assert.Equal(originalBytes, File.ReadAllBytes(sourcePath));
+        Assert.Equal("template-workbook", File.ReadAllText(outputPath));
+        Assert.False(File.Exists(context.BinDocumentPath));
+    }
+
+    [Fact]
     public async Task OrdinaryBuildUsesTheActiveCodePageForAmbiguousBomlessSource()
     {
         using var temp = TempDirectory.Create();
@@ -214,10 +243,8 @@ public sealed class BuildSourceAdmissionTests
         Assert.Equal(bytes, File.ReadAllBytes(sourcePath));
     }
 
-    [Theory]
-    [InlineData("build-snapshot")]
-    [InlineData("test-snapshot")]
-    public async Task SnapshotRoutesKeepTheirUtf8FirstDecoding(string route)
+    [Fact]
+    public async Task SnapshotTestUsesTheActiveCodePageForAmbiguousBomlessSource()
     {
         using var temp = TempDirectory.Create();
         var context = CreateContext(temp.Path);
@@ -226,30 +253,114 @@ public sealed class BuildSourceAdmissionTests
         var bytes = new UTF8Encoding(false, true).GetBytes(text);
         File.WriteAllBytes(sourcePath, bytes);
         var automation = new FakeWorkbookBuildAutomation();
-        var mirrorFactory = new VbeImportSourceSetFactory(() => 1252, mirror => Assert.Null(mirror.Admission));
+        var mirrorFactory = new VbeImportSourceSetFactory(() => 1252);
         var outputCommand = CreateOutputCommand(automation, 1252, mirrorFactory: mirrorFactory);
         var build = new BuildCommand(outputCommand, new FileSystemPathIdentityResolver());
         var runner = new FakeWorkbookTestRunner();
-        var test = new TestCommand(build, runner, new TestResultOutputFormatter(), new TestProcedureSourceLocator(), new FileSystemPathIdentityResolver());
+        var test = new TestCommand(build, runner, new TestResultOutputFormatter(), new TestProcedureSourceLocator(),
+            new SnapshotTestExecutionWorkspaceFactory(new FileSystemPathIdentityResolver(), temp.CreateDirectory("scratch"),
+                new SnapshotTestWorkspaceFileSystem(), 3, TimeSpan.Zero,
+                sourceCaptureFactory: new SnapshotSourceCaptureFactory(new VbaSourceAdmission(() => 1252))));
 
-        var result = route switch
-        {
-            "build-snapshot" => await build.RunSnapshotAsync(
-                context, context.DocumentSourceSetPath, Path.Combine(temp.Path, "custom", "Result.xlsm"), CancellationToken.None),
-            _ => await test.RunAsync(context,
-                new TestCommandRequest("text", true, new(), TimeSpan.FromMinutes(1), context.DocumentSourceSetPath), CancellationToken.None)
-        };
+        var result = await test.RunAsync(context,
+            new TestCommandRequest("text", true, new(), TimeSpan.FromMinutes(1), context.DocumentSourceSetPath), CancellationToken.None);
 
         Assert.True(result.ExitCode == 0, result.StandardError);
         var imported = Assert.Single(automation.ImportedSources);
-        Assert.Contains("' caf\u00e9", imported.ImportVerification.CodeModuleLines);
-        Assert.Equal("utf8", imported.ImportVerification.OriginalEncoding);
+        Assert.Contains("' caf\u00c3\u00a9", imported.ImportVerification.CodeModuleLines);
+        Assert.Equal("windows-1252", imported.ImportVerification.OriginalEncoding);
         Assert.Equal(bytes, File.ReadAllBytes(sourcePath));
-        if (route == "test-snapshot")
+        Assert.Single(runner.Workbooks);
+        Assert.NotEqual(context.BinDocumentPath, runner.Workbooks[0]);
+    }
+
+    public static IEnumerable<object[]> SnapshotEncodingCases()
+    {
+        foreach (var item in VbaSourceAdmissionTests.EncodingCases())
         {
-            Assert.Single(runner.Workbooks);
-            Assert.NotEqual(context.BinDocumentPath, runner.Workbooks[0]);
+            yield return ["build", item[0], item[1]];
+            yield return ["test", item[0], item[1]];
         }
+    }
+
+    [Theory]
+    [MemberData(nameof(SnapshotEncodingCases))]
+    public async Task SnapshotCommandsConformToTheFixedAcpEncodingCorpus(string command, string id, string caseJson)
+    {
+        using var document = JsonDocument.Parse(caseJson);
+        var item = document.RootElement;
+        using var temp = TempDirectory.Create();
+        var context = CreateContext(temp.Path);
+        var snapshotPath = temp.CreateDirectory("snapshot");
+        var sourcePath = Path.Combine(snapshotPath, item.GetProperty("fileName").GetString()!);
+        var bytes = Convert.FromBase64String(item.GetProperty("bytesBase64").GetString()!);
+        var activeCodePage = item.GetProperty("activeCodePage").GetInt32();
+        File.WriteAllBytes(sourcePath, bytes);
+        Directory.CreateDirectory(Path.GetDirectoryName(context.BinDocumentPath)!);
+        File.WriteAllText(context.BinDocumentPath, "persistent-bin");
+        var outputPath = Path.Combine(temp.Path, "snapshot-output.xlsm");
+        File.WriteAllText(outputPath, "previous-output");
+        var acpCalls = 0;
+        var readCalls = 0;
+        var admission = new VbaSourceAdmission(
+            () => { acpCalls++; return activeCodePage; },
+            readAllBytes: path => { readCalls++; Assert.Equal(sourcePath, path); return File.ReadAllBytes(path); });
+        var automation = new FakeWorkbookBuildAutomation();
+        var mirrorObserved = false;
+        var mirrorFactory = new VbeImportSourceSetFactory(
+            () => throw new InvalidOperationException("Mirror requested ACP again."),
+            mirror =>
+            {
+                mirrorObserved = true;
+                Assert.Empty(automation.OpenedWorkbooks);
+                var source = Assert.Single(mirror.Admission!.Sources);
+                var expectedText = item.GetProperty("expectedText").GetString();
+                Assert.Equal(expectedText, source.Text);
+                Assert.Equal(expectedText, source.Syntax.Text);
+                Assert.Equal(item.GetProperty("expectedEncoding").GetString(), source.OriginalEncoding);
+                Assert.Equal(bytes, source.OriginalBytes.ToArray());
+                Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+                var encoding = Encoding.GetEncoding(activeCodePage, EncoderFallback.ExceptionFallback, DecoderFallback.ExceptionFallback);
+                Assert.Equal(encoding.GetBytes(expectedText!), File.ReadAllBytes(Assert.Single(mirror.SourceFiles).SourcePath));
+            });
+        var scratchRoot = temp.CreateDirectory("scratch");
+        var build = new BuildCommand(CreateOutputCommand(automation, activeCodePage, mirrorFactory: mirrorFactory),
+            new BuildSourceSnapshotCaptureFactory(scratchRoot, admission),
+            new BuildSourceSnapshotOutputSafetyValidator(new FileSystemPathIdentityResolver()));
+        var runner = new FakeWorkbookTestRunner();
+        var test = new TestCommand(build, runner, new TestResultOutputFormatter(), new TestProcedureSourceLocator(),
+            new SnapshotTestExecutionWorkspaceFactory(new FileSystemPathIdentityResolver(), scratchRoot,
+                new SnapshotTestWorkspaceFileSystem(), 3, TimeSpan.Zero,
+                sourceCaptureFactory: new SnapshotSourceCaptureFactory(admission)));
+
+        var result = command == "build"
+            ? await build.RunSnapshotAsync(context, snapshotPath, outputPath, CancellationToken.None)
+            : await test.RunAsync(context,
+                new TestCommandRequest("ndjson", true, new(), TimeSpan.FromMinutes(1), snapshotPath), CancellationToken.None);
+
+        var shouldFail = (item.TryGetProperty("expectedFailure", out var failure) && failure.GetBoolean())
+            || (item.TryGetProperty("expectedProjectionFailure", out var projectionFailure) && projectionFailure.GetBoolean());
+        Assert.True(result.ExitCode == (shouldFail ? 1 : 0), $"{command}/{id}: {result.StandardError}");
+        Assert.Equal(1, acpCalls);
+        Assert.Equal(1, readCalls);
+        Assert.Equal(!shouldFail, mirrorObserved);
+        if (shouldFail)
+        {
+            Assert.Contains(sourcePath, result.StandardError, StringComparison.Ordinal);
+            Assert.Empty(automation.OpenedWorkbooks);
+            Assert.Empty(runner.Workbooks);
+            Assert.Empty(result.StandardOutput);
+        }
+        else
+        {
+            Assert.Equal(item.GetProperty("expectedEncoding").GetString(), Assert.Single(automation.ImportedSources).ImportVerification.OriginalEncoding);
+            Assert.Equal(command == "test" ? 1 : 0, runner.Workbooks.Count);
+        }
+        Assert.Equal(command == "build" && !shouldFail ? "template-workbook" : "previous-output", File.ReadAllText(outputPath));
+        Assert.Equal("persistent-bin", File.ReadAllText(context.BinDocumentPath));
+        Assert.Equal(bytes, File.ReadAllBytes(sourcePath));
+        Assert.Empty(Directory.EnumerateDirectories(scratchRoot));
+        Assert.Empty(Directory.EnumerateFiles(context.DocumentSourceSetPath));
     }
 
     [Fact]
@@ -283,6 +394,67 @@ public sealed class BuildSourceAdmissionTests
         Assert.Empty(runner.Workbooks);
         Assert.Equal("previous-output", File.ReadAllText(context.BinDocumentPath));
         Assert.Equal(invalidUtf8, File.ReadAllBytes(sourcePath));
+    }
+
+    [Fact]
+    public async Task SnapshotTestKeepsAdmittedLocationsAfterSourceFilesDisappear()
+    {
+        using var temp = TempDirectory.Create();
+        var context = CreateContext(temp.Path);
+        var snapshotPath = temp.CreateDirectory("snapshot");
+        var sourcePath = Path.Combine(Directory.CreateDirectory(Path.Combine(snapshotPath, "nested")).FullName, "Test_Module.bas");
+        var sourceBytes = new UTF8Encoding(false, true).GetBytes(
+            "Attribute VB_Name = \"Test_Module\"\n' caf\u00e9\n' frozen\nPublic Sub Test_Passes()\nEnd Sub\n");
+        File.WriteAllBytes(sourcePath, sourceBytes);
+        var scratchRoot = temp.CreateDirectory("scratch");
+        var acpCalls = 0;
+        var readCalls = 0;
+        var admission = new VbaSourceAdmission(
+            () => { acpCalls++; return 1252; },
+            readAllBytes: path => { readCalls++; return File.ReadAllBytes(path); });
+        var automation = new FakeWorkbookBuildAutomation
+        {
+            OnImport = () =>
+            {
+                File.Delete(sourcePath);
+                foreach (var capturedPath in Directory.EnumerateFiles(scratchRoot, "*.bas", SearchOption.AllDirectories))
+                {
+                    File.Delete(capturedPath);
+                }
+            }
+        };
+        var runner = new FakeWorkbookTestRunner(new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
+        var test = new TestCommand(
+            CreateCommand(automation, 1252, mirrorFactory: new VbeImportSourceSetFactory(
+                () => throw new InvalidOperationException("Mirror requested ACP again."))),
+            runner,
+            new TestResultOutputFormatter(),
+            new TestProcedureSourceLocator(),
+            new SnapshotTestExecutionWorkspaceFactory(new FileSystemPathIdentityResolver(), scratchRoot,
+                new SnapshotTestWorkspaceFileSystem(), 3, TimeSpan.Zero,
+                sourceCaptureFactory: new SnapshotSourceCaptureFactory(admission)));
+
+        var result = await test.RunAsync(context,
+            new TestCommandRequest("ndjson", true, new(), TimeSpan.FromMinutes(1), snapshotPath), CancellationToken.None);
+
+        Assert.Equal(0, result.ExitCode);
+        var completed = result.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Single(line => line.Contains("\"type\":\"testFinished\"", StringComparison.Ordinal));
+        using var document = JsonDocument.Parse(completed);
+        Assert.True(document.RootElement.TryGetProperty("location", out var location), completed);
+        Assert.Equal(new Uri(Path.Combine(context.DocumentSourceSetPath, "nested", "Test_Module.bas")).AbsoluteUri,
+            location.GetProperty("uri").GetString());
+        Assert.Equal(3, location.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(11, location.GetProperty("range").GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(1, acpCalls);
+        Assert.Equal(1, readCalls);
+        Assert.Contains("' caf\u00c3\u00a9", Assert.Single(automation.ImportedSources).ImportVerification.CodeModuleLines);
+        Assert.False(File.Exists(sourcePath));
+        Assert.False(File.Exists(context.BinDocumentPath));
+        Assert.Empty(Directory.EnumerateFiles(context.DocumentSourceSetPath));
+        Assert.Empty(Directory.EnumerateDirectories(scratchRoot));
+        Assert.DoesNotContain(snapshotPath, result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(string.Empty, result.StandardError);
     }
 
     private static ResolvedProjectContext CreateContext(string root)

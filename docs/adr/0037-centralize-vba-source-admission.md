@@ -8,7 +8,8 @@ This decision introduces the source-admission boundary through the
 `ExplicitWorkbookImport` slice in issue #335. For explicit import, it supersedes
 the shared UTF-8-first source-decoding rule in ADR 0027 and the tool-local
 workbook-backed command model. Issue #339 extends that boundary to ordinary
-saved-source Build; issue #340 adds Publish. Source ownership, VBE import
+saved-source Build; issue #340 adds Publish and #344 adds snapshot Build/Test.
+Source ownership, VBE import
 verification, and owned Excel-process lifecycle contracts remain accepted.
 
 ## Explicit import admission
@@ -148,22 +149,53 @@ Issue #341 applies the same closed-source encoding decisions independently
 inside the language server, as described below.
 
 Issue #335 introduced `ExplicitImport`; issue #339 adds ordinary Build and the
-ordinary Build stage reused by Test; issue #340 adds Publish. Snapshot build and
-test, and Doctor retain their existing UTF-8-first decoding and capture paths until
-their own migration slices. Test execution and result-location authority also
-remain on their existing paths.
-Their existing `VbeImportSourceSet` entry point remains responsible for that
-legacy admission behavior. Snapshot producers retain their current contracts.
-This decision does not claim that every `VbaDev` source path already uses
-`VbaSourceAdmission`.
+ordinary Build stage reused by Test; issue #340 adds Publish. Issue #344 admits
+snapshot Build/Test with the existing closed `Build` intent: the complete
+caller-owned inventory is authoritative, including an empty set, without
+Publish exclusions or comparison with persistent source. Snapshot ordering
+remains the existing flat filename order. Invocation scratch preserves original
+captured bytes and sidecars; preflight and the VBE import mirror consume the
+same admitted facts rather than decoding the scratch copy again.
 
-The current `build.sourceSnapshot`, `test.sourceSnapshot`, and
-`sourceSnapshot.activeWindowsCodePage` capabilities remain version `1.0`.
-Adapter protocol and snapshot-schema contracts are unchanged. A future
-snapshot encoding migration must coordinate producer, adapter, and CLI
-compatibility in its own complete slice. `ExecutedSourceIndex`-based test
-locations, changes to `test --no-build` navigation, and whole-run Doctor
-admission are deferred; these migrations do not enable them.
+`SnapshotTestExecutionWorkspace` also retains that admission for test execution
+input and source locations. The location mapper uses already-admitted syntax
+and source-set-relative provenance to produce persistent URIs without reading
+source, decoding it, or obtaining ACP again. Missing or ambiguous optional
+locations keep their existing warning behavior. This does not introduce the
+later `ExecutedSourceIndex` design or change ordinary/no-build navigation.
+Doctor admission and those ordinary/no-build location paths remain deferred;
+not every VbaDev source path uses this module yet.
+
+The coordinated compatibility matrix is:
+
+| Contract | Version |
+| --- | --- |
+| VbaDev command contract | `1.0` (unchanged) |
+| `build.sourceSnapshot`, `test.sourceSnapshot` | `2.0` |
+| `sourceSnapshot.activeWindowsCodePage` | `1.0` (unchanged) |
+| Adapter capability contract | `1.0` (unchanged) |
+| Adapter protocol | `2.0` |
+| DAP `sourceSnapshot` schema | integer `2` |
+| Adapter-required CLI `build.sourceSnapshot` | `2.0` |
+
+Issue #344 updates providers, extension requirements, DAP, and packaging in one
+release-ready slice. Mixed old/new versions fail closed before Excel; no
+incompatible intermediate main or package is supported. The extension validates
+both providers before snapshot capture or temporary artifacts, then uses the
+chosen compatible paths. Restart revalidates those same paths before its new
+capture. Ordinary commands remain CLI-only.
+
+The extension preserves clean bytes and sidecars and strictly encodes dirty
+text using a supported BOM or the matching captured ACP. `utf8` without BOM is
+valid only under ACP 65001 and `windows-65001` is never emitted. The adapter
+independently validates schema, safe paths, identity, base64, encoding token,
+BOM, strict decode/reproduction, ACP relationship, sidecars, and complete
+inventory before materialization. It independently requires the CLI Build
+snapshot feature and invokes only the public CLI process. VbaDev independently
+admits those materialized bytes and proves lossless ACP projection before Excel;
+it reads no extension manifest, DAP contract, adapter capability, or consumer
+proof. No runtime DTO, implementation assembly, or product test is shared.
+Adapter analysis-authority consolidation remains a separate issue #363.
 
 ## Language-server closed source
 
@@ -213,7 +245,7 @@ the same corpus without changing its ownership.
   have a supported BOM or be converted to that ACP by its author.
 - Explicit-import preflight, projection, verification, and diagnostics share
   one captured source authority even if caller files change afterward.
-- Ordinary Build and Publish share the same admitted authority without adding
+- Ordinary Build, Publish, and snapshot Build/Test share the same admitted authority without adding
   a second source inventory, ACP decision, or authoring-file read downstream.
 - The previous target survives failures during source admission, workbook
   mutation, verification, save, and owned-process release.

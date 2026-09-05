@@ -32,7 +32,8 @@ export interface VbaDebugConfigurationHost {
   readTextFile(filePath: string): Promise<string>;
   captureSourceInventory(
     sourceSetPath: string,
-    cancellationToken?: VbaDebugCancellationToken
+    cancellationToken?: VbaDebugCancellationToken,
+    activeWindowsCodePage?: number
   ): Promise<SnapshotSourceInventory>;
 }
 
@@ -296,7 +297,7 @@ function createTransportedSnapshotConfiguration(
     document: selection.document.name,
     __vbaDebugWorkbookFileName: path.basename(binPath),
     sourceSnapshot: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources,
       ...(activeEditor === undefined
         ? {}

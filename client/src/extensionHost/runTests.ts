@@ -182,7 +182,7 @@ async function createDebugConfigurationFixture(): Promise<string> {
     }
   }, undefined, 2), 'utf8');
   await writeFile(path.join(sourceSetPath, 'DebugModule.bas'), [
-    'Attribute VB_Name = "DebugModule"',
+    '\ufeffAttribute VB_Name = "DebugModule"',
     'Option Explicit',
     '',
     'Public Sub DebugMe()',

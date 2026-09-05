@@ -765,13 +765,13 @@ test('bundled debug adapter capabilities require the snapshot build feature cont
   const contract = readRequiredVbaDebugAdapterContract();
   assert.deepEqual(contract, {
     contractVersion: '1.0',
-    protocolVersion: '1.1',
+    protocolVersion: '2.0',
     transports: ['stdio'],
     sessionIdFormat: 'lowercase-hex-32',
     commands: ['cleanup', 'doctor'],
     commandSchemaVersions: { doctor: '1.0' },
     featureVersions: { 'doctor.stdinCancellation': '1.0' },
-    requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '1.0' }
+    requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0' }
   });
   const compatibleCapabilities = {
     toolVersion: '0.1.0',
@@ -800,7 +800,7 @@ test('bundled debug adapter capabilities require the snapshot build feature cont
     ...contract,
     requiredVbaDevFeatureVersions: {
       ...contract.requiredVbaDevFeatureVersions,
-      'test.sourceSnapshot': '1.0'
+      'test.sourceSnapshot': '2.0'
     }
   };
   assert.throws(
@@ -808,8 +808,74 @@ test('bundled debug adapter capabilities require the snapshot build feature cont
       toolVersion: '0.1.0',
       ...contractWithExtraFeature
     }), contractWithExtraFeature),
-    /only build\.sourceSnapshot 1\.0/i
+    /only build\.sourceSnapshot 2\.0/i
   );
+});
+
+test('packaging admits the coordinated ACP-authoritative snapshot v2 providers', () => {
+  const cliContract = readRequiredVbaDevContract();
+  const adapterContract = readRequiredVbaDebugAdapterContract();
+  assert.equal(cliContract.contractVersion, '1.0');
+  assert.equal(cliContract.featureVersions['build.sourceSnapshot'], '2.0');
+  assert.equal(cliContract.featureVersions['test.sourceSnapshot'], '2.0');
+  assert.equal(cliContract.featureVersions['sourceSnapshot.activeWindowsCodePage'], '1.0');
+  assert.equal(adapterContract.contractVersion, '1.0');
+  assert.equal(adapterContract.protocolVersion, '2.0');
+  assert.deepEqual(adapterContract.requiredVbaDevFeatureVersions, { 'build.sourceSnapshot': '2.0' });
+  assert.doesNotThrow(() => assertBundledCliCapabilities(JSON.stringify({
+    toolVersion: '0.1.0',
+    contractVersion: cliContract.contractVersion,
+    featureVersions: cliContract.featureVersions,
+    activeWindowsCodePage: 932,
+    commands: Object.fromEntries(Object.entries(cliContract.commandSchemaVersions)
+      .map(([name, version]) => [name, { outputSchemaVersion: version }]))
+  })));
+  assert.doesNotThrow(() => assertBundledDebugAdapterCapabilities(JSON.stringify({
+    toolVersion: '0.1.0',
+    ...adapterContract
+  })));
+});
+
+test('packaging rejects mixed snapshot feature requirements and providers in either direction', () => {
+  const contract = readRequiredVbaDevContract();
+  const capabilities = {
+    toolVersion: '0.1.0',
+    contractVersion: contract.contractVersion,
+    featureVersions: contract.featureVersions,
+    activeWindowsCodePage: 932,
+    commands: Object.fromEntries(Object.entries(contract.commandSchemaVersions)
+      .map(([name, version]) => [name, { outputSchemaVersion: version }]))
+  };
+  for (const feature of ['build.sourceSnapshot', 'test.sourceSnapshot']) {
+    const oldFeatures = { ...contract.featureVersions, [feature]: '1.0' };
+    assert.throws(() => assertBundledCliCapabilities(JSON.stringify({
+      ...capabilities,
+      featureVersions: oldFeatures
+    }), contract), /sourceSnapshot/);
+    assert.throws(() => assertBundledCliCapabilities(JSON.stringify(capabilities), {
+      ...contract,
+      featureVersions: oldFeatures
+    }), /sourceSnapshot/);
+  }
+});
+
+test('packaging rejects mixed adapter protocols and required CLI snapshot features', () => {
+  const contract = readRequiredVbaDebugAdapterContract();
+  const capabilities = { toolVersion: '0.1.0', ...contract };
+  const oldProtocol = { ...contract, protocolVersion: '1.1' };
+  const oldBuildRequirement = {
+    ...contract,
+    requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '1.0' }
+  };
+  for (const oldContract of [oldProtocol, oldBuildRequirement]) {
+    assert.throws(() => assertBundledDebugAdapterCapabilities(JSON.stringify({
+      toolVersion: '0.1.0',
+      ...oldContract
+    }), contract), /adapter|sourceSnapshot/);
+    assert.throws(() => assertBundledDebugAdapterCapabilities(
+      JSON.stringify(capabilities), oldContract
+    ), /adapter|sourceSnapshot/);
+  }
 });
 
 test('bundled language server smoke must prove the C# executable runs directly', () => {

@@ -23,7 +23,7 @@ public sealed record DebugSourceSnapshot(
     ImmutableArray<DebugSourceFileSnapshot> Sources,
     DebugSourcePosition? ActiveSource)
 {
-    public const int CurrentSchemaVersion = 1;
+    public const int CurrentSchemaVersion = 2;
 
     public ImmutableArray<DebugSourceBreakpoint> Breakpoints { get; init; } = [];
 }

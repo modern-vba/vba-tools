@@ -83,7 +83,7 @@ public sealed class CliSurfaceTests
             ? $"\"activeWindowsCodePage\":{capabilities.RootElement.GetProperty("activeWindowsCodePage").GetInt32()},"
             : string.Empty;
         Assert.Equal(
-            "{\"toolVersion\":\"0.1.0\",\"contractVersion\":\"1.0\",\"featureVersions\":{\"build.sourceSnapshot\":\"1.0\",\"test.sourceSnapshot\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"}," +
+            "{\"toolVersion\":\"0.1.0\",\"contractVersion\":\"1.0\",\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"}," +
             activeCodePageProperty +
             "\"commands\":{\"build\":{\"outputSchemaVersion\":\"1.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"import\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"1.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}}}" + Environment.NewLine,
             standardOutput.ToString());
@@ -668,7 +668,7 @@ public sealed class CliSurfaceTests
         Assert.Equal(0, result.ExitCode);
         using var capabilities = JsonDocument.Parse(result.StandardOutput);
         Assert.Equal(
-            "1.0",
+            "2.0",
             capabilities.RootElement
                 .GetProperty("featureVersions")
                 .GetProperty("build.sourceSnapshot")
@@ -684,7 +684,7 @@ public sealed class CliSurfaceTests
         Assert.Equal(0, result.ExitCode);
         using var capabilities = JsonDocument.Parse(result.StandardOutput);
         Assert.Equal(
-            "1.0",
+            "2.0",
             capabilities.RootElement
                 .GetProperty("featureVersions")
                 .GetProperty("test.sourceSnapshot")

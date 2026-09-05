@@ -2,8 +2,13 @@ using VbaDev.App.Workbooks;
 
 namespace VbaDev.App.Build;
 
+internal interface IAdmittedWorkbookGenerationSourceInput : IWorkbookGenerationSourceInput
+{
+    AdmittedVbaSourceSet Admission { get; }
+}
+
 /// <summary>Retains admitted workbook-output authority and its ordered display provenance.</summary>
-internal sealed class AdmittedWorkbookGenerationSourceInput : IWorkbookGenerationSourceInput
+internal sealed class AdmittedWorkbookGenerationSourceInput : IAdmittedWorkbookGenerationSourceInput
 {
     internal AdmittedWorkbookGenerationSourceInput(AdmittedVbaSourceSet admission)
     {
@@ -13,7 +18,7 @@ internal sealed class AdmittedWorkbookGenerationSourceInput : IWorkbookGeneratio
             .ToArray());
     }
 
-    internal AdmittedVbaSourceSet Admission { get; }
+    public AdmittedVbaSourceSet Admission { get; }
 
     public IReadOnlyList<VbaSourceFile> SourceFiles { get; }
 

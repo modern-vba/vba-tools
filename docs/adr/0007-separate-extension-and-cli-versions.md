@@ -117,11 +117,19 @@ ADR 0027 adds a third independently versioned component and contract for
 `vbaTools.debugAdapter.path` independently from `vba-dev`, then supplies the
 resolved CLI path to the adapter. The extension-owned
 `vba-debug-adapter-contract.json` pins adapter contract `1.0`, DAP extension
-protocol `1.1`, stdio transport, lowercase-hex-32 session IDs, cleanup and
+protocol `2.0`, source-snapshot schema `2`, stdio transport, lowercase-hex-32 session IDs, cleanup and
 Doctor commands, Doctor output schema `1.0`, and required
-`build.sourceSnapshot` feature `1.0`. The CLI advertises that build primitive
+`build.sourceSnapshot` feature `2.0`. The CLI advertises that build primitive
 under `featureVersions` rather than carrying a debug-adapter protocol version.
 The adapter validates only the snapshot-build feature it consumes, not the CLI
 tool version or complete command contract. An invalid debug-adapter override
 remains a failed explicit selection and does not fall back. One debug session
 pins both effective paths, and no component performs a silent fallback.
+
+Issue #344 coordinates snapshot Build/Test features `2.0`, adapter protocol
+`2.0`, and DAP source-snapshot schema `2` across the complete package. The CLI
+command contract, adapter capability contract, and active-ACP feature remain
+`1.0`. The extension validates both providers before snapshot capture or
+temporary artifacts; Restart revalidates the pinned paths before fresh capture.
+Ordinary non-snapshot commands remain CLI-only. VbaDev knows no extension
+requirement manifest, adapter capability, DAP version, or consumer proof.

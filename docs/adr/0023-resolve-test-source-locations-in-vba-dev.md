@@ -27,8 +27,9 @@ discovery error or showing a popup.
 
 Under ADR 0026, a default Test Explorer run materializes unsaved editor state in
 a complete snapshot directory whose paths preserve the original
-`DocumentSourceSet`-relative layout. `VbaDev` parses the invocation-fixed
-snapshot bytes so the emitted UTF-16 declaration range describes the code that
+`DocumentSourceSet`-relative layout. Under issue #344 and ADR 0037, `VbaDev`
+uses the same admitted snapshot syntax as Build/Test, without another source
+read, ACP acquisition, or decode, so the emitted UTF-16 declaration range describes the code that
 actually ran. It combines that range with the corresponding persistent source
 URI derived from the relative path; it never emits an internal workspace URI
 that would expire during cleanup. Unsafe, missing, or ambiguous provenance
@@ -38,12 +39,14 @@ may intentionally execute older generated code. When scoped source is clean,
 its navigation target remains current saved source. When scoped source is dirty
 at invocation start, outcomes and workbook-reported test identities remain
 visible but source locations are omitted with a non-failing warning because
-saved-source ranges may not identify the current editor text. Source decoding
+saved-source ranges may not identify the current editor text. Ordinary/no-build source decoding
 recognizes UTF-8 with or without BOM, BOM-marked UTF-16 LE or BE, and the
 operation-fixed active Windows ANSI code page without BOM. It checks a
 recognized BOM first, then strict UTF-8, then the strict ACP, and never
-substitutes replacement characters. Snapshot build/test input must already pass
-strict decode and exact byte round trip before Excel starts. For ordinary or
+substitutes replacement characters; that lookup path is not migrated by #344.
+Snapshot Build/Test instead uses BOM-or-fixed-ACP admission, with no UTF-8
+probe, and must pass strict decode, exact byte round trip, and lossless ACP
+projection before Excel starts. For ordinary or
 `--no-build` source that was not prevalidated, a decoding failure omits only the
 optional source location with the existing non-failing warning; it does not
 change an executed test outcome.

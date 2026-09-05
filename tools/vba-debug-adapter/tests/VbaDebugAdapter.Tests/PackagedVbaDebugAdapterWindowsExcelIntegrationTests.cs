@@ -311,7 +311,7 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
                 "The Windows tracer must baseline the persistent source template.");
 
             var sourceText = CreateDebugSource(launchMarkerPath, completionMarkerPath);
-            var sourceBytes = new UTF8Encoding(false).GetBytes(sourceText);
+            var sourceBytes = DebugSnapshotTestEncoding.Utf8BomBytes(sourceText);
             var sourceUri = new Uri(sourcePath).AbsoluteUri;
             var breakpointLine = FindLine(
                 sourceText,
@@ -376,14 +376,14 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
                             __vbaDebugWorkbookFileName = documentPaths.WorkbookFileName,
                             sourceSnapshot = new
                             {
-                                schemaVersion = 1,
+                                schemaVersion = 2,
                                 sources = new[]
                                 {
                                     new
                                     {
                                         relativePath = "DebugModule.bas",
                                         sourceUri,
-                                        encoding = "utf8",
+                                        encoding = "utf8bom",
                                         contentBase64 = Convert.ToBase64String(sourceBytes)
                                     }
                                 },
@@ -557,7 +557,7 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
             var persistentArtifacts = CapturePersistentArtifacts(documentPaths);
 
             var sourceText = CreateDebugSource(launchMarkerPath, completionMarkerPath);
-            var sourceBytes = new UTF8Encoding(false).GetBytes(sourceText);
+            var sourceBytes = DebugSnapshotTestEncoding.Utf8BomBytes(sourceText);
             var sourceUri = new Uri(sourcePath).AbsoluteUri;
             var breakpointLine = FindLine(
                 sourceText,
@@ -566,7 +566,7 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
                 documentPaths.SourceSetPath,
                 "ConflictingThisWorkbook.bas");
             var conflictingSourceUri = new Uri(conflictingSourcePath).AbsoluteUri;
-            var conflictingSourceBytes = new UTF8Encoding(false).GetBytes(string.Join(
+            var conflictingSourceBytes = DebugSnapshotTestEncoding.Utf8BomBytes(string.Join(
                 "\r\n",
                 "Attribute VB_Name = \"ThisWorkbook\"",
                 "Option Explicit",
@@ -586,14 +586,14 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
                 },
                 sourceSnapshot = new
                 {
-                    schemaVersion = 1,
+                    schemaVersion = 2,
                     sources = new[]
                     {
                         new
                         {
                             relativePath = "DebugModule.bas",
                             sourceUri,
-                            encoding = "utf8",
+                            encoding = "utf8bom",
                             contentBase64 = Convert.ToBase64String(sourceBytes)
                         }
                     },
@@ -615,21 +615,21 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
                 },
                 sourceSnapshot = new
                 {
-                    schemaVersion = 1,
+                    schemaVersion = 2,
                     sources = new[]
                     {
                         new
                         {
                             relativePath = "ConflictingThisWorkbook.bas",
                             sourceUri = conflictingSourceUri,
-                            encoding = "utf8",
+                            encoding = "utf8bom",
                             contentBase64 = Convert.ToBase64String(conflictingSourceBytes)
                         },
                         new
                         {
                             relativePath = "DebugModule.bas",
                             sourceUri,
-                            encoding = "utf8",
+                            encoding = "utf8bom",
                             contentBase64 = Convert.ToBase64String(sourceBytes)
                         }
                     },
@@ -834,7 +834,7 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
             File.Copy(documentPaths.TemplatePath, documentPaths.PublishPath, overwrite: true);
             var persistentArtifacts = CapturePersistentArtifacts(documentPaths);
             var sourceText = CreateDebugSource(launchMarkerPath, completionMarkerPath);
-            var sourceBytes = new UTF8Encoding(false).GetBytes(sourceText);
+            var sourceBytes = DebugSnapshotTestEncoding.Utf8BomBytes(sourceText);
             var sourceUri = new Uri(sourcePath).AbsoluteUri;
             var breakpointLine = FindLine(
                 sourceText,
@@ -881,14 +881,14 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
                             __vbaDebugWorkbookFileName = documentPaths.WorkbookFileName,
                             sourceSnapshot = new
                             {
-                                schemaVersion = 1,
+                                schemaVersion = 2,
                                 sources = new[]
                                 {
                                     new
                                     {
                                         relativePath = "DebugModule.bas",
                                         sourceUri,
-                                        encoding = "utf8",
+                                        encoding = "utf8bom",
                                         contentBase64 = Convert.ToBase64String(sourceBytes)
                                     }
                                 },

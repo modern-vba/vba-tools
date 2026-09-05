@@ -2,11 +2,13 @@ using VbaDev.Infrastructure.FileSystem;
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using VbaDev.App.Build;
 using VbaDev.App.Import;
 using VbaDev.App.Projects;
 using VbaDev.App.References;
+using VbaDev.App.Testing;
 using VbaDev.App.Workbooks;
 using VbaDev.Domain;
 using VbaDev.Infrastructure.Debugging;
@@ -1372,6 +1374,164 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
                 File.ReadAllBytes(source.SourcePath));
         }
         await WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20));
+    }
+
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
+    public async Task SnapshotBuildPreservesAcpBomAndFormBytesAndRejectsInvalidInputBeforeExcel()
+    {
+        using var temp = TempDirectory.Create();
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        var initialProcesses = CaptureExcelProcessIds();
+        var initialBootstrapFiles = CaptureBootstrapWorkbookPaths();
+        var activeCodePage = ActiveWindowsAnsiCodePage.Get();
+        try
+        {
+            var fixture = await CreateOrdinaryWorkbookFixtureAsync(temp, activeCodePage, cancellation.Token);
+            var snapshotPath = CopySnapshotFixtureSources(temp, fixture);
+            var snapshotBytes = Directory.GetFiles(snapshotPath, "*", SearchOption.AllDirectories)
+                .ToDictionary(path => path, File.ReadAllBytes, StringComparer.OrdinalIgnoreCase);
+            Directory.CreateDirectory(Path.GetDirectoryName(fixture.Context.BinDocumentPath)!);
+            CreateEmptyMacroEnabledWorkbook(fixture.Context.BinDocumentPath);
+            var originalBin = File.ReadAllBytes(fixture.Context.BinDocumentPath);
+            var outputPath = Path.Combine(temp.CreateDirectory("snapshot-output"), "AdmissionBook.xlsm");
+            IReadOnlyList<VbeImportSourceFile>? admittedSources = null;
+            var automation = new RecordingOwnedWorkbookGenerationAutomation();
+            var command = CreateOrdinaryBuildCommand(sourceSet =>
+            {
+                Assert.Equal(activeCodePage, sourceSet.ActiveCodePage);
+                Assert.NotNull(sourceSet.Admission);
+                admittedSources = sourceSet.SourceFiles.ToArray();
+            }, automation);
+
+            var result = await command.RunSnapshotAsync(fixture.Context, snapshotPath, outputPath, cancellation.Token);
+
+            Assert.True(result.ExitCode == 0, result.StandardError);
+            Assert.NotNull(admittedSources);
+            Assert.Equal(
+                new[] { "utf8bom", "utf16le", "utf16be", activeCodePage == 65001 ? "utf8" : $"windows-{activeCodePage}" },
+                admittedSources.Select(source => source.ImportVerification.OriginalEncoding));
+            var reopenedVersion = await AssertOrdinaryWorkbookAsync(
+                fixture, outputPath, admittedSources, activeCodePage, temp.Path, cancellation.Token);
+            var completedOutput = File.ReadAllBytes(outputPath);
+            foreach (var source in snapshotBytes)
+            {
+                Assert.Equal(source.Value, File.ReadAllBytes(source.Key));
+            }
+
+            var badSourcePath = Path.Combine(snapshotPath, "modules", "UnicodeModule.bas");
+            List<byte[]> failures = [[0xef, 0xbb, 0xbf, 0xc3, 0x28]];
+            if (activeCodePage != 65001)
+            {
+                var utf8Bom = new UTF8Encoding(true, true);
+                failures.Add(utf8Bom.GetPreamble().Concat(utf8Bom.GetBytes(
+                    "Attribute VB_Name = \"UnicodeModule\"\r\nOption Explicit\r\n' \U0001f642\r\n")).ToArray());
+            }
+            foreach (var invalidBytes in failures)
+            {
+                File.WriteAllBytes(badSourcePath, invalidBytes);
+                var failed = await command.RunSnapshotAsync(fixture.Context, snapshotPath, outputPath, cancellation.Token);
+                Assert.Equal(1, failed.ExitCode);
+                Assert.Equal(1, automation.StartedRuns);
+                Assert.Equal(1, automation.CompletedRuns);
+                Assert.Equal(completedOutput, File.ReadAllBytes(outputPath));
+                Assert.Equal(invalidBytes, File.ReadAllBytes(badSourcePath));
+            }
+
+            Assert.Equal(originalBin, File.ReadAllBytes(fixture.Context.BinDocumentPath));
+            foreach (var source in fixture.CallerBytes)
+            {
+                Assert.Equal(source.Value, File.ReadAllBytes(source.Key));
+            }
+            output.WriteLine($"Snapshot Build v2: actual GetACP {activeCodePage}; reopened Excel {reopenedVersion}; " +
+                $"four BOM/ACP components and nested FRX state preserved; {failures.Count} failures before another Excel start.");
+        }
+        finally
+        {
+            await WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20));
+            Assert.Equal(initialBootstrapFiles.Order(), CaptureBootstrapWorkbookPaths().Order());
+        }
+    }
+
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
+    public async Task SnapshotTestExecutesEditorOnlyBomSourceAndReturnsPersistentLocationWithoutChangingBin()
+    {
+        using var temp = TempDirectory.Create();
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        var initialProcesses = CaptureExcelProcessIds();
+        var initialBootstrapFiles = CaptureBootstrapWorkbookPaths();
+        var activeCodePage = ActiveWindowsAnsiCodePage.Get();
+        try
+        {
+            var fixture = await CreateOrdinaryWorkbookFixtureAsync(temp, activeCodePage, cancellation.Token);
+            var snapshotPath = CopySnapshotFixtureSources(temp, fixture);
+            var editorOnlyPath = Path.Combine(snapshotPath, "modules", "SnapshotTests.bas");
+            WriteEncodedFixtureSource(editorOnlyPath, string.Join("\r\n", [
+                "Attribute VB_Name = \"SnapshotTests\"",
+                "Option Explicit",
+                "Public Sub UnitTestMain()",
+                "    Dim resultSheet As Object",
+                "    Set resultSheet = ThisWorkbook.Worksheets(1)",
+                "    resultSheet.Name = \"UNIT_TEST_SHEET\"",
+                "    resultSheet.Cells(1, 1).Value2 = \"Module\"",
+                "    resultSheet.Cells(2, 1).Value2 = \"SnapshotTests\"",
+                "    resultSheet.Cells(2, 2).Value2 = \"UnitTestMain\"",
+                "    If UnicodeModule.NonAsciiValue = UnicodeBomModule.BomValue Then",
+                "        resultSheet.Cells(2, 3).Value2 = \"OK\"",
+                "    Else",
+                "        resultSheet.Cells(2, 3).Value2 = \"NG\"",
+                "    End If",
+                "    resultSheet.Cells(2, 4).Value2 = UnicodeModule.NonAsciiValue",
+                "End Sub",
+                string.Empty
+            ]), new UTF8Encoding(true, true));
+            var capturedBytes = Directory.GetFiles(snapshotPath, "*", SearchOption.AllDirectories)
+                .ToDictionary(path => path, File.ReadAllBytes, StringComparer.OrdinalIgnoreCase);
+            Directory.CreateDirectory(Path.GetDirectoryName(fixture.Context.BinDocumentPath)!);
+            CreateEmptyMacroEnabledWorkbook(fixture.Context.BinDocumentPath);
+            var originalBin = File.ReadAllBytes(fixture.Context.BinDocumentPath);
+            var build = CreateOrdinaryBuildCommand(sourceSet => Assert.NotNull(sourceSet.Admission));
+            var command = new TestCommand(build, new ExcelComWorkbookTestRunner(),
+                new TestResultOutputFormatter(), new TestProcedureSourceLocator(), new FileSystemPathIdentityResolver());
+
+            var result = await command.RunAsync(fixture.Context,
+                new TestCommandRequest("ndjson", true, new(), TimeSpan.FromMinutes(1), snapshotPath), cancellation.Token);
+
+            Assert.True(result.ExitCode == 0, result.StandardError);
+            using var finished = JsonDocument.Parse(Assert.Single(result.StandardOutput.Split('\n'),
+                line => line.Contains("\"type\":\"testFinished\"", StringComparison.Ordinal)));
+            Assert.Equal("passed", finished.RootElement.GetProperty("outcome").GetString());
+            Assert.Equal(fixture.NonAsciiText, finished.RootElement.GetProperty("message").GetString());
+            var persistentPath = Path.Combine(fixture.Context.DocumentSourceSetPath, "modules", "SnapshotTests.bas");
+            Assert.Equal(new Uri(persistentPath).AbsoluteUri,
+                finished.RootElement.GetProperty("location").GetProperty("uri").GetString());
+            Assert.False(File.Exists(persistentPath));
+            Assert.Equal(originalBin, File.ReadAllBytes(fixture.Context.BinDocumentPath));
+            foreach (var source in fixture.CallerBytes.Concat(capturedBytes))
+            {
+                Assert.Equal(source.Value, File.ReadAllBytes(source.Key));
+            }
+            output.WriteLine($"Snapshot Test v2: actual GetACP {activeCodePage}; seed Excel {fixture.SeedExcelVersion}; " +
+                "real UnitTestMain executed from editor-only UTF-8 BOM source; ACP/BOM values and persistent location preserved.");
+        }
+        finally
+        {
+            await WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20));
+            Assert.Equal(initialBootstrapFiles.Order(), CaptureBootstrapWorkbookPaths().Order());
+        }
+    }
+
+    private static string CopySnapshotFixtureSources(TempDirectory temp, OrdinaryWorkbookFixture fixture)
+    {
+        var snapshotPath = temp.CreateDirectory("caller-snapshot");
+        foreach (var source in Directory.GetFiles(Path.Combine(fixture.Context.DocumentSourceSetPath, "modules")))
+        {
+            var target = Path.Combine(snapshotPath, Path.GetRelativePath(fixture.Context.DocumentSourceSetPath, source));
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+            File.Copy(source, target);
+        }
+        return snapshotPath;
     }
 
     private static void WriteRecasingClassSource(

@@ -4,6 +4,12 @@ using Xunit;
 
 namespace VbaDebugAdapter.Tests;
 
+internal static class DebugSnapshotTestEncoding
+{
+    public static byte[] Utf8BomBytes(string text)
+        => [0xef, 0xbb, 0xbf, .. System.Text.Encoding.UTF8.GetBytes(text)];
+}
+
 internal sealed class TempDirectory : IDisposable
 {
     private TempDirectory(string path)

@@ -37,11 +37,23 @@ internal interface ISnapshotSourceCaptureFactory
 
 internal sealed class SnapshotSourceCaptureFactory : ISnapshotSourceCaptureFactory
 {
+    private readonly VbaSourceAdmission admission;
+
+    internal SnapshotSourceCaptureFactory()
+        : this(new VbaSourceAdmission(ActiveWindowsAnsiCodePage.Get))
+    {
+    }
+
+    internal SnapshotSourceCaptureFactory(VbaSourceAdmission admission)
+    {
+        this.admission = admission;
+    }
+
     public BuildSourceSnapshotCapture Create(
         string scratchRoot,
         string sourceSnapshotPath,
         CancellationToken cancellationToken)
-        => new BuildSourceSnapshotCaptureFactory(scratchRoot)
+        => new BuildSourceSnapshotCaptureFactory(scratchRoot, admission)
             .Create(sourceSnapshotPath, cancellationToken);
 }
 
@@ -335,7 +347,9 @@ internal sealed class SnapshotTestExecutionWorkspace : IDisposable
 
     public string SourceSnapshotPath => sourceCapture.StagingPath;
 
-    internal IReadOnlyList<VbaSourceFile> SourceFiles => sourceCapture.SourceFiles;
+    internal AdmittedVbaSourceSet Admission => sourceCapture.Admission;
+
+    internal string SourceRootPath => sourceCapture.SourceRootPath;
 
     public string WorkbookPath { get; }
 

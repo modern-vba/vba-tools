@@ -7,9 +7,11 @@ import {
 export function createSnapshotSourceInventoryVscodeAdapter(
   host: SnapshotSourceInventoryHost
 ): SnapshotSourceInventoryCapture {
-  return (sourceSetPath, cancellationToken) => captureSnapshotSourceInventory(
+  return (sourceSetPath, cancellationToken, activeWindowsCodePage) => captureSnapshotSourceInventory(
     sourceSetPath,
-    host,
+    activeWindowsCodePage === undefined ? host : {
+      ...host, getActiveWindowsCodePage: () => activeWindowsCodePage
+    },
     cancellationToken
   );
 }

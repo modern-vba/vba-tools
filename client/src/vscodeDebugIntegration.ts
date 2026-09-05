@@ -1,17 +1,16 @@
 import * as path from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { SnapshotProviderCancellationError, SnapshotProviders, resolveSnapshotProviders, snapshotActiveWindowsCodePage } from './snapshotProviders';
 
 import {
   CompanionExecutableResolver,
   ProcessRunner,
   RequiredVbaDevContract,
-  isReportedVbaDevResolutionFailure,
-  resolveCompatibleVbaDev
+  isReportedVbaDevResolutionFailure
 } from './devtool';
 import {
   RequiredVbaDebugAdapterContract,
   VbaDebugAdapterResolver,
-  resolveCompatibleVbaDebugAdapter,
   runDebugAdapterProcess
 } from './debugAdapter';
 import {
@@ -103,7 +102,7 @@ export function createVbaDebugConfigurationProvider(
 
         return boundConfiguration;
       } catch (error) {
-        if (error instanceof VbaDebugCancellationError) {
+        if (error instanceof VbaDebugCancellationError || error instanceof SnapshotProviderCancellationError) {
           return undefined;
         }
 
@@ -338,8 +337,10 @@ export function handleVbaDebugSessionTermination(
 }
 
 export class VscodeDebugIntegration {
+  private readonly capturedProviders = new WeakMap<VbaDebugConfiguration, SnapshotProviders>();
   private activeSessionId: string | undefined;
   private activeSessionReservation: symbol | undefined;
+  private activeSessionCancellation: VbaDebugCancellationController | undefined;
   private shutdownRequested = false;
   private readonly restartPreparations = new Map<string, VbaDebugRestartPreparationState>();
   private readonly restartPreparationIdsBySession = new Map<string, Set<string>>();
@@ -347,7 +348,7 @@ export class VscodeDebugIntegration {
 
   public constructor(private readonly options: VscodeDebugIntegrationOptions) {}
 
-  public resolveDebugConfiguration(
+  public async resolveDebugConfiguration(
     configuration: VbaDebugConfiguration,
     cancellationToken?: VbaDebugCancellationToken
   ): Promise<VbaDebugConfiguration> {
@@ -355,11 +356,32 @@ export class VscodeDebugIntegration {
       throw new Error('VBA debug configuration resolution is not available in this host.');
     }
 
-    return resolveVbaDebugConfiguration(
-      this.options.debugConfigurationHost,
+    const providers = await resolveSnapshotProviders({
+      ...this.options,
+      cancellationToken,
+      configuredDevToolPath: this.options.getConfiguredDevToolPath(),
+      configuredDebugAdapterPath: this.options.getConfiguredDebugAdapterPath?.()
+    });
+
+    const resolved = await resolveVbaDebugConfiguration(
+      this.snapshotHost(providers),
       configuration,
       cancellationToken
     );
+    this.capturedProviders.set(resolved, providers);
+    return resolved;
+  }
+
+  private snapshotHost(providers: SnapshotProviders): VbaDebugConfigurationHost {
+    const host = this.options.debugConfigurationHost!;
+    if (typeof host.captureSourceInventory !== 'function') {
+      throw new VbaDebugSelectionError('VBA debug source inventory capture is unavailable in this host.');
+    }
+    const activeCodePage = snapshotActiveWindowsCodePage(providers);
+    return {
+      ...host,
+      captureSourceInventory: (sourceSetPath, token) => host.captureSourceInventory(sourceSetPath, token, activeCodePage)
+    };
   }
 
   public provideDynamicDebugConfigurations(): readonly VbaDebugConfiguration[] {
@@ -386,6 +408,7 @@ export class VscodeDebugIntegration {
       id,
       projectRoot: path.resolve(projectRoot),
       configuration,
+      providers: this.capturedProviders.get(configuration),
       generation: 0
     });
 
@@ -424,11 +447,16 @@ export class VscodeDebugIntegration {
       throw new Error('VBA debug configuration resolution is not available in this host.');
     }
 
-    return recaptureBoundVbaDebugConfiguration(
-      this.options.debugConfigurationHost,
+    return resolveSnapshotProviders({
+      ...this.options,
+      cancellationToken,
+      configuredDevToolPath: this.options.getConfiguredDevToolPath(),
+      configuredDebugAdapterPath: this.options.getConfiguredDebugAdapterPath?.()
+    }, preparation.providers).then(providers => recaptureBoundVbaDebugConfiguration(
+      this.snapshotHost(providers),
       preparation.configuration,
       cancellationToken
-    );
+    ));
   }
 
   public beginRestartPreparation(
@@ -480,9 +508,8 @@ export class VscodeDebugIntegration {
     const adapterSessionId = preparation.adapterSessionId;
     const completion = (async (): Promise<VbaDebugConfiguration> => {
       try {
-        const captured = await recaptureBoundVbaDebugConfiguration(
-          this.options.debugConfigurationHost!,
-          preparation.configuration,
+        const captured = await this.captureBoundRestartConfiguration(
+          configuration,
           cancellation.token
         );
         return {
@@ -534,26 +561,20 @@ export class VscodeDebugIntegration {
       return undefined;
     }
     const reservation = this.reserveSession(session.id);
+    const cancellationToken = this.activeSessionCancellation!.token;
     try {
-      const devtool = this.options.vbaDevResolver === undefined
-        ? await resolveCompatibleVbaDev({
-            extensionRoot: this.options.extensionRoot,
-            configuredPath: this.options.getConfiguredDevToolPath(),
-            runProcess: this.options.capabilitiesProcess,
-            requiredContract: this.options.requiredContract
-          })
-        : await this.options.vbaDevResolver.resolve();
-      if (!this.hasSessionReservation(session.id, reservation)) {
-        return undefined;
-      }
-      const standaloneDebugAdapter = this.options.vbaDebugAdapterResolver !== undefined
-        ? await this.options.vbaDebugAdapterResolver.resolve()
-        : await resolveCompatibleVbaDebugAdapter({
-            extensionRoot: this.options.extensionRoot,
-            configuredPath: this.options.getConfiguredDebugAdapterPath?.(),
-            requiredContract: this.options.requiredDebugAdapterContract,
-            runProcess: this.options.capabilitiesProcess
-          });
+      const preparationId = session.configuration === undefined
+        ? undefined : this.restartPreparationId(session.configuration);
+      const providers = (preparationId === undefined
+        ? undefined : this.restartPreparations.get(preparationId)?.providers)
+        ?? await resolveSnapshotProviders({
+          ...this.options,
+          cancellationToken,
+          configuredDevToolPath: this.options.getConfiguredDevToolPath(),
+          configuredDebugAdapterPath: this.options.getConfiguredDebugAdapterPath?.()
+        });
+      const devtool = providers.vbaDev;
+      const standaloneDebugAdapter = providers.adapter;
       if (!this.hasSessionReservation(session.id, reservation)) {
         return undefined;
       }
@@ -586,7 +607,7 @@ export class VscodeDebugIntegration {
       };
     } catch (error) {
       this.releaseSessionReservation(session.id, reservation);
-      if (isReportedVbaDevResolutionFailure(error)) {
+      if (isReportedVbaDevResolutionFailure(error) || error instanceof SnapshotProviderCancellationError) {
         return undefined;
       }
       throw error;
@@ -600,8 +621,12 @@ export class VscodeDebugIntegration {
     }
     this.restartPreparationIdsBySession.delete(sessionId);
     if (this.activeSessionId === sessionId) {
+      const cancellation = this.activeSessionCancellation;
       this.activeSessionId = undefined;
       this.activeSessionReservation = undefined;
+      this.activeSessionCancellation = undefined;
+      cancellation?.cancel();
+      cancellation?.dispose();
     }
   }
 
@@ -773,6 +798,7 @@ export class VscodeDebugIntegration {
     const reservation = Symbol(sessionId);
     this.activeSessionId = sessionId;
     this.activeSessionReservation = reservation;
+    this.activeSessionCancellation = new VbaDebugCancellationController();
     return reservation;
   }
 
@@ -821,6 +847,7 @@ export class VscodeDebugIntegration {
 }
 
 interface VbaDebugRestartPreparationState {
+  readonly providers?: SnapshotProviders | undefined;
   readonly id: string;
   readonly projectRoot: string;
   readonly configuration: VbaDebugConfiguration;
