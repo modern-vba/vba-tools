@@ -18,6 +18,16 @@ scratch cleanup. After it successfully produces the requested output, the
 caller owns that output's lifetime; `VbaDev` neither starts a debug session nor
 deletes the output later.
 
+Within VbaDev, public snapshot Build and the build stage of snapshot Test both
+enter the same closed data-only `SourceSnapshotBuild` intent of
+`WorkbookMaterializer`. The intent consumes only VbaDev-owned project context,
+command-owned snapshot capture, and the selected output path. It accepts no
+DAP envelope, adapter DTO, extension or editor state, or consumer validation
+proof. This internal consolidation does not change the public CLI process
+contract: a successful snapshot Build output remains caller-owned, while the
+snapshot Test workbook remains command-owned and is removed with its test
+workspace.
+
 Snapshot build uses paired explicit inputs: `vba-dev build --source-snapshot
 <snapshot-directory> --output <workbook-path>`. Supplying only one option is a
 usage error. Before starting Excel, `VbaDev` resolves case-insensitive,
@@ -237,13 +247,14 @@ Restart uses a newly captured immutable byte snapshot through the same protocol.
 The accepted base64 expansion avoids shared-directory ownership and
 arbitrary-path deletion across the process boundary.
 
-A separate debug component owns DAP transport, snapshot validation and
-materialization, debug-target and breakpoint resolution, visible Excel and VBE
-automation, Restart, termination, debug-session output, and cleanup of the
-snapshot inputs and successful build outputs it uses. The extension owns editor
-snapshot capture and sends the immutable bytes through DAP. The adapter composes
-the snapshot-aware
-`vba-dev build` command rather than adding debug-session behavior to `VbaDev`.
+A separate debug component owns DAP transport, DAP snapshot validation and
+expansion into its session-owned source directory, debug-target and breakpoint
+resolution, visible Excel and VBE automation, Restart, termination, session
+output, and cleanup. Workbook materialization remains VbaDev-owned and is
+invoked only through the public snapshot-aware `vba-dev build` process contract.
+The extension owns editor snapshot capture and sends the immutable bytes through
+DAP. The adapter composes that process command rather than adding debug-session
+behavior to `VbaDev`.
 
 Restart is a `DebugRestartPreparation` transaction rather than a new target
 selection. An opaque preparation ID is bound to the adapter session, canonical

@@ -15,6 +15,7 @@ internal sealed class WorkbookMaterializer
     private readonly WorkbookReferenceNormalizer referenceNormalizer;
     private readonly IWorkbookOutputTransactionFactory transactionFactory;
     private readonly VbeImportSourceSetFactory importSourceSetFactory;
+    private readonly WorkbookAutomationTimeouts baseTimeouts;
     private readonly WorkbookMaterializationNamePreflight namePreflight = new();
     private readonly WorkbookMaterializationOutputValidator outputValidator = new();
 
@@ -71,13 +72,15 @@ internal sealed class WorkbookMaterializer
         IWorkbookGenerationAutomation workbookGenerationAutomation,
         WorkbookReferenceNormalizer referenceNormalizer,
         IWorkbookOutputTransactionFactory transactionFactory,
-        VbeImportSourceSetFactory importSourceSetFactory)
+        VbeImportSourceSetFactory importSourceSetFactory,
+        WorkbookAutomationTimeouts? baseTimeouts = null)
     {
         this.sourcePlanner = sourcePlanner;
         this.workbookGenerationAutomation = workbookGenerationAutomation;
         this.referenceNormalizer = referenceNormalizer;
         this.transactionFactory = transactionFactory;
         this.importSourceSetFactory = importSourceSetFactory;
+        this.baseTimeouts = baseTimeouts ?? WorkbookAutomationTimeouts.Default;
     }
 
     internal Task<WorkbookMaterializationResult> MaterializeAsync(
@@ -89,25 +92,34 @@ internal sealed class WorkbookMaterializer
         {
             WorkbookMaterializationIntent.ProjectBuild build => build.Context,
             WorkbookMaterializationIntent.Publish publish => publish.Context,
+            WorkbookMaterializationIntent.SourceSnapshotBuild snapshot => snapshot.Context,
             _ => throw new ArgumentOutOfRangeException(nameof(intent), intent, null)
         };
         var targetWorkbookPath = intent switch
         {
             WorkbookMaterializationIntent.ProjectBuild => context.BinDocumentPath,
             WorkbookMaterializationIntent.Publish => context.PublishDocumentPath,
+            WorkbookMaterializationIntent.SourceSnapshotBuild snapshot => snapshot.TargetWorkbookPath,
             _ => throw new ArgumentOutOfRangeException(nameof(intent), intent, null)
         };
-        var timeouts = WorkbookAutomationTimeouts.Default with
+        var configuredTimeouts = context.Manifest.CommandDefaults?.ExcelAutomation;
+        var timeouts = baseTimeouts with
         {
-            WorkbookOpen = CommandDefaultResolver.ResolveWorkbookOpenTimeout(context.Manifest),
-            WorkbookSave = CommandDefaultResolver.ResolveWorkbookSaveTimeout(context.Manifest)
+            WorkbookOpen = configuredTimeouts?.WorkbookOpenTimeoutSeconds is int openSeconds
+                ? TimeSpan.FromSeconds(openSeconds)
+                : baseTimeouts.WorkbookOpen,
+            WorkbookSave = configuredTimeouts?.WorkbookSaveTimeoutSeconds is int saveSeconds
+                ? TimeSpan.FromSeconds(saveSeconds)
+                : baseTimeouts.WorkbookSave
         };
-        var sourceInput = intent switch
+        IAdmittedWorkbookGenerationSourceInput sourceInput = intent switch
         {
             WorkbookMaterializationIntent.ProjectBuild =>
                 sourcePlanner.CaptureBuildSourceInput(context, cancellationToken),
             WorkbookMaterializationIntent.Publish =>
                 sourcePlanner.CapturePublishSourceInput(context, cancellationToken),
+            WorkbookMaterializationIntent.SourceSnapshotBuild snapshot =>
+                snapshot.SourceCapture,
             _ => throw new ArgumentOutOfRangeException(nameof(intent), intent, null)
         };
         return MaterializeCoreAsync(
@@ -120,29 +132,12 @@ internal sealed class WorkbookMaterializer
             cancellationToken);
     }
 
-    internal Task<WorkbookMaterializationResult> MaterializeCapturedSnapshotCompatibilityAsync(
-        string documentName,
-        string templateWorkbookPath,
-        string targetWorkbookPath,
-        IReadOnlyList<VbaProjectReference> desiredReferences,
-        IWorkbookGenerationSourceInput sourceInput,
-        WorkbookAutomationTimeouts timeouts,
-        CancellationToken cancellationToken)
-        => MaterializeCoreAsync(
-            documentName,
-            templateWorkbookPath,
-            targetWorkbookPath,
-            desiredReferences,
-            sourceInput,
-            timeouts,
-            cancellationToken);
-
     private async Task<WorkbookMaterializationResult> MaterializeCoreAsync(
         string documentName,
         string templateWorkbookPath,
         string targetWorkbookPath,
         IReadOnlyList<VbaProjectReference> desiredReferences,
-        IWorkbookGenerationSourceInput sourceInput,
+        IAdmittedWorkbookGenerationSourceInput sourceInput,
         WorkbookAutomationTimeouts timeouts,
         CancellationToken cancellationToken)
     {
@@ -349,7 +344,7 @@ internal sealed class WorkbookMaterializer
     }
 
     private PreparedImportSource CreateImportSourceSetAndReleaseInput(
-        IWorkbookGenerationSourceInput sourceInput,
+        IAdmittedWorkbookGenerationSourceInput sourceInput,
         CancellationToken cancellationToken)
     {
         VbeImportSourceSet? importSourceSet = null;
@@ -360,9 +355,7 @@ internal sealed class WorkbookMaterializer
             ThrowIfCanceled(
                 cancellationToken,
                 new WorkbookAutomationStage(WorkbookAutomationStageKind.ExcelStartup));
-            importSourceSet = sourceInput is IAdmittedWorkbookGenerationSourceInput admitted
-                ? importSourceSetFactory.Create(admitted.Admission)
-                : importSourceSetFactory.Create(sourceInput.SourceFiles);
+            importSourceSet = importSourceSetFactory.Create(sourceInput.Admission);
             sourcePreflight = namePreflight.InspectSourcePhase(importSourceSet.SourceFiles);
             if (sourcePreflight.HasFailures)
             {

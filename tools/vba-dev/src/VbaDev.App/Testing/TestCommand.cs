@@ -183,21 +183,22 @@ public sealed class TestCommand
                     request.SourceSnapshotPath,
                     Path.GetFileName(context.BinDocumentPath),
                     cancellationToken);
-                var buildResult = await buildCommand.RunCapturedSnapshotAsync(
+                var buildResult = await buildCommand.RunSnapshotIntentAsync(
                         context,
-                        snapshotWorkspace.SourceSnapshotPath,
-                        snapshotWorkspace.Admission,
+                        snapshotWorkspace.TakeSourceCapture(),
                         snapshotWorkspace.WorkbookPath,
                         cancellationToken)
                     .ConfigureAwait(false);
-                if (buildResult.ExitCode != 0)
+                if (buildResult.CommandResult.ExitCode != 0)
                 {
-                    return buildResult;
+                    return buildResult.CommandResult;
                 }
 
-                successfulBuildStandardError = buildResult.StandardError;
+                successfulBuildStandardError = buildResult.CommandResult.StandardError;
 
-                workbookPath = snapshotWorkspace.WorkbookPath;
+                workbookPath = buildResult.CommittedArtifactPath
+                    ?? throw new InvalidOperationException(
+                        "Snapshot materialization succeeded without a committed workbook path.");
             }
             else if (request.BuildFirst)
             {

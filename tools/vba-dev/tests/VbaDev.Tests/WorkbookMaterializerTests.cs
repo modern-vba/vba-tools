@@ -34,9 +34,9 @@ public sealed class WorkbookMaterializerTests
             TimeSpan.FromSeconds(4),
             TimeSpan.FromSeconds(5),
             TimeSpan.FromSeconds(6));
-        var pipeline = CreatePipeline(automation);
+        var pipeline = CreatePipeline(automation, baseTimeouts: timeouts);
 
-        await pipeline.GenerateAsync(
+        await pipeline.MaterializeSourceSnapshotAsync(
             "Book1",
             templatePath,
             targetPath,
@@ -45,7 +45,7 @@ public sealed class WorkbookMaterializerTests
             timeouts,
             CancellationToken.None);
 
-        Assert.Same(timeouts, automation.Timeouts);
+        Assert.Equal(timeouts, automation.Timeouts);
         Assert.Equal("new-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
         Assert.Equal(
             [
@@ -84,7 +84,7 @@ public sealed class WorkbookMaterializerTests
             });
 
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            pipeline.GenerateAsync(
+            pipeline.MaterializeSourceSnapshotAsync(
                 "Book1",
                 templatePath,
                 targetPath,
@@ -99,7 +99,7 @@ public sealed class WorkbookMaterializerTests
     }
 
     [Fact]
-    public async Task OwnedSnapshotIsReleasedAfterImportMirrorCreationAndBeforeOutputOrExcelStarts()
+    public async Task SourceSnapshotCaptureIsReleasedAfterImportMirrorCreationAndBeforeOutputOrExcelStarts()
     {
         using var temp = TempDirectory.Create();
         var templatePath = Path.Combine(temp.Path, "Template.xlsm");
@@ -111,30 +111,35 @@ public sealed class WorkbookMaterializerTests
             "Attribute VB_Name = \"Module1\"\r\n",
             new UTF8Encoding(false));
         var events = new List<string>();
-        var sourceInput = new RecordingSourceInput(
-            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
-            () =>
-            {
-                File.Delete(sourcePath);
-                events.Add("snapshot-release");
-            });
+        BuildSourceSnapshotCapture? sourceCapture = null;
         var pipeline = CreatePipeline(
             new RecordingWorkbookGenerationAutomation(events),
-            new RecordingTransactionFactory(events));
+            new RecordingTransactionFactory(
+                events,
+                () => Assert.False(Directory.Exists(sourceCapture!.StagingPath))),
+            new VbeImportSourceSetFactory(
+                () => throw new InvalidOperationException("Import mirror requested ACP again."),
+                _ =>
+                {
+                    Assert.True(Directory.Exists(sourceCapture!.StagingPath));
+                    events.Add("mirror-created");
+                }));
 
-        await pipeline.GenerateAsync(
+        await pipeline.MaterializeSourceSnapshotAsync(
             "Book1",
             templatePath,
             targetPath,
             [],
-            sourceInput,
+            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
             WorkbookAutomationTimeouts.Default,
-            CancellationToken.None);
+            CancellationToken.None,
+            captureCreated: capture => sourceCapture = capture);
 
-        Assert.False(File.Exists(sourcePath));
+        Assert.True(File.Exists(sourcePath));
+        Assert.False(Directory.Exists(sourceCapture!.StagingPath));
         Assert.Equal(
             [
-                "snapshot-release",
+                "mirror-created",
                 "transaction-create",
                 "open",
                 "get-project-name",
@@ -154,8 +159,13 @@ public sealed class WorkbookMaterializerTests
     }
 
     [Fact]
-    public async Task OwnedSnapshotCleanupFailureStopsBeforeOutputOrExcelStarts()
+    public async Task SourceSnapshotCaptureCleanupFailureStopsBeforeOutputOrExcelStarts()
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
         using var temp = TempDirectory.Create();
         var templatePath = Path.Combine(temp.Path, "Template.xlsm");
         var targetPath = Path.Combine(temp.Path, "Book1.xlsm");
@@ -167,33 +177,46 @@ public sealed class WorkbookMaterializerTests
             "Attribute VB_Name = \"Module1\"\r\n",
             new UTF8Encoding(false));
         var events = new List<string>();
-        var disposeAttempts = 0;
-        var sourceInput = new RecordingSourceInput(
-            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
-            () =>
-            {
-                disposeAttempts++;
-                throw new InvalidOperationException("snapshot cleanup failed");
-            });
         var pipeline = CreatePipeline(
             new RecordingWorkbookGenerationAutomation(events),
             new RecordingTransactionFactory(events));
+        FileStream? sourceLock = null;
+        string? captureStagingPath = null;
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            pipeline.GenerateAsync(
-                "Book1",
-                templatePath,
-                targetPath,
-                [],
-                sourceInput,
-                WorkbookAutomationTimeouts.Default,
-                CancellationToken.None));
+        try
+        {
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                pipeline.MaterializeSourceSnapshotAsync(
+                    "Book1",
+                    templatePath,
+                    targetPath,
+                    [],
+                    [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
+                    WorkbookAutomationTimeouts.Default,
+                    CancellationToken.None,
+                    captureCreated: capture =>
+                    {
+                        captureStagingPath = capture.StagingPath;
+                        sourceLock = File.Open(
+                            Assert.Single(capture.SourceFiles).SourcePath,
+                            FileMode.Open,
+                            FileAccess.Read,
+                            FileShare.None);
+                    }));
 
-        Assert.Contains("snapshot cleanup failed", error.Message, StringComparison.Ordinal);
-        Assert.Equal(1, disposeAttempts);
-        Assert.Empty(events);
-        Assert.Equal("previous-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
-        Assert.Empty(Directory.EnumerateFiles(temp.Path, ".Book1.*.tmp.xlsm"));
+            Assert.Contains("could not be removed", error.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Empty(events);
+            Assert.Equal("previous-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
+            Assert.Empty(Directory.EnumerateFiles(temp.Path, ".Book1.*.tmp.xlsm"));
+        }
+        finally
+        {
+            sourceLock?.Dispose();
+            if (captureStagingPath is not null && Directory.Exists(captureStagingPath))
+            {
+                Directory.Delete(captureStagingPath, recursive: true);
+            }
+        }
     }
 
     [Fact]
@@ -250,7 +273,7 @@ public sealed class WorkbookMaterializerTests
                             0)),
                     probe)));
 
-        await pipeline.GenerateAsync(
+        await pipeline.MaterializeSourceSnapshotAsync(
             "Book1",
             templatePath,
             targetPath,
@@ -286,7 +309,7 @@ public sealed class WorkbookMaterializerTests
         var pipeline = CreatePipeline(automation);
 
         var error = await Assert.ThrowsAsync<WorkbookAutomationCanceledException>(() =>
-            pipeline.GenerateAsync(
+            pipeline.MaterializeSourceSnapshotAsync(
                 "Book1",
                 templatePath,
                 targetPath,
@@ -314,7 +337,7 @@ public sealed class WorkbookMaterializerTests
             new RecordingWorkbookGenerationAutomation([]),
             transactionFactory);
 
-        var result = await pipeline.GenerateAsync(
+        var result = await pipeline.MaterializeSourceSnapshotAsync(
             "Book1",
             templatePath,
             targetPath,
@@ -347,7 +370,7 @@ public sealed class WorkbookMaterializerTests
             new ThrowingWorkbookGenerationAutomation(timeout),
             new CleanupFailureTransactionFactory());
 
-        var error = await Assert.ThrowsAsync<BuildCommandException>(() => pipeline.GenerateAsync(
+        var error = await Assert.ThrowsAsync<BuildCommandException>(() => pipeline.MaterializeSourceSnapshotAsync(
             "Book1",
             templatePath,
             targetPath,
@@ -361,45 +384,6 @@ public sealed class WorkbookMaterializerTests
         var aggregate = Assert.IsType<AggregateException>(error.InnerException);
         Assert.Same(timeout, aggregate.InnerExceptions[0]);
         Assert.Equal("previous-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
-    }
-
-    [Fact]
-    public async Task LossySourceFailsBeforeOwnedExcelOrOutputStagingStarts()
-    {
-        using var temp = TempDirectory.Create();
-        var templatePath = Path.Combine(temp.Path, "Template.xlsm");
-        var targetPath = Path.Combine(temp.Path, "Book1.xlsm");
-        var sourcePath = Path.Combine(temp.Path, "Lossy.bas");
-        File.WriteAllText(templatePath, "new-workbook", Encoding.UTF8);
-        File.WriteAllText(targetPath, "previous-workbook", Encoding.UTF8);
-        const string sourceText = "Attribute VB_Name = \"Lossy\"\r\nPublic Const Minus As String = \"−\"\r\n";
-        var sourceBytes = new UTF8Encoding(false, true).GetBytes(sourceText);
-        File.WriteAllBytes(sourcePath, sourceBytes);
-        var events = new List<string>();
-        var codePageReads = 0;
-        var pipeline = CreatePipeline(
-            new RecordingWorkbookGenerationAutomation(events),
-            importSourceSetFactory: new VbeImportSourceSetFactory(() =>
-            {
-                codePageReads++;
-                return 1252;
-            }));
-
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
-            "Book1",
-            templatePath,
-            targetPath,
-            [],
-            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
-            WorkbookAutomationTimeouts.Default,
-            CancellationToken.None));
-
-        Assert.Contains("Windows code page 1252", error.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal(1, codePageReads);
-        Assert.Empty(events);
-        Assert.Equal(sourceBytes, File.ReadAllBytes(sourcePath));
-        Assert.Equal("previous-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
-        Assert.Empty(Directory.EnumerateFiles(temp.Path, ".Book1.*.tmp.xlsm"));
     }
 
     [Fact]
@@ -423,7 +407,7 @@ public sealed class WorkbookMaterializerTests
         var events = new List<string>();
         var pipeline = CreatePipeline(new RecordingWorkbookGenerationAutomation(events));
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.MaterializeSourceSnapshotAsync(
             "Book1",
             templatePath,
             targetPath,
@@ -459,7 +443,7 @@ public sealed class WorkbookMaterializerTests
         var events = new List<string>();
         var pipeline = CreatePipeline(new RecordingWorkbookGenerationAutomation(events));
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.MaterializeSourceSnapshotAsync(
             "Book1",
             templatePath,
             targetPath,
@@ -481,10 +465,10 @@ public sealed class WorkbookMaterializerTests
         using var temp = TempDirectory.Create();
         var templatePath = Path.Combine(temp.Path, "Template.xlsm");
         var targetPath = Path.Combine(temp.Path, "Book1.xlsm");
-        var misplacedPath = Path.Combine(temp.Path, "First.bas");
-        var missingPath = Path.Combine(temp.Path, "Second.bas");
-        var conflictPath = Path.Combine(temp.Path, "Third.bas");
-        var caseConflictPath = Path.Combine(temp.Path, "Fourth.bas");
+        var conflictPath = Path.Combine(temp.Path, "AFirst.bas");
+        var caseConflictPath = Path.Combine(temp.Path, "BSecond.bas");
+        var misplacedPath = Path.Combine(temp.Path, "CThird.bas");
+        var missingPath = Path.Combine(temp.Path, "DFourth.bas");
         File.WriteAllText(templatePath, "new-workbook", Encoding.UTF8);
         File.WriteAllText(targetPath, "previous-workbook", Encoding.UTF8);
         File.WriteAllText(
@@ -506,7 +490,7 @@ public sealed class WorkbookMaterializerTests
         var events = new List<string>();
         var pipeline = CreatePipeline(new RecordingWorkbookGenerationAutomation(events));
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.MaterializeSourceSnapshotAsync(
             "Book1",
             templatePath,
             targetPath,
@@ -561,7 +545,7 @@ public sealed class WorkbookMaterializerTests
         var events = new List<string>();
         var pipeline = CreatePipeline(new RecordingWorkbookGenerationAutomation(events));
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.MaterializeSourceSnapshotAsync(
             "Book1",
             templatePath,
             targetPath,
@@ -597,7 +581,7 @@ public sealed class WorkbookMaterializerTests
         };
         var pipeline = CreatePipeline(automation);
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.MaterializeSourceSnapshotAsync(
             "Book1",
             templatePath,
             targetPath,
@@ -634,7 +618,7 @@ public sealed class WorkbookMaterializerTests
         };
         var pipeline = CreatePipeline(automation);
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.MaterializeSourceSnapshotAsync(
             "Book1",
             templatePath,
             targetPath,
@@ -671,7 +655,7 @@ public sealed class WorkbookMaterializerTests
         };
         var pipeline = CreatePipeline(automation);
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.MaterializeSourceSnapshotAsync(
             "Book1",
             templatePath,
             targetPath,
@@ -706,7 +690,7 @@ public sealed class WorkbookMaterializerTests
         };
         var pipeline = CreatePipeline(automation);
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.MaterializeSourceSnapshotAsync(
             "ManifestDocumentLabel",
             templatePath,
             targetPath,
@@ -743,7 +727,7 @@ public sealed class WorkbookMaterializerTests
         };
         var pipeline = CreatePipeline(automation);
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.MaterializeSourceSnapshotAsync(
             "Book1",
             templatePath,
             targetPath,
@@ -781,7 +765,7 @@ public sealed class WorkbookMaterializerTests
         };
         var pipeline = CreatePipeline(automation);
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.MaterializeSourceSnapshotAsync(
             "Book1",
             templatePath,
             targetPath,
@@ -820,7 +804,7 @@ public sealed class WorkbookMaterializerTests
         };
         var pipeline = CreatePipeline(automation);
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.MaterializeSourceSnapshotAsync(
             "Book1",
             templatePath,
             targetPath,
@@ -858,7 +842,7 @@ public sealed class WorkbookMaterializerTests
         };
         var pipeline = CreatePipeline(automation);
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.MaterializeSourceSnapshotAsync(
             "Book1",
             templatePath,
             targetPath,
@@ -916,7 +900,7 @@ public sealed class WorkbookMaterializerTests
         };
         var pipeline = CreatePipeline(automation);
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.MaterializeSourceSnapshotAsync(
             "Book1",
             templatePath,
             targetPath,
@@ -965,7 +949,7 @@ public sealed class WorkbookMaterializerTests
         };
         var pipeline = CreatePipeline(automation);
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.MaterializeSourceSnapshotAsync(
             "Book1",
             templatePath,
             targetPath,
@@ -1009,7 +993,7 @@ public sealed class WorkbookMaterializerTests
         };
         var pipeline = CreatePipeline(automation);
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.MaterializeSourceSnapshotAsync(
             "Book1",
             templatePath,
             targetPath,
@@ -1061,7 +1045,7 @@ public sealed class WorkbookMaterializerTests
                 new VbaProjectReferencePlanner(
                     new FakeVbaProjectReferenceResolver(resolvedReference))));
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.MaterializeSourceSnapshotAsync(
             "Book1",
             templatePath,
             targetPath,
@@ -1079,7 +1063,7 @@ public sealed class WorkbookMaterializerTests
     }
 
     [Fact]
-    public async Task DebugSnapshotTextMismatchFailsBeforeOwnedExcelOrOutputStagingStarts()
+    public async Task SourceSnapshotBuildUsesCapturedAdmissionAfterCallerSourceChanges()
     {
         using var temp = TempDirectory.Create();
         var templatePath = Path.Combine(temp.Path, "Template.xlsm");
@@ -1087,39 +1071,41 @@ public sealed class WorkbookMaterializerTests
         var sourcePath = Path.Combine(temp.Path, "Module1.bas");
         File.WriteAllText(templatePath, "new-workbook", Encoding.UTF8);
         File.WriteAllText(targetPath, "previous-workbook", Encoding.UTF8);
-        const string sourceText = "Attribute VB_Name = \"Module1\"\r\nPublic Sub CurrentCode()\r\nEnd Sub\r\n";
-        var sourceBytes = new UTF8Encoding(false, true).GetBytes(sourceText);
-        File.WriteAllBytes(sourcePath, sourceBytes);
+        const string admittedText =
+            "Attribute VB_Name = \"Module1\"\r\nPublic Sub AdmittedCode()\r\nEnd Sub\r\n";
+        const string laterCallerText =
+            "Attribute VB_Name = \"Module1\"\r\nPublic Sub LaterCallerCode()\r\nEnd Sub\r\n";
+        File.WriteAllText(sourcePath, admittedText, new UTF8Encoding(false, true));
         var events = new List<string>();
-        var codePageReads = 0;
-        var pipeline = CreatePipeline(
-            new RecordingWorkbookGenerationAutomation(events),
-            importSourceSetFactory: new VbeImportSourceSetFactory(() =>
-            {
-                codePageReads++;
-                return 65001;
-            }));
-        var source = new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)
+        VbeImportSourceFile? importedSource = null;
+        var pipeline = CreatePipeline(new RecordingWorkbookGenerationAutomation(events)
         {
-            ExpectedUnicodeText = sourceText.Replace("CurrentCode", "StaleCode", StringComparison.Ordinal),
-            ExpectedUnicodeTextSourcePath = sourcePath
-        };
+            OnImport = source => importedSource = source
+        });
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+        var result = await pipeline.MaterializeSourceSnapshotAsync(
             "Book1",
             templatePath,
             targetPath,
             [],
-            [source],
+            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
             WorkbookAutomationTimeouts.Default,
-            CancellationToken.None));
+            CancellationToken.None,
+            captureCreated: _ =>
+            {
+                File.WriteAllText(
+                    sourcePath,
+                    laterCallerText,
+                    new UTF8Encoding(false, true));
+            });
 
-        Assert.Contains("changed after", error.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains(sourcePath, error.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal(1, codePageReads);
-        Assert.Empty(events);
-        Assert.Equal(sourceBytes, File.ReadAllBytes(sourcePath));
-        Assert.Equal("previous-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
+        Assert.Empty(result.Warnings);
+        Assert.Equal("new-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
+        Assert.Equal(laterCallerText, File.ReadAllText(sourcePath, new UTF8Encoding(false, true)));
+        Assert.NotNull(importedSource);
+        Assert.Contains("Public Sub AdmittedCode()", importedSource.ImportVerification.CodeModuleLines);
+        Assert.DoesNotContain("Public Sub LaterCallerCode()", importedSource.ImportVerification.CodeModuleLines);
+        Assert.Equal(sourcePath, importedSource.DiagnosticSourcePath);
         Assert.Empty(Directory.EnumerateFiles(temp.Path, ".Book1.*.tmp.xlsm"));
     }
 
@@ -1151,7 +1137,7 @@ public sealed class WorkbookMaterializerTests
 
         try
         {
-            var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.GenerateAsync(
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.MaterializeSourceSnapshotAsync(
                 "Book1",
                 templatePath,
                 targetPath,
@@ -1177,13 +1163,17 @@ public sealed class WorkbookMaterializerTests
     private static WorkbookMaterializer CreatePipeline(
         IWorkbookGenerationAutomation automation,
         IWorkbookOutputTransactionFactory? transactionFactory = null,
-        VbeImportSourceSetFactory? importSourceSetFactory = null)
+        VbeImportSourceSetFactory? importSourceSetFactory = null,
+        WorkbookAutomationTimeouts? baseTimeouts = null)
         => new(
+            new WorkbookSourcePlanner(() => 65001),
             automation,
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),
             transactionFactory ?? new WorkbookOutputTransactionFactory(),
-            importSourceSetFactory ?? new VbeImportSourceSetFactory(() => 65001));
+            importSourceSetFactory ?? new VbeImportSourceSetFactory(
+                () => throw new InvalidOperationException("Import mirror requested ACP again.")),
+            baseTimeouts);
 
     private sealed class RecordingWorkbookGenerationAutomation(
         List<string> events) : IWorkbookGenerationAutomation
@@ -1401,26 +1391,19 @@ public sealed class WorkbookMaterializerTests
     }
 
     private sealed class RecordingTransactionFactory(
-        List<string> events) : IWorkbookOutputTransactionFactory
+        List<string> events,
+        Action? beforeCreate = null) : IWorkbookOutputTransactionFactory
     {
         public IWorkbookOutputTransaction Create(
             string templateWorkbookPath,
             string targetWorkbookPath)
         {
+            beforeCreate?.Invoke();
             events.Add("transaction-create");
             return WorkbookOutputTransaction.Create(
                 templateWorkbookPath,
                 targetWorkbookPath);
         }
-    }
-
-    private sealed class RecordingSourceInput(
-        IReadOnlyList<VbaSourceFile> sourceFiles,
-        Action onDispose) : IWorkbookGenerationSourceInput
-    {
-        public IReadOnlyList<VbaSourceFile> SourceFiles => sourceFiles;
-
-        public void Dispose() => onDispose();
     }
 
     private sealed class ThrowingWorkbookGenerationAutomation(

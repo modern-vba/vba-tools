@@ -50,12 +50,16 @@ BOM-less UTF-8, BOM-marked UTF-8, and BOM-marked UTF-16 LE and BE. ADR 0027
 therefore requires the ACP import copy for snapshot test builds.
 
 Snapshot test mode does not accept `--output`. `VbaDev` creates a unique internal
-`SnapshotTestExecutionWorkspace`, builds a workbook there using the
-manifest-defined bin workbook's file name, runs the selected tests, releases its
-owned Excel process, and then removes the workspace. The source template,
-references, project identity, document identity, selectors, result format, and
-other test configuration continue to come from the project and ordinary test
-options. The internal source and workbook paths are not part of test output.
+`SnapshotTestExecutionWorkspace` and materializes its workbook through the same
+closed `SourceSnapshotBuild` intent used by snapshot-aware `vba-dev build`.
+Test execution opens the exact `CommittedArtifactPath` returned after that
+intent has committed output and proved release of its hidden build Excel
+process; it does not perform an independent build or read, open, create,
+replace, or delete the manifest-defined bin workbook path. Only that path's file
+name is reused for the workspace workbook. The source template, references,
+project identity, document identity, selectors, result format, and other test
+configuration continue to come from the project and ordinary test options.
+Internal source and workbook paths remain absent from test output.
 
 The command removes its workspace after success, failed assertions, build or
 automation failure, and cancellation. Cleanup occurs only after owned Excel

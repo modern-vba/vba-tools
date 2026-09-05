@@ -2,7 +2,7 @@ using VbaDev.App.Workbooks;
 
 namespace VbaDev.App.Build;
 
-internal interface IAdmittedWorkbookGenerationSourceInput : IWorkbookGenerationSourceInput
+internal interface IAdmittedWorkbookGenerationSourceInput : IDisposable
 {
     AdmittedVbaSourceSet Admission { get; }
 }
@@ -13,14 +13,9 @@ internal sealed class AdmittedWorkbookGenerationSourceInput : IAdmittedWorkbookG
     internal AdmittedWorkbookGenerationSourceInput(AdmittedVbaSourceSet admission)
     {
         Admission = admission;
-        SourceFiles = Array.AsReadOnly(admission.Sources
-            .Select(source => new VbaSourceFile(source.SourcePath, source.Kind, source.BinaryPath))
-            .ToArray());
     }
 
     public AdmittedVbaSourceSet Admission { get; }
-
-    public IReadOnlyList<VbaSourceFile> SourceFiles { get; }
 
     public void Dispose()
     {

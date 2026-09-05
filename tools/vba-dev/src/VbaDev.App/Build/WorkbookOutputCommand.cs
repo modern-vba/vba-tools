@@ -26,7 +26,7 @@ internal sealed class WorkbookOutputCommand
     internal Task<CommandResult> RunBuildAsync(
         ResolvedProjectContext context,
         CancellationToken cancellationToken)
-        => RunAsyncCore(
+        => RunCommandAsync(
             context,
             operationName: "build",
             displayName: "Build",
@@ -42,7 +42,7 @@ internal sealed class WorkbookOutputCommand
     internal Task<CommandResult> RunPublishAsync(
         ResolvedProjectContext context,
         CancellationToken cancellationToken)
-        => RunAsyncCore(
+        => RunCommandAsync(
             context,
             operationName: "publish",
             displayName: "Publish",
@@ -59,58 +59,89 @@ internal sealed class WorkbookOutputCommand
         BuildSourceSnapshotCaptureFactory captureFactory,
         BuildSourceSnapshotOutputSafetyValidator outputSafetyValidator,
         CancellationToken cancellationToken)
-        => RunAsyncCore(
+        => RunCommandAsync(
             context,
             operationName: "build",
             displayName: "Build",
             completedVerb: "Built",
-            () =>
+            async () =>
             {
-                var timeouts = ResolveTimeouts(context);
                 var validatedPaths = outputSafetyValidator.Validate(
                     context,
                     sourceSnapshotPath,
                     outputPath);
-                return MaterializeCapturedSnapshotAsync(
-                    context,
-                    captureFactory.Create(
+                using var sourceCapture = captureFactory.Create(
                         validatedPaths.SourceSnapshotPath,
-                        cancellationToken),
+                        cancellationToken);
+                return await MaterializeSourceSnapshotAsync(
+                        context,
+                        sourceCapture,
                     validatedPaths.OutputPath,
-                    timeouts,
-                    cancellationToken);
+                        cancellationToken)
+                    .ConfigureAwait(false);
             },
             cancellationToken);
 
-    internal Task<CommandResult> RunCapturedSnapshotBuildAsync(
+    internal async Task<SourceSnapshotBuildCommandResult> RunSnapshotIntentAsync(
         ResolvedProjectContext context,
-        string sourceSnapshotPath,
-        AdmittedVbaSourceSet admission,
-        string outputPath,
-        BuildSourceSnapshotOutputSafetyValidator outputSafetyValidator,
+        BuildSourceSnapshotCapture sourceCapture,
+        string targetWorkbookPath,
         CancellationToken cancellationToken)
-        => RunAsyncCore(
-            context,
-            operationName: "build",
-            displayName: "Build",
-            completedVerb: "Built",
-            () =>
+    {
+        WorkbookOutputExecution? execution = null;
+        try
+        {
+            using (sourceCapture)
             {
-                var timeouts = ResolveTimeouts(context);
-                var validatedPaths = outputSafetyValidator.Validate(
-                    context,
-                    sourceSnapshotPath,
-                    outputPath);
-                return MaterializeCapturedSnapshotAsync(
-                    context,
-                    new AdmittedWorkbookGenerationSourceInput(admission),
-                    validatedPaths.OutputPath,
-                    timeouts,
-                    cancellationToken);
-            },
-            cancellationToken);
+                execution = await RunAsyncCore(
+                        context,
+                        operationName: "build",
+                        displayName: "Build",
+                        completedVerb: "Built",
+                        () => MaterializeSourceSnapshotAsync(
+                            context,
+                            sourceCapture,
+                            targetWorkbookPath,
+                            cancellationToken),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+        catch (InvalidOperationException cleanupError) when (execution is not null)
+        {
+            execution = execution with
+            {
+                CommandResult = execution.CommandResult with
+                {
+                    StandardError = execution.CommandResult.StandardError
+                        + cleanupError.Message
+                        + Environment.NewLine
+                }
+            };
+        }
 
-    private async Task<CommandResult> RunAsyncCore(
+        return new SourceSnapshotBuildCommandResult(
+            execution!.CommandResult,
+            execution.Materialization?.CommittedArtifactPath);
+    }
+
+    private async Task<CommandResult> RunCommandAsync(
+        ResolvedProjectContext context,
+        string operationName,
+        string displayName,
+        string completedVerb,
+        Func<Task<WorkbookMaterializationResult>> materialize,
+        CancellationToken cancellationToken)
+        => (await RunAsyncCore(
+                context,
+                operationName,
+                displayName,
+                completedVerb,
+                materialize,
+                cancellationToken)
+            .ConfigureAwait(false)).CommandResult;
+
+    private async Task<WorkbookOutputExecution> RunAsyncCore(
         ResolvedProjectContext context,
         string operationName,
         string displayName,
@@ -122,102 +153,98 @@ internal sealed class WorkbookOutputCommand
         {
             if (cancellationToken.IsCancellationRequested)
             {
-                return CommandResult.Cancelled(
-                    "Workbook automation was cancelled during Excel startup.");
+                return Failed(CommandResult.Cancelled(
+                    "Workbook automation was cancelled during Excel startup."));
             }
 
             if (!context.Document.Kind.Equals(ProjectDocument.ExcelKind, StringComparison.OrdinalIgnoreCase))
             {
-                return CommandResult.UsageError($"{displayName} supports only Excel documents: {context.DocumentName}");
+                return Failed(CommandResult.UsageError(
+                    $"{displayName} supports only Excel documents: {context.DocumentName}"));
             }
 
             var result = await materialize().ConfigureAwait(false);
 
-            return new CommandResult(
-                0,
-                RenderOutput(
-                    completedVerb,
-                    result.CommittedArtifactPath,
-                    result.ImportedSourceCount,
-                    result.Warnings),
-                VbeImportWarningRenderer.Render(result.VerificationReport));
+            return new WorkbookOutputExecution(
+                new CommandResult(
+                    0,
+                    RenderOutput(
+                        completedVerb,
+                        result.CommittedArtifactPath,
+                        result.ImportedSourceCount,
+                        result.Warnings),
+                    VbeImportWarningRenderer.Render(result.VerificationReport)),
+                result);
         }
         catch (WorkbookAutomationCanceledException ex)
         {
-            return PreserveReleaseProof(ex, CommandResult.Cancelled(ex.Message));
+            return Failed(PreserveReleaseProof(ex, CommandResult.Cancelled(ex.Message)));
         }
         catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
         {
-            return PreserveReleaseProof(
+            return Failed(PreserveReleaseProof(
                 ex,
                 CommandResult.Cancelled(
-                    "Workbook automation was cancelled during the active generation stage."));
+                    "Workbook automation was cancelled during the active generation stage.")));
         }
         catch (WorkbookAutomationTimeoutException ex)
         {
-            return CreateFailureResult(ex);
+            return Failed(CreateFailureResult(ex));
         }
         catch (WorkbookAutomationProcessLostException ex)
         {
-            return CreateFailureResult(ex);
+            return Failed(CreateFailureResult(ex));
         }
         catch (WorkbookAutomationCleanupException ex)
         {
-            return CreateFailureResult(ex);
+            return Failed(CreateFailureResult(ex));
         }
         catch (WorkbookAutomationReleasedProcessCleanupException ex)
         {
-            return CreateFailureResult(ex);
+            return Failed(CreateFailureResult(ex));
         }
         catch (BuildCommandException ex)
         {
-            return CreateFailureResult(ex);
+            return Failed(CreateFailureResult(ex));
         }
         catch (CommonModulesManifestException ex)
         {
-            return CreateFailureResult(ex);
+            return Failed(CreateFailureResult(ex));
         }
         catch (InvalidOperationException ex)
         {
-            return CreateFailureResult(ex);
+            return Failed(CreateFailureResult(ex));
         }
         catch (IOException ex)
         {
-            return CreateFailureResult(ex);
+            return Failed(CreateFailureResult(ex));
         }
         catch (UnauthorizedAccessException ex)
         {
-            return CreateFailureResult(ex);
+            return Failed(CreateFailureResult(ex));
         }
         catch (COMException ex)
         {
-            return CreateFailureResult(
+            return Failed(CreateFailureResult(
                 ex,
-                CommandErrorMessages.ExcelComAutomationFailed(operationName, ex));
+                CommandErrorMessages.ExcelComAutomationFailed(operationName, ex)));
         }
     }
 
-    private Task<WorkbookMaterializationResult> MaterializeCapturedSnapshotAsync(
-        ResolvedProjectContext context,
-        IWorkbookGenerationSourceInput sourceInput,
-        string targetDocumentPath,
-        WorkbookAutomationTimeouts timeouts,
-        CancellationToken cancellationToken)
-        => materializer.MaterializeCapturedSnapshotCompatibilityAsync(
-            context.DocumentName,
-            context.TemplateDocumentPath,
-            targetDocumentPath,
-            context.Document.References,
-            sourceInput,
-            timeouts,
-            cancellationToken);
+    private static WorkbookOutputExecution Failed(CommandResult result)
+        => new(result, Materialization: null);
 
-    private static WorkbookAutomationTimeouts ResolveTimeouts(ResolvedProjectContext context)
-        => WorkbookAutomationTimeouts.Default with
-        {
-            WorkbookOpen = CommandDefaultResolver.ResolveWorkbookOpenTimeout(context.Manifest),
-            WorkbookSave = CommandDefaultResolver.ResolveWorkbookSaveTimeout(context.Manifest)
-        };
+    private Task<WorkbookMaterializationResult> MaterializeSourceSnapshotAsync(
+        ResolvedProjectContext context,
+        BuildSourceSnapshotCapture sourceCapture,
+        string targetDocumentPath,
+        CancellationToken cancellationToken)
+        => materializer.MaterializeAsync(
+            new WorkbookMaterializationIntent.SourceSnapshotBuild(
+                context,
+                sourceCapture,
+                targetDocumentPath),
+            cancellationToken);
 
     private static CommandResult CreateFailureResult(Exception error, string? message = null)
     {
@@ -246,4 +273,12 @@ internal sealed class WorkbookOutputCommand
 
         return output.ToString();
     }
+
+    private sealed record WorkbookOutputExecution(
+        CommandResult CommandResult,
+        WorkbookMaterializationResult? Materialization);
 }
+
+internal sealed record SourceSnapshotBuildCommandResult(
+    CommandResult CommandResult,
+    string? CommittedArtifactPath);

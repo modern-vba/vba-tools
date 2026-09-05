@@ -865,8 +865,11 @@ public sealed class TestCommandTests
         Assert.Equal(0, result.ExitCode);
         Assert.Empty(result.StandardError);
         var testWorkbookPath = Assert.Single(runner.Workbooks);
+        var materializationStagingPath = Assert.Single(buildAutomation.OpenedWorkbooks);
         Assert.Equal("Book1.xlsm", Path.GetFileName(testWorkbookPath));
         Assert.NotEqual(binPath, testWorkbookPath);
+        Assert.NotEqual(materializationStagingPath, testWorkbookPath);
+        Assert.Equal(1, buildAutomation.SaveCalls);
         Assert.False(File.Exists(testWorkbookPath));
         Assert.Equal(manifestBinBytes, File.ReadAllBytes(binPath));
         Assert.False(Directory.Exists(persistentSourcePath));
@@ -1354,6 +1357,66 @@ public sealed class TestCommandTests
         Assert.Contains("retained", result.StandardError, StringComparison.OrdinalIgnoreCase);
         Assert.Contains(retainedPath, result.StandardError, StringComparison.OrdinalIgnoreCase);
         Assert.True(Directory.Exists(retainedPath));
+        Assert.Empty(runner.Workbooks);
+    }
+
+    [Fact]
+    public async Task SnapshotPrecheckCancellationPreserves130WhenCaptureCleanupFails()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
+        new JsonProjectManifestStore().Save(root, manifest);
+        var templatePath = Path.Combine(root, "src", "Book1", "Book1.xlsm");
+        Directory.CreateDirectory(Path.GetDirectoryName(templatePath)!);
+        File.WriteAllText(templatePath, "snapshot-test-template", Encoding.UTF8);
+        var snapshotPath = temp.CreateDirectory("caller-snapshot");
+        File.WriteAllText(
+            Path.Combine(snapshotPath, "Test_Module.bas"),
+            "Attribute VB_Name = \"Test_Module\"",
+            Encoding.UTF8);
+        var scratchRoot = temp.CreateDirectory("snapshot-test-scratch");
+        var runner = new FakeWorkbookTestRunner();
+        var composition = ToolingCompositionRoot.CreateApplicationComposition(
+            root,
+            workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
+            workbookTestRunner: runner);
+        using var cancellation = new CancellationTokenSource();
+        using var captureFactory = new CancelingLockedSnapshotSourceCaptureFactory(cancellation);
+        var testCommand = new TestCommand(
+            composition.BuildCommand,
+            runner,
+            new TestResultOutputFormatter(),
+            new TestProcedureSourceLocator(),
+            new SnapshotTestExecutionWorkspaceFactory(
+                new FileSystemPathIdentityResolver(),
+                scratchRoot,
+                new SnapshotTestWorkspaceFileSystem(),
+                cleanupAttempts: 3,
+                retryDelay: TimeSpan.Zero,
+                sourceCaptureFactory: captureFactory));
+        var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
+
+        var result = await application.RunAsync(
+        [
+            "test",
+            "--source-snapshot",
+            snapshotPath,
+            "--format",
+            "ndjson"
+        ], cancellation.Token);
+
+        Assert.Equal(130, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Contains("cancelled", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        var retainedPath = Assert.Single(Directory.EnumerateDirectories(scratchRoot));
+        Assert.Contains("retained", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(retainedPath, result.StandardError, StringComparison.OrdinalIgnoreCase);
         Assert.Empty(runner.Workbooks);
     }
 
@@ -2223,6 +2286,42 @@ internal sealed class NestedCancellationSnapshotSourceCaptureFactory
         => throw new InvalidOperationException(
             "The nested snapshot capture rollback failed.",
             new OperationCanceledException(cancellationToken));
+}
+
+internal sealed class CancelingLockedSnapshotSourceCaptureFactory(
+    CancellationTokenSource cancellation) : ISnapshotSourceCaptureFactory, IDisposable
+{
+    private FileStream? sourceLock;
+
+    public BuildSourceSnapshotCapture Create(
+        string scratchRoot,
+        string sourceSnapshotPath,
+        CancellationToken cancellationToken)
+    {
+        var capture = new SnapshotSourceCaptureFactory(
+                new VbaSourceAdmission(() => 1252))
+            .Create(scratchRoot, sourceSnapshotPath, cancellationToken);
+        try
+        {
+            sourceLock = File.Open(
+                Assert.Single(capture.SourceFiles).SourcePath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.None);
+            cancellation.Cancel();
+            return capture;
+        }
+        catch
+        {
+            capture.Dispose();
+            throw;
+        }
+    }
+
+    public void Dispose()
+    {
+        sourceLock?.Dispose();
+    }
 }
 
 internal sealed class PathReportingFailingSnapshotSourceCaptureFactory

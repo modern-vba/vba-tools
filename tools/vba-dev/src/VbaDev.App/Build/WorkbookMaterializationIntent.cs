@@ -19,6 +19,19 @@ internal abstract class WorkbookMaterializationIntent
     {
         internal ResolvedProjectContext Context { get; } = context;
     }
+
+    internal sealed class SourceSnapshotBuild(
+        ResolvedProjectContext context,
+        BuildSourceSnapshotCapture sourceCapture,
+        string targetWorkbookPath)
+        : WorkbookMaterializationIntent
+    {
+        internal ResolvedProjectContext Context { get; } = context;
+
+        internal BuildSourceSnapshotCapture SourceCapture { get; } = sourceCapture;
+
+        internal string TargetWorkbookPath { get; } = targetWorkbookPath;
+    }
 }
 
 internal sealed record WorkbookMaterializationResult(

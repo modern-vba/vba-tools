@@ -2,21 +2,6 @@ using VbaDev.App.Workbooks;
 
 namespace VbaDev.App.Build;
 
-internal interface IWorkbookGenerationSourceInput : IDisposable
-{
-    IReadOnlyList<VbaSourceFile> SourceFiles { get; }
-}
-
-internal sealed class BorrowedWorkbookGenerationSourceInput(
-    IReadOnlyList<VbaSourceFile> sourceFiles) : IWorkbookGenerationSourceInput
-{
-    public IReadOnlyList<VbaSourceFile> SourceFiles => sourceFiles;
-
-    public void Dispose()
-    {
-    }
-}
-
 internal sealed class BuildSourceSnapshotCaptureFactory
 {
     private readonly string scratchRoot;
