@@ -4,9 +4,9 @@ status: accepted
 
 # Resolve test source locations in VbaDev
 
-`VbaDev test` resolves each reported test identity against the selected
-`DocumentSourceSet` with the reusable C# VBA syntax model and emits the
-resulting `TestProcedureSourceLocation` on `testFinished`. `VscodeExtension`
+`VbaDev test` emits an optional `TestProcedureSourceLocation` on
+`testFinished` by resolving each reported test identity against an immutable
+`ExecutedSourceIndex`. `VscodeExtension`
 only projects that location into the matching procedure node and test message;
 project, document, and module nodes remain runnable scopes without a precise
 source target. The extension does not parse VBA or query the running language
@@ -27,29 +27,44 @@ discovery error or showing a popup.
 
 Under ADR 0026, a default Test Explorer run materializes unsaved editor state in
 a complete snapshot directory whose paths preserve the original
-`DocumentSourceSet`-relative layout. Under issue #344 and ADR 0037, `VbaDev`
-uses the same admitted snapshot syntax as Build/Test, without another source
-read, ACP acquisition, or decode, so the emitted UTF-16 declaration range describes the code that
-actually ran. It combines that range with the corresponding persistent source
-URI derived from the relative path; it never emits an internal workspace URI
-that would expire during cleanup. Unsafe, missing, or ambiguous provenance
-omits the optional location. Ordinary test without a snapshot resolves against
-saved source. A no-build run never saves dirty source or captures a snapshot; it
-may intentionally execute older generated code. When scoped source is clean,
-its navigation target remains current saved source. When scoped source is dirty
-at invocation start, outcomes and workbook-reported test identities remain
-visible but source locations are omitted with a non-failing warning because
-saved-source ranges may not identify the current editor text. Ordinary/no-build source decoding
-recognizes UTF-8 with or without BOM, BOM-marked UTF-16 LE or BE, and the
-operation-fixed active Windows ANSI code page without BOM. It checks a
-recognized BOM first, then strict UTF-8, then the strict ACP, and never
-substitutes replacement characters; that lookup path is not migrated by #344.
-Snapshot Build/Test instead uses BOM-or-fixed-ACP admission, with no UTF-8
-probe, and must pass strict decode, exact byte round trip, and lossless ACP
-projection before Excel starts. For ordinary or
-`--no-build` source that was not prevalidated, a decoding failure omits only the
-optional source location with the existing non-failing warning; it does not
-change an executed test outcome.
+`DocumentSourceSet`-relative layout. Ordinary build-before-test and snapshot
+test both receive the exact `VbaSourceAdmission` returned with the workbook
+materialization that succeeded. Before test execution, `VbaDev` copies only its
+module identities, callable declaration-name ranges, and safely mapped
+persistent source URIs into an immutable `ExecutedSourceIndex`. The index is the
+sole location authority for that workbook. It retains no path-backed content
+authority, and location resolution performs no source inventory, file read,
+existence check, encoding detection, decode, or parse. Editing, replacing, or
+deleting authoring source after materialization therefore cannot change the
+locations reported for that run.
+
+For snapshot input, declaration ranges come from the admitted snapshot bytes
+while persistent URIs are derived from their preserved
+`DocumentSourceSet`-relative provenance; internal workspace paths never appear
+in results. For ordinary build-before-test, both ranges and persistent URIs are
+derived from the saved-source admission that produced the committed bin
+workbook. Unsafe, missing, or ambiguous module, procedure, or provenance
+mapping omits only the optional location. The executed identity and outcome
+remain unchanged, and the completed built run reports a deterministic
+non-failing source-location warning for each distinct unresolved test identity.
+
+`test --no-build` intentionally has no proved source capture for the existing
+bin workbook. It never constructs an `ExecutedSourceIndex`, never inspects the
+current project source for navigation, and always omits every optional source
+location, whether the working source is clean, dirty, changed, or absent. Each
+completed no-build invocation emits exactly one fixed non-failing warning:
+`Warning: Source locations were omitted because --no-build runs an existing workbook without a proved source capture.`
+A usage or infrastructure failure that prevents a completed test-result run
+does not gain that warning.
+
+These changes do not alter ADR 0037's BOM-or-fixed-ACP admission policy. Built
+test source must still pass strict decode, exact byte round trip, and lossless
+ACP projection before Excel starts; `ExecutedSourceIndex` only consumes the
+already-admitted syntax and provenance. The `testFinished.location` object
+remains optional with its existing URI and zero-based UTF-16 range shape, and
+the NDJSON schema version remains `1.2`. True event streaming remains deferred
+to issue #155. `VbaDev` owns this index and result behavior without depending on
+`VscodeExtension`, Test Explorer, the language server, or the debug adapter.
 
 The client records one document-level source and project revision when it
 captures a snapshot. Editing during the run does not cancel or restart the

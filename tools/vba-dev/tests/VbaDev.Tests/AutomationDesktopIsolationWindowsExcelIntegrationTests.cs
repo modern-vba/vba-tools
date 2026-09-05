@@ -20,6 +20,10 @@ namespace VbaDev.Tests;
 [Collection(WindowsExcelIntegrationCollection.Name)]
 public sealed class AutomationDesktopIsolationWindowsExcelIntegrationTests
 {
+    private static string NoBuildSourceLocationWarning
+        => "Warning: Source locations were omitted because --no-build runs an existing workbook without a proved source capture."
+            + Environment.NewLine;
+
     [WindowsExcelIntegrationFact]
     [Trait("Category", "WindowsExcelIntegration")]
     public async Task SharedProductionAutomationKeepsRepresentativeWorkOffCallerDesktop()
@@ -200,7 +204,11 @@ public sealed class AutomationDesktopIsolationWindowsExcelIntegrationTests
             () => application.RunAsync(["test", .. selectedArguments]),
             initialProcesses,
             project.BinPath);
-        AssertSuccessfulSelectedTestResult(buildFirst.Result, project);
+        AssertSuccessfulSelectedTestResult(
+            buildFirst.Result,
+            project,
+            expectLocation: true,
+            expectedStandardError: string.Empty);
         var buildFirstLifetimes = buildFirst.ProcessTimeline.Lifetimes
             .OrderBy(lifetime => lifetime.StartedAt)
             .ToArray();
@@ -236,7 +244,11 @@ public sealed class AutomationDesktopIsolationWindowsExcelIntegrationTests
             () => application.RunAsync(["test", "--no-build", .. selectedArguments]),
             initialProcesses,
             project.BinPath);
-        AssertSuccessfulSelectedTestResult(noBuild.Result, project);
+        AssertSuccessfulSelectedTestResult(
+            noBuild.Result,
+            project,
+            expectLocation: false,
+            expectedStandardError: NoBuildSourceLocationWarning);
         var noBuildLifetime = Assert.Single(noBuild.ProcessTimeline.Lifetimes);
         Assert.True(noBuildLifetime.HasExited, noBuildLifetime.ObservationError);
         Assert.All(
@@ -246,8 +258,6 @@ public sealed class AutomationDesktopIsolationWindowsExcelIntegrationTests
         AssertNoCallerDesktopWindows(noBuild, [noBuildLifetime]);
 
         Assert.Equal(buildFirst.Result.ExitCode, noBuild.Result.ExitCode);
-        Assert.Equal(buildFirst.Result.StandardOutput, noBuild.Result.StandardOutput);
-        Assert.Equal(buildFirst.Result.StandardError, noBuild.Result.StandardError);
         Assert.Equal(builtWorkbook, File.ReadAllBytes(project.BinPath));
         Assert.True(initialProcesses.SetEquals(CaptureExcelProcessIds()));
         Assert.Equal(
@@ -343,13 +353,15 @@ public sealed class AutomationDesktopIsolationWindowsExcelIntegrationTests
 
     private static void AssertSuccessfulSelectedTestResult(
         CommandResult result,
-        CommandTestProject project)
+        CommandTestProject project,
+        bool expectLocation,
+        string expectedStandardError)
     {
         Assert.True(
             result.ExitCode == 0,
             $"Expected exit 0 but received {result.ExitCode}. " +
             $"stdout: {result.StandardOutput} stderr: {result.StandardError}");
-        Assert.Equal(string.Empty, result.StandardError);
+        Assert.Equal(expectedStandardError, result.StandardError);
         var lines = result.StandardOutput.Split(
             '\n',
             StringSplitOptions.RemoveEmptyEntries);
@@ -373,30 +385,43 @@ public sealed class AutomationDesktopIsolationWindowsExcelIntegrationTests
             Assert.Equal(project.TestModule, records[1].RootElement.GetProperty("module").GetString());
             Assert.Equal(project.TestProcedure, records[1].RootElement.GetProperty("procedure").GetString());
 
-            AssertJsonProperties(
-                records[2].RootElement,
+            var expectedFinishedProperties = new List<string>
+            {
                 "type",
                 "project",
                 "document",
                 "module",
                 "procedure",
                 "outcome",
-                "message",
-                "location");
+                "message"
+            };
+            if (expectLocation)
+            {
+                expectedFinishedProperties.Add("location");
+            }
+
+            AssertJsonProperties(records[2].RootElement, [.. expectedFinishedProperties]);
             Assert.Equal("testFinished", records[2].RootElement.GetProperty("type").GetString());
             Assert.Equal(project.TestModule, records[2].RootElement.GetProperty("module").GetString());
             Assert.Equal(project.TestProcedure, records[2].RootElement.GetProperty("procedure").GetString());
             Assert.Equal("passed", records[2].RootElement.GetProperty("outcome").GetString());
             Assert.Equal(string.Empty, records[2].RootElement.GetProperty("message").GetString());
-            var location = records[2].RootElement.GetProperty("location");
-            AssertJsonProperties(location, "uri", "range");
-            Assert.Equal(new Uri(project.TestSourcePath).AbsoluteUri, location.GetProperty("uri").GetString());
-            var range = location.GetProperty("range");
-            AssertJsonProperties(range, "start", "end");
-            Assert.Equal(3, range.GetProperty("start").GetProperty("line").GetInt32());
-            Assert.Equal(11, range.GetProperty("start").GetProperty("character").GetInt32());
-            Assert.Equal(3, range.GetProperty("end").GetProperty("line").GetInt32());
-            Assert.Equal(24, range.GetProperty("end").GetProperty("character").GetInt32());
+            if (expectLocation)
+            {
+                var location = records[2].RootElement.GetProperty("location");
+                AssertJsonProperties(location, "uri", "range");
+                Assert.Equal(new Uri(project.TestSourcePath).AbsoluteUri, location.GetProperty("uri").GetString());
+                var range = location.GetProperty("range");
+                AssertJsonProperties(range, "start", "end");
+                Assert.Equal(3, range.GetProperty("start").GetProperty("line").GetInt32());
+                Assert.Equal(11, range.GetProperty("start").GetProperty("character").GetInt32());
+                Assert.Equal(3, range.GetProperty("end").GetProperty("line").GetInt32());
+                Assert.Equal(24, range.GetProperty("end").GetProperty("character").GetInt32());
+            }
+            else
+            {
+                Assert.False(records[2].RootElement.TryGetProperty("location", out _));
+            }
 
             AssertJsonProperties(
                 records[3].RootElement,

@@ -15,6 +15,10 @@ namespace VbaDev.Tests;
 
 public sealed class TestCommandTests
 {
+    private static string ExpectedNoBuildSourceLocationWarning
+        => "Warning: Source locations were omitted because --no-build runs an existing workbook without a proved source capture."
+            + Environment.NewLine;
+
     [Fact]
     public async Task NdjsonFormatEmitsEventRecordsForWorkbookTestRun()
     {
@@ -46,7 +50,7 @@ public sealed class TestCommandTests
             "{\"type\":\"testFinished\",\"project\":\"Project\",\"document\":\"Book1\",\"module\":\"Test_Module\",\"procedure\":\"Test_Errors\",\"outcome\":\"error\",\"message\":\"Runtime error\"}\n" +
             "{\"type\":\"runFinished\",\"project\":\"Project\",\"document\":\"Book1\",\"outcome\":\"failed\",\"total\":3,\"passed\":1,\"failed\":1,\"errors\":1}\n",
             result.StandardOutput);
-        Assert.Equal(string.Empty, result.StandardError);
+        Assert.Equal(ExpectedNoBuildSourceLocationWarning, result.StandardError);
     }
 
     [Fact]
@@ -88,7 +92,7 @@ public sealed class TestCommandTests
     }
 
     [Fact]
-    public void NdjsonTestFinishedIncludesTheUniqueProcedureDeclarationRange()
+    public void NoBuildOmitsLocationsAndEmitsOneRunLevelWarning()
     {
         using var temp = TempDirectory.Create();
         var root = temp.CreateDirectory("Project");
@@ -110,50 +114,60 @@ public sealed class TestCommandTests
             .Split('\n', StringSplitOptions.RemoveEmptyEntries)
             .Single(line => line.Contains("\"type\":\"testFinished\"", StringComparison.Ordinal));
         using var finished = JsonDocument.Parse(finishedLine);
-        var location = finished.RootElement.GetProperty("location");
-        Assert.Equal(
-            new Uri(Path.Combine(root, "src", "Book1", "Test_Module.bas")).AbsoluteUri,
-            location.GetProperty("uri").GetString());
-        var range = location.GetProperty("range");
-        Assert.Equal(3, range.GetProperty("start").GetProperty("line").GetInt32());
-        Assert.Equal(11, range.GetProperty("start").GetProperty("character").GetInt32());
-        Assert.Equal(3, range.GetProperty("end").GetProperty("line").GetInt32());
-        Assert.Equal(22, range.GetProperty("end").GetProperty("character").GetInt32());
+        Assert.Equal("passed", finished.RootElement.GetProperty("outcome").GetString());
+        Assert.False(finished.RootElement.TryGetProperty("location", out _));
+        Assert.Equal(ExpectedNoBuildSourceLocationWarning, result.StandardError);
     }
 
     [Fact]
-    public void Cp932SourceLocationUsesTheEstablishedVbaSourceDecoder()
+    public void NoBuildEmitsOneRunLevelWarningForACompletedEmptyRun()
     {
-        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
         using var temp = TempDirectory.Create();
         var root = temp.CreateDirectory("Project");
-        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
-        const string moduleName = "テストモジュール";
-        const string procedureName = "Test_Run";
-        var source = $"Attribute VB_Name = \"{moduleName}\"\n' 日本語コメント\nPublic Sub {procedureName}()\nEnd Sub\n";
-        CreateWorkbookSource(root, "Book1", ("Encoded.bas", string.Empty));
-        var sourcePath = Path.Combine(root, "src", "Book1", "Encoded.bas");
-        File.WriteAllBytes(sourcePath, Encoding.GetEncoding(932).GetBytes(source));
+        new JsonProjectManifestStore().Save(
+            root,
+            ProjectManifest.CreateDefault("Project", "Book1", root, null));
         var binPath = Path.Combine(root, "bin", "Book1.xlsm");
         Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
         File.WriteAllText(binPath, "bin", Encoding.UTF8);
-        var runner = new FakeWorkbookTestRunner(
-            new WorkbookTestResultRow(moduleName, procedureName, "OK", ""));
-        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
+        var application = CommandLineTestFactory.Create(
+            root,
+            workbookTestRunner: new FakeWorkbookTestRunner());
 
         var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
 
-        var finishedLine = result.StandardOutput
-            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
-            .Single(line => line.Contains("\"type\":\"testFinished\"", StringComparison.Ordinal));
-        using var finished = JsonDocument.Parse(finishedLine);
-        var location = finished.RootElement.GetProperty("location");
-        Assert.Equal(new Uri(sourcePath).AbsoluteUri, location.GetProperty("uri").GetString());
-        var range = location.GetProperty("range");
-        Assert.Equal(2, range.GetProperty("start").GetProperty("line").GetInt32());
-        Assert.Equal(11, range.GetProperty("start").GetProperty("character").GetInt32());
-        Assert.Equal(2, range.GetProperty("end").GetProperty("line").GetInt32());
-        Assert.Equal(19, range.GetProperty("end").GetProperty("character").GetInt32());
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains(
+            "\"type\":\"runFinished\",\"project\":\"Project\",\"document\":\"Book1\",\"outcome\":\"passed\",\"total\":0",
+            result.StandardOutput,
+            StringComparison.Ordinal);
+        Assert.Equal(ExpectedNoBuildSourceLocationWarning, result.StandardError);
+    }
+
+    [Fact]
+    public void ExecutedSourceIndexUsesTheOperationFixedCp932Admission()
+    {
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+        using var temp = TempDirectory.Create();
+        var sourceRoot = temp.CreateDirectory("source");
+        var persistentRoot = temp.CreateDirectory("persistent");
+        const string moduleName = "テストモジュール";
+        const string procedureName = "Test_Run";
+        var source = $"Attribute VB_Name = \"{moduleName}\"\n' 日本語コメント\nPublic Sub {procedureName}()\nEnd Sub\n";
+        var sourcePath = Path.Combine(sourceRoot, "Encoded.bas");
+        File.WriteAllBytes(sourcePath, Encoding.GetEncoding(932).GetBytes(source));
+        var admission = new VbaSourceAdmission(() => 932)
+            .Admit(sourceRoot, VbaSourceAdmissionIntent.Build);
+        var locator = new TestProcedureSourceLocator();
+
+        var located = Assert.Single(locator.Locate(
+            locator.CreateIndex(admission, sourceRoot, persistentRoot),
+            [new TestResultRecord("Book1", moduleName, procedureName, TestOutcome.Passed, "")]));
+
+        var location = Assert.IsType<TestProcedureSourceLocation>(located.Location);
+        Assert.Equal(new Uri(Path.Combine(persistentRoot, "Encoded.bas")).AbsoluteUri, location.Uri);
+        Assert.Equal(new TestProcedureSourcePosition(2, 11), location.Range.Start);
+        Assert.Equal(new TestProcedureSourcePosition(2, 19), location.Range.End);
     }
 
     [Fact]
@@ -175,11 +189,11 @@ public sealed class TestCommandTests
             TestOutcome.Passed,
             "");
 
-        var located = Assert.Single(locator.LocateSnapshot(
+        var index = locator.CreateIndex(
             admission,
             snapshotPath,
-            persistentPath,
-            [result]));
+            persistentPath);
+        var located = Assert.Single(locator.Locate(index, [result]));
 
         var location = Assert.IsType<TestProcedureSourceLocation>(located.Location);
         Assert.Equal(
@@ -190,77 +204,63 @@ public sealed class TestCommandTests
     }
 
     [Fact]
-    public void Utf8NestedFilenameFallbackResolvesCaseInsensitiveMultilineProcedureIdentity()
+    public void ExecutedSourceIndexMapsUtf8BomNestedFilenameAndMultilineProcedureIdentity()
     {
         using var temp = TempDirectory.Create();
-        var root = temp.CreateDirectory("Project");
-        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
-        var nestedDirectory = Path.Combine(root, "src", "Book1", "nested");
+        var sourceRoot = temp.CreateDirectory("source");
+        var persistentRoot = temp.CreateDirectory("persistent");
+        var nestedDirectory = Path.Combine(sourceRoot, "nested");
         Directory.CreateDirectory(nestedDirectory);
         var sourcePath = Path.Combine(nestedDirectory, "Test_Module.bas");
         var source = "' 日本語😀\nPublic Sub Scenario_Multi( _\n    ByVal value As String)\nEnd Sub\n";
+        var encoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: true);
         File.WriteAllBytes(
             sourcePath,
-            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetBytes(source));
-        var binPath = Path.Combine(root, "bin", "Book1.xlsm");
-        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
-        File.WriteAllText(binPath, "bin", Encoding.UTF8);
-        var runner = new FakeWorkbookTestRunner(
-            new WorkbookTestResultRow("test_module", "scenario_multi", "OK", ""));
-        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
+            encoding.GetPreamble().Concat(encoding.GetBytes(source)).ToArray());
+        var admission = new VbaSourceAdmission(() => 932)
+            .Admit(sourceRoot, VbaSourceAdmissionIntent.Build);
+        var locator = new TestProcedureSourceLocator();
 
-        var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
+        var located = Assert.Single(locator.Locate(
+            locator.CreateIndex(admission, sourceRoot, persistentRoot),
+            [new TestResultRecord("Book1", "test_module", "scenario_multi", TestOutcome.Passed, "")]));
 
-        var finishedLine = result.StandardOutput
-            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
-            .Single(line => line.Contains("\"type\":\"testFinished\"", StringComparison.Ordinal));
-        using var finished = JsonDocument.Parse(finishedLine);
-        var location = finished.RootElement.GetProperty("location");
-        Assert.Equal(new Uri(sourcePath).AbsoluteUri, location.GetProperty("uri").GetString());
-        var range = location.GetProperty("range");
-        Assert.Equal(1, range.GetProperty("start").GetProperty("line").GetInt32());
-        Assert.Equal(11, range.GetProperty("start").GetProperty("character").GetInt32());
-        Assert.Equal(1, range.GetProperty("end").GetProperty("line").GetInt32());
-        Assert.Equal(25, range.GetProperty("end").GetProperty("character").GetInt32());
+        var location = Assert.IsType<TestProcedureSourceLocation>(located.Location);
+        Assert.Equal(
+            new Uri(Path.Combine(persistentRoot, "nested", "Test_Module.bas")).AbsoluteUri,
+            location.Uri);
+        Assert.Equal(new TestProcedureSourcePosition(1, 11), location.Range.Start);
+        Assert.Equal(new TestProcedureSourcePosition(1, 25), location.Range.End);
     }
 
     [Fact]
-    public void Utf16BomAttributeIdentityTakesPrecedenceOverTheSourceFilename()
+    public void ExecutedSourceIndexUsesUtf16BomAttributeIdentityInsteadOfTheFilename()
     {
         using var temp = TempDirectory.Create();
-        var root = temp.CreateDirectory("Project");
-        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        var sourceRoot = temp.CreateDirectory("source");
+        var persistentRoot = temp.CreateDirectory("persistent");
         const string source = "Attribute VB_Name = \"Preferred_Module\"\n' 日本語😀\nPublic Sub Test_Utf16()\nEnd Sub\n";
-        CreateWorkbookSource(root, "Book1", ("WrongName.bas", string.Empty));
-        var sourcePath = Path.Combine(root, "src", "Book1", "WrongName.bas");
+        var sourcePath = Path.Combine(sourceRoot, "WrongName.bas");
         var encoding = Encoding.Unicode;
         File.WriteAllBytes(
             sourcePath,
             encoding.GetPreamble().Concat(encoding.GetBytes(source)).ToArray());
-        var binPath = Path.Combine(root, "bin", "Book1.xlsm");
-        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
-        File.WriteAllText(binPath, "bin", Encoding.UTF8);
-        var runner = new FakeWorkbookTestRunner(
-            new WorkbookTestResultRow("preferred_module", "TEST_UTF16", "OK", ""));
-        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
+        var admission = new VbaSourceAdmission(() => 932)
+            .Admit(sourceRoot, VbaSourceAdmissionIntent.Build);
+        var locator = new TestProcedureSourceLocator();
 
-        var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
+        var located = Assert.Single(locator.Locate(
+            locator.CreateIndex(admission, sourceRoot, persistentRoot),
+            [new TestResultRecord("Book1", "preferred_module", "TEST_UTF16", TestOutcome.Passed, "")]));
 
-        var finishedLine = result.StandardOutput
-            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
-            .Single(line => line.Contains("\"type\":\"testFinished\"", StringComparison.Ordinal));
-        using var finished = JsonDocument.Parse(finishedLine);
-        var location = finished.RootElement.GetProperty("location");
-        Assert.Equal(new Uri(sourcePath).AbsoluteUri, location.GetProperty("uri").GetString());
-        var range = location.GetProperty("range");
-        Assert.Equal(2, range.GetProperty("start").GetProperty("line").GetInt32());
-        Assert.Equal(11, range.GetProperty("start").GetProperty("character").GetInt32());
-        Assert.Equal(2, range.GetProperty("end").GetProperty("line").GetInt32());
-        Assert.Equal(21, range.GetProperty("end").GetProperty("character").GetInt32());
+        var location = Assert.IsType<TestProcedureSourceLocation>(located.Location);
+        Assert.Equal(new Uri(Path.Combine(persistentRoot, "WrongName.bas")).AbsoluteUri, location.Uri);
+        Assert.Equal(new TestProcedureSourcePosition(2, 11), location.Range.Start);
+        Assert.Equal(new TestProcedureSourcePosition(2, 21), location.Range.End);
     }
 
     [Fact]
-    public void UnreadableSourceLocationDoesNotChangeTheCompletedTestOutcome()
+    public void NoBuildDoesNotReadLockedProjectSourceForNavigation()
     {
         using var temp = TempDirectory.Create();
         var root = temp.CreateDirectory("Project");
@@ -287,10 +287,11 @@ public sealed class TestCommandTests
         using var finished = JsonDocument.Parse(finishedLine);
         Assert.Equal("passed", finished.RootElement.GetProperty("outcome").GetString());
         Assert.False(finished.RootElement.TryGetProperty("location", out _));
+        Assert.Equal(ExpectedNoBuildSourceLocationWarning, result.StandardError);
     }
 
     [Fact]
-    public void PartiallyUnreadableSourceInventoryDoesNotClaimAUniqueLocation()
+    public void NoBuildDoesNotInventoryPartiallyLockedProjectSourceForNavigation()
     {
         using var temp = TempDirectory.Create();
         var root = temp.CreateDirectory("Project");
@@ -319,10 +320,11 @@ public sealed class TestCommandTests
         using var finished = JsonDocument.Parse(finishedLine);
         Assert.Equal("passed", finished.RootElement.GetProperty("outcome").GetString());
         Assert.False(finished.RootElement.TryGetProperty("location", out _));
+        Assert.Equal(ExpectedNoBuildSourceLocationWarning, result.StandardError);
     }
 
     [Fact]
-    public void InvalidBomMarkedUtf8OmitsLocationsWithoutChangingTheCompletedOutcome()
+    public void NoBuildDoesNotDecodeInvalidProjectSourceForNavigation()
     {
         using var temp = TempDirectory.Create();
         var root = temp.CreateDirectory("Project");
@@ -351,6 +353,7 @@ public sealed class TestCommandTests
         using var finished = JsonDocument.Parse(finishedLine);
         Assert.Equal("passed", finished.RootElement.GetProperty("outcome").GetString());
         Assert.False(finished.RootElement.TryGetProperty("location", out _));
+        Assert.Equal(ExpectedNoBuildSourceLocationWarning, result.StandardError);
     }
 
     [Fact]
@@ -395,9 +398,91 @@ public sealed class TestCommandTests
     {
         AssertUnavailableSourceLocation(
             new WorkbookTestResultRow("Missing_Module", "Test_Fails", "NG", "Expected 1 but was 2"),
-            1,
-            "failed",
             ("Other_Module.bas", "Attribute VB_Name = \"Other_Module\"\nPublic Sub Test_Fails()\nEnd Sub\n"));
+    }
+
+    [Fact]
+    public void ExecutedSourceIndexPreservesAllOutcomesWhenLocationsAreMissing()
+    {
+        using var temp = TempDirectory.Create();
+        var sourceRoot = temp.CreateDirectory("source");
+        File.WriteAllText(
+            Path.Combine(sourceRoot, "Other_Module.bas"),
+            "Attribute VB_Name = \"Other_Module\"\nPublic Sub Test_Other()\nEnd Sub\n",
+            new UTF8Encoding(false));
+        var admission = new VbaSourceAdmission(() => 65001)
+            .Admit(sourceRoot, VbaSourceAdmissionIntent.Build);
+        var locator = new TestProcedureSourceLocator();
+        TestResultRecord[] originals =
+        [
+            new("Book1", "Missing_Module", "Test_Passes", TestOutcome.Passed, "", TimeSpan.FromMilliseconds(1)),
+            new("Book1", "Missing_Module", "Test_Fails", TestOutcome.Failed, "failure", TimeSpan.FromMilliseconds(2)),
+            new("Book1", "Missing_Module", "Test_Errors", TestOutcome.Error, "error", TimeSpan.FromMilliseconds(3))
+        ];
+
+        var located = locator.Locate(
+            locator.CreateIndex(admission, sourceRoot, sourceRoot),
+            originals);
+
+        Assert.Equal(originals, located);
+        Assert.All(located, result => Assert.Null(result.Location));
+    }
+
+    [Fact]
+    public void OrdinaryBuildWarnsForMissingLocationsWithoutChangingCompletedOutcomes()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(
+            root,
+            ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        CreateWorkbookSource(
+            root,
+            "Book1",
+            ("Other_Module.bas", "Attribute VB_Name = \"Other_Module\"\nPublic Sub Test_Other()\nEnd Sub\n"));
+        var runner = new FakeWorkbookTestRunner(
+            new WorkbookTestResultRow("Missing_Module", "Test_Passes", "OK", ""),
+            new WorkbookTestResultRow("Missing_Module", "Test_Fails", "NG", "failure"),
+            new WorkbookTestResultRow("Missing_Module", "Test_Errors", "ERR", "error"));
+        var application = CommandLineTestFactory.Create(
+            root,
+            workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
+            workbookTestRunner: runner);
+
+        var result = application.Run(["test", "--format", "ndjson"]);
+
+        Assert.Equal(1, result.ExitCode);
+        var finished = result.StandardOutput
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Where(line => line.Contains("\"type\":\"testFinished\"", StringComparison.Ordinal))
+            .Select(line => JsonDocument.Parse(line))
+            .ToArray();
+        try
+        {
+            Assert.Equal(["passed", "failed", "error"], finished
+                .Select(document => document.RootElement.GetProperty("outcome").GetString()!)
+                .ToArray());
+            Assert.All(finished, document =>
+                Assert.False(document.RootElement.TryGetProperty("location", out _)));
+        }
+        finally
+        {
+            foreach (var document in finished)
+            {
+                document.Dispose();
+            }
+        }
+        var warnings = result.StandardError.Split(
+            Environment.NewLine,
+            StringSplitOptions.RemoveEmptyEntries);
+        Assert.Equal(3, warnings.Length);
+        Assert.Contains(warnings, warning => warning.Contains("Missing_Module.Test_Passes", StringComparison.Ordinal));
+        Assert.Contains(warnings, warning => warning.Contains("Missing_Module.Test_Fails", StringComparison.Ordinal));
+        Assert.Contains(warnings, warning => warning.Contains("Missing_Module.Test_Errors", StringComparison.Ordinal));
+        Assert.All(warnings, warning => Assert.Contains(
+            "executed source capture",
+            warning,
+            StringComparison.Ordinal));
     }
 
     [Fact]
@@ -474,6 +559,31 @@ public sealed class TestCommandTests
         Assert.Equal([binPath], runner.Workbooks);
         Assert.Empty(buildAutomation.OpenedWorkbooks);
         Assert.Contains("Book1: 1 passed, 0 failed, 0 errors, 1 total", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void NoBuildMissingWorkbookDoesNotEmitTheCompletedRunLocationWarning()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(
+            root,
+            ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        var runner = new FakeWorkbookTestRunner();
+        var application = CommandLineTestFactory.Create(
+            root,
+            workbookTestRunner: runner);
+
+        var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Contains("Bin workbook was not found", result.StandardError, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "Source locations were omitted",
+            result.StandardError,
+            StringComparison.Ordinal);
+        Assert.Empty(runner.Workbooks);
     }
 
     [Fact]
@@ -653,6 +763,10 @@ public sealed class TestCommandTests
 
         Assert.Equal(1, result.ExitCode);
         Assert.Contains("Test module was not found: MissingModule", result.StandardError, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "Source locations were omitted",
+            result.StandardError,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -713,7 +827,8 @@ public sealed class TestCommandTests
         CreateWorkbookSource(
             root,
             "Book1",
-            ("Local.bas", "Attribute VB_Name = \"Local\""));
+            ("Local.bas", "Attribute VB_Name = \"Local\""),
+            ("Test_Module.bas", "Attribute VB_Name = \"Test_Module\"\nPublic Sub Test_Passes()\nEnd Sub\n"));
         var runner = new FakeWorkbookTestRunner(
             new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
         var buildAutomation = new FakeWorkbookGenerationAutomation();
@@ -752,7 +867,8 @@ public sealed class TestCommandTests
         CreateWorkbookSource(
             root,
             "Book1",
-            ("Local.bas", "Attribute VB_Name = \"Local\""));
+            ("Local.bas", "Attribute VB_Name = \"Local\""),
+            ("Test_Module.bas", "Attribute VB_Name = \"Test_Module\"\nPublic Sub Test_Fails()\nEnd Sub\n"));
         var runner = new FakeWorkbookTestRunner(
             new WorkbookTestResultRow(
                 "Test_Module",
@@ -2062,7 +2178,7 @@ public sealed class TestCommandTests
         Assert.Contains("\"outcome\":\"passed\"", result.StandardOutput, StringComparison.Ordinal);
         Assert.Contains("\"outcome\":\"failed\"", result.StandardOutput, StringComparison.Ordinal);
         Assert.Contains("\"outcome\":\"error\"", result.StandardOutput, StringComparison.Ordinal);
-        Assert.Equal(string.Empty, result.StandardError);
+        Assert.Equal(ExpectedNoBuildSourceLocationWarning, result.StandardError);
     }
 
     [Fact]
@@ -2124,35 +2240,32 @@ public sealed class TestCommandTests
         params (string FileName, string Content)[] sources)
         => AssertUnavailableSourceLocation(
             new WorkbookTestResultRow(moduleName, procedureName, "OK", ""),
-            0,
-            "passed",
             sources);
 
     private static void AssertUnavailableSourceLocation(
         WorkbookTestResultRow resultRow,
-        int expectedExitCode,
-        string expectedOutcome,
         params (string FileName, string Content)[] sources)
     {
         using var temp = TempDirectory.Create();
-        var root = temp.CreateDirectory("Project");
-        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
-        CreateWorkbookSource(root, "Book1", sources);
-        var binPath = Path.Combine(root, "bin", "Book1.xlsm");
-        Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
-        File.WriteAllText(binPath, "bin", Encoding.UTF8);
-        var runner = new FakeWorkbookTestRunner(resultRow);
-        var application = CommandLineTestFactory.Create(root, workbookTestRunner: runner);
+        var sourceRoot = temp.CreateDirectory("source");
+        foreach (var (fileName, content) in sources)
+        {
+            File.WriteAllText(
+                Path.Combine(sourceRoot, fileName),
+                content,
+                new UTF8Encoding(false));
+        }
+        var admission = new VbaSourceAdmission(() => 65001)
+            .Admit(sourceRoot, VbaSourceAdmissionIntent.Build);
+        var locator = new TestProcedureSourceLocator();
+        var original = TestResultRecord.FromWorkbookRow("Book1", resultRow);
 
-        var result = application.Run(["test", "--no-build", "--format", "ndjson"]);
+        var located = Assert.Single(locator.Locate(
+            locator.CreateIndex(admission, sourceRoot, sourceRoot),
+            [original]));
 
-        Assert.Equal(expectedExitCode, result.ExitCode);
-        var finishedLine = result.StandardOutput
-            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
-            .Single(line => line.Contains("\"type\":\"testFinished\"", StringComparison.Ordinal));
-        using var finished = JsonDocument.Parse(finishedLine);
-        Assert.Equal(expectedOutcome, finished.RootElement.GetProperty("outcome").GetString());
-        Assert.False(finished.RootElement.TryGetProperty("location", out _));
+        Assert.Equal(original, located);
+        Assert.Null(located.Location);
     }
 
     private static void CreateWorkbookSource(string root, string documentName, params (string FileName, string Content)[] sources)
@@ -2181,6 +2294,7 @@ internal sealed class FakeWorkbookTestRunner : IWorkbookTestRunner
     public List<TimeSpan> ExecutionTimeouts { get; } = [];
     public List<WorkbookAutomationTimeouts> AutomationTimeouts { get; } = [];
     public Exception? Error { get; init; }
+    public Action? OnRun { get; init; }
 
     public Task<IReadOnlyList<WorkbookTestResultRow>> RunTestsAsync(
         string workbookPath,
@@ -2190,6 +2304,7 @@ internal sealed class FakeWorkbookTestRunner : IWorkbookTestRunner
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        OnRun?.Invoke();
         ExecutionTimeouts.Add(executionTimeout);
         AutomationTimeouts.Add(automationTimeouts);
         if (Error is not null)

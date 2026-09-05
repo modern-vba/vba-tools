@@ -23,18 +23,18 @@ internal sealed class WorkbookOutputCommand
     internal CommandResult RunBuild(ResolvedProjectContext context)
         => RunBuildAsync(context, CancellationToken.None).GetAwaiter().GetResult();
 
-    internal Task<CommandResult> RunBuildAsync(
+    internal async Task<CommandResult> RunBuildAsync(
         ResolvedProjectContext context,
         CancellationToken cancellationToken)
-        => RunCommandAsync(
-            context,
-            operationName: "build",
-            displayName: "Build",
-            completedVerb: "Built",
-            () => materializer.MaterializeAsync(
-                new WorkbookMaterializationIntent.ProjectBuild(context),
-                cancellationToken),
-            cancellationToken);
+        => (await RunBuildCoreAsync(context, cancellationToken)
+            .ConfigureAwait(false)).CommandResult;
+
+    internal async Task<TestWorkbookBuildCommandResult> RunTestBuildIntentAsync(
+        ResolvedProjectContext context,
+        CancellationToken cancellationToken)
+        => CreateTestWorkbookBuildResult(
+            await RunBuildCoreAsync(context, cancellationToken)
+                .ConfigureAwait(false));
 
     internal CommandResult RunPublish(ResolvedProjectContext context)
         => RunPublishAsync(context, CancellationToken.None).GetAwaiter().GetResult();
@@ -82,7 +82,7 @@ internal sealed class WorkbookOutputCommand
             },
             cancellationToken);
 
-    internal async Task<SourceSnapshotBuildCommandResult> RunSnapshotIntentAsync(
+    internal async Task<TestWorkbookBuildCommandResult> RunSnapshotIntentAsync(
         ResolvedProjectContext context,
         BuildSourceSnapshotCapture sourceCapture,
         string targetWorkbookPath,
@@ -120,10 +120,21 @@ internal sealed class WorkbookOutputCommand
             };
         }
 
-        return new SourceSnapshotBuildCommandResult(
-            execution!.CommandResult,
-            execution.Materialization?.CommittedArtifactPath);
+        return CreateTestWorkbookBuildResult(execution!);
     }
+
+    private Task<WorkbookOutputExecution> RunBuildCoreAsync(
+        ResolvedProjectContext context,
+        CancellationToken cancellationToken)
+        => RunAsyncCore(
+            context,
+            operationName: "build",
+            displayName: "Build",
+            completedVerb: "Built",
+            () => materializer.MaterializeAsync(
+                new WorkbookMaterializationIntent.ProjectBuild(context),
+                cancellationToken),
+            cancellationToken);
 
     private async Task<CommandResult> RunCommandAsync(
         ResolvedProjectContext context,
@@ -274,11 +285,19 @@ internal sealed class WorkbookOutputCommand
         return output.ToString();
     }
 
+    private static TestWorkbookBuildCommandResult CreateTestWorkbookBuildResult(
+        WorkbookOutputExecution execution)
+        => new(
+            execution.CommandResult,
+            execution.Materialization?.CommittedArtifactPath,
+            execution.Materialization?.SourceAdmission);
+
     private sealed record WorkbookOutputExecution(
         CommandResult CommandResult,
         WorkbookMaterializationResult? Materialization);
 }
 
-internal sealed record SourceSnapshotBuildCommandResult(
+internal sealed record TestWorkbookBuildCommandResult(
     CommandResult CommandResult,
-    string? CommittedArtifactPath);
+    string? CommittedArtifactPath,
+    AdmittedVbaSourceSet? SourceAdmission);

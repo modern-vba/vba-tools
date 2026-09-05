@@ -462,17 +462,35 @@ capture and contains a test workbook whose file name matches the
 manifest-defined bin workbook. The build stage passes that capture and its
 immutable admission facts to the closed `SourceSnapshotBuild` intent. Test
 execution opens exactly the committed artifact returned by that intent and
-does not perform an independent build. The same admission supplies snapshot
-test result locations without another disk read, decoding decision, or ACP
-acquisition. The test command consumes and removes the workspace after releasing
-owned Excel processes on success, failed assertions, command failure, and
-cancellation; it never owns the caller's snapshot directory or mutates
+does not perform an independent build. The returned materialization result pairs
+that artifact with the exact admission from which `TestCommand` creates its
+`ExecutedSourceIndex`. The test command consumes and removes the workspace after
+releasing owned Excel processes on success, failed assertions, command failure,
+and cancellation; it never owns the caller's snapshot directory or mutates
 persistent bin output. Failure to prove
 owned-process release is a command-level infrastructure error. After release is
 proved, workspace deletion receives bounded retries; a remaining deletion
 failure retains and reports the absolute path as a warning without changing
 individual test outcomes or the test-result exit status.
 _Avoid_: BuildSourceSnapshot, caller-selected build output, persistent bin directory
+
+**ExecutedSourceIndex**:
+The immutable VbaDev-owned navigation index copied before test execution from
+the exact `VbaSourceAdmission` paired with a successfully materialized ordinary
+or snapshot test workbook. It contains only module identities, callable
+declaration-name ranges, and safely mapped persistent source URIs. It is the sole
+source-location authority for that workbook and retains no path-backed content
+authority. Resolution performs no source inventory, file read, existence check,
+encoding detection, decode, or parse, so later source edits, replacements, and
+deletions cannot change the run's optional `TestProcedureSourceLocation`s.
+Unsafe, missing, or ambiguous mapping omits only the location and yields a
+non-failing built-run warning without changing workbook-owned test identity or
+outcome. `test --no-build` creates no index, performs no project-source
+inspection for navigation, always omits locations, and emits one fixed
+non-failing warning per completed invocation. The index belongs wholly to
+`VbaDev` and adds no dependency on an editor, Test Explorer, language server, or
+debug adapter.
+_Avoid_: saved-source reread, mutable location cache, consumer-owned source map
 
 **TestExecutionTimeout**:
 The positive, finite, whole-second deadline applied only to the test macro
@@ -815,14 +833,16 @@ facts and ordering; an empty effective Publish source set is valid. Later
 authoring changes belong to the next invocation, without new locks or retries.
 Issue #335 introduced explicit import, #339 adds ordinary Build including the
 stage reused by ordinary Test, #340 adds Publish, and #344 adds snapshot
-Build/Test. A snapshot's admitted bytes and syntax also supply its test
-execution input and result-location ranges without rereading caller files or
-reacquiring ACP. Issue #345 captures each Doctor document once under one run ACP;
-layout, installed CommonModules drift, and both materialization profiles reuse
-those facts. Build failures cannot contaminate a valid Publish exclusion, and
-external CommonModules repository authority stays separate. Ordinary/no-build
-result-location authority remains on its existing path; language-server
-admission is independently owned.
+Build/Test. Issue #350 pairs a successful ordinary or snapshot test
+materialization with its exact admission and copies only immutable navigation
+facts into an `ExecutedSourceIndex`; neither built mode rereads caller source or
+reacquires ACP during result resolution. Issue #345 captures each Doctor
+document once under one run ACP; layout, installed CommonModules drift, and
+both materialization profiles reuse those facts. Build failures cannot
+contaminate a valid Publish exclusion, and
+external CommonModules repository authority stays separate. No-build test
+location resolution has no source admission or index and always omits optional
+locations; language-server admission is independently owned.
 Snapshot feature versions are `2.0`; staged rollout is governed by ADR 0037.
 _Avoid_: public extension point, caller-composed decoding profile, mutable source cache
 
@@ -859,9 +879,12 @@ inspection, source import and verification, save, owned Excel-process release,
 saved-staging validation, cancellation fence, and durable output commitment in
 one ordered workflow. Public snapshot Build and the build stage of snapshot Test
 use the same `SourceSnapshotBuild` path. Test execution consumes the exact
-`CommittedArtifactPath` returned by that intent; `TestCommand` owns subsequent
-execution and `SnapshotTestExecutionWorkspace` owns post-result artifact
-cleanup.
+`CommittedArtifactPath` returned by that intent. Successful ordinary and
+snapshot test materialization also returns the exact `SourceAdmission` paired
+with that artifact so `TestCommand` can create its `ExecutedSourceIndex` before
+execution; public Build command output is unchanged. `TestCommand` owns
+subsequent execution and `SnapshotTestExecutionWorkspace` owns post-result
+artifact cleanup.
 
 Failure or cancellation before commitment disposes invocation-owned staging and
 does not replace the previous output. Commitment is attempted once.
@@ -1282,10 +1305,12 @@ _Avoid_: macro, module, assertion
 **TestProcedureSourceLocation**:
 The exported source URI and declaration-name range that identify one
 `TestProcedure` within its `DocumentSourceSet`. An unavailable or ambiguous
-location does not change the test outcome. For snapshot test mode, its range
-comes from the invocation-fixed snapshot bytes while its URI identifies the
-corresponding persistent source path; it never exposes an internal workspace
-URI.
+location does not change the test outcome or identity. For an ordinary or
+snapshot built test, the location comes only from the `ExecutedSourceIndex`
+created from the exact admission paired with the workbook that ran. Snapshot
+ranges come from invocation-fixed snapshot bytes while their URIs identify the
+corresponding persistent source paths; internal workspace URIs never appear.
+No-build tests never carry a source location.
 _Avoid_: failure location, result location, test file location
 
 **TestDiscoverySnapshot**:
@@ -1293,7 +1318,8 @@ The output-derived set of module and `TestProcedure` `TestExplorerNode`s for one
 `DocumentSourceSet`. It remains valid only while that document's exported VBA
 source and project definition remain unchanged. A normal snapshot test run may
 carry ranges derived from captured unsaved editor state while retaining stable
-persistent source URIs; ordinary and no-build runs use saved-source locations.
+persistent source URIs; an ordinary built run uses the saved-source admission
+that produced its workbook, while a no-build run has no locations.
 If the document-level source/project revision changes during a snapshot run,
 outcomes remain visible but the resulting discovery snapshot and locations are
 not committed. Initial invalidation is document-wide rather than per-file.
@@ -4384,7 +4410,7 @@ Dev: "Should a Test Explorer run use unsaved exported VBA source?"
 Domain Expert: "Yes, for the normal build-before-test profile. Capture a caller-owned complete `BuildSourceSnapshot` without saving source and invoke `vba-dev test --source-snapshot`; `VbaDev` owns only its internal test workspace. A no-build run intentionally executes the existing bin workbook and cannot accept a snapshot."
 
 Dev: "Should the no-build Test Explorer profile save dirty source before running the existing bin workbook?"
-Domain Expert: "No. Run the existing bin unchanged and retain its outcomes and test identities. Omit navigation for source that was already dirty, report a non-failing warning, and never save, build, or rerun implicitly."
+Domain Expert: "No. Run the existing bin unchanged and retain its outcomes and test identities. Because that artifact has no proved source capture, `VbaDev` must inspect no project source for navigation, omit every optional location regardless of current source state, and emit exactly one fixed non-failing warning for a completed run. Never save, build, or rerun implicitly."
 
 Dev: "Should `test --no-build` reject a module/reference name conflict found in the current source or manifest?"
 Domain Expert: "No. It executes the existing bin workbook and does not claim that current source is buildable. Ordinary and snapshot tests inherit the build-stage preflight; no-build reports only failures that prevent the existing workbook from opening or executing, while Doctor owns current source health."
@@ -4397,6 +4423,9 @@ Domain Expert: "No. A module node is a runnable grouping scope with multiple pos
 
 Dev: "Should an unavailable `TestProcedureSourceLocation` make the test fail?"
 Domain Expert: "No. Keep the node and outcome, and report a non-failing source-location warning in Test Run output. Do not turn navigation availability into a `TestItem` discovery error or popup notification."
+
+Dev: "May an ordinary or snapshot test resolve locations by reading source after the workbook was built?"
+Domain Expert: "No. Create an immutable `ExecutedSourceIndex` from the exact admission paired with the committed workbook before executing it. Location resolution uses only copied module, procedure-range, and persistent-URI facts; later edits, replacements, or deletions belong to another invocation."
 
 Dev: "Is a workbook lock a failed `TestProcedure`?"
 Domain Expert: "No. It is a `TestRunError` on the project or document scope because the test run could not reach individual test execution."

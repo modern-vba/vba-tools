@@ -84,11 +84,13 @@ schema revision that must represent a later infrastructure failure explicitly.
 has no effect unless it is built; combining them is a usage error rather than
 silently ignoring the snapshot. Ordinary `vba-dev test` without a snapshot
 continues to build and use manifest-defined bin output. `--no-build` without a
-snapshot retains its existing meaning and runs the existing bin workbook.
-The VS Code no-build profile does not save dirty source before invoking it.
-Dirty source does not suppress workbook outcomes or test identities, but the
-client omits saved-source locations that could be stale and reports a
-non-failing navigation warning.
+snapshot retains its existing meaning and runs the existing bin workbook. It
+has no proved source capture for that artifact, so `VbaDev` does not inspect
+project source for navigation, always omits optional source locations, and emits
+exactly one fixed non-failing source-location warning for each completed
+no-build invocation. The VS Code no-build profile does not save dirty source
+before invoking it. Workbook outcomes and test identities remain authoritative
+regardless of current source state.
 
 Every test mode accepts
 `--timeout-seconds <positive-whole-seconds>` for only its test macro execution
@@ -103,16 +105,26 @@ Snapshot input remains a client-neutral explicit contract rather than implicit
 VS Code integration. Test-result identity and outcome remain workbook-owned,
 and the existing machine-readable result schema remains in force. Snapshot
 paths preserve their original `DocumentSourceSet`-relative layout. `VbaDev`
-uses the admitted snapshot's existing syntax facts to calculate the declaration-name
-range for the code that actually ran, but emits the corresponding persistent
-source URI derived from that relative path rather than an internal snapshot or
-workspace URI. If that mapping is unsafe, missing, or ambiguous, it omits the
-optional location and reports the existing non-failing source-location warning.
-Encoding validity is no longer optional at this point because snapshot input
-passed VbaDev's independent pre-Excel admission. Build preflight, ACP import
-projection, test execution input, and snapshot result locations share those
-immutable facts without another source read, ACP acquisition, or decode.
-Ordinary/no-build result-location lookup remains outside this migration.
+receives the exact admission paired with the committed snapshot workbook and
+copies its module identities, callable declaration-name ranges, and safely
+mapped persistent URIs into an immutable `ExecutedSourceIndex` before test
+execution. Declaration ranges therefore describe the admitted code that ran,
+while URIs identify corresponding persistent paths rather than internal
+snapshot or workspace paths. The index is the only location authority and
+performs no source read, existence check, ACP acquisition, decoding, or parsing
+during result resolution. If a module, procedure, or provenance mapping is
+unsafe, missing, or ambiguous, `VbaDev` omits only that optional location,
+preserves the workbook-owned identity and outcome, and reports the non-failing
+built-run warning. Encoding validity is no longer optional at this point because
+snapshot input passed VbaDev's independent pre-Excel admission. Ordinary
+build-before-test now creates the same index from the exact saved-source
+admission paired with its committed workbook; no-build creates no index.
+
+The optional `testFinished.location` shape and NDJSON schema `1.2` remain
+unchanged. True real-time streaming remains issue #155. The index and location
+resolution are wholly owned by `VbaDev`; this decision adds no dependency on
+the extension, Test Explorer, language server, or debug adapter and does not
+change the source-admission encoding policy.
 
 The VS Code caller records the selected document's source/project revision when
 it creates the snapshot. Later edits do not cancel the immutable command or

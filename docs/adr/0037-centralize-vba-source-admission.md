@@ -9,7 +9,9 @@ This decision introduces the source-admission boundary through the
 the shared UTF-8-first source-decoding rule in ADR 0027 and the tool-local
 workbook-backed command model. Issue #339 extends that boundary to ordinary
 saved-source Build; issue #340 adds Publish, #344 adds snapshot Build/Test, and
-#345 adds project Doctor.
+#345 adds project Doctor. Issue #350 makes the exact admission paired with a
+successfully materialized test workbook the sole authority for built-test
+source locations.
 Source ownership, VBE import
 verification, and owned Excel-process lifecycle contracts remain accepted.
 
@@ -114,10 +116,14 @@ verification and, after owned-process release, requires readable, non-empty
 saved staging before commitment. Cancellation before commitment preserves the
 previous output; the successful committed result is authoritative afterward.
 
-Ordinary Test with BuildFirst already invokes ordinary BuildCommand, so its
-build stage receives the same admitted Build behavior. This does not introduce
-shared admission for test execution or result-location lookup, nor does it
-change `--no-build` navigation. It does not add a parallel legacy Build route.
+Ordinary Test with BuildFirst uses the same closed ProjectBuild intent. Its
+successful internal materialization result pairs the committed workbook path
+with the exact admission that produced it. `TestCommand` copies immutable
+module, callable-range, and persistent-URI facts from that admission into an
+`ExecutedSourceIndex` before executing the workbook. Result-location lookup
+uses only that index and does not reread or decode current source. This internal
+pairing does not change public Build output or add a parallel legacy Build
+route. A no-build test receives no admission or index.
 
 ## Publish admission
 
@@ -213,14 +219,19 @@ remains the existing flat filename order. Invocation scratch preserves original
 captured bytes and sidecars; preflight and the VBE import mirror consume the
 same admitted facts rather than decoding the scratch copy again.
 
-`SnapshotTestExecutionWorkspace` also retains that admission for test execution
-input and source locations. The location mapper uses already-admitted syntax
-and source-set-relative provenance to produce persistent URIs without reading
-source, decoding it, or obtaining ACP again. Missing or ambiguous optional
-locations keep their existing warning behavior. This does not introduce the
-later `ExecutedSourceIndex` design or change ordinary/no-build navigation.
-Issue #345 admits Doctor as described above. Ordinary/no-build result-location
-paths remain deferred; not every VbaDev source path uses this module yet.
+Snapshot test materialization returns that exact admission with its committed
+workspace workbook. `TestCommand` copies its already-admitted syntax and
+source-set-relative provenance into an immutable `ExecutedSourceIndex`, which
+maps ranges to persistent URIs without retaining path-backed content authority.
+The ordinary build-before-test path creates the same index from its own exact
+materialization admission. Later edits, replacements, and deletions cannot
+change either built run's locations, and result resolution performs no file
+read, existence check, encoding decision, decode, or parse. Missing or ambiguous
+mapping omits only optional locations and reports a non-failing built-run
+warning without changing workbook-owned identities or outcomes. Issue #345
+admits Doctor as described above. Issue #350 adds this result-location boundary;
+`--no-build` creates no index, inspects no project source for navigation, always
+omits locations, and emits one fixed non-failing warning per completed run.
 
 Issue #347 consumes this admission through the closed `ProjectBuild` and
 `Publish` materialization intents. Issue #348 adds the closed
@@ -318,6 +329,9 @@ the same corpus without changing its ownership.
 - Ordinary Build, Publish, snapshot Build/Test, and Doctor share admitted
   authority without a second source inventory, ACP decision, or authoring-file
   read downstream.
+- Ordinary and snapshot built tests derive optional locations only from an
+  immutable `ExecutedSourceIndex` copied from the exact admission paired with
+  their committed workbook; no-build omits locations without source inspection.
 - The previous target survives failures during source admission, workbook
   mutation, verification, save, and owned-process release.
 - `WorkbookMaterializationIntent.ProjectBuild`,

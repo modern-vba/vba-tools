@@ -1,153 +1,132 @@
-using System.Text;
+using System.Collections.Immutable;
 using VbaDev.App.Workbooks;
-using VbaTools.Syntax;
 
 namespace VbaDev.App.Testing;
 
 /// <summary>
-/// Resolves completed workbook test identities to exported VBA declarations.
+/// Creates and queries immutable indexes for the source admitted into a tested workbook.
 /// </summary>
 public sealed class TestProcedureSourceLocator
 {
-    /// <summary>
-    /// Adds a source location to each result whose module and procedure resolve uniquely.
-    /// </summary>
-    /// <param name="sourceSetPath">The document source set to inspect.</param>
-    /// <param name="results">The completed workbook test results.</param>
-    /// <returns>The results enriched with optional declaration locations.</returns>
-    public IReadOnlyList<TestResultRecord> Locate(
-        string sourceSetPath,
-        IReadOnlyList<TestResultRecord> results)
-        => Locate(sourceSetPath, sourceSetPath, results);
-
-    /// <summary>
-    /// Parses one invocation-fixed source set while emitting locations rooted at a persistent source set.
-    /// </summary>
-    /// <param name="parsedSourceSetPath">The source set whose bytes determine declaration ranges.</param>
-    /// <param name="locationSourceSetPath">The persistent source set used only to derive emitted URIs.</param>
-    /// <param name="results">The completed workbook test results.</param>
-    /// <returns>The results enriched with optional declaration locations.</returns>
-    public IReadOnlyList<TestResultRecord> Locate(
-        string parsedSourceSetPath,
-        string locationSourceSetPath,
-        IReadOnlyList<TestResultRecord> results)
-        => LocateCore(
-            parsedSourceSetPath,
-            locationSourceSetPath,
-            results,
-            static (_, bytes) => TestSourceFileTextReader.Decode(bytes));
-
-    internal IReadOnlyList<TestResultRecord> LocateSnapshot(
+    internal ExecutedSourceIndex CreateIndex(
         AdmittedVbaSourceSet admission,
-        string capturedSourceRoot,
-        string locationSourceSetPath,
+        string admittedSourceRoot,
+        string persistentSourceRoot)
+        => ExecutedSourceIndex.Create(
+            admission,
+            admittedSourceRoot,
+            persistentSourceRoot);
+
+    internal IReadOnlyList<TestResultRecord> Locate(
+        ExecutedSourceIndex index,
         IReadOnlyList<TestResultRecord> results)
+        => index.Locate(results);
+}
+
+/// <summary>
+/// Holds only immutable navigation facts copied from the source capture that produced a workbook.
+/// </summary>
+internal sealed class ExecutedSourceIndex
+{
+    private readonly ImmutableArray<ExecutedSourceModule> modules;
+
+    private ExecutedSourceIndex(IEnumerable<ExecutedSourceModule> modules)
     {
-        var modules = admission.Sources.Select(source => new ParsedTestModule(
-            TryMapPersistentUri(capturedSourceRoot, locationSourceSetPath, source.SourcePath),
-            source.Syntax)).ToArray();
-        return results.Select(result => result with
+        this.modules = modules.ToImmutableArray();
+    }
+
+    internal static ExecutedSourceIndex Create(
+        AdmittedVbaSourceSet admission,
+        string admittedSourceRoot,
+        string persistentSourceRoot)
+        => new(admission.Sources.Select(source => new ExecutedSourceModule(
+            source.Syntax.Module.Identity.Name,
+            TryMapPersistentUri(
+                admittedSourceRoot,
+                persistentSourceRoot,
+                source.SourcePath),
+            source.Syntax.Module.CallableDeclarations
+                .Select(declaration => new ExecutedSourceProcedure(
+                    declaration.Name,
+                    new TestProcedureSourceRange(
+                        new TestProcedureSourcePosition(
+                            declaration.Range.Start.Line,
+                            declaration.Range.Start.Character),
+                        new TestProcedureSourcePosition(
+                            declaration.Range.End.Line,
+                            declaration.Range.End.Character))))
+                .ToImmutableArray())));
+
+    internal IReadOnlyList<TestResultRecord> Locate(
+        IReadOnlyList<TestResultRecord> results)
+        => results.Select(result => result with
         {
-            Location = Resolve(modules, result.Category, result.TestName)
+            Location = Resolve(result.Category, result.TestName)
         }).ToArray();
-    }
 
-    private static IReadOnlyList<TestResultRecord> LocateCore(
-        string parsedSourceSetPath,
-        string locationSourceSetPath,
-        IReadOnlyList<TestResultRecord> results,
-        Func<string, byte[], string> decodeSource)
+    private TestProcedureSourceLocation? Resolve(
+        string moduleName,
+        string procedureName)
     {
-        IReadOnlyList<string> sourcePaths;
-        try
-        {
-            sourcePaths = DocumentSourceSetLayout.EnumerateVbaSourcePaths(parsedSourceSetPath);
-        }
-        catch (IOException)
-        {
-            return results;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return results;
-        }
-
-        var modules = new List<ParsedTestModule>();
-        foreach (var sourcePath in sourcePaths)
-        {
-            try
-            {
-                modules.Add(ParseModule(
-                    sourcePath,
-                    TryMapPersistentUri(
-                        parsedSourceSetPath,
-                        locationSourceSetPath,
-                        sourcePath),
-                    decodeSource));
-            }
-            catch (IOException)
-            {
-                // Source navigation is optional metadata and must not replace a completed outcome.
-                return results;
-            }
-            catch (UnauthorizedAccessException)
-            {
-                // Source navigation is optional metadata and must not replace a completed outcome.
-                return results;
-            }
-            catch (DecoderFallbackException)
-            {
-                // Source navigation is optional metadata and must not replace a completed outcome.
-                return results;
-            }
-            catch (InvalidOperationException)
-            {
-                // Source navigation remains optional when parsing cannot establish a location.
-                return results;
-            }
-        }
-
-        return results
-            .Select(result => result with
-            {
-                Location = Resolve(modules, result.Category, result.TestName)
-            })
+        var moduleMatches = modules
+            .Where(module => module.Name.Equals(
+                moduleName,
+                StringComparison.OrdinalIgnoreCase))
+            .Take(2)
             .ToArray();
-    }
+        if (moduleMatches.Length != 1)
+        {
+            return null;
+        }
 
-    private static ParsedTestModule ParseModule(
-        string sourcePath,
-        string? locationUri,
-        Func<string, byte[], string> decodeSource)
-    {
-        var parseUri = new Uri(Path.GetFullPath(sourcePath)).AbsoluteUri;
-        var source = decodeSource(sourcePath, File.ReadAllBytes(sourcePath));
-        var tree = VbaSyntaxTree.ParseModule(parseUri, source);
-        return new ParsedTestModule(locationUri, tree);
+        var module = moduleMatches[0];
+        var procedureMatches = module.Procedures
+            .Where(procedure => procedure.Name.Equals(
+                procedureName,
+                StringComparison.OrdinalIgnoreCase))
+            .Take(2)
+            .ToArray();
+        if (procedureMatches.Length != 1 || module.Uri is null)
+        {
+            return null;
+        }
+
+        return new TestProcedureSourceLocation(
+            module.Uri,
+            procedureMatches[0].Range);
     }
 
     private static string? TryMapPersistentUri(
-        string parsedSourceSetPath,
-        string locationSourceSetPath,
-        string sourcePath)
+        string admittedSourceRoot,
+        string persistentSourceRoot,
+        string admittedSourcePath)
     {
         try
         {
-            var parsedRoot = Path.GetFullPath(parsedSourceSetPath);
-            var relativePath = Path.GetRelativePath(parsedRoot, Path.GetFullPath(sourcePath));
+            var admittedRoot = Path.GetFullPath(admittedSourceRoot);
+            var relativePath = Path.GetRelativePath(
+                admittedRoot,
+                Path.GetFullPath(admittedSourcePath));
             if (!IsSafeRelativePath(relativePath))
             {
                 return null;
             }
 
-            var locationRoot = Path.GetFullPath(locationSourceSetPath);
-            var locationPath = Path.GetFullPath(Path.Combine(locationRoot, relativePath));
-            var locationRelativePath = Path.GetRelativePath(locationRoot, locationPath);
-            return IsSafeRelativePath(locationRelativePath)
-                ? new Uri(locationPath).AbsoluteUri
+            var persistentRoot = Path.GetFullPath(persistentSourceRoot);
+            var persistentPath = Path.GetFullPath(Path.Combine(
+                persistentRoot,
+                relativePath));
+            var persistentRelativePath = Path.GetRelativePath(
+                persistentRoot,
+                persistentPath);
+            return IsSafeRelativePath(persistentRelativePath)
+                ? new Uri(persistentPath).AbsoluteUri
                 : null;
         }
-        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        catch (Exception ex) when (ex is ArgumentException
+            or NotSupportedException
+            or PathTooLongException
+            or UriFormatException)
         {
             return null;
         }
@@ -159,48 +138,14 @@ public sealed class TestProcedureSourceLocator
             && !relativePath.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
             && !relativePath.StartsWith($"..{Path.AltDirectorySeparatorChar}", StringComparison.Ordinal);
 
-    private static TestProcedureSourceLocation? Resolve(
-        IReadOnlyList<ParsedTestModule> modules,
-        string moduleName,
-        string procedureName)
-    {
-        var moduleMatches = modules
-            .Where(module => module.Tree.Module.Identity.Name.Equals(
-                moduleName,
-                StringComparison.OrdinalIgnoreCase))
-            .Take(2)
-            .ToArray();
-        if (moduleMatches.Length != 1)
-        {
-            return null;
-        }
+    private sealed record ExecutedSourceModule(
+        string Name,
+        string? Uri,
+        ImmutableArray<ExecutedSourceProcedure> Procedures);
 
-        var procedureMatches = moduleMatches[0].Tree.Module.CallableDeclarations
-            .Where(declaration => declaration.Name.Equals(
-                procedureName,
-                StringComparison.OrdinalIgnoreCase))
-            .Take(2)
-            .ToArray();
-        if (procedureMatches.Length != 1)
-        {
-            return null;
-        }
-
-        var locationUri = moduleMatches[0].Uri;
-        if (locationUri is null)
-        {
-            return null;
-        }
-
-        var range = procedureMatches[0].Range;
-        return new TestProcedureSourceLocation(
-            locationUri,
-            new TestProcedureSourceRange(
-                new TestProcedureSourcePosition(range.Start.Line, range.Start.Character),
-                new TestProcedureSourcePosition(range.End.Line, range.End.Character)));
-    }
-
-    private sealed record ParsedTestModule(string? Uri, VbaSyntaxTree Tree);
+    private sealed record ExecutedSourceProcedure(
+        string Name,
+        TestProcedureSourceRange Range);
 }
 
 /// <summary>

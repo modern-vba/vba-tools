@@ -184,11 +184,15 @@ byte-exact beside the staged `.frm` with the same base name. Unsupported
 encoding, unrepresentable characters, and best-fit-only conversions fail
 without starting Excel. The staged mirror is removed with `VbaDev` invocation
 scratch and never rewrites the persistent source, snapshot, or DAP payload.
-Build preflight, import projection, test execution input, and snapshot test
-locations consume the same immutable admission. Snapshot result locations use
-its existing syntax and relative provenance rather than rereading scratch or
-caller source, obtaining ACP, or decoding bytes again. Ordinary/no-build result
-locations remain outside this migration.
+Build preflight, import projection, and built-test source locations consume the
+same immutable admission. Ordinary and snapshot test materialization returns
+the exact admission paired with the committed workbook, and `VbaDev` copies its
+module, callable-range, and persistent-URI facts into an immutable
+`ExecutedSourceIndex` before execution. Result resolution does not reread
+scratch, caller, or persistent source, obtain ACP, decode, or parse again. A
+no-build run has no proved admission, inspects no project source for navigation,
+always omits locations, and emits one fixed non-failing warning after a
+completed run.
 
 After each import and before workbook save, `VbaDev` builds
 `VbaCodeModuleProjection` from the strict-decoded Unicode source and requires
