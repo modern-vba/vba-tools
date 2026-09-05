@@ -246,6 +246,63 @@ public sealed class CommonModulesReconciliationTests
     }
 
     [Fact]
+    public async Task StagingCleanupFailureBeforeFirstMutationPreservesManifestAndReportsRetainedPath()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        var (root, repository) = CreateProject(temp);
+        WritePackageModule(repository, "Feature.bas", "' " + new string('x', 80 * 1024));
+        WriteManifest(repository, "Feature.bas");
+        var sourcePath = Path.Combine(root, "src", "Book1", "Feature.bas");
+        WriteModule(sourcePath, "Feature", "local feature");
+        var sourceBefore = File.ReadAllBytes(sourcePath);
+        var manifestPath = Path.Combine(root, ProjectManifest.ManifestFileName);
+        var manifestBefore = File.ReadAllBytes(manifestPath);
+        string? temporaryPath = null;
+        var transaction = CreateTransaction(
+            temp,
+            new CommonModulesSourceMutationWriter(onTemporaryBytesWritten: (path, _) =>
+            {
+                temporaryPath = path;
+                File.SetAttributes(path, FileAttributes.ReadOnly);
+                throw new IOException("partial staging write failed");
+            }));
+
+        try
+        {
+            var error = await Assert.ThrowsAsync<CommonModulesTransactionException>(() =>
+                transaction.AddAsync(
+                    ResolveContext(root),
+                    ["Feature"],
+                    force: true,
+                    CancellationToken.None));
+
+            var retained = Assert.Single(
+                Directory.EnumerateFiles(root, "*.vba-dev.*.tmp", SearchOption.AllDirectories));
+            Assert.Equal(temporaryPath, retained);
+            Assert.True(File.GetAttributes(retained).HasFlag(FileAttributes.ReadOnly));
+            Assert.NotEmpty(File.ReadAllBytes(retained));
+            Assert.Equal(sourceBefore, File.ReadAllBytes(sourcePath));
+            Assert.Equal(manifestBefore, File.ReadAllBytes(manifestPath));
+            Assert.Empty(Directory.EnumerateFiles(root, "vba-project.failed-*.json"));
+            Assert.Contains("before source mutation began", error.Message, StringComparison.Ordinal);
+            Assert.Contains("partial staging write failed", error.Message, StringComparison.Ordinal);
+            Assert.Contains(Path.GetFullPath(retained), error.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (temporaryPath is not null && File.Exists(temporaryPath))
+            {
+                File.SetAttributes(temporaryPath, FileAttributes.Normal);
+            }
+        }
+    }
+
+    [Fact]
     public async Task LateSourceConflictKeepsExternalBytesAndPersistsRecoveryWithAllPaths()
     {
         using var temp = TempDirectory.Create();

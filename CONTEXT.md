@@ -674,8 +674,17 @@ _Avoid_: manifest snapshot, stale copy plan
 **CommonModulesMutationSnapshot**:
 The invocation-fixed repository bytes and per-target existence and raw-byte
 preconditions that authorize one **CommonModulesMutationIntent** after
-latest-state replanning. It prevents mixed repository generations and lost
-target edits without making `--force` an unconditional overwrite grant.
+latest-state replanning. It prevents mixed repository generations and rejects
+detected target-edit conflicts without making `--force` an unconditional
+overwrite grant. Non-cooperating concurrent external writes are unsupported;
+the final comparison-to-mutation interval is outside the preservation guarantee.
+Sibling staging creation and cleanup use invocation-local
+`ExactFileSystemObjectOwnership` receipts. Planned existing-source deletion uses
+trusted stable capture, planned-byte verification, and same-handle deletion.
+Ordinary source replacement remains a separate atomic filesystem operation,
+not owned-artifact cleanup or a destination-identity compare-and-swap. Moving
+a create-only staging file into an absent target remains no-overwrite; it does
+not authorize cleanup of that committed source through the staging receipt.
 _Avoid_: live repository copy, package version, target backup
 
 **CommonModulesMutationCommitmentBoundary**:
@@ -817,6 +826,9 @@ both one normalized route and the exact ordinary object identity; a file receipt
 also binds length and SHA-256 content evidence. It permits only no-follow
 re-observation and same-handle deletion of that unchanged object, while the
 owning workflow retains deletion order, retry, rollback, and outcome policy.
+Sharing this mechanism does not strengthen every consumer's mutation contract:
+CommonModules retains its existing atomic source replacement and documented
+comparison-to-mutation gap, without a backup handoff or automatic rollback.
 It also provides non-destructive receipt observation for complete target
 inventory checks. Creating a file beneath a pre-existing ordinary directory
 does not issue or imply ownership of that parent directory.
@@ -4774,6 +4786,9 @@ Domain Expert: "No. Capture the selected repository manifest, source, and form-s
 
 Dev: "Does failure to delete a CommonModules mutation snapshot after a successful commit make the mutation fail?"
 Domain Expert: "No. After releasing its handles, retry deletion for a bounded period. If only the invocation-owned, non-authoritative snapshot workspace remains, preserve exit zero and the complete result, add `commonModulesSnapshotCleanupFailed`, and identify the retained absolute directory. Before success is established, a retained snapshot is failure or cancellation diagnostic context rather than a partial success warning; uncertainty in source mutation, manifest commit, or recovery remains command failure."
+
+Dev: "Does sharing CommonModules file ownership require preserving every concurrent external edit or replacing atomic source updates with a backup handoff?"
+Domain Expert: "No. Commonize create-only staging, stored-receipt cleanup, and trusted existing-source deletion without changing the source-mutation contract. Detect precondition conflicts before mutation and retain existing partial-progress, manifest-last, cancellation, and recovery behavior. Keep path-based atomic replacement and no-overwrite initial placement. Concurrent non-cooperating external writes, including the final comparison-to-mutation gap, have no preservation guarantee. Do not weaken the shared receipt mechanism, turn normal source replacement into cleanup, or add backup handoff, conditional replacement, or transaction protocols solely for that unsupported concurrency."
 
 Dev: "Can an `ExactFileSystemObjectOwnership` receipt authorize deletion through another hard-link path or after the object was replaced?"
 Domain Expert: "No. Bind the receipt to both its normalized route and exact object identity, and bind ordinary files to their captured length and SHA-256 evidence. Reopen without following a reparse point, preserve every foreign, replaced, changed, or unproved entry, and apply disposition only to the same verified handle. Treat file disposition as tentative until its postcondition is proved; prove exact-route restoration before reporting a rollback as retained, and fail rather than claim retention if restoration cannot be proved. Each owning workflow still decides what missing or retained state means."
