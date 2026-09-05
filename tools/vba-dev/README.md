@@ -535,12 +535,13 @@ or native-debug readiness.
 
 When `commonModulesRepository` is configured, project Doctor validates its complete closed package before comparing installed entries. A missing, unreadable, or invalid package is a failure. A retained `orphaned: true` entry that is still absent is advisory, while an absent non-orphaned identity or a reappeared orphan identity is a stale-reconciliation warning directing the user to `common-module update`. Doctor never changes the marker or removes retained source. If any requested root is orphaned, dependency reachability remains indeterminate instead of producing prune-candidate advice.
 
-For each document, project Doctor evaluates build and publish namespace profiles independently. It runs source preflight before Excel, then uses one disposable template copy to remove replaceable components, normalize references, and inspect actual final project, retained-component, protected-reference, and VBE-adopted identities. It imports no source, saves no workbook, deletes the copy, and reports each profile's conflicts in deterministic order.
+For each document, project Doctor passes the source already captured for that run to `WorkbookMaterializer.InspectAsync` and evaluates build and publish namespace profiles independently. It runs source preflight before Excel. When at least one profile can continue and the source template is available, the inspection owns exactly one disposable template copy and one Excel session for that document, shared by both viable profiles, to remove replaceable components, normalize references, and inspect actual final project, retained-component, protected-reference, and VBE-adopted identities. It imports no source, saves no workbook, commits no output, deletes the copy after the session closes, and reports each profile's conflicts in deterministic order. Existing check IDs, Doctor schema `1.0`, formats, and exit semantics are unchanged.
 
 One project Doctor run fixes Windows ACP once, then captures each document's
 recursive inventory, text sources, and matching same-directory `.frx` bytes
 once. Source layout, installed CommonModules drift, and both profiles use this
-same evidence without rereading caller files. The external CommonModules
+same evidence without rereading caller files; inspection neither recaptures the
+source nor makes another encoding decision. The external CommonModules
 repository retains its independent package authority. Unpaired sidecars are
 inventoried for layout findings but their bytes are not read.
 

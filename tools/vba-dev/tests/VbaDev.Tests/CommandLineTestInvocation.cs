@@ -8,6 +8,7 @@ using VbaDev.App.Testing;
 using VbaDev.App.Workbooks;
 using VbaDev.Cli;
 using VbaDev.Composition;
+using VbaDev.Infrastructure.Diagnostics;
 
 namespace VbaDev.Tests;
 
@@ -70,7 +71,8 @@ internal static class CommandLineTestFactory
             projectManifestStore,
             vbaProjectReferenceAmbiguityProbe,
             exportDestinationFileOperations,
-            projectMaterializationDiagnosticPort,
+            projectMaterializationDiagnosticPort ??
+                new DisabledProjectMaterializationDiagnosticPort(),
             projectManifestMutationCoordinator,
             projectManifestMutationLeaseProvider,
             hostEventCatalogAutomation);

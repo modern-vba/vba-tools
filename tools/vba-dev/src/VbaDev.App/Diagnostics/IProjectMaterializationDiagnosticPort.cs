@@ -12,6 +12,7 @@ public interface IProjectMaterializationDiagnosticPort
     /// </summary>
     Task<ProjectMaterializationDiagnosticRun> RunAsync(
         ResolvedProject project,
+        DoctorProjectSourceInspection sources,
         CancellationToken cancellationToken);
 }
 

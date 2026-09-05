@@ -5,7 +5,7 @@ using VbaDev.App.Workbooks;
 namespace VbaDev.App.Diagnostics;
 
 /// <summary>Retains one Doctor run's document source evidence.</summary>
-internal sealed class DoctorProjectSourceInspection
+public sealed class DoctorProjectSourceInspection
 {
     private readonly IReadOnlyDictionary<string, CapturedDoctorSourceSet> documents;
 
@@ -50,12 +50,4 @@ internal interface IDoctorSourceDiagnosticProvider
         List<DiagnosticResult> results,
         ResolvedProject project,
         DoctorProjectSourceInspection sources);
-}
-
-internal interface IDoctorSourceMaterializationDiagnosticPort
-{
-    Task<ProjectMaterializationDiagnosticRun> RunAsync(
-        ResolvedProject project,
-        DoctorProjectSourceInspection sources,
-        CancellationToken cancellationToken);
 }
