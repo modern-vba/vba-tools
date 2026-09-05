@@ -851,7 +851,7 @@ public sealed class BuildCommandTests
     }
 
     [Fact]
-    public void CancelledGenerationDeletesItsTemporaryWorkbookAndPreservesThePreviousBin()
+    public async Task CancelledGenerationDeletesItsTemporaryWorkbookAndPreservesThePreviousBin()
     {
         using var temp = TempDirectory.Create();
         var root = temp.CreateDirectory("Project");
@@ -873,13 +873,15 @@ public sealed class BuildCommandTests
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())));
 
-        Assert.ThrowsAny<OperationCanceledException>(() => pipeline.Generate(
-            "Book1",
-            templatePath,
-            binPath,
-            [],
-            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
-            cancellation.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            pipeline.MaterializeSourceSnapshotAsync(
+                "Book1",
+                templatePath,
+                binPath,
+                [],
+                [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
+                WorkbookAutomationTimeouts.Default,
+                cancellation.Token));
 
         Assert.Equal("last-known-good", File.ReadAllText(binPath, Encoding.UTF8));
         Assert.Empty(Directory.EnumerateFiles(

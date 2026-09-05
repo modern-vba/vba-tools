@@ -70,19 +70,16 @@ public sealed class BuildCommand
             snapshotOutputSafetyValidator,
             cancellationToken);
 
-    internal Task<CommandResult> RunCapturedSnapshotAsync(
+    internal Task<SourceSnapshotBuildCommandResult> RunSnapshotIntentAsync(
         ResolvedProjectContext context,
-        string sourceSnapshotPath,
-        AdmittedVbaSourceSet admission,
+        BuildSourceSnapshotCapture sourceCapture,
         string outputPath,
         CancellationToken cancellationToken)
     {
-        return outputCommand.RunCapturedSnapshotBuildAsync(
+        return outputCommand.RunSnapshotIntentAsync(
             context,
-            sourceSnapshotPath,
-            admission,
+            sourceCapture,
             outputPath,
-            snapshotOutputSafetyValidator,
             cancellationToken);
     }
 }

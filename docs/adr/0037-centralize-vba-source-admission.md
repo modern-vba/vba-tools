@@ -207,12 +207,14 @@ later `ExecutedSourceIndex` design or change ordinary/no-build navigation.
 Issue #345 admits Doctor as described above. Ordinary/no-build result-location
 paths remain deferred; not every VbaDev source path uses this module yet.
 
-Issue #347 consumes this admission through closed `ProjectBuild` and `Publish`
-materialization intents only. Snapshot Build/Test retains its narrow internal
-compatibility path until issue #348. Explicit import remains independently
-owned until issue #349, and Doctor retains its disposable inspection path until
-issue #351. This staged boundary does not change those commands' current public
-behavior and does not create a second generic materialization pipeline.
+Issue #347 consumes this admission through the closed `ProjectBuild` and
+`Publish` materialization intents. Issue #348 adds the closed
+`SourceSnapshotBuild` intent for public snapshot Build and the build stage of
+snapshot Test. It consumes the command-owned capture and the same immutable
+admitted facts without rereading persistent source, redetecting encoding, or
+accepting consumer proof. Explicit import remains independently owned until
+issue #349, and Doctor retains its disposable inspection path until issue #351.
+This staged boundary does not create a second generic materialization pipeline.
 
 The coordinated compatibility matrix is:
 
@@ -300,9 +302,9 @@ the same corpus without changing its ownership.
   read downstream.
 - The previous target survives failures during source admission, workbook
   mutation, verification, save, and owned-process release.
-- Ordinary Build and Publish re-inspect live authority after import verification
-  and validate the released saved staging workbook as readable and non-empty
-  before commitment.
+- `ProjectBuild`, `Publish`, and `SourceSnapshotBuild` re-inspect live authority
+  after import verification and validate the released saved staging workbook as
+  readable and non-empty before commitment.
 - This adds no source re-inventory, authoring lock, target compare-and-swap,
   retry, or rollback of competing external changes.
 - Other source workflows keep their released behavior during the staged

@@ -390,19 +390,23 @@ accepted by VbaDev in place of its own byte admission and lossless ACP projectio
 _Avoid_: arbitrary editor encoding, lossy fallback, treating VBE import bytes as snapshot bytes
 
 **BuildSourceSnapshot**:
-A caller-owned complete source directory explicitly supplied to `vba-dev build`
-in place of reading the manifest-selected `DocumentSourceSet`. Its recursive
-`.bas`, `.cls`, and `.frm` files and same-directory `.frx` sidecars are
-authoritative as bytes, not an overlay to compare with persistent source. Their
-paths preserve the original source-set-relative layout as provenance even though
-build identity remains flat by exported file name.
+A caller-owned complete source directory explicitly supplied to snapshot-aware
+`vba-dev build` or `vba-dev test` in place of reading the manifest-selected
+`DocumentSourceSet`. Its recursive `.bas`, `.cls`, and `.frm` files and
+same-directory `.frx` sidecars are authoritative as bytes, not an overlay to
+compare with persistent source. Their paths preserve the original
+source-set-relative layout as provenance even though build identity remains flat
+by exported file name.
 `VbaDev` fixes the input in invocation-internal scratch and consumes it for one
-build but does not own the caller's directory or successful output afterward.
-Snapshot mode pairs `--source-snapshot` with a caller-selected `--output` path
-outside the snapshot subtree and every manifest document's
-`DocumentSourceSet`, and distinct from the resolved `vba-project.json` and every
-document's source template, bin workbook, and publish workbook; neither option
-is valid alone.
+materialization but does not own the caller's directory. Snapshot Build pairs
+`--source-snapshot` with a caller-selected `--output` path outside the snapshot
+subtree and every manifest document's `DocumentSourceSet`, and distinct from the
+resolved `vba-project.json` and every document's source template, bin workbook,
+and publish workbook; neither option is valid alone, and the caller owns a
+successful output. Snapshot Test accepts
+`--source-snapshot` without `--output`; its workbook remains inside the
+command-owned `SnapshotTestExecutionWorkspace` and is removed with that
+workspace.
 Before Excel starts, `VbaDev` compares case-insensitive, filesystem-canonical
 path identities, including reparse-point aliases, and fails when it cannot
 establish that the output is safe. Any other caller-owned target, including an
@@ -453,14 +457,17 @@ _Avoid_: case-insensitive line comparison, component recasing, source formatting
 
 **SnapshotTestExecutionWorkspace**:
 The command-owned temporary directory created only by
-`vba-dev test --source-snapshot`. It contains the invocation-fixed source and a
-test workbook whose file name matches the manifest-defined bin workbook. The
-same VbaDev-owned admission supplies build/import facts and snapshot test result
-locations; the locator uses existing syntax and relative provenance without
-another disk read, decoding decision, or ACP acquisition. The
-test command consumes and removes it after releasing owned Excel processes on
-success, failed assertions, command failure, and cancellation; it never owns the
-caller's snapshot directory or mutates persistent bin output. Failure to prove
+`vba-dev test --source-snapshot`. It coordinates the invocation-fixed source
+capture and contains a test workbook whose file name matches the
+manifest-defined bin workbook. The build stage passes that capture and its
+immutable admission facts to the closed `SourceSnapshotBuild` intent. Test
+execution opens exactly the committed artifact returned by that intent and
+does not perform an independent build. The same admission supplies snapshot
+test result locations without another disk read, decoding decision, or ACP
+acquisition. The test command consumes and removes the workspace after releasing
+owned Excel processes on success, failed assertions, command failure, and
+cancellation; it never owns the caller's snapshot directory or mutates
+persistent bin output. Failure to prove
 owned-process release is a command-level infrastructure error. After release is
 proved, workspace deletion receives bounded retries; a remaining deletion
 failure retains and reports the absolute path as a warning without changing
@@ -825,20 +832,30 @@ not compile verification.
 _Avoid_: reference resolution, compile check, CommonModules consistency check
 
 **WorkbookMaterializer**:
-The internal sealed VbaDev operation owner for one closed `ProjectBuild` or
-`Publish` intent. It keeps source admission and static preflight, sibling
-workbook staging, repeated live-authority inspection, source import and
-verification, save, owned Excel-process release, saved-staging validation, and
-durable output commitment in one ordered workflow. Its result is established
-only after commitment and identifies the absolute committed artifact path,
-imported-source count, warnings, and verification report.
+The internal sealed VbaDev operation owner for one closed `ProjectBuild`,
+`Publish`, or `SourceSnapshotBuild` intent. `ProjectBuild` and `Publish`
+select their manifest-owned admitted sources. `SourceSnapshotBuild` consumes
+a command-owned `BuildSourceSnapshotCapture` and its immutable
+`VbaSourceAdmission` facts without rereading the persistent
+`DocumentSourceSet`, redetecting source encoding, or accepting consumer proof.
+
+Across all three intents, the materializer keeps the applicable admitted-source
+preparation, static preflight, sibling workbook staging, repeated live-authority
+inspection, source import and verification, save, owned Excel-process release,
+saved-staging validation, and durable output commitment in one ordered
+workflow. Public snapshot Build and the build stage of snapshot Test use the
+same `SourceSnapshotBuild` path. Test execution consumes the exact
+`CommittedArtifactPath` returned by that intent; `TestCommand` owns subsequent
+execution and `SnapshotTestExecutionWorkspace` owns post-result artifact
+cleanup.
 
 Failure or cancellation before commitment disposes invocation-owned staging and
 does not replace the previous output. Commitment is attempted once. The module
 does not coordinate external target changes through locking, compare-and-swap,
 retry, rollback, or an editor fence. It is implemented wholly inside VbaDev and
 adds no dependency on another product.
-_Avoid_: configurable stage pipeline, workflow DSL, plug-in surface, external-change coordinator
+_Avoid_: configurable stage pipeline, workflow DSL, plug-in surface, DAP or
+adapter state, artifact-lifecycle policy, external-change coordinator
 
 **ProjectManifest**:
 The project-local manifest, stored as `vba-project.json`, that identifies a
@@ -5398,7 +5415,7 @@ Dev: "Should `WorkbookMaterializer` use target locking, compare-and-swap, retry,
 Domain Expert: "No. Concurrent destination mutation is outside the command contract. Keep the destination closed. VbaDev validates its invocation-owned saved staging artifact and attempts commitment once; it neither adopts competing writes nor rolls back an already committed artifact."
 
 Dev: "Does issue #347 move snapshot Build, explicit import, and Doctor into `WorkbookMaterializer`?"
-Domain Expert: "No. Issue #347 closes only ordinary `ProjectBuild` and `Publish`. Issue #348 owns `SnapshotBuild`, #349 owns `ExplicitImport`, and #351 owns project inspection. Their current behavior remains independently owned until those slices migrate."
+Domain Expert: "No. Issue #347 closes only ordinary `ProjectBuild` and `Publish`. At that boundary, snapshot Build, explicit import, and Doctor remained independently owned until their #348, #349, and #351 slices. Issue #348 subsequently migrated snapshot Build and the build stage of snapshot Test through the closed `SourceSnapshotBuild` intent."
 
 Dev: "Should a test-only or `'#ExcludePublish` module with a conflicting `ModuleIdentity` block `publish`?"
 Domain Expert: "No. `WorkbookMaterializationNamePreflight` evaluates the effective source set selected for that output profile. Build and build-before-test include test source and may fail, while publish ignores name defects confined to excluded source; Language Server validation and Doctor may still report project-source health independently. Structural failures that prevent the command from selecting a trustworthy flat source set remain command failures."

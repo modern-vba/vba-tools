@@ -71,11 +71,16 @@ cancellation policy.
 This consolidation adds no independent process loop, automatic restart, new
 ownership primitive, or concurrent-editor guarantee.
 
-Issue #347 preserves this lifecycle/scenario boundary while routing ordinary
-Project Build and Publish through the internal sealed `WorkbookMaterializer`.
-`AutomationExcelProcessRuntime` still owns process lifecycle and release proof;
-the materializer owns scenario order, repeated live-authority inspection,
-saved-staging validation, the cancellation boundary, and output commitment.
+Issues #347 and #348 preserve this lifecycle/scenario boundary while routing
+ordinary Project Build, Publish, snapshot Build, and the build stage of snapshot
+Test through the internal sealed `WorkbookMaterializer`. Its closed data-only
+`ProjectBuild`, `Publish`, and `SourceSnapshotBuild` intents share one ordered
+workbook-generation workflow. `AutomationExcelProcessRuntime` still owns process
+lifecycle and release proof; the materializer owns scenario order, repeated
+live-authority inspection, saved-staging validation, the cancellation boundary,
+and output commitment. Snapshot Test opens the exact committed workbook returned
+by its intent only after the hidden build process has been released, using a
+fresh test-execution process.
 
 The #346 migration preserved the workbook-generation interfaces that existed
 at that point. Issue #347 subsequently removes the public test-shaped

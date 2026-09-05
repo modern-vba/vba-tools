@@ -283,7 +283,9 @@ internal sealed class SnapshotTestExecutionWorkspaceFactory
 
 internal sealed class SnapshotTestExecutionWorkspace : IDisposable
 {
-    private readonly BuildSourceSnapshotCapture sourceCapture;
+    private BuildSourceSnapshotCapture? sourceCapture;
+    private readonly AdmittedVbaSourceSet admission;
+    private readonly string sourceRootPath;
     private readonly ISnapshotTestWorkspaceFileSystem fileSystem;
     private readonly int cleanupAttempts;
     private readonly TimeSpan retryDelay;
@@ -337,6 +339,8 @@ internal sealed class SnapshotTestExecutionWorkspace : IDisposable
         }
 
         this.sourceCapture = sourceCapture;
+        admission = sourceCapture.Admission;
+        sourceRootPath = sourceCapture.SourceRootPath;
         WorkbookPath = absoluteWorkbookPath;
         this.fileSystem = fileSystem;
         this.cleanupAttempts = cleanupAttempts;
@@ -345,13 +349,16 @@ internal sealed class SnapshotTestExecutionWorkspace : IDisposable
 
     public string WorkspacePath { get; }
 
-    public string SourceSnapshotPath => sourceCapture.StagingPath;
+    internal AdmittedVbaSourceSet Admission => admission;
 
-    internal AdmittedVbaSourceSet Admission => sourceCapture.Admission;
-
-    internal string SourceRootPath => sourceCapture.SourceRootPath;
+    internal string SourceRootPath => sourceRootPath;
 
     public string WorkbookPath { get; }
+
+    internal BuildSourceSnapshotCapture TakeSourceCapture()
+        => Interlocked.Exchange(ref sourceCapture, null)
+            ?? throw new InvalidOperationException(
+                "The snapshot test source capture has already been transferred for materialization.");
 
     public SnapshotTestWorkspaceCleanupResult Cleanup()
     {

@@ -126,15 +126,15 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
         var originalTarget = Encoding.UTF8.GetBytes("existing-target");
         File.WriteAllBytes(targetPath, originalTarget);
-        var pipeline = CreateGenerationPipeline();
         var timeouts = WorkbookAutomationTimeouts.Default with
         {
             ExcelStartup = TimeSpan.FromMilliseconds(1),
             ProcessCleanup = TimeSpan.Zero
         };
+        var pipeline = CreateGenerationPipeline(timeouts);
 
         var error = await Assert.ThrowsAsync<WorkbookAutomationTimeoutException>(() =>
-            pipeline.GenerateAsync(
+            pipeline.MaterializeSourceSnapshotAsync(
                 "OwnedBuildProject",
                 templatePath,
                 targetPath,
@@ -168,19 +168,20 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
         var originalTarget = Encoding.UTF8.GetBytes("existing-target");
         File.WriteAllBytes(targetPath, originalTarget);
-        var pipeline = CreateGenerationPipeline();
+        var timeouts = WorkbookAutomationTimeouts.Default with
+        {
+            ProcessCleanup = TimeSpan.Zero
+        };
+        var pipeline = CreateGenerationPipeline(timeouts);
         using var cancellation = new CancellationTokenSource();
 
-        var generation = pipeline.GenerateAsync(
+        var generation = pipeline.MaterializeSourceSnapshotAsync(
             "OwnedBuildProject",
             templatePath,
             targetPath,
             [],
             [],
-            WorkbookAutomationTimeouts.Default with
-            {
-                ProcessCleanup = TimeSpan.Zero
-            },
+            timeouts,
             cancellation.Token);
         _ = await WaitForOwnedExcelProcessAsync(
             initialProcesses,
@@ -265,7 +266,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
                 processesWithPreExistingExcel.Except(initialProcesses));
 
             var pipeline = CreateGenerationPipeline();
-            await pipeline.GenerateAsync(
+            await pipeline.MaterializeSourceSnapshotAsync(
                 "OwnedBuildProject",
                 templatePath,
                 targetPath,
@@ -385,7 +386,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
                 activeCodePage,
                 nonAsciiText,
                 temp.Path);
-            await CreateGenerationPipeline().GenerateAsync(
+            await CreateGenerationPipeline().MaterializeSourceSnapshotAsync(
                 "ProductionImported",
                 productionTemplatePath,
                 productionTargetPath,
@@ -396,7 +397,8 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
                     new VbaSourceFile(formSourcePath, VbaSourceKind.Form, formSidecarPath)
                 ],
                 WorkbookAutomationTimeouts.Default,
-                CancellationToken.None);
+                CancellationToken.None,
+                activeCodePage: activeCodePage);
             var productionExcelVersion = OpenAndAssertPersistedWorkbook(
                 productionTargetPath,
                 importSourceSet.SourceFiles,
@@ -1319,7 +1321,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         {
             verificationStagingDirectory = Path.GetDirectoryName(
                 verificationSourceSet.SourceFiles[0].SourcePath)!;
-            var result = await CreateGenerationPipeline().GenerateAsync(
+            var result = await CreateGenerationPipeline().MaterializeSourceSnapshotAsync(
                 "RecasingProduction",
                 templatePath,
                 targetPath,
@@ -1859,11 +1861,16 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         public void Dispose() => inner.Dispose();
     }
 
-    private static WorkbookMaterializer CreateGenerationPipeline()
+    private static WorkbookMaterializer CreateGenerationPipeline(
+        WorkbookAutomationTimeouts? baseTimeouts = null)
         => new(
+            new WorkbookSourcePlanner(),
             (IWorkbookGenerationAutomation)new ExcelComWorkbookGenerationAutomation(),
             new WorkbookReferenceNormalizer(
-                new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())));
+                new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),
+            new WorkbookOutputTransactionFactory(),
+            new VbeImportSourceSetFactory(),
+            baseTimeouts);
 
     private static Task<VbeOwnedWorkbookObservation> ImportVerifySaveWithOwnedExcelAsync(
         string workbookPath,
