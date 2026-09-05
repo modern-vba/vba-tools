@@ -10,25 +10,15 @@ namespace VbaDev.App.Import;
 /// </summary>
 public sealed class ImportCommand
 {
-    private readonly IWorkbookGenerationAutomation workbookGenerationAutomation;
-    private readonly VbeImportSourceSetFactory importSourceSetFactory;
-    private readonly WorkbookMaterializationNamePreflight namePreflight = new();
-
-    /// <summary>
-    /// Creates the import command.
-    /// </summary>
-    /// <param name="workbookGenerationAutomation">The workbook automation port used to modify the target workbook.</param>
-    public ImportCommand(IWorkbookGenerationAutomation workbookGenerationAutomation)
-        : this(workbookGenerationAutomation, new VbeImportSourceSetFactory())
-    {
-    }
+    private readonly WorkbookMaterializer materializer;
+    private readonly VbaSourceAdmission sourceAdmission;
 
     internal ImportCommand(
-        IWorkbookGenerationAutomation workbookGenerationAutomation,
-        VbeImportSourceSetFactory importSourceSetFactory)
+        WorkbookMaterializer materializer,
+        VbaSourceAdmission sourceAdmission)
     {
-        this.workbookGenerationAutomation = workbookGenerationAutomation;
-        this.importSourceSetFactory = importSourceSetFactory;
+        this.materializer = materializer;
+        this.sourceAdmission = sourceAdmission;
     }
 
     /// <summary>
@@ -54,138 +44,46 @@ public sealed class ImportCommand
         ImportCommandRequest request,
         CancellationToken cancellationToken)
     {
-        VbeImportSourceSet? ownedSourceSet = null;
-        WorkbookOutputTransaction? outputTransaction = null;
-        FileStream? protectedTarget = null;
-        Exception? operationFailure = null;
-        try
+        if (request.FromPath is null)
         {
-            if (request.FromPath is null)
-            {
-                return CommandResult.UsageError("--from is required.");
-            }
-
-            if (string.IsNullOrWhiteSpace(request.FromPath))
-            {
-                return CommandResult.UsageError("--from requires a source directory path.");
-            }
-
-            if (request.ToPath is null)
-            {
-                return CommandResult.UsageError("--to is required.");
-            }
-
-            if (string.IsNullOrWhiteSpace(request.ToPath))
-            {
-                return CommandResult.UsageError("--to requires a target workbook path.");
-            }
-
-            var sourceDirectory = ResolveOptionPath(request.WorkingDirectory, request.FromPath);
-            var targetWorkbookPath = ResolveOptionPath(request.WorkingDirectory, request.ToPath);
-            ValidateTargetWorkbook(targetWorkbookPath);
-            var importSourceSet = importSourceSetFactory.CreateExplicitImport(sourceDirectory);
-            ownedSourceSet = importSourceSet;
-            var sourcePreflight = namePreflight.InspectSourcePhase(importSourceSet.SourceFiles);
-            if (sourcePreflight.HasFailures)
-            {
-                namePreflight.ThrowIfFailed(sourcePreflight);
-            }
-
-            protectedTarget = new FileStream(targetWorkbookPath, FileMode.Open, FileAccess.Read, FileShare.Read);
-            outputTransaction = WorkbookOutputTransaction.Create(targetWorkbookPath, targetWorkbookPath);
-            var verificationReport = await workbookGenerationAutomation.RunAsync(
-                outputTransaction.StagingWorkbookPath,
-                WorkbookAutomationTimeouts.Default,
-                async (session, operationCancellationToken) =>
-                {
-                    var projectName = await session
-                        .GetProjectNameAsync(operationCancellationToken)
-                        .ConfigureAwait(false);
-                    var modules = await session
-                        .GetModulesAsync(operationCancellationToken)
-                        .ConfigureAwait(false);
-                    var references = await session
-                        .GetReferencesAsync(operationCancellationToken)
-                        .ConfigureAwait(false);
-                    var livePreflight = namePreflight.InspectLivePhase(
-                        importSourceSet.SourceFiles,
-                        modules.Where(component => !component.Kind.IsImportable()).ToArray(),
-                        projectName,
-                        references);
-                    namePreflight.ThrowIfFailed(sourcePreflight, livePreflight);
-                    foreach (var component in modules.Where(component => component.Kind.IsImportable()))
-                    {
-                        operationCancellationToken.ThrowIfCancellationRequested();
-                        await session
-                            .RemoveModuleAsync(component.Name, operationCancellationToken)
-                            .ConfigureAwait(false);
-                    }
-
-                    foreach (var sourceFile in importSourceSet.SourceFiles)
-                    {
-                        operationCancellationToken.ThrowIfCancellationRequested();
-                        await session
-                            .ImportModuleAsync(sourceFile, operationCancellationToken)
-                            .ConfigureAwait(false);
-                    }
-
-                    importSourceSet.Dispose();
-                    ownedSourceSet = null;
-                    operationCancellationToken.ThrowIfCancellationRequested();
-                    var report = await session
-                        .VerifyAsync(operationCancellationToken)
-                        .ConfigureAwait(false)
-                        ?? throw new InvalidOperationException(
-                            "Workbook import verification returned no verification report.");
-                    operationCancellationToken.ThrowIfCancellationRequested();
-                    await session.SaveAsync(operationCancellationToken).ConfigureAwait(false);
-                    return report;
-                },
-                cancellationToken).ConfigureAwait(false);
-
-            cancellationToken.ThrowIfCancellationRequested();
-            // Release write/delete exclusion only for the synchronous atomic replacement.
-            protectedTarget.Dispose();
-            protectedTarget = null;
-            outputTransaction.Commit();
-            var label = importSourceSet.SourceFiles.Count == 1 ? "source file" : "source files";
-            return new CommandResult(
-                0,
-                $"Imported {importSourceSet.SourceFiles.Count} {label} from {sourceDirectory} to {targetWorkbookPath}{Environment.NewLine}",
-                VbeImportWarningRenderer.Render(verificationReport));
+            return CommandResult.UsageError("--from is required.");
         }
-        catch (Exception error)
+
+        if (string.IsNullOrWhiteSpace(request.FromPath))
         {
-            operationFailure = error;
-            throw;
+            return CommandResult.UsageError("--from requires a source directory path.");
         }
-        finally
+
+        if (request.ToPath is null)
         {
-            var cleanupFailures = new List<Exception>();
-            foreach (var artifact in new IDisposable?[] { ownedSourceSet, outputTransaction, protectedTarget })
-            {
-                try
-                {
-                    artifact?.Dispose();
-                }
-                catch (Exception cleanupError)
-                {
-                    cleanupFailures.Add(cleanupError);
-                }
-            }
-
-            if (cleanupFailures.Count > 0)
-            {
-                if (operationFailure is not null)
-                {
-                    cleanupFailures.Insert(0, operationFailure);
-                }
-
-                throw new InvalidOperationException(
-                    string.Join(" ", cleanupFailures.Select(error => error.Message)),
-                    new AggregateException(cleanupFailures));
-            }
+            return CommandResult.UsageError("--to is required.");
         }
+
+        if (string.IsNullOrWhiteSpace(request.ToPath))
+        {
+            return CommandResult.UsageError("--to requires a target workbook path.");
+        }
+
+        var sourceDirectory = ResolveOptionPath(request.WorkingDirectory, request.FromPath);
+        var targetWorkbookPath = ResolveOptionPath(request.WorkingDirectory, request.ToPath);
+        ValidateTargetWorkbook(targetWorkbookPath);
+        var admission = sourceAdmission.Admit(
+            sourceDirectory,
+            VbaSourceAdmissionIntent.ExplicitImport,
+            cancellationToken);
+        var materialization = await materializer.MaterializeAsync(
+                new WorkbookMaterializationIntent.ExplicitImport(
+                    admission,
+                    targetWorkbookPath),
+                cancellationToken)
+            .ConfigureAwait(false);
+        var label = materialization.ImportedSourceCount == 1
+            ? "source file"
+            : "source files";
+        return new CommandResult(
+            0,
+            $"Imported {materialization.ImportedSourceCount} {label} from {sourceDirectory} to {targetWorkbookPath}{Environment.NewLine}",
+            VbeImportWarningRenderer.Render(materialization.VerificationReport));
     }
 
     private async Task<CommandResult> RunCoreAsync(
@@ -198,7 +96,10 @@ public sealed class ImportCommand
         }
         catch (WorkbookAutomationCanceledException ex)
         {
-            return CreateCancellationResult(ex, ex.Message);
+            var message = ex.Stage.Kind == WorkbookAutomationStageKind.OutputCommit
+                ? "Workbook import was cancelled."
+                : ex.Message;
+            return CreateCancellationResult(ex, message);
         }
         catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
         {
@@ -222,7 +123,12 @@ public sealed class ImportCommand
         }
         catch (InvalidOperationException ex)
         {
-            return PreserveReleaseProof(ex, CommandResult.UsageError(ex.Message));
+            var message = ex.Message.Equals(
+                "Workbook generation verification returned no verification report.",
+                StringComparison.Ordinal)
+                ? "Workbook import verification returned no verification report."
+                : ex.Message;
+            return PreserveReleaseProof(ex, CommandResult.UsageError(message));
         }
         catch (BuildCommandException ex)
         {

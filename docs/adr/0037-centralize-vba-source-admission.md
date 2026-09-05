@@ -16,14 +16,15 @@ verification, and owned Excel-process lifecycle contracts remain accepted.
 ## Explicit import admission
 
 `VbaDev` uses one internal sealed `VbaSourceAdmission` module with one production
-implementation. Its initial closed intent is `ExplicitImport`; callers do not
-compose decoding, capture, or projection policies and there is no public
-substitutable admission interface. One command invocation fixes `GetACP`
-exactly once before source capture, fixes one recursive inventory, and reads
-each selected `.bas`, `.cls`, `.frm`, and matching same-directory `.frx` at most
-once. A successful capture contains each selected file's original bytes. A
-read failure fails admission; capture does not rescan, retry, or perform a
-closing stability check. Later caller edits cannot replace admitted facts.
+implementation. Its initial closed intent is
+`VbaSourceAdmissionIntent.ExplicitImport`; callers do not compose decoding,
+capture, or projection policies and there is no public substitutable admission
+interface. One command invocation fixes `GetACP` exactly once before source
+capture, fixes one recursive inventory, and reads each selected `.bas`, `.cls`,
+`.frm`, and matching same-directory `.frx` at most once. A successful capture
+contains each selected file's original bytes. A read failure fails admission;
+capture does not rescan, retry, or perform a closing stability check. Later
+caller edits cannot replace admitted facts.
 
 A recognized UTF-8, UTF-16 LE, or UTF-16 BE BOM selects its strict Unicode
 decoder. Every source without a BOM is interpreted strictly in the
@@ -43,30 +44,42 @@ fail before Excel starts. A `.frx` remains opaque binary content associated
 with its inventoried form; orphan sidecars are not import inputs.
 
 `VbeImportSourceSet` remains a separate invocation-owned module at the VBE
-boundary. For `ExplicitImport`, it consumes admitted Unicode and the fixed ACP,
-strictly encodes text in that ACP, decodes it again, and requires exact Unicode
-equality before Excel starts. An unrepresentable or best-fit-only character is
-a failure. The mirror preserves captured `.frx` bytes exactly beside the
-matching `.frm`. It neither calls `GetACP`, chooses a source encoding, nor
-rereads caller source or sidecars. Caller-owned bytes remain unchanged.
+boundary. For `VbaSourceAdmissionIntent.ExplicitImport`, it consumes admitted
+Unicode and the fixed ACP, strictly encodes text in that ACP, decodes it again,
+and requires exact Unicode equality before Excel starts. An unrepresentable or
+best-fit-only character is a failure. The mirror preserves captured `.frx`
+bytes exactly beside the matching `.frm`. It neither calls `GetACP`, chooses a
+source encoding, nor rereads caller source or sidecars. Caller-owned bytes
+remain unchanged.
 
 Explicit import copies the existing target into an invocation-owned workbook
 transaction. It inspects the copy's actual project, reference, and retained
-component names before flushing replaceable components, then imports and
-verifies the admitted sources. Only the private copy is saved. The target is
+component names before flushing replaceable components, then imports the
+admitted sources and verifies their component names, kinds, and projected code.
+Captured form sidecars are staged exactly from admitted bytes; sidecar-backed
+state remains covered by the real-Excel semantic fixture rather than exhaustive
+per-command runtime proof. Only the private copy is saved. The target is
 atomically replaced only after mirror cleanup, workbook verification and save,
 and release of the owned Excel process have succeeded. Any earlier failure or
 cancellation leaves the original target bytes intact. Cleanup failures report
-the original failure and any retained private artifact paths; they cannot
-turn an incomplete import into a successful target update.
+the original failure and any retained private artifact paths; they cannot turn
+an incomplete import into a successful target update.
+
+Issue #349 moves that target workflow into the distinct closed
+`WorkbookMaterializationIntent.ExplicitImport`. The materialization intent
+consumes the source authority already captured by
+`VbaSourceAdmissionIntent.ExplicitImport`; it performs no second source
+inventory, filesystem read, or encoding decision and resolves no project
+context or manifest reference normalization.
 
 Before copying the target, import opens a read-only `FileStream` with
-`FileShare.Read`. It holds that guard through staging, Excel processing, and
-owned-process release, excluding concurrent writes and delete-based
-replacement of the original target. It releases the guard immediately before
-the synchronous atomic replacement. This protects the processing interval;
-it is not a persistent compare-and-swap guarantee across the final
-guard-release-to-replacement gap.
+`FileShare.Read`. It holds that guard through target staging, Excel processing,
+owned-process release, saved-staging output validation, and the final
+cancellation fence, excluding concurrent writes and delete-based replacement
+of the original target during that interval. It releases the guard immediately
+before the synchronous atomic replacement. This is not a persistent
+compare-and-swap guarantee across the final guard-release-to-replacement gap
+and adds no retry or rollback of competing external changes.
 
 ## Ordinary Build admission
 
@@ -82,8 +95,9 @@ Build retains its existing source-selection rules: installed CommonModules in
 manifest order, including test-only and orphaned entries, followed by remaining
 sources in case-insensitive filename order. A manifest entry whose source is
 absent does not add a new Build failure; Doctor retains its consistency checks.
-An empty Build source set remains valid, unlike ExplicitImport's empty-input
-rejection. Template and source-directory admission remain Build responsibilities.
+An empty Build source set remains valid, unlike
+`VbaSourceAdmissionIntent.ExplicitImport`'s empty-input rejection. Template and
+source-directory admission remain Build responsibilities.
 
 BOM-less Build source now uses only the captured ACP, including ACP 65001 as
 the canonical UTF-8 case. Supported BOMs, strict byte reproduction, and lossless
@@ -189,9 +203,10 @@ capture and obtains no source ACP.
 Issue #341 applies the same closed-source encoding decisions independently
 inside the language server, as described below.
 
-Issue #335 introduced `ExplicitImport`; issue #339 adds ordinary Build and the
-ordinary Build stage reused by Test; issue #340 adds Publish. Issue #344 admits
-snapshot Build/Test with the existing closed `Build` intent: the complete
+Issue #335 introduced `VbaSourceAdmissionIntent.ExplicitImport`; issue #339
+adds ordinary Build and the ordinary Build stage reused by Test; issue #340 adds
+Publish. Issue #344 admits snapshot Build/Test with the existing closed
+`VbaSourceAdmissionIntent.Build`: the complete
 caller-owned inventory is authoritative, including an empty set, without
 Publish exclusions or comparison with persistent source. Snapshot ordering
 remains the existing flat filename order. Invocation scratch preserves original
@@ -212,9 +227,12 @@ Issue #347 consumes this admission through the closed `ProjectBuild` and
 `SourceSnapshotBuild` intent for public snapshot Build and the build stage of
 snapshot Test. It consumes the command-owned capture and the same immutable
 admitted facts without rereading persistent source, redetecting encoding, or
-accepting consumer proof. Explicit import remains independently owned until
-issue #349, and Doctor retains its disposable inspection path until issue #351.
-This staged boundary does not create a second generic materialization pipeline.
+accepting consumer proof. Issue #349 adds the distinct closed
+`WorkbookMaterializationIntent.ExplicitImport`; it consumes the same immutable
+explicit-import admission without source reinspection and retains the existing
+target guard and one-shot commitment contract described above. Doctor retains
+its disposable inspection path until issue #351. This staged boundary does not
+create a second generic materialization pipeline.
 
 The coordinated compatibility matrix is:
 
@@ -302,10 +320,16 @@ the same corpus without changing its ownership.
   read downstream.
 - The previous target survives failures during source admission, workbook
   mutation, verification, save, and owned-process release.
-- `ProjectBuild`, `Publish`, and `SourceSnapshotBuild` re-inspect live authority
-  after import verification and validate the released saved staging workbook as
-  readable and non-empty before commitment.
-- This adds no source re-inventory, authoring lock, target compare-and-swap,
-  retry, or rollback of competing external changes.
+- `WorkbookMaterializationIntent.ProjectBuild`,
+  `WorkbookMaterializationIntent.Publish`,
+  `WorkbookMaterializationIntent.SourceSnapshotBuild`, and
+  `WorkbookMaterializationIntent.ExplicitImport` re-inspect live authority
+  after import verification and validate the released saved staging workbook
+  as readable and non-empty before commitment.
+- Explicit import retains its existing narrow `FileShare.Read` target guard; it
+  is not general external-change protection and does not cover the final
+  guard-release-to-commit gap.
+- This adds no source re-inventory or reread, authoring lock, target
+  compare-and-swap, retry, or rollback of competing external changes.
 - Other source workflows keep their released behavior during the staged
   rollout; extending admission requires an explicit follow-up change.

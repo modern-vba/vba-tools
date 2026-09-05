@@ -1193,22 +1193,29 @@ not read VS Code settings or the extension's bundled-tool path.
 
 Every ordinary or source-snapshot `build`, `publish`, and build-before-test path performs source and repeated live **WorkbookMaterializationNamePreflight** checks over the effective source set selected for that output profile. Before Excel starts, it stages, decodes, and parses that selected set, requires authoritative `ModuleIdentity` metadata, and rejects case-insensitive source-to-source identity conflicts. It then copies and opens the source template as an invocation-owned temporary workbook, inspects its actual `VBProject.Name`, active reference names, and component names that generation will retain, and rejects every conflict already conclusive at that point. Importable old components may then be removed from this temporary copy so identities absent from the final artifact cannot obstruct manifest reference addition. Registry-ambiguous manifest references are probed against that same cleaned, open workbook session; each candidate uses the actual identity returned by VBE and restores the session's reference inventory before the next candidate. After reference normalization, the command re-enumerates the prepared active-reference set, including protected references that could not be removed and the identities VBE adopted for added references, and completes the case-insensitive comparison against every staged source identity and retained component. A successful prepared-workbook check permits source import. After `VbeImportVerification` succeeds, the command re-enumerates project, reference, and retained-component authority once more; only identities proved to be the imported components are excluded from the retained set. Invalid or incomplete authority and any conflict at this post-import checkpoint fail before workbook save or output replacement. A source unit excluded from publish through manifest-recorded `testOnly: true` or `'#ExcludePublish` neither participates in publish identity comparison nor blocks publish solely because its metadata is invalid; build and build-before-test still include it under their profiles. Structural failures that prevent deterministic selection of the flat source set, such as duplicate exported file names or an invalid manifest, remain command failures before profile-specific name comparison. These checks do not perform CommonModules consistency checking or claim that the resulting project compiles.
 
-Ordinary Project Build, Publish, source-snapshot Build, and the build stage of
-snapshot Test materialize through one internal sealed `WorkbookMaterializer`,
-using closed data-only `ProjectBuild`, `Publish`, and `SourceSnapshotBuild`
-intents rather than caller-supplied stages, callbacks, or strategies.
-`ProjectBuild` and `Publish` retain their distinct source-selection, collision,
-exclusion, and marker profiles. `SourceSnapshotBuild` consumes a command-owned
-snapshot capture and its immutable admission facts without rereading persistent
-source or redetecting encoding. All three intents use the same ordered
-preflight, staging, automation, release, validation, cancellation, cleanup, and
-single-commit policy described above. Snapshot Test executes the exact committed
-artifact returned by its materialization result; its later execution and
-workspace deletion remain outside the materializer. Public command results,
-stdout, stderr, and exit behavior remain stable. Explicit import and Doctor
-remain on their existing narrow paths until issues #349 and #351 respectively.
-This boundary is not a generic workflow engine, plug-in surface, or DSL and adds
-no dependency outside VbaDev.
+Ordinary Project Build, Publish, source-snapshot Build, the build stage of
+snapshot Test, and explicit import materialize through one internal sealed
+`WorkbookMaterializer`, using closed data-only
+`WorkbookMaterializationIntent.ProjectBuild`,
+`WorkbookMaterializationIntent.Publish`,
+`WorkbookMaterializationIntent.SourceSnapshotBuild`, and
+`WorkbookMaterializationIntent.ExplicitImport` intents rather than
+caller-supplied stages, callbacks, or strategies. `ProjectBuild` and `Publish`
+retain their distinct source-selection, collision, exclusion, and marker
+profiles. `SourceSnapshotBuild` consumes a command-owned snapshot capture and
+its immutable admission facts without rereading persistent source or
+redetecting encoding. `ExplicitImport` consumes the source authority captured
+by `VbaSourceAdmissionIntent.ExplicitImport` and the caller-provided existing
+target without resolving project context or normalizing manifest references.
+All four intents use the same ordered applicable preflight, staging, automation,
+release, validation, cancellation, cleanup, and single-commit policy described
+above. Snapshot Test executes the exact committed artifact returned by its
+materialization result; its later execution and workspace deletion remain
+outside the materializer. Public command results, stdout, stderr, and exit
+behavior remain stable. Doctor remains on its existing narrow path until issue
+#351. This boundary is not a generic workflow engine, plug-in surface, or DSL,
+adds no dependency outside VbaDev, and introduces no reverse product
+dependency.
 
 `vba-dev doctor` composes the Excel-free project checks with active evidence without producing an artifact. For each document it prepares build and publish source profiles independently, runs their source-metadata preflight before Excel, and opens one invocation-owned disposable source-template copy for the profiles that can continue. In that single workbook session it inspects initial authoritative project, reference, and retained-component identities; removes replaceable components and unlisted removable references; resolves registry ambiguity against the cleaned open session with candidate rollback; applies the selected manifest references; and re-enumerates the actual final authority before reporting each profile's deterministic complete conflict result. Doctor never imports or verifies source, saves the workbook, or replaces an output, and it closes and removes the disposable copy after both profiles. A conclusive failed or incomplete check makes the command exit nonzero. This live materialization/name preflight adds neither compile verification nor CommonModules repository-consistency checking; Doctor retains its existing Excel-free CommonModules checks. It neither invokes nor substitutes for the independent `vba-debug-adapter doctor` native-debug diagnostic.
 
@@ -1235,12 +1242,16 @@ The first gate run used Excel 16.0 with active ACP 932. VBE-exported `.bas`, `.c
 Every path that reaches `VBComponents.Import` uses a separate
 invocation-internal **VbeImportSourceSet**. ADR 0037 applies one sealed
 **VbaSourceAdmission** authority to explicit import, ordinary Build, Publish,
-and snapshot Build/Test. Snapshot input uses the closed admission `Build`
-intent; the separate materialization intent is `SourceSnapshotBuild`. The mirror
-consumes immutable admitted Unicode, fixed ACP, identities, syntax, provenance,
-and captured sidecars without calling `GetACP`, redetecting source encoding, or
-rereading caller files. DAP encoding validation remains adapter-owned and is not
-accepted as proof by VbaDev. Snapshot Build and Test feature versions are `2.0`.
+and snapshot Build/Test. Snapshot input uses the closed admission
+`VbaSourceAdmissionIntent.Build`; the separate materialization intent is
+`WorkbookMaterializationIntent.SourceSnapshotBuild`. Explicit import uses
+`VbaSourceAdmissionIntent.ExplicitImport`; its distinct materialization intent
+is `WorkbookMaterializationIntent.ExplicitImport`. The mirror consumes
+immutable admitted Unicode, fixed ACP, identities, syntax, provenance, and
+captured sidecars without calling `GetACP`, redetecting source encoding, or
+rereading caller files. DAP encoding validation remains adapter-owned and is
+not accepted as proof by VbaDev. Snapshot Build and Test feature versions are
+`2.0`.
 
 Publish checks case-insensitive flat filename collisions across all candidates
 before content reads or filtering. Manifest test-only sources and sidecars are
@@ -1285,9 +1296,9 @@ Workbook open and save stages each default to 300 seconds because their duration
 
 `export` keeps exact-snapshot semantics: after success, the destination's importable VBA source and form sidecars match the source workbook, so modules removed from the workbook cannot silently reappear during a later `build`. Before mutating the **DocumentSourceSet** or an explicit destination, it exports every module to staging, computes and validates the complete placement and deletion plan, and copies every affected existing source file and sidecar to a recovery area on the destination file system. It then applies additions, replacements, and stale-source deletions without touching the source template or unrelated files. Any apply failure triggers rollback from the recovery area. A successful rollback removes the incomplete result and reports the original export failure; if rollback is incomplete, the command retains the recovery area and reports its path and manual recovery instructions. The recovery area is removed only after the exact snapshot has been committed successfully or rollback has been verified.
 
-`import` performs an **ExplicitWorkbookImport** from a caller-provided source directory into a caller-provided workbook path without resolving project context. **VbaSourceAdmission** fixes one recursive inventory of `.bas`, `.cls`, and `.frm` sources and their matching same-directory `.frx` sidecars. The text sources form a flat set ordered by extension-including exported file name. Relative paths are not ordering tie-breakers because duplicate exported source file names fail before Excel starts. Each selected source or sidecar is read once; an unreadable inventoried input fails admission without a rescan or retry. Sidecars remain opaque binary content consumed with their forms; orphan `.frx` files are ignored. Empty source sets and case-insensitive duplicate exported source file names also fail before Excel starts. Unlike `build`, `import` uses the existing target as its workbook baseline, does not add, remove, or normalize **VbaProjectReferences** from a manifest, does not resolve CommonModules dependencies, does not interpret `'#ExcludePublish`, and does not validate whether the resulting workbook compiles.
+`import` performs an **ExplicitWorkbookImport** from a caller-provided source directory into a caller-provided workbook path without resolving project context. The closed **VbaSourceAdmission** intent `VbaSourceAdmissionIntent.ExplicitImport` fixes one recursive inventory of `.bas`, `.cls`, and `.frm` sources and their matching same-directory `.frx` sidecars. The text sources form a flat set ordered by extension-including exported file name. Relative paths are not ordering tie-breakers because duplicate exported source file names fail before Excel starts. Each selected source or sidecar is read once; an unreadable inventoried input fails admission without a rescan or retry. Sidecars remain opaque binary content consumed with their forms; orphan `.frx` files are ignored. Empty source sets and case-insensitive duplicate exported source file names also fail before Excel starts. The distinct closed `WorkbookMaterializationIntent.ExplicitImport` consumes those admitted artifacts without a second inventory, source read, or encoding decision. Unlike `build`, `import` uses the existing target as its workbook baseline, does not add, remove, or normalize **VbaProjectReferences** from a manifest, does not resolve CommonModules dependencies, does not interpret `'#ExcludePublish`, and does not validate whether the resulting workbook compiles.
 
-Before Excel starts, `import` obtains authoritative `ModuleIdentity` and syntax facts from admission, rejects source-only conflicts, and derives the lossless ACP mirror. It copies the existing target into an invocation-owned workbook transaction, opens only that private copy in its owned **AutomationExcelProcess**, and inspects the actual `VBProject.Name`, every active `Reference.Name`, and every component name that the flush will retain, including document modules. All source-to-source and source-to-target comparisons are case-insensitive. Invalid or incomplete source identity metadata, incomplete target inspection, or any conflict fails before component mutation. The target's current active reference set remains authoritative: `import` neither adds, removes, nor normalizes references. After preflight, the private copy's existing standard modules, class modules, and forms are flushed, while document modules remain. Imported components are verified against the same admitted facts and only the private copy is saved. The target is atomically replaced only after mirror cleanup, workbook verification and save, and owned Excel-process release all succeed. Any earlier failure or cancellation preserves the original target bytes. Incomplete cleanup reports the failure and retained private artifact paths for recovery. This compatibility and persistence contract does not claim that the resulting project compiles.
+Before Excel starts, `import` obtains authoritative `ModuleIdentity` and syntax facts from admission, rejects source-only conflicts, and derives the lossless ACP mirror. Before target staging, the materializer opens the existing target through a read-only `FileStream` with `FileShare.Read`. It holds that guard while copying the target into an invocation-owned workbook transaction, opening only that private copy in its owned **AutomationExcelProcess**, and inspecting the actual `VBProject.Name`, every active `Reference.Name`, and every component name that the flush will retain, including document modules. All source-to-source and source-to-target comparisons are case-insensitive. Invalid or incomplete source identity metadata, incomplete target inspection, or any conflict fails before component mutation. The target's current active reference set remains authoritative: `import` neither adds, removes, nor normalizes references. After preflight, the private copy's existing standard modules, class modules, and forms are flushed, while document modules remain. Imported component names, kinds, and projected code are verified against the same admitted facts before only the private copy is saved. Captured form sidecars are staged exactly from admitted bytes; sidecar-backed state remains covered by the established real-Excel semantic fixture rather than an exhaustive per-command runtime proof. After mirror cleanup and owned Excel-process release, the materializer validates the saved staging workbook, observes the final cancellation fence, releases the target guard, and attempts the synchronous atomic replacement once. Any earlier failure or cancellation preserves the original target bytes. The workflow does not reinspect source, compare-and-swap the target, retry, or roll back competing external changes, and the guard does not protect the final release-to-commit gap or non-cooperating changes. Incomplete cleanup reports the failure and retained private artifact paths for recovery. This compatibility and persistence contract does not claim that the resulting project compiles.
 
 `test` follows `dotnet test` by building before it runs tests by default. `--no-build` skips that build and uses the existing bin workbook. It emits `text` or `ndjson`, with `text` as the default for command-line use. VS Code and other machine consumers should request `--format ndjson` explicitly. A complete schema `1.2` `runFinished` is authoritative for distinguishing workbook-owned test outcomes from infrastructure failure: a passed run exits zero, a run containing failed or error outcomes exits nonzero with the complete terminal record, and a nonzero exit without that record is a command-level failure even if partial test events exist. `test --no-build` does not add or update **VbaProjectReferences** in an existing bin workbook; the default build step applies manifest-defined references before tests run.
 

@@ -71,16 +71,22 @@ cancellation policy.
 This consolidation adds no independent process loop, automatic restart, new
 ownership primitive, or concurrent-editor guarantee.
 
-Issues #347 and #348 preserve this lifecycle/scenario boundary while routing
-ordinary Project Build, Publish, snapshot Build, and the build stage of snapshot
-Test through the internal sealed `WorkbookMaterializer`. Its closed data-only
-`ProjectBuild`, `Publish`, and `SourceSnapshotBuild` intents share one ordered
-workbook-generation workflow. `AutomationExcelProcessRuntime` still owns process
-lifecycle and release proof; the materializer owns scenario order, repeated
-live-authority inspection, saved-staging validation, the cancellation boundary,
-and output commitment. Snapshot Test opens the exact committed workbook returned
-by its intent only after the hidden build process has been released, using a
-fresh test-execution process.
+Issues #347 through #349 preserve this lifecycle/scenario boundary while routing
+ordinary Project Build, Publish, snapshot Build, the build stage of snapshot
+Test, and explicit import through the internal sealed `WorkbookMaterializer`.
+Its closed data-only `WorkbookMaterializationIntent.ProjectBuild`,
+`WorkbookMaterializationIntent.Publish`,
+`WorkbookMaterializationIntent.SourceSnapshotBuild`, and
+`WorkbookMaterializationIntent.ExplicitImport` intents share one ordered
+workbook-materialization workflow. The explicit-import intent consumes the
+admission produced by `VbaSourceAdmissionIntent.ExplicitImport`, resolves no
+project context, and performs no manifest reference normalization.
+`AutomationExcelProcessRuntime` still owns process lifecycle and release proof;
+the materializer owns scenario order, repeated live-authority inspection,
+saved-staging validation, the cancellation boundary, and output commitment.
+Snapshot Test opens the exact committed workbook returned by its intent only
+after the hidden build process has been released, using a fresh test-execution
+process.
 
 The #346 migration preserved the workbook-generation interfaces that existed
 at that point. Issue #347 subsequently removes the public test-shaped
@@ -88,4 +94,10 @@ at that point. Issue #347 subsequently removes the public test-shaped
 composition and tests use the production-shaped `IWorkbookGenerationAutomation`
 port instead. The public command process and result contracts are unchanged.
 This refinement adds no dependency outside VbaDev and introduces no generic
-stage DSL, transaction framework, retry, rollback, or external-write policy.
+stage DSL, transaction framework, retry, rollback, or new general external-write
+policy.
+Explicit import only retains its existing read-only `FileShare.Read` target
+guard through target staging, Excel processing, owned Excel-process release,
+saved-staging output validation, and the final cancellation fence, releasing it
+for the synchronous atomic commit. It adds no source reinspection, target
+compare-and-swap, or rollback of competing external changes.

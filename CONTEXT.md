@@ -426,7 +426,7 @@ round-trip through the operation-fixed active Windows ANSI code page while
 `.frx` sidecars retain their exact bytes and relative pairing. An
 unrepresentable or best-fit-only character fails before Excel starts, and the
 mirror never changes caller-owned bytes and is removed with command scratch.
-For `ExplicitImport`, ordinary Build, Publish, and snapshot Build/Test, it consumes the admission's Unicode,
+For `VbaSourceAdmissionIntent.ExplicitImport`, ordinary Build, Publish, and snapshot Build/Test, it consumes the admission's Unicode,
 fixed ACP, and captured sidecar bytes without calling `GetACP`, choosing a source encoding,
 or rereading caller files.
 _Avoid_: source snapshot, persistent source conversion, lossy staging file
@@ -774,13 +774,21 @@ _Avoid_: path-only export, ad hoc export, project export
 **ExplicitWorkbookImport**:
 A `VbaDev` import operation scoped by a caller-provided source directory and
 workbook path rather than by a `ProjectManifest` document definition. Its
-source authority is the immutable `VbaSourceAdmission` captured with the closed
-`ExplicitImport` intent. Compatibility uses those admitted identities together
-with the actual project, reference, and retained-component names in a private
-copy of the existing target. The target is atomically replaced only after
-mirror cleanup, workbook verification and save, and owned Excel-process release
-succeed. Failure preserves the original target and reports retained private
-artifact paths when cleanup is incomplete.
+source authority is the immutable `VbaSourceAdmission` captured with
+`VbaSourceAdmissionIntent.ExplicitImport`; the separate closed
+`WorkbookMaterializationIntent.ExplicitImport` owns the target workflow.
+Compatibility uses those admitted identities together with the actual project,
+reference, and retained-component names in a private copy of the existing
+target. Imported component names, kinds, and projected code are verified against
+the admission; form sidecars are staged exactly from admitted bytes and remain
+covered by the real-Excel semantic fixture rather than exhaustive per-command
+runtime proof. Its existing read-only `FileShare.Read` guard covers target
+staging, Excel processing, owned Excel-process release, saved-staging output
+validation, and the final cancellation fence, and is released only for the
+synchronous atomic commit. A failure or cancellation before that commit
+preserves the original target and reports retained private artifact paths when
+cleanup is incomplete. The workflow neither reinspects admitted source nor adds
+target compare-and-swap, retry, or rollback of competing external changes.
 _Avoid_: path-only import, ad hoc import, project import
 
 **VbaSourceAdmission**:
@@ -819,41 +827,52 @@ Snapshot feature versions are `2.0`; staged rollout is governed by ADR 0037.
 _Avoid_: public extension point, caller-composed decoding profile, mutable source cache
 
 **WorkbookMaterializationNamePreflight**:
-The compatibility decision required before a generated workbook accepts its
+The compatibility decision required before a materialized workbook accepts its
 selected source set, using authoritative source identities and the workbook's
 actual project, active-reference, and retained-component names. Source-only
 preflight runs before Excel. The prepared-workbook authority is checked after
-component removal and reference normalization, and the live authority is
-checked again after `VbeImportVerification`. Only verified imported identities
-are excluded from the retained-component set at that last checkpoint. A failed
-decision preserves the complete deterministic conflict set rather than only its
-first member; a post-import failure prevents save and output commitment. This is
-not compile verification.
+component removal and, for manifest-driven intents, reference normalization;
+the live authority is checked again after `VbeImportVerification`. Only
+verified imported identities are excluded from the retained-component set at
+that last checkpoint. A failed decision preserves the complete deterministic
+conflict set rather than only its first member; a post-import failure prevents
+save and output commitment. This is not compile verification.
 _Avoid_: reference resolution, compile check, CommonModules consistency check
 
 **WorkbookMaterializer**:
-The internal sealed VbaDev operation owner for one closed `ProjectBuild`,
-`Publish`, or `SourceSnapshotBuild` intent. `ProjectBuild` and `Publish`
-select their manifest-owned admitted sources. `SourceSnapshotBuild` consumes
-a command-owned `BuildSourceSnapshotCapture` and its immutable
+The internal sealed VbaDev operation owner for one closed
+`WorkbookMaterializationIntent.ProjectBuild`,
+`WorkbookMaterializationIntent.Publish`,
+`WorkbookMaterializationIntent.SourceSnapshotBuild`, or
+`WorkbookMaterializationIntent.ExplicitImport` intent. `ProjectBuild` and
+`Publish` select their manifest-owned admitted sources. `SourceSnapshotBuild`
+consumes a command-owned `BuildSourceSnapshotCapture` and its immutable
 `VbaSourceAdmission` facts without rereading the persistent
 `DocumentSourceSet`, redetecting source encoding, or accepting consumer proof.
+`ExplicitImport` consumes the `AdmittedVbaSourceSet` captured by
+`VbaSourceAdmissionIntent.ExplicitImport` and a caller-provided existing target;
+it resolves no project context and performs no manifest reference normalization.
 
-Across all three intents, the materializer keeps the applicable admitted-source
+Across all four intents, the materializer keeps the applicable admitted-source
 preparation, static preflight, sibling workbook staging, repeated live-authority
 inspection, source import and verification, save, owned Excel-process release,
-saved-staging validation, and durable output commitment in one ordered
-workflow. Public snapshot Build and the build stage of snapshot Test use the
-same `SourceSnapshotBuild` path. Test execution consumes the exact
+saved-staging validation, cancellation fence, and durable output commitment in
+one ordered workflow. Public snapshot Build and the build stage of snapshot Test
+use the same `SourceSnapshotBuild` path. Test execution consumes the exact
 `CommittedArtifactPath` returned by that intent; `TestCommand` owns subsequent
 execution and `SnapshotTestExecutionWorkspace` owns post-result artifact
 cleanup.
 
 Failure or cancellation before commitment disposes invocation-owned staging and
-does not replace the previous output. Commitment is attempted once. The module
-does not coordinate external target changes through locking, compare-and-swap,
-retry, rollback, or an editor fence. It is implemented wholly inside VbaDev and
-adds no dependency on another product.
+does not replace the previous output. Commitment is attempted once.
+`ExplicitImport` alone retains its existing read-only `FileShare.Read` target
+guard from target staging through owned Excel-process release, saved-staging
+validation, and the final cancellation fence, then releases it only for the
+synchronous atomic commit. The module neither reinspects admitted source nor
+coordinates external target changes through compare-and-swap, retry, rollback,
+or an editor fence; the guard is not protection for non-cooperating changes or
+the final guard-release-to-commit gap. It is implemented wholly inside VbaDev,
+adds no dependency on another product, and gains no reverse product dependency.
 _Avoid_: configurable stage pipeline, workflow DSL, plug-in surface, DAP or
 adapter state, artifact-lifecycle policy, external-change coordinator
 
@@ -5411,11 +5430,11 @@ Domain Expert: "Only the source-metadata and source-to-source part. The final ac
 Dev: "Can a successful pre-import authority check authorize save after `VBComponents.Import`?"
 Domain Expert: "No. Import may change the project, retained-component, or active-reference authority. After imported-component verification, re-enumerate that authority and reject any new gap or conflict before save and output commitment."
 
-Dev: "Should `WorkbookMaterializer` use target locking, compare-and-swap, retry, or rollback when another actor changes the destination?"
-Domain Expert: "No. Concurrent destination mutation is outside the command contract. Keep the destination closed. VbaDev validates its invocation-owned saved staging artifact and attempts commitment once; it neither adopts competing writes nor rolls back an already committed artifact."
+Dev: "Should `WorkbookMaterializer` add general target locking, compare-and-swap, retry, or rollback when another actor changes the destination?"
+Domain Expert: "No. Explicit import retains only its existing read-only `FileShare.Read` guard from target staging through Excel processing, owned-process release, saved-staging validation, and the final cancellation fence, then releases it for the synchronous atomic commit. That guard rejects writes during its protected interval but is not a compare-and-swap guarantee across the final release-to-commit gap. No intent reinspects admitted source, retries, adopts competing writes, or rolls back competing external changes. Keep the destination closed."
 
 Dev: "Does issue #347 move snapshot Build, explicit import, and Doctor into `WorkbookMaterializer`?"
-Domain Expert: "No. Issue #347 closes only ordinary `ProjectBuild` and `Publish`. At that boundary, snapshot Build, explicit import, and Doctor remained independently owned until their #348, #349, and #351 slices. Issue #348 subsequently migrated snapshot Build and the build stage of snapshot Test through the closed `SourceSnapshotBuild` intent."
+Domain Expert: "No. Issue #347 closes only ordinary `ProjectBuild` and `Publish`. At that boundary, snapshot Build, explicit import, and Doctor remained independently owned until their #348, #349, and #351 slices. Issue #348 subsequently migrated snapshot Build and the build stage of snapshot Test through `WorkbookMaterializationIntent.SourceSnapshotBuild`; issue #349 migrated explicit import through the distinct `WorkbookMaterializationIntent.ExplicitImport`. Doctor remains independently owned until issue #351."
 
 Dev: "Should a test-only or `'#ExcludePublish` module with a conflicting `ModuleIdentity` block `publish`?"
 Domain Expert: "No. `WorkbookMaterializationNamePreflight` evaluates the effective source set selected for that output profile. Build and build-before-test include test source and may fail, while publish ignores name defects confined to excluded source; Language Server validation and Doctor may still report project-source health independently. Structural failures that prevent the command from selecting a trustworthy flat source set remain command failures."

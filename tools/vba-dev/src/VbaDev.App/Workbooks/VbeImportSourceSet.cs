@@ -37,12 +37,6 @@ public sealed class VbeImportSourceSetFactory
     internal VbeImportSourceSet Create(AdmittedVbaSourceSet admission)
         => NotifyCreated(VbeImportSourceSet.Create(admission));
 
-    internal VbeImportSourceSet CreateExplicitImport(string sourceDirectory)
-        => NotifyCreated(VbeImportSourceSet.Create(
-            new VbaSourceAdmission(getActiveCodePage).Admit(
-                sourceDirectory,
-                VbaSourceAdmissionIntent.ExplicitImport)));
-
     private VbeImportSourceSet NotifyCreated(VbeImportSourceSet sourceSet)
     {
         try

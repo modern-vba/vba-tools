@@ -31,7 +31,7 @@ public sealed class VbaSourceAdmissionTests
     }
 
     [Fact]
-    public void FactoryCapturesAcpOnceAndKeepsAllIdentityFindingsInSourceOrder()
+    public void AdmissionCapturesAcpOnceAndFactoryKeepsAllIdentityFindingsInSourceOrder()
     {
         using var temp = TempDirectory.Create();
         var missingPath = Path.Combine(temp.Path, "A_Missing.bas");
@@ -45,11 +45,16 @@ public sealed class VbaSourceAdmissionTests
         var codePageReads = 0;
         var createdCalls = 0;
         VbeImportSourceSet? observed = null;
+        Func<int> getActiveCodePage = () => { codePageReads++; return 1252; };
+        var admission = new VbaSourceAdmission(getActiveCodePage);
         var factory = new VbeImportSourceSetFactory(
-            () => { codePageReads++; return 1252; },
+            getActiveCodePage,
             sourceSet => { createdCalls++; observed = sourceSet; });
 
-        using var mirror = factory.CreateExplicitImport(temp.Path);
+        var admitted = admission.Admit(
+            temp.Path,
+            VbaSourceAdmissionIntent.ExplicitImport);
+        using var mirror = factory.Create(admitted);
         var report = new WorkbookMaterializationNamePreflight().InspectSourcePhase(mirror.SourceFiles);
 
         Assert.Equal(1, codePageReads);
@@ -122,7 +127,10 @@ public sealed class VbaSourceAdmissionTests
 
         try
         {
-            var error = Assert.Throws<InvalidOperationException>(() => factory.CreateExplicitImport(temp.Path));
+            var admitted = new VbaSourceAdmission(() => 65001).Admit(
+                temp.Path,
+                VbaSourceAdmissionIntent.ExplicitImport);
+            var error = Assert.Throws<InvalidOperationException>(() => factory.Create(admitted));
 
             Assert.Contains("source-set callback failed", error.Message, StringComparison.Ordinal);
             Assert.NotNull(mirrorPath);
