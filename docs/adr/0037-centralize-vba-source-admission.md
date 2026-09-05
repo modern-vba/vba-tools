@@ -144,24 +144,56 @@ commitment remains authoritative if cancellation arrives afterward.
 
 ## Rollout boundary
 
+Issue #341 applies the same closed-source encoding decisions independently
+inside the language server, as described below.
+
 Issue #335 introduced `ExplicitImport`; issue #339 adds ordinary Build and the
 ordinary Build stage reused by Test; issue #340 adds Publish. Snapshot build and
 test, and Doctor retain their existing UTF-8-first decoding and capture paths until
 their own migration slices. Test execution and result-location authority also
 remain on their existing paths.
 Their existing `VbeImportSourceSet` entry point remains responsible for that
-legacy admission behavior. The language server and snapshot producers also
-retain their current contracts. This decision does not claim that every
-`VbaDev` source path already uses `VbaSourceAdmission`.
+legacy admission behavior. Snapshot producers retain their current contracts.
+This decision does not claim that every `VbaDev` source path already uses
+`VbaSourceAdmission`.
 
 The current `build.sourceSnapshot`, `test.sourceSnapshot`, and
 `sourceSnapshot.activeWindowsCodePage` capabilities remain version `1.0`.
 Adapter protocol and snapshot-schema contracts are unchanged. A future
 snapshot encoding migration must coordinate producer, adapter, and CLI
 compatibility in its own complete slice. `ExecutedSourceIndex`-based test
-locations, changes to `test --no-build` navigation, whole-run Doctor admission,
-and language-server source decoding are deferred; these migrations do not
-enable them.
+locations, changes to `test --no-build` navigation, and whole-run Doctor
+admission are deferred; these migrations do not enable them.
+
+## Language-server closed source
+
+The language server owns its own `DiskSourceDecoding` implementation. Its normal
+startup obtains Windows `GetACP` directly once before the protocol loop; the
+existing process-wide decoder retains that authority. Supported UTF-8, UTF-16
+LE, and UTF-16 BE BOMs select strict Unicode decoding with exact original-byte
+reproduction. BOM-less Windows source uses only the fixed ACP, including
+ACP 65001 as canonical UTF-8. No UTF-8 probe, fallback, locale inference, or
+companion executable participates. Non-Windows closed source without a BOM is
+rejected, including ASCII and empty input, because no Windows ACP authority
+exists.
+
+Unsupported or malformed BOMs, invalid bytes, and failed byte reproduction are
+syntax-free `invalid-disk-source-encoding` facts. They never become empty,
+replacement, guessed, or last-known-good semantic source. Cold capture, watched
+reload, reconciliation, and close-to-disk transitions use the same local
+decoder and existing inventory lifecycle. Open LSP Unicode remains authoritative
+and bypasses disk decoding; accepted valid reload or deletion clears an invalid
+source diagnostic. Closing the buffer invalidates its previously hidden disk
+failure, so the next capture publishes a still-invalid source again or accepts
+the current repaired bytes. Existing watcher-first freshness and reconciliation
+ownership are unchanged.
+
+The language-server decoder and `VbaSourceAdmission` do not call or reference
+each other. They share the neutral data-only conformance corpus through
+product-owned loaders and assertions, not another product's runtime or test
+assembly. Existing unrelated language-server catalog dependencies are unchanged.
+The language server does not project text for VBE import: supported BOM-marked
+Unicode remains valid even when it cannot be represented in the Windows ACP.
 
 ## Conformance
 

@@ -581,6 +581,10 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                 return false;
             }
 
+            // A fresh disk capture must republish a failure hidden by this buffer,
+            // even when the file still has exactly the same invalid bytes.
+            ClearDiskSourceFailure(documentIdentity);
+
             if (hasOpenRevision)
             {
                 acceptedRevisions.Remove(documentIdentity);

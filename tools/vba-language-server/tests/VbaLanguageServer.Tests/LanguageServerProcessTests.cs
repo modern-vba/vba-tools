@@ -25914,7 +25914,7 @@ public sealed class LanguageServerProcessTests
             var removedDefinition = await SendDefinitionRequestAsync(process, 3, callerUri, callerText, "BuildValue");
             Assert.Equal(JsonValueKind.Null, removedDefinition.ValueKind);
 
-            File.WriteAllText(renamedHelperPath, renamedHelperText);
+            File.WriteAllText(renamedHelperPath, renamedHelperText, new UTF8Encoding(true, true));
             await process.SendNotificationAsync("workspace/didChangeWatchedFiles",
                 new
                 {

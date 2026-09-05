@@ -1365,14 +1365,20 @@ _Avoid_: raw filesystem reader, source document cache, semantic inventory
 
 **DiskSourceDecoding**:
 The strict byte-to-Unicode policy used when `VbaProjectDiskInventory` reads a
-closed exported VBA source file. It recognizes UTF-8, UTF-16 LE, or UTF-16 BE
-from a BOM, then tries BOM-less strict UTF-8, then on Windows tries the active
-ANSI code page fixed once at language-server process start; ACP 65001 is
-canonical UTF-8. A non-Windows process has no implicit legacy fallback, and an
-unsupported or invalid byte sequence produces a source diagnostic instead of
-guessed text. Open editor text already arrives as Unicode and does not use this
-policy. Decoding determines source text but does not restrict which
-`VbaIdentifierForm` that text may contain.
+closed exported VBA source file. A supported UTF-8, UTF-16 LE, or UTF-16 BE
+BOM selects strict Unicode decoding; Windows BOM-less bytes use only the active
+ANSI code page obtained directly from `GetACP` once at language-server process
+start. ACP 65001 is canonical UTF-8, with no UTF-8 probing or fallback under
+another ACP. Every decoded source must reproduce its original bytes exactly.
+A non-Windows process rejects BOM-less source, including ASCII and empty input,
+because it has no Windows ACP authority. Unsupported or malformed BOMs, invalid
+bytes, and failed byte reproduction produce `invalid-disk-source-encoding`
+instead of guessed, empty, replacement, or last-known-good text. Cold capture,
+watched reload, reconciliation, and close-to-disk transitions share this local
+decoder. Open editor Unicode bypasses it; valid reload or deletion clears the
+diagnostic. The decoder shares only neutral conformance data with VbaDev, not
+its admission implementation or VBE projection. Decoding does not restrict
+which `VbaIdentifierForm` the resulting Unicode may contain.
 _Avoid_: CP932 fallback, locale inference, identifier-form selection, VBE import encoding
 
 **DiskContentIdentity**:

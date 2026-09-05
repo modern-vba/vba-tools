@@ -11,11 +11,12 @@ internal sealed class DiskSourceDecodingException : Exception
     internal DiskSourceDecodingException(
         string sourcePath,
         string policyDescription,
-        DecoderFallbackException innerException)
+        Exception innerException)
         : base(
             $"Unable to decode closed VBA source '{sourcePath}' with {policyDescription}. "
-            + "Save the file as valid UTF-8, UTF-8 with BOM, UTF-16 LE with BOM, "
-            + "or UTF-16 BE with BOM, or use the active Windows ANSI code page.",
+            + "Save the file as valid UTF-8 with BOM, UTF-16 LE with BOM, "
+            + "or UTF-16 BE with BOM. On Windows, BOM-less source must use "
+            + "the process-start ANSI code page; UTF-8 requires ACP 65001.",
             innerException)
     {
     }
@@ -27,12 +28,17 @@ internal sealed class DiskSourceDecodingException : Exception
 internal sealed class DiskSourceDecoding
 {
     private static readonly byte[] Utf8Preamble = [0xEF, 0xBB, 0xBF];
-    private static readonly byte[] Utf32LittleEndianPreamble =
-        [0xFF, 0xFE, 0x00, 0x00];
-    private static readonly byte[] Utf32BigEndianPreamble =
-        [0x00, 0x00, 0xFE, 0xFF];
     private static readonly byte[] Utf16LittleEndianPreamble = [0xFF, 0xFE];
     private static readonly byte[] Utf16BigEndianPreamble = [0xFE, 0xFF];
+    private static readonly byte[][] UnsupportedUnicodePreambles =
+    [
+        [0xFF, 0xFE, 0x00, 0x00],
+        [0x00, 0x00, 0xFE, 0xFF],
+        [0x2B, 0x2F, 0x76, 0x38],
+        [0x2B, 0x2F, 0x76, 0x39],
+        [0x2B, 0x2F, 0x76, 0x2B],
+        [0x2B, 0x2F, 0x76, 0x2F]
+    ];
     private static readonly Encoding Utf8Strict = new UTF8Encoding(
         encoderShouldEmitUTF8Identifier: false,
         throwOnInvalidBytes: true);
@@ -49,11 +55,11 @@ internal sealed class DiskSourceDecoding
     private static readonly Lazy<DiskSourceDecoding> CurrentProcess =
         new(CreateForCurrentProcess);
 
-    private readonly Encoding? activeLegacyEncoding;
+    private readonly Encoding? activeWindowsEncoding;
     private readonly string policyDescription;
 
     internal DiskSourceDecoding(
-        bool supportsLegacyFallback,
+        bool hasWindowsAcpAuthority,
         int activeCodePage)
     {
         if (activeCodePage <= 0)
@@ -61,19 +67,21 @@ internal sealed class DiskSourceDecoding
             throw new ArgumentOutOfRangeException(nameof(activeCodePage));
         }
 
-        if (!supportsLegacyFallback || activeCodePage == 65001)
+        if (!hasWindowsAcpAuthority)
         {
-            policyDescription = "strict Unicode decoding (including UTF-8)";
+            policyDescription = "strict BOM-selected Unicode decoding without Windows ACP authority";
             return;
         }
 
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
-        activeLegacyEncoding = Encoding.GetEncoding(
-            activeCodePage,
-            EncoderFallback.ExceptionFallback,
-            DecoderFallback.ExceptionFallback);
+        activeWindowsEncoding = activeCodePage == 65001
+            ? Utf8Strict
+            : Encoding.GetEncoding(
+                activeCodePage,
+                EncoderFallback.ExceptionFallback,
+                DecoderFallback.ExceptionFallback);
         policyDescription =
-            $"strict Unicode decoding or active Windows code page {activeCodePage}";
+            $"strict BOM-selected Unicode or BOM-less Windows code page {activeCodePage}";
     }
 
     internal static DiskSourceDecoding ForCurrentProcess
@@ -86,7 +94,7 @@ internal sealed class DiskSourceDecoding
         {
             return DecodeCore(bytes);
         }
-        catch (DecoderFallbackException error)
+        catch (Exception error) when (error is DecoderFallbackException or EncoderFallbackException)
         {
             throw new DiskSourceDecodingException(
                 sourcePath,
@@ -97,52 +105,82 @@ internal sealed class DiskSourceDecoding
 
     private string DecodeCore(ReadOnlySpan<byte> bytes)
     {
-        if (bytes.IsEmpty)
+        foreach (var preamble in UnsupportedUnicodePreambles)
         {
-            return string.Empty;
-        }
-
-        if (bytes.StartsWith(Utf32LittleEndianPreamble)
-            || bytes.StartsWith(Utf32BigEndianPreamble))
-        {
-            throw new DecoderFallbackException(
-                "UTF-32 BOMs are outside the supported disk-source policy.");
+            if (bytes.StartsWith(preamble))
+            {
+                throw new DecoderFallbackException(
+                    "The Unicode BOM is outside the supported disk-source policy.");
+            }
         }
 
         if (bytes.StartsWith(Utf8Preamble))
         {
-            return Utf8Strict.GetString(bytes[Utf8Preamble.Length..]);
+            return DecodeExactly(bytes[Utf8Preamble.Length..], Utf8Strict);
         }
 
         if (bytes.StartsWith(Utf16LittleEndianPreamble))
         {
-            return Utf16LittleEndianStrict.GetString(
-                bytes[Utf16LittleEndianPreamble.Length..]);
+            return DecodeExactly(
+                bytes[Utf16LittleEndianPreamble.Length..],
+                Utf16LittleEndianStrict);
         }
 
         if (bytes.StartsWith(Utf16BigEndianPreamble))
         {
-            return Utf16BigEndianStrict.GetString(
-                bytes[Utf16BigEndianPreamble.Length..]);
+            return DecodeExactly(
+                bytes[Utf16BigEndianPreamble.Length..],
+                Utf16BigEndianStrict);
         }
 
-        try
+        if (IsTruncatedPreamble(bytes, Utf8Preamble)
+            || IsTruncatedPreamble(bytes, Utf16LittleEndianPreamble)
+            || IsTruncatedPreamble(bytes, Utf16BigEndianPreamble))
         {
-            return Utf8Strict.GetString(bytes);
+            throw new DecoderFallbackException("The Unicode BOM is truncated.");
         }
-        catch (DecoderFallbackException) when (activeLegacyEncoding is not null)
+
+        foreach (var preamble in UnsupportedUnicodePreambles)
         {
-            return activeLegacyEncoding.GetString(bytes);
+            if (IsTruncatedPreamble(bytes, preamble))
+            {
+                throw new DecoderFallbackException("The Unicode BOM is truncated.");
+            }
         }
+
+        if (activeWindowsEncoding is null)
+        {
+            throw new DecoderFallbackException(
+                "BOM-less source requires Windows ACP authority.");
+        }
+
+        return DecodeExactly(bytes, activeWindowsEncoding);
     }
+
+    private static string DecodeExactly(ReadOnlySpan<byte> bytes, Encoding encoding)
+    {
+        var text = encoding.GetString(bytes);
+        if (!bytes.SequenceEqual(encoding.GetBytes(text)))
+        {
+            throw new DecoderFallbackException(
+                "The decoded source cannot reproduce its original bytes.");
+        }
+
+        return text;
+    }
+
+    private static bool IsTruncatedPreamble(ReadOnlySpan<byte> bytes, byte[] preamble)
+        => !bytes.IsEmpty
+            && bytes.Length < preamble.Length
+            && preamble.AsSpan().StartsWith(bytes);
 
     private static DiskSourceDecoding CreateForCurrentProcess()
         => OperatingSystem.IsWindows()
             ? new DiskSourceDecoding(
-                supportsLegacyFallback: true,
+                hasWindowsAcpAuthority: true,
                 activeCodePage: checked((int)GetACP()))
             : new DiskSourceDecoding(
-                supportsLegacyFallback: false,
+                hasWindowsAcpAuthority: false,
                 activeCodePage: 65001);
 
     [DllImport("kernel32.dll")]

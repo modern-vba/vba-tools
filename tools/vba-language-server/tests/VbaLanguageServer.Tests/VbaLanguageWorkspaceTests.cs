@@ -781,8 +781,8 @@ public sealed class VbaLanguageWorkspaceTests
     }
 
     [Theory]
-    [MemberData(nameof(BomAndUtf8EncodedSourceCases))]
-    public void ProjectSnapshotDecodesBomAndUtf8DiskSourceDocumentation(byte[] helperBytes)
+    [MemberData(nameof(BomEncodedSourceCases))]
+    public void ProjectSnapshotDecodesBomDiskSourceDocumentation(byte[] helperBytes)
     {
         var projectRoot = Directory.CreateTempSubdirectory("vba-ls-utf-source-").FullName;
         try
@@ -845,7 +845,7 @@ public sealed class VbaLanguageWorkspaceTests
                 new VbaProjectReferenceCatalogCache(
                     VbaProjectReferenceCatalogSet.CreateBundled()),
                 new DiskSourceDecoding(
-                    supportsLegacyFallback: true,
+                    hasWindowsAcpAuthority: true,
                     activeCodePage: 932));
             workspace.UpdateDocument(callerUri, string.Join('\n', [
                 "Attribute VB_Name = \"Caller\"",
@@ -896,13 +896,13 @@ public sealed class VbaLanguageWorkspaceTests
                 + "Public Function 日本語() As String\n"
                 + "End Function\n",
                 new UTF8Encoding(
-                    encoderShouldEmitUTF8Identifier: false,
+                    encoderShouldEmitUTF8Identifier: true,
                     throwOnInvalidBytes: true));
             var workspace = new VbaLanguageWorkspace(
                 new VbaProjectReferenceCatalogCache(
                     VbaProjectReferenceCatalogSet.CreateBundled()),
                 new DiskSourceDecoding(
-                    supportsLegacyFallback: true,
+                    hasWindowsAcpAuthority: true,
                     activeCodePage: 1252));
 
             var symbols = workspace
@@ -944,7 +944,7 @@ public sealed class VbaLanguageWorkspaceTests
                 new VbaProjectReferenceCatalogCache(
                     VbaProjectReferenceCatalogSet.CreateBundled()),
                 new DiskSourceDecoding(
-                    supportsLegacyFallback: false,
+                    hasWindowsAcpAuthority: false,
                     activeCodePage: 65001));
             workspace.OpenDocument(sourceUri, version: 1, openText);
 
@@ -1687,7 +1687,7 @@ public sealed class VbaLanguageWorkspaceTests
             : new Uri(path).AbsoluteUri;
     }
 
-    public static IEnumerable<object[]> BomAndUtf8EncodedSourceCases()
+    public static IEnumerable<object[]> BomEncodedSourceCases()
     {
         const string documentation = "\u65e5\u672c\u8a9e\u306e\u8aac\u660e";
         var source = string.Join('\n', [
@@ -1698,7 +1698,7 @@ public sealed class VbaLanguageWorkspaceTests
         ]);
         yield return [AddPreamble(Encoding.UTF8.GetPreamble(), Encoding.UTF8.GetBytes(source))];
         yield return [AddPreamble(Encoding.Unicode.GetPreamble(), Encoding.Unicode.GetBytes(source))];
-        yield return [new UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetBytes(source)];
+        yield return [AddPreamble(Encoding.BigEndianUnicode.GetPreamble(), Encoding.BigEndianUnicode.GetBytes(source))];
     }
 
     private sealed class BlockingFirstProjectSnapshotBuildObserver

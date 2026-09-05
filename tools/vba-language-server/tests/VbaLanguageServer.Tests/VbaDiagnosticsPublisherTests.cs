@@ -3700,7 +3700,7 @@ public sealed class VbaDiagnosticsPublisherTests
                 SystemVbaProjectFileSystem.Instance,
                 reconciliationAuthorityLeaseObserver: null,
                 sourceDecoding: new DiskSourceDecoding(
-                    supportsLegacyFallback: false,
+                    hasWindowsAcpAuthority: true,
                     activeCodePage: 65001));
             workspace.OpenDocument(callerUri, 7, callerText);
             _ = workspace.CreateProjectSnapshot(callerUri);
@@ -4109,14 +4109,295 @@ public sealed class VbaDiagnosticsPublisherTests
     }
 
     [Fact]
-    public async Task Watched_invalid_closed_source_publishes_actionable_encoding_diagnostic()
+    public async Task Close_republishes_previously_reported_encoding_failure_with_open_project_peer()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-close-invalid-peer-").FullName;
+        try
+        {
+            var callerPath = Path.Combine(projectRoot, "Caller.bas");
+            var helperPath = Path.Combine(projectRoot, "Helper.bas");
+            var callerUri = new Uri(callerPath).AbsoluteUri;
+            var helperUri = new Uri(helperPath).AbsoluteUri;
+            const string callerText = "Attribute VB_Name = \"Caller\"\n"
+                + "Public Sub Run()\n    BuildValue\nEnd Sub\n";
+            const string helperText = "Attribute VB_Name = \"Helper\"\n"
+                + "'* @brief 日本語\n"
+                + "Public Function BuildValue() As String\nEnd Function\n";
+            File.WriteAllText(callerPath, callerText);
+            File.WriteAllBytes(helperPath, [0xEF, 0xBB, 0xBF, 0xC3, 0x28]);
+            await using var output = new CapturingWriteStream();
+            await using var scheduler = new VbaInteractiveWorkScheduler();
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()),
+                new DiskSourceDecoding(
+                    hasWindowsAcpAuthority: true,
+                    activeCodePage: 932));
+            var publisher = new VbaDiagnosticsPublisher(
+                new LspMessageTransport(Stream.Null, output),
+                workspace);
+            publisher.AttachScheduler(scheduler);
+            var pipeline = new VbaDocumentChangePipeline(
+                workspace,
+                new RecordingReferenceCatalogLifecycle(),
+                publisher);
+            await pipeline.ApplyAsync(
+                new VbaTextDocumentOpenedChange(callerUri, 1, callerText),
+                CancellationToken.None);
+            _ = workspace.CreateProjectSnapshot(callerUri);
+            await Task.WhenAll(
+                    publisher.WaitForIdleAsync(callerUri),
+                    publisher.WaitForIdleAsync(helperUri))
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.NotNull(workspace.GetDiskSourceFailure(helperUri));
+            var initialParameters = ReadJsonMessages(output.ReadText())
+                .Select(message => Assert.IsType<JsonObject>(message["params"]))
+                .Last(parameters => parameters["uri"]?.GetValue<string>() == helperUri);
+            Assert.Equal(
+                "invalid-disk-source-encoding",
+                Assert.IsType<JsonObject>(Assert.Single(
+                    Assert.IsType<JsonArray>(initialParameters["diagnostics"])))
+                    ["code"]?.GetValue<string>());
+
+            await pipeline.ApplyAsync(
+                new VbaTextDocumentOpenedChange(helperUri, 1, helperText),
+                CancellationToken.None);
+            var openSnapshot = workspace.CreateProjectSnapshot(callerUri);
+            await Task.WhenAll(
+                    publisher.WaitForIdleAsync(callerUri),
+                    publisher.WaitForIdleAsync(helperUri))
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(helperText, openSnapshot.SourceDocuments[helperUri]);
+            Assert.Contains(
+                openSnapshot.SemanticInventory.GetWorkspaceSymbols("BuildValue"),
+                symbol => symbol.Uri == helperUri);
+            Assert.Null(workspace.GetDiskSourceFailure(helperUri));
+            var openParameters = ReadJsonMessages(output.ReadText())
+                .Select(message => Assert.IsType<JsonObject>(message["params"]))
+                .Last(parameters => parameters["uri"]?.GetValue<string>() == helperUri);
+            Assert.Empty(Assert.IsType<JsonArray>(openParameters["diagnostics"]));
+
+            await pipeline.ApplyAsync(
+                new VbaTextDocumentClosedChange(helperUri),
+                CancellationToken.None);
+            var closedSnapshot = workspace.CreateProjectSnapshot(callerUri);
+            await Task.WhenAll(
+                    publisher.WaitForIdleAsync(callerUri),
+                    publisher.WaitForIdleAsync(helperUri))
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.DoesNotContain(helperUri, closedSnapshot.SourceDocuments.Keys);
+            Assert.Empty(closedSnapshot.SemanticInventory.GetWorkspaceSymbols("BuildValue"));
+            Assert.NotNull(workspace.GetDiskSourceFailure(helperUri));
+            var closedParameters = ReadJsonMessages(output.ReadText())
+                .Select(message => Assert.IsType<JsonObject>(message["params"]))
+                .Last(parameters => parameters["uri"]?.GetValue<string>() == helperUri);
+            var codes = Assert.IsType<JsonArray>(closedParameters["diagnostics"])
+                .Select(diagnostic => Assert.IsType<JsonObject>(diagnostic)["code"]?.GetValue<string>())
+                .ToArray();
+            Assert.Contains("invalid-disk-source-encoding", codes);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Close_reads_repaired_disk_without_republishing_hidden_failure_with_open_peer()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-close-repaired-peer-").FullName;
+        try
+        {
+            var callerPath = Path.Combine(projectRoot, "Caller.bas");
+            var helperPath = Path.Combine(projectRoot, "Helper.bas");
+            var callerUri = new Uri(callerPath).AbsoluteUri;
+            var helperUri = new Uri(helperPath).AbsoluteUri;
+            const string callerText = "Attribute VB_Name = \"Caller\"\n"
+                + "Public Sub Run()\nEnd Sub\n";
+            const string openText = "Attribute VB_Name = \"Helper\"\n"
+                + "Public Sub OpenValue()\nEnd Sub\n";
+            const string repairedText = "Attribute VB_Name = \"Helper\"\n"
+                + "'* @brief 日本語\nPublic Sub DiskValue()\nEnd Sub\n";
+            File.WriteAllText(callerPath, callerText);
+            File.WriteAllBytes(helperPath, [0xEF, 0xBB, 0xBF, 0xC3, 0x28]);
+            await using var output = new CapturingWriteStream();
+            await using var scheduler = new VbaInteractiveWorkScheduler();
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()),
+                new DiskSourceDecoding(
+                    hasWindowsAcpAuthority: true,
+                    activeCodePage: 932));
+            var publisher = new VbaDiagnosticsPublisher(
+                new LspMessageTransport(Stream.Null, output),
+                workspace);
+            publisher.AttachScheduler(scheduler);
+            var pipeline = new VbaDocumentChangePipeline(
+                workspace,
+                new RecordingReferenceCatalogLifecycle(),
+                publisher);
+
+            await pipeline.ApplyAsync(
+                new VbaTextDocumentOpenedChange(callerUri, 1, callerText),
+                CancellationToken.None);
+            _ = workspace.CreateProjectSnapshot(callerUri);
+            await Task.WhenAll(
+                    publisher.WaitForIdleAsync(callerUri),
+                    publisher.WaitForIdleAsync(helperUri))
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.NotNull(workspace.GetDiskSourceFailure(helperUri));
+            var initialParameters = ReadJsonMessages(output.ReadText())
+                .Select(message => Assert.IsType<JsonObject>(message["params"]))
+                .Last(parameters => parameters["uri"]?.GetValue<string>() == helperUri);
+            Assert.Equal(
+                "invalid-disk-source-encoding",
+                Assert.IsType<JsonObject>(Assert.Single(
+                    Assert.IsType<JsonArray>(initialParameters["diagnostics"])))
+                    ["code"]?.GetValue<string>());
+
+            await pipeline.ApplyAsync(
+                new VbaTextDocumentOpenedChange(helperUri, 1, openText),
+                CancellationToken.None);
+            File.WriteAllText(helperPath, repairedText, new UTF8Encoding(true, true));
+            await pipeline.ApplyAsync(
+                new VbaWatchedFileReloadChange(helperUri),
+                CancellationToken.None);
+            Assert.Equal(openText, workspace.CreateProjectSnapshot(callerUri)
+                .SourceDocuments[helperUri]);
+            Assert.Null(workspace.GetDiskSourceFailure(helperUri));
+            await Task.WhenAll(
+                    publisher.WaitForIdleAsync(callerUri),
+                    publisher.WaitForIdleAsync(helperUri))
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            var messagesBeforeClose = ReadJsonMessages(output.ReadText()).Count;
+
+            await pipeline.ApplyAsync(
+                new VbaTextDocumentClosedChange(helperUri),
+                CancellationToken.None);
+            var closedSnapshot = workspace.CreateProjectSnapshot(callerUri);
+            await Task.WhenAll(
+                    publisher.WaitForIdleAsync(callerUri),
+                    publisher.WaitForIdleAsync(helperUri))
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Equal(repairedText, closedSnapshot.SourceDocuments[helperUri]);
+            Assert.Contains(
+                closedSnapshot.SemanticInventory.GetWorkspaceSymbols("DiskValue"),
+                symbol => symbol.Uri == helperUri);
+            Assert.Empty(closedSnapshot.SemanticInventory.GetWorkspaceSymbols("OpenValue"));
+            Assert.Null(workspace.GetDiskSourceFailure(helperUri));
+            var closePublications = ReadJsonMessages(output.ReadText())
+                .Skip(messagesBeforeClose)
+                .Select(message => Assert.IsType<JsonObject>(message["params"]))
+                .Where(parameters => parameters["uri"]?.GetValue<string>() == helperUri)
+                .ToArray();
+            Assert.NotEmpty(closePublications);
+            Assert.All(closePublications, parameters =>
+                Assert.Empty(Assert.IsType<JsonArray>(parameters["diagnostics"])));
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(932)]
+    [InlineData(1252)]
+    [InlineData(65001)]
+    public async Task Close_readmits_invalid_disk_after_open_unicode_authority(
+        int activeCodePage)
+    {
+        var projectRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-close-invalid-source-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(projectRoot, "Worker.bas");
+            var uri = new Uri(sourcePath).AbsoluteUri;
+            File.WriteAllBytes(sourcePath, [0xEF, 0xBB, 0xBF, 0xC3, 0x28]);
+            const string openText = "Attribute VB_Name = \"Worker\"\n"
+                + "Public Sub 日本語()\nEnd Sub\n";
+            await using var output = new CapturingWriteStream();
+            await using var scheduler = new VbaInteractiveWorkScheduler();
+            var workspace = new VbaLanguageWorkspace(
+                new VbaProjectReferenceCatalogCache(
+                    VbaProjectReferenceCatalogSet.CreateBundled()),
+                new DiskSourceDecoding(
+                    hasWindowsAcpAuthority: true,
+                    activeCodePage));
+            var publisher = new VbaDiagnosticsPublisher(
+                new LspMessageTransport(Stream.Null, output),
+                workspace);
+            publisher.AttachScheduler(scheduler);
+            var pipeline = new VbaDocumentChangePipeline(
+                workspace,
+                new RecordingReferenceCatalogLifecycle(),
+                publisher);
+
+            await pipeline.ApplyAsync(
+                new VbaTextDocumentOpenedChange(uri, 1, openText),
+                CancellationToken.None);
+            await pipeline.ApplyAsync(
+                new VbaWatchedFileReloadChange(uri),
+                CancellationToken.None);
+            var openSnapshot = workspace.CreateProjectSnapshot(uri);
+            await publisher.WaitForIdleAsync(uri)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Equal(openText, openSnapshot.SourceDocuments[uri]);
+            Assert.Null(workspace.GetDiskSourceFailure(uri));
+            Assert.Contains(
+                openSnapshot.SemanticInventory.GetWorkspaceSymbols("日本語"),
+                symbol => symbol.Uri == uri);
+            var openParameters = ReadJsonMessages(output.ReadText())
+                .Select(message => Assert.IsType<JsonObject>(message["params"]))
+                .Last(parameters => parameters["uri"]?.GetValue<string>() == uri);
+            Assert.Empty(Assert.IsType<JsonArray>(openParameters["diagnostics"]));
+
+            await pipeline.ApplyAsync(
+                new VbaTextDocumentClosedChange(uri),
+                CancellationToken.None);
+            var closedSnapshot = workspace.CreateProjectSnapshot(uri);
+            await publisher.WaitForIdleAsync(uri)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.DoesNotContain(uri, closedSnapshot.SourceDocuments.Keys);
+            Assert.Empty(closedSnapshot.SemanticInventory.GetWorkspaceSymbols("日本語"));
+            Assert.Null(workspace.GetDocumentText(uri));
+            Assert.NotNull(workspace.GetDiskSourceFailure(uri));
+            var closedParameters = ReadJsonMessages(output.ReadText())
+                .Select(message => Assert.IsType<JsonObject>(message["params"]))
+                .Last(parameters => parameters["uri"]?.GetValue<string>() == uri);
+            var diagnostic = Assert.IsType<JsonObject>(
+                Assert.Single(Assert.IsType<JsonArray>(closedParameters["diagnostics"])));
+            Assert.Equal(
+                "invalid-disk-source-encoding",
+                diagnostic["code"]?.GetValue<string>());
+            Assert.Contains(sourcePath, diagnostic["message"]?.GetValue<string>());
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(932, "日本語")]
+    [InlineData(1252, "Café")]
+    [InlineData(65001, "日本語 Café")]
+    public async Task Watched_invalid_closed_source_recovers_with_fixed_acp_and_clears_on_deletion(
+        int activeCodePage,
+        string documentation)
     {
         var sourcePath = Path.Combine(
             Directory.CreateTempSubdirectory("vba-ls-invalid-source-").FullName,
             "Worker.bas");
         try
         {
-            File.WriteAllBytes(sourcePath, [0xC3, 0x28]);
+            byte[] invalidBytes = [0xEF, 0xBB, 0xBF, 0xC3, 0x28];
+            File.WriteAllBytes(sourcePath, invalidBytes);
             var uri = new Uri(sourcePath).AbsoluteUri;
             await using var output = new CapturingWriteStream();
             await using var scheduler = new VbaInteractiveWorkScheduler();
@@ -4124,8 +4405,8 @@ public sealed class VbaDiagnosticsPublisherTests
                 new VbaProjectReferenceCatalogCache(
                     VbaProjectReferenceCatalogSet.CreateBundled()),
                 new DiskSourceDecoding(
-                    supportsLegacyFallback: false,
-                    activeCodePage: 65001));
+                    hasWindowsAcpAuthority: true,
+                    activeCodePage));
             var publisher = new VbaDiagnosticsPublisher(
                 new LspMessageTransport(Stream.Null, output),
                 workspace);
@@ -4153,6 +4434,65 @@ public sealed class VbaDiagnosticsPublisherTests
                 sourcePath,
                 diagnostic["message"]?.GetValue<string>());
             Assert.Null(workspace.GetDocumentText(uri));
+
+            Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+            var encoding = Encoding.GetEncoding(
+                activeCodePage,
+                EncoderFallback.ExceptionFallback,
+                DecoderFallback.ExceptionFallback);
+            var recoveredText = "Attribute VB_Name = \"Worker\"\n"
+                + $"'* @brief {documentation}\n"
+                + "Public Sub Recovered()\nEnd Sub\n";
+            File.WriteAllBytes(sourcePath, encoding.GetBytes(recoveredText));
+            await pipeline.ApplyAsync(
+                new VbaWatchedFileReloadChange(uri),
+                CancellationToken.None);
+            await publisher.WaitForIdleAsync(uri)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Null(workspace.GetDiskSourceFailure(uri));
+            Assert.Equal(recoveredText, workspace.GetDocumentText(uri));
+            var recoveredDefinition = Assert.Single(
+                workspace.CreateProjectSnapshot(uri).SemanticInventory
+                    .GetDocumentDefinitions(uri),
+                definition => definition.Name == "Recovered");
+            Assert.Equal(documentation, recoveredDefinition.Documentation);
+            var recoveredParameters = ReadJsonMessages(output.ReadText())
+                .Select(message => Assert.IsType<JsonObject>(message["params"]))
+                .Last(parameters => parameters["uri"]?.GetValue<string>() == uri);
+            Assert.Empty(Assert.IsType<JsonArray>(recoveredParameters["diagnostics"]));
+
+            File.WriteAllBytes(sourcePath, invalidBytes);
+            await pipeline.ApplyAsync(
+                new VbaWatchedFileReloadChange(uri),
+                CancellationToken.None);
+            await publisher.WaitForIdleAsync(uri)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.NotNull(workspace.GetDiskSourceFailure(uri));
+            Assert.Empty(workspace.CreateProjectSnapshot(uri)
+                .SemanticInventory.GetWorkspaceSymbols("Recovered"));
+            var invalidParameters = ReadJsonMessages(output.ReadText())
+                .Select(message => Assert.IsType<JsonObject>(message["params"]))
+                .Last(parameters => parameters["uri"]?.GetValue<string>() == uri);
+            Assert.Equal(
+                "invalid-disk-source-encoding",
+                Assert.IsType<JsonObject>(Assert.Single(
+                    Assert.IsType<JsonArray>(invalidParameters["diagnostics"])))
+                    ["code"]?.GetValue<string>());
+
+            File.Delete(sourcePath);
+            await pipeline.ApplyAsync(
+                new VbaWatchedFileDeletedChange(uri),
+                CancellationToken.None);
+            await publisher.WaitForIdleAsync(uri)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Null(workspace.GetDiskSourceFailure(uri));
+            Assert.Null(workspace.GetDocumentText(uri));
+            var deletedParameters = ReadJsonMessages(output.ReadText())
+                .Select(message => Assert.IsType<JsonObject>(message["params"]))
+                .Last(parameters => parameters["uri"]?.GetValue<string>() == uri);
+            Assert.Empty(Assert.IsType<JsonArray>(deletedParameters["diagnostics"]));
         }
         finally
         {
@@ -4182,7 +4522,7 @@ public sealed class VbaDiagnosticsPublisherTests
                 new VbaProjectReferenceCatalogCache(
                     VbaProjectReferenceCatalogSet.CreateBundled()),
                 new DiskSourceDecoding(
-                    supportsLegacyFallback: false,
+                    hasWindowsAcpAuthority: true,
                     activeCodePage: 65001));
             workspace.OpenDocument(callerUri, version: 1, callerText);
             var publisher = new VbaDiagnosticsPublisher(
@@ -4268,7 +4608,7 @@ public sealed class VbaDiagnosticsPublisherTests
                 new VbaProjectReferenceCatalogCache(
                     VbaProjectReferenceCatalogSet.CreateBundled()),
                 new DiskSourceDecoding(
-                    supportsLegacyFallback: false,
+                    hasWindowsAcpAuthority: true,
                     activeCodePage: 65001));
             workspace.OpenDocument(callerUri, version: 7, callerText);
             var publisher = new VbaDiagnosticsPublisher(
