@@ -1,7 +1,7 @@
 using VbaLanguageServer.BlockSkeletonInsertion;
 using VbaLanguageServer.Diagnostics;
 using VbaLanguageServer.SourceModel;
-using VbaLanguageServer.Syntax;
+using VbaTools.Syntax;
 using VbaLanguageServer.Workspace;
 using Xunit;
 using PublishedSyntaxDiagnostic = VbaLanguageServer.Diagnostics.VbaSyntaxDiagnostic;

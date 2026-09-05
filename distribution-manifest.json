@@ -61,6 +61,8 @@
       "tools/vba-dev/",
       "tools/vba-debug-adapter/",
       "tools/vba-language-server/",
+      "tools/vba-syntax/",
+      "tools/vba-integration-tests/",
       "client/src/",
       "client/out/extensionHost/",
       ".tmp/",

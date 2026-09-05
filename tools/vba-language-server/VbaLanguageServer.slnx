@@ -2,10 +2,10 @@
   <Folder Name="/src/">
     <Project Path="../vba-protocol-framing/src/VbaTools.ContentLengthFraming/VbaTools.ContentLengthFraming.csproj" />
     <Project Path="src/VbaLanguageServer.Cli/VbaLanguageServer.Cli.csproj" />
-    <Project Path="src/VbaLanguageServer.Syntax/VbaLanguageServer.Syntax.csproj" />
+    <Project Path="../vba-syntax/src/VbaTools.Syntax/VbaTools.Syntax.csproj" />
   </Folder>
   <Folder Name="/tests/">
-    <Project Path="tests/VbaLanguageServer.Syntax.Tests/VbaLanguageServer.Syntax.Tests.csproj" />
+    <Project Path="../vba-syntax/tests/VbaTools.Syntax.Tests/VbaTools.Syntax.Tests.csproj" />
     <Project Path="tests/VbaLanguageServer.Tests/VbaLanguageServer.Tests.csproj" />
   </Folder>
 </Solution>

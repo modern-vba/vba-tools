@@ -409,6 +409,26 @@ test('extension package metadata rejects both removed Host Event refresh IDs', a
   }
 });
 
+test('VSIX content rules exclude product-neutral syntax and integration-test sources', () => {
+  for (const source of [
+    'tools/vba-syntax/src/VbaTools.Syntax/VbaSyntaxTree.cs',
+    'tools/vba-integration-tests/tests/VbaTools.Integration.Tests/PrebuiltTools.cs'
+  ]) {
+    assert.throws(() => assertVsixContents([
+      ...marketplaceDocumentPaths,
+      'package.json',
+      distributionManifestPath,
+      marketplaceIconPath,
+      requiredBundledCliPath,
+      requiredBundledLanguageServerPath,
+      requiredVbaDevContractPath,
+      ...standaloneDebugAdapterPaths,
+      'client/out/extension.js',
+      source
+    ]), /tools\/vba-(syntax|integration-tests)/);
+  }
+});
+
 test('VSIX content rules require the bundled CLI artifact and exclude source tree files', () => {
   assert.doesNotThrow(() => assertVsixContents([
     ...marketplaceDocumentPaths,
@@ -1039,7 +1059,13 @@ test('release verification scripts expose every suite and keep Excel integration
   );
   const scripts = packageJson.scripts;
 
-  assert.match(scripts['test:syntax-core'], /VbaLanguageServer\.Syntax\.Tests/);
+  assert.match(scripts['test:syntax-core'], /vba-syntax\/tests\/VbaTools\.Syntax\.Tests/);
+  assert.match(scripts['verify:architecture'], /dependencyBoundaries\.mjs/);
+  assert.match(scripts.test, /npm run verify:architecture/);
+  assert.match(scripts['test:cross-product-integration'], /VbaTools\.Integration\.Tests/);
+  assert.doesNotMatch(scripts['test:cross-product-integration'], /dotnet build|RUN_EXCEL_INTEGRATION_TESTS=1/);
+  assert.match(scripts['test:windows-excel-integration'], /npm run build:devtool/);
+  assert.match(scripts['test:windows-excel-integration'], /npm run test:cross-product-integration -- --environment VBA_TOOLS_RUN_EXCEL_INTEGRATION_TESTS=1/);
   assert.match(scripts['test:compatibility'], /devtool\.test\.js/);
   assert.match(scripts['test:compatibility'], /debugAdapter\.test\.js/);
   assert.match(scripts['test:compatibility'], /vscodeDebugIntegration\.test\.js/);
@@ -1051,12 +1077,14 @@ test('release verification scripts expose every suite and keep Excel integration
   );
 
   for (const requiredSuite of [
+    'verify:architecture',
     'test:extension',
     'test:extension-host',
     'test:devtool',
     'test:debug-adapter',
     'test:language-server',
     'test:syntax-core',
+    'test:cross-product-integration',
     'test:packaging',
     'test:compatibility',
     'package:verify'

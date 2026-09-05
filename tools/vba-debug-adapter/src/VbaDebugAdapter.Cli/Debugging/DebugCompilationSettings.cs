@@ -1,5 +1,5 @@
 using System.Collections.ObjectModel;
-using VbaLanguageServer.Syntax;
+using VbaTools.Syntax;
 
 namespace VbaDebugAdapter.Debugging;
 

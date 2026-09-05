@@ -3997,7 +3997,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             new DebugSourceBreakpoint(sourceUri, 2),
             new VbeCodeModuleSourceMap(
                 "Module1",
-                VbaLanguageServer.Syntax.VbaModuleKind.StandardModule,
+                VbaTools.Syntax.VbaModuleKind.StandardModule,
                 ["Public Sub Run()", "    Debug.Print \"break\"", "End Sub"]),
             2);
         var probe = new RecordingVbaDevCapabilitiesProbe(

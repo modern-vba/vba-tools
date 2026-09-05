@@ -4,8 +4,13 @@ status: accepted
 
 # Use a hand-written reusable C# VBA parser core
 
+ADR 0039 supersedes the original project name, location, and product ownership
+in this decision. The parser is now the product-neutral `VbaTools.Syntax` module
+at `tools/vba-syntax/src/VbaTools.Syntax`; the hand-written strategy, syntax
+interface, recovery behavior, and lexical decisions below remain accepted.
+
 VbaLanguageServer will replace its regex-based declaration scanner with a
-hand-written C# parser core in a separate `VbaLanguageServer.Syntax` project.
+hand-written C# parser core in the separate `VbaTools.Syntax` project.
 The parser core will produce a source-range-preserving `VbaTokenStream` and
 `VbaSyntaxTree` for the syntax structure needed by syntax highlighting, parser
 recovery diagnostics, and completion candidate discovery, while keeping
@@ -20,9 +25,9 @@ parser comparison was available. Keeping the implementation hand-written
 preserves control over editor-oriented recovery, `ModuleMember` incremental
 parsing, trivia retention, and incomplete-code completion behavior.
 
-The parser core must not depend on LSP, VS Code, workbook automation, or
-`VbaDev` command behavior. It is owned by VbaLanguageServer for now, but its
-syntax model and public Interface should remain reusable enough for a future DoxyVB6
+The parser core must not depend on LSP, VS Code, DAP, workbook automation,
+command behavior, or any product consumer. Its product-neutral
+syntax model and public Interface remain reusable enough for a future DoxyVB6
 adapter to consume without forcing DoxyVB6 integration into the initial parser
 replacement work.
 
@@ -88,7 +93,7 @@ expand.
 
 ## Consequences
 
-`VbaLanguageServer.Syntax` becomes the parser ownership Seam. Language
+`VbaTools.Syntax` is the product-neutral parser ownership Seam. Language
 server features derive `VbaDefinition`s, `CallableSignature`s,
 `SyntaxDiagnostic`s, semantic tokens, completion context, and formatting inputs
 from `VbaSyntaxTree` and consume `SyntaxChangeSet` during projection instead of

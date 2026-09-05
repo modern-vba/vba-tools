@@ -18,7 +18,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\VbaLanguageServer.Syntax\VbaLanguageServer.Syntax.csproj" />
+    <ProjectReference Include="..\..\..\vba-syntax\src\VbaTools.Syntax\VbaTools.Syntax.csproj" />
     <ProjectReference Include="..\..\..\vba-protocol-framing\src\VbaTools.ContentLengthFraming\VbaTools.ContentLengthFraming.csproj" />
     <ProjectReference Include="..\..\..\vba-dev\src\VbaDev.Domain\VbaDev.Domain.csproj" />
     <ProjectReference Include="..\..\..\vba-dev\src\VbaTools.TypeLibRegistry\VbaTools.TypeLibRegistry.csproj" />

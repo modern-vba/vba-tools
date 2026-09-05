@@ -1,6 +1,6 @@
 using System.Text;
 using VbaDev.App.Workbooks;
-using VbaLanguageServer.Syntax;
+using VbaTools.Syntax;
 
 namespace VbaDev.App.Testing;
 

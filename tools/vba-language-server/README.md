@@ -346,13 +346,13 @@ The generator pins the SHA-256 digest of every source file and fails before
 generation when any digest differs. Regenerate the checked-in data with:
 
 ```text
-powershell.exe -NoProfile -File tools\vba-language-server\scripts\Generate-VbaIdentifierConformanceData.ps1 -MappingDirectory <path-to-WindowsBestFit>
+powershell.exe -NoProfile -File tools\vba-syntax\scripts\Generate-VbaIdentifierConformanceData.ps1 -MappingDirectory <path-to-WindowsBestFit>
 ```
 
 Verify that the checked-in file is current without rewriting it with:
 
 ```text
-powershell.exe -NoProfile -File tools\vba-language-server\scripts\Generate-VbaIdentifierConformanceData.ps1 -MappingDirectory <path-to-WindowsBestFit> -Check
+powershell.exe -NoProfile -File tools\vba-syntax\scripts\Generate-VbaIdentifierConformanceData.ps1 -MappingDirectory <path-to-WindowsBestFit> -Check
 ```
 
 The TextMate grammar is a conservative editor fallback and is not another VBA

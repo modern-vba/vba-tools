@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Text;
-using VbaLanguageServer.Syntax;
+using VbaTools.Syntax;
 
 namespace VbaDev.App.Workbooks;
 

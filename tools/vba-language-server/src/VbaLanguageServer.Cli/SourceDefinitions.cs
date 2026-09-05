@@ -1,7 +1,7 @@
 using System.Text.Json.Serialization;
 using VbaLanguageServer.Diagnostics;
 using VbaLanguageServer.ProjectModel;
-using VbaLanguageServer.Syntax;
+using VbaTools.Syntax;
 
 namespace VbaLanguageServer.SourceModel;
 

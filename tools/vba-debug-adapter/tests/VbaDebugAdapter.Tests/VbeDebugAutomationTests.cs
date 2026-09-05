@@ -1,6 +1,6 @@
 using VbaDebugAdapter.Debugging;
 using VbaDebugAdapter.Infrastructure;
-using VbaLanguageServer.Syntax;
+using VbaTools.Syntax;
 using System.Collections.Immutable;
 using System.Runtime.InteropServices;
 using Xunit;

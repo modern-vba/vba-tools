@@ -1,5 +1,5 @@
 using VbaLanguageServer.Diagnostics;
-using VbaLanguageServer.Syntax;
+using VbaTools.Syntax;
 
 namespace VbaLanguageServer.SourceModel;
 
@@ -275,8 +275,8 @@ internal sealed record VbaWithEventsHandlerNameDecomposition(
 
         var variableName = declarationName[..separatorIndex];
         var eventName = declarationName[(separatorIndex + 1)..];
-        if (!VbaLanguageServer.Syntax.VbaIdentifier.IsIdentifier(variableName)
-            || !VbaLanguageServer.Syntax.VbaIdentifier.IsIdentifier(eventName))
+        if (!VbaTools.Syntax.VbaIdentifier.IsIdentifier(variableName)
+            || !VbaTools.Syntax.VbaIdentifier.IsIdentifier(eventName))
         {
             return false;
         }

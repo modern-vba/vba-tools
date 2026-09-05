@@ -5,7 +5,7 @@ status: accepted
 # Use content-verified breakpoint source maps
 
 `BreakpointTransfer` maps `.bas`, `.cls`, and `.frm` exported-source positions
-to VBE code-module positions by using the reusable `VbaLanguageServer.Syntax`
+to VBE code-module positions by using the product-neutral `VbaTools.Syntax`
 parser core to exclude export-only attributes and designer records and then
 verifying the remaining code against the built `CodeModule`. Fixed line offsets
 and a second debug-specific parser are rejected because exported source kinds

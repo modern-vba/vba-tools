@@ -1,6 +1,6 @@
 using System.Text;
 using System.Text.RegularExpressions;
-using VbaLanguageServer.Syntax;
+using VbaTools.Syntax;
 
 namespace VbaDev.App.CommonModules;
 

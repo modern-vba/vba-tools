@@ -8,7 +8,7 @@ internal static class MsOvbaCompression
     public static byte[] Decompress(
         ReadOnlySpan<byte> compressedContainer,
         int maximumOutputLength)
-        => VbaLanguageServer.Syntax.MsOvbaCompression.Decompress(
+        => VbaTools.Syntax.MsOvbaCompression.Decompress(
             compressedContainer,
             maximumOutputLength);
 }

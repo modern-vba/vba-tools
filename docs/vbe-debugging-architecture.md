@@ -63,6 +63,15 @@ build must release its hidden Excel process before the adapter cleans
 caller-owned session artifacts or starts visible Excel. CLI and adapter
 compatibility are validated and versioned independently.
 
+ADR 0039 also applies this one-way provider boundary to project and test
+dependencies. `VbaDev` never references or launches the extension, language
+server, debug adapter, or their tests and harnesses, including build-only
+references and linked compile source. Both the adapter and VbaDev consume
+product-neutral `VbaTools.Syntax`; parser reuse creates no dependency between
+those products. Other consumers may use an explicitly public VbaDev-owned
+non-command library, but command orchestration always uses the public process
+contract.
+
 UserForm Event discovery is a separate extension-owned lifecycle and never runs
 through the debug adapter. Trusted activation asynchronously invokes the
 environment-scoped `vba-dev host-event list --format json` at most once, using
@@ -379,7 +388,7 @@ breakpoints are unsupported; an in-scope unsupported breakpoint invalidates
 launch.
 
 `.bas`, `.cls`, and `.frm` source lines may participate. `.frx` files do not.
-`BreakpointSourceMap` uses the reusable `VbaLanguageServer.Syntax` parser core
+`BreakpointSourceMap` uses the product-neutral `VbaTools.Syntax` parser core
 to exclude export-only class headers, attributes, and form designer records,
 then verifies the projected source against the generated workbook's
 `CodeModule`. The projection includes the known UserForm leading blank and
@@ -697,6 +706,23 @@ exit. They are serialized and require
 `VBA_TOOLS_RUN_EXCEL_INTEGRATION_TESTS=1`. Packaging tests separately inspect the
 VSIX surface and execute the independent CLI compatibility and debug-component
 entry points.
+
+The rename/build/export round-trip that crosses the language server and CLI is
+owned by `tools/vba-integration-tests/tests/VbaTools.Integration.Tests`, not by
+the VbaDev test project. Its own process client invokes already-built apphosts;
+it neither links a product's test harness nor creates a build-order dependency
+on another executable project. Run its ordinary, Excel-skipping surface with
+`npm run test:cross-product-integration`. The Windows integration gate builds
+the executable prerequisites explicitly before opting into the real Excel
+case. Absolute executable overrides are
+`VBA_TOOLS_INTEGRATION_LANGUAGE_SERVER_PATH` and
+`VBA_TOOLS_INTEGRATION_VBA_DEV_PATH`. Shared conformance fixtures remain data
+only; each product owns its assertions and lifecycle.
+
+`npm run verify:architecture` checks production and test project references,
+assembly references, linked compile source, and product-contract imports. It
+rejects reverse VbaDev dependencies and neutral-foundation-to-consumer
+dependencies without prohibiting consumer-to-provider reuse.
 
 ## Maintenance guidance
 

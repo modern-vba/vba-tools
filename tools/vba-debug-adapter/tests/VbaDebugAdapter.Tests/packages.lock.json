@@ -102,14 +102,14 @@
         "type": "Project",
         "dependencies": {
           "OpenMcdf": "[3.1.4, )",
-          "VbaLanguageServer.Syntax": "[1.0.0, )",
-          "VbaTools.ContentLengthFraming": "[1.0.0, )"
+          "VbaTools.ContentLengthFraming": "[1.0.0, )",
+          "VbaTools.Syntax": "[1.0.0, )"
         }
       },
-      "vbalanguageserver.syntax": {
+      "vbatools.contentlengthframing": {
         "type": "Project"
       },
-      "vbatools.contentlengthframing": {
+      "vbatools.syntax": {
         "type": "Project"
       }
     }

@@ -2,7 +2,7 @@ using System.Text.RegularExpressions;
 using VbaDebugAdapter.Debugging;
 using VbaDebugAdapter.Diagnostics;
 using VbaDebugAdapter.Infrastructure;
-using VbaLanguageServer.Syntax;
+using VbaTools.Syntax;
 using Xunit;
 
 namespace VbaDebugAdapter.Tests;

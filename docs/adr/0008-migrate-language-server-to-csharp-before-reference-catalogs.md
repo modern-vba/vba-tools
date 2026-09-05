@@ -17,8 +17,11 @@ This order avoids implementing project manifest parsing, reference resolution,
 catalog identity handling, and TypeLib discovery twice. Those concerns overlap
 with `VbaDev`, which is already C#/.NET and Windows-focused for workbook and
 COM automation. Moving the VbaLanguageServer process first lets the language
-server share domain code and tests with `VbaDev` while keeping completion,
-hover, and signature help on a dedicated LSP process.
+server reuse public VbaDev-owned non-command libraries or product-neutral
+foundations while keeping completion, hover, and signature help on a dedicated
+LSP process. As refined by ADR 0039, shared conformance fixtures are data-only:
+products own their loaders and assertions, and VbaDev never references another
+product's executable, test project, linked test source, or process harness.
 
 The migration should not be a big-bang rewrite. The first slice is a minimal C#
 LSP server that `VscodeExtension` can launch and validate through
@@ -32,9 +35,10 @@ The C# VbaLanguageServer should be a separate executable from `vba-dev.exe`.
 `VbaDev` remains the user-facing and automation-facing CLI for workbook
 operations, diagnostics, and reference changes, while the language-server
 executable owns the long-lived stdio LSP process launched by `VscodeExtension`.
-Shared manifest, reference, and catalog logic should live in C#
-libraries referenced by both executables instead of exposing VbaLanguageServer
-as a `VbaDev` subcommand.
+Shared manifest, reference, and catalog logic should live in explicitly public
+VbaDev-owned non-command libraries or product-neutral C# foundations instead of
+exposing VbaLanguageServer as a `VbaDev` subcommand. Neither sharing route adds
+a reference from VbaDev to the language server.
 
 `VscodeExtension` should not ship a Marketplace release that depends on the
 partially migrated C# VbaLanguageServer. Because releases are held until the C#

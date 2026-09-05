@@ -1,6 +1,6 @@
 using System.Collections.Immutable;
 using System.Text;
-using VbaLanguageServer.Syntax;
+using VbaTools.Syntax;
 
 namespace VbaDebugAdapter.Debugging;
 

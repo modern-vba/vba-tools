@@ -1,6 +1,6 @@
 using VbaDebugAdapter.Debugging;
 using VbaDebugAdapter.Infrastructure;
-using VbaLanguageServer.Syntax;
+using VbaTools.Syntax;
 using Microsoft.CSharp.RuntimeBinder;
 using System.ComponentModel;
 using System.Diagnostics;

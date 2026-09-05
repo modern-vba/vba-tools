@@ -2,7 +2,7 @@
   "version": 1,
   "dependencies": {
     "net10.0": {
-      "vbalanguageserver.syntax": {
+      "vbatools.syntax": {
         "type": "Project"
       }
     }

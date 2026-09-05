@@ -17,13 +17,13 @@
       "vbadev.domain": {
         "type": "Project",
         "dependencies": {
-          "VbaLanguageServer.Syntax": "[1.0.0, )"
+          "VbaTools.Syntax": "[1.0.0, )"
         }
       },
-      "vbalanguageserver.syntax": {
+      "vbatools.contentlengthframing": {
         "type": "Project"
       },
-      "vbatools.contentlengthframing": {
+      "vbatools.syntax": {
         "type": "Project"
       },
       "vbatools.typelibregistry": {

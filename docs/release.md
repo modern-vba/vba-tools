@@ -252,8 +252,9 @@ After generation:
 
 ## Local Verification
 
-Run the normal client, C# devtool, debug-adapter, language-server, syntax-core,
-and packaging suite during development:
+Run the normal client, C# devtool, debug-adapter, language-server, neutral
+syntax-core, cross-product integration, architecture-boundary, and packaging
+suite during development:
 
 ```powershell
 npm test
@@ -265,10 +266,18 @@ Before preparing an artifact, run the non-Excel release verification surface:
 npm run verify:release
 ```
 
-This runs the client, Extension Host, C# unit, language-server, explicit syntax
-core, packaging, and compatibility suites, then republishes all three bundled
-executables and verifies the planned VSIX. It intentionally does not opt in to
-real Excel automation.
+This runs the client, Extension Host, C# unit, language-server, explicit neutral
+syntax core, cross-product integration, architecture-boundary, packaging, and
+compatibility suites, then republishes all three bundled executables and
+verifies the planned VSIX. It intentionally does not opt in to real Excel
+automation; the real-Excel cross-product case is skipped.
+
+`npm run verify:architecture` also runs independently. It rejects references
+from VbaDev production or tests into another product and from designated
+product-neutral foundations into their consumers, including build-only
+references, assembly references, linked compile source, and product-contract
+imports. The neutral parser suite runs through `npm run test:syntax-core` from
+`tools/vba-syntax/tests/VbaTools.Syntax.Tests`.
 
 After branch-level `npm test` and `npm run verify:release` pass, integrate the
 release preparation through the workflow in `CONTRIBUTING.md`. Use the normal
@@ -290,7 +299,13 @@ npm run verify:release:windows-excel
 ```
 
 The explicit `test:windows-excel-integration` step sets the required opt-in
-environment variable and filters to `Category=WindowsExcelIntegration`. Do not
+environment variable and filters to `Category=WindowsExcelIntegration`. It
+explicitly builds the language-server and CLI apphosts before running the
+neutral cross-product suite, whose test project does not build or link those
+executable projects. `npm run test:cross-product-integration` runs that suite
+without opting into Excel by default; explicit already-built apphost overrides
+use `VBA_TOOLS_INTEGRATION_LANGUAGE_SERVER_PATH` and
+`VBA_TOOLS_INTEGRATION_VBA_DEV_PATH`. Do not
 add it to ordinary `npm test`; the suite owns visible Excel/VBE processes and may
 wait for interactive modal prompts.
 

@@ -27,6 +27,16 @@ test, publish, export, environment-scoped UserForm Event discovery, and
 environment diagnostics.
 _Avoid_: language server, VS Code command, CommonModules package
 
+**VbaDevProductDependencyRule**:
+The rule that `VbaDev` production and test projects may depend on the platform,
+third-party packages, VbaDev-owned Modules, and explicitly designated
+product-neutral foundations, but never on another product's implementation,
+contracts, executable, tests, or linked source. Build-only references and test
+harness dependencies are dependencies too. Other products may consume a public
+VbaDev-owned non-command library or the `PublicToolProcessContract`; those
+downstream uses never permit `VbaDev` to invoke or discover its consumers.
+_Avoid_: product-owned ProjectReference, shared product test harness, reverse process invocation
+
 **VscodeExtension**:
 The VS Code extension package that activates VBA language support, launches the
 language server, invokes `VbaDev` for project-level workflows and
@@ -58,6 +68,23 @@ A user-facing or automation-facing `VbaDev` command. It should have explicit
 inputs, outputs, side effects, and verification behavior.
 _Avoid_: script, helper, task
 
+**PublicToolProcessContract**:
+The versioned executable boundary through which one product consumes another's
+command behavior: capabilities, command spelling, standard streams, exit
+status, cancellation transport, and declared result schemas. It exposes no
+provider implementation assembly, application service, test harness, or private
+DTO. Explicitly public non-command library interfaces are separate reuse seams.
+_Avoid_: in-process command invocation, shared product DTO, product test helper
+
+**CrossProductConformanceFixture**:
+A repository-neutral, data-only corpus of exact payloads, declarative metadata,
+and expected classifications or failures. Each product owns its loader,
+assertions, and lifecycle harness; the corpus contains no executable helper,
+product type, test assembly, or linked compile source. A neutral integration
+test may compose already-built products through their public process contracts
+without becoming a foundation dependency of those products.
+_Avoid_: shared product test harness, executable fixture library, linked test source
+
 **VbaDevProcessInvocation**:
 A language-server-local one-shot invocation of one session-pinned absolute
 `vba-dev` executable through its public process contract. It preserves argument
@@ -71,10 +98,9 @@ work for longer than this process-cleanup deadline. A missed deadline is a
 lifecycle failure because termination cannot be proved.
 Capability inspection and CLI-backed reference discovery share this process
 lifecycle while retaining separate command contracts. This lifecycle adds only
-a consumer-side dependency from the language server to the public CLI process
-contract. It adds no reverse dependency to `VbaDev`; the pre-existing
-language-server-owned parser reference remains a separate migration tracked by
-issue 361.
+a consumer-side dependency from the language server to the
+`PublicToolProcessContract`. It adds no reverse dependency to `VbaDev`; both
+products consume the independent `ReusableVbaParserCore` for syntax.
 _Avoid_: process lease, command-specific process runner, shared JSON contract
 
 **VbaDevTerminal**:
@@ -2996,11 +3022,15 @@ form.
 _Avoid_: language mode, source code page, locale, script
 
 **ReusableVbaParserCore**:
-The parser and syntax model layer that can serve `VbaLanguageServer` editor
-features and may later be shared with documentation tooling such as DoxyVB6
-without depending on LSP, VS Code, workbook automation, or `VbaDev` command
-behavior.
-_Avoid_: language-server feature code, DoxyVB6 adapter, workbook parser
+The product-neutral `VbaTools.Syntax` parser and syntax model at
+`tools/vba-syntax/src/VbaTools.Syntax`, outside every executable product tree.
+Its syntax interface serves `VbaDev`, `VbaLanguageServer`, `VbaDebugAdapter`,
+and future documentation adapters without depending on LSP, VS Code, DAP,
+workbook automation, command behavior, or any consumer's implementation or
+projection. Its independent tests live at
+`tools/vba-syntax/tests/VbaTools.Syntax.Tests`. Moving ownership does not change
+parser recovery, trivia, source spans, or the meaning of public syntax facts.
+_Avoid_: language-server-owned parser, DoxyVB6 adapter, workbook parser
 
 **SemanticToken**:
 A meaning-aware classification of a source range, derived from parsed `VbaProject` information. `SemanticToken`s refine `SyntaxHighlighting` for declarations and references, using standard editor token categories whenever a VBA meaning can be represented by one.

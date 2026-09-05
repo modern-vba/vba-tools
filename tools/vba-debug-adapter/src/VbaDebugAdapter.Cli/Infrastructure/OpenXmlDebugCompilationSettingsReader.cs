@@ -5,7 +5,7 @@ using System.Text;
 using System.Xml.Linq;
 using OpenMcdf;
 using VbaDebugAdapter.Debugging;
-using VbaLanguageServer.Syntax;
+using VbaTools.Syntax;
 
 namespace VbaDebugAdapter.Infrastructure;
 
