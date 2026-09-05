@@ -17,18 +17,12 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
 
     private static IStandaloneVbaDebugLaunchService CreateDefaultLaunchService()
     {
-        var validator = TransportedDebugSourceSnapshotValidator
-            .CreateForCurrentWindowsSession();
         return new StandaloneVbaDebugLaunchService(
-            validator,
-            new VbaDevSnapshotWorkbookBuilder(
-                new ProcessVbaDevBuildProcess(),
-                validator),
+            DebugSourceAdmission.CreateForCurrentWindowsSession(),
+            new VbaDevSnapshotWorkbookBuilder(new ProcessVbaDevBuildProcess()),
             new VbeDebugAutomation(),
-            new BreakpointSourceMapper(),
             new OpenXmlDebugCompilationSettingsReader(),
-            new DebugCompilationEnvironmentFactory(),
-            new DebugConditionalCompilationPreflight());
+            new DebugCompilationEnvironmentFactory());
     }
 
     internal StandaloneVbaDebugAdapterStdioRunner(
@@ -549,7 +543,8 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                             ModuleName = runningSession.TargetModuleName,
                             ProcedureName = runningSession.TargetProcedureName
                         };
-                        breakpointRegistry.ValidateForLaunch(freshLaunch.SourceSnapshot);
+                        breakpointRegistry.ValidateDapPolicyForLaunch(
+                            freshLaunch.SourceSnapshot);
                         restartBinding = new DebugRestartLaunchBinding(
                             sessionId,
                             runningSession,
@@ -725,7 +720,8 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
     {
         try
         {
-            breakpointRegistry.ValidateForLaunch(launchRequest.SourceSnapshot);
+            breakpointRegistry.ValidateDapPolicyForLaunch(
+                launchRequest.SourceSnapshot);
             return true;
         }
         catch (DebugSetupException exception)
@@ -1305,7 +1301,7 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
             return replacement;
         }
 
-        public void ValidateForLaunch(TransportedDebugSourceSnapshot snapshot)
+        public void ValidateDapPolicyForLaunch(TransportedDebugSourceSnapshot snapshot)
         {
             if (unsupportedCategories.FirstOrDefault() is { } unsupportedCategory)
             {
@@ -1318,8 +1314,8 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                 if (!Uri.TryCreate(source.SourceUri, UriKind.Absolute, out var sourceUri) ||
                     !sourceUri.IsFile)
                 {
-                    throw new DebugSetupException(
-                        $"Debug source snapshot path '{source.RelativePath}' requires a persistent file URI.");
+                    // Source transport validation belongs to DebugSourceAdmission.
+                    return;
                 }
                 try
                 {
@@ -1329,8 +1325,8 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                     exception is ArgumentException or InvalidOperationException or
                         NotSupportedException or PathTooLongException or UriFormatException)
                 {
-                    throw new DebugSetupException(
-                        $"Debug source snapshot path '{source.RelativePath}' requires a persistent file URI.");
+                    // Source transport validation belongs to DebugSourceAdmission.
+                    return;
                 }
             }
             foreach (var (sourcePath, breakpoints) in bySource.Where(item =>

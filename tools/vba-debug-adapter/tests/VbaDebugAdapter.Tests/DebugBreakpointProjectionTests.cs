@@ -1,11 +1,10 @@
-using System.Collections.Immutable;
 using VbaDebugAdapter.Debugging;
 using VbaTools.Syntax;
 using Xunit;
 
 namespace VbaDebugAdapter.Tests;
 
-public sealed class BreakpointSourceMapperTests
+public sealed class DebugBreakpointProjectionTests
 {
     [Fact]
     public void AnExecutableStandardModuleLineMapsExactlyAfterExportOnlyAttributesAreRemoved()
@@ -21,10 +20,9 @@ public sealed class BreakpointSourceMapperTests
             "    value = 1",
             "End Sub"
         ]);
-        var snapshot = Snapshot(sourcePath, source);
         var requested = new DebugSourceBreakpoint(SourceUri(sourcePath), EditorLine: 5);
 
-        var mapped = new BreakpointSourceMapper().Map(snapshot, requested);
+        var mapped = Projection(sourcePath, source).Map(requested);
 
         Assert.Equal(requested, mapped.Source);
         Assert.Equal("DebugModule", mapped.ModuleName);
@@ -43,25 +41,6 @@ public sealed class BreakpointSourceMapperTests
     }
 
     [Fact]
-    public void ModuleIdentityUsesTheSharedForwardMappingIdentifierAuthority()
-    {
-        var sourcePath = Path.GetFullPath(Path.Combine("DebugProject", "Japanese.bas"));
-        var source = string.Join('\n',
-        [
-            "Attribute VB_Name = \"A・\"",
-            "Public Sub RunTarget()",
-            "    value = 1",
-            "End Sub"
-        ]);
-
-        var mapped = new BreakpointSourceMapper().Map(
-            Snapshot(sourcePath, source),
-            new DebugSourceBreakpoint(SourceUri(sourcePath), EditorLine: 2));
-
-        Assert.Equal("A・", mapped.ModuleName);
-    }
-
-    [Fact]
     public void AProcedureAttributeIsExcludedByTheSharedSyntaxProjection()
     {
         var sourcePath = Path.GetFullPath(Path.Combine("DebugProject", "DebugModule.bas"));
@@ -75,10 +54,8 @@ public sealed class BreakpointSourceMapperTests
             "    Debug.Print \"same text\"",
             "End Sub"
         ]);
-        var snapshot = Snapshot(sourcePath, source);
 
-        var mapped = new BreakpointSourceMapper().Map(
-            snapshot,
+        var mapped = Projection(sourcePath, source).Map(
             new DebugSourceBreakpoint(SourceUri(sourcePath), EditorLine: 4));
 
         Assert.Equal("DebugModule", mapped.ModuleName);
@@ -126,8 +103,7 @@ public sealed class BreakpointSourceMapperTests
                 "End Sub"
             ]);
 
-        var mapped = new BreakpointSourceMapper().Map(
-            Snapshot(sourcePath, source),
+        var mapped = Projection(sourcePath, source).Map(
             new DebugSourceBreakpoint(SourceUri(sourcePath), editorLine));
 
         Assert.Equal(moduleName, mapped.ModuleName);
@@ -168,8 +144,7 @@ public sealed class BreakpointSourceMapperTests
             "End Sub"
         ]);
 
-        var error = Assert.Throws<DebugSetupException>(() => new BreakpointSourceMapper().Map(
-            Snapshot(sourcePath, source),
+        var error = Assert.Throws<DebugSetupException>(() => Projection(sourcePath, source).Map(
             new DebugSourceBreakpoint(SourceUri(sourcePath), editorLine)));
 
         Assert.Contains("invalid breakpoint", error.Message, StringComparison.OrdinalIgnoreCase);
@@ -189,8 +164,7 @@ public sealed class BreakpointSourceMapperTests
             "End Sub"
         ]);
 
-        var error = Assert.Throws<DebugSetupException>(() => new BreakpointSourceMapper().Map(
-            Snapshot(sourcePath, source),
+        var error = Assert.Throws<DebugSetupException>(() => Projection(sourcePath, source).Map(
             new DebugSourceBreakpoint(SourceUri(sourcePath), EditorLine: 3)));
 
         Assert.Contains("invalid breakpoint", error.Message, StringComparison.OrdinalIgnoreCase);
@@ -219,8 +193,7 @@ public sealed class BreakpointSourceMapperTests
             "End Sub"
         ]);
 
-        var mapped = new BreakpointSourceMapper().Map(
-            Snapshot(sourcePath, source),
+        var mapped = Projection(sourcePath, source).Map(
             new DebugSourceBreakpoint(SourceUri(sourcePath), editorLine));
 
         Assert.Equal(editorLine, mapped.Source.EditorLine);
@@ -251,8 +224,7 @@ public sealed class BreakpointSourceMapperTests
             "End Sub"
         ]);
 
-        var mapped = new BreakpointSourceMapper().Map(
-            Snapshot(sourcePath, source),
+        var mapped = Projection(sourcePath, source).Map(
             new DebugSourceBreakpoint(SourceUri(sourcePath), editorLine));
 
         Assert.Equal(editorLine, mapped.Source.EditorLine);
@@ -275,13 +247,11 @@ public sealed class BreakpointSourceMapperTests
             "#End If",
             "End Sub"
         ]);
-        var snapshot = Snapshot(sourcePath, source);
+        var projection = Projection(sourcePath, source);
 
-        var modern = new BreakpointSourceMapper().Map(
-            snapshot,
+        var modern = projection.Map(
             new DebugSourceBreakpoint(SourceUri(sourcePath), EditorLine: 3));
-        var legacy = new BreakpointSourceMapper().Map(
-            snapshot,
+        var legacy = projection.Map(
             new DebugSourceBreakpoint(SourceUri(sourcePath), EditorLine: 5));
 
         Assert.NotNull(modern.ConditionalCompilationPath);
@@ -306,115 +276,15 @@ public sealed class BreakpointSourceMapperTests
             "End Sub"
         ]);
 
-        var error = Assert.Throws<DebugSetupException>(() => new BreakpointSourceMapper().Map(
-            Snapshot(sourcePath, source),
+        var error = Assert.Throws<DebugSetupException>(() => Projection(sourcePath, source).Map(
             new DebugSourceBreakpoint(SourceUri(sourcePath), EditorLine: 3)));
 
         Assert.Contains("conditional-compilation", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("not relocated", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void MissingOrDuplicateExportedModuleIdentityFailsClosed(bool duplicate)
-    {
-        var sourcePath = Path.GetFullPath(Path.Combine("DebugProject", "Worker.bas"));
-        var sourceLines = new List<string>();
-        if (duplicate)
-        {
-            sourceLines.Add("Attribute VB_Name = \"Worker\"");
-            sourceLines.Add("Attribute VB_Name = \"Other\"");
-        }
-
-        sourceLines.AddRange(
-        [
-            "Public Sub Run()",
-            "    Debug.Print \"run\"",
-            "End Sub"
-        ]);
-        var editorLine = duplicate ? 3 : 1;
-
-        var error = Assert.Throws<DebugSetupException>(() => new BreakpointSourceMapper().Map(
-            Snapshot(sourcePath, string.Join('\n', sourceLines)),
-            new DebugSourceBreakpoint(SourceUri(sourcePath), editorLine)));
-
-        Assert.Contains("module identity", error.Message, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Theory]
-    [InlineData("Other.bas")]
-    [InlineData("Other.cls")]
-    [InlineData("Other.frm")]
-    public void CaseInsensitiveModuleIdentityCollisionAcrossSnapshotFailsClosed(
-        string conflictingFileName)
-    {
-        var sourcePath = Path.GetFullPath(Path.Combine("DebugProject", "Worker.bas"));
-        var conflictingPath = Path.GetFullPath(Path.Combine("DebugProject", conflictingFileName));
-        var snapshot = new DebugSourceSnapshot(
-            DebugSourceSnapshot.CurrentSchemaVersion,
-            ImmutableArray.Create(
-                new DebugSourceFileSnapshot(
-                    Path.GetFileName(sourcePath),
-                    SourceUri(sourcePath),
-                    CreateExportedSource("Worker.bas", "Worker")),
-                new DebugSourceFileSnapshot(
-                    Path.GetFileName(conflictingPath),
-                    SourceUri(conflictingPath),
-                    CreateExportedSource(conflictingFileName, "worker"))),
-            null);
-
-        var error = Assert.Throws<DebugSetupException>(() => new BreakpointSourceMapper().Map(
-            snapshot,
-            new DebugSourceBreakpoint(SourceUri(sourcePath), EditorLine: 2)));
-
-        Assert.Contains("invalid breakpoint", error.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("module identity", error.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("ambiguous", error.Message, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string CreateExportedSource(string fileName, string moduleName)
-        => Path.GetExtension(fileName).ToLowerInvariant() switch
-        {
-            ".bas" => string.Join('\n',
-            [
-                $"Attribute VB_Name = \"{moduleName}\"",
-                "Public Sub Run()",
-                "    Debug.Print \"run\"",
-                "End Sub"
-            ]),
-            ".cls" => string.Join('\n',
-            [
-                "VERSION 1.0 CLASS",
-                "BEGIN",
-                "  MultiUse = -1  'True",
-                "END",
-                $"Attribute VB_Name = \"{moduleName}\"",
-                "Public Sub Run()",
-                "    Debug.Print \"run\"",
-                "End Sub"
-            ]),
-            ".frm" => string.Join('\n',
-            [
-                "VERSION 5.00",
-                $"Begin VB.Form {moduleName}",
-                "End",
-                $"Attribute VB_Name = \"{moduleName}\"",
-                "Public Sub Run()",
-                "    Debug.Print \"run\"",
-                "End Sub"
-            ]),
-            _ => throw new ArgumentOutOfRangeException(nameof(fileName), fileName, null)
-        };
-
-    private static DebugSourceSnapshot Snapshot(string sourcePath, string source)
-        => new(
-            DebugSourceSnapshot.CurrentSchemaVersion,
-            ImmutableArray.Create(new DebugSourceFileSnapshot(
-                Path.GetFileName(sourcePath),
-                SourceUri(sourcePath),
-                source)),
-            null);
+    private static DebugBreakpointProjection Projection(string sourcePath, string source)
+        => DebugBreakpointProjection.Create(VbaSyntaxTree.ParseModule(SourceUri(sourcePath), source));
 
     private static string SourceUri(string sourcePath)
         => new Uri(Path.GetFullPath(sourcePath)).AbsoluteUri;

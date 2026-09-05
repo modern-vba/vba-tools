@@ -1,54 +1,52 @@
+using VbaDebugAdapter.Build;
 using VbaDebugAdapter.Debugging;
+using VbaDebugAdapter.Infrastructure;
 using Xunit;
 
 namespace VbaDebugAdapter.Tests;
 
-public sealed class DebugLaunchRequestResolverTests
+public sealed class DebugSourceAdmissionTargetTests
 {
     [Fact]
     public void ExplicitTargetResolvesFromTheTransportedSourceInsteadOfPersistentDisk()
     {
-        const string sourceUri = "file:///C:/persistent/Module1.bas";
-        var snapshot = new DebugSourceSnapshot(
-            DebugSourceSnapshot.CurrentSchemaVersion,
+        const string sourceUri =
+            "file:///C:/definitely-missing-vba-debug-source/nested/Module1.bas";
+        var snapshot = new TransportedDebugSourceSnapshot(
+            2,
             [
-                new DebugSourceFileSnapshot(
+                TextSource(
                     "nested/Module1.bas",
                     sourceUri,
-                    "Attribute VB_Name = \"Module1\"\r\nPublic Sub Run()\r\nEnd Sub\r\n")
-            ],
-            ActiveSource: null);
+                    "Attribute VB_Name = \"Module1\"\r\n" +
+                    "Public Sub Run()\r\nEnd Sub\r\n")
+            ]);
 
-        var request = new DebugLaunchRequestResolver().Resolve(
-            snapshot,
-            "Module1",
-            "Run");
+        var admitted = Admit(snapshot, "Module1", "Run");
 
-        Assert.Equal("Module1", request.Target.ModuleName);
-        Assert.Equal("Run", request.Target.ProcedureName);
-        Assert.Same(snapshot, request.SourceSnapshot);
-        Assert.Empty(request.Target.ConditionalCompilationPath.Branches);
+        Assert.Equal("Module1", admitted.Target.ModuleName);
+        Assert.Equal("Run", admitted.Target.ProcedureName);
+        Assert.Empty(admitted.Target.ConditionalCompilationPath.Branches);
+        Assert.Equal(DebugGenerationId.Initial, admitted.GenerationId);
+        Assert.Equal(1, admitted.BuildSources.Count);
     }
 
     [Fact]
     public void ExplicitTargetAcceptsCaseInsensitiveExportedSourceExtensions()
     {
-        var snapshot = new DebugSourceSnapshot(
-            DebugSourceSnapshot.CurrentSchemaVersion,
+        var snapshot = new TransportedDebugSourceSnapshot(
+            2,
             [
-                new DebugSourceFileSnapshot(
+                TextSource(
                     "MODULE1.BAS",
                     "file:///C:/persistent/MODULE1.BAS",
-                    "Attribute VB_Name = \"Module1\"\r\nPublic Sub Run()\r\nEnd Sub\r\n")
-            ],
-            ActiveSource: null);
+                    "Attribute VB_Name = \"Module1\"\r\n" +
+                    "Public Sub Run()\r\nEnd Sub\r\n")
+            ]);
 
-        var request = new DebugLaunchRequestResolver().Resolve(
-            snapshot,
-            "Module1",
-            "Run");
+        var admitted = Admit(snapshot, "Module1", "Run");
 
-        Assert.Equal("Module1", request.Target.ModuleName);
+        Assert.Equal("Module1", admitted.Target.ModuleName);
     }
 
     [Fact]
@@ -56,24 +54,20 @@ public sealed class DebugLaunchRequestResolverTests
     {
         const string moduleName = "\u00A0";
         const string procedureName = "集計";
-        var snapshot = new DebugSourceSnapshot(
-            DebugSourceSnapshot.CurrentSchemaVersion,
+        var snapshot = new TransportedDebugSourceSnapshot(
+            2,
             [
-                new DebugSourceFileSnapshot(
+                TextSource(
                     "CodePage.bas",
                     "file:///C:/persistent/CodePage.bas",
                     $"Attribute VB_Name = \"{moduleName}\"\r\n" +
                     $"Public Sub {procedureName}()\r\nEnd Sub\r\n")
-            ],
-            ActiveSource: null);
+            ]);
 
-        var request = new DebugLaunchRequestResolver().Resolve(
-            snapshot,
-            moduleName,
-            procedureName);
+        var admitted = Admit(snapshot, moduleName, procedureName);
 
-        Assert.Equal(moduleName, request.Target.ModuleName);
-        Assert.Equal(procedureName, request.Target.ProcedureName);
+        Assert.Equal(moduleName, admitted.Target.ModuleName);
+        Assert.Equal(procedureName, admitted.Target.ProcedureName);
     }
 
     [Fact]
@@ -85,12 +79,9 @@ public sealed class DebugLaunchRequestResolverTests
             "Attribute VB_Name = \"DebugModule\"\r\n" +
             $"Public Sub {procedureName}()\r\nEnd Sub\r\n");
 
-        var request = new DebugLaunchRequestResolver().Resolve(
-            snapshot,
-            "DebugModule",
-            procedureName);
+        var admitted = Admit(snapshot, "DebugModule", procedureName);
 
-        Assert.Equal(procedureName, request.Target.ProcedureName);
+        Assert.Equal(procedureName, admitted.Target.ProcedureName);
     }
 
     [Fact]
@@ -111,15 +102,9 @@ public sealed class DebugLaunchRequestResolverTests
         foreach (var invalidName in invalidNames)
         {
             var moduleError = Assert.Throws<DebugSetupException>(() =>
-                new DebugLaunchRequestResolver().Resolve(
-                    snapshot,
-                    invalidName,
-                    "RunTarget"));
+                Admit(snapshot, invalidName, "RunTarget"));
             var procedureError = Assert.Throws<DebugSetupException>(() =>
-                new DebugLaunchRequestResolver().Resolve(
-                    snapshot,
-                    "DebugModule",
-                    invalidName));
+                Admit(snapshot, "DebugModule", invalidName));
 
             Assert.Contains("IDENTIFIER", moduleError.Message, StringComparison.Ordinal);
             Assert.Contains("IDENTIFIER", procedureError.Message, StringComparison.Ordinal);
@@ -135,7 +120,7 @@ public sealed class DebugLaunchRequestResolverTests
             "Public Sub RunTarget()\r\nEnd Sub\r\n");
 
         var error = Assert.Throws<DebugSetupException>(() =>
-            new DebugLaunchRequestResolver().Resolve(snapshot, "", ""));
+            Admit(snapshot, "", ""));
 
         Assert.Contains("IDENTIFIER", error.Message, StringComparison.Ordinal);
     }
@@ -143,25 +128,15 @@ public sealed class DebugLaunchRequestResolverTests
     [Fact]
     public void ImplicitPublicSubInAnOptionPrivateStandardModuleIsEligible()
     {
-        const string sourceUri = "file:///C:/persistent/DebugModule.bas";
-        var snapshot = new DebugSourceSnapshot(
-            DebugSourceSnapshot.CurrentSchemaVersion,
-            [
-                new DebugSourceFileSnapshot(
-                    "DebugModule.bas",
-                    sourceUri,
-                    "Attribute VB_Name = \"DebugModule\"\r\n" +
-                    "Option Private Module\r\n\r\n" +
-                    "Sub RunTarget()\r\nEnd Sub\r\n")
-            ],
-            ActiveSource: null);
+        var snapshot = Snapshot(
+            ".bas",
+            "Attribute VB_Name = \"DebugModule\"\r\n" +
+            "Option Private Module\r\n\r\n" +
+            "Sub RunTarget()\r\nEnd Sub\r\n");
 
-        var request = new DebugLaunchRequestResolver().Resolve(
-            snapshot,
-            "debugmodule",
-            "runtarget");
+        var admitted = Admit(snapshot, "debugmodule", "runtarget");
 
-        Assert.Equal(new DebugTargetProcedure("DebugModule", "RunTarget"), request.Target);
+        Assert.Equal(new DebugTargetProcedure("DebugModule", "RunTarget"), admitted.Target);
     }
 
     [Fact]
@@ -174,10 +149,7 @@ public sealed class DebugLaunchRequestResolverTests
             "    RunTarget = 1\r\nEnd Function\r\n");
 
         var error = Assert.Throws<DebugSetupException>(() =>
-            new DebugLaunchRequestResolver().Resolve(
-                snapshot,
-                "DebugModule",
-                "RunTarget"));
+            Admit(snapshot, "DebugModule", "RunTarget"));
 
         Assert.Contains("Sub", error.Message, StringComparison.Ordinal);
     }
@@ -191,10 +163,7 @@ public sealed class DebugLaunchRequestResolverTests
             "Private Sub RunTarget()\r\nEnd Sub\r\n");
 
         var error = Assert.Throws<DebugSetupException>(() =>
-            new DebugLaunchRequestResolver().Resolve(
-                snapshot,
-                "DebugModule",
-                "RunTarget"));
+            Admit(snapshot, "DebugModule", "RunTarget"));
 
         Assert.Contains("public", error.Message, StringComparison.OrdinalIgnoreCase);
     }
@@ -208,10 +177,7 @@ public sealed class DebugLaunchRequestResolverTests
             "Public Sub RunTarget(ByVal value As Long)\r\nEnd Sub\r\n");
 
         var error = Assert.Throws<DebugSetupException>(() =>
-            new DebugLaunchRequestResolver().Resolve(
-                snapshot,
-                "DebugModule",
-                "RunTarget"));
+            Admit(snapshot, "DebugModule", "RunTarget"));
 
         Assert.Contains("parameterless", error.Message, StringComparison.OrdinalIgnoreCase);
     }
@@ -225,10 +191,7 @@ public sealed class DebugLaunchRequestResolverTests
             "Public Declare PtrSafe Sub RunTarget Lib \"kernel32\" ()\r\n");
 
         var error = Assert.Throws<DebugSetupException>(() =>
-            new DebugLaunchRequestResolver().Resolve(
-                snapshot,
-                "DebugModule",
-                "RunTarget"));
+            Admit(snapshot, "DebugModule", "RunTarget"));
 
         Assert.Contains("Declare", error.Message, StringComparison.OrdinalIgnoreCase);
     }
@@ -243,10 +206,7 @@ public sealed class DebugLaunchRequestResolverTests
             "Public Sub RunTarget()\r\nEnd Sub\r\n");
 
         var error = Assert.Throws<DebugSetupException>(() =>
-            new DebugLaunchRequestResolver().Resolve(
-                snapshot,
-                "DebugModule",
-                "RunTarget"));
+            Admit(snapshot, "DebugModule", "RunTarget"));
 
         Assert.Contains("standard module", error.Message, StringComparison.OrdinalIgnoreCase);
     }
@@ -260,62 +220,91 @@ public sealed class DebugLaunchRequestResolverTests
             "Public Sub CapturedTarget()\r\n" +
             "    Debug.Print \"captured\"\r\n" +
             "End Sub\r\n";
-        var snapshot = new DebugSourceSnapshot(
-            DebugSourceSnapshot.CurrentSchemaVersion,
-            [new DebugSourceFileSnapshot("DebugModule.bas", sourceUri, source)],
-            new DebugSourcePosition(sourceUri, Line: 3, Character: 4));
+        var snapshot = new TransportedDebugSourceSnapshot(
+            2,
+            [TextSource("DebugModule.bas", sourceUri, source)])
+        {
+            ActiveSource = new TransportedDebugSourcePosition(
+                sourceUri,
+                Line: 3,
+                Character: 4)
+        };
 
-        var request = new DebugLaunchRequestResolver().Resolve(
-            snapshot,
-            moduleName: null,
-            procedureName: null);
+        var admitted = Admit(snapshot, moduleName: null, procedureName: null);
 
-        Assert.Equal(new DebugTargetProcedure("DebugModule", "CapturedTarget"), request.Target);
-        Assert.Equal(source, Assert.Single(request.SourceSnapshot.Sources).Text);
+        Assert.Equal(
+            new DebugTargetProcedure("DebugModule", "CapturedTarget"),
+            admitted.Target);
+        Assert.Equal(
+            new DebugSourcePosition(sourceUri, Line: 3, Character: 4),
+            admitted.ActiveSource);
     }
 
     [Fact]
     public void ActivePositionRejectsAnAmbiguousModuleIdentity()
     {
         const string activeUri = "file:///C:/persistent/DebugModule.bas";
-        var snapshot = new DebugSourceSnapshot(
-            DebugSourceSnapshot.CurrentSchemaVersion,
+        var snapshot = new TransportedDebugSourceSnapshot(
+            2,
             [
-                new DebugSourceFileSnapshot(
+                TextSource(
                     "Alpha.bas",
                     "file:///C:/persistent/Alpha.bas",
                     "Attribute VB_Name = \"DebugModule\"\r\n" +
                     "Public Sub OtherTarget()\r\nEnd Sub\r\n"),
-                new DebugSourceFileSnapshot(
+                TextSource(
                     "DebugModule.bas",
                     activeUri,
                     "Attribute VB_Name = \"DebugModule\"\r\n" +
                     "Public Sub RunTarget()\r\n" +
                     "    Debug.Print \"ready\"\r\nEnd Sub\r\n")
-            ],
-            new DebugSourcePosition(activeUri, Line: 2, Character: 4));
+            ])
+        {
+            ActiveSource = new TransportedDebugSourcePosition(
+                activeUri,
+                Line: 2,
+                Character: 4)
+        };
 
         var error = Assert.Throws<DebugSetupException>(() =>
-            new DebugLaunchRequestResolver().Resolve(
-                snapshot,
-                moduleName: null,
-                procedureName: null));
+            Admit(snapshot, moduleName: null, procedureName: null));
 
         Assert.Contains("module", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("ambiguous", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static DebugSourceSnapshot Snapshot(string extension, string source)
+    private static AdmittedDebugSourceSnapshot Admit(
+        TransportedDebugSourceSnapshot snapshot,
+        string? moduleName,
+        string? procedureName)
+        => new DebugSourceAdmission(932).Admit(
+            snapshot,
+            moduleName,
+            procedureName,
+            DebugGenerationId.Initial);
+
+    private static TransportedDebugSourceSnapshot Snapshot(
+        string extension,
+        string source)
     {
         var relativePath = $"DebugModule{extension}";
-        return new DebugSourceSnapshot(
-            DebugSourceSnapshot.CurrentSchemaVersion,
+        return new TransportedDebugSourceSnapshot(
+            2,
             [
-                new DebugSourceFileSnapshot(
+                TextSource(
                     relativePath,
                     $"file:///C:/persistent/{relativePath}",
                     source)
-            ],
-            ActiveSource: null);
+            ]);
     }
+
+    private static TransportedDebugSource TextSource(
+        string relativePath,
+        string sourceUri,
+        string text)
+        => new(
+            relativePath,
+            sourceUri,
+            "utf8bom",
+            Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(text)));
 }

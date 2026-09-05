@@ -1,4 +1,5 @@
 using VbaDebugAdapter.Build;
+using VbaDebugAdapter.Debugging;
 using VbaDebugAdapter.Infrastructure;
 using Xunit;
 
@@ -41,7 +42,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                     projectRoot,
                     "Book1",
                     "Book1.xlsm",
-                    new TransportedDebugSourceSnapshot(
+                    AdmitBuildSources(new TransportedDebugSourceSnapshot(
                         2,
                         [
                             new TransportedDebugSource(
@@ -49,7 +50,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                                 "file:///C:/work/BookProject/src/Book1/nested/DebugModule.bas",
                                 "utf8bom",
                                 Convert.ToBase64String(sourceBytes))
-                        ])),
+                        ]))),
                 CancellationToken.None);
 
             Assert.Equal("Book1.xlsm", Path.GetFileName(result.WorkbookPath));
@@ -124,10 +125,9 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                     projectRoot,
                     "Book1",
                     "Book1.xlsm",
-                    snapshot)
-                {
-                    GenerationId = DebugGenerationId.Initial
-                },
+                    AdmitBuildSources(
+                        snapshot,
+                        DebugGenerationId.Initial)),
                 CancellationToken.None);
             await using var restarted = await builder.BuildAsync(
                 vbaDevPath,
@@ -136,10 +136,9 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                     projectRoot,
                     "Book1",
                     "Book1.xlsm",
-                    snapshot)
-                {
-                    GenerationId = DebugGenerationId.FromValue(1)
-                },
+                    AdmitBuildSources(
+                        snapshot,
+                        DebugGenerationId.FromValue(1))),
                 CancellationToken.None);
 
             Assert.NotEqual(
@@ -188,7 +187,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                 projectRoot,
                 "Book1",
                 "Book1.xlsm",
-                new TransportedDebugSourceSnapshot(
+                AdmitBuildSources(new TransportedDebugSourceSnapshot(
                     2,
                     [
                         new TransportedDebugSource(
@@ -197,7 +196,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                             "utf8bom",
                             Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
                                 "Attribute VB_Name = \"Module1\"\r\n")))
-                    ])),
+                    ]))),
             CancellationToken.None);
         var displacedPath = result.GenerationWorkspacePath + "-displaced";
 
@@ -239,8 +238,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
             rootBinding,
             cleanupOperations: null);
         var builder = new VbaDevSnapshotWorkbookBuilder(
-            new RecordingBuildProcess(),
-            new TransportedDebugSourceSnapshotValidator(932));
+            new RecordingBuildProcess());
 
         try
         {
@@ -257,7 +255,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                     projectRoot,
                     "Book1",
                     "Book1.xlsm",
-                    new TransportedDebugSourceSnapshot(
+                    AdmitBuildSources(new TransportedDebugSourceSnapshot(
                         2,
                         [
                             new TransportedDebugSource(
@@ -266,7 +264,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                                 "utf8bom",
                                 Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
                                     "Attribute VB_Name = \"Module1\"\r\n")))
-                        ])),
+                        ]))),
                 CancellationToken.None);
 
             Assert.StartsWith(
@@ -331,7 +329,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                 projectRoot,
                 "Book1",
                 "Book1.xlsm",
-                new TransportedDebugSourceSnapshot(
+                AdmitBuildSources(new TransportedDebugSourceSnapshot(
                     2,
                     [
                         new TransportedDebugSource(
@@ -340,7 +338,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                             "utf8bom",
                             Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
                                 "Attribute VB_Name = \"Module1\"\r\n")))
-                    ])),
+                    ]))),
             CancellationToken.None));
 
         Assert.Empty(Directory.EnumerateFileSystemEntries(outsidePath));
@@ -359,9 +357,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
         Directory.CreateDirectory(Path.GetDirectoryName(vbaDevPath)!);
         await File.WriteAllBytesAsync(vbaDevPath, []);
         var process = new RecordingBuildProcess();
-        var builder = new VbaDevSnapshotWorkbookBuilder(
-            process,
-            new TransportedDebugSourceSnapshotValidator(932));
+        var builder = new VbaDevSnapshotWorkbookBuilder(process);
         var manager = new VbaDebugSessionWorkspaceManager(
             workspaceRoot,
             cleanupOperations: null,
@@ -381,7 +377,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                     projectRoot,
                     "Book1",
                     "Book1.xlsm",
-                    new TransportedDebugSourceSnapshot(
+                    AdmitBuildSources(new TransportedDebugSourceSnapshot(
                         2,
                         [
                             new TransportedDebugSource(
@@ -390,7 +386,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                                 "utf8bom",
                                 Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
                                     "Attribute VB_Name = \"Module1\"\r\n")))
-                        ])),
+                        ]))),
                 CancellationToken.None);
             await result.DisposeAsync();
         });
@@ -434,7 +430,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                 projectRoot,
                 "Book1",
                 "Book1.xlsm",
-                new TransportedDebugSourceSnapshot(
+                AdmitBuildSources(new TransportedDebugSourceSnapshot(
                     2,
                     [
                         new TransportedDebugSource(
@@ -443,68 +439,11 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                             "utf8bom",
                             Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
                                 "Attribute VB_Name = \"Module1\"\r\n")))
-                    ])),
+                    ]))),
             CancellationToken.None));
 
         Assert.True(File.Exists(sentinelPath));
         Assert.Empty(process.Invocations);
-    }
-
-    [Fact]
-    public async Task BuildRejectsBytesThatDoNotStrictlyMatchTheDeclaredEncoding()
-    {
-        var root = Path.Combine(
-            Path.GetTempPath(),
-            "vba-debug-adapter-builder-tests",
-            Guid.NewGuid().ToString("N"));
-        var projectRoot = Path.Combine(root, "project");
-        var workspaceRoot = Path.Combine(root, "adapter-root");
-        Directory.CreateDirectory(projectRoot);
-        var vbaDevPath = Path.Combine(root, "tools", "vba-dev.exe");
-        Directory.CreateDirectory(Path.GetDirectoryName(vbaDevPath)!);
-        await File.WriteAllBytesAsync(vbaDevPath, []);
-        var process = new RecordingBuildProcess();
-        var builder = new VbaDevSnapshotWorkbookBuilder(process);
-        const string sessionId = "0123456789abcdef0123456789abcdef";
-
-        try
-        {
-            await using var lease = await new VbaDebugSessionWorkspaceManager(workspaceRoot)
-                .ClaimAsync(DebugSessionId.Parse(sessionId), CancellationToken.None);
-            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                builder.BuildAsync(
-                    vbaDevPath,
-                    lease,
-                    new VbaDevSnapshotBuildRequest(
-                        projectRoot,
-                        "Book1",
-                        "Book1.xlsm",
-                        new TransportedDebugSourceSnapshot(
-                            2,
-                            [
-                                new TransportedDebugSource(
-                                    "Module1.bas",
-                                    "file:///C:/persistent/Module1.bas",
-                                    "utf8bom",
-                                    Convert.ToBase64String([0xef, 0xbb, 0xbf, 0xff]))
-                            ])),
-                    CancellationToken.None));
-
-            Assert.Contains("utf8bom", exception.Message, StringComparison.Ordinal);
-            Assert.Empty(process.Invocations);
-            Assert.False(Directory.Exists(Path.Combine(
-                workspaceRoot,
-                "workspaces",
-                sessionId,
-                "generations")));
-        }
-        finally
-        {
-            if (Directory.Exists(root))
-            {
-                Directory.Delete(root, recursive: true);
-            }
-        }
     }
 
     [Fact]
@@ -541,7 +480,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                         projectRoot,
                         "Book1",
                         "Book1.xlsm",
-                        new TransportedDebugSourceSnapshot(
+                        AdmitBuildSources(new TransportedDebugSourceSnapshot(
                             2,
                             [
                                 new TransportedDebugSource(
@@ -550,7 +489,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                                     "utf8bom",
                                     Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
                                         "Attribute VB_Name = \"Module1\"\r\n")))
-                            ])),
+                            ]))),
                     CancellationToken.None));
 
             Assert.Contains("code 7", exception.Message, StringComparison.Ordinal);
@@ -602,7 +541,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                         projectRoot,
                         "Book1",
                         "Book1.xlsm",
-                        new TransportedDebugSourceSnapshot(
+                        AdmitBuildSources(new TransportedDebugSourceSnapshot(
                             2,
                             [
                                 new TransportedDebugSource(
@@ -611,7 +550,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                                     "utf8bom",
                                     Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
                                         "Attribute VB_Name = \"Module1\"\r\n")))
-                            ])),
+                            ]))),
                     CancellationToken.None));
 
             Assert.Contains("without producing", exception.Message, StringComparison.Ordinal);
@@ -662,7 +601,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                     projectRoot,
                     "Book1",
                     "Book1.xlsm",
-                    new TransportedDebugSourceSnapshot(
+                    AdmitBuildSources(new TransportedDebugSourceSnapshot(
                         2,
                         [
                             new TransportedDebugSource(
@@ -675,7 +614,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                                 null,
                                 null,
                                 Convert.ToBase64String(sidecarBytes))
-                        ])),
+                        ]))),
                 CancellationToken.None);
 
             Assert.Equal(
@@ -706,9 +645,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
         var originalSource = DebugSnapshotTestEncoding.Utf8BomBytes(
             "Attribute VB_Name = \"Module1\"\r\n");
         var process = new SourceMutationBuildProcess();
-        var builder = new VbaDevSnapshotWorkbookBuilder(
-            process,
-            new TransportedDebugSourceSnapshotValidator(932));
+        var builder = new VbaDevSnapshotWorkbookBuilder(process);
 
         await using var lease = await new VbaDebugSessionWorkspaceManager(workspaceRoot)
             .ClaimAsync(DebugSessionId.Parse(sessionId), CancellationToken.None);
@@ -719,7 +656,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                 projectRoot,
                 "Book1",
                 "Book1.xlsm",
-                new TransportedDebugSourceSnapshot(
+                AdmitBuildSources(new TransportedDebugSourceSnapshot(
                     2,
                     [
                         new TransportedDebugSource(
@@ -727,7 +664,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                             "file:///C:/persistent/Module1.bas",
                             "utf8bom",
                             Convert.ToBase64String(originalSource))
-                    ])),
+                    ]))),
             CancellationToken.None));
 
         Assert.False(process.MutationSucceeded);
@@ -760,8 +697,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
         await File.WriteAllBytesAsync(vbaDevPath, []);
         await File.WriteAllBytesAsync(outsideWorkbookPath, outsideWorkbookBytes);
         var builder = new VbaDevSnapshotWorkbookBuilder(
-            new SymlinkOutputBuildProcess(outsideWorkbookPath),
-            new TransportedDebugSourceSnapshotValidator(932));
+            new SymlinkOutputBuildProcess(outsideWorkbookPath));
         await using var lease = await new VbaDebugSessionWorkspaceManager(workspaceRoot)
             .ClaimAsync(DebugSessionId.Parse(sessionId), CancellationToken.None);
         VbaDevSnapshotBuildResult? unexpectedResult = null;
@@ -775,7 +711,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                     projectRoot,
                     "Book1",
                     "Book1.xlsm",
-                    new TransportedDebugSourceSnapshot(
+                    AdmitBuildSources(new TransportedDebugSourceSnapshot(
                         2,
                         [
                             new TransportedDebugSource(
@@ -784,7 +720,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                                 "utf8bom",
                                 Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
                                     "Attribute VB_Name = \"Module1\"\r\n")))
-                        ])),
+                        ]))),
                 CancellationToken.None);
         });
         if (unexpectedResult is not null)
@@ -797,30 +733,6 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
         Assert.Equal(
             outsideWorkbookBytes,
             await File.ReadAllBytesAsync(outsideWorkbookPath));
-    }
-
-    [Theory]
-    [InlineData("nested:stream/Module1.bas")]
-    [InlineData("CON/Module1.bas")]
-    [InlineData("trailing-dot./Module1.bas")]
-    [InlineData("trailing-space /Module1.bas")]
-    public void SnapshotValidationRejectsWindowsAmbiguousPathComponents(string relativePath)
-    {
-        var validator = new TransportedDebugSourceSnapshotValidator(932);
-        var sourceUri = "file:///C:/persistent/" +
-            relativePath.Replace(" ", "%20", StringComparison.Ordinal);
-        var snapshot = new TransportedDebugSourceSnapshot(
-            2,
-            [
-                new TransportedDebugSource(
-                    relativePath,
-                    sourceUri,
-                    "utf8bom",
-                    Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
-                        "Attribute VB_Name = \"Module1\"\r\n")))
-            ]);
-
-        Assert.Throws<InvalidOperationException>(() => validator.Validate(snapshot));
     }
 
     [Fact]
@@ -852,7 +764,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                     projectRoot,
                     "Book1",
                     "Book1.xlsm",
-                    new TransportedDebugSourceSnapshot(
+                    AdmitBuildSources(new TransportedDebugSourceSnapshot(
                         2,
                         [
                             new TransportedDebugSource(
@@ -861,7 +773,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                                 "utf8bom",
                                 Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
                                     "Attribute VB_Name = \"Module1\"\r\n")))
-                        ])),
+                        ]))),
                 cancellation.Token);
             await process.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -1010,6 +922,19 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                 string.Empty,
                 string.Empty));
         }
+    }
+
+    private static AdmittedDebugBuildSourceSet AdmitBuildSources(
+        TransportedDebugSourceSnapshot snapshot)
+        => AdmitBuildSources(snapshot, DebugGenerationId.Initial);
+
+    private static AdmittedDebugBuildSourceSet AdmitBuildSources(
+        TransportedDebugSourceSnapshot snapshot,
+        DebugGenerationId generationId)
+    {
+        var validated = new TransportedDebugSourceSnapshotValidator(932)
+            .Validate(snapshot);
+        return new AdmittedDebugBuildSourceSet(generationId, validated.Sources);
     }
 
     private static string GetArgumentValue(

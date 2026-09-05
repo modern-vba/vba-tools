@@ -243,7 +243,9 @@ snapshot feature and invokes only the public CLI process. VbaDev independently
 admits those materialized bytes and proves lossless ACP projection before Excel;
 it reads no extension manifest, DAP contract, adapter capability, or consumer
 proof. No runtime DTO, implementation assembly, or product test is shared.
-Adapter analysis-authority consolidation remains a separate issue #363.
+ADR 0041 consolidates adapter analysis independently: one generation parses
+each transported text source once and gives its builder only an opaque exact-byte
+source set. It does not change `VbaDev` or weaken this provider-owned admission.
 
 ## Language-server closed source
 

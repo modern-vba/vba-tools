@@ -2,26 +2,14 @@ using VbaDebugAdapter.Infrastructure;
 
 namespace VbaDebugAdapter.Build;
 
-public sealed class VbaDevSnapshotWorkbookBuilder : IVbaDebugWorkbookBuilder
+internal sealed class VbaDevSnapshotWorkbookBuilder : IVbaDebugWorkbookBuilder
 {
     private readonly IVbaDevBuildProcess buildProcess;
-    private readonly TransportedDebugSourceSnapshotValidator snapshotValidator;
 
-    public VbaDevSnapshotWorkbookBuilder(
+    internal VbaDevSnapshotWorkbookBuilder(
         IVbaDevBuildProcess buildProcess)
-        : this(
-            buildProcess,
-            TransportedDebugSourceSnapshotValidator.CreateForCurrentWindowsSession())
-    {
-    }
-
-    public VbaDevSnapshotWorkbookBuilder(
-        IVbaDevBuildProcess buildProcess,
-        TransportedDebugSourceSnapshotValidator snapshotValidator)
     {
         this.buildProcess = buildProcess ?? throw new ArgumentNullException(nameof(buildProcess));
-        this.snapshotValidator = snapshotValidator
-            ?? throw new ArgumentNullException(nameof(snapshotValidator));
     }
 
     public async Task<VbaDevSnapshotBuildResult> BuildAsync(
@@ -32,18 +20,15 @@ public sealed class VbaDevSnapshotWorkbookBuilder : IVbaDebugWorkbookBuilder
     {
         ArgumentNullException.ThrowIfNull(workspaceLease);
         ValidateRequest(vbaDevPath, request);
-        var validatedSnapshot = snapshotValidator.Validate(request.SourceSnapshot);
         IVbaDebugGenerationWorkspace? generationWorkspace = null;
         try
         {
             generationWorkspace = workspaceLease.CreateGenerationWorkspace(
-                request.GenerationId,
+                request.SourceSet.GenerationId,
                 request.WorkbookFileName);
             var sourceSnapshotPath = generationWorkspace.SourceSnapshotPath;
             var workbookPath = generationWorkspace.WorkbookPath;
-            MaterializeSnapshot(
-                validatedSnapshot,
-                generationWorkspace);
+            request.SourceSet.MaterializeInto(generationWorkspace);
             generationWorkspace.SealSourceSnapshot();
             var arguments = new[]
             {
@@ -123,7 +108,6 @@ public sealed class VbaDevSnapshotWorkbookBuilder : IVbaDebugWorkbookBuilder
                 "The supplied vba-dev path must identify an existing absolute file.",
                 nameof(vbaDevPath));
         }
-        ArgumentNullException.ThrowIfNull(request.GenerationId);
         if (!Path.IsPathFullyQualified(request.ProjectRoot) || !Directory.Exists(request.ProjectRoot))
         {
             throw new ArgumentException(
@@ -150,35 +134,33 @@ public sealed class VbaDevSnapshotWorkbookBuilder : IVbaDebugWorkbookBuilder
                 "The debug workbook file name must be a path-free .xlsm file name.",
                 nameof(request));
         }
-        if (request.SourceSnapshot.SchemaVersion != 2)
-        {
-            throw new ArgumentException(
-                $"Unsupported source snapshot schema version {request.SourceSnapshot.SchemaVersion}.",
-                nameof(request));
-        }
-    }
-
-    private static void MaterializeSnapshot(
-        ValidatedTransportedDebugSourceSnapshot snapshot,
-        IVbaDebugGenerationWorkspace generationWorkspace)
-    {
-        foreach (var source in snapshot.Sources)
-        {
-            using var stream = generationWorkspace.CreateSourceFile(source.RelativePath);
-            stream.Write(source.Bytes);
-            stream.Flush(flushToDisk: true);
-        }
     }
 
 }
 
-public sealed record VbaDevSnapshotBuildRequest(
-    string ProjectRoot,
-    string DocumentName,
-    string WorkbookFileName,
-    TransportedDebugSourceSnapshot SourceSnapshot)
+internal sealed class VbaDevSnapshotBuildRequest
 {
-    public DebugGenerationId GenerationId { get; init; } = DebugGenerationId.Initial;
+    internal VbaDevSnapshotBuildRequest(
+        string projectRoot,
+        string documentName,
+        string workbookFileName,
+        AdmittedDebugBuildSourceSet sourceSet)
+    {
+        ProjectRoot = projectRoot;
+        DocumentName = documentName;
+        WorkbookFileName = workbookFileName;
+        SourceSet = sourceSet;
+    }
+
+    internal string ProjectRoot { get; }
+
+    internal string DocumentName { get; }
+
+    internal string WorkbookFileName { get; }
+
+    internal AdmittedDebugBuildSourceSet SourceSet { get; }
+
+    internal DebugGenerationId GenerationId => SourceSet.GenerationId;
 }
 
 public sealed record TransportedDebugSourceSnapshot(
@@ -260,7 +242,7 @@ public interface IVbaDevBuildProcess
         CancellationToken cancellationToken);
 }
 
-public interface IVbaDebugWorkbookBuilder
+internal interface IVbaDebugWorkbookBuilder
 {
     Task<VbaDevSnapshotBuildResult> BuildAsync(
         string vbaDevPath,

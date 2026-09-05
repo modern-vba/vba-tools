@@ -116,6 +116,13 @@ adapter separately revalidates DAP text encoding tokens, BOM policy, byte
 reproduction, and the ACP relationship before materialization. Its result is
 not a validation proof accepted by VbaDev.
 
+ADR 0041 makes that adapter-side work one generation-bound
+`DebugSourceAdmission`: target resolution, breakpoint mapping, conditional
+evidence, and the opaque build source set reuse one parse of each transported
+text source. This is an adapter-internal consolidation only. `VbaDev` still
+admits the materialized directory independently and has no adapter assembly,
+DTO, proof, test, or reverse product dependency.
+
 ADR 0037 supersedes the historical UTF-8-first source-decoding rule for `ExplicitWorkbookImport`
 in issue #335, ordinary saved-source Build in issue #339, Publish in issue #340,
 and snapshot Build/Test in issue #344. Its internal

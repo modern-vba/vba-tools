@@ -5,6 +5,7 @@ using VbaDebugAdapter.Diagnostics;
 using VbaDebugAdapter.Infrastructure;
 using System.Text;
 using System.Text.Json;
+using VbaTools.Syntax;
 using Xunit;
 
 namespace VbaDebugAdapter.Tests;
@@ -3793,7 +3794,10 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             sourceSnapshot["sources"]);
         sources[0]["sourceUri"] = "http://[";
 
-        await AssertLaunchArgumentsRejectedAsync(arguments, "persistent file URI");
+        await AssertLaunchArgumentsRejectedAsync(
+            arguments,
+            "persistent file URI",
+            ValidateSourceAdmission);
     }
 
     [Fact]
@@ -3806,7 +3810,10 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             sourceSnapshot["sources"]);
         sources[0]["sourceUri"] = "file:///C:/persistent/Mod%00ule1.bas";
 
-        await AssertLaunchArgumentsRejectedAsync(arguments, "persistent file URI");
+        await AssertLaunchArgumentsRejectedAsync(
+            arguments,
+            "invalid sourceUri",
+            ValidateSourceAdmission);
     }
 
     [Fact]
@@ -4446,14 +4453,15 @@ public sealed class VbaDebugAdapterCliSurfaceTests
 
     private static async Task AssertLaunchArgumentsRejectedAsync(
         Dictionary<string, object?> arguments,
-        string expectedMessage)
+        string expectedMessage,
+        Action<StandaloneVbaDebugLaunchRequest>? validate = null)
     {
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
                 "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
                 string.Empty));
-        var launchService = new RecordingDebugLaunchService();
+        var launchService = new RecordingDebugLaunchService(validate: validate);
         var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(launchService),
             probe);
@@ -4499,6 +4507,13 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             StringComparison.Ordinal);
     }
 
+    private static void ValidateSourceAdmission(StandaloneVbaDebugLaunchRequest request)
+        => _ = new DebugSourceAdmission(932).Admit(
+            request.SourceSnapshot,
+            request.ModuleName,
+            request.ProcedureName,
+            DebugGenerationId.Initial);
+
     private sealed class RecordingVbaDevCapabilitiesProbe(
         VbaDevCapabilitiesProbeResult result) : IVbaDevCapabilitiesProbe
     {
@@ -4516,7 +4531,9 @@ public sealed class VbaDebugAdapterCliSurfaceTests
     private sealed class RecordingDebugLaunchService(
         IStandaloneVbaDebugRunningSession? runningSession = null,
         DebugInputWait? inputWait = null,
-        DebugLifecycleMessage? lifecycleMessage = null) : IStandaloneVbaDebugLaunchService
+        DebugLifecycleMessage? lifecycleMessage = null,
+        Action<StandaloneVbaDebugLaunchRequest>? validate = null)
+        : IStandaloneVbaDebugLaunchService
     {
         public List<(
             string VbaDevPath,
@@ -4532,6 +4549,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             CancellationToken cancellationToken,
             IDebugLifecycleSink? lifecycleSink = null)
         {
+            validate?.Invoke(request);
             Invocations.Add((vbaDevPath, workspaceLease, request));
             return Task.FromResult<IPreparedDebugLaunchPlan>(
                 new FakePreparedDebugLaunchPlan(
@@ -4804,19 +4822,32 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 restartBinding?.TargetModuleName ?? "Module1";
             var targetProcedureName = request.ProcedureName ??
                 restartBinding?.TargetProcedureName ?? "Run";
-            Snapshot = new PreparedDebugLaunchPlanSnapshot(
-                request.SourceSnapshot,
+            var generationId = DebugGenerationId.FromValue(
+                request.RestartPreparation?.Generation.Value ?? 0);
+            var target = new DebugTargetProcedure(targetModuleName, targetProcedureName);
+            var syntheticTree = VbaSyntaxTree.ParseModule(
+                "file:///C:/synthetic/Module1.bas",
+                $"Attribute VB_Name = \"{targetModuleName}\"\r\n" +
+                $"Public Sub {targetProcedureName}()\r\n" +
+                "End Sub\r\n");
+            var admittedSource = new AdmittedDebugSourceSnapshot(
+                generationId,
                 request.SourceSnapshot.ActiveSource is null
                     ? null
                     : new DebugSourcePosition(
                         request.SourceSnapshot.ActiveSource.SourceUri,
                         request.SourceSnapshot.ActiveSource.Line,
                         request.SourceSnapshot.ActiveSource.Character),
-                new DebugTargetProcedure(targetModuleName, targetProcedureName),
+                target,
                 [],
-                RequiresConditionalCompilationPreflight: false,
-                DebugGenerationId.FromValue(
-                    request.RestartPreparation?.Generation.Value ?? 0),
+                new AdmittedDebugBuildSourceSet(generationId, []),
+                DeferredDebugConditionalCompilationProof.Create(
+                    generationId,
+                    target,
+                    syntheticTree,
+                    []));
+            Snapshot = new PreparedDebugLaunchPlanSnapshot(
+                admittedSource,
                 GenerationWorkspacePath: string.Empty,
                 new PreparedDebugLaunchSettings(
                     Path.GetFullPath(request.ProjectRoot),

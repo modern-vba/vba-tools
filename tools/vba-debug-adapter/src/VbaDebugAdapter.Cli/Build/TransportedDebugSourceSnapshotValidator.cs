@@ -4,7 +4,7 @@ using VbaDebugAdapter.Infrastructure;
 
 namespace VbaDebugAdapter.Build;
 
-public sealed class TransportedDebugSourceSnapshotValidator
+internal sealed class TransportedDebugSourceSnapshotValidator
 {
     private static readonly byte[][] SupportedUnicodePreambles =
     [
@@ -25,7 +25,7 @@ public sealed class TransportedDebugSourceSnapshotValidator
 
     private readonly int activeWindowsCodePage;
 
-    public TransportedDebugSourceSnapshotValidator(int activeWindowsCodePage)
+    internal TransportedDebugSourceSnapshotValidator(int activeWindowsCodePage)
     {
         if (activeWindowsCodePage <= 0)
         {
@@ -34,7 +34,7 @@ public sealed class TransportedDebugSourceSnapshotValidator
         this.activeWindowsCodePage = activeWindowsCodePage;
     }
 
-    public static TransportedDebugSourceSnapshotValidator CreateForCurrentWindowsSession()
+    internal static TransportedDebugSourceSnapshotValidator CreateForCurrentWindowsSession()
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -44,7 +44,7 @@ public sealed class TransportedDebugSourceSnapshotValidator
         return new TransportedDebugSourceSnapshotValidator(checked((int)GetAcp()));
     }
 
-    public ValidatedTransportedDebugSourceSnapshot Validate(
+    internal ValidatedTransportedDebugSourceSnapshot Validate(
         TransportedDebugSourceSnapshot snapshot)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
@@ -383,13 +383,13 @@ public sealed class TransportedDebugSourceSnapshotValidator
     private static extern uint GetAcp();
 }
 
-public sealed record ValidatedTransportedDebugSourceSnapshot(
+internal sealed record ValidatedTransportedDebugSourceSnapshot(
     int SchemaVersion,
     IReadOnlyList<ValidatedTransportedDebugSource> Sources,
     TransportedDebugSourcePosition? ActiveSource,
     IReadOnlyList<TransportedDebugSourceBreakpoint> Breakpoints);
 
-public sealed record ValidatedTransportedDebugSource(
+internal sealed record ValidatedTransportedDebugSource(
     string RelativePath,
     string? SourceUri,
     string? Encoding,
