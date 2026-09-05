@@ -38,9 +38,7 @@ internal sealed class VbaProjectReferenceCandidateRejectedException(
 public sealed class ExcelComVbaProjectReferenceProbeAutomation
     : IVbaProjectReferenceProbeAutomation
 {
-    private static readonly TimeSpan DispatcherAbandonmentObservation =
-        TimeSpan.FromMilliseconds(100);
-    private readonly IStaComDispatcherFactory dispatcherFactory;
+    private readonly AutomationExcelProcessRuntime runtime;
     private readonly IExcelComVbaProjectReferenceProbeLifecycle lifecycle;
 
     /// <summary>
@@ -57,7 +55,7 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
         IStaComDispatcherFactory dispatcherFactory,
         IExcelComVbaProjectReferenceProbeLifecycle lifecycle)
     {
-        this.dispatcherFactory = dispatcherFactory;
+        runtime = new AutomationExcelProcessRuntime(dispatcherFactory);
         this.lifecycle = lifecycle;
     }
 
@@ -75,97 +73,34 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
         var workspace = baseline.Kind == VbaProjectReferenceProbeBaselineKind.SourceTemplate
             ? ReferenceProbeWorkspace.Create(baseline.WorkbookPath!)
             : null;
-        using var terminationController = new OwnedExcelTerminationController();
-        IStaComDispatcher dispatcher;
-        try
-        {
-            dispatcher = dispatcherFactory.Create();
-        }
-        catch (Exception exception)
-        {
-            Exception? workspaceCleanupError = null;
-            try
-            {
-                workspace?.Dispose();
-            }
-            catch (Exception cleanupException)
-            {
-                workspaceCleanupError = cleanupException;
-            }
-
-            if (workspaceCleanupError is not null)
-            {
-                throw new VbaProjectReferenceProbeAttemptException(
-                    "cleanupFailure",
-                    "The reference-probe workspace could not be removed after dispatcher creation failed.",
-                    processTrusted: true,
-                    new AggregateException(exception, workspaceCleanupError));
-            }
-
-            throw new VbaProjectReferenceProbeAttemptException(
-                "excelVbeFailure",
-                "The Excel STA dispatcher required for reference probing could not be created.",
-                processTrusted: true,
-                exception);
-        }
-
-        var stageExecutor = new WorkbookAutomationStageExecutor(
-            () => terminationController.HasAttachedProcessExited,
-            terminationController.RequestForcedTermination,
-            getOwnedProcessCompletion: () =>
-                terminationController.AttachedProcessCompletion,
-            captureAutomationStage: terminationController.CaptureAutomationStage,
-            describeIsolationEvidence: terminationController.DescribeIsolationEvidence);
-        object? host = null;
         TResult? result = default;
-        Exception? operationError = null;
-        try
-        {
-            await stageExecutor.ExecuteAsync(
-                new WorkbookAutomationStage(WorkbookAutomationStageKind.ExcelStartup),
-                timeouts.ExcelStartup,
-                timeouts.ProcessCleanup,
-                cancellationToken,
-                stageCancellation => dispatcher.InvokeAsync(
-                    () =>
-                    {
-                        host = lifecycle.Start(terminationController, stageCancellation);
-                        return true;
-                    },
-                    stageCancellation)).ConfigureAwait(false);
-
-            var session = new BoundedReferenceProbeSession(
-                dispatcher,
-                stageExecutor,
-                lifecycle,
-                host!,
-                baseline.Kind,
-                workspace,
-                timeouts,
-                () => terminationController.HasAttachedProcessExited);
-            result = await operation(session, cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception exception)
-        {
-            operationError = NormalizeError(exception, cancellationToken);
-        }
-
-        var cleanupError = await CleanupAsync(
-            dispatcher,
-            terminationController,
-            host,
-            timeouts.ProcessCleanup,
-            stageExecutor,
-            operationError).ConfigureAwait(false);
-        var dispatcherError = await DisposeDispatcherAsync(
-            dispatcher,
-            stageExecutor.HasAbandonedOperation).ConfigureAwait(false);
-        if (dispatcherError is not null)
+        var outcome = await runtime.RunReferenceProbeAsync(
+            lifecycle,
+            timeouts,
+            async (execution, token) =>
+            {
+                var session = new BoundedReferenceProbeSession(
+                    execution, lifecycle, baseline.Kind, workspace, timeouts);
+                result = await operation(session, token).ConfigureAwait(false);
+                return true;
+            },
+            cancellationToken).ConfigureAwait(false);
+        var evidence = outcome.Evidence;
+        var operationError = evidence.OperationFailure is null
+            ? null
+            : !evidence.DispatcherCreated
+                ? new VbaProjectReferenceProbeAttemptException(
+                    "excelVbeFailure",
+                    "The Excel STA dispatcher required for reference probing could not be created.",
+                    processTrusted: true,
+                    evidence.OperationFailure)
+                : NormalizeError(evidence.OperationFailure, cancellationToken);
+        var cleanupError = evidence.CleanupFailure;
+        if (evidence.DispatcherFailure is { } dispatcherError)
         {
             cleanupError = cleanupError is null
                 ? dispatcherError
-                : WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(
-                    cleanupError)
+                : !evidence.ProcessReleaseVerified
                     ? new WorkbookAutomationCleanupException(
                         "Reference-probe cleanup and STA dispatcher disposal both failed, and exact owned-process release could not be proved.",
                         new AggregateException(cleanupError, dispatcherError))
@@ -183,28 +118,23 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
             var combinedCleanupError = cleanupError is null
                 ? exception
                 : new AggregateException(cleanupError, exception);
-            cleanupError = cleanupError is not null &&
-                WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(
-                    cleanupError)
-                    ? new WorkbookAutomationCleanupException(
-                        "The reference probe could not verify exact owned-process release, and its workspace cleanup also failed.",
-                        combinedCleanupError)
-                    : new WorkbookAutomationReleasedProcessCleanupException(
-                        "The reference-probe Excel process was released, but its workspace cleanup failed.",
-                        combinedCleanupError);
+            cleanupError = !evidence.ProcessReleaseVerified
+                ? new WorkbookAutomationCleanupException(
+                    "The reference probe could not verify exact owned-process release, and its workspace cleanup also failed.",
+                    combinedCleanupError)
+                : new WorkbookAutomationReleasedProcessCleanupException(
+                    "The reference-probe Excel process was released, but its workspace cleanup failed.",
+                    combinedCleanupError);
         }
 
         if (cleanupError is not null)
         {
-            var releaseVerified =
-                !WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(
-                    cleanupError);
             throw new VbaProjectReferenceProbeAttemptException(
                 "cleanupFailure",
-                releaseVerified
+                evidence.ProcessReleaseVerified
                     ? "The reference-probe Excel process was released, but cooperative cleanup or automation isolation failed."
                     : "The reference probe could not prove cleanup of its workbook copies and owned Excel process.",
-                processTrusted: false,
+                processTrusted: !evidence.DispatcherCreated,
                 operationError is null
                     ? cleanupError
                     : new AggregateException(operationError, cleanupError),
@@ -216,151 +146,9 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
             ExceptionDispatchInfo.Capture(operationError).Throw();
         }
 
+        // A cancellation first observed during final cleanup does not replace
+        // the completed reference classification. The runtime only reports it.
         return result!;
-    }
-
-    private async Task<Exception?> CleanupAsync(
-        IStaComDispatcher dispatcher,
-        OwnedExcelTerminationController terminationController,
-        object? host,
-        TimeSpan cleanupGrace,
-        WorkbookAutomationStageExecutor stageExecutor,
-        Exception? operationError)
-    {
-        var cleanupStage = new WorkbookAutomationStage(
-            WorkbookAutomationStageKind.ProcessCleanup);
-        terminationController.CaptureAutomationStage(cleanupStage);
-        if (stageExecutor.HasAbandonedOperation ||
-            terminationController.HasAttachedProcessExited ||
-            host is null)
-        {
-            return await CleanupOwnedProcessOnlyAsync(
-                terminationController,
-                cleanupGrace).ConfigureAwait(false);
-        }
-
-        terminationController.RequestForcedTermination(cleanupGrace);
-        Exception? cleanupError = null;
-        try
-        {
-            var cleanupTask = dispatcher.InvokeAsync(
-                () =>
-                {
-                    lifecycle.DisposeHost(host, cleanupGrace);
-                    return true;
-                },
-                CancellationToken.None);
-            var completed = await Task.WhenAny(
-                cleanupTask,
-                Task.Delay(
-                    cleanupGrace +
-                    PrivateDesktopOwnedExcelProcessControl.ForcedCleanupObservationAllowance))
-                .ConfigureAwait(false);
-            if (completed != cleanupTask)
-            {
-                stageExecutor.MarkOperationAbandoned();
-                WorkbookAutomationStageExecutor.ObserveFault(cleanupTask);
-                cleanupError = new WorkbookAutomationTimeoutException(
-                    cleanupStage,
-                    cleanupGrace,
-                    isolationDiagnostics:
-                        terminationController.DescribeIsolationEvidence());
-            }
-            else
-            {
-                await cleanupTask.ConfigureAwait(false);
-            }
-        }
-        catch (Exception exception)
-        {
-            cleanupError = exception;
-        }
-
-        var ownershipError = await CleanupOwnedProcessOnlyAsync(
-            terminationController,
-            cleanupGrace).ConfigureAwait(false);
-        if (cleanupError is null)
-        {
-            return ownershipError;
-        }
-
-        if (ownershipError is null &&
-            ReleasedAutomationCleanupPolicy.CanPreservePrimaryFailure(
-                operationError,
-                cleanupError))
-        {
-            return null;
-        }
-
-        return ownershipError is null
-            ? cleanupError
-            : WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(
-                ownershipError)
-                ? new WorkbookAutomationCleanupException(
-                    "Cooperative reference-probe cleanup and exact owned-process cleanup both failed.",
-                    new AggregateException(cleanupError, ownershipError))
-                : new WorkbookAutomationReleasedProcessCleanupException(
-                    "Cooperative reference-probe cleanup and exact owned-process cleanup both failed after exact owned-process release was verified.",
-                    new AggregateException(cleanupError, ownershipError));
-    }
-
-    private static async Task<Exception?> CleanupOwnedProcessOnlyAsync(
-        OwnedExcelTerminationController terminationController,
-        TimeSpan cleanupGrace)
-    {
-        try
-        {
-            terminationController.RequestForcedTermination(cleanupGrace);
-            await terminationController.ObserveCleanupWithinAsync(
-                PrivateDesktopOwnedExcelProcessControl.ForcedCleanupObservationAllowance)
-                .ConfigureAwait(false);
-            return null;
-        }
-        catch (WorkbookAutomationReleasedProcessCleanupException exception)
-        {
-            return exception;
-        }
-        catch (Exception exception)
-        {
-            return new WorkbookAutomationCleanupException(
-                "The reference probe could not verify exact owned-process release.",
-                exception);
-        }
-    }
-
-    private static async Task<Exception?> DisposeDispatcherAsync(
-        IStaComDispatcher dispatcher,
-        bool allowAbandonment)
-    {
-        try
-        {
-            var disposalTask = dispatcher.DisposeAsync().AsTask();
-            if (!allowAbandonment)
-            {
-                await disposalTask.ConfigureAwait(false);
-                return null;
-            }
-
-            var completed = await Task.WhenAny(
-                disposalTask,
-                Task.Delay(DispatcherAbandonmentObservation)).ConfigureAwait(false);
-            if (completed == disposalTask)
-            {
-                await disposalTask.ConfigureAwait(false);
-            }
-            else
-            {
-                WorkbookAutomationStageExecutor.ObserveFault(disposalTask);
-            }
-
-            return null;
-        }
-        catch (Exception exception)
-        {
-            return new WorkbookAutomationReleasedProcessCleanupException(
-                "The reference-probe process was released, but its STA dispatcher could not be disposed cleanly.",
-                exception);
-        }
     }
 
     private static Exception NormalizeError(
@@ -438,20 +226,18 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
         };
 
     private sealed class BoundedReferenceProbeSession(
-        IStaComDispatcher dispatcher,
-        WorkbookAutomationStageExecutor stageExecutor,
+        AutomationExcelProcessRuntime.AutomationExcelProcessSession execution,
         IExcelComVbaProjectReferenceProbeLifecycle lifecycle,
-        object host,
         VbaProjectReferenceProbeBaselineKind baselineKind,
         ReferenceProbeWorkspace? workspace,
-        WorkbookAutomationTimeouts timeouts,
-        Func<bool> hasOwnedProcessExited) : IVbaProjectReferenceProbeSession
+        WorkbookAutomationTimeouts timeouts) : IVbaProjectReferenceProbeSession
     {
         public async Task<VbaProjectReferenceProbeAttemptResult> TryResolveAsync(
             string referenceName,
             ResolvedVbaProjectReference candidate,
             CancellationToken cancellationToken)
         {
+            execution.ThrowIfRetired();
             var attemptPath = baselineKind == VbaProjectReferenceProbeBaselineKind.SourceTemplate
                 ? workspace!.CreateAttemptCopy()
                 : null;
@@ -466,13 +252,13 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
             {
                 try
                 {
-                    workbook = await ExecuteAsync(
+                    workbook = await execution.ExecuteAsync(
                         new WorkbookAutomationStage(
                             WorkbookAutomationStageKind.WorkbookOpen,
                             attemptName),
                         timeouts.WorkbookOpen,
                         cancellationToken,
-                        () => attemptPath is null
+                        host => attemptPath is null
                             ? lifecycle.CreateBlankWorkbook(host)
                             : lifecycle.OpenWorkbook(host, attemptPath)).ConfigureAwait(false);
                 }
@@ -486,13 +272,13 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
 
                 try
                 {
-                    reference = await ExecuteAsync(
+                    reference = await execution.ExecuteAsync(
                         new WorkbookAutomationStage(
                             WorkbookAutomationStageKind.ReferenceIdentityInspection,
                             referenceName),
                         timeouts.ReferenceAttempt,
                         cancellationToken,
-                        () => lifecycle.FindReference(workbook, referenceName)).ConfigureAwait(false);
+                        _ => lifecycle.FindReference(workbook, referenceName)).ConfigureAwait(false);
                 }
                 catch (Exception exception)
                 {
@@ -506,13 +292,13 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
                 {
                     try
                     {
-                        reference = await ExecuteAsync(
+                        reference = await execution.ExecuteAsync(
                             new WorkbookAutomationStage(
                                 WorkbookAutomationStageKind.ReferenceAttempt,
                                 referenceName),
                             timeouts.ReferenceAttempt,
                             cancellationToken,
-                            () => lifecycle.AddReference(workbook, candidate)).ConfigureAwait(false);
+                            _ => lifecycle.AddReference(workbook, candidate)).ConfigureAwait(false);
                     }
                     catch (VbaProjectReferenceCandidateRejectedException)
                     {
@@ -525,13 +311,13 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
                     ResolvedVbaProjectReference identity;
                     try
                     {
-                        identity = await ExecuteAsync(
+                        identity = await execution.ExecuteAsync(
                             new WorkbookAutomationStage(
                                 WorkbookAutomationStageKind.ReferenceIdentityInspection,
                                 referenceName),
                             timeouts.ReferenceAttempt,
                             cancellationToken,
-                            () => lifecycle.ReadIdentity(reference!, referenceName)).ConfigureAwait(false);
+                            _ => lifecycle.ReadIdentity(reference!, referenceName)).ConfigureAwait(false);
                     }
                     catch (Exception exception)
                     {
@@ -547,19 +333,17 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
             }
 
             Exception? cleanupError = null;
-            if (!stageExecutor.HasAbandonedOperation && !hasOwnedProcessExited())
+            if (!execution.HasAbandonedOperation && !execution.HasOwnedProcessExited)
             {
                 try
                 {
-                    await stageExecutor.ExecuteAsync(
+                    await execution.ExecuteAsync(
                         new WorkbookAutomationStage(
                             WorkbookAutomationStageKind.ProcessCleanup,
                             attemptName),
                         timeouts.ProcessCleanup,
-                        timeouts.ProcessCleanup,
                         CancellationToken.None,
-                        stageCancellation => dispatcher.InvokeAsync(
-                            () =>
+                        _ =>
                             {
                                 lifecycle.ReleaseReference(reference);
                                 if (workbook is not null)
@@ -568,8 +352,7 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
                                 }
 
                                 return true;
-                            },
-                            stageCancellation)).ConfigureAwait(false);
+                            }).ConfigureAwait(false);
                 }
                 catch (Exception exception)
                 {
@@ -579,7 +362,7 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
 
             if (cleanupError is null &&
                 attemptPath is not null &&
-                (!stageExecutor.HasAbandonedOperation || hasOwnedProcessExited()))
+                (!execution.HasAbandonedOperation || execution.HasOwnedProcessExited))
             {
                 try
                 {
@@ -610,19 +393,6 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
             return result!;
         }
 
-        private Task<T> ExecuteAsync<T>(
-            WorkbookAutomationStage stage,
-            TimeSpan timeout,
-            CancellationToken cancellationToken,
-            Func<T> operation)
-            => stageExecutor.ExecuteAsync(
-                stage,
-                timeout,
-                timeouts.ProcessCleanup,
-                cancellationToken,
-                stageCancellation => dispatcher.InvokeAsync(
-                    operation,
-                    stageCancellation));
     }
 
     private sealed class ReferenceProbeWorkspace : IDisposable

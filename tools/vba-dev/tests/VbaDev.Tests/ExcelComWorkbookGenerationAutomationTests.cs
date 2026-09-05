@@ -13,6 +13,34 @@ namespace VbaDev.Tests;
 public sealed class ExcelComWorkbookGenerationAutomationTests
 {
     [Fact]
+    public async Task CancellationAfterWorkbookOpenReleasesTheOpenedSessionResource()
+    {
+        using var temp = TempDirectory.Create();
+        using var resource = new FileStream(
+            Path.Combine(temp.Path, "session-resource.tmp"), FileMode.CreateNew,
+            FileAccess.ReadWrite, FileShare.None);
+        using var cancellation = new CancellationTokenSource();
+        var events = new List<string>();
+        var lifecycle = new FakeWorkbookGenerationLifecycle(events)
+        {
+            OnWorkbookOpened = cancellation.Cancel,
+            SessionResource = resource
+        };
+        var automation = new ExcelComWorkbookBuildAutomation(
+            new RecordingGenerationDispatcherFactory(new RecordingGenerationDispatcher(events)),
+            lifecycle);
+
+        var failure = await Assert.ThrowsAsync<WorkbookAutomationCanceledException>(() =>
+            automation.RunAsync(
+                "staged.xlsm", WorkbookAutomationTimeouts.Default,
+                (_, _) => Task.FromResult(true), cancellation.Token));
+
+        Assert.Equal(WorkbookAutomationStageKind.WorkbookOpen, failure.Stage.Kind);
+        Assert.True(resource.SafeFileHandle.IsClosed);
+        Assert.True(lifecycle.Owner.HasExited);
+    }
+
+    [Fact]
     public async Task WorkbookTestsRunInsideTheOwnedSessionBeforeCleanupReturns()
     {
         var events = new List<string>();
@@ -1067,6 +1095,10 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
 
         public Exception? OpenError { get; init; }
 
+        public Action? OnWorkbookOpened { get; init; }
+
+        public IDisposable? SessionResource { get; init; }
+
         public Exception? CleanupError { get; init; }
 
         public bool ExitOwnedProcessBeforeStartError { get; init; }
@@ -1117,12 +1149,14 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
                 throw OpenError;
             }
 
-            return new FakeWorkbookBuildSession(
+            var session = new FakeWorkbookBuildSession(
                 events,
                 Owner,
                 BlockSaveUntilTermination,
                 BlockGetModulesUntilTermination,
                 BlockTestUntilTermination);
+            OnWorkbookOpened?.Invoke();
+            return session;
         }
 
         public void DisposeHost(object host, TimeSpan cleanupGrace)
@@ -1139,6 +1173,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
         public void DisposeSession(IWorkbookBuildSession session, TimeSpan cleanupGrace)
         {
             events.Add($"cleanup-session:{cleanupGrace}");
+            SessionResource?.Dispose();
             WaitForCleanupRelease();
             Owner.CompleteCooperatively();
             if (CleanupError is not null)

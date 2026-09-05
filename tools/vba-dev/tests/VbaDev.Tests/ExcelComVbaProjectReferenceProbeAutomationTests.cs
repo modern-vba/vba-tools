@@ -12,6 +12,39 @@ namespace VbaDev.Tests;
 public sealed class ExcelComVbaProjectReferenceProbeAutomationTests
 {
     [Fact]
+    public async Task ReferenceSessionIsRetiredBeforeOwnedProcessCleanupBegins()
+    {
+        IVbaProjectReferenceProbeSession? capturedSession = null;
+        Exception? retirementFailure = null;
+        var candidate = new ResolvedVbaProjectReference(
+            "Widget Library", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", 1, 0);
+        var lifecycle = new FakeReferenceProbeLifecycle
+        {
+            OnDisposeHost = () => retirementFailure = Record.Exception(() =>
+                capturedSession!.TryResolveAsync(
+                    "Widget Library", candidate, CancellationToken.None).GetAwaiter().GetResult())
+        };
+        var automation = new ExcelComVbaProjectReferenceProbeAutomation(
+            new ImmediateDispatcherFactory(), lifecycle);
+
+        var result = await automation.RunAsync(
+            VbaProjectReferenceProbeBaseline.BlankWorkbook,
+            WorkbookAutomationTimeouts.Default,
+            (session, _) =>
+            {
+                capturedSession = session;
+                return Task.FromResult(true);
+            },
+            CancellationToken.None);
+
+        Assert.True(result);
+        Assert.IsType<ObjectDisposedException>(retirementFailure);
+        Assert.Equal(0, lifecycle.BlankWorkbookCreations);
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => capturedSession!.TryResolveAsync(
+            "Widget Library", candidate, CancellationToken.None));
+    }
+
+    [Fact]
     public async Task UsesOneOwnedProcessAndAFreshBaselineCopyForEveryCandidateAttempt()
     {
         using var temp = TempDirectory.Create();
@@ -134,6 +167,33 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomationTests
         Assert.Equal(1, lifecycle.DisposeHostCalls);
         Assert.Equal(1, lifecycle.BlankWorkbookCreations);
         Assert.Equal(0, lifecycle.CloseWithoutSaveCalls);
+    }
+
+    [Fact]
+    public async Task CompletedCancellationKeepsItsBatchWithoutReopeningAnExitedComHost()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var lifecycle = new FakeReferenceProbeLifecycle
+        {
+            OnAddReference = cancellation.Cancel,
+            ExitAfterAddReference = true,
+            DisposeHostError = new COMException("The terminated Excel server cannot accept Quit.")
+        };
+        var probe = new VbaProjectReferenceAmbiguityProbe(
+            new ExcelComVbaProjectReferenceProbeAutomation(
+                new ImmediateDispatcherFactory(), lifecycle));
+
+        var result = await probe.ResolveAsync(
+            VbaProjectReferenceProbeBaseline.BlankWorkbook,
+            CreateAmbiguousRegistryResolution(),
+            cancellation.Token);
+
+        Assert.False(result.Complete);
+        Assert.Equal("cancelled", Assert.Single(result.References).UnverifiedReasonCode);
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "operationCancelled");
+        Assert.DoesNotContain(result.Diagnostics, diagnostic => diagnostic.Code == "probeProcessUntrusted");
+        Assert.True(lifecycle.OwnerHasExited);
+        Assert.Equal(0, lifecycle.DisposeHostCalls);
     }
 
     [Fact]
@@ -1095,6 +1155,12 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomationTests
 
         public Exception? StartError { get; init; }
 
+        public Action? OnDisposeHost { get; init; }
+
+        public Action? OnAddReference { get; init; }
+
+        public bool ExitAfterAddReference { get; init; }
+
         public Exception? OwnerDisposeError
         {
             get => owner.DisposeError;
@@ -1166,6 +1232,12 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomationTests
             ResolvedVbaProjectReference candidate)
         {
             AddReferenceCalls++;
+            OnAddReference?.Invoke();
+            if (ExitAfterAddReference)
+            {
+                owner.Complete();
+            }
+
             return candidate;
         }
 
@@ -1192,6 +1264,7 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomationTests
         public void DisposeHost(object host, TimeSpan cleanupGrace)
         {
             DisposeHostCalls++;
+            OnDisposeHost?.Invoke();
             owner.Complete();
             if (DisposeHostError is not null)
             {
