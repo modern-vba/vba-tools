@@ -146,7 +146,9 @@ public static class ToolingCompositionRoot
         var exportCommand = new ExportCommand(
             workbookModuleExporter ?? new ExcelComWorkbookModuleExporter(),
             exportDestinationFileOperations ?? new ExportDestinationFileOperations());
-        var importCommand = new ImportCommand(generationAutomation);
+        var importCommand = new ImportCommand(
+            materializer,
+            new VbaSourceAdmission(ActiveWindowsAnsiCodePage.Get));
         var hostEventListCommand = new HostEventListCommand(
             hostEventCatalogAutomation ?? new ExcelComHostEventCatalogAutomation());
         return new ToolingApplicationComposition(

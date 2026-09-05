@@ -1,5 +1,6 @@
 using System.Reflection;
 using VbaDev.App.Build;
+using VbaDev.App.Workbooks;
 using Xunit;
 
 namespace VbaDev.Tests;
@@ -13,7 +14,7 @@ public sealed class WorkbookMaterializerContractTests
         BindingFlags.DeclaredOnly;
 
     [Fact]
-    public void WorkbookOutputsUseExactlyThreeDataOnlyClosedIntentsAndOneProductionEntrypoint()
+    public void WorkbookOutputsUseExactlyFourDataOnlyClosedIntentsAndOneProductionEntrypoint()
     {
         var applicationAssembly = typeof(BuildCommand).Assembly;
         var materializer = applicationAssembly.GetType(
@@ -46,7 +47,7 @@ public sealed class WorkbookMaterializerContractTests
             .OrderBy(type => type.Name, StringComparer.Ordinal)
             .ToArray();
         Assert.Equal(
-            ["ProjectBuild", "Publish", "SourceSnapshotBuild"],
+            ["ExplicitImport", "ProjectBuild", "Publish", "SourceSnapshotBuild"],
             closedIntents.Select(type => type.Name).ToArray());
         Assert.All(closedIntents, type =>
         {
@@ -126,6 +127,34 @@ public sealed class WorkbookMaterializerContractTests
         Assert.Null(applicationAssembly.GetType(
             "VbaDev.App.Workbooks.SynchronousWorkbookGenerationAutomation",
             throwOnError: false));
+    }
+
+    [Fact]
+    public void ExplicitImportOwnsConcreteAdmittedSourceAndTargetPath()
+    {
+        var applicationAssembly = typeof(BuildCommand).Assembly;
+        var intent = applicationAssembly.GetType(
+            "VbaDev.App.Build.WorkbookMaterializationIntent",
+            throwOnError: false);
+
+        Assert.NotNull(intent);
+        var explicitImport = intent.GetNestedType(
+            "ExplicitImport",
+            BindingFlags.NonPublic);
+        Assert.NotNull(explicitImport);
+        var constructorParameters = Assert.Single(
+                explicitImport.GetConstructors(DeclaredInstanceMembers))
+            .GetParameters();
+        Assert.Collection(
+            constructorParameters,
+            parameter => Assert.Equal(typeof(AdmittedVbaSourceSet), parameter.ParameterType),
+            parameter => Assert.Equal(typeof(string), parameter.ParameterType));
+        Assert.Contains(
+            explicitImport.GetProperties(DeclaredInstanceMembers),
+            property => property.PropertyType == typeof(AdmittedVbaSourceSet));
+        Assert.Contains(
+            explicitImport.GetProperties(DeclaredInstanceMembers),
+            property => property.PropertyType == typeof(string));
     }
 
     [Fact]

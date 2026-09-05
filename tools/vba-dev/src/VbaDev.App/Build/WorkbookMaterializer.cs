@@ -88,22 +88,70 @@ internal sealed class WorkbookMaterializer
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(intent);
-        var context = intent switch
+        var plan = CreatePlan(intent, cancellationToken);
+        return MaterializeCoreAsync(
+            plan.DocumentName,
+            plan.TemplateWorkbookPath,
+            plan.TargetWorkbookPath,
+            plan.DesiredReferences,
+            plan.SourceInput,
+            plan.Timeouts,
+            plan.NormalizeReferences,
+            plan.GuardExistingTarget,
+            cancellationToken);
+    }
+
+    private WorkbookMaterializationPlan CreatePlan(
+        WorkbookMaterializationIntent intent,
+        CancellationToken cancellationToken)
+        => intent switch
         {
-            WorkbookMaterializationIntent.ProjectBuild build => build.Context,
-            WorkbookMaterializationIntent.Publish publish => publish.Context,
-            WorkbookMaterializationIntent.SourceSnapshotBuild snapshot => snapshot.Context,
+            WorkbookMaterializationIntent.ProjectBuild build => CreateProjectPlan(
+                build.Context,
+                build.Context.BinDocumentPath,
+                ResolveTimeouts(build.Context),
+                sourcePlanner.CaptureBuildSourceInput(build.Context, cancellationToken)),
+            WorkbookMaterializationIntent.Publish publish => CreateProjectPlan(
+                publish.Context,
+                publish.Context.PublishDocumentPath,
+                ResolveTimeouts(publish.Context),
+                sourcePlanner.CapturePublishSourceInput(publish.Context, cancellationToken)),
+            WorkbookMaterializationIntent.SourceSnapshotBuild snapshot => CreateProjectPlan(
+                snapshot.Context,
+                snapshot.TargetWorkbookPath,
+                ResolveTimeouts(snapshot.Context),
+                snapshot.SourceCapture),
+            WorkbookMaterializationIntent.ExplicitImport import => new WorkbookMaterializationPlan(
+                Path.GetFileNameWithoutExtension(import.TargetWorkbookPath),
+                import.TargetWorkbookPath,
+                import.TargetWorkbookPath,
+                [],
+                new AdmittedWorkbookGenerationSourceInput(import.Admission),
+                baseTimeouts,
+                NormalizeReferences: false,
+                GuardExistingTarget: true),
             _ => throw new ArgumentOutOfRangeException(nameof(intent), intent, null)
         };
-        var targetWorkbookPath = intent switch
-        {
-            WorkbookMaterializationIntent.ProjectBuild => context.BinDocumentPath,
-            WorkbookMaterializationIntent.Publish => context.PublishDocumentPath,
-            WorkbookMaterializationIntent.SourceSnapshotBuild snapshot => snapshot.TargetWorkbookPath,
-            _ => throw new ArgumentOutOfRangeException(nameof(intent), intent, null)
-        };
+
+    private WorkbookMaterializationPlan CreateProjectPlan(
+        ResolvedProjectContext context,
+        string targetWorkbookPath,
+        WorkbookAutomationTimeouts timeouts,
+        IAdmittedWorkbookGenerationSourceInput sourceInput)
+        => new(
+            context.DocumentName,
+            context.TemplateDocumentPath,
+            targetWorkbookPath,
+            context.Document.References,
+            sourceInput,
+            timeouts,
+            NormalizeReferences: true,
+            GuardExistingTarget: false);
+
+    private WorkbookAutomationTimeouts ResolveTimeouts(ResolvedProjectContext context)
+    {
         var configuredTimeouts = context.Manifest.CommandDefaults?.ExcelAutomation;
-        var timeouts = baseTimeouts with
+        return baseTimeouts with
         {
             WorkbookOpen = configuredTimeouts?.WorkbookOpenTimeoutSeconds is int openSeconds
                 ? TimeSpan.FromSeconds(openSeconds)
@@ -112,24 +160,6 @@ internal sealed class WorkbookMaterializer
                 ? TimeSpan.FromSeconds(saveSeconds)
                 : baseTimeouts.WorkbookSave
         };
-        IAdmittedWorkbookGenerationSourceInput sourceInput = intent switch
-        {
-            WorkbookMaterializationIntent.ProjectBuild =>
-                sourcePlanner.CaptureBuildSourceInput(context, cancellationToken),
-            WorkbookMaterializationIntent.Publish =>
-                sourcePlanner.CapturePublishSourceInput(context, cancellationToken),
-            WorkbookMaterializationIntent.SourceSnapshotBuild snapshot =>
-                snapshot.SourceCapture,
-            _ => throw new ArgumentOutOfRangeException(nameof(intent), intent, null)
-        };
-        return MaterializeCoreAsync(
-            context.DocumentName,
-            context.TemplateDocumentPath,
-            targetWorkbookPath,
-            context.Document.References,
-            sourceInput,
-            timeouts,
-            cancellationToken);
     }
 
     private async Task<WorkbookMaterializationResult> MaterializeCoreAsync(
@@ -139,6 +169,8 @@ internal sealed class WorkbookMaterializer
         IReadOnlyList<VbaProjectReference> desiredReferences,
         IAdmittedWorkbookGenerationSourceInput sourceInput,
         WorkbookAutomationTimeouts timeouts,
+        bool normalizeReferences,
+        bool guardExistingTarget,
         CancellationToken cancellationToken)
     {
         var preparedSource = CreateImportSourceSetAndReleaseInput(
@@ -147,8 +179,18 @@ internal sealed class WorkbookMaterializer
         VbeImportSourceSet? importSourceSet = preparedSource.SourceSet;
         var sourcePreflight = preparedSource.Preflight;
         IWorkbookOutputTransaction? transaction = null;
+        FileStream? targetGuard = null;
         try
         {
+            if (guardExistingTarget)
+            {
+                targetGuard = new FileStream(
+                    targetWorkbookPath,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.Read);
+            }
+
             transaction = transactionFactory.Create(
                 templateWorkbookPath,
                 targetWorkbookPath);
@@ -172,11 +214,13 @@ internal sealed class WorkbookMaterializer
                     var desiredReferenceNames = desiredReferences
                         .Select(reference => reference.Name)
                         .ToHashSet(StringComparer.OrdinalIgnoreCase);
-                    var referencesKnownToRemain = activeReferences
-                        .Where(reference =>
-                            !reference.IsRemovable ||
-                            desiredReferenceNames.Contains(reference.Name))
-                        .ToArray();
+                    var referencesKnownToRemain = normalizeReferences
+                        ? activeReferences
+                            .Where(reference =>
+                                !reference.IsRemovable ||
+                                desiredReferenceNames.Contains(reference.Name))
+                            .ToArray()
+                        : activeReferences;
                     var initialLivePreflight = namePreflight.InspectLivePhase(
                         importSourceSet.SourceFiles,
                         retainedModules,
@@ -193,12 +237,14 @@ internal sealed class WorkbookMaterializer
                             .ConfigureAwait(false);
                     }
 
-                    var result = await referenceNormalizer.NormalizeAsync(
-                            session,
-                            documentName,
-                            desiredReferences,
-                            operationCancellationToken)
-                        .ConfigureAwait(false);
+                    var result = normalizeReferences
+                        ? await referenceNormalizer.NormalizeAsync(
+                                session,
+                                documentName,
+                                desiredReferences,
+                                operationCancellationToken)
+                            .ConfigureAwait(false)
+                        : [];
                     var finalProjectName = await session
                         .GetProjectNameAsync(operationCancellationToken)
                         .ConfigureAwait(false);
@@ -267,6 +313,8 @@ internal sealed class WorkbookMaterializer
                 new WorkbookAutomationStage(
                     WorkbookAutomationStageKind.OutputCommit,
                     Path.GetFileName(targetWorkbookPath)));
+            targetGuard?.Dispose();
+            targetGuard = null;
             try
             {
                 transaction.Commit();
@@ -296,6 +344,7 @@ internal sealed class WorkbookMaterializer
             var failure = operationError;
             failure = DisposeAfterFailure(importSourceSet, failure);
             failure = DisposeTransactionAfterFailure(transaction, failure);
+            failure = DisposeAfterFailure(targetGuard, failure);
             ExceptionDispatchInfo.Capture(failure).Throw();
             throw;
         }
@@ -411,6 +460,16 @@ internal sealed class WorkbookMaterializer
         IReadOnlyList<string> OutputWarnings,
         VbeImportVerificationReport VerificationReport,
         int ImportedSourceCount);
+
+    private sealed record WorkbookMaterializationPlan(
+        string DocumentName,
+        string TemplateWorkbookPath,
+        string TargetWorkbookPath,
+        IReadOnlyList<VbaProjectReference> DesiredReferences,
+        IAdmittedWorkbookGenerationSourceInput SourceInput,
+        WorkbookAutomationTimeouts Timeouts,
+        bool NormalizeReferences,
+        bool GuardExistingTarget);
 
     private static void ThrowIfCanceled(
         CancellationToken cancellationToken,

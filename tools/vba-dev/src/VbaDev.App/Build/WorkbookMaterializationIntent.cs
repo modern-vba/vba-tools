@@ -1,4 +1,5 @@
 using VbaDev.App.Projects;
+using VbaDev.App.Workbooks;
 
 namespace VbaDev.App.Build;
 
@@ -29,6 +30,16 @@ internal abstract class WorkbookMaterializationIntent
         internal ResolvedProjectContext Context { get; } = context;
 
         internal BuildSourceSnapshotCapture SourceCapture { get; } = sourceCapture;
+
+        internal string TargetWorkbookPath { get; } = targetWorkbookPath;
+    }
+
+    internal sealed class ExplicitImport(
+        AdmittedVbaSourceSet admission,
+        string targetWorkbookPath)
+        : WorkbookMaterializationIntent
+    {
+        internal AdmittedVbaSourceSet Admission { get; } = admission;
 
         internal string TargetWorkbookPath { get; } = targetWorkbookPath;
     }

@@ -408,7 +408,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
             Assert.False(string.IsNullOrWhiteSpace(seedExcelVersion));
             Assert.False(string.IsNullOrWhiteSpace(directImportExcelVersion));
             Assert.False(string.IsNullOrWhiteSpace(productionExcelVersion));
-            var explicitResult = await new ImportCommand(new ExcelComWorkbookGenerationAutomation()).RunAsync(
+            var explicitResult = await CreateImportCommand().RunAsync(
                 new ImportCommandRequest(explicitSourceDirectory, explicitTargetPath, temp.Path),
                 CancellationToken.None);
             Assert.True(explicitResult.ExitCode == 0, explicitResult.StandardError);
@@ -1164,7 +1164,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         byte[] malformedBomSource = [0xef, 0xbb, 0xbf, 0xc3, 0x28];
         File.WriteAllBytes(sourcePath, malformedBomSource);
 
-        var command = new ImportCommand(new ExcelComWorkbookGenerationAutomation());
+        var command = CreateImportCommand();
         var result = await command.RunAsync(
             new ImportCommandRequest(sourceDirectory, targetPath, temp.Path),
             CancellationToken.None);
@@ -1871,6 +1871,11 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
             new WorkbookOutputTransactionFactory(),
             new VbeImportSourceSetFactory(),
             baseTimeouts);
+
+    private static ImportCommand CreateImportCommand()
+        => new(
+            CreateGenerationPipeline(),
+            new VbaSourceAdmission(ActiveWindowsAnsiCodePage.Get));
 
     private static Task<VbeOwnedWorkbookObservation> ImportVerifySaveWithOwnedExcelAsync(
         string workbookPath,
