@@ -1,5 +1,7 @@
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using VbaDev.App.FileSystem;
 using VbaDev.App.CommonModules;
 using VbaDev.App.Projects;
 using VbaDev.App.References;
@@ -12,6 +14,86 @@ namespace VbaDev.Tests;
 
 public sealed class NewProjectTransactionContractTests
 {
+    [Fact]
+    public async Task DiagnosticEvidenceOnlyCreatorCannotGrantProjectRollbackAuthority()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = Path.Combine(temp.Path, "NoReceipt");
+        var creator = new EvidenceOnlyWorkbookCreator();
+        var leaseProvider = new RecordingLeaseProvider();
+
+        var result = await CreateCommand(creator, leaseProvider).RunAsync(
+            CreateRequest(projectRoot, "NoReceipt"), CancellationToken.None);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("cannot issue an invocation-owned", result.StandardError, StringComparison.Ordinal);
+        Assert.Equal(0, creator.Calls);
+        Assert.True(leaseProvider.Released);
+        Assert.False(Directory.Exists(projectRoot));
+    }
+
+    [Fact]
+    public async Task CancellationPreservesAWorkbookThatAcquiredAnotherHardLink()
+    {
+        using var temp = TempDirectory.Create();
+        using var cancellation = new CancellationTokenSource();
+        var projectRoot = Path.Combine(temp.Path, "AliasedWorkbook");
+        var aliasPath = Path.Combine(temp.Path, "external-alias.xlsm");
+        string? createdWorkbookPath = null;
+        var leaseProvider = new RecordingLeaseProvider();
+        var creator = new CallbackInitialWorkbookCreator(path =>
+        {
+            createdWorkbookPath = path;
+            Assert.True(CreateHardLink(aliasPath, path, IntPtr.Zero));
+            cancellation.Cancel();
+        });
+
+        var result = await CreateCommand(creator, leaseProvider).RunAsync(
+            CreateRequest(projectRoot, "AliasedWorkbook"), cancellation.Token);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("newProjectTargetChanged", result.StandardError, StringComparison.Ordinal);
+        Assert.NotNull(createdWorkbookPath);
+        Assert.Contains(createdWorkbookPath, result.StandardError, StringComparison.Ordinal);
+        Assert.Equal("fake xlsm", File.ReadAllText(createdWorkbookPath));
+        Assert.Equal("fake xlsm", File.ReadAllText(aliasPath));
+        Assert.False(File.Exists(Path.Combine(projectRoot, ProjectManifest.ManifestFileName)));
+        Assert.True(leaseProvider.Released);
+        AssertOwnershipReleased(creator);
+    }
+
+    [Theory]
+    [InlineData(false, 0)]
+    [InlineData(true, 130)]
+    public async Task TerminalCreationReleasesItsOwnershipSession(bool cancelBeforeCommit, int expectedExitCode)
+    {
+        using var temp = TempDirectory.Create();
+        using var cancellation = new CancellationTokenSource();
+        var projectRoot = Path.Combine(temp.Path, "TerminalSession");
+        var creator = new CallbackInitialWorkbookCreator(_ =>
+        {
+            if (cancelBeforeCommit)
+            {
+                cancellation.Cancel();
+            }
+        });
+        var leaseProvider = new RecordingLeaseProvider();
+
+        var result = await CreateCommand(creator, leaseProvider).RunAsync(
+            CreateRequest(projectRoot, "TerminalSession"), cancellation.Token);
+
+        Assert.Equal(expectedExitCode, result.ExitCode);
+        Assert.True(leaseProvider.Released);
+        AssertOwnershipReleased(creator);
+    }
+
+    private static void AssertOwnershipReleased(CallbackInitialWorkbookCreator creator)
+    {
+        Assert.NotNull(creator.LastOwnership);
+        Assert.NotNull(creator.LastReceipt);
+        Assert.Throws<ObjectDisposedException>(() => creator.LastOwnership.Observe(creator.LastReceipt));
+    }
+
     [Fact]
     public async Task NewExcelAcquiresProjectLeaseBeforeCreatingAnyProjectArtifact()
     {
@@ -857,17 +939,45 @@ public sealed class NewProjectTransactionContractTests
 
     private sealed class CallbackInitialWorkbookCreator(
         Action<string>? afterCreate = null,
-        IReadOnlyList<string>? referenceNames = null) : IInitialWorkbookCreator
+        IReadOnlyList<string>? referenceNames = null) : IReceiptInitialWorkbookCreator
     {
+        public ExactFileSystemObjectOwnership? LastOwnership { get; private set; }
+
+        public ExactFileSystemObjectOwnership.FileReceipt? LastReceipt { get; private set; }
+
         public InitialWorkbookCreationResult CreateInitialWorkbook(string workbookPath)
         {
+            using var ownership = ExactFileSystemObjectOwnership.Open();
+            return CreateInitialWorkbookAsync(workbookPath, ownership, CancellationToken.None).GetAwaiter().GetResult();
+        }
+
+        public Task<InitialWorkbookCreationResult> CreateInitialWorkbookAsync(
+            string workbookPath,
+            ExactFileSystemObjectOwnership ownership,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
             Directory.CreateDirectory(Path.GetDirectoryName(workbookPath)!);
-            File.WriteAllText(workbookPath, "fake xlsm", new UTF8Encoding(false));
+            var receipt = ownership.CreateOnlyFile(Path.GetDirectoryName(workbookPath)!, Path.GetFileName(workbookPath), "fake xlsm"u8);
+            LastOwnership = ownership;
+            LastReceipt = receipt;
             var evidence = InitialWorkbookTestArtifactEvidence.Capture(workbookPath);
             afterCreate?.Invoke(workbookPath);
-            return new InitialWorkbookCreationResult(
+            return Task.FromResult(new InitialWorkbookCreationResult(
                 referenceNames ?? [],
-                evidence);
+                evidence)
+            { OwnedArtifactReceipt = receipt });
+        }
+    }
+
+    private sealed class EvidenceOnlyWorkbookCreator : IInitialWorkbookCreator
+    {
+        public int Calls { get; private set; }
+
+        public InitialWorkbookCreationResult CreateInitialWorkbook(string workbookPath)
+        {
+            Calls++;
+            throw new InvalidOperationException("Evidence-only creator must not be invoked by new excel.");
         }
     }
 
@@ -991,4 +1101,9 @@ public sealed class NewProjectTransactionContractTests
                     "Another project mutation owns the target.");
         }
     }
+
+    [DllImport("kernel32.dll", EntryPoint = "CreateHardLinkW", CharSet = CharSet.Unicode,
+        SetLastError = true, ExactSpelling = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CreateHardLink(string fileName, string existingFileName, IntPtr securityAttributes);
 }

@@ -547,7 +547,28 @@ public sealed class NewProjectRouteContractTests
             OutputDirectorySpecified: true,
             Format: "json"));
 
-        Assert.True(identityResolver.ReplacementOccurred);
+        Assert.True(identityResolver.ReplacementAttempted);
+        Assert.Single(workbookCreator.CreatedPaths);
+        Assert.True(leaseProvider.Released);
+        if (!identityResolver.ReplacementOccurred)
+        {
+            // Windows can prevent ancestor renaming while descendant receipt
+            // anchors are live. A rejected external mutation is not a failed
+            // project operation when the original root identity remains valid.
+            var failure = Assert.IsType<IOException>(identityResolver.ReplacementFailure);
+            Assert.Contains(failure.HResult & 0xffff, new[] { 5, 32 });
+            Assert.Equal(0, result.ExitCode);
+            Assert.Empty(result.StandardError);
+            Assert.False(File.Exists(foreignPath));
+            Assert.True(File.Exists(Path.Combine(projectRoot, ProjectManifest.ManifestFileName)));
+            Assert.True(File.Exists(workbookCreator.CreatedPaths[0]));
+
+            // Terminal success must release the anchors that prevented rename.
+            Directory.Move(projectRoot, displacedOwnedRoot);
+            Assert.True(File.Exists(Path.Combine(displacedOwnedRoot, ProjectManifest.ManifestFileName)));
+            return;
+        }
+
         Assert.Equal(1, result.ExitCode);
         Assert.Empty(result.StandardOutput);
         Assert.Contains(
@@ -635,14 +656,28 @@ public sealed class NewProjectRouteContractTests
 
         public bool ReplacementOccurred { get; private set; }
 
+        public bool ReplacementAttempted { get; private set; }
+
+        public Exception? ReplacementFailure { get; private set; }
+
         public void Arm()
             => armed = true;
 
         public FileSystemPathIdentity Resolve(string path)
         {
-            if (armed && !ReplacementOccurred)
+            if (armed && !ReplacementAttempted)
             {
-                Directory.Move(projectRoot, displacedOwnedRoot);
+                ReplacementAttempted = true;
+                try
+                {
+                    Directory.Move(projectRoot, displacedOwnedRoot);
+                }
+                catch (IOException exception) when ((exception.HResult & 0xffff) is 5 or 32)
+                {
+                    ReplacementFailure = exception;
+                    return inner.Resolve(path);
+                }
+
                 Directory.CreateDirectory(projectRoot);
                 File.WriteAllText(foreignPath, "foreign root Y");
                 ReplacementOccurred = true;

@@ -48,6 +48,7 @@ internal sealed class ExactFileSystemObjectOwnership : IDisposable
 
     private readonly HashSet<FileReceipt> fileReceipts = [];
     private readonly HashSet<DirectoryReceipt> directoryReceipts = [];
+    private readonly HashSet<PendingFileCapture> pendingFileCaptures = [];
     private bool disposed;
 
     private ExactFileSystemObjectOwnership()
@@ -169,16 +170,74 @@ internal sealed class ExactFileSystemObjectOwnership : IDisposable
         }
 
         onDirectoryProofComplete?.Invoke(directory.Route);
-        var route = Path.GetFullPath(Path.Combine(directory.Route, fileName));
+        return CreateOnlyFileCore(directoryFence, directory.Route, fileName, content);
+    }
+
+    /// <summary>
+    /// Creates one owned child beneath a fixed ordinary parent without adopting
+    /// ownership of the existing parent directory.
+    /// </summary>
+    internal FileReceipt CreateOnlyFile(
+        string parentRoute,
+        string fileName,
+        ReadOnlySpan<byte> content,
+        Action<string>? onDirectoryProofComplete = null,
+        Action<string>? onFileCreated = null,
+        Action<string, long>? onBytesWritten = null,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(parentRoute);
+        ValidateChildName(fileName);
+        var absoluteParentRoute = Path.GetFullPath(parentRoute);
+        using var parentHandle = OpenDirectory(
+            absoluteParentRoute,
+            FileListDirectory | FileReadAttributes | SynchronizeAccess,
+            FileShareRead | FileShareWrite | FileShareDelete);
+        RequireOrdinaryDirectory(
+            ReadObjectInformation(parentHandle, absoluteParentRoute),
+            absoluteParentRoute);
+        onDirectoryProofComplete?.Invoke(absoluteParentRoute);
+        return CreateOnlyFileCore(
+            parentHandle, absoluteParentRoute, fileName, content,
+            onFileCreated, onBytesWritten, cancellationToken);
+    }
+
+    private FileReceipt CreateOnlyFileCore(
+        SafeFileHandle directoryHandle,
+        string directoryRoute,
+        string fileName,
+        ReadOnlySpan<byte> content,
+        Action<string>? onFileCreated = null,
+        Action<string, long>? onBytesWritten = null,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var route = Path.GetFullPath(Path.Combine(directoryRoute, fileName));
         using var handle = CreateFileRelative(
-            directoryFence,
+            directoryHandle,
             fileName,
             route);
 
         SafeFileHandle? anchor = null;
+        ObjectIdentity? createdIdentity = null;
         try
         {
-            RandomAccess.Write(handle, content, 0);
+            var createdInformation = ReadObjectInformation(handle, route);
+            createdIdentity = createdInformation.Identity;
+            RequireOrdinarySingleLinkFile(createdInformation, expectedLength: 0, route);
+            onFileCreated?.Invoke(route);
+            var offset = 0;
+            while (offset < content.Length)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var count = Math.Min(HashBufferSize, content.Length - offset);
+                RandomAccess.Write(handle, content.Slice(offset, count), offset);
+                offset += count;
+                onBytesWritten?.Invoke(route, offset);
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
             RandomAccess.FlushToDisk(handle);
 
             var expectedHash = SHA256.HashData(content);
@@ -215,11 +274,323 @@ internal sealed class ExactFileSystemObjectOwnership : IDisposable
             fileReceipts.Add(receipt);
             return receipt;
         }
+        catch (Exception originalFailure)
+        {
+            anchor?.Dispose();
+            var cleanupFailure = CleanupCreatedFile(
+                handle, route, createdIdentity, content, originalFailure);
+            if (cleanupFailure is not null)
+            {
+                throw cleanupFailure;
+            }
+
+            throw;
+        }
+    }
+
+    private FileCreationCleanupException? CleanupCreatedFile(
+        SafeFileHandle handle,
+        string route,
+        ObjectIdentity? createdIdentity,
+        ReadOnlySpan<byte> content,
+        Exception originalFailure)
+    {
+        FileReceipt? retainedReceipt = null;
+        SafeFileHandle? partialAnchor = null;
+        var targetChanged = false;
+        try
+        {
+            if (createdIdentity is not { } identity)
+            {
+                throw new IOException("The created file identity could not be proven.");
+            }
+
+            var information = ReadObjectInformation(handle, route);
+            if (information.Length < 0 || information.Length > content.Length
+                || !MatchesIssuedFile(information, identity, information.Length))
+            {
+                targetChanged = true;
+                throw new IOException("The created file changed before partial-copy cleanup.");
+            }
+
+            var partialHash = SHA256.HashData(content[..(int)information.Length]);
+            if (!MatchesFixedFileState(
+                    handle, route, identity, information.Length, partialHash,
+                    expectedDeletePending: false, static links => links == 1))
+            {
+                targetChanged = true;
+                throw new IOException("The partial file no longer matches the bytes created by this invocation.");
+            }
+
+            // A moved parent can make the diagnostic route unavailable. The
+            // fixed create-only handle still owns its child, but no route-based
+            // receipt may be issued unless its anchor is independently proven.
+            try
+            {
+                partialAnchor = OpenAnchor(route);
+                if (MatchesIssuedFile(
+                        ReadObjectInformation(partialAnchor, route), identity, information.Length))
+                {
+                    retainedReceipt = new FileReceipt(new FileReceiptProof(
+                        this, route, identity, information.Length, partialHash, partialAnchor));
+                    fileReceipts.Add(retainedReceipt);
+                    partialAnchor = null;
+                }
+                else
+                {
+                    targetChanged = true;
+                }
+            }
+            catch (Exception exception) when (IsObservationFailure(exception))
+            {
+                // Retention can be reported without adopting an unproven route.
+            }
+
+            if (!MatchesFixedFileState(
+                    handle, route, identity, information.Length, partialHash,
+                    expectedDeletePending: false, static links => links == 1))
+            {
+                targetChanged = true;
+                throw new IOException("The partial file changed immediately before cleanup.");
+            }
+
+            if (!TrySetDeleteDisposition(handle))
+            {
+                throw new Win32Exception(Marshal.GetLastPInvokeError());
+            }
+
+            var deleteAuthorized = false;
+            try
+            {
+                deleteAuthorized = MatchesFixedFileState(
+                    handle, route, identity, information.Length, partialHash,
+                    expectedDeletePending: true, static links => links == 0);
+                targetChanged |= !deleteAuthorized;
+            }
+            finally
+            {
+                if (!deleteAuthorized)
+                {
+                    EnsureCreatedFileDispositionCleared(handle, route, identity);
+                }
+            }
+
+            if (!deleteAuthorized)
+            {
+                targetChanged = true;
+                throw new IOException("The partial file changed while cleanup was authorized.");
+            }
+
+            if (retainedReceipt is not null)
+            {
+                Retire(retainedReceipt);
+            }
+
+            return null;
+        }
+        catch (Exception cleanupFailure) when (
+            cleanupFailure is RollbackException || IsObservationFailure(cleanupFailure))
+        {
+            return new FileCreationCleanupException(
+                route, retainedReceipt, targetChanged,
+                originalFailure, cleanupFailure);
+        }
+        finally
+        {
+            partialAnchor?.Dispose();
+        }
+    }
+
+    private static bool MatchesFixedFileState(
+        SafeFileHandle handle,
+        string route,
+        ObjectIdentity identity,
+        long length,
+        byte[] expectedHash,
+        bool expectedDeletePending,
+        Func<uint, bool> linksMatch)
+    {
+        bool Matches(ObjectInformation information)
+            => !information.IsDirectory
+               && !information.IsReparsePoint
+               && information.Identity == identity
+               && information.Length == length
+               && information.DeletePending == expectedDeletePending
+               && linksMatch(information.NumberOfLinks);
+
+        if (!Matches(ReadObjectInformation(handle, route)))
+        {
+            return false;
+        }
+
+        var actualHash = ComputeSha256(handle, length);
+        return Matches(ReadObjectInformation(handle, route))
+               && CryptographicOperations.FixedTimeEquals(expectedHash, actualHash);
+    }
+
+    private static void EnsureCreatedFileDispositionCleared(
+        SafeFileHandle handle, string route, ObjectIdentity identity)
+    {
+        for (var attempt = 0; attempt < DispositionRollbackAttempts; attempt++)
+        {
+            try
+            {
+                _ = TrySetDeleteDisposition(handle, delete: false);
+                var information = ReadObjectInformation(handle, route);
+                if (!information.IsDirectory && !information.IsReparsePoint
+                    && information.Identity == identity && !information.DeletePending
+                    && information.NumberOfLinks > 0)
+                {
+                    return;
+                }
+            }
+            catch (Exception exception) when (IsObservationFailure(exception))
+            {
+                // Retry the rollback and its postcondition as one bounded operation.
+            }
+        }
+
+        throw new RollbackException(route);
+    }
+
+    /// <summary>
+    /// Observes saved producer bytes without issuing mutation authority. The
+    /// pending read handle remains alive until completion or session disposal.
+    /// </summary>
+    internal PendingFileCapture CapturePendingSavedFile(string route)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(route);
+        var absoluteRoute = Path.GetFullPath(route);
+        var handle = OpenFileForObservation(
+            absoluteRoute, GenericRead, FileShareRead | FileShareWrite);
+        try
+        {
+            var information = ReadObjectInformation(handle, absoluteRoute);
+            RequireOrdinarySingleLinkFile(information, expectedLength: null, absoluteRoute);
+            var bytes = ReadExactBytes(handle, information.Length, absoluteRoute);
+            var hash = SHA256.HashData(bytes);
+            if (!MatchesFixedFileState(
+                    handle, absoluteRoute, information.Identity, bytes.LongLength, hash,
+                    expectedDeletePending: false, static links => links == 1))
+            {
+                throw new IOException($"The saved producer file changed during capture: '{absoluteRoute}'.");
+            }
+
+            var pending = new PendingFileCapture(new PendingFileCaptureProof(
+                this, absoluteRoute, information.Identity, bytes, hash, handle));
+            pendingFileCaptures.Add(pending);
+            return pending;
+        }
         catch
         {
-            _ = TrySetDeleteDisposition(handle);
-            anchor?.Dispose();
+            handle.Dispose();
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Issues a receipt only after a strict handle proves the saved observation
+    /// unchanged. A failed completion grants no authority and keeps the pending
+    /// observation alive; a successful completion consumes it exactly once.
+    /// </summary>
+    internal StableCaptureCompletion CompleteStableCapture(PendingFileCapture pending)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(pending);
+        var state = ((IPendingFileCaptureState)pending).State;
+        if (!ReferenceEquals(state.Owner, this) || !pendingFileCaptures.Contains(pending))
+        {
+            throw new ArgumentException("The pending capture is not active in this ownership session.", nameof(pending));
+        }
+
+        SafeFileHandle? anchor = null;
+        try
+        {
+            var information = ReadObjectInformation(state.Handle, state.Route);
+            if (information.IsDirectory || information.IsReparsePoint
+                || information.Identity != state.Identity || information.Length != state.Bytes.LongLength
+                || information.NumberOfLinks > 1)
+            {
+                return StableCaptureCompletion.Failed(ObservationResult.Changed);
+            }
+
+            if (information.DeletePending || information.NumberOfLinks == 0)
+            {
+                return CompleteMissingPendingCapture(state);
+            }
+
+            using var handle = OpenFileForObservation(state.Route, GenericRead, FileShareRead);
+            if (!MatchesFixedFileState(
+                    handle, state.Route, state.Identity, state.Bytes.LongLength, state.Sha256,
+                    expectedDeletePending: false, static links => links == 1)
+                || !MatchesIssuedFile(
+                    ReadObjectInformation(state.Handle, state.Route), state.Identity, state.Bytes.LongLength))
+            {
+                return StableCaptureCompletion.Failed(ObservationResult.Changed);
+            }
+
+            // The producer observation's deny-delete handle cannot become the
+            // receipt anchor: retaining it would prevent future exact cleanup.
+            anchor = OpenAnchor(state.Route);
+            if (!MatchesIssuedFile(
+                    ReadObjectInformation(anchor, state.Route), state.Identity, state.Bytes.LongLength))
+            {
+                return StableCaptureCompletion.Failed(ObservationResult.Changed);
+            }
+
+            var receipt = new FileReceipt(new FileReceiptProof(
+                this, state.Route, state.Identity, state.Bytes.LongLength, state.Sha256, anchor));
+            var capture = new StableFileCapture(new StableFileCaptureProof(receipt, state.Bytes));
+            fileReceipts.Add(receipt);
+            anchor = null;
+            pendingFileCaptures.Remove(pending);
+            state.Handle.Dispose();
+            return StableCaptureCompletion.Completed(capture);
+        }
+        catch (Win32Exception exception) when (exception.NativeErrorCode is ErrorFileNotFound or ErrorPathNotFound)
+        {
+            return CompleteMissingPendingCapture(state);
+        }
+        catch (FileNotFoundException)
+        {
+            return CompleteMissingPendingCapture(state);
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return CompleteMissingPendingCapture(state);
+        }
+        catch (Exception exception) when (IsObservationFailure(exception))
+        {
+            return StableCaptureCompletion.Failed(ObservationResult.Inconclusive);
+        }
+        finally
+        {
+            anchor?.Dispose();
+        }
+    }
+
+    private static StableCaptureCompletion CompleteMissingPendingCapture(PendingFileCaptureProof state)
+    {
+        try
+        {
+            var routeState = ObserveRouteState(state.Route);
+            if (routeState != RouteState.Absent)
+            {
+                return StableCaptureCompletion.Failed(routeState == RouteState.Present
+                    ? ObservationResult.Changed : ObservationResult.Inconclusive);
+            }
+
+            var information = ReadObjectInformation(state.Handle, state.Route);
+            return StableCaptureCompletion.Failed(
+                !information.IsDirectory && !information.IsReparsePoint
+                && information.Identity == state.Identity && information.Length == state.Bytes.LongLength
+                && information.NumberOfLinks == 0
+                    ? ObservationResult.Missing : ObservationResult.Changed);
+        }
+        catch (Exception exception) when (IsObservationFailure(exception))
+        {
+            return StableCaptureCompletion.Failed(ObservationResult.Inconclusive);
         }
     }
 
@@ -289,6 +660,112 @@ internal sealed class ExactFileSystemObjectOwnership : IDisposable
         ThrowIfDisposed();
         RequireOwned(directory);
         ReleaseCreationFenceCore(directory);
+    }
+
+    internal enum ObservationResult
+    {
+        Unchanged,
+        Missing,
+        Changed,
+        Inconclusive
+    }
+
+    /// <summary>
+    /// Observes the exact ordinary single-link file without retiring its receipt.
+    /// </summary>
+    internal ObservationResult Observe(FileReceipt receipt, Action<string>? onProofComplete = null)
+    {
+        ThrowIfDisposed();
+        RequireOwned(receipt);
+        var invokingCallback = false;
+        try
+        {
+            var anchorInformation = ReadObjectInformation(
+                ((IFileReceiptAuthority)receipt).Anchor!, receipt.Route);
+            if (!MatchesAnchoredFile(receipt, anchorInformation) || anchorInformation.NumberOfLinks > 1)
+            {
+                return ObservationResult.Changed;
+            }
+
+            if (anchorInformation.DeletePending || anchorInformation.NumberOfLinks == 0)
+            {
+                return ObserveMissing(receipt);
+            }
+
+            using var handle = OpenFileForObservation(receipt.Route, GenericRead, FileShareRead);
+            if (!MatchesFileReceipt(handle, receipt))
+            {
+                return ObservationResult.Changed;
+            }
+
+            invokingCallback = true;
+            onProofComplete?.Invoke(receipt.Route);
+            invokingCallback = false;
+            return MatchesFileReceipt(handle, receipt)
+                ? ObservationResult.Unchanged
+                : ObservationResult.Changed;
+        }
+        catch (Win32Exception exception) when (
+            !invokingCallback && exception.NativeErrorCode is ErrorFileNotFound or ErrorPathNotFound)
+        {
+            return ObserveMissing(receipt);
+        }
+        catch (FileNotFoundException) when (!invokingCallback)
+        {
+            return ObserveMissing(receipt);
+        }
+        catch (DirectoryNotFoundException) when (!invokingCallback)
+        {
+            return ObserveMissing(receipt);
+        }
+        catch (Exception exception) when (!invokingCallback && IsObservationFailure(exception))
+        {
+            return ObservationResult.Inconclusive;
+        }
+    }
+
+    /// <summary>
+    /// Observes directory identity, not emptiness, without retiring the receipt
+    /// or releasing its construction fence.
+    /// </summary>
+    internal ObservationResult Observe(DirectoryReceipt receipt)
+    {
+        ThrowIfDisposed();
+        RequireOwned(receipt);
+        try
+        {
+            var anchorInformation = ReadObjectInformation(
+                ((IDirectoryReceiptAuthority)receipt).Anchor!, receipt.Route);
+            if (!MatchesAnchoredDirectory(receipt, anchorInformation))
+            {
+                return ObservationResult.Changed;
+            }
+
+            if (anchorInformation.DeletePending || anchorInformation.NumberOfLinks == 0)
+            {
+                return ObserveMissing(receipt);
+            }
+
+            using var handle = OpenDirectory(
+                receipt.Route,
+                FileReadAttributes | SynchronizeAccess,
+                FileShareRead | FileShareWrite | FileShareDelete);
+            return MatchesDirectoryReceipt(receipt, handle)
+                ? ObservationResult.Unchanged
+                : ObservationResult.Changed;
+        }
+        catch (Win32Exception exception) when (exception.NativeErrorCode is ErrorFileNotFound or ErrorPathNotFound)
+        {
+            return ObserveMissing(receipt);
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return ObserveMissing(receipt);
+        }
+        catch (Exception exception) when (IsObservationFailure(exception))
+        {
+            return ObservationResult.Inconclusive;
+        }
     }
 
     /// <summary>
@@ -497,12 +974,18 @@ internal sealed class ExactFileSystemObjectOwnership : IDisposable
             {
                 Retire(receipt);
             }
+
+            foreach (var pending in pendingFileCaptures)
+            {
+                ((IPendingFileCaptureState)pending).State.Handle.Dispose();
+            }
         }
         finally
         {
             disposed = true;
             fileReceipts.Clear();
             directoryReceipts.Clear();
+            pendingFileCaptures.Clear();
         }
     }
 
@@ -848,18 +1331,9 @@ internal sealed class ExactFileSystemObjectOwnership : IDisposable
             return false;
         }
 
-        var beforeHash = ReadObjectInformation(handle, receipt.Route);
-        if (!MatchesFileReceiptStateInformation(
-                receipt,
-                beforeHash,
-                expectedDeletePending,
-                linksMatch))
-        {
-            return false;
-        }
-
-        var hash = ComputeSha256(handle, beforeHash.Length);
-        var afterHash = ReadObjectInformation(handle, receipt.Route);
+        var fixedFileMatches = MatchesFixedFileState(
+            handle, receipt.Route, authority.Identity, authority.Length,
+            authority.Sha256, expectedDeletePending, linksMatch);
         var anchorAfterHash = ReadObjectInformation(
             authority.Anchor!,
             receipt.Route);
@@ -868,13 +1342,7 @@ internal sealed class ExactFileSystemObjectOwnership : IDisposable
                    anchorAfterHash,
                    expectedDeletePending,
                    linksMatch)
-               && MatchesFileReceiptStateInformation(
-                   receipt,
-                   afterHash,
-                   expectedDeletePending,
-                   linksMatch)
-               && afterHash.Identity == beforeHash.Identity
-               && CryptographicOperations.FixedTimeEquals(authority.Sha256, hash);
+               && fixedFileMatches;
     }
 
     private static bool MatchesIssuedFile(
@@ -1231,7 +1699,21 @@ internal sealed class ExactFileSystemObjectOwnership : IDisposable
         }
     }
 
-    private DeletionResult ClassifyMissing(FileReceipt receipt)
+    private ObservationResult ObserveMissing(FileReceipt receipt)
+    {
+        var result = ClassifyMissing(receipt, retireReceipt: false);
+        return result.Removed ? ObservationResult.Missing
+            : result.Conclusive ? ObservationResult.Changed : ObservationResult.Inconclusive;
+    }
+
+    private ObservationResult ObserveMissing(DirectoryReceipt receipt)
+    {
+        var result = ClassifyMissing(receipt, retireReceipt: false);
+        return result.Removed ? ObservationResult.Missing
+            : result.Conclusive ? ObservationResult.Changed : ObservationResult.Inconclusive;
+    }
+
+    private DeletionResult ClassifyMissing(FileReceipt receipt, bool retireReceipt = true)
     {
         try
         {
@@ -1260,7 +1742,10 @@ internal sealed class ExactFileSystemObjectOwnership : IDisposable
                 return DeletionResult.RetainedConclusive(receipt.Route);
             }
 
-            Retire(receipt);
+            if (retireReceipt)
+            {
+                Retire(receipt);
+            }
             return DeletionResult.RemovedResult();
         }
         catch (Exception exception) when (IsObservationFailure(exception))
@@ -1269,7 +1754,7 @@ internal sealed class ExactFileSystemObjectOwnership : IDisposable
         }
     }
 
-    private DeletionResult ClassifyMissing(DirectoryReceipt receipt)
+    private DeletionResult ClassifyMissing(DirectoryReceipt receipt, bool retireReceipt = true)
     {
         try
         {
@@ -1298,7 +1783,10 @@ internal sealed class ExactFileSystemObjectOwnership : IDisposable
                 return DeletionResult.RetainedConclusive(receipt.Route);
             }
 
-            Retire(receipt);
+            if (retireReceipt)
+            {
+                Retire(receipt);
+            }
             return DeletionResult.RemovedResult();
         }
         catch (Exception exception) when (IsObservationFailure(exception))
@@ -1578,6 +2066,57 @@ internal sealed class ExactFileSystemObjectOwnership : IDisposable
         }
     }
 
+    private interface IPendingFileCaptureState
+    {
+        PendingFileCaptureProof State { get; }
+    }
+
+    /// <summary>
+    /// Retains saved bytes and a producer-file handle, but grants no deletion
+    /// authority. Only this session can complete the pending observation.
+    /// </summary>
+    internal sealed class PendingFileCapture : IPendingFileCaptureState
+    {
+        private readonly PendingFileCaptureProof state;
+
+        internal PendingFileCapture(object provenState)
+        {
+            state = provenState as PendingFileCaptureProof
+                ?? throw new InvalidOperationException(
+                    "A pending file capture requires private observed state.");
+        }
+
+        internal string Route => state.Route;
+
+        internal byte[] Bytes => state.Bytes.ToArray();
+
+        PendingFileCaptureProof IPendingFileCaptureState.State => state;
+    }
+
+    internal sealed class StableCaptureCompletion
+    {
+        private StableCaptureCompletion(ObservationResult observation, StableFileCapture? capture)
+        {
+            Observation = observation;
+            Capture = capture;
+        }
+
+        internal ObservationResult Observation { get; }
+
+        internal StableFileCapture? Capture { get; }
+
+        internal static StableCaptureCompletion Completed(StableFileCapture capture)
+        {
+            ArgumentNullException.ThrowIfNull(capture);
+            return new(ObservationResult.Unchanged, capture);
+        }
+
+        internal static StableCaptureCompletion Failed(ObservationResult observation)
+            => observation is ObservationResult.Changed or ObservationResult.Missing or ObservationResult.Inconclusive
+                ? new(observation, null)
+                : throw new ArgumentOutOfRangeException(nameof(observation));
+    }
+
     /// <summary>
     /// Couples immutable captured bytes to the receipt issued from the same
     /// stable handle observation.
@@ -1647,6 +2186,39 @@ internal sealed class ExactFileSystemObjectOwnership : IDisposable
     }
 
     /// <summary>
+    /// Preserves the original creation failure and exact-object cleanup evidence
+    /// when deletion of a partially created file could not be proven.
+    /// </summary>
+    internal sealed class FileCreationCleanupException : IOException
+    {
+        internal FileCreationCleanupException(
+            string route,
+            FileReceipt? retainedReceipt,
+            bool targetChanged,
+            Exception originalFailure,
+            Exception cleanupFailure)
+            : base(
+                $"Created file cleanup could not be proven for '{route}'. {originalFailure.Message} {cleanupFailure.Message}",
+                new AggregateException(originalFailure, cleanupFailure))
+        {
+            Route = route;
+            RetainedReceipt = retainedReceipt;
+            TargetChanged = targetChanged;
+            RollbackUnproven = cleanupFailure is RollbackException;
+        }
+
+        internal string Route { get; }
+        internal FileReceipt? RetainedReceipt { get; }
+        internal bool TargetChanged { get; }
+
+        /// <summary>
+        /// When true, retention is not proven even if TargetChanged is also
+        /// true. Workflow consumers must preserve both independent facts.
+        /// </summary>
+        internal bool RollbackUnproven { get; }
+    }
+
+    /// <summary>
     /// Reports that a tentative same-handle delete disposition could not be
     /// proven rolled back and therefore cannot be represented as retention.
     /// </summary>
@@ -1691,6 +2263,14 @@ internal sealed class ExactFileSystemObjectOwnership : IDisposable
     private sealed record StableFileCaptureProof(
         FileReceipt Receipt,
         byte[] Bytes);
+
+    private sealed record PendingFileCaptureProof(
+        ExactFileSystemObjectOwnership Owner,
+        string Route,
+        ObjectIdentity Identity,
+        byte[] Bytes,
+        byte[] Sha256,
+        SafeFileHandle Handle);
 
     private enum RouteState
     {

@@ -1513,13 +1513,14 @@ public sealed class PrivateDesktopExcelFeasibilityWindowsExcelIntegrationTests(
         InitialWorkbookArtifactGuard artifactGuard,
         InitialWorkbookStagingArtifact staging)
     {
-        InitialWorkbookArtifactEvidence? evidence = null;
+        using var stagingLifetime = staging;
         if (File.Exists(staging.WorkbookPath))
         {
-            evidence = artifactGuard.Capture(staging.WorkbookPath);
+            _ = artifactGuard.Capture(staging);
+            artifactGuard.CompleteCapture(staging);
         }
 
-        var guardedCleanup = artifactGuard.TryDeleteStaging(staging, evidence);
+        var guardedCleanup = artifactGuard.TryDeleteStaging(staging);
         if (!guardedCleanup.RemovedOrAbsent && Directory.Exists(staging.DirectoryPath))
         {
             var stagingPath = Path.TrimEndingDirectorySeparator(

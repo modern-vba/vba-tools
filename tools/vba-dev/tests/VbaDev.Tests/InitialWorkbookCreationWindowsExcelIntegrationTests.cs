@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Xml.Linq;
+using VbaDev.App.FileSystem;
 using VbaDev.App.Workbooks;
 using VbaDev.Domain;
 using VbaDev.Infrastructure.Workbooks;
@@ -11,6 +12,35 @@ namespace VbaDev.Tests;
 [Collection(WindowsExcelIntegrationCollection.Name)]
 public sealed class InitialWorkbookCreationWindowsExcelIntegrationTests
 {
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
+    public async Task RealExcelReturnsTheInvocationsCreateOnlyReceiptForProjectRollback()
+    {
+        using var temp = TempDirectory.Create();
+        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var workbookPath = Path.Combine(temp.Path, "OwnedSample.xlsm");
+        var initialProcesses = CaptureExcelProcessIds();
+        IReceiptInitialWorkbookCreator creator = new ExcelComInitialWorkbookCreator();
+
+        try
+        {
+            var result = await creator.CreateInitialWorkbookAsync(workbookPath, ownership, cancellation.Token);
+
+            var receipt = Assert.IsType<ExactFileSystemObjectOwnership.FileReceipt>(result.OwnedArtifactReceipt);
+            Assert.Equal(workbookPath, receipt.Route);
+            Assert.Equal(ExactFileSystemObjectOwnership.ObservationResult.Unchanged, ownership.Observe(receipt));
+            Assert.Equal(["Sheet1"], ReadWorksheetNames(workbookPath));
+            Assert.True(ownership.TryDelete(receipt).Removed);
+            Assert.False(File.Exists(workbookPath));
+        }
+        finally
+        {
+            await WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20));
+            Assert.True(initialProcesses.SetEquals(CaptureExcelProcessIds()));
+        }
+    }
+
     [WindowsExcelIntegrationFact]
     [Trait("Category", "WindowsExcelIntegration")]
     public async Task RealExcelCreatesAndReleasesTheExactInitialWorkbookBaseline()
@@ -35,6 +65,7 @@ public sealed class InitialWorkbookCreationWindowsExcelIntegrationTests
         finally
         {
             await WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20));
+            Assert.True(initialProcesses.SetEquals(CaptureExcelProcessIds()));
         }
 
         Assert.True(File.Exists(workbookPath));
@@ -44,7 +75,6 @@ public sealed class InitialWorkbookCreationWindowsExcelIntegrationTests
             reference.Contains("Excel", StringComparison.OrdinalIgnoreCase) &&
             reference.Contains("Object Library", StringComparison.OrdinalIgnoreCase));
         Assert.Equal(["Sheet1"], ReadWorksheetNames(workbookPath));
-        Assert.True(initialProcesses.SetEquals(CaptureExcelProcessIds()));
     }
 
     private static IReadOnlyList<string> ReadWorksheetNames(string workbookPath)

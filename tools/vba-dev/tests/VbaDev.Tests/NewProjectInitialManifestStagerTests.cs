@@ -14,7 +14,7 @@ public sealed class NewProjectInitialManifestStagerTests
         var projectRoot = Path.Combine(temp.Path, "Project");
         var manifestPath = Path.Combine(projectRoot, ProjectManifest.ManifestFileName);
         var leaseMarkerPath = manifestPath + ".vba-dev.lock";
-        var tracker = new NewProjectArtifactTracker();
+        using var tracker = new NewProjectArtifactTracker();
         tracker.EnsureDirectory(projectRoot);
         File.WriteAllText(leaseMarkerPath, "owned lease", new UTF8Encoding(false));
         var manifest = ProjectManifest.CreateDefault("Project", "Book1", projectRoot, null);
@@ -35,7 +35,7 @@ public sealed class NewProjectInitialManifestStagerTests
         using var temp = TempDirectory.Create();
         var projectRoot = Path.Combine(temp.Path, "Project");
         var manifestPath = Path.Combine(projectRoot, ProjectManifest.ManifestFileName);
-        var tracker = new NewProjectArtifactTracker();
+        using var tracker = new NewProjectArtifactTracker();
         tracker.EnsureDirectory(projectRoot);
         var manifest = ProjectManifest.CreateDefault("Project", "Book1", projectRoot, null);
         var stage = NewProjectInitialManifestStager.Stage(manifestPath, manifest, tracker);
@@ -55,7 +55,7 @@ public sealed class NewProjectInitialManifestStagerTests
         using var temp = TempDirectory.Create();
         var projectRoot = Path.Combine(temp.Path, "Project");
         var manifestPath = Path.Combine(projectRoot, ProjectManifest.ManifestFileName);
-        var tracker = new NewProjectArtifactTracker();
+        using var tracker = new NewProjectArtifactTracker();
         tracker.EnsureDirectory(projectRoot);
         var manifest = ProjectManifest.CreateDefault("Project", "Book1", projectRoot, null);
         var stage = NewProjectInitialManifestStager.Stage(manifestPath, manifest, tracker);

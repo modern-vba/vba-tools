@@ -1,4 +1,5 @@
 using System.Text;
+using VbaDev.App.FileSystem;
 using System.Text.Json;
 using VbaDev.App.CommonModules;
 using VbaDev.App.Projects;
@@ -1279,7 +1280,7 @@ public sealed class NewProjectCommandTests
     }
 }
 
-internal sealed class FakeInitialWorkbookCreator : IInitialWorkbookCreator
+internal sealed class FakeInitialWorkbookCreator : IReceiptInitialWorkbookCreator
 {
     private readonly IReadOnlyList<string> referenceNames;
 
@@ -1294,11 +1295,21 @@ internal sealed class FakeInitialWorkbookCreator : IInitialWorkbookCreator
 
     public InitialWorkbookCreationResult CreateInitialWorkbook(string workbookPath)
     {
+        using var ownership = ExactFileSystemObjectOwnership.Open();
+        return CreateInitialWorkbookAsync(workbookPath, ownership, CancellationToken.None).GetAwaiter().GetResult();
+    }
+
+    public Task<InitialWorkbookCreationResult> CreateInitialWorkbookAsync(
+        string workbookPath,
+        ExactFileSystemObjectOwnership ownership,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
         Directory.CreateDirectory(Path.GetDirectoryName(workbookPath)!);
-        File.WriteAllText(workbookPath, "fake xlsm", new UTF8Encoding(false));
+        var receipt = ownership.CreateOnlyFile(Path.GetDirectoryName(workbookPath)!, Path.GetFileName(workbookPath), "fake xlsm"u8);
         var evidence = InitialWorkbookTestArtifactEvidence.Capture(workbookPath);
         CreatedPaths.Add(workbookPath);
         AfterCreate?.Invoke(workbookPath);
-        return new InitialWorkbookCreationResult(referenceNames, evidence);
+        return Task.FromResult(new InitialWorkbookCreationResult(referenceNames, evidence) { OwnedArtifactReceipt = receipt });
     }
 }

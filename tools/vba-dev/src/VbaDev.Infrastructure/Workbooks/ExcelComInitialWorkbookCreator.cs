@@ -1,4 +1,5 @@
 using System.Runtime.ExceptionServices;
+using VbaDev.App.FileSystem;
 using VbaDev.App.Workbooks;
 using VbaDev.Domain;
 using VbaDev.Infrastructure.Debugging;
@@ -47,7 +48,7 @@ internal interface IExcelComInitialWorkbookLifecycle
 /// <summary>
 /// Creates initial macro-enabled workbooks through an exactly owned Excel process.
 /// </summary>
-public sealed class ExcelComInitialWorkbookCreator : IInitialWorkbookCreator
+public sealed class ExcelComInitialWorkbookCreator : IReceiptInitialWorkbookCreator
 {
     private const int XlOpenXmlWorkbookMacroEnabled = 52;
     private const int XlWbatWorksheet = -4167;
@@ -116,10 +117,33 @@ public sealed class ExcelComInitialWorkbookCreator : IInitialWorkbookCreator
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workbookPath);
         cancellationToken.ThrowIfCancellationRequested();
-
         var absoluteWorkbookPath = Path.GetFullPath(workbookPath);
         Directory.CreateDirectory(Path.GetDirectoryName(absoluteWorkbookPath)!);
-        var staging = artifactGuard.CreateStagingArtifact();
+        using var ownership = ExactFileSystemObjectOwnership.Open();
+        var result = await CreateInitialWorkbookAsync(
+            absoluteWorkbookPath,
+            ownership,
+            cancellationToken).ConfigureAwait(false);
+        return result with { OwnedArtifactReceipt = null };
+    }
+
+    Task<InitialWorkbookCreationResult> IReceiptInitialWorkbookCreator.CreateInitialWorkbookAsync(
+        string workbookPath,
+        ExactFileSystemObjectOwnership ownership,
+        CancellationToken cancellationToken)
+        => CreateInitialWorkbookAsync(workbookPath, ownership, cancellationToken);
+
+    internal async Task<InitialWorkbookCreationResult> CreateInitialWorkbookAsync(
+        string workbookPath,
+        ExactFileSystemObjectOwnership ownership,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(workbookPath);
+        ArgumentNullException.ThrowIfNull(ownership);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var absoluteWorkbookPath = Path.GetFullPath(workbookPath);
+        using var staging = artifactGuard.CreateStagingArtifact();
 
         OwnedExcelTerminationController? candidateTerminationController = null;
         IStaComDispatcher? candidateDispatcher = null;
@@ -147,7 +171,7 @@ public sealed class ExcelComInitialWorkbookCreator : IInitialWorkbookCreator
                         allowAbandonment: false)
                     .ConfigureAwait(false);
             candidateTerminationController?.Dispose();
-            var artifactCleanup = TryDeleteStaging(staging, stagingEvidence: null);
+            var artifactCleanup = TryDeleteStaging(staging);
             if (!artifactCleanup.RemovedOrAbsent)
             {
                 var setupArtifactError = artifactCleanup.Failure
@@ -241,7 +265,7 @@ public sealed class ExcelComInitialWorkbookCreator : IInitialWorkbookCreator
                         session!.Save(
                             staging.WorkbookPath,
                             XlOpenXmlWorkbookMacroEnabled);
-                        stagingEvidence = artifactGuard.Capture(staging.WorkbookPath);
+                        stagingEvidence = artifactGuard.Capture(staging);
                         afterSave = session.ReadBaseline();
                         return true;
                     },
@@ -272,9 +296,25 @@ public sealed class ExcelComInitialWorkbookCreator : IInitialWorkbookCreator
                 : new AggregateException(cleanupError, dispatcherError);
         }
 
+        if (terminationController.HasAttachedProcessExited &&
+            (cleanupError is null ||
+             !WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(cleanupError)))
+        {
+            try
+            {
+                // A saved observation grants no deletion authority until the
+                // producer is released and strict completion proves its facts.
+                artifactGuard.CompleteCapture(staging);
+            }
+            catch (Exception exception)
+            {
+                operationError = CombineErrors(operationError, exception);
+            }
+        }
+
         if (operationError is not null || cleanupError is not null)
         {
-            var artifactCleanup = TryDeleteStaging(staging, stagingEvidence);
+            var artifactCleanup = TryDeleteStaging(staging);
 
             if (!artifactCleanup.RemovedOrAbsent)
             {
@@ -317,13 +357,14 @@ public sealed class ExcelComInitialWorkbookCreator : IInitialWorkbookCreator
             ExceptionDispatchInfo.Capture(operationError).Throw();
         }
 
-        InitialWorkbookArtifactEvidence? finalEvidence = null;
+        InitialWorkbookMaterializedArtifact? finalArtifact = null;
         Exception? materializationError = null;
         try
         {
-            finalEvidence = artifactGuard.MaterializeCreateOnly(
-                stagingEvidence!,
+            finalArtifact = artifactGuard.MaterializeCreateOnly(
+                staging,
                 absoluteWorkbookPath,
+                ownership,
                 cancellationToken);
         }
         catch (Exception exception)
@@ -331,38 +372,36 @@ public sealed class ExcelComInitialWorkbookCreator : IInitialWorkbookCreator
             materializationError = exception;
         }
 
-        var stagingCleanup = TryDeleteStaging(staging, stagingEvidence);
+        var stagingCleanup = TryDeleteStaging(staging);
         if (!stagingCleanup.RemovedOrAbsent)
         {
-            var stagingError = stagingCleanup.Failure
+            var stagingFailure = stagingCleanup.Failure
                 ?? new InvalidOperationException(
                     "The staging workbook path changed before it could be removed.");
-            if (finalEvidence is not null)
+            var stagingError = new InitialWorkbookArtifactRetainedException(
+                staging.WorkbookPath,
+                stagingEvidence,
+                stagingCleanup.TargetChanged,
+                CombineErrors(materializationError, stagingFailure)!);
+            if (finalArtifact is not null)
             {
                 var finalCleanup = TryDeleteArtifact(
-                    absoluteWorkbookPath,
-                    finalEvidence);
+                    ownership,
+                    finalArtifact.Receipt);
                 if (!finalCleanup.RemovedOrAbsent)
                 {
                     throw new InitialWorkbookArtifactRetainedException(
                         absoluteWorkbookPath,
-                        finalEvidence,
+                        finalArtifact.Evidence,
                         finalCleanup.TargetChanged,
                         new AggregateException(
-                            materializationError ?? stagingError,
                             stagingError,
                             finalCleanup.Failure ?? new InvalidOperationException(
                                 "The final workbook no longer names the exact materialized object and bytes.")));
                 }
             }
 
-            throw new InitialWorkbookArtifactRetainedException(
-                staging.WorkbookPath,
-                stagingEvidence,
-                stagingCleanup.TargetChanged,
-                materializationError is null
-                    ? stagingError
-                    : new AggregateException(materializationError, stagingError));
+            throw stagingError;
         }
 
         if (materializationError is not null)
@@ -372,16 +411,18 @@ public sealed class ExcelComInitialWorkbookCreator : IInitialWorkbookCreator
 
         return new InitialWorkbookCreationResult(
             selectableReferences!,
-            finalEvidence!);
+            finalArtifact!.Evidence)
+        {
+            OwnedArtifactReceipt = finalArtifact.Receipt
+        };
     }
 
     private InitialWorkbookArtifactCleanupResult TryDeleteStaging(
-        InitialWorkbookStagingArtifact staging,
-        InitialWorkbookArtifactEvidence? stagingEvidence)
+        InitialWorkbookStagingArtifact staging)
     {
         try
         {
-            return artifactGuard.TryDeleteStaging(staging, stagingEvidence);
+            return artifactGuard.TryDeleteStaging(staging);
         }
         catch (Exception exception)
         {
@@ -390,12 +431,12 @@ public sealed class ExcelComInitialWorkbookCreator : IInitialWorkbookCreator
     }
 
     private InitialWorkbookArtifactCleanupResult TryDeleteArtifact(
-        string workbookPath,
-        InitialWorkbookArtifactEvidence? evidence)
+        ExactFileSystemObjectOwnership ownership,
+        ExactFileSystemObjectOwnership.FileReceipt receipt)
     {
         try
         {
-            return artifactGuard.TryDeleteIfUnchanged(workbookPath, evidence);
+            return artifactGuard.TryDeleteFinalArtifact(ownership, receipt);
         }
         catch (Exception exception)
         {
