@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using VbaDev.App.Build;
 using VbaDev.App.CommonModules;
 using VbaDev.App.Diagnostics;
@@ -61,6 +62,8 @@ public static class ToolingCompositionRoot
         IProjectManifestMutationLeaseProvider? projectManifestMutationLeaseProvider = null,
         IHostEventCatalogAutomation? hostEventCatalogAutomation = null)
     {
+        var ownershipFactory = new WindowsExactFileSystemObjectOwnershipFactory();
+        var pathIdentityResolver = new FileSystemPathIdentityResolver();
         var atomicManifestWriter = new ProjectManifestAtomicWriter();
         var manifestStore = projectManifestStore
                             ?? new JsonProjectManifestStore(atomicManifestWriter);
@@ -82,14 +85,17 @@ public static class ToolingCompositionRoot
             ambiguityProbe);
         var commonModulesManifestReader = new CommonModulesManifestReader();
         var commonModulesInstallationTransaction = new CommonModulesInstallationTransaction(
+            ownershipFactory,
             commonModulesManifestReader,
             manifestEditor,
             referencePlanner,
-            mutationCoordinator);
+            mutationCoordinator,
+            pathIdentityResolver);
         var commonModulesService = new CommonModulesService(commonModulesInstallationTransaction);
         var referenceService = new VbaProjectReferenceService(
             referencePlanner,
-            mutationCoordinator);
+            mutationCoordinator,
+            pathIdentityResolver);
         var projectContextResolver = new ProjectContextResolver(manifestStore);
         var referenceCompletionService = new VbaProjectReferenceCompletionService(
             projectContextResolver,
@@ -115,23 +121,26 @@ public static class ToolingCompositionRoot
             doctorPipeline,
             new DoctorReportRenderer());
         var newProjectCommand = new NewProjectCommand(
+            ownershipFactory,
             manifestStore,
             initialWorkbookCreator ?? new ExcelComInitialWorkbookCreator(),
             commonModulesManifestReader,
             referencePlanner,
-            mutationLeaseProvider);
+            mutationLeaseProvider,
+            pathIdentityResolver);
         var sourcePlanner = new WorkbookSourcePlanner();
         var generationPipeline = CreateWorkbookGenerationPipeline(
             buildAutomation,
             new WorkbookReferenceNormalizer(referencePlanner));
         var workbookOutputCommand = new WorkbookOutputCommand(sourcePlanner, generationPipeline);
-        var buildCommand = new BuildCommand(workbookOutputCommand);
+        var buildCommand = new BuildCommand(workbookOutputCommand, pathIdentityResolver);
         var publishCommand = new PublishCommand(workbookOutputCommand);
         var testCommand = new TestCommand(
             buildCommand,
             workbookTestRunner ?? new ExcelComWorkbookTestRunner(),
             new TestResultOutputFormatter(),
-            new TestProcedureSourceLocator());
+            new TestProcedureSourceLocator(),
+            pathIdentityResolver);
         var exportCommand = new ExportCommand(
             workbookModuleExporter ?? new ExcelComWorkbookModuleExporter(),
             exportDestinationFileOperations ?? new ExportDestinationFileOperations());

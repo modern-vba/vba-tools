@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using System.Text;
 using VbaDev.App.FileSystem;
 using System.Text.Json;
@@ -450,6 +451,7 @@ public sealed class NewProjectCommandTests
         var projectRoot = Path.Combine(temp.Path, "ChildProject");
         var workbookCreator = new FakeInitialWorkbookCreator();
         var command = new NewProjectCommand(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             new JsonProjectManifestStore(),
             workbookCreator,
             new CommonModulesManifestReader(),
@@ -477,6 +479,7 @@ public sealed class NewProjectCommandTests
         var projectRoot = temp.CreateDirectory("ChildProject");
         var workbookCreator = new FakeInitialWorkbookCreator();
         var command = new NewProjectCommand(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             new JsonProjectManifestStore(),
             workbookCreator,
             new CommonModulesManifestReader(),
@@ -699,6 +702,7 @@ public sealed class NewProjectCommandTests
                     null));
         });
         var command = new NewProjectCommand(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             new JsonProjectManifestStore(),
             new FakeInitialWorkbookCreator(),
             new CommonModulesManifestReader(),
@@ -1295,7 +1299,7 @@ internal sealed class FakeInitialWorkbookCreator : IReceiptInitialWorkbookCreato
 
     public InitialWorkbookCreationResult CreateInitialWorkbook(string workbookPath)
     {
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         return CreateInitialWorkbookAsync(workbookPath, ownership, CancellationToken.None).GetAwaiter().GetResult();
     }
 

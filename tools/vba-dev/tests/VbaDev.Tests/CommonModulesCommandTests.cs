@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using System.Text;
 using System.Text.Json;
 using VbaDev.App.CommonModules;
@@ -2069,10 +2070,12 @@ public sealed class CommonModulesCommandTests
         var atomicWriter = new ProjectManifestAtomicWriter();
 
         Assert.Throws<ArgumentNullException>(() => new CommonModulesInstallationTransaction(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             new CommonModulesManifestReader(),
             new ProjectManifestEditor(atomicWriter),
             referencePlanner: null,
-            manifestMutationCoordinator: null!));
+            manifestMutationCoordinator: null!,
+            new FileSystemPathIdentityResolver()));
     }
 
     [Fact]

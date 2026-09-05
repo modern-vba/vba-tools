@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using System.Text;
 using VbaDev.App.Build;
 using VbaDev.App.Projects;
@@ -41,7 +42,7 @@ public sealed class BuildSourceSnapshotOutputSafetyValidatorTests
         Directory.CreateSymbolicLink(outputAliasPath, acceptedOutputDirectory);
         var selectedOutputPath = Path.Combine(outputAliasPath, "Book1.xlsm");
 
-        var validatedPaths = new BuildSourceSnapshotOutputSafetyValidator().Validate(
+        var validatedPaths = new BuildSourceSnapshotOutputSafetyValidator(new FileSystemPathIdentityResolver()).Validate(
             context,
             snapshotAliasPath,
             selectedOutputPath);

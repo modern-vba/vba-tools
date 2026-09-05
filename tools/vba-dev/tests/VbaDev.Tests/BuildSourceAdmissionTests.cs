@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using System.Text;
 using System.Text.Json;
 using VbaDev.App.Build;
@@ -227,9 +228,9 @@ public sealed class BuildSourceAdmissionTests
         var automation = new FakeWorkbookBuildAutomation();
         var mirrorFactory = new VbeImportSourceSetFactory(() => 1252, mirror => Assert.Null(mirror.Admission));
         var outputCommand = CreateOutputCommand(automation, 1252, mirrorFactory: mirrorFactory);
-        var build = new BuildCommand(outputCommand);
+        var build = new BuildCommand(outputCommand, new FileSystemPathIdentityResolver());
         var runner = new FakeWorkbookTestRunner();
-        var test = new TestCommand(build, runner, new TestResultOutputFormatter(), new TestProcedureSourceLocator());
+        var test = new TestCommand(build, runner, new TestResultOutputFormatter(), new TestProcedureSourceLocator(), new FileSystemPathIdentityResolver());
 
         var result = route switch
         {
@@ -269,7 +270,8 @@ public sealed class BuildSourceAdmissionTests
             CreateCommand(automation, 1252, new WorkbookSourcePlanner(admission)),
             runner,
             new TestResultOutputFormatter(),
-            new TestProcedureSourceLocator());
+            new TestProcedureSourceLocator(),
+            new FileSystemPathIdentityResolver());
 
         var result = await test.RunAsync(context, new TestCommandRequest("ndjson", true, new()), CancellationToken.None);
 
@@ -307,7 +309,7 @@ public sealed class BuildSourceAdmissionTests
         int activeCodePage,
         WorkbookSourcePlanner? planner = null,
         VbeImportSourceSetFactory? mirrorFactory = null)
-        => new(CreateOutputCommand(automation, activeCodePage, planner, mirrorFactory));
+        => new(CreateOutputCommand(automation, activeCodePage, planner, mirrorFactory), new FileSystemPathIdentityResolver());
 
     private static WorkbookOutputCommand CreateOutputCommand(
         FakeWorkbookBuildAutomation automation,

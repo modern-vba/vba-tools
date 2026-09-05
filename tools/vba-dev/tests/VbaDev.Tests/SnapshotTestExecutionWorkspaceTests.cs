@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using System.Text;
 using VbaDev.App.Build;
 using VbaDev.App.Testing;
@@ -23,6 +24,7 @@ public sealed class SnapshotTestExecutionWorkspaceTests
         File.WriteAllText(siblingSentinel, "keep", Encoding.UTF8);
         var fileSystem = new RetryingSnapshotWorkspaceFileSystem(failuresBeforeDelete: 2);
         var factory = new SnapshotTestExecutionWorkspaceFactory(
+            new FileSystemPathIdentityResolver(),
             scratchRoot,
             fileSystem,
             cleanupAttempts: 3,
@@ -71,6 +73,7 @@ public sealed class SnapshotTestExecutionWorkspaceTests
         var scratchRoot = temp.CreateDirectory("scratch");
         var fileSystem = new InaccessibleSnapshotWorkspaceFileSystem();
         var factory = new SnapshotTestExecutionWorkspaceFactory(
+            new FileSystemPathIdentityResolver(),
             scratchRoot,
             fileSystem,
             cleanupAttempts: 3,
@@ -174,6 +177,7 @@ public sealed class SnapshotTestExecutionWorkspaceTests
         var outsideSentinel = Path.Combine(outsideSourcePath, "sentinel.txt");
         File.WriteAllText(outsideSentinel, "keep", Encoding.UTF8);
         var factory = new SnapshotTestExecutionWorkspaceFactory(
+            new FileSystemPathIdentityResolver(),
             scratchRoot,
             new SnapshotTestWorkspaceFileSystem(),
             cleanupAttempts: 3,

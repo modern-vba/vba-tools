@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using System.Text;
 using VbaDev.App.Projects;
 using VbaDev.Domain;
@@ -14,12 +15,12 @@ public sealed class NewProjectInitialManifestStagerTests
         var projectRoot = Path.Combine(temp.Path, "Project");
         var manifestPath = Path.Combine(projectRoot, ProjectManifest.ManifestFileName);
         var leaseMarkerPath = manifestPath + ".vba-dev.lock";
-        using var tracker = new NewProjectArtifactTracker();
+        using var tracker = new NewProjectArtifactTracker(new WindowsExactFileSystemObjectOwnershipFactory());
         tracker.EnsureDirectory(projectRoot);
         File.WriteAllText(leaseMarkerPath, "owned lease", new UTF8Encoding(false));
         var manifest = ProjectManifest.CreateDefault("Project", "Book1", projectRoot, null);
 
-        var stage = NewProjectInitialManifestStager.Stage(manifestPath, manifest, tracker);
+        var stage = NewProjectInitialManifestStager.Stage(manifestPath, manifest, tracker, new FileSystemPathIdentityResolver());
 
         Assert.Equal(projectRoot, Path.GetDirectoryName(stage.TemporaryPath));
         Assert.Equal(
@@ -35,10 +36,10 @@ public sealed class NewProjectInitialManifestStagerTests
         using var temp = TempDirectory.Create();
         var projectRoot = Path.Combine(temp.Path, "Project");
         var manifestPath = Path.Combine(projectRoot, ProjectManifest.ManifestFileName);
-        using var tracker = new NewProjectArtifactTracker();
+        using var tracker = new NewProjectArtifactTracker(new WindowsExactFileSystemObjectOwnershipFactory());
         tracker.EnsureDirectory(projectRoot);
         var manifest = ProjectManifest.CreateDefault("Project", "Book1", projectRoot, null);
-        var stage = NewProjectInitialManifestStager.Stage(manifestPath, manifest, tracker);
+        var stage = NewProjectInitialManifestStager.Stage(manifestPath, manifest, tracker, new FileSystemPathIdentityResolver());
 
         stage.CommitCreateOnly();
 
@@ -55,10 +56,10 @@ public sealed class NewProjectInitialManifestStagerTests
         using var temp = TempDirectory.Create();
         var projectRoot = Path.Combine(temp.Path, "Project");
         var manifestPath = Path.Combine(projectRoot, ProjectManifest.ManifestFileName);
-        using var tracker = new NewProjectArtifactTracker();
+        using var tracker = new NewProjectArtifactTracker(new WindowsExactFileSystemObjectOwnershipFactory());
         tracker.EnsureDirectory(projectRoot);
         var manifest = ProjectManifest.CreateDefault("Project", "Book1", projectRoot, null);
-        var stage = NewProjectInitialManifestStager.Stage(manifestPath, manifest, tracker);
+        var stage = NewProjectInitialManifestStager.Stage(manifestPath, manifest, tracker, new FileSystemPathIdentityResolver());
         var externalBytes = Encoding.UTF8.GetBytes("external manifest");
         File.WriteAllBytes(manifestPath, externalBytes);
 

@@ -930,7 +930,30 @@ The directory proven empty except for the owned lease marker after acquisition i
 
 The lease is represented by the sibling path `vba-project.json.vba-dev.lock`, opened for write with an OS sharing mode that excludes another writer for the lifetime of the mutation window. After acquisition and before project mutation, the owner writes and flushes one complete advisory JSON object with `schemaVersion: "1.0"`, a random `leaseId`, `machineName`, `processId`, UTC ISO-8601 `processStartTimeUtc`, a stable argument-free `command` name, UTC ISO-8601 `acquiredAtUtc`, and `toolVersion`. It contains no manifest path, username, command arguments, reference or module names, full command line, working directory, or environment values. Failure to establish this metadata releases the handle and fails before mutation. Diagnostics may report any readable fields but never use metadata alone as ownership or stale authority; malformed or partially readable metadata yields a generic busy diagnostic.
 
-A contender polls cancellation-aware for at most 30 seconds. Expiry returns a nonzero `manifestMutationBusy` outcome identifying the canonical manifest path and any readable safe owner metadata; it never force-removes the marker or terminates the owner. Process termination releases the file handle. Where supported, the owner requests OS delete-on-close semantics as crash cleanup, without making that behavior the ownership authority. A marker left without an owning handle is immediately acquirable and may be overwritten by the next owner, so stale PID liveness heuristics are unnecessary. Release closes the handle and deletes the marker best-effort; deletion racing a new owner must not disturb that owner. If a successful mutation cannot remove its now-unowned marker, it retains success and adds the non-fatal warning `leaseMarkerCleanupFailed`. Failure to create or exclusively open the marker fails before mutation. The initial contract adds neither a CLI timeout option nor a manifest setting for this wait.
+A contender polls cancellation-aware for at most 30 seconds. Expiry returns a nonzero `manifestMutationBusy` outcome identifying the canonical manifest path and any readable safe owner metadata; it never force-removes the marker or terminates the owner. Process termination releases the file handle. Where supported, the owner requests OS delete-on-close semantics as crash cleanup, without making that behavior the ownership authority. A marker left without an owning handle is reclaimed through trusted stable capture and exact receipt-authorized deletion before create-only acquisition, so stale PID liveness heuristics are unnecessary. Release closes the handle and cleans up any remaining unchanged receipt-owned marker; deletion racing a new owner must not disturb that owner. If a successful mutation cannot remove its now-unowned marker, it retains success and adds the non-fatal warning `leaseMarkerCleanupFailed`. Failure to create or exclusively open the marker fails before mutation. The initial contract adds neither a CLI timeout option nor a manifest setting for this wait.
+
+Manifest lease markers use the same `ExactFileSystemObjectOwnership` boundary
+as other invocation-owned artifacts. Creation issues a receipt without closing
+and reopening the exclusive owner handle. That handle, not JSON metadata,
+continues to authorize the live lease. After release, the receipt proves the
+unchanged ordinary single-link object and exact content before any explicit
+deletion. A copied lease identifier, changed bytes, replacement, alias, reparse
+point, or inconclusive observation cannot substitute for that proof. The
+receipt's anchor lifetime must not delay established DeleteOnClose cleanup past
+the completed owner-release observation. Stale capture uses complete content
+evidence; the bounded advisory metadata parser does not become a new stale-file
+size limit.
+
+Application owns only the injected session contract and opaque receipt/result
+types. Infrastructure owns their private native proof, handle lifetime, hashes,
+no-follow identity resolution, and exact deletion. Domain retains pure identity
+models and comparisons, with concrete resolution supplied by Infrastructure.
+The language server's existing path-identity consumers follow the relocated
+public resolver rather than duplicating it; this permitted downstream reference
+does not introduce a VbaDev dependency on another product or invoke Excel.
+This consolidation adds no recursive cleanup, cohort receipt, generic
+transaction framework, portable exact-deletion fallback, extra retry policy,
+or stronger concurrent-editor mutation guarantee.
 
 `VbaDev` never creates or edits `.gitignore` or `.git/info/exclude` merely to hide the lease marker, including during `new`. User documentation may recommend the exact optional ignore entry `vba-project.json.vba-dev.lock`. This preserves repository ownership at the cost of a transient untracked marker during a mutation, or a harmless retained marker after exceptional cleanup failure.
 

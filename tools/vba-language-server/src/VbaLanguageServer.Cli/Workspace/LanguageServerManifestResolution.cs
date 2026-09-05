@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.SourceModel;
 
@@ -128,7 +129,8 @@ internal static class LanguageServerManifestResolution
                 _ = DocumentSourceSetIsolationValidator.ResolveAndValidate(
                     manifest,
                     manifestPath,
-                    uri);
+                    uri,
+                    new FileSystemPathIdentityResolver());
                 var manifestIdentity = manifestPath;
                 var projectPath = CreateProjectPath(manifestIdentity);
                 var resolvedSelections =

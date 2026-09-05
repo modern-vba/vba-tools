@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 namespace VbaLanguageServer.ProjectModel;
 
 /// <summary>
@@ -104,7 +105,8 @@ public static class VbaProjectResolver
             var sourceRoots = DocumentSourceSetIsolationValidator.ResolveAndValidate(
                 manifest,
                 manifestPath,
-                manifestPath);
+                manifestPath,
+                new FileSystemPathIdentityResolver());
             foreach (var (documentName, document) in manifest.Documents)
             {
                 var sourceRootIdentity = sourceRoots[documentName];

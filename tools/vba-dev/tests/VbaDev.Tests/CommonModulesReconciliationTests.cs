@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using System.Text;
 using VbaDev.App.CommonModules;
 using VbaDev.App.FileSystem;
@@ -169,7 +170,7 @@ public sealed class CommonModulesReconciliationTests
         using var cancellation = new CancellationTokenSource();
         var transaction = CreateTransaction(
             temp,
-            new CommonModulesSourceMutationWriter(beforeOperation: index =>
+            new CommonModulesSourceMutationWriter(new WindowsExactFileSystemObjectOwnershipFactory(), beforeOperation: index =>
             {
                 if (index == 1)
                 {
@@ -198,7 +199,7 @@ public sealed class CommonModulesReconciliationTests
         using var cancellation = new CancellationTokenSource();
         var transaction = CreateTransaction(
             temp,
-            new CommonModulesSourceMutationWriter(beforeOperation: _ => cancellation.Cancel()));
+            new CommonModulesSourceMutationWriter(new WindowsExactFileSystemObjectOwnershipFactory(), beforeOperation: _ => cancellation.Cancel()));
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             transaction.AddAsync(
@@ -230,6 +231,7 @@ public sealed class CommonModulesReconciliationTests
         var transaction = CreateTransaction(
             temp,
             new CommonModulesSourceMutationWriter(
+                new WindowsExactFileSystemObjectOwnershipFactory(),
                 afterTemporaryFileFlushed: _ => throw new IOException("staging failed")));
 
         await Assert.ThrowsAsync<CommonModulesTransactionException>(() =>
@@ -265,7 +267,7 @@ public sealed class CommonModulesReconciliationTests
         string? temporaryPath = null;
         var transaction = CreateTransaction(
             temp,
-            new CommonModulesSourceMutationWriter(onTemporaryBytesWritten: (path, _) =>
+            new CommonModulesSourceMutationWriter(new WindowsExactFileSystemObjectOwnershipFactory(), onTemporaryBytesWritten: (path, _) =>
             {
                 temporaryPath = path;
                 File.SetAttributes(path, FileAttributes.ReadOnly);
@@ -320,7 +322,7 @@ public sealed class CommonModulesReconciliationTests
             new InstalledCommonModule("Second", "Second.bas", true, false, false));
         var transaction = CreateTransaction(
             temp,
-            new CommonModulesSourceMutationWriter(beforeOperation: index =>
+            new CommonModulesSourceMutationWriter(new WindowsExactFileSystemObjectOwnershipFactory(), beforeOperation: index =>
             {
                 if (index == 1)
                 {
@@ -353,7 +355,7 @@ public sealed class CommonModulesReconciliationTests
         WriteModule(target, "Feature", "observed feature");
         var transaction = CreateTransaction(
             temp,
-            new CommonModulesSourceMutationWriter(beforeOperation: _ =>
+            new CommonModulesSourceMutationWriter(new WindowsExactFileSystemObjectOwnershipFactory(), beforeOperation: _ =>
                 WriteModule(target, "Feature", "external feature")));
         var manifestPath = Path.Combine(root, ProjectManifest.ManifestFileName);
         var manifestBefore = File.ReadAllBytes(manifestPath);
@@ -379,7 +381,7 @@ public sealed class CommonModulesReconciliationTests
         WriteManifest(repository, "Feature.bas");
         var transaction = CreateTransaction(
             temp,
-            new CommonModulesSourceMutationWriter(beforeOperation: _ =>
+            new CommonModulesSourceMutationWriter(new WindowsExactFileSystemObjectOwnershipFactory(), beforeOperation: _ =>
                 WritePackageModule(repository, "Feature.bas", "later feature")));
 
         await transaction.AddAsync(
@@ -411,7 +413,7 @@ public sealed class CommonModulesReconciliationTests
             Requested: true,
             TestOnly: false,
             Orphaned: false));
-        var transaction = CreateTransaction(temp, new CommonModulesSourceMutationWriter());
+        var transaction = CreateTransaction(temp, new CommonModulesSourceMutationWriter(new WindowsExactFileSystemObjectOwnershipFactory()));
 
         await transaction.UpdateAsync(ResolveProject(root), CancellationToken.None);
 
@@ -435,7 +437,7 @@ public sealed class CommonModulesReconciliationTests
             Orphaned: true));
         var transaction = CreateTransaction(
             temp,
-            new CommonModulesSourceMutationWriter(beforeOperation: _ =>
+            new CommonModulesSourceMutationWriter(new WindowsExactFileSystemObjectOwnershipFactory(), beforeOperation: _ =>
                 WriteModule(target, "Feature", "external feature")));
 
         await Assert.ThrowsAsync<CommonModulesTransactionException>(() =>
@@ -456,7 +458,7 @@ public sealed class CommonModulesReconciliationTests
         var observer = new FatalSnapshotCleanupObserver();
         var transaction = CreateTransaction(
             temp,
-            new CommonModulesSourceMutationWriter(beforeOperation: _ => observer.Enabled = true),
+            new CommonModulesSourceMutationWriter(new WindowsExactFileSystemObjectOwnershipFactory(), beforeOperation: _ => observer.Enabled = true),
             observer);
 
         var error = await Assert.ThrowsAsync<ExactFileSystemObjectOwnership.RollbackException>(() =>
@@ -494,7 +496,7 @@ public sealed class CommonModulesReconciliationTests
         var observer = new FatalSnapshotCleanupObserver();
         var transaction = CreateTransaction(
             temp,
-            new CommonModulesSourceMutationWriter(beforeOperation: _ => observer.Enabled = true),
+            new CommonModulesSourceMutationWriter(new WindowsExactFileSystemObjectOwnershipFactory(), beforeOperation: _ => observer.Enabled = true),
             observer);
 
         var error = await Assert.ThrowsAsync<ExactFileSystemObjectOwnership.RollbackException>(() =>
@@ -520,17 +522,19 @@ public sealed class CommonModulesReconciliationTests
         var observingWriter = new SnapshotObservingAtomicWriter(innerWriter, snapshotScratch);
         var manifestReader = new CommonModulesManifestReader();
         var transaction = new CommonModulesInstallationTransaction(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             manifestReader,
             new ProjectManifestEditor(observingWriter),
             referencePlanner: null,
             manifestMutationCoordinator: new ProjectManifestMutationCoordinator(
                 observingWriter,
                 new ProjectManifestMutationLeaseProvider()),
-            pathIdentityResolver: null,
+            pathIdentityResolver: new FileSystemPathIdentityResolver(),
             packageSnapshotFactory: new CommonModulesPackageSnapshotFactory(
+                new WindowsExactFileSystemObjectOwnershipFactory(),
                 new CommonModulesPackageReader(manifestReader),
                 snapshotScratch),
-            sourceMutationWriter: new CommonModulesSourceMutationWriter());
+            sourceMutationWriter: new CommonModulesSourceMutationWriter(new WindowsExactFileSystemObjectOwnershipFactory()));
 
         await transaction.AddAsync(
             ResolveContext(root),
@@ -563,17 +567,19 @@ public sealed class CommonModulesReconciliationTests
         var manifestReader = new CommonModulesManifestReader();
         var snapshotScratch = temp.CreateDirectory("snapshot-scratch");
         var transaction = new CommonModulesInstallationTransaction(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             manifestReader,
             new ProjectManifestEditor(conflictingWriter),
             referencePlanner: null,
             manifestMutationCoordinator: new ProjectManifestMutationCoordinator(
                 conflictingWriter,
                 new ProjectManifestMutationLeaseProvider()),
-            pathIdentityResolver: null,
+            pathIdentityResolver: new FileSystemPathIdentityResolver(),
             packageSnapshotFactory: new CommonModulesPackageSnapshotFactory(
+                new WindowsExactFileSystemObjectOwnershipFactory(),
                 new CommonModulesPackageReader(manifestReader),
                 snapshotScratch),
-            sourceMutationWriter: new CommonModulesSourceMutationWriter());
+            sourceMutationWriter: new CommonModulesSourceMutationWriter(new WindowsExactFileSystemObjectOwnershipFactory()));
 
         var error = await Assert.ThrowsAsync<CommonModulesTransactionException>(() =>
             transaction.UpdateAsync(ResolveProject(root), CancellationToken.None));
@@ -632,20 +638,22 @@ public sealed class CommonModulesReconciliationTests
         var packageReader = new CommonModulesPackageReader(manifestReader);
         var snapshotScratch = temp.CreateDirectory("snapshot-scratch-" + Guid.NewGuid().ToString("N"));
         var snapshotFactory = cleanupObserver is null
-            ? new CommonModulesPackageSnapshotFactory(packageReader, snapshotScratch)
+            ? new CommonModulesPackageSnapshotFactory(new WindowsExactFileSystemObjectOwnershipFactory(), packageReader, snapshotScratch)
             : new CommonModulesPackageSnapshotFactory(
+                new WindowsExactFileSystemObjectOwnershipFactory(),
                 packageReader,
                 snapshotScratch,
                 beforeLiveStabilityProof: null,
                 cleanupObserver);
         return new CommonModulesInstallationTransaction(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             manifestReader,
             new ProjectManifestEditor(atomicWriter),
             referencePlanner: null,
             manifestMutationCoordinator: new ProjectManifestMutationCoordinator(
                 atomicWriter,
                 new ProjectManifestMutationLeaseProvider()),
-            pathIdentityResolver: null,
+            pathIdentityResolver: new FileSystemPathIdentityResolver(),
             packageSnapshotFactory: snapshotFactory,
             sourceMutationWriter: writer);
     }

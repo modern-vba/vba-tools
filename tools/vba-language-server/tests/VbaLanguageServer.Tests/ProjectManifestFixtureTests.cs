@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using VbaLanguageServer.ProjectModel;
 using Xunit;
 
@@ -24,7 +25,8 @@ public sealed class ProjectManifestFixtureTests
         _ = DocumentSourceSetIsolationValidator.ResolveAndValidate(
             manifest,
             fixturePath,
-            fixtureName);
+            fixtureName,
+            new FileSystemPathIdentityResolver());
 
         Assert.Equal(expectedProjectName, manifest.ProjectName);
         Assert.Equal(expectedPrimaryDocument, manifest.PrimaryDocument);
@@ -80,7 +82,8 @@ public sealed class ProjectManifestFixtureTests
             _ = DocumentSourceSetIsolationValidator.ResolveAndValidate(
                 manifest,
                 fixturePath,
-                fixtureName);
+                fixtureName,
+                new FileSystemPathIdentityResolver());
         });
 
         Assert.Contains(expectedMessage, ex.Message, StringComparison.OrdinalIgnoreCase);

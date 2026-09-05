@@ -29,27 +29,36 @@ internal sealed class NewProjectArtifactTracker : IDisposable
     private readonly Action<string>? beforeDirectoryCreate;
     private readonly INewProjectDirectoryCreationObserver? directoryCreationObserver;
     private readonly INewProjectArtifactRollbackObserver? rollbackObserver;
+    private readonly IExactFileSystemObjectOwnershipFactory ownershipFactory;
     private ExactFileSystemObjectOwnership? ownership;
     private string? allowedLeaseMarkerPath;
     private bool disposed;
 
-    public NewProjectArtifactTracker()
+    public NewProjectArtifactTracker(IExactFileSystemObjectOwnershipFactory ownershipFactory)
     {
+        this.ownershipFactory = ownershipFactory;
     }
 
-    internal NewProjectArtifactTracker(Action<string> beforeDirectoryCreate)
+    internal NewProjectArtifactTracker(
+        IExactFileSystemObjectOwnershipFactory ownershipFactory,
+        Action<string> beforeDirectoryCreate)
+        : this(ownershipFactory)
     {
         this.beforeDirectoryCreate = beforeDirectoryCreate;
     }
 
     internal NewProjectArtifactTracker(
+        IExactFileSystemObjectOwnershipFactory ownershipFactory,
         INewProjectDirectoryCreationObserver directoryCreationObserver)
+        : this(ownershipFactory)
     {
         this.directoryCreationObserver = directoryCreationObserver;
     }
 
     internal NewProjectArtifactTracker(
+        IExactFileSystemObjectOwnershipFactory ownershipFactory,
         INewProjectArtifactRollbackObserver rollbackObserver)
+        : this(ownershipFactory)
     {
         this.rollbackObserver = rollbackObserver;
     }
@@ -59,7 +68,7 @@ internal sealed class NewProjectArtifactTracker : IDisposable
         get
         {
             ObjectDisposedException.ThrowIf(disposed, this);
-            return ownership ??= ExactFileSystemObjectOwnership.Open();
+            return ownership ??= ownershipFactory.Open();
         }
     }
 

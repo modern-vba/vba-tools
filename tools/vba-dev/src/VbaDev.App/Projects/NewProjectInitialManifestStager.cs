@@ -7,12 +7,13 @@ internal static class NewProjectInitialManifestStager
     public static NewProjectInitialManifestStage Stage(
         string manifestPath,
         ProjectManifest manifest,
-        NewProjectArtifactTracker artifacts)
+        NewProjectArtifactTracker artifacts,
+        IFileSystemPathIdentityResolver pathIdentityResolver)
     {
         ArgumentNullException.ThrowIfNull(manifest);
         ArgumentNullException.ThrowIfNull(artifacts);
         var fullManifestPath = Path.GetFullPath(manifestPath);
-        var bytes = ValidateAndSerialize(fullManifestPath, manifest);
+        var bytes = ValidateAndSerialize(fullManifestPath, manifest, pathIdentityResolver);
         var directory = Path.GetDirectoryName(fullManifestPath)
             ?? throw new ArgumentException(
                 "The initial project manifest path must have a parent directory.",
@@ -47,7 +48,8 @@ internal static class NewProjectInitialManifestStager
 
     private static byte[] ValidateAndSerialize(
         string manifestPath,
-        ProjectManifest manifest)
+        ProjectManifest manifest,
+        IFileSystemPathIdentityResolver pathIdentityResolver)
     {
         try
         {
@@ -55,7 +57,8 @@ internal static class NewProjectInitialManifestStager
             _ = DocumentSourceSetIsolationValidator.ResolveAndValidate(
                 manifest,
                 manifestPath,
-                ProjectManifest.ManifestFileName);
+                ProjectManifest.ManifestFileName,
+                pathIdentityResolver);
             return ProjectManifestCanonicalSerializer.SerializeToUtf16LeBytes(manifest);
         }
         catch (VbaProjectManifestException ex)

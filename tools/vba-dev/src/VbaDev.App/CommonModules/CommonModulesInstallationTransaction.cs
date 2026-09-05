@@ -40,14 +40,16 @@ public sealed class CommonModulesInstallationTransaction
     /// <param name="manifestEditor">The helper used to clone manifests and persist recovery artifacts.</param>
     /// <param name="referencePlanner">The optional required-reference planner.</param>
     /// <param name="manifestMutationCoordinator">The mandatory leased manifest mutation boundary.</param>
-    /// <param name="pathIdentityResolver">The optional filesystem identity resolver.</param>
+    /// <param name="pathIdentityResolver">The filesystem identity resolver.</param>
     public CommonModulesInstallationTransaction(
+        IExactFileSystemObjectOwnershipFactory ownershipFactory,
         CommonModulesManifestReader manifestReader,
         ProjectManifestEditor manifestEditor,
         VbaProjectReferencePlanner? referencePlanner,
         IProjectManifestMutationCoordinator manifestMutationCoordinator,
-        IFileSystemPathIdentityResolver? pathIdentityResolver = null)
+        IFileSystemPathIdentityResolver pathIdentityResolver)
         : this(
+            ownershipFactory,
             manifestReader,
             manifestEditor,
             referencePlanner,
@@ -59,11 +61,12 @@ public sealed class CommonModulesInstallationTransaction
     }
 
     internal CommonModulesInstallationTransaction(
+        IExactFileSystemObjectOwnershipFactory ownershipFactory,
         CommonModulesManifestReader manifestReader,
         ProjectManifestEditor manifestEditor,
         VbaProjectReferencePlanner? referencePlanner,
         IProjectManifestMutationCoordinator manifestMutationCoordinator,
-        IFileSystemPathIdentityResolver? pathIdentityResolver,
+        IFileSystemPathIdentityResolver pathIdentityResolver,
         CommonModulesPackageSnapshotFactory? packageSnapshotFactory,
         CommonModulesSourceMutationWriter? sourceMutationWriter)
     {
@@ -72,11 +75,11 @@ public sealed class CommonModulesInstallationTransaction
         this.referencePlanner = referencePlanner;
         this.manifestMutationCoordinator = manifestMutationCoordinator
             ?? throw new ArgumentNullException(nameof(manifestMutationCoordinator));
-        this.pathIdentityResolver = pathIdentityResolver ?? new FileSystemPathIdentityResolver();
+        this.pathIdentityResolver = pathIdentityResolver;
         this.packageSnapshotFactory = packageSnapshotFactory
-            ?? new CommonModulesPackageSnapshotFactory(packageReader);
+            ?? new CommonModulesPackageSnapshotFactory(ownershipFactory, packageReader);
         this.sourceMutationWriter = sourceMutationWriter
-            ?? new CommonModulesSourceMutationWriter();
+            ?? new CommonModulesSourceMutationWriter(ownershipFactory);
     }
 
     /// <summary>

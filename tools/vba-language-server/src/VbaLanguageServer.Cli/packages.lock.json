@@ -13,10 +13,27 @@
         "resolved": "3.1.4",
         "contentHash": "ncchtCh9YKqutHTlUCrr1llXA65ijGOCjXBM0mL1+WaGouApWDEACWbBHGzuYcAvB+rgW6IgO4AKgmZ2v1moNA=="
       },
+      "vbadev.app": {
+        "type": "Project",
+        "dependencies": {
+          "VbaDev.Domain": "[0.1.0, )",
+          "VbaTools.Syntax": "[1.0.0, )",
+          "VbaTools.TypeLibRegistry": "[0.1.0, )"
+        }
+      },
       "vbadev.domain": {
         "type": "Project",
         "dependencies": {
           "VbaTools.Syntax": "[1.0.0, )"
+        }
+      },
+      "vbadev.infrastructure": {
+        "type": "Project",
+        "dependencies": {
+          "VbaDev.App": "[0.1.0, )",
+          "VbaDev.Domain": "[0.1.0, )",
+          "VbaTools.Syntax": "[1.0.0, )",
+          "VbaTools.TypeLibRegistry": "[0.1.0, )"
         }
       },
       "vbatools.contentlengthframing": {

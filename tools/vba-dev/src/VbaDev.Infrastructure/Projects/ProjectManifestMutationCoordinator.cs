@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using System.Text;
 using System.Runtime.ExceptionServices;
 using VbaDev.App.Projects;
@@ -168,7 +169,8 @@ public sealed class ProjectManifestMutationCoordinator : IProjectManifestMutatio
             _ = DocumentSourceSetIsolationValidator.ResolveAndValidate(
                 manifest,
                 manifestPath,
-                manifestPath);
+                manifestPath,
+                new FileSystemPathIdentityResolver());
             return manifest;
         }
         catch (VbaProjectManifestException ex)

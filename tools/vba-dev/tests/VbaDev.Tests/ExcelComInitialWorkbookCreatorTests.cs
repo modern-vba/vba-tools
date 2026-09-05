@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using System.Runtime.InteropServices;
 using VbaDev.App.FileSystem;
 using VbaDev.App.Workbooks;
@@ -19,7 +20,7 @@ public sealed class ExcelComInitialWorkbookCreatorTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var workbookPath = Path.Combine(temp.Path, "SavedWithWriter.xlsm");
         var bytes = new byte[] { 0x51, 0x52, 0x53 };
         FileStream? writer = null;
@@ -556,7 +557,7 @@ public sealed class ExcelComInitialWorkbookCreatorTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var workbookPath = Path.Combine(temp.Path, "Owned.xlsm");
         var lifecycle = new RecordingInitialWorkbookLifecycle(
             CreateExactBaseline("Visual Basic For Applications"));

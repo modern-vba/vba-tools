@@ -7,11 +7,6 @@ internal sealed class NewProjectAncestorSourceSetIsolation
     private readonly IProjectManifestStore manifestStore;
     private readonly IFileSystemPathIdentityResolver pathIdentityResolver;
 
-    public NewProjectAncestorSourceSetIsolation(IProjectManifestStore manifestStore)
-        : this(manifestStore, new FileSystemPathIdentityResolver())
-    {
-    }
-
     internal NewProjectAncestorSourceSetIsolation(
         IProjectManifestStore manifestStore,
         IFileSystemPathIdentityResolver pathIdentityResolver)

@@ -42,11 +42,11 @@ public sealed class VbaProjectReferenceService
     public VbaProjectReferenceService(
         VbaProjectReferencePlanner referencePlanner,
         IProjectManifestMutationCoordinator manifestMutationCoordinator,
-        IFileSystemPathIdentityResolver? pathIdentityResolver = null)
+        IFileSystemPathIdentityResolver pathIdentityResolver)
     {
         this.referencePlanner = referencePlanner;
         this.manifestMutationCoordinator = manifestMutationCoordinator;
-        this.pathIdentityResolver = pathIdentityResolver ?? new FileSystemPathIdentityResolver();
+        this.pathIdentityResolver = pathIdentityResolver;
     }
 
     /// <summary>

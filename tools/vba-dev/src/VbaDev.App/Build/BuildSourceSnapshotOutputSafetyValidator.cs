@@ -11,11 +11,6 @@ internal sealed class BuildSourceSnapshotOutputSafetyValidator
 {
     private readonly IFileSystemPathIdentityResolver pathIdentityResolver;
 
-    public BuildSourceSnapshotOutputSafetyValidator()
-        : this(new FileSystemPathIdentityResolver())
-    {
-    }
-
     internal BuildSourceSnapshotOutputSafetyValidator(
         IFileSystemPathIdentityResolver pathIdentityResolver)
     {

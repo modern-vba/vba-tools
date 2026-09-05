@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using VbaDev.App.Projects;
 using VbaDev.Domain;
+using VbaDev.Infrastructure.FileSystem;
 using VbaDev.Infrastructure.Projects;
 using Xunit;
 
@@ -490,6 +491,91 @@ public sealed class ProjectManifestMutationCoordinatorTests
 
         Assert.Equal("manifestMutationBusy", failure.Code);
         Assert.DoesNotContain("Owner:", failure.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ReadOnlyStaleMarkerFailsImmediatelyWithoutPollingOrChangingBytes()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var markerPath = Path.Combine(
+            root,
+            ProjectManifest.ManifestFileName + ".vba-dev.lock");
+        var markerBytes = Encoding.UTF8.GetBytes("{}");
+        File.WriteAllBytes(markerPath, markerBytes);
+        var originalAttributes = File.GetAttributes(markerPath);
+        File.SetAttributes(markerPath, originalAttributes | FileAttributes.ReadOnly);
+        var timeProvider = new AdvancingTimeProvider();
+        var provider = new ProjectManifestMutationLeaseProvider(
+            new FileSystemPathIdentityResolver(),
+            timeProvider,
+            TimeSpan.FromMilliseconds(100),
+            TimeSpan.FromMilliseconds(10),
+            "test-version");
+        try
+        {
+            var failure = await Assert.ThrowsAsync<ProjectManifestMutationException>(async () =>
+                await provider.AcquireAsync(
+                    root,
+                    ProjectManifestMutationCommand.ReferenceAdd,
+                    CancellationToken.None));
+
+            Assert.Equal("manifestMutationLeaseFailed", failure.Code);
+            Assert.Equal(TimeSpan.Zero, timeProvider.Elapsed);
+            Assert.Equal(markerBytes, File.ReadAllBytes(markerPath));
+            Assert.Equal(
+                originalAttributes | FileAttributes.ReadOnly,
+                File.GetAttributes(markerPath));
+        }
+        finally
+        {
+            File.SetAttributes(markerPath, originalAttributes);
+        }
+    }
+
+    [Fact]
+    public async Task TemporaryMarkerReaderIsPolledUntilItsHandleIsReleased()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var markerPath = Path.Combine(
+            root,
+            ProjectManifest.ManifestFileName + ".vba-dev.lock");
+        File.WriteAllText(markerPath, "{}", new UTF8Encoding(false));
+        using var reader = new FileStream(
+            markerPath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read);
+        var readerReleased = false;
+        var timeProvider = new BoundaryTimeProvider(
+            () =>
+            {
+                reader.Dispose();
+                readerReleased = true;
+            },
+            TimeSpan.FromMilliseconds(10));
+        var provider = new ProjectManifestMutationLeaseProvider(
+            new FileSystemPathIdentityResolver(),
+            timeProvider,
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromMilliseconds(10),
+            "test-version");
+
+        var lease = await provider.AcquireAsync(
+            root,
+            ProjectManifestMutationCommand.ReferenceAdd,
+            CancellationToken.None);
+        var release = await lease.ReleaseAsync();
+
+        Assert.True(readerReleased);
+        Assert.Empty(release.Warnings);
+        Assert.False(File.Exists(markerPath));
     }
 
     [Fact]
@@ -1056,7 +1142,7 @@ public sealed class ProjectManifestMutationCoordinatorTests
     }
 
     [Fact]
-    public async Task StaleMarkerHardLinkCannotOverwriteItsExternalTarget()
+    public async Task StaleMarkerHardLinkIsRejectedWithoutRemovingEitherAlias()
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -1073,14 +1159,26 @@ public sealed class ProjectManifestMutationCoordinatorTests
         File.WriteAllBytes(sentinelPath, sentinelBytes);
         Assert.True(CreateHardLink(markerPath, sentinelPath, IntPtr.Zero));
         var provider = new ProjectManifestMutationLeaseProvider();
+        IProjectManifestMutationLease? unexpectedLease = null;
+        try
+        {
+            var failure = await Assert.ThrowsAsync<ProjectManifestMutationException>(async () =>
+                unexpectedLease = await provider.AcquireAsync(
+                    root,
+                    ProjectManifestMutationCommand.ReferenceAdd,
+                    CancellationToken.None));
 
-        var lease = await provider.AcquireAsync(
-            root,
-            ProjectManifestMutationCommand.ReferenceAdd,
-            CancellationToken.None);
-        var release = await lease.ReleaseAsync();
+            Assert.Equal("manifestMutationLeaseFailed", failure.Code);
+        }
+        finally
+        {
+            if (unexpectedLease is not null)
+            {
+                await unexpectedLease.ReleaseAsync();
+            }
+        }
 
-        Assert.Empty(release.Warnings);
+        Assert.Equal(sentinelBytes, File.ReadAllBytes(markerPath));
         Assert.Equal(sentinelBytes, File.ReadAllBytes(sentinelPath));
     }
 
@@ -1166,6 +1264,37 @@ public sealed class ProjectManifestMutationCoordinatorTests
             File.Delete(readyPath);
             File.Delete(markerPath);
         }
+    }
+
+    [Fact]
+    public async Task ReleasingTheSameLeaseTwiceFailsWithoutRepeatingCleanup()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var markerPath = Path.Combine(
+            root,
+            ProjectManifest.ManifestFileName + ".vba-dev.lock");
+        var releaseCallbacks = 0;
+        var provider = new ProjectManifestMutationLeaseProvider(
+            new FileSystemPathIdentityResolver(),
+            TimeProvider.System,
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromMilliseconds(10),
+            "test-version",
+            afterOwnerRelease: _ => releaseCallbacks++);
+        var lease = await provider.AcquireAsync(
+            root,
+            ProjectManifestMutationCommand.ReferenceAdd,
+            CancellationToken.None);
+
+        var firstRelease = await lease.ReleaseAsync();
+        var failure = await Assert.ThrowsAsync<ProjectManifestMutationException>(async () =>
+            await lease.ReleaseAsync());
+
+        Assert.Empty(firstRelease.Warnings);
+        Assert.Equal("manifestMutationReleaseFailed", failure.Code);
+        Assert.Equal(1, releaseCallbacks);
+        Assert.False(File.Exists(markerPath));
     }
 
     [Fact]
@@ -1268,6 +1397,137 @@ public sealed class ProjectManifestMutationCoordinatorTests
         }
 
         Assert.Equal(sentinelBytes, File.ReadAllBytes(sentinelPath));
+    }
+
+    [Fact]
+    public async Task ReleasedOwnerPreservesAReplacementWithCopiedMetadataWithoutWarning()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var markerPath = Path.Combine(
+            root,
+            ProjectManifest.ManifestFileName + ".vba-dev.lock");
+        var originalMarkerPath = Path.Combine(temp.Path, "released-original-marker.lock");
+        var identityResolver = new FileSystemPathIdentityResolver();
+        byte[]? copiedBytes = null;
+        var provider = new ProjectManifestMutationLeaseProvider(
+            identityResolver,
+            TimeProvider.System,
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromMilliseconds(10),
+            "test-version",
+            releasedMarkerPath =>
+            {
+                var originalIdentity = identityResolver.Resolve(releasedMarkerPath);
+                copiedBytes = File.ReadAllBytes(releasedMarkerPath);
+                File.Move(releasedMarkerPath, originalMarkerPath);
+                File.WriteAllBytes(releasedMarkerPath, copiedBytes);
+                Assert.NotNull(originalIdentity.ObjectIdentity);
+                Assert.NotEqual(
+                    originalIdentity.ObjectIdentity,
+                    identityResolver.Resolve(releasedMarkerPath).ObjectIdentity);
+            },
+            useDeleteOnClose: false);
+        var lease = await provider.AcquireAsync(
+            root,
+            ProjectManifestMutationCommand.ReferenceAdd,
+            CancellationToken.None);
+
+        var release = await lease.ReleaseAsync();
+
+        Assert.Empty(release.Warnings);
+        Assert.NotNull(copiedBytes);
+        Assert.Equal(copiedBytes, File.ReadAllBytes(markerPath));
+        Assert.Equal(copiedBytes, File.ReadAllBytes(originalMarkerPath));
+    }
+
+    [Fact]
+    public async Task ReleasedOwnerPreservesBothMarkerHardLinkAliasesAsACleanupWarning()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var markerPath = Path.Combine(
+            root,
+            ProjectManifest.ManifestFileName + ".vba-dev.lock");
+        var aliasPath = Path.Combine(temp.Path, "released-marker-alias.lock");
+        byte[]? markerBytes = null;
+        var provider = new ProjectManifestMutationLeaseProvider(
+            new FileSystemPathIdentityResolver(),
+            TimeProvider.System,
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromMilliseconds(10),
+            "test-version",
+            releasedMarkerPath =>
+            {
+                markerBytes = File.ReadAllBytes(releasedMarkerPath);
+                Assert.True(CreateHardLink(aliasPath, releasedMarkerPath, IntPtr.Zero));
+            },
+            useDeleteOnClose: false);
+        var lease = await provider.AcquireAsync(
+            root,
+            ProjectManifestMutationCommand.ReferenceAdd,
+            CancellationToken.None);
+
+        var release = await lease.ReleaseAsync();
+
+        Assert.NotNull(markerBytes);
+        Assert.Equal(markerBytes, File.ReadAllBytes(markerPath));
+        Assert.Equal(markerBytes, File.ReadAllBytes(aliasPath));
+        var warning = Assert.Single(release.Warnings);
+        Assert.Equal("leaseMarkerCleanupFailed", warning.Code);
+    }
+
+    [Fact]
+    public async Task ReleasedOwnerPreservesChangedMetadataWithTheSameLeaseId()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateProject(temp);
+        var markerPath = Path.Combine(
+            root,
+            ProjectManifest.ManifestFileName + ".vba-dev.lock");
+        var identityResolver = new FileSystemPathIdentityResolver();
+        byte[]? changedBytes = null;
+        var provider = new ProjectManifestMutationLeaseProvider(
+            identityResolver,
+            TimeProvider.System,
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromMilliseconds(10),
+            "test-version",
+            releasedMarkerPath =>
+            {
+                var originalIdentity = identityResolver.Resolve(releasedMarkerPath);
+                var originalText = File.ReadAllText(releasedMarkerPath);
+                var changedText = originalText.Replace(
+                    "test-version",
+                    "edit-version",
+                    StringComparison.Ordinal);
+                Assert.NotEqual(originalText, changedText);
+                Assert.Equal(originalText.Length, changedText.Length);
+                changedBytes = Encoding.UTF8.GetBytes(changedText);
+                File.WriteAllBytes(releasedMarkerPath, changedBytes);
+                Assert.NotNull(originalIdentity.ObjectIdentity);
+                Assert.Equal(
+                    originalIdentity.ObjectIdentity,
+                    identityResolver.Resolve(releasedMarkerPath).ObjectIdentity);
+            },
+            useDeleteOnClose: false);
+        var lease = await provider.AcquireAsync(
+            root,
+            ProjectManifestMutationCommand.ReferenceAdd,
+            CancellationToken.None);
+
+        var release = await lease.ReleaseAsync();
+
+        Assert.True(File.Exists(markerPath));
+        Assert.NotNull(changedBytes);
+        Assert.Equal(changedBytes, File.ReadAllBytes(markerPath));
+        var warning = Assert.Single(release.Warnings);
+        Assert.Equal("leaseMarkerCleanupFailed", warning.Code);
     }
 
     [Fact]

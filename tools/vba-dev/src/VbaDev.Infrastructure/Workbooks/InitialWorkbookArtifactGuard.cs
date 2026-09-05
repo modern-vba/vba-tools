@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using System.ComponentModel;
 using System.Security.Cryptography;
 using VbaDev.App.FileSystem;
@@ -176,7 +177,7 @@ internal sealed class InitialWorkbookArtifactGuard : IInitialWorkbookArtifactGua
     {
         for (var attempt = 0; attempt < 16; attempt++)
         {
-            var ownership = ExactFileSystemObjectOwnership.Open();
+            var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
             ExactFileSystemObjectOwnership.DirectoryReceipt? directory = null;
             try
             {

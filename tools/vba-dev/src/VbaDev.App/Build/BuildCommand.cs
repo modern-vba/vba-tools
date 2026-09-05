@@ -1,6 +1,7 @@
 using VbaDev.App.Cli;
 using VbaDev.App.Projects;
 using VbaDev.App.Workbooks;
+using VbaDev.Domain;
 
 namespace VbaDev.App.Build;
 
@@ -17,11 +18,13 @@ public sealed class BuildCommand
     /// Creates the build command.
     /// </summary>
     /// <param name="outputCommand">The shared workbook output command implementation.</param>
-    public BuildCommand(WorkbookOutputCommand outputCommand)
+    public BuildCommand(
+        WorkbookOutputCommand outputCommand,
+        IFileSystemPathIdentityResolver pathIdentityResolver)
         : this(
             outputCommand,
             new BuildSourceSnapshotCaptureFactory(),
-            new BuildSourceSnapshotOutputSafetyValidator())
+            new BuildSourceSnapshotOutputSafetyValidator(pathIdentityResolver))
     {
     }
 

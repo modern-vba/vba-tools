@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using System.Text;
 using VbaDev.App.Build;
 using VbaDev.App.Cli;
@@ -310,7 +311,7 @@ public sealed class WorkbookOutputFailureTests
         CancellationToken cancellationToken)
         => commandName switch
         {
-            "build" => new BuildCommand(outputCommand).RunAsync(context, cancellationToken),
+            "build" => new BuildCommand(outputCommand, new FileSystemPathIdentityResolver()).RunAsync(context, cancellationToken),
             "publish" => new PublishCommand(outputCommand).RunAsync(context, cancellationToken),
             _ => throw new ArgumentOutOfRangeException(nameof(commandName), commandName, null)
         };

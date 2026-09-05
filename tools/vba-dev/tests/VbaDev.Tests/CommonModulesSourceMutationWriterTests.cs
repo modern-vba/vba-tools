@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using VbaDev.App.CommonModules;
@@ -24,7 +25,7 @@ public sealed class CommonModulesSourceMutationWriterTests
             new Win32Exception(Marshal.GetLastWin32Error()).Message);
 
         var error = Assert.Throws<CommonModulesSourceMutationException>(() =>
-            new CommonModulesSourceMutationWriter().Execute(
+            new CommonModulesSourceMutationWriter(new WindowsExactFileSystemObjectOwnershipFactory()).Execute(
                 [new CommonModulesSourceFileMutation(
                     target, target, CommonModulesExpectedFile.Present([1]), DesiredBytes: null)],
                 CancellationToken.None));
@@ -51,7 +52,7 @@ public sealed class CommonModulesSourceMutationWriterTests
         File.WriteAllBytes(second, [99]);
 
         var error = Assert.Throws<CommonModulesSourceMutationException>(() =>
-            new CommonModulesSourceMutationWriter().Execute(plan, CancellationToken.None));
+            new CommonModulesSourceMutationWriter(new WindowsExactFileSystemObjectOwnershipFactory()).Execute(plan, CancellationToken.None));
 
         Assert.False(error.SourceMutationCommitted);
         Assert.Equal([1], File.ReadAllBytes(first));
@@ -72,7 +73,7 @@ public sealed class CommonModulesSourceMutationWriterTests
             Replace(first, [1], [11]),
             Replace(second, [2], [22])
         };
-        var writer = new CommonModulesSourceMutationWriter(beforeOperation: index =>
+        var writer = new CommonModulesSourceMutationWriter(new WindowsExactFileSystemObjectOwnershipFactory(), beforeOperation: index =>
         {
             if (index == 1)
             {
@@ -100,7 +101,7 @@ public sealed class CommonModulesSourceMutationWriterTests
         cancellation.Cancel();
 
         Assert.ThrowsAny<OperationCanceledException>(() =>
-            new CommonModulesSourceMutationWriter().Execute(
+            new CommonModulesSourceMutationWriter(new WindowsExactFileSystemObjectOwnershipFactory()).Execute(
                 [Replace(target, [1], [2])],
                 cancellation.Token));
 
@@ -114,7 +115,7 @@ public sealed class CommonModulesSourceMutationWriterTests
         var target = Path.Combine(temp.Path, "Feature.bas");
         File.WriteAllBytes(target, [1]);
         using var cancellation = new CancellationTokenSource();
-        var writer = new CommonModulesSourceMutationWriter(beforeCommitment: _ =>
+        var writer = new CommonModulesSourceMutationWriter(new WindowsExactFileSystemObjectOwnershipFactory(), beforeCommitment: _ =>
             cancellation.Cancel());
 
         Assert.ThrowsAny<OperationCanceledException>(() =>
@@ -131,6 +132,7 @@ public sealed class CommonModulesSourceMutationWriterTests
         var target = Path.Combine(temp.Path, "Feature.bas");
         File.WriteAllBytes(target, [1]);
         var writer = new CommonModulesSourceMutationWriter(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             afterTemporaryFileFlushed: _ => throw new IOException("staging failed"));
 
         var error = Assert.Throws<CommonModulesSourceMutationException>(() =>
@@ -148,7 +150,7 @@ public sealed class CommonModulesSourceMutationWriterTests
         var target = Path.Combine(temp.Path, "Feature.bas");
         File.WriteAllBytes(target, [1]);
         string? temporaryPath = null;
-        var writer = new CommonModulesSourceMutationWriter(afterTemporaryFileFlushed: _ =>
+        var writer = new CommonModulesSourceMutationWriter(new WindowsExactFileSystemObjectOwnershipFactory(), afterTemporaryFileFlushed: _ =>
         {
             temporaryPath = Assert.Single(Directory.EnumerateFiles(temp.Path, "*.vba-dev.*.tmp"));
             File.WriteAllBytes(temporaryPath, [99]);
@@ -175,6 +177,7 @@ public sealed class CommonModulesSourceMutationWriterTests
         File.WriteAllBytes(target, [1]);
         var writeAttempts = 0;
         var writer = new CommonModulesSourceMutationWriter(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             onTemporaryBytesWritten: (_, _) =>
             {
                 writeAttempts++;
@@ -197,7 +200,7 @@ public sealed class CommonModulesSourceMutationWriterTests
         var target = Path.Combine(temp.Path, "Feature.bas");
         File.WriteAllBytes(target, [1]);
         var writeAttempts = 0;
-        var writer = new CommonModulesSourceMutationWriter(onTemporaryBytesWritten: (_, _) =>
+        var writer = new CommonModulesSourceMutationWriter(new WindowsExactFileSystemObjectOwnershipFactory(), onTemporaryBytesWritten: (_, _) =>
         {
             writeAttempts++;
             throw new Win32Exception(183, "native write failed");
@@ -221,6 +224,7 @@ public sealed class CommonModulesSourceMutationWriterTests
         File.WriteAllBytes(target, [1]);
         string? temporaryPath = null;
         var writer = new CommonModulesSourceMutationWriter(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             onTemporaryBytesWritten: (path, _) =>
             {
                 temporaryPath = path;
@@ -260,7 +264,7 @@ public sealed class CommonModulesSourceMutationWriterTests
         File.WriteAllBytes(first, [1]);
         File.WriteAllBytes(second, [2]);
         using var cancellation = new CancellationTokenSource();
-        var writer = new CommonModulesSourceMutationWriter(beforeOperation: index =>
+        var writer = new CommonModulesSourceMutationWriter(new WindowsExactFileSystemObjectOwnershipFactory(), beforeOperation: index =>
         {
             if (index == 1)
             {
@@ -289,7 +293,7 @@ public sealed class CommonModulesSourceMutationWriterTests
         File.WriteAllBytes(target, [3]);
 
         var error = Assert.Throws<CommonModulesSourceMutationException>(() =>
-            new CommonModulesSourceMutationWriter().Execute([plan], CancellationToken.None));
+            new CommonModulesSourceMutationWriter(new WindowsExactFileSystemObjectOwnershipFactory()).Execute([plan], CancellationToken.None));
 
         Assert.False(error.SourceMutationCommitted);
         Assert.Equal([3], File.ReadAllBytes(target));
@@ -303,7 +307,7 @@ public sealed class CommonModulesSourceMutationWriterTests
         var canonical = Path.Combine(temp.Path, "Feature.bas");
         File.WriteAllBytes(observed, [1]);
 
-        var result = new CommonModulesSourceMutationWriter().Execute(
+        var result = new CommonModulesSourceMutationWriter(new WindowsExactFileSystemObjectOwnershipFactory()).Execute(
             [new CommonModulesSourceFileMutation(
                 observed,
                 canonical,

@@ -1,3 +1,4 @@
+using VbaDev.Domain;
 using VbaDev.App.Build;
 using VbaDev.App.Projects;
 using VbaDev.App.Workbooks;
@@ -134,29 +135,34 @@ internal sealed class SnapshotTestExecutionWorkspaceFactory
     private readonly BuildSourceSnapshotOutputSafetyValidator outputSafetyValidator;
     private readonly ISnapshotSourceCaptureFactory sourceCaptureFactory;
 
-    public SnapshotTestExecutionWorkspaceFactory()
+    public SnapshotTestExecutionWorkspaceFactory(IFileSystemPathIdentityResolver pathIdentityResolver)
         : this(
+            pathIdentityResolver,
             Path.Combine(Path.GetTempPath(), "vba-dev-snapshot-test"),
             new SnapshotTestWorkspaceFileSystem(),
             cleanupAttempts: 3,
             retryDelay: TimeSpan.FromMilliseconds(50),
-            new BuildSourceSnapshotOutputSafetyValidator(),
-            new SnapshotSourceCaptureFactory())
-    {
-    }
-
-    internal SnapshotTestExecutionWorkspaceFactory(string scratchRoot)
-        : this(
-            scratchRoot,
-            new SnapshotTestWorkspaceFileSystem(),
-            cleanupAttempts: 3,
-            retryDelay: TimeSpan.FromMilliseconds(50),
-            new BuildSourceSnapshotOutputSafetyValidator(),
+            new BuildSourceSnapshotOutputSafetyValidator(pathIdentityResolver),
             new SnapshotSourceCaptureFactory())
     {
     }
 
     internal SnapshotTestExecutionWorkspaceFactory(
+        IFileSystemPathIdentityResolver pathIdentityResolver,
+        string scratchRoot)
+        : this(
+            pathIdentityResolver,
+            scratchRoot,
+            new SnapshotTestWorkspaceFileSystem(),
+            cleanupAttempts: 3,
+            retryDelay: TimeSpan.FromMilliseconds(50),
+            new BuildSourceSnapshotOutputSafetyValidator(pathIdentityResolver),
+            new SnapshotSourceCaptureFactory())
+    {
+    }
+
+    internal SnapshotTestExecutionWorkspaceFactory(
+        IFileSystemPathIdentityResolver pathIdentityResolver,
         string scratchRoot,
         ISnapshotTestWorkspaceFileSystem fileSystem,
         int cleanupAttempts,
@@ -173,7 +179,7 @@ internal sealed class SnapshotTestExecutionWorkspaceFactory
         this.cleanupAttempts = cleanupAttempts;
         this.retryDelay = retryDelay;
         this.outputSafetyValidator = outputSafetyValidator
-            ?? new BuildSourceSnapshotOutputSafetyValidator();
+            ?? new BuildSourceSnapshotOutputSafetyValidator(pathIdentityResolver);
         this.sourceCaptureFactory = sourceCaptureFactory
             ?? new SnapshotSourceCaptureFactory();
     }

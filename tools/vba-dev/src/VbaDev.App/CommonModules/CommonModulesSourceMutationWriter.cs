@@ -71,17 +71,20 @@ internal sealed class CommonModulesTemporaryFileException : IOException
 /// </summary>
 internal sealed class CommonModulesSourceMutationWriter
 {
+    private readonly IExactFileSystemObjectOwnershipFactory ownershipFactory;
     private readonly Action<int>? beforeOperation;
     private readonly Action<int>? beforeCommitment;
     private readonly Action<int>? afterTemporaryFileFlushed;
     private readonly Action<string, long>? onTemporaryBytesWritten;
 
     internal CommonModulesSourceMutationWriter(
+        IExactFileSystemObjectOwnershipFactory ownershipFactory,
         Action<int>? beforeOperation = null,
         Action<int>? beforeCommitment = null,
         Action<int>? afterTemporaryFileFlushed = null,
         Action<string, long>? onTemporaryBytesWritten = null)
     {
+        this.ownershipFactory = ownershipFactory;
         this.beforeOperation = beforeOperation;
         this.beforeCommitment = beforeCommitment;
         this.afterTemporaryFileFlushed = afterTemporaryFileFlushed;
@@ -100,7 +103,7 @@ internal sealed class CommonModulesSourceMutationWriter
         }
 
         var verificationPaths = GetVerificationPaths(mutations);
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = ownershipFactory.Open();
         var deletionReceipts = new ExactFileSystemObjectOwnership.FileReceipt?[mutations.Count];
         try
         {
