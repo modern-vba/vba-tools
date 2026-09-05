@@ -17,6 +17,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Content Include="..\..\..\..\fixtures\vba-source-encoding\cases.json"
+             Link="fixtures\vba-source-encoding\cases.json"
+             CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\VbaDev.App\VbaDev.App.csproj" />
     <ProjectReference Include="..\..\src\VbaDev.Cli\VbaDev.Cli.csproj" />
     <ProjectReference Include="..\..\src\VbaDev.Domain\VbaDev.Domain.csproj" />

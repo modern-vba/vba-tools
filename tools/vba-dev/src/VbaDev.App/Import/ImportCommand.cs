@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using VbaDev.App.Build;
 using VbaDev.App.Cli;
 using VbaDev.App.Workbooks;
 
@@ -51,10 +52,14 @@ public sealed class ImportCommand
         CancellationToken cancellationToken)
         => RunCoreAsync(request, cancellationToken);
 
-    private async Task<CommandResult> RunCoreAsync(
+    private async Task<CommandResult> RunImportAsync(
         ImportCommandRequest request,
         CancellationToken cancellationToken)
     {
+        VbeImportSourceSet? ownedSourceSet = null;
+        WorkbookOutputTransaction? outputTransaction = null;
+        FileStream? protectedTarget = null;
+        Exception? operationFailure = null;
         try
         {
             if (request.FromPath is null)
@@ -79,17 +84,19 @@ public sealed class ImportCommand
 
             var sourceDirectory = ResolveOptionPath(request.WorkingDirectory, request.FromPath);
             var targetWorkbookPath = ResolveOptionPath(request.WorkingDirectory, request.ToPath);
-            var sourceFiles = ResolveSourceFiles(sourceDirectory);
             ValidateTargetWorkbook(targetWorkbookPath);
-            using var importSourceSet = importSourceSetFactory.Create(sourceFiles);
+            var importSourceSet = importSourceSetFactory.CreateExplicitImport(sourceDirectory);
+            ownedSourceSet = importSourceSet;
             var sourcePreflight = namePreflight.InspectSourcePhase(importSourceSet.SourceFiles);
             if (sourcePreflight.HasFailures)
             {
                 namePreflight.ThrowIfFailed(sourcePreflight);
             }
 
+            protectedTarget = new FileStream(targetWorkbookPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            outputTransaction = WorkbookOutputTransaction.Create(targetWorkbookPath, targetWorkbookPath);
             var verificationReport = await workbookGenerationAutomation.RunAsync(
-                targetWorkbookPath,
+                outputTransaction.StagingWorkbookPath,
                 WorkbookAutomationTimeouts.Default,
                 async (session, operationCancellationToken) =>
                 {
@@ -125,6 +132,7 @@ public sealed class ImportCommand
                     }
 
                     importSourceSet.Dispose();
+                    ownedSourceSet = null;
                     operationCancellationToken.ThrowIfCancellationRequested();
                     var report = await session
                         .VerifyAsync(operationCancellationToken)
@@ -137,11 +145,58 @@ public sealed class ImportCommand
                 },
                 cancellationToken).ConfigureAwait(false);
 
-            var label = sourceFiles.Count == 1 ? "source file" : "source files";
+            cancellationToken.ThrowIfCancellationRequested();
+            // Release write/delete exclusion only for the synchronous atomic replacement.
+            protectedTarget.Dispose();
+            protectedTarget = null;
+            outputTransaction.Commit();
+            var label = importSourceSet.SourceFiles.Count == 1 ? "source file" : "source files";
             return new CommandResult(
                 0,
-                $"Imported {sourceFiles.Count} {label} from {sourceDirectory} to {targetWorkbookPath}{Environment.NewLine}",
+                $"Imported {importSourceSet.SourceFiles.Count} {label} from {sourceDirectory} to {targetWorkbookPath}{Environment.NewLine}",
                 VbeImportWarningRenderer.Render(verificationReport));
+        }
+        catch (Exception error)
+        {
+            operationFailure = error;
+            throw;
+        }
+        finally
+        {
+            var cleanupFailures = new List<Exception>();
+            foreach (var artifact in new IDisposable?[] { ownedSourceSet, outputTransaction, protectedTarget })
+            {
+                try
+                {
+                    artifact?.Dispose();
+                }
+                catch (Exception cleanupError)
+                {
+                    cleanupFailures.Add(cleanupError);
+                }
+            }
+
+            if (cleanupFailures.Count > 0)
+            {
+                if (operationFailure is not null)
+                {
+                    cleanupFailures.Insert(0, operationFailure);
+                }
+
+                throw new InvalidOperationException(
+                    string.Join(" ", cleanupFailures.Select(error => error.Message)),
+                    new AggregateException(cleanupFailures));
+            }
+        }
+    }
+
+    private async Task<CommandResult> RunCoreAsync(
+        ImportCommandRequest request,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await RunImportAsync(request, cancellationToken).ConfigureAwait(false);
         }
         catch (WorkbookAutomationCanceledException ex)
         {
@@ -169,7 +224,11 @@ public sealed class ImportCommand
         }
         catch (InvalidOperationException ex)
         {
-            return CommandResult.UsageError(ex.Message);
+            return PreserveReleaseProof(ex, CommandResult.UsageError(ex.Message));
+        }
+        catch (BuildCommandException ex)
+        {
+            return PreserveReleaseProof(ex, CommandResult.UsageError(ex.Message));
         }
         catch (IOException ex)
         {
@@ -197,33 +256,6 @@ public sealed class ImportCommand
                 CommandResult.UsageError(
                     $"{message} The owned Excel process release could not be verified."))
             : CommandResult.Cancelled(message);
-
-    private static IReadOnlyList<VbaSourceFile> ResolveSourceFiles(string sourceDirectory)
-    {
-        if (File.Exists(sourceDirectory))
-        {
-            throw new InvalidOperationException($"Import source path is not a directory: {sourceDirectory}");
-        }
-
-        if (!Directory.Exists(sourceDirectory))
-        {
-            throw new InvalidOperationException($"Import source directory was not found: {sourceDirectory}");
-        }
-
-        var sourceFiles = DocumentSourceSetLayout
-            .EnumerateVbaSourceFiles(sourceDirectory)
-            .ToArray();
-        if (sourceFiles.Length == 0)
-        {
-            throw new InvalidOperationException($"No importable VBA source files were found in: {sourceDirectory}");
-        }
-
-        DocumentSourceSetLayout.ThrowIfDuplicateSourceFileNames(sourceDirectory, sourceFiles);
-
-        return sourceFiles
-            .OrderBy(source => source.FileName, StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-    }
 
     private static void ValidateTargetWorkbook(string targetWorkbookPath)
     {

@@ -3,6 +3,7 @@ using System.IO.Compression;
 using System.Text;
 using System.Text.RegularExpressions;
 using VbaDev.App.Build;
+using VbaDev.App.Import;
 using VbaDev.App.References;
 using VbaDev.App.Workbooks;
 using VbaDev.Infrastructure.Debugging;
@@ -337,6 +338,15 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         var originalClassBytes = File.ReadAllBytes(classSourcePath);
         var originalFormBytes = File.ReadAllBytes(formSourcePath);
         var originalSidecarBytes = File.ReadAllBytes(formSidecarPath);
+        var explicitSourceDirectory = temp.CreateDirectory("ExplicitSources");
+        File.WriteAllBytes(Path.Combine(explicitSourceDirectory, "UnicodeModule.bas"), originalStandardBytes);
+        File.WriteAllBytes(Path.Combine(explicitSourceDirectory, "ContractClass.cls"), originalClassBytes);
+        var utf16Le = new UnicodeEncoding(false, true, true);
+        var explicitFormBytes = utf16Le.GetPreamble().Concat(utf16Le.GetBytes(formSourceText)).ToArray();
+        File.WriteAllBytes(Path.Combine(explicitSourceDirectory, "Dialog.frm"), explicitFormBytes);
+        File.WriteAllBytes(Path.Combine(explicitSourceDirectory, "Dialog.frx"), originalSidecarBytes);
+        var explicitTargetPath = Path.Combine(temp.Path, "ExplicitImported.xlsm");
+        CreateEmptyMacroEnabledWorkbook(explicitTargetPath);
         var targetWorkbookPath = Path.Combine(temp.Path, "Imported.xlsm");
         CreateEmptyMacroEnabledWorkbook(targetWorkbookPath);
         var productionTemplatePath = Path.Combine(temp.Path, "ProductionTemplate.xlsm");
@@ -378,9 +388,25 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
             Assert.False(string.IsNullOrWhiteSpace(seedExcelVersion));
             Assert.False(string.IsNullOrWhiteSpace(directImportExcelVersion));
             Assert.False(string.IsNullOrWhiteSpace(productionExcelVersion));
+            var explicitResult = await new ImportCommand(new ExcelComWorkbookBuildAutomation()).RunAsync(
+                new ImportCommandRequest(explicitSourceDirectory, explicitTargetPath, temp.Path),
+                CancellationToken.None);
+            Assert.True(explicitResult.ExitCode == 0, explicitResult.StandardError);
+            var explicitExcelVersion = OpenAndAssertPersistedWorkbook(
+                explicitTargetPath,
+                importSourceSet.SourceFiles,
+                activeCodePage,
+                nonAsciiText,
+                Path.Combine(temp.Path, "ExplicitContractClass.cls"));
+            Assert.False(string.IsNullOrWhiteSpace(explicitExcelVersion));
+            Assert.Equal(originalStandardBytes, File.ReadAllBytes(Path.Combine(explicitSourceDirectory, "UnicodeModule.bas")));
+            Assert.Equal(originalClassBytes, File.ReadAllBytes(Path.Combine(explicitSourceDirectory, "ContractClass.cls")));
+            Assert.Equal(explicitFormBytes, File.ReadAllBytes(Path.Combine(explicitSourceDirectory, "Dialog.frm")));
+            Assert.Equal(originalSidecarBytes, File.ReadAllBytes(Path.Combine(explicitSourceDirectory, "Dialog.frx")));
+            Assert.Empty(Directory.GetFiles(temp.Path, ".ExplicitImported.*.tmp.xlsm"));
             output.WriteLine(
                 $"VBE import integration: direct Excel {directImportExcelVersion}; production Excel {productionExcelVersion}; " +
-                $"active ACP {activeCodePage}; seed Excel {seedExcelVersion}; " +
+                $"explicit import Excel {explicitExcelVersion}; active ACP {activeCodePage}; seed Excel {seedExcelVersion}; " +
                 $"source encodings {string.Join(", ", importSourceSet.SourceFiles.Select(source => source.ImportVerification.OriginalEncoding))}.");
         }
 
@@ -388,6 +414,48 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         Assert.Equal(originalClassBytes, File.ReadAllBytes(classSourcePath));
         Assert.Equal(originalFormBytes, File.ReadAllBytes(formSourcePath));
         Assert.Equal(originalSidecarBytes, File.ReadAllBytes(formSidecarPath));
+        await WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20));
+    }
+
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
+    public async Task ExplicitImportAdmissionFailurePreservesRealWorkbookAndExcelProcessSet()
+    {
+        using var temp = TempDirectory.Create();
+        var initialProcesses = CaptureExcelProcessIds();
+        var sourceDirectory = temp.CreateDirectory("src");
+        var sourcePath = Path.Combine(sourceDirectory, "Module1.bas");
+        var targetPath = Path.Combine(temp.Path, "Target.xlsm");
+        CreateEmptyMacroEnabledWorkbook(targetPath);
+        var originalWorkbook = File.ReadAllBytes(targetPath);
+        byte[] malformedBomSource = [0xef, 0xbb, 0xbf, 0xc3, 0x28];
+        File.WriteAllBytes(sourcePath, malformedBomSource);
+
+        var command = new ImportCommand(new ExcelComWorkbookBuildAutomation());
+        var result = await command.RunAsync(
+            new ImportCommandRequest(sourceDirectory, targetPath, temp.Path),
+            CancellationToken.None);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("utf8bom", result.StandardError, StringComparison.Ordinal);
+        Assert.Equal(originalWorkbook, File.ReadAllBytes(targetPath));
+        Assert.Equal(malformedBomSource, File.ReadAllBytes(sourcePath));
+        Assert.Empty(Directory.GetFiles(temp.Path, ".Target.*.tmp.xlsm"));
+        if (ActiveWindowsAnsiCodePage.Get() != 65001)
+        {
+            var utf8Bom = new UTF8Encoding(true, true);
+            var unrepresentableSource = utf8Bom.GetPreamble().Concat(utf8Bom.GetBytes(
+                "Attribute VB_Name = \"Module1\"\r\n' 😀\r\n")).ToArray();
+            File.WriteAllBytes(sourcePath, unrepresentableSource);
+            var projectionResult = await command.RunAsync(
+                new ImportCommandRequest(sourceDirectory, targetPath, temp.Path),
+                CancellationToken.None);
+            Assert.Equal(1, projectionResult.ExitCode);
+            Assert.Contains("Windows code page", projectionResult.StandardError, StringComparison.Ordinal);
+            Assert.Equal(originalWorkbook, File.ReadAllBytes(targetPath));
+            Assert.Equal(unrepresentableSource, File.ReadAllBytes(sourcePath));
+        }
+
         await WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20));
     }
 

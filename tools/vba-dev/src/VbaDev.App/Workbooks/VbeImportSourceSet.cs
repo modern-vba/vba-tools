@@ -32,16 +32,34 @@ public sealed class VbeImportSourceSetFactory
     /// Captures the active code page once and stages every supplied source for one invocation.
     /// </summary>
     public VbeImportSourceSet Create(IReadOnlyList<VbaSourceFile> sourceFiles)
+        => NotifyCreated(VbeImportSourceSet.Create(sourceFiles, getActiveCodePage()));
+
+    internal VbeImportSourceSet CreateExplicitImport(string sourceDirectory)
+        => NotifyCreated(VbeImportSourceSet.Create(
+            new VbaSourceAdmission(getActiveCodePage).Admit(
+                sourceDirectory,
+                VbaSourceAdmissionIntent.ExplicitImport)));
+
+    private VbeImportSourceSet NotifyCreated(VbeImportSourceSet sourceSet)
     {
-        var sourceSet = VbeImportSourceSet.Create(sourceFiles, getActiveCodePage());
         try
         {
             sourceSetCreated?.Invoke(sourceSet);
             return sourceSet;
         }
-        catch
+        catch (Exception creationError)
         {
-            sourceSet.Dispose();
+            try
+            {
+                sourceSet.Dispose();
+            }
+            catch (Exception cleanupError)
+            {
+                throw new InvalidOperationException(
+                    $"{creationError.Message} {cleanupError.Message}",
+                    new AggregateException(creationError, cleanupError));
+            }
+
             throw;
         }
     }
@@ -79,11 +97,13 @@ public sealed class VbeImportSourceSet : IDisposable
     private VbeImportSourceSet(
         string stagingPath,
         IReadOnlyList<VbeImportSourceFile> sourceFiles,
-        int activeCodePage)
+        int activeCodePage,
+        AdmittedVbaSourceSet? admission = null)
     {
         StagingPath = stagingPath;
         SourceFiles = sourceFiles;
         ActiveCodePage = activeCodePage;
+        Admission = admission;
     }
 
     /// <summary>
@@ -100,6 +120,72 @@ public sealed class VbeImportSourceSet : IDisposable
     /// Gets the staged sources that may be passed to VBComponents.Import.
     /// </summary>
     public IReadOnlyList<VbeImportSourceFile> SourceFiles { get; }
+
+    internal AdmittedVbaSourceSet? Admission { get; }
+
+    /// <summary>
+    /// Derives the VBE mirror solely from the invocation's admitted source facts.
+    /// </summary>
+    internal static VbeImportSourceSet Create(AdmittedVbaSourceSet admission)
+    {
+        ArgumentNullException.ThrowIfNull(admission);
+        var activeEncoding = CreateStrictActiveEncoding(admission.ActiveCodePage);
+        var stagingPath = Path.Combine(Path.GetTempPath(), "vba-dev-vbe-import", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(stagingPath);
+        try
+        {
+            var stagedSources = new List<VbeImportSourceFile>(admission.Sources.Length);
+            foreach (var source in admission.Sources)
+            {
+                var importBytes = EncodeForVbe(
+                    source.Text,
+                    activeEncoding,
+                    admission.ActiveCodePage,
+                    source.DiagnosticSourcePath);
+                var stagedSourcePath = Path.Combine(stagingPath, source.FileName);
+                File.WriteAllBytes(stagedSourcePath, importBytes);
+                string? stagedBinaryPath = null;
+                if (source.BinaryBytes is { } binaryBytes)
+                {
+                    stagedBinaryPath = Path.Combine(stagingPath, Path.GetFileNameWithoutExtension(source.FileName) + ".frx");
+                    File.WriteAllBytes(stagedBinaryPath, binaryBytes.AsSpan());
+                }
+
+                stagedSources.Add(new VbeImportSourceFile(
+                    stagedSourcePath,
+                    source.Kind,
+                    stagedBinaryPath,
+                    new VbeImportVerification(
+                        source.ModuleIdentityAuthority.Name ?? source.Projection.ModuleName,
+                        source.Kind,
+                        source.Projection.CodeModuleLines,
+                        source.OriginalEncoding),
+                    source.DiagnosticSourcePath,
+                    source.ModuleIdentityAuthority));
+            }
+
+            return new VbeImportSourceSet(
+                stagingPath,
+                stagedSources.AsReadOnly(),
+                admission.ActiveCodePage,
+                admission);
+        }
+        catch (Exception stagingError)
+        {
+            try
+            {
+                DeleteStagingDirectory(stagingPath);
+            }
+            catch (Exception cleanupError)
+            {
+                throw new InvalidOperationException(
+                    $"{stagingError.Message} The VBE import staging directory could not be removed: '{stagingPath}'.",
+                    new AggregateException(stagingError, cleanupError));
+            }
+
+            throw;
+        }
+    }
 
     /// <summary>
     /// Strictly validates and stages one complete import source set.

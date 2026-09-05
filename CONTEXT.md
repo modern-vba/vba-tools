@@ -373,11 +373,16 @@ _Avoid_: debug session, source overlay, implicit editor integration
 
 **VbeImportSourceSet**:
 The invocation-owned VBE-facing mirror derived from a `DocumentSourceSet` or
-`BuildSourceSnapshot` before `VBComponents.Import`; text components strictly
+`BuildSourceSnapshot`, or from admitted `ExplicitWorkbookImport` facts, before
+`VBComponents.Import`; text components strictly
 round-trip through the operation-fixed active Windows ANSI code page while
 `.frx` sidecars retain their exact bytes and relative pairing. An
 unrepresentable or best-fit-only character fails before Excel starts, and the
 mirror never changes caller-owned bytes and is removed with command scratch.
+For `ExplicitImport`, it consumes the admission's Unicode, fixed ACP, and
+captured sidecar bytes without calling `GetACP`, choosing a source encoding,
+or rereading caller files. Other materialization paths retain their existing
+UTF-8-first admission behavior until their own migration slices.
 _Avoid_: source snapshot, persistent source conversion, lossy staging file
 
 **VbeImportVerification**:
@@ -708,9 +713,31 @@ _Avoid_: path-only export, ad hoc export, project export
 **ExplicitWorkbookImport**:
 A `VbaDev` import operation scoped by a caller-provided source directory and
 workbook path rather than by a `ProjectManifest` document definition. Its
-compatibility authority is the staged source identity set together with the
-live target's current project, reference, and retained-component names.
+source authority is the immutable `VbaSourceAdmission` captured with the closed
+`ExplicitImport` intent. Compatibility uses those admitted identities together
+with the actual project, reference, and retained-component names in a private
+copy of the existing target. The target is atomically replaced only after
+mirror cleanup, workbook verification and save, and owned Excel-process release
+succeed. Failure preserves the original target and reports retained private
+artifact paths when cleanup is incomplete.
 _Avoid_: path-only import, ad hoc import, project import
+
+**VbaSourceAdmission**:
+The internal sealed module that captures source authority for one explicit
+import invocation. Its closed `ExplicitImport` intent fixes `GetACP` once,
+fixes one recursive inventory, and reads each selected text source and matching
+`.frx` once without retries or a closing stability check. Recognized UTF-8,
+UTF-16 LE, and UTF-16 BE BOMs select strict decoders; BOM-less source uses only
+the fixed ACP, with ACP 65001 canonicalized as UTF-8. Admission never probes
+BOM-less UTF-8. Malformed or unsupported BOMs, strict-decoding failures, and
+inexact byte round trips fail closed. Immutable original bytes, Unicode,
+module identity and kind, syntax facts, deterministic order, sidecars, and
+provenance are shared by preflight, projection, verification, and diagnostics.
+Issue #335 introduces only explicit import: ordinary build, publish, snapshot,
+test, Doctor, and language-server admission remain on their existing paths.
+Snapshot capability versions remain `1.0`; later rollout is governed by
+ADR 0037.
+_Avoid_: public extension point, caller-composed decoding profile, mutable source cache
 
 **WorkbookMaterializationNamePreflight**:
 The compatibility decision required before a generated workbook accepts its
@@ -5165,7 +5192,7 @@ Dev: "Should `reference add` reject a registry-unique library because an exporte
 Domain Expert: "No. `reference add` resolves and records dependency intent; it does not preflight every source identity or the template's project name. Language Server validation, Doctor, and materializing commands report incompatibility separately. If an ambiguity probe itself cannot resolve a candidate because its required VBE baseline rejects the name, leave the manifest unchanged and report that probe failure."
 
 Dev: "Should an `ExplicitWorkbookImport` let `VBComponents.Import` discover name conflicts after it has flushed the target?"
-Domain Expert: "No. Before mutation, compare the staged authoritative `ModuleIdentity` values with each other and with the live target's actual `VBProject.Name`, active reference project or library names, and retained component names. Invalid source metadata, incomplete target inspection, or any conflict closes the workbook without saving and leaves the target file unchanged."
+Domain Expert: "No. Before mutation, compare the admitted authoritative `ModuleIdentity` values with each other and with the private target copy's actual `VBProject.Name`, active reference project or library names, and retained component names. Invalid source metadata, incomplete target inspection, or any conflict leaves the target file unchanged. The target is replaced only after import verification, private workbook save, mirror cleanup, and owned Excel-process release succeed."
 
 Dev: "Can build, publish, or a test build complete `WorkbookMaterializationNamePreflight` before it opens Excel?"
 Domain Expert: "Only the source-metadata and source-to-source part. The final active-reference set may include protected references that remain after normalization, so finish the decision in the temporary materialization workbook. It may flush replaceable old components and normalize references there, but it must re-inspect final authority and reject conflicts before source import, save, or output replacement."
