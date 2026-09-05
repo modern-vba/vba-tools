@@ -24,8 +24,8 @@ mixed identifier casing in caller-owned source does not add another import
 verification failure. Source-style enforcement remains a separate concern.
 
 Both projected code streams are tokenized with the canonical
-`VbaLanguageServer.Syntax` lexer. Token count, `VbaTokenKind`, and source range
-must match at every position. Only corresponding tokens classified exactly as
+product-neutral `VbaTools.Syntax` lexer. Token count, `VbaTokenKind`, and source
+range must match at every position. Only corresponding tokens classified exactly as
 `VbaTokenKind.Identifier` may have different text, and each such pair must be
 equal with `OrdinalIgnoreCase`. Every other token text compares with `Ordinal`,
 and the fail-closed lexical exclusions below remain `Ordinal`-exact even when

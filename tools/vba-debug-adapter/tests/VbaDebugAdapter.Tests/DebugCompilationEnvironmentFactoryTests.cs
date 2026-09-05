@@ -1,5 +1,5 @@
 using VbaDebugAdapter.Debugging;
-using VbaLanguageServer.Syntax;
+using VbaTools.Syntax;
 using Xunit;
 
 namespace VbaDebugAdapter.Tests;

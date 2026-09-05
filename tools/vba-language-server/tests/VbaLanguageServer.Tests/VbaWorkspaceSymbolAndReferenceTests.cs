@@ -1,7 +1,7 @@
 using VbaLanguageServer.Diagnostics;
 using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.SourceModel;
-using VbaLanguageServer.Syntax;
+using VbaTools.Syntax;
 using VbaLanguageServer.Workspace;
 using Xunit;
 

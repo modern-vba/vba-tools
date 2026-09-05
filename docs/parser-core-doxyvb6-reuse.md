@@ -2,31 +2,49 @@
 
 ## Purpose
 
-The Full VbaSyntaxTree Parser Core PRD treats `VbaLanguageServer.Syntax` as a
-`ReusableVbaParserCore`. VbaLanguageServer owns the first consumer, but the
-syntax model should remain usable by a future DoxyVB6 adapter that needs VBA
-module structure and source ranges for documentation generation.
+The Full VbaSyntaxTree Parser Core PRD treats `VbaTools.Syntax` as a
+`ReusableVbaParserCore`. VbaLanguageServer owns the first consumer, but not the
+product-neutral parser. The syntax model should remain usable by a future
+DoxyVB6 adapter that needs VBA module structure and source ranges for
+documentation generation.
 
 This document records the reusable parser Seam. It complements ADR 0010, which
 selects a hand-written reusable C# parser core and keeps direct DoxyVB6
-integration outside the initial parser replacement work.
+integration outside the initial parser replacement work. ADR 0039 supersedes
+the former product-owned project name and location without changing syntax
+behavior.
 
 ## Dependency Seam
 
-`VbaLanguageServer.Syntax` is the dependency Seam for reusable parsing. It
+`VbaTools.Syntax`, at `tools/vba-syntax/src/VbaTools.Syntax`, is the dependency
+Seam for reusable parsing. Its tests live independently at
+`tools/vba-syntax/tests/VbaTools.Syntax.Tests`. The module
 must not depend on:
 
 - LSP request or response types;
 - VS Code extension APIs;
+- DAP types or debug-adapter services;
 - workbook automation or Office COM automation;
 - `VbaDev` command behavior;
 - VbaLanguageServer feature services such as completion, hover, signature help,
   semantic tokens, formatting, or reference catalog resolution.
 
-Consumers may reference `VbaLanguageServer.Syntax` for lexical and syntactic VBA
+Consumers may reference `VbaTools.Syntax` for lexical and syntactic VBA
 structure. VbaLanguageServer-specific layers derive `VbaDefinition`,
 `CallableSignature`, diagnostics projection, semantic tokens, and LSP responses
 from that syntax model outside the parser core.
+
+For lexical and syntactic facts, `VbaDev` production and test projects consume
+this neutral module, not a language-server executable, build-order reference,
+test assembly, linked test source, or process harness. Other products may consume a public VbaDev-owned
+non-command library or invoke its public command process contract, without a
+reverse reference from VbaDev. `npm run verify:architecture` checks these
+project, assembly, linked-source, and product-contract import boundaries.
+
+The internal `MsOvbaCompression` helper is carried mechanically during the
+project move only. It is not part of the public syntax interface. Issue #362
+owns its final private placement with the neutral workbook metadata reader;
+this move does not add metadata parsing to the reusable syntax contract.
 
 The reusable incremental Interface is
 `VbaSyntaxTree.ParseOrUpdate(uri, source, previousSyntaxTree)`. It returns a
@@ -84,7 +102,7 @@ workflows, or VbaLanguageServer LSP behavior.
 The Full VbaSyntaxTree Parser Core PRD does not include:
 
 - changes in the DoxyVB6 repository;
-- NuGet packaging for `VbaLanguageServer.Syntax`;
+- NuGet packaging for `VbaTools.Syntax`;
 - replacing DoxyVB6's current parser directly;
 - a DoxyVB6 adapter implementation;
 - DoxyVB6-specific diagnostics or documentation rendering behavior.
@@ -96,4 +114,5 @@ consume outside VbaLanguageServer.
 
 - PRD: `docs/prd/full-vba-syntax-tree.md`
 - ADR 0010: `docs/adr/0010-use-hand-written-reusable-csharp-vba-parser-core.md`
+- ADR 0039: `docs/adr/0039-keep-vba-dev-independent-of-product-owned-modules.md`
 - ADR 0009: `docs/adr/0009-csharp-vba-language-server-architecture.md`

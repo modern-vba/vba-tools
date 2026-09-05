@@ -1,4 +1,4 @@
-using VbaLanguageServer.Syntax;
+using VbaTools.Syntax;
 
 namespace VbaDev.Infrastructure.Workbooks;
 

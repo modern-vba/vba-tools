@@ -2,7 +2,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
 using System.Runtime.Versioning;
 using System.Text;
-using VbaLanguageServer.Syntax;
+using VbaTools.Syntax;
 
 namespace VbaLanguageServer.SourceModel;
 

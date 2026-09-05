@@ -1,5 +1,5 @@
 using VbaLanguageServer.SourceModel;
-using VbaLanguageServer.Syntax;
+using VbaTools.Syntax;
 using Xunit;
 
 namespace VbaLanguageServer.Tests;

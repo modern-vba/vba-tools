@@ -2,7 +2,7 @@ using System.Runtime.InteropServices;
 using System.Reflection;
 using System.Text;
 using Microsoft.CSharp.RuntimeBinder;
-using VbaLanguageServer.Syntax;
+using VbaTools.Syntax;
 
 namespace VbaDev.Infrastructure.Workbooks;
 

@@ -4,7 +4,7 @@ using System.Runtime;
 using System.Runtime.InteropServices;
 using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.SourceModel;
-using VbaLanguageServer.Syntax;
+using VbaTools.Syntax;
 using VbaLanguageServer.Workspace;
 using Xunit;
 using Xunit.Abstractions;

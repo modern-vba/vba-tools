@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
-    <ProjectReference Include="..\..\..\vba-language-server\src\VbaLanguageServer.Syntax\VbaLanguageServer.Syntax.csproj" />
+    <ProjectReference Include="..\..\..\vba-syntax\src\VbaTools.Syntax\VbaTools.Syntax.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

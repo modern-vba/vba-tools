@@ -1,7 +1,7 @@
 namespace VbaDev.App.Testing;
 
 using VbaDev.App.Workbooks;
-using VbaLanguageServer.Syntax;
+using VbaTools.Syntax;
 
 /// <summary>
 /// Selects the VBA tests to run inside a workbook.

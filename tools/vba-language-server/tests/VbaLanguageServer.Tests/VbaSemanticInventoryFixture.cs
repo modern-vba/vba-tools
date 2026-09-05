@@ -1,6 +1,6 @@
 using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.SourceModel;
-using VbaLanguageServer.Syntax;
+using VbaTools.Syntax;
 
 namespace VbaLanguageServer.Tests;
 

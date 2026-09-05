@@ -1,7 +1,7 @@
 using VbaDev.App.Projects;
 using VbaDev.App.Workbooks;
 using VbaDev.Domain;
-using VbaLanguageServer.Syntax;
+using VbaTools.Syntax;
 
 namespace VbaDev.App.Build;
 

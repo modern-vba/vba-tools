@@ -5,7 +5,7 @@ using System.Text.Json.Nodes;
 using VbaLanguageServer.Lsp;
 using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.SourceModel;
-using VbaLanguageServer.Syntax;
+using VbaTools.Syntax;
 using VbaLanguageServer.Workspace;
 using Xunit;
 

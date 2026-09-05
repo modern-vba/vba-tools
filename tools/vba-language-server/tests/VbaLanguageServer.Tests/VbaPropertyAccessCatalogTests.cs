@@ -1,7 +1,7 @@
 using System.Runtime.InteropServices.ComTypes;
 using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.SourceModel;
-using VbaLanguageServer.Syntax;
+using VbaTools.Syntax;
 using Xunit;
 
 namespace VbaLanguageServer.Tests;

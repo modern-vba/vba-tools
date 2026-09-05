@@ -1,5 +1,10 @@
 # Full VbaSyntaxTree Parser Core
 
+The initial parser work used a language-server-owned project name. ADR 0039 and
+issue #361 relocate that implementation to product-neutral `VbaTools.Syntax`
+without changing the syntax, recovery, trivia, or source-span requirements of
+this PRD. The project and namespace references below reflect that ownership.
+
 ## Problem
 
 VbaLanguageServer currently relies on regex-oriented source scanning for many
@@ -16,13 +21,14 @@ expanding into compile-time type inference or unresolved-name diagnostics.
 ## Solution
 
 Introduce a reusable hand-written C# parser core in a new
-`VbaLanguageServer.Syntax` project. The parser core will produce a
-source-range-preserving `VbaTokenStream` and `VbaSyntaxTree` and will replace
-the current `VbaModuleParser` behavior used by the language server.
+`VbaTools.Syntax` project at `tools/vba-syntax/src/VbaTools.Syntax`. The parser
+core will produce a source-range-preserving `VbaTokenStream` and `VbaSyntaxTree`
+and will replace the current `VbaModuleParser` behavior used by the language
+server.
 
 The parser core is a `ReusableVbaParserCore`: it must not depend on LSP,
-VS Code, workbook automation, or `VbaDev` command behavior. VbaLanguageServer
-will consume it for editor features, and DoxyVB6 may later consume the same
+VS Code, DAP, workbook automation, command behavior, or any product consumer.
+VbaLanguageServer will consume it for editor features, and DoxyVB6 may later consume the same
 syntax model through a separate adapter.
 
 Rubberduck's public parser grammar and declaration-resolution source are used
@@ -56,7 +62,7 @@ current scope.
 
 The initial parser scope includes:
 
-- `VbaLanguageServer.Syntax` project and public syntax model skeleton;
+- product-neutral `VbaTools.Syntax` project and public syntax model skeleton;
 - `VbaTokenStream` lexer with source ranges;
 - module attributes, module options, and module identity;
 - `.bas`, `.cls`, and `.frm` files;
@@ -97,8 +103,10 @@ in issue #120.
 
 ## Acceptance Criteria
 
-- `VbaLanguageServer.Syntax` builds as a separate C# project and has no
-  dependency on LSP, VS Code, workbook automation, or `VbaDev` command behavior.
+- `VbaTools.Syntax` builds as a separate product-neutral C# project and has no
+  dependency on LSP, VS Code, DAP, workbook automation, command behavior, or its
+  product consumers. Its parser tests are independently owned at
+  `tools/vba-syntax/tests/VbaTools.Syntax.Tests`.
 - The lexer emits a source-range-preserving `VbaTokenStream` for keywords,
   identifiers, literals, operators, punctuation, comments, whitespace, newlines,
   line continuations, and preprocessor directives.
@@ -130,13 +138,13 @@ in issue #120.
 - Tests include representative Rubberduck-compatible VBA syntax cases without
   copying Rubberduck grammar or implementation.
 - Documentation explains how a future DoxyVB6 adapter can consume
-  `VbaLanguageServer.Syntax` without making DoxyVB6 integration part of this
+  `VbaTools.Syntax` without making DoxyVB6 integration part of this
   PRD. The dependency boundary is recorded in
   `docs/parser-core-doxyvb6-reuse.md`.
 
 ## Implementation Plan
 
-1. Add `VbaLanguageServer.Syntax` and the public syntax model skeleton.
+1. Add `VbaTools.Syntax` and the public syntax model skeleton.
 2. Implement the `VbaTokenStream` lexer.
 3. Parse modules, module attributes, options, module identity, and `.frm`
    designer/code boundaries.
@@ -156,6 +164,8 @@ in issue #120.
 - ADR 0009 keeps editor-intelligence behavior in the C# VbaLanguageServer.
 - ADR 0003 keeps incremental parsing at the `ModuleMember` replacement boundary.
 - ADR 0010 records the hand-written reusable C# parser-core decision.
+- ADR 0039 and issue #361 establish product-neutral parser ownership and forbid
+  reverse product, build, test, and harness dependencies from VbaDev.
 - `docs/parser-core-doxyvb6-reuse.md` records the future DoxyVB6 adapter reuse
   boundary for the `ReusableVbaParserCore`.
 - Issue #120 tracks semantic and compiler-compatibility diagnostics that are

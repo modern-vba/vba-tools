@@ -1,5 +1,5 @@
 using VbaLanguageServer.Diagnostics;
-using VbaLanguageServer.Syntax;
+using VbaTools.Syntax;
 using VbaLanguageServer.Workspace;
 using PublishedSyntaxDiagnostic = VbaLanguageServer.Diagnostics.VbaSyntaxDiagnostic;
 

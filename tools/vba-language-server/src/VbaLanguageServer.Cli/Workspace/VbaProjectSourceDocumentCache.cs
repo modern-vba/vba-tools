@@ -1,6 +1,6 @@
 using VbaLanguageServer.SourceModel;
 using VbaLanguageServer.ProjectModel;
-using VbaLanguageServer.Syntax;
+using VbaTools.Syntax;
 
 namespace VbaLanguageServer.Workspace;
 

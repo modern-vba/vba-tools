@@ -42,7 +42,7 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
                 && definition.Kind == VbaSourceDefinitionKind.Property
                 && definition.ParentTypeName == "GeneratedType"
                 && definition.PropertyAccess == (VbaPropertyAccess.Readable | VbaPropertyAccess.Writable)
-                && definition.PropertyAccessorKind == VbaLanguageServer.Syntax.VbaPropertyAccessorKind.Get);
+                && definition.PropertyAccessorKind == VbaTools.Syntax.VbaPropertyAccessorKind.Get);
             Assert.Contains(entry.Catalog.Definitions, definition =>
                 definition.Name == "GeneratedMethod"
                 && definition.Signature?.CallableKind == VbaCallableKind.Function
@@ -1031,7 +1031,7 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
                     PropertyAccess: VbaPropertyAccess.Readable | VbaPropertyAccess.Writable)
                 {
                     PropertyAccessorKind =
-                        VbaLanguageServer.Syntax.VbaPropertyAccessorKind.Get
+                        VbaTools.Syntax.VbaPropertyAccessorKind.Get
                 },
                 new VbaProjectReferenceDefinition(
                     referenceName,
