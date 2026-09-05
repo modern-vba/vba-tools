@@ -1,112 +1,163 @@
 using VbaLanguageServer.Diagnostics;
 using VbaTools.Syntax;
-using VbaLanguageServer.Workspace;
 using PublishedSyntaxDiagnostic = VbaLanguageServer.Diagnostics.VbaSyntaxDiagnostic;
 
 namespace VbaLanguageServer.BlockSkeletonInsertion;
 
+/// <summary>
+/// Compares caller-selected diagnostic evidence without parsing or deciding insertion eligibility.
+/// </summary>
 internal static class BlockSkeletonInsertionDiagnosticProof
 {
-    public static bool IsSafe(
-        VbaVersionedDocumentSnapshot snapshot,
-        VbaDiagnosticPipelineResult controlDiagnostics,
-        VbaSourceText controlSource,
-        VbaDiagnosticPipelineResult prospectiveDiagnostics,
-        VbaSourceText prospectiveSource,
-        BlockSkeletonInsertionPrefixContext prefix,
-        IReadOnlyList<VbaBlockSyntax> controlAncestorBlocks,
-        int insertionStartOffset,
-        int insertionEndOffset,
-        int replacementEndOffset,
-        int delta)
+    public static bool IsSafe(BlockSkeletonInsertionDiagnosticProofCase proofCase)
     {
-        var originalSource = snapshot.SourceText;
-        var original = CreateErrorMultiset(snapshot.Diagnostics, originalSource);
-        if (!snapshot.IsOwnedByAnalysis
-            && !MultisetsEqual(
-                original,
-                CreateErrorMultiset(
-                    VbaDiagnosticPipeline.CollectDocument(
-                        snapshot.SyntaxTree,
-                        snapshot.Uri),
-                    originalSource)))
+        if (!HasConsistentSourceEvidence(proofCase)
+            || !TryCreateErrorMultiset(proofCase.Original, out var expected)
+            || !TryCreateErrorMultiset(proofCase.AllowedRemovals, out var allowed))
         {
             return false;
         }
 
-        var control = CreateErrorMultiset(controlDiagnostics, controlSource);
-        var remainingOriginal = new Dictionary<DiagnosticFingerprint, int>(original);
-        foreach (var pair in control)
+        if (proofCase.Control is { } controlEvidence)
         {
-            if (!remainingOriginal.TryGetValue(pair.Key, out var count)
-                || count < pair.Value)
+            if (!TryCreateErrorMultiset(controlEvidence, out var control)
+                || !TrySubtract(expected, control)
+                || !expected.All(pair => allowed.TryGetValue(pair.Key, out var count)
+                    && pair.Value <= count))
+            {
+                return false;
+            }
+
+            expected = control;
+        }
+        else if (!TrySubtract(expected, allowed))
+        {
+            return false;
+        }
+
+        return TryCreateErrorMultiset(
+                proofCase.Prospective,
+                out var prospective,
+                proofCase.Replacement)
+            && MultisetsEqual(expected, prospective);
+    }
+
+    private static bool HasConsistentSourceEvidence(BlockSkeletonInsertionDiagnosticProofCase proofCase)
+    {
+        var original = proofCase.Original.Source;
+        var prospective = proofCase.Prospective.Source;
+        var replacement = proofCase.Replacement;
+        if (replacement.StartOffset < 0
+            || replacement.EndOffset < replacement.StartOffset
+            || replacement.EndOffset > original.Text.Length
+            || replacement.ProspectiveEndOffset < replacement.StartOffset
+            || replacement.ProspectiveEndOffset > prospective.Text.Length
+            || original.Text.Length + (long)replacement.ProspectiveEndOffset - replacement.EndOffset
+                != prospective.Text.Length
+            || !original.Text.Equals(proofCase.AllowedRemovals.Source.Text, StringComparison.Ordinal)
+            || !original.Text.AsSpan(0, replacement.StartOffset)
+                .SequenceEqual(prospective.Text.AsSpan(0, replacement.StartOffset))
+            || !original.Text.AsSpan(replacement.EndOffset)
+                .SequenceEqual(prospective.Text.AsSpan(replacement.ProspectiveEndOffset)))
+        {
+            return false;
+        }
+
+        if (proofCase.Control is not { } control)
+        {
+            return true;
+        }
+
+        // Neutralizing a header changes text, but not its physical source coordinates.
+        if (control.Source.Text.Length != original.Text.Length
+            || control.Source.Lines.Count != original.Lines.Count)
+        {
+            return false;
+        }
+
+        for (var index = 0; index < original.Lines.Count; index++)
+        {
+            if (control.Source.Lines[index].StartOffset != original.Lines[index].StartOffset
+                || control.Source.Lines[index].EndOffset != original.Lines[index].EndOffset)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool TryCreateErrorMultiset(
+        BlockSkeletonInsertionDiagnosticEvidence evidence,
+        out Dictionary<DiagnosticFingerprint, int> result,
+        BlockSkeletonInsertionDiagnosticReplacement? replacement = null)
+    {
+        result = new();
+        replacement ??= new(0, 0, 0);
+        var delta = (long)replacement.ProspectiveEndOffset - replacement.EndOffset;
+        foreach (var diagnostic in evidence.SyntaxDiagnostics
+            .Where(diagnostic => IsError(diagnostic.Severity)))
+        {
+            if (!TryCreateNormalizedFingerprint(
+                "syntax",
+                diagnostic,
+                evidence.Source,
+                replacement.StartOffset,
+                replacement.EndOffset,
+                replacement.ProspectiveEndOffset,
+                delta,
+                out var fingerprint))
+            {
+                return false;
+            }
+
+            Add(result, fingerprint);
+        }
+
+        foreach (var diagnostic in evidence.DocumentValidationDiagnostics
+            .Where(diagnostic => IsError(diagnostic.Severity)))
+        {
+            if (!TryCreateNormalizedFingerprint(
+                "validation",
+                diagnostic,
+                evidence.Source,
+                replacement.StartOffset,
+                replacement.EndOffset,
+                replacement.ProspectiveEndOffset,
+                delta,
+                out var fingerprint))
+            {
+                return false;
+            }
+
+            Add(result, fingerprint);
+        }
+
+        return true;
+    }
+
+    private static bool TrySubtract(
+        Dictionary<DiagnosticFingerprint, int> original,
+        IReadOnlyDictionary<DiagnosticFingerprint, int> removed)
+    {
+        foreach (var pair in removed)
+        {
+            if (!original.TryGetValue(pair.Key, out var count) || count < pair.Value)
             {
                 return false;
             }
 
             if (count == pair.Value)
             {
-                remainingOriginal.Remove(pair.Key);
+                original.Remove(pair.Key);
             }
             else
             {
-                remainingOriginal[pair.Key] = count - pair.Value;
+                original[pair.Key] = count - pair.Value;
             }
         }
 
-        var allowedDirectCascades = CreateAllowedDirectCascadeMultiset(
-            prefix,
-            controlAncestorBlocks,
-            controlSource);
-        foreach (var pair in remainingOriginal)
-        {
-            if (!allowedDirectCascades.TryGetValue(pair.Key, out var allowedCount)
-                || pair.Value > allowedCount)
-            {
-                return false;
-            }
-        }
-
-        var prospective = new Dictionary<DiagnosticFingerprint, int>();
-        foreach (var diagnostic in prospectiveDiagnostics.SyntaxDiagnostics
-            .Where(diagnostic => IsError(diagnostic.Severity)))
-        {
-            if (!TryCreateNormalizedFingerprint(
-                "syntax",
-                diagnostic,
-                prospectiveSource,
-                insertionStartOffset,
-                insertionEndOffset,
-                replacementEndOffset,
-                delta,
-                out var fingerprint))
-            {
-                return false;
-            }
-
-            Add(prospective, fingerprint);
-        }
-
-        foreach (var diagnostic in prospectiveDiagnostics.DocumentValidationDiagnostics
-            .Where(diagnostic => IsError(diagnostic.Severity)))
-        {
-            if (!TryCreateNormalizedFingerprint(
-                "validation",
-                diagnostic,
-                prospectiveSource,
-                insertionStartOffset,
-                insertionEndOffset,
-                replacementEndOffset,
-                delta,
-                out var fingerprint))
-            {
-                return false;
-            }
-
-            Add(prospective, fingerprint);
-        }
-
-        return MultisetsEqual(control, prospective);
+        return true;
     }
 
     private static bool MultisetsEqual(
@@ -116,105 +167,6 @@ internal static class BlockSkeletonInsertionDiagnosticProof
             && left.All(pair => right.TryGetValue(pair.Key, out var count)
                 && count == pair.Value);
 
-    private static Dictionary<DiagnosticFingerprint, int> CreateErrorMultiset(
-        VbaDiagnosticPipelineResult diagnostics,
-        VbaSourceText source)
-    {
-        var result = new Dictionary<DiagnosticFingerprint, int>();
-        foreach (var diagnostic in diagnostics.SyntaxDiagnostics
-            .Where(diagnostic => IsError(diagnostic.Severity)))
-        {
-            Add(result, CreateFingerprint("syntax", diagnostic, source));
-        }
-
-        foreach (var diagnostic in diagnostics.DocumentValidationDiagnostics
-            .Where(diagnostic => IsError(diagnostic.Severity)))
-        {
-            Add(result, CreateFingerprint("validation", diagnostic, source));
-        }
-
-        return result;
-    }
-
-    private static Dictionary<DiagnosticFingerprint, int> CreateAllowedDirectCascadeMultiset(
-        BlockSkeletonInsertionPrefixContext prefix,
-        IReadOnlyList<VbaBlockSyntax> controlAncestorBlocks,
-        VbaSourceText controlSource)
-    {
-        var result = new Dictionary<DiagnosticFingerprint, int>();
-        foreach (var block in prefix.Ancestors.Append(prefix.Candidate))
-        {
-            Add(result, new DiagnosticFingerprint(
-                "syntax",
-                "vba-language-server",
-                "error",
-                "syntax.missingBlockTerminator",
-                $"Block is missing '{block.ExpectedTerminator}'.",
-                block.StatementRange.Start.Offset,
-                block.StatementRange.End.Offset));
-        }
-
-        foreach (var block in controlAncestorBlocks)
-        {
-            if (block.CloserRange is null)
-            {
-                continue;
-            }
-
-            var range = ToFullStatementRange(controlSource, block.CloserRange);
-            Add(result, new DiagnosticFingerprint(
-                "syntax",
-                "vba-language-server",
-                "error",
-                "syntax.unexpectedStatementBoundaryToken",
-                $"Unexpected statement-boundary token '{block.ExpectedTerminator}'.",
-                range.Start.Offset,
-                range.End.Offset));
-        }
-
-        return result;
-    }
-
-    private static VbaSyntaxRange ToFullStatementRange(
-        VbaSourceText source,
-        VbaSyntaxRange tokenRange)
-    {
-        var firstLine = source.Lines[tokenRange.Start.Line];
-        var finalLine = source.Lines[tokenRange.End.Line];
-        return new VbaSyntaxRange(
-            new VbaSyntaxPosition(firstLine.LineNumber, 0, firstLine.StartOffset),
-            new VbaSyntaxPosition(
-                finalLine.LineNumber,
-                finalLine.Text.Length,
-                finalLine.EndOffset));
-    }
-
-    private static DiagnosticFingerprint CreateFingerprint(
-        string category,
-        PublishedSyntaxDiagnostic diagnostic,
-        VbaSourceText source)
-        => new(
-            category,
-            diagnostic.Source,
-            diagnostic.Severity,
-            diagnostic.Code,
-            diagnostic.Message,
-            ToOffset(source, diagnostic.Range.Start),
-            ToOffset(source, diagnostic.Range.End));
-
-    private static DiagnosticFingerprint CreateFingerprint(
-        string category,
-        VbaValidationDiagnostic diagnostic,
-        VbaSourceText source)
-        => new(
-            category,
-            diagnostic.Source,
-            diagnostic.Severity,
-            diagnostic.Code,
-            diagnostic.Message,
-            ToOffset(source, diagnostic.Range.Start),
-            ToOffset(source, diagnostic.Range.End));
-
     private static bool TryCreateNormalizedFingerprint(
         string category,
         PublishedSyntaxDiagnostic diagnostic,
@@ -222,7 +174,7 @@ internal static class BlockSkeletonInsertionDiagnosticProof
         int insertionStartOffset,
         int insertionEndOffset,
         int replacementEndOffset,
-        int delta,
+        long delta,
         out DiagnosticFingerprint fingerprint)
         => TryCreateNormalizedFingerprint(
             category,
@@ -245,7 +197,7 @@ internal static class BlockSkeletonInsertionDiagnosticProof
         int insertionStartOffset,
         int insertionEndOffset,
         int replacementEndOffset,
-        int delta,
+        long delta,
         out DiagnosticFingerprint fingerprint)
         => TryCreateNormalizedFingerprint(
             category,
@@ -272,21 +224,26 @@ internal static class BlockSkeletonInsertionDiagnosticProof
         int insertionStartOffset,
         int insertionEndOffset,
         int replacementEndOffset,
-        int delta,
+        long delta,
         out DiagnosticFingerprint fingerprint)
     {
         fingerprint = default!;
-        var startOffset = ToOffset(source, range.Start);
-        var endOffset = ToOffset(source, range.End);
-        if (!TryMapRangeToOriginal(
-            startOffset,
-            endOffset,
-            insertionStartOffset,
-            insertionEndOffset,
-            replacementEndOffset,
-            delta,
-            out var originalStart,
-            out var originalEnd))
+        if (!TryToOffset(source, range.Start, out var startOffset)
+            || !TryToOffset(source, range.End, out var endOffset)
+            || !TryMapRangeToOriginal(
+                startOffset,
+                endOffset,
+                insertionStartOffset,
+                insertionEndOffset,
+                replacementEndOffset,
+                delta,
+                out var originalStart,
+                out var originalEnd))
+        {
+            return false;
+        }
+
+        if (originalEnd > source.Text.Length - delta)
         {
             return false;
         }
@@ -308,7 +265,7 @@ internal static class BlockSkeletonInsertionDiagnosticProof
         int insertionStartOffset,
         int insertionEndOffset,
         int replacementEndOffset,
-        int delta,
+        long delta,
         out int originalStartOffset,
         out int originalEndOffset)
     {
@@ -328,9 +285,14 @@ internal static class BlockSkeletonInsertionDiagnosticProof
 
         if (prospectiveStartOffset >= replacementEndOffset)
         {
-            originalStartOffset = prospectiveStartOffset - delta;
-            originalEndOffset = prospectiveEndOffset - delta;
-            return originalStartOffset >= insertionEndOffset;
+            var mappedStart = prospectiveStartOffset - delta;
+            var mappedEnd = prospectiveEndOffset - delta;
+            if (mappedStart >= insertionEndOffset && mappedEnd <= int.MaxValue)
+            {
+                originalStartOffset = (int)mappedStart;
+                originalEndOffset = (int)mappedEnd;
+                return true;
+            }
         }
 
         originalStartOffset = 0;
@@ -341,8 +303,23 @@ internal static class BlockSkeletonInsertionDiagnosticProof
     private static bool IsError(string severity)
         => severity.Equals("error", StringComparison.OrdinalIgnoreCase);
 
-    private static int ToOffset(VbaSourceText source, VbaPosition position)
-        => source.Lines[position.Line].StartOffset + position.Character;
+    private static bool TryToOffset(VbaSourceText source, VbaPosition position, out int offset)
+    {
+        offset = 0;
+        if (position.Line < 0 || position.Line >= source.Lines.Count)
+        {
+            return false;
+        }
+
+        var line = source.Lines[position.Line];
+        if (position.Character < 0 || position.Character > line.Text.Length)
+        {
+            return false;
+        }
+
+        offset = line.StartOffset + position.Character;
+        return true;
+    }
 
     private static void Add(
         IDictionary<DiagnosticFingerprint, int> counts,

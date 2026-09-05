@@ -140,3 +140,31 @@ The manual smoke gate passed on 2026-07-16 with the packaged and installed
 
 All feasibility criteria passed, so this ADR is accepted and issue #198 may
 proceed after issue #197 is committed and closed.
+
+## Diagnostic Proof Ownership
+
+Issue #364 consolidates declaration and structured-block diagnostic comparison
+behind one internal pure `BlockSkeletonInsertionDiagnosticProof`. Immutable
+proof evidence contains original, optional control, and prospective diagnostics,
+source coordinates, exact caller-selected removal allowances, and the edit.
+Fingerprint construction, prospective-to-original mapping, counted subtraction,
+and exact equality are implementation details, not separate callable services.
+
+The speculation caller still owns candidate and ancestor boundaries,
+conditional-branch locality, control construction, and cascade selection.
+Declaration speculation retains its direct-missing count check for unowned
+snapshots, while structured-block speculation retains its full original-error
+recollection check. The trusted declaration tail shortcut is unchanged; this
+refactoring does not impose the structured provenance policy on declarations.
+
+Syntax and document-validation error identities include their category, source,
+literal severity, code, message, mapped half-open range, and multiplicity.
+Selection of error severity remains case-insensitive. Warnings, information,
+and project diagnostics retain their existing exclusion. Adjacent ranges are
+not overlaps. Malformed proof evidence returns failure, and permitted removals
+are exact identities and counts rather than wildcard filters.
+
+This internal consolidation does not change the Enter trigger, LSP contract,
+cursor placement, editor transaction, or insertion eligibility established above.
+It adds no generic diagnostic framework, product adapter, or new product or
+package dependency.
