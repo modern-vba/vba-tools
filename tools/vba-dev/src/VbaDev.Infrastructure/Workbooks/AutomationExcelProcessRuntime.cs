@@ -1,0 +1,663 @@
+using VbaDev.App.Workbooks;
+using VbaDev.App.Testing;
+using VbaDev.Infrastructure.Debugging;
+
+namespace VbaDev.Infrastructure.Workbooks;
+
+internal interface IExcelComWorkbookGenerationLifecycle
+{
+    object Start(
+        OwnedExcelTerminationController terminationController,
+        bool enableAutomationSecurityLow,
+        CancellationToken cancellationToken);
+
+    IWorkbookBuildSession Open(object host, string workbookPath);
+
+    void DisposeHost(object host, TimeSpan cleanupGrace);
+
+    void DisposeSession(IWorkbookBuildSession session, TimeSpan cleanupGrace);
+}
+
+/// <summary>
+/// Owns the native process, private desktop, STA, deadlines, and cleanup for
+/// bounded workbook scenarios without deciding a command's commitment policy.
+/// </summary>
+internal sealed class AutomationExcelProcessRuntime
+{
+    private static readonly TimeSpan DispatcherRetirementObservation =
+        TimeSpan.FromMilliseconds(100);
+    private readonly IStaComDispatcherFactory generationDispatcherFactory;
+    private readonly IExcelComWorkbookGenerationLifecycle generationLifecycle;
+
+    /// <summary>
+    /// Creates the production runtime over the native Windows ownership boundary.
+    /// </summary>
+    internal AutomationExcelProcessRuntime()
+        : this(
+            new StaComDispatcherFactory(),
+            new ExcelComWorkbookGenerationLifecycle())
+    {
+    }
+
+    internal AutomationExcelProcessRuntime(
+        IStaComDispatcherFactory generationDispatcherFactory,
+        IExcelComWorkbookGenerationLifecycle generationLifecycle)
+    {
+        this.generationDispatcherFactory = generationDispatcherFactory;
+        this.generationLifecycle = generationLifecycle;
+    }
+
+    /// <summary>
+    /// Executes one workbook scenario and returns its terminal release evidence.
+    /// </summary>
+    internal Task<AutomationExcelProcessOutcome<TResult>> RunWorkbookAsync<TResult>(
+        string workbookPath,
+        WorkbookAutomationTimeouts timeouts,
+        Func<IWorkbookGenerationSession, CancellationToken, Task<TResult>> operation,
+        CancellationToken cancellationToken)
+        => RunCoreAsync(
+            workbookPath,
+            timeouts,
+            operation,
+            enableAutomationSecurityLow: false,
+            cancellationToken);
+
+    private async Task<AutomationExcelProcessOutcome<TResult>> RunCoreAsync<TResult>(
+        string workbookPath,
+        WorkbookAutomationTimeouts timeouts,
+        Func<IWorkbookGenerationSession, CancellationToken, Task<TResult>> operation,
+        bool enableAutomationSecurityLow,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(workbookPath);
+        ArgumentNullException.ThrowIfNull(timeouts);
+        ArgumentNullException.ThrowIfNull(operation);
+
+        using var terminationController = new OwnedExcelTerminationController();
+        IStaComDispatcher dispatcher;
+        try
+        {
+            dispatcher = generationDispatcherFactory.Create();
+        }
+        catch (Exception exception)
+        {
+            var stage = new WorkbookAutomationStage(WorkbookAutomationStageKind.ExcelStartup);
+            return new AutomationExcelProcessOutcome<TResult>(
+                default,
+                new AutomationExcelProcessEvidence(
+                    stage,
+                    NormalizeOperationError(exception, cancellationToken, stage, null),
+                    CleanupFailure: null,
+                    DispatcherFailure: null,
+                    CancellationRequestedDuringCleanup: false,
+                    ProcessReleaseVerified: true,
+                    DispatcherRetired: true,
+                    IsolationDiagnostics: null));
+        }
+
+        var stageExecutor = new WorkbookAutomationStageExecutor(
+            () => terminationController.HasAttachedProcessExited,
+            terminationController.RequestForcedTermination,
+            getOwnedProcessCompletion: () =>
+                terminationController.AttachedProcessCompletion,
+            captureAutomationStage: terminationController.CaptureAutomationStage,
+            describeIsolationEvidence: terminationController.DescribeIsolationEvidence);
+        object? host = null;
+        IWorkbookBuildSession? buildSession = null;
+        BoundedWorkbookGenerationSession? generationSession = null;
+        WorkbookAutomationStage? lifecycleStage = null;
+        TResult? result = default;
+        Exception? operationError = null;
+
+        try
+        {
+            var startupStage = new WorkbookAutomationStage(
+                WorkbookAutomationStageKind.ExcelStartup);
+            lifecycleStage = startupStage;
+            await stageExecutor.ExecuteAsync(
+                startupStage,
+                timeouts.ExcelStartup,
+                timeouts.ProcessCleanup,
+                cancellationToken,
+                stageCancellation => dispatcher.InvokeAsync(
+                    () =>
+                    {
+                        host = generationLifecycle.Start(
+                            terminationController,
+                            enableAutomationSecurityLow,
+                            stageCancellation);
+                        return true;
+                    },
+                    stageCancellation)).ConfigureAwait(false);
+
+            var openStage = new WorkbookAutomationStage(
+                WorkbookAutomationStageKind.WorkbookOpen,
+                Path.GetFileName(workbookPath));
+            lifecycleStage = openStage;
+            await stageExecutor.ExecuteAsync(
+                openStage,
+                timeouts.WorkbookOpen,
+                timeouts.ProcessCleanup,
+                cancellationToken,
+                stageCancellation => dispatcher.InvokeAsync(
+                    () =>
+                    {
+                        buildSession = generationLifecycle.Open(host!, workbookPath);
+                        host = null;
+                        return true;
+                    },
+                    stageCancellation)).ConfigureAwait(false);
+
+            generationSession = new BoundedWorkbookGenerationSession(
+                dispatcher,
+                stageExecutor,
+                buildSession!,
+                Path.GetFileName(workbookPath),
+                timeouts);
+            result = await operation(generationSession, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            operationError = NormalizeOperationError(
+                ex,
+                cancellationToken,
+                generationSession?.LastStage ?? lifecycleStage,
+                terminationController.DescribeIsolationEvidence());
+        }
+
+        if (operationError is null && terminationController.HasAttachedProcessExited)
+        {
+            operationError = new WorkbookAutomationProcessLostException(
+                generationSession?.LastStage ??
+                lifecycleStage ??
+                new WorkbookAutomationStage(WorkbookAutomationStageKind.ProcessCleanup),
+                isolationDiagnostics:
+                    terminationController.DescribeIsolationEvidence());
+        }
+
+        generationSession?.Retire();
+        var cancellationBeforeCleanup = cancellationToken.IsCancellationRequested;
+        var cleanupError = await CleanupAsync(
+            dispatcher,
+            terminationController,
+            host,
+            buildSession,
+            timeouts.ProcessCleanup,
+            stageExecutor,
+            operationError).ConfigureAwait(false);
+        var dispatcherError = await DisposeDispatcherAsync(
+            dispatcher,
+            timeouts.ProcessCleanup).ConfigureAwait(false);
+        return new AutomationExcelProcessOutcome<TResult>(
+            result,
+            new AutomationExcelProcessEvidence(
+                generationSession?.LastStage ?? lifecycleStage,
+                operationError,
+                cleanupError,
+                dispatcherError,
+                !cancellationBeforeCleanup && cancellationToken.IsCancellationRequested,
+                (operationError is null || !ContainsReleaseProofFailure(operationError))
+                    && (cleanupError is null || !ContainsReleaseProofFailure(cleanupError)),
+                DispatcherRetired: dispatcherError is null,
+                terminationController.DescribeIsolationEvidence()));
+    }
+
+    internal Task<AutomationExcelProcessOutcome<IReadOnlyList<WorkbookTestResultRow>>> RunWorkbookTestsAsync(
+        string workbookPath,
+        WorkbookAutomationTimeouts timeouts,
+        TimeSpan executionTimeout,
+        WorkbookTestSelector selector,
+        CancellationToken cancellationToken)
+        => RunCoreAsync(
+            workbookPath,
+            timeouts,
+            (session, operationCancellationToken) =>
+                ((BoundedWorkbookGenerationSession)session).RunTestsAsync(
+                    selector,
+                    executionTimeout,
+                    operationCancellationToken),
+            enableAutomationSecurityLow: true,
+            cancellationToken);
+
+    private async Task<Exception?> CleanupAsync(
+        IStaComDispatcher dispatcher,
+        OwnedExcelTerminationController terminationController,
+        object? host,
+        IWorkbookBuildSession? session,
+        TimeSpan cleanupGrace,
+        WorkbookAutomationStageExecutor stageExecutor,
+        Exception? terminalFailureToPreserve)
+    {
+        var cleanupStage = new WorkbookAutomationStage(
+            WorkbookAutomationStageKind.ProcessCleanup);
+        terminationController.CaptureAutomationStage(cleanupStage);
+        if (stageExecutor.HasAbandonedOperation)
+        {
+            return await CleanupOwnedProcessOnlyAsync(
+                terminationController,
+                cleanupGrace).ConfigureAwait(false);
+        }
+
+        if (session is null && host is null)
+        {
+            return await CleanupOwnedProcessOnlyAsync(
+                terminationController,
+                cleanupGrace).ConfigureAwait(false);
+        }
+
+        terminationController.RequestForcedTermination(cleanupGrace);
+        Exception? cooperativeCleanupError = null;
+        try
+        {
+            var cleanupTask = dispatcher.InvokeAsync(
+                () =>
+                {
+                    if (session is not null)
+                    {
+                        generationLifecycle.DisposeSession(session, cleanupGrace);
+                    }
+                    else
+                    {
+                        generationLifecycle.DisposeHost(host!, cleanupGrace);
+                    }
+
+                    return true;
+                },
+                CancellationToken.None);
+            var completed = await Task.WhenAny(
+                cleanupTask,
+                Task.Delay(
+                    cleanupGrace +
+                    PrivateDesktopOwnedExcelProcessControl.ForcedCleanupObservationAllowance))
+                .ConfigureAwait(false);
+            if (completed != cleanupTask)
+            {
+                stageExecutor.MarkOperationAbandoned();
+                WorkbookAutomationStageExecutor.ObserveFault(cleanupTask);
+                cooperativeCleanupError = new WorkbookAutomationTimeoutException(
+                    cleanupStage,
+                    cleanupGrace,
+                    isolationDiagnostics:
+                        terminationController.DescribeIsolationEvidence());
+            }
+            else
+            {
+                await cleanupTask.ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex)
+        {
+            cooperativeCleanupError = new WorkbookAutomationReleasedProcessCleanupException(
+                "Cooperative workbook automation cleanup failed.",
+                ex);
+        }
+
+        var ownershipCleanupError = await CleanupOwnedProcessOnlyAsync(
+            terminationController,
+            cleanupGrace).ConfigureAwait(false);
+        if (cooperativeCleanupError is null)
+        {
+            return ownershipCleanupError;
+        }
+
+        if (ownershipCleanupError is null &&
+            CanPreserveVerifiedTerminalFailure(
+                terminalFailureToPreserve,
+                cooperativeCleanupError))
+        {
+            // A COM server terminated by timeout, cancellation, or unexpected process loss
+            // commonly rejects Close/Quit. Exact process-tree release is sufficient cleanup
+            // evidence, so preserve the stage-specific terminal result.
+            return null;
+        }
+
+        return ownershipCleanupError is null
+            ? cooperativeCleanupError
+            : ContainsReleaseProofFailure(ownershipCleanupError)
+                ? new WorkbookAutomationCleanupException(
+                    "Cooperative cleanup and exact owned-process cleanup both failed.",
+                    new AggregateException(cooperativeCleanupError, ownershipCleanupError))
+                : new WorkbookAutomationReleasedProcessCleanupException(
+                    "Cooperative cleanup and exact owned-process cleanup both failed after exact owned-process release was verified.",
+                    new AggregateException(cooperativeCleanupError, ownershipCleanupError));
+    }
+
+    private static bool CanPreserveVerifiedTerminalFailure(
+        Exception? terminalFailure,
+        Exception cleanupError)
+        => ReleasedAutomationCleanupPolicy.CanPreservePrimaryFailure(
+            terminalFailure,
+            cleanupError);
+
+    private static async Task<Exception?> CleanupOwnedProcessOnlyAsync(
+        OwnedExcelTerminationController terminationController,
+        TimeSpan cleanupGrace)
+    {
+        try
+        {
+            terminationController.RequestForcedTermination(cleanupGrace);
+            await terminationController.ObserveCleanupWithinAsync(
+                PrivateDesktopOwnedExcelProcessControl.ForcedCleanupObservationAllowance)
+                .ConfigureAwait(false);
+
+            return null;
+        }
+        catch (WorkbookAutomationReleasedProcessCleanupException ex)
+        {
+            return ex;
+        }
+        catch (Exception ex)
+        {
+            return new WorkbookAutomationCleanupException(
+                "The owned Excel process could not be verified as released during process cleanup.",
+                ex);
+        }
+    }
+
+    private static async Task<Exception?> DisposeDispatcherAsync(
+        IStaComDispatcher dispatcher,
+        TimeSpan cleanupGrace)
+    {
+        try
+        {
+            var disposalTask = dispatcher.DisposeAsync().AsTask();
+            var completed = await Task.WhenAny(
+                disposalTask,
+                Task.Delay(cleanupGrace + DispatcherRetirementObservation)).ConfigureAwait(false);
+            if (completed == disposalTask)
+            {
+                await disposalTask.ConfigureAwait(false);
+            }
+            else
+            {
+                _ = disposalTask.ContinueWith(
+                    static task => _ = task.Exception,
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted |
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+                return new WorkbookAutomationReleasedProcessCleanupException(
+                    "The Excel STA dispatcher did not retire within its bounded cleanup observation period.");
+            }
+
+            return null;
+        }
+        catch (Exception ex)
+        {
+            return new WorkbookAutomationReleasedProcessCleanupException(
+                "The Excel STA dispatcher could not be disposed cleanly.",
+                ex);
+        }
+    }
+
+    private static Exception NormalizeOperationError(
+        Exception error,
+        CancellationToken cancellationToken,
+        WorkbookAutomationStage? lastStage,
+        string? isolationDiagnostics)
+    {
+        var stage = lastStage ?? new WorkbookAutomationStage(
+            WorkbookAutomationStageKind.ExcelStartup);
+        var startFailure = FindOwnedSessionStartFailure(error);
+        if (startFailure is not null && !startFailure.CleanupVerified)
+        {
+            var cleanupEvidence = startFailure.CleanupException ??
+                new InvalidOperationException(
+                    "The owned Excel process cleanup could not be verified.");
+            if (cleanupEvidence is WorkbookAutomationReleasedProcessCleanupException)
+            {
+                return new WorkbookAutomationReleasedProcessCleanupException(
+                    $"Workbook automation failed during {stage.Description}, and automation cleanup or isolation also failed after owned Excel process release was verified.",
+                    new AggregateException(
+                        startFailure.StartException,
+                        cleanupEvidence));
+            }
+
+            return new WorkbookAutomationCleanupException(
+                $"Workbook automation failed during {stage.Description}, and owned Excel process cleanup could not be verified.",
+                new AggregateException(startFailure.StartException, cleanupEvidence));
+        }
+
+        if (error is WorkbookAutomationTimeoutException or
+            WorkbookAutomationCanceledException or
+            WorkbookAutomationProcessLostException or
+            WorkbookAutomationCleanupException or
+            WorkbookAutomationReleasedProcessCleanupException)
+        {
+            return error;
+        }
+
+        if (error is OperationCanceledException && cancellationToken.IsCancellationRequested)
+        {
+            return new WorkbookAutomationCanceledException(
+                stage,
+                cancellationToken,
+                error,
+                isolationDiagnostics);
+        }
+
+        return new InvalidOperationException(
+            $"Workbook automation failed during {stage.Description}: {error.Message}",
+            error);
+    }
+
+    private static bool ContainsReleaseProofFailure(Exception error)
+        => WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error);
+
+    private static IOwnedExcelSessionStartFailure? FindOwnedSessionStartFailure(
+        Exception error)
+    {
+        if (error is IOwnedExcelSessionStartFailure startFailure)
+        {
+            return startFailure;
+        }
+
+        if (error is AggregateException aggregate)
+        {
+            foreach (var innerError in aggregate.InnerExceptions)
+            {
+                var nestedFailure = FindOwnedSessionStartFailure(innerError);
+                if (nestedFailure is not null)
+                {
+                    return nestedFailure;
+                }
+            }
+        }
+
+        return error.InnerException is null
+            ? null
+            : FindOwnedSessionStartFailure(error.InnerException);
+    }
+
+    private sealed class BoundedWorkbookGenerationSession(
+        IStaComDispatcher dispatcher,
+        WorkbookAutomationStageExecutor stageExecutor,
+        IWorkbookBuildSession session,
+        string workbookName,
+        WorkbookAutomationTimeouts timeouts) :
+        IWorkbookGenerationSession
+    {
+        private int retired;
+
+        public WorkbookAutomationStage? LastStage { get; private set; }
+
+        internal void Retire() => Interlocked.Exchange(ref retired, 1);
+
+        public Task<string> GetProjectNameAsync(CancellationToken cancellationToken)
+            => ExecuteAsync(
+                new WorkbookAutomationStage(WorkbookAutomationStageKind.ModuleInspection),
+                timeouts.ModuleImport,
+                cancellationToken,
+                session.GetProjectName);
+
+        public Task<IReadOnlyList<WorkbookModule>> GetModulesAsync(
+            CancellationToken cancellationToken)
+            => ExecuteAsync(
+                new WorkbookAutomationStage(WorkbookAutomationStageKind.ModuleInspection),
+                timeouts.ModuleImport,
+                cancellationToken,
+                session.GetModules);
+
+        public Task<IReadOnlyList<WorkbookReference>> GetReferencesAsync(
+            CancellationToken cancellationToken)
+            => ExecuteAsync(
+                new WorkbookAutomationStage(WorkbookAutomationStageKind.ReferenceAttempt),
+                timeouts.ReferenceAttempt,
+                cancellationToken,
+                session.GetReferences);
+
+        public Task<bool> RemoveReferenceAsync(
+            string referenceName,
+            CancellationToken cancellationToken)
+            => ExecuteAsync(
+                new WorkbookAutomationStage(
+                    WorkbookAutomationStageKind.ReferenceAttempt,
+                    referenceName),
+                timeouts.ReferenceAttempt,
+                cancellationToken,
+                () => session.RemoveReference(referenceName));
+
+        public Task AddReferenceAsync(
+            ResolvedVbaProjectReference reference,
+            CancellationToken cancellationToken)
+            => ExecuteAsync(
+                new WorkbookAutomationStage(
+                    WorkbookAutomationStageKind.ReferenceAttempt,
+                    reference.Name),
+                timeouts.ReferenceAttempt,
+                cancellationToken,
+                () => session.AddReference(reference));
+
+        public Task<VbaProjectReferenceProbeAttemptResult> TryResolveAsync(
+            string referenceName,
+            ResolvedVbaProjectReference candidate,
+            CancellationToken cancellationToken)
+            => ExecuteAsync(
+                new WorkbookAutomationStage(
+                    WorkbookAutomationStageKind.ReferenceAttempt,
+                    referenceName),
+                timeouts.ReferenceAttempt,
+                cancellationToken,
+                () => session.TryResolveReference(referenceName, candidate));
+
+        public Task RemoveModuleAsync(
+            string moduleName,
+            CancellationToken cancellationToken)
+            => ExecuteAsync(
+                new WorkbookAutomationStage(
+                    WorkbookAutomationStageKind.ModuleRemoval,
+                    moduleName),
+                timeouts.ModuleImport,
+                cancellationToken,
+                () => session.RemoveModule(moduleName));
+
+        public Task ImportModuleAsync(
+            VbeImportSourceFile sourceFile,
+            CancellationToken cancellationToken)
+            => ExecuteAsync(
+                new WorkbookAutomationStage(
+                    WorkbookAutomationStageKind.ModuleImport,
+                    sourceFile.FileName),
+                timeouts.ModuleImport,
+                cancellationToken,
+                () => session.ImportModule(sourceFile));
+
+        public Task ExportModuleAsync(
+            string moduleName,
+            string destinationPath,
+            CancellationToken cancellationToken)
+            => ExecuteAsync(
+                new WorkbookAutomationStage(
+                    WorkbookAutomationStageKind.ModuleExport,
+                    moduleName),
+                timeouts.ModuleImport,
+                cancellationToken,
+                () => session.ExportModule(moduleName, destinationPath));
+
+        public Task<VbeImportVerificationReport> VerifyAsync(CancellationToken cancellationToken)
+            => ExecuteAsync(
+                new WorkbookAutomationStage(WorkbookAutomationStageKind.Verification),
+                timeouts.ModuleImport,
+                cancellationToken,
+                session.VerifyImportedModules);
+
+        public Task SaveAsync(CancellationToken cancellationToken)
+            => ExecuteAsync(
+                new WorkbookAutomationStage(
+                    WorkbookAutomationStageKind.WorkbookSave,
+                    workbookName),
+                timeouts.WorkbookSave,
+                cancellationToken,
+                session.Save);
+
+        public Task<IReadOnlyList<WorkbookTestResultRow>> RunTestsAsync(
+            WorkbookTestSelector selector,
+            TimeSpan executionTimeout,
+            CancellationToken cancellationToken)
+            => ExecuteAsync(
+                new WorkbookAutomationStage(WorkbookAutomationStageKind.TestExecution),
+                executionTimeout,
+                cancellationToken,
+                () => ((IExcelComWorkbookTestSession)session).RunTests(selector));
+
+        private Task<T> ExecuteAsync<T>(
+            WorkbookAutomationStage stage,
+            TimeSpan timeout,
+            CancellationToken cancellationToken,
+            Func<T> operation)
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref retired) != 0, this);
+            LastStage = stage;
+            return stageExecutor.ExecuteAsync(
+                stage,
+                timeout,
+                timeouts.ProcessCleanup,
+                cancellationToken,
+                stageCancellation => dispatcher.InvokeAsync(
+                    operation,
+                    stageCancellation));
+        }
+
+        private Task ExecuteAsync(
+            WorkbookAutomationStage stage,
+            TimeSpan timeout,
+            CancellationToken cancellationToken,
+            Action operation)
+            => ExecuteAsync(
+                stage,
+                timeout,
+                cancellationToken,
+                () =>
+                {
+                    operation();
+                    return true;
+                });
+    }
+
+    private sealed class ExcelComWorkbookGenerationLifecycle
+        : IExcelComWorkbookGenerationLifecycle
+    {
+        public object Start(
+            OwnedExcelTerminationController terminationController,
+            bool enableAutomationSecurityLow,
+            CancellationToken cancellationToken)
+            => ExcelComWorkbookSession.StartOwnedForGeneration(
+                terminationController,
+                enableAutomationSecurityLow,
+                cancellationToken);
+
+        public IWorkbookBuildSession Open(object host, string workbookPath)
+            => new ExcelComWorkbookBuildSession(
+                ExcelComWorkbookSession.OpenOwnedForGeneration(
+                    (ExcelComWorkbookSession.ExcelComHostObjects)host,
+                    workbookPath));
+
+        public void DisposeHost(object host, TimeSpan cleanupGrace)
+            => ExcelComWorkbookSession.DisposeOwnedGenerationHost(
+                (ExcelComWorkbookSession.ExcelComHostObjects)host,
+                cleanupGrace);
+
+        public void DisposeSession(IWorkbookBuildSession session, TimeSpan cleanupGrace)
+            => ((ExcelComWorkbookBuildSession)session).DisposeOwnedGeneration(cleanupGrace);
+    }
+}
