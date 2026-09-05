@@ -68,6 +68,22 @@ A user-facing or automation-facing `VbaDev` command. It should have explicit
 inputs, outputs, side effects, and verification behavior.
 _Avoid_: script, helper, task
 
+**VbaDevCommandGrammar**:
+The internal executable-facing Deep Module that constructs the one
+`System.CommandLine` root for a `VbaDevCommandLine`. It owns actual command
+symbols, help and version actions, completion attachment, typed binding, and
+explicit capability registration. It does not read a serialized command
+catalog or expose command-family interfaces to another product.
+_Avoid_: command DSL, reflection binder, generated parser, public command catalog
+
+**VbaDevCommandGraph**:
+The single constructed `RootCommand`, its exact hidden cancellation-transport
+symbol, and its completed-graph-validated capability registrations. Parsing,
+help, version, completion, and action dispatch use that same root instance;
+each command-line composition receives its own graph rather than a global
+singleton.
+_Avoid_: parallel help graph, reconstructed option symbol, process-wide graph cache
+
 **PublicToolProcessContract**:
 The versioned executable boundary through which one product consumes another's
 command behavior: capabilities, command spelling, standard streams, exit

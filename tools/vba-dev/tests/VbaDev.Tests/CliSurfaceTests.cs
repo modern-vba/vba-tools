@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Text.Json;
 using VbaDev.App.Diagnostics;
+using VbaDev.App.HostEvents;
 using VbaDev.App.Projects;
 using VbaDev.Cli;
 using VbaDev.Domain;
@@ -490,7 +491,7 @@ public sealed class CliSurfaceTests
             ["import"] = ["--from <dir>", "--to <path>"],
             ["check"] = ["--project <path>"],
             ["doctor"] = ["--project <path>", "--scope <project|environment>", "--format <text|json>"],
-            ["capabilities"] = ["--format <json>"]
+            ["capabilities"] = ["--format <json>", "-f"]
         };
 
         foreach (var expectation in expectations)
@@ -661,6 +662,21 @@ public sealed class CliSurfaceTests
     }
 
     [Fact]
+    public void CapabilitiesFormatSupportsTheCanonicalShortAlias()
+    {
+        var defaultForm = application.Run(["capabilities"]);
+        var longForm = application.Run(["capabilities", "--format", "json"]);
+        var shortForm = application.Run(["capabilities", "-f", "json"]);
+
+        Assert.Equal(longForm.ExitCode, defaultForm.ExitCode);
+        Assert.Equal(longForm.StandardOutput, defaultForm.StandardOutput);
+        Assert.Equal(longForm.StandardError, defaultForm.StandardError);
+        Assert.Equal(longForm.ExitCode, shortForm.ExitCode);
+        Assert.Equal(longForm.StandardOutput, shortForm.StandardOutput);
+        Assert.Equal(longForm.StandardError, shortForm.StandardError);
+    }
+
+    [Fact]
     public void CapabilitiesAdvertiseSnapshotBuildFeatureVersion()
     {
         var result = application.Run(["capabilities", "--format", "json"]);
@@ -755,7 +771,7 @@ public sealed class CliSurfaceTests
     public void HelpAndCapabilitiesDoNotReadProjectState()
     {
         var workbookAutomation = new FakeWorkbookGenerationAutomation();
-        var referenceResolver = new FakeVbaProjectReferenceResolver();
+        var referenceResolver = new CountingReferenceResolver();
         var contractOnlyApplication = CommandLineTestFactory.Create(
             Directory.GetCurrentDirectory(),
             environmentDiagnosticPort: new ThrowingEnvironmentDiagnosticPort(),
@@ -771,7 +787,74 @@ public sealed class CliSurfaceTests
         Assert.Equal(0, capabilities.ExitCode);
         Assert.Contains("\"test\":{\"outputSchemaVersion\":\"1.2\"}", capabilities.StandardOutput, StringComparison.Ordinal);
         Assert.Empty(workbookAutomation.OpenedWorkbooks);
-        Assert.Empty(referenceResolver.RequestedNames);
+        Assert.Equal(0, referenceResolver.ResolveAvailableCount);
+        Assert.Equal(0, referenceResolver.ResolveCount);
+    }
+
+    [Fact]
+    public void TerminalModesDoNotExecuteOperationalActionsOrReadExternalState()
+    {
+        using var temp = TempDirectory.Create();
+        var initialWorkbookCreator = new FakeInitialWorkbookCreator();
+        var workbookAutomation = new FakeWorkbookGenerationAutomation();
+        var workbookTestRunner = new FakeWorkbookTestRunner();
+        var workbookExporter = new FakeWorkbookModuleExporter();
+        var referenceResolver = new CountingReferenceResolver();
+        var hostEventAutomation = new CountingHostEventCatalogAutomation();
+        var commandLine = CommandLineTestFactory.Create(
+            temp.Path,
+            environmentDiagnosticPort: new ThrowingEnvironmentDiagnosticPort(),
+            initialWorkbookCreator: initialWorkbookCreator,
+            workbookGenerationAutomation: workbookAutomation,
+            workbookTestRunner: workbookTestRunner,
+            workbookModuleExporter: workbookExporter,
+            vbaProjectReferenceResolver: referenceResolver,
+            projectManifestStore: new ThrowingProjectManifestStore(),
+            hostEventCatalogAutomation: hostEventAutomation);
+        var initialEntries = Directory.GetFileSystemEntries(temp.Path);
+        string[][] terminalInvocations =
+        [
+            [],
+            ["--help"],
+            ["--version"],
+            ["capabilities"],
+            ["[suggest:1]", "b"],
+            ["new", "excel", "--help"],
+            ["common-module", "add", "--help"],
+            ["common-module", "list", "--help"],
+            ["common-module", "update", "--help"],
+            ["completions", "script", "pwsh", "--help"],
+            ["reference", "add", "--help"],
+            ["reference", "list", "--help"],
+            ["reference", "remove", "--help"],
+            ["host-event", "list", "--help"],
+            ["build", "--help"],
+            ["test", "--help"],
+            ["publish", "--help"],
+            ["export", "--help"],
+            ["import", "--help"],
+            ["check", "--help"],
+            ["doctor", "--help"],
+            ["capabilities", "--help"]
+        ];
+
+        foreach (var invocation in terminalInvocations)
+        {
+            var result = commandLine.Run(invocation);
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.NotEmpty(result.StandardOutput);
+            Assert.Empty(result.StandardError);
+        }
+
+        Assert.Equal(initialEntries, Directory.GetFileSystemEntries(temp.Path));
+        Assert.Empty(initialWorkbookCreator.CreatedPaths);
+        Assert.Empty(workbookAutomation.OpenedWorkbooks);
+        Assert.Empty(workbookTestRunner.Workbooks);
+        Assert.Empty(workbookExporter.Calls);
+        Assert.Equal(0, referenceResolver.ResolveAvailableCount);
+        Assert.Equal(0, referenceResolver.ResolveCount);
+        Assert.Equal(0, hostEventAutomation.ReadCount);
     }
 
     [Fact]
@@ -1030,6 +1113,17 @@ public sealed class CliSurfaceTests
         public Task<EnvironmentDiagnosticRun> RunEnvironmentDiagnosticsAsync(
             CancellationToken cancellationToken)
             => throw new InvalidOperationException("Help must not access Excel or VBIDE diagnostics.");
+    }
+
+    private sealed class CountingHostEventCatalogAutomation : IHostEventCatalogAutomation
+    {
+        public int ReadCount { get; private set; }
+
+        public Task<IntrinsicHostEventCatalog> ReadAsync(CancellationToken cancellationToken)
+        {
+            ReadCount++;
+            return Task.FromResult(new IntrinsicHostEventCatalog("MSForms.UserForm", []));
+        }
     }
 
     private sealed class AwaitingCancellationEnvironmentDiagnosticPort

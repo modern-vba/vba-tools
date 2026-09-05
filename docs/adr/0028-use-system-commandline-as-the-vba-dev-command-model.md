@@ -21,6 +21,13 @@ machine contracts such as `capabilities --format json` and command-specific
 output schemas remain explicit application behavior rather than being inferred
 from help output.
 
+ADR 0038 concentrates construction behind the internal
+`VbaDevCommandGrammar`, returns the one completed root and its exact hidden
+cancellation symbol as a `VbaDevCommandGraph`, and defines completed-graph
+capability validation and deterministic grammar-failure ordering. Invocation,
+standard streams, cancellation monitoring, and terminal dispatch remain with
+`VbaDevCommandLine`.
+
 `vba-dev` keeps System.CommandLine process-termination handling enabled but
 sets `InvocationConfiguration.ProcessTerminationTimeout` to
 `Timeout.InfiniteTimeSpan` instead of accepting the library's two-second
