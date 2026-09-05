@@ -380,7 +380,7 @@ source and sidecars; dirty editor text follows `SnapshotSourceEncoding`.
 _Avoid_: debug session, source overlay, implicit editor integration
 
 **VbeImportSourceSet**:
-The invocation-owned VBE-facing mirror derived from admitted ordinary Build or
+The invocation-owned VBE-facing mirror derived from admitted ordinary Build, Publish, or
 `ExplicitWorkbookImport` facts, or from other `DocumentSourceSet` and
 `BuildSourceSnapshot` materialization paths, before
 `VBComponents.Import`; text components strictly
@@ -388,10 +388,10 @@ round-trip through the operation-fixed active Windows ANSI code page while
 `.frx` sidecars retain their exact bytes and relative pairing. An
 unrepresentable or best-fit-only character fails before Excel starts, and the
 mirror never changes caller-owned bytes and is removed with command scratch.
-For `ExplicitImport` and ordinary Build, it consumes the admission's Unicode,
+For `ExplicitImport`, ordinary Build, and Publish, it consumes the admission's Unicode,
 fixed ACP, and captured sidecar bytes without calling `GetACP`, choosing a source encoding,
-or rereading caller files. Publish and snapshot materialization retain their
-existing UTF-8-first admission behavior until their own migration slices.
+or rereading caller files. Snapshot materialization retains its
+existing UTF-8-first admission behavior until its own migration slice.
 _Avoid_: source snapshot, persistent source conversion, lossy staging file
 
 **VbeImportVerification**:
@@ -742,9 +742,9 @@ _Avoid_: path-only import, ad hoc import, project import
 
 **VbaSourceAdmission**:
 The internal sealed module that captures source authority for one explicit
-import or ordinary saved-source Build invocation. Its closed `ExplicitImport`
-and `Build` intents fix `GetACP` once,
-fixes one recursive inventory, and reads each selected text source and matching
+import, ordinary saved-source Build, or Publish invocation. Its closed
+`ExplicitImport`, `Build`, and `Publish` intents fix `GetACP` once,
+fix one recursive inventory, and read each selected text source and matching
 `.frx` once without retries or a closing stability check. Recognized UTF-8,
 UTF-16 LE, and UTF-16 BE BOMs select strict decoders; BOM-less source uses only
 the fixed ACP, with ACP 65001 canonicalized as UTF-8. Admission never probes
@@ -754,8 +754,15 @@ module identity and kind, syntax facts, deterministic order, sidecars, and
 provenance are shared by preflight, projection, verification, and diagnostics.
 Build preserves CommonModules manifest order followed by remaining filenames,
 includes test-only and orphaned entries, and permits an empty source set.
+Publish checks flat filename collisions before filtering, excludes manifest
+test-only sources and sidecars without reading them, and strictly decodes each
+entire project-local source once before its marker decision. A proved marker
+exclusion bypasses import eligibility, ACP projection, and sidecar capture;
+included CommonModules ignore that marker. Included sources share the admitted
+facts and ordering; an empty effective Publish source set is valid. Later
+authoring changes belong to the next invocation, without new locks or retries.
 Issue #335 introduced explicit import and #339 adds ordinary Build, including
-the Build stage reused by ordinary Test. Publish, snapshot inputs, test execution
+the Build stage reused by ordinary Test; #340 adds Publish. Snapshot inputs, test execution
 and result-location authority, Doctor, and language-server admission remain on
 their existing paths.
 Snapshot capability versions remain `1.0`; later rollout is governed by
@@ -1138,6 +1145,11 @@ _Avoid_: runtime source, publishable source
 **PublishExclusionMarker**:
 The `'#ExcludePublish` source comment marker that declares a project-local
 exported VBA source file as `TestOnlyVbaSource` or otherwise not publishable.
+The existing grammar checks the first 32 CRLF-, LF-, or CR-delimited physical
+lines for that case-insensitive prefix after VBA-leading whitespace trimming.
+Publish proves this marker from strictly decoded complete source bytes before
+requiring import eligibility or lossless ACP projection. Installed CommonModules
+use manifest `testOnly` metadata instead of this marker.
 _Avoid_: filename-only test detection, implicit publish exclusion
 
 ## Testing

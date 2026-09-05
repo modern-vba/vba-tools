@@ -529,6 +529,14 @@ document's publish output and omits CommonModules recorded with `testOnly: true`
 plus project-local files marked with `'#ExcludePublish`. Build and publish do not
 consult the current CommonModules repository.
 
+Publish uses the same supported-BOM and BOM-less ACP rules as [Build](#build),
+with one source capture for selection, preflight, and import. Flat filename
+collisions fail before filtering. Manifest test-only sources and their sidecars
+are not read; project-local sources must decode completely before their marker
+can exclude them. A proved marker exclusion does not require lossless ACP
+projection, but every included source does. Later source changes belong to the
+next publish invocation; the command does not lock or retry authoring files.
+
 ### Export
 
 `VBA Tools: Export` pulls modules from the selected workbook into the configured

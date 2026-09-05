@@ -47,7 +47,9 @@ public sealed class WorkbookOutputCommand
             profile,
             () => ReferenceEquals(profile, WorkbookOutputProfile.Build)
                 ? sourcePlanner.CaptureBuildSourceInput(context, cancellationToken)
-                : new BorrowedWorkbookGenerationSourceInput(profile.ResolveSourceFiles(sourcePlanner, context)),
+                : ReferenceEquals(profile, WorkbookOutputProfile.Publish)
+                    ? sourcePlanner.CapturePublishSourceInput(context, cancellationToken)
+                    : new BorrowedWorkbookGenerationSourceInput(profile.ResolveSourceFiles(sourcePlanner, context)),
             () => profile.ResolveTargetDocumentPath(context),
             cancellationToken);
 

@@ -2,7 +2,7 @@ using VbaDev.App.Workbooks;
 
 namespace VbaDev.App.Build;
 
-/// <summary>Retains the admitted Build authority and its ordered display provenance.</summary>
+/// <summary>Retains admitted workbook-output authority and its ordered display provenance.</summary>
 internal sealed class AdmittedWorkbookGenerationSourceInput : IWorkbookGenerationSourceInput
 {
     internal AdmittedWorkbookGenerationSourceInput(AdmittedVbaSourceSet admission)

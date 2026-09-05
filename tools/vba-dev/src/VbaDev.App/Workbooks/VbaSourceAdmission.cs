@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Text;
+using VbaDev.Domain;
 using VbaTools.Syntax;
 
 namespace VbaDev.App.Workbooks;
@@ -7,7 +8,8 @@ namespace VbaDev.App.Workbooks;
 internal enum VbaSourceAdmissionIntent
 {
     ExplicitImport,
-    Build
+    Build,
+    Publish
 }
 
 /// <summary>
@@ -58,6 +60,21 @@ internal sealed class VbaSourceAdmission
             throw new ArgumentOutOfRangeException(nameof(intent));
         }
 
+        return AdmitCore(sourceDirectory, intent, [], cancellationToken);
+    }
+
+    internal AdmittedVbaSourceSet AdmitPublish(
+        string sourceDirectory,
+        IReadOnlyList<InstalledCommonModule> commonModules,
+        CancellationToken cancellationToken = default)
+        => AdmitCore(sourceDirectory, VbaSourceAdmissionIntent.Publish, commonModules, cancellationToken);
+
+    private AdmittedVbaSourceSet AdmitCore(
+        string sourceDirectory,
+        VbaSourceAdmissionIntent intent,
+        IReadOnlyList<InstalledCommonModule> commonModules,
+        CancellationToken cancellationToken)
+    {
         cancellationToken.ThrowIfCancellationRequested();
         var activeCodePage = getActiveCodePage();
         cancellationToken.ThrowIfCancellationRequested();
@@ -96,14 +113,26 @@ internal sealed class VbaSourceAdmission
         }
 
         DocumentSourceSetLayout.ThrowIfDuplicateSourceFileNames(root, sources);
+        var commonNames = commonModules.Select(entry => entry.ModuleFile).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var includedCommonNames = commonModules.Where(entry => !entry.TestOnly)
+            .Select(entry => entry.ModuleFile).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var admitted = new List<AdmittedVbaSource>(sources.Length);
         foreach (var source in sources.OrderBy(source => source.FileName, StringComparer.OrdinalIgnoreCase))
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var isCommonModule = commonNames.Contains(source.FileName);
+            if (isCommonModule && !includedCommonNames.Contains(source.FileName))
+            {
+                continue;
+            }
             var bytes = ImmutableArray.CreateRange(readAllBytes(source.SourcePath));
             cancellationToken.ThrowIfCancellationRequested();
             var decoded = Decode(bytes, encoding, activeCodePage, source.SourcePath);
             var text = decoded.Text;
+            if (intent == VbaSourceAdmissionIntent.Publish && !isCommonModule && VbaPublishExclusionMarker.IsPresent(text))
+            {
+                continue;
+            }
             var syntax = VbaSyntaxTree.ParseModule(new Uri(source.SourcePath).AbsoluteUri, text);
             var projection = VbaCodeModuleProjection.Create(syntax);
             var projectedKind = KindFromSyntax(projection.ModuleKind);

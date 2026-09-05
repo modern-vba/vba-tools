@@ -164,24 +164,38 @@ public sealed class WorkbookOutputFailureTests
     }
 
     [Fact]
-    public async Task PublishFailsClosedWhenAnIncludedSourceChangesBeforeStaging()
+    public async Task PublishUsesItsIncludedCaptureWhenTheAuthoringSourceChangesBeforeStaging()
     {
         using var temp = TempDirectory.Create();
         var project = CreateProject(temp);
         var sourcePath = Path.Combine(project.Context.DocumentSourceSetPath, "Local.bas");
         var automation = new CompletingWorkbookGenerationAutomation();
-        var importSourceSetFactory = new VbeImportSourceSetFactory(() =>
+        var originalBytes = File.ReadAllBytes(sourcePath);
+        var reads = 0;
+        var admission = new VbaSourceAdmission(() => 65001, readAllBytes: path =>
         {
+            reads++;
+            var bytes = File.ReadAllBytes(path);
             File.WriteAllText(
                 sourcePath,
                 "Attribute VB_Name = \"Local\"\r\n'#ExcludePublish\r\n",
                 new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
-            return 65001;
+            return bytes;
         });
+        var stagedSourceObserved = false;
+        var importSourceSetFactory = new VbeImportSourceSetFactory(
+            () => throw new InvalidOperationException("ACP must come from admission."),
+            mirror =>
+            {
+                stagedSourceObserved = true;
+                Assert.Equal(originalBytes, Assert.Single(mirror.Admission!.Sources).OriginalBytes.ToArray());
+                Assert.DoesNotContain("ExcludePublish", File.ReadAllText(Assert.Single(mirror.SourceFiles).SourcePath));
+            });
         var command = CreateCommand(
             project.Context,
             automation,
-            importSourceSetFactory: importSourceSetFactory);
+            importSourceSetFactory: importSourceSetFactory,
+            sourcePlanner: new WorkbookSourcePlanner(admission));
 
         var result = await RunAsync(
             "publish",
@@ -189,11 +203,12 @@ public sealed class WorkbookOutputFailureTests
             project.Context,
             CancellationToken.None);
 
-        Assert.Equal(1, result.ExitCode);
-        Assert.Contains("changed after", result.StandardError, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains(sourcePath, result.StandardError, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal(0, automation.RunCount);
-        Assert.Equal("previous-publish", File.ReadAllText(project.Context.PublishDocumentPath, Encoding.UTF8));
+        Assert.True(result.ExitCode == 0, result.StandardError);
+        Assert.Equal(1, reads);
+        Assert.True(stagedSourceObserved);
+        Assert.Equal(1, automation.RunCount);
+        Assert.Equal("new-template", File.ReadAllText(project.Context.PublishDocumentPath, Encoding.UTF8));
+        Assert.Contains("ExcludePublish", File.ReadAllText(sourcePath));
         Assert.Empty(EnumerateOwnedStaging(project.SelectedOutputDirectory("publish")));
     }
 
@@ -276,7 +291,8 @@ public sealed class WorkbookOutputFailureTests
         ResolvedProjectContext context,
         IWorkbookGenerationAutomation automation,
         IWorkbookOutputTransactionFactory? transactionFactory = null,
-        VbeImportSourceSetFactory? importSourceSetFactory = null)
+        VbeImportSourceSetFactory? importSourceSetFactory = null,
+        WorkbookSourcePlanner? sourcePlanner = null)
     {
         var pipeline = new WorkbookGenerationPipeline(
             automation,
@@ -284,7 +300,7 @@ public sealed class WorkbookOutputFailureTests
                 new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),
             transactionFactory ?? new WorkbookOutputTransactionFactory(),
             importSourceSetFactory ?? new VbeImportSourceSetFactory());
-        return new WorkbookOutputCommand(new WorkbookSourcePlanner(), pipeline);
+        return new WorkbookOutputCommand(sourcePlanner ?? new WorkbookSourcePlanner(), pipeline);
     }
 
     private static Task<VbaDev.App.Cli.CommandResult> RunAsync(
