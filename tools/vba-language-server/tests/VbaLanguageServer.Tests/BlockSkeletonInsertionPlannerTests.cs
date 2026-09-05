@@ -2034,6 +2034,36 @@ public sealed class BlockSkeletonInsertionPlannerTests
     }
 
     [Fact]
+    public void Planner_retains_full_provenance_for_a_structured_block_missing_terminator()
+    {
+        const string uri = "file:///C:/work/StructuredDiagnosticProvenance.bas";
+        const string header = "    If True Then";
+        const string text = "Public Sub Main()\n" + header + "\n    \nEnd Sub";
+        var snapshot = CreateSnapshot(uri, version: 5, text);
+        var direct = Assert.Single(snapshot.Diagnostics.SyntaxDiagnostics, diagnostic =>
+            diagnostic.Code == "syntax.missingBlockTerminator"
+            && diagnostic.Message == "Block is missing 'End If'.");
+        snapshot = snapshot with
+        {
+            Diagnostics = snapshot.Diagnostics with
+            {
+                SyntaxDiagnostics = snapshot.Diagnostics.SyntaxDiagnostics
+                    .Select(diagnostic => diagnostic == direct
+                        ? diagnostic with { Source = "another-diagnostic-source" }
+                        : diagnostic)
+                    .ToArray()
+            }
+        };
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(1, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.Null(plan);
+    }
+
+    [Fact]
     public void Planner_rejects_an_injected_candidate_recovery_diagnostic_not_derived_from_the_snapshot_tree()
     {
         const string uri = "file:///C:/work/InjectedCandidateRecovery.bas";
@@ -3089,6 +3119,38 @@ public sealed class BlockSkeletonInsertionPlannerTests
             VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
 
         Assert.Null(plan);
+    }
+
+    [Fact]
+    public void Planner_retains_count_only_provenance_for_a_declaration_missing_terminator()
+    {
+        const string uri = "file:///C:/work/DeclarationDiagnosticProvenance.bas";
+        const string header = "Public Sub First()";
+        const string text = header + "\n    \n\nPublic Sub Second()\nEnd Sub";
+        var snapshot = CreateSnapshot(uri, version: 35, text);
+        var direct = Assert.Single(snapshot.Diagnostics.SyntaxDiagnostics, diagnostic =>
+            diagnostic.Code == "syntax.missingBlockTerminator"
+            && diagnostic.Message == "Block is missing 'End Sub'.");
+        snapshot = snapshot with
+        {
+            Diagnostics = snapshot.Diagnostics with
+            {
+                SyntaxDiagnostics = snapshot.Diagnostics.SyntaxDiagnostics
+                    .Select(diagnostic => diagnostic == direct
+                        ? diagnostic with { Source = "another-diagnostic-source" }
+                        : diagnostic)
+                    .ToArray()
+            }
+        };
+
+        var plan = BlockSkeletonInsertionPlanner.CreatePlan(
+            snapshot,
+            new BlockSkeletonInsertionPosition(0, header.Length),
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.NotNull(plan);
+        Assert.Equal("\n    ", plan.TextBeforeCursor);
+        Assert.Equal("\nEnd Sub", plan.TextAfterCursor);
     }
 
     [Fact]

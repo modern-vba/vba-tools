@@ -3322,6 +3322,23 @@ the document's line-ending convention. The terminator uses canonical
 does not recase the existing header.
 _Avoid_: `EndStatementCompletion`, source formatting, automatic completion
 
+**BlockSkeletonInsertionDiagnosticProof**:
+The feature-local pure comparison used by declaration and structured-block
+speculation after the caller fixes candidate eligibility and exact removable
+diagnostics. One immutable proof case carries original, optional control, and
+prospective diagnostic evidence together with the edit coordinates. The proof
+compares syntax and document-validation errors by category, source, severity,
+code, message, mapped range, and multiplicity, independent of ordering.
+Warnings, informational diagnostics, and project diagnostics do not participate.
+Prospective ranges use half-open semantics: adjacency to the edit is permitted,
+but actual overlap cannot be mapped and fails the proof. Invalid or inconsistent
+proof evidence also fails without accepting a partial comparison.
+The caller retains document-version ownership, conditional-branch locality,
+candidate and cascade selection, and the trusted declaration tail shortcut.
+The proof is not a general diagnostic framework or an authority for insertion
+eligibility; fingerprints, range mapping, and multiset operations remain private.
+_Avoid_: generic diagnostic equivalence, diagnostic filter, insertion policy
+
 **MemberStubGeneration**:
 A deferred explicit source mutation that creates complete VBA procedure
 declarations from authoritative Event-handler or `Implements` member contracts.
