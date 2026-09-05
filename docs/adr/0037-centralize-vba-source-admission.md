@@ -8,7 +8,8 @@ This decision introduces the source-admission boundary through the
 `ExplicitWorkbookImport` slice in issue #335. For explicit import, it supersedes
 the shared UTF-8-first source-decoding rule in ADR 0027 and the tool-local
 workbook-backed command model. Issue #339 extends that boundary to ordinary
-saved-source Build; issue #340 adds Publish and #344 adds snapshot Build/Test.
+saved-source Build; issue #340 adds Publish, #344 adds snapshot Build/Test, and
+#345 adds project Doctor.
 Source ownership, VBE import
 verification, and owned Excel-process lifecycle contracts remain accepted.
 
@@ -122,7 +123,7 @@ strict-decode and reproduce exactly before the existing marker decision. The
 first 32 physical lines, split on CRLF, LF, or CR, are checked after VBA-leading
 whitespace trimming for a case-insensitive `'#ExcludePublish` prefix. An early
 marker cannot excuse invalid bytes later in the source. This marker grammar is
-shared with Doctor's legacy selector without migrating Doctor's decoder.
+shared with Doctor's profiles, which use the same captured decoding facts.
 
 A proved marker exclusion precedes declared-kind, identity, syntax-derived
 import eligibility, ACP projection, and sidecar capture. Consequently,
@@ -142,6 +143,42 @@ closing stability checks, or new locks. Existing warnings, output schema,
 source-only and live-workbook preflight, cleanup, and output commitment remain
 unchanged. Cancellation before commitment preserves prior output; successful
 commitment remains authoritative if cancellation arrives afterward.
+
+## Doctor source inspection
+
+Project Doctor fixes ACP once for the whole run and captures each document's
+recursive inventory, source bytes, and matching same-directory sidecars once.
+It retains decoded Unicode, syntax, identity, kind, and failures at their
+applicable admission stage. Build and Publish select from those same facts;
+neither profile rereads authoring files or changes the other's input. Source
+layout and installed CommonModules drift diagnostics also use this captured
+document evidence. The external CommonModules repository remains an independent
+package authority, not part of the document capture.
+
+Build includes every source. Publish keeps ordinary Publish's filename-collision,
+manifest test-only, and local-marker ordering. Doctor captures test-only bytes
+for Build, but a read, decoding, or admission failure in an excluded test-only
+unit cannot fail the Publish profile. As before, unavailable evidence needed
+by a static source diagnostic (for example a CommonModules drift read failure)
+makes the whole run incomplete before profile inspection; exclusion is not a
+fallback for that independent diagnostic. A local marker requires successful
+whole-file strict decoding before exclusion; a proved marker can exclude identity, kind, sidecar,
+or lossless-ACP-projection failures. Included CommonModules ignore the marker.
+Ordinary Publish still skips test-only files before reading them.
+
+Capture records orphan or displaced `.frx` paths for layout diagnostics without
+reading their bytes. Failed capture or admission yields failed or incomplete
+existing diagnostics, never an empty-success or alternate-decoding fallback.
+Cancellation does not publish a partial capture. This is fixed-input ownership,
+not concurrent-editor protection: no retry, closing check, new lock, or fence is
+introduced, and later author edits belong to the next run.
+
+Each document still uses one disposable template inspection for the prepared
+profiles. Existing component removal and reference normalization are confined
+to that unsaved copy; Doctor never imports sources, saves a workbook, commits
+output, or mutates durable caller files. Check IDs, schema `1.0`, formats, and
+exit semantics remain unchanged. Environment-only Doctor performs no project
+capture and obtains no source ACP.
 
 ## Rollout boundary
 
@@ -163,8 +200,8 @@ and source-set-relative provenance to produce persistent URIs without reading
 source, decoding it, or obtaining ACP again. Missing or ambiguous optional
 locations keep their existing warning behavior. This does not introduce the
 later `ExecutedSourceIndex` design or change ordinary/no-build navigation.
-Doctor admission and those ordinary/no-build location paths remain deferred;
-not every VbaDev source path uses this module yet.
+Issue #345 admits Doctor as described above. Ordinary/no-build result-location
+paths remain deferred; not every VbaDev source path uses this module yet.
 
 The coordinated compatibility matrix is:
 
@@ -245,8 +282,9 @@ the same corpus without changing its ownership.
   have a supported BOM or be converted to that ACP by its author.
 - Explicit-import preflight, projection, verification, and diagnostics share
   one captured source authority even if caller files change afterward.
-- Ordinary Build, Publish, and snapshot Build/Test share the same admitted authority without adding
-  a second source inventory, ACP decision, or authoring-file read downstream.
+- Ordinary Build, Publish, snapshot Build/Test, and Doctor share admitted
+  authority without a second source inventory, ACP decision, or authoring-file
+  read downstream.
 - The previous target survives failures during source admission, workbook
   mutation, verification, save, and owned-process release.
 - Other source workflows keep their released behavior during the staged

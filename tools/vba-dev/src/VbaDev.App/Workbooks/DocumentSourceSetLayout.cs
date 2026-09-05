@@ -97,9 +97,16 @@ public static class DocumentSourceSetLayout
     public static IReadOnlyList<DocumentSourceSetLayoutDiagnostic> InspectSourceIdentity(
         string documentName,
         string sourceSetPath)
+        => InspectSourceIdentity(documentName, sourceSetPath,
+            EnumerateVbaSourcePaths(sourceSetPath).Concat(EnumerateFormSidecarPaths(sourceSetPath)).ToArray());
+
+    internal static IReadOnlyList<DocumentSourceSetLayoutDiagnostic> InspectSourceIdentity(
+        string documentName,
+        string sourceSetPath,
+        IReadOnlyList<string> inventory)
     {
         var diagnostics = new List<DocumentSourceSetLayoutDiagnostic>();
-        var sourceFiles = EnumerateVbaSourcePaths(sourceSetPath);
+        var sourceFiles = inventory.Where(IsVbaSourceFile).ToArray();
         foreach (var group in FindSourceFileNameCollisions(sourceFiles))
         {
             diagnostics.Add(DocumentSourceSetLayoutDiagnostic.Fail(
@@ -116,7 +123,9 @@ public static class DocumentSourceSetLayout
                 group => group.OrderBy(path => path, StringComparer.OrdinalIgnoreCase).ToArray(),
                 StringComparer.OrdinalIgnoreCase);
 
-        foreach (var sidecarPath in EnumerateFormSidecarPaths(sourceSetPath))
+        foreach (var sidecarPath in inventory
+                     .Where(path => Path.GetExtension(path).Equals(".frx", StringComparison.OrdinalIgnoreCase))
+                     .OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
         {
             var sidecarName = Path.GetFileNameWithoutExtension(sidecarPath);
             if (!formFilesByName.TryGetValue(sidecarName, out var matchingForms))
@@ -124,7 +133,8 @@ public static class DocumentSourceSetLayout
                 continue;
             }
 
-            if (HasSameDirectoryForm(sidecarPath))
+            if (matchingForms.Any(form => string.Equals(
+                    Path.GetDirectoryName(form), Path.GetDirectoryName(sidecarPath), StringComparison.OrdinalIgnoreCase)))
             {
                 continue;
             }
@@ -145,7 +155,10 @@ public static class DocumentSourceSetLayout
     /// <param name="moduleFile">The module file name to match.</param>
     /// <returns>Matching source paths ordered by path.</returns>
     public static IReadOnlyList<string> FindSourceMatches(string sourceSetPath, string moduleFile)
-        => EnumerateVbaSourcePaths(sourceSetPath)
+        => FindSourceMatches(EnumerateVbaSourcePaths(sourceSetPath), moduleFile);
+
+    internal static IReadOnlyList<string> FindSourceMatches(IEnumerable<string> inventory, string moduleFile)
+        => inventory.Where(IsVbaSourceFile)
             .Where(path => GetFileName(path).Equals(moduleFile, StringComparison.OrdinalIgnoreCase))
             .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
             .ToArray();
@@ -178,10 +191,16 @@ public static class DocumentSourceSetLayout
             return null;
         }
 
+        return ResolveExistingSidecarPath(formSourcePath,
+            Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly));
+    }
+
+    internal static string? ResolveExistingSidecarPath(string formSourcePath, IEnumerable<string> inventory)
+    {
         var formBaseName = Path.GetFileNameWithoutExtension(formSourcePath);
-        return Directory
-            .EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly)
+        return inventory
             .Where(path =>
+                string.Equals(Path.GetDirectoryName(path), Path.GetDirectoryName(formSourcePath), StringComparison.OrdinalIgnoreCase) &&
                 Path.GetExtension(path).Equals(".frx", StringComparison.OrdinalIgnoreCase) &&
                 Path.GetFileNameWithoutExtension(path).Equals(formBaseName, StringComparison.OrdinalIgnoreCase))
             .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)

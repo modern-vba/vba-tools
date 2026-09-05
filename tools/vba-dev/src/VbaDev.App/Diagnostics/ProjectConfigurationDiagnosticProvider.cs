@@ -6,10 +6,18 @@ namespace VbaDev.App.Diagnostics;
 /// <summary>
 /// Adds project path, source layout, and CommonModulesRepository diagnostics.
 /// </summary>
-public sealed class ProjectConfigurationDiagnosticProvider : IDoctorProjectDiagnosticProvider
+public sealed class ProjectConfigurationDiagnosticProvider : IDoctorProjectDiagnosticProvider, IDoctorSourceDiagnosticProvider
 {
     /// <inheritdoc />
     public void AddDiagnostics(List<DiagnosticResult> results, ResolvedProject project)
+        => AddDiagnostics(results, project, null);
+
+    void IDoctorSourceDiagnosticProvider.AddDiagnostics(
+        List<DiagnosticResult> results, ResolvedProject project, DoctorProjectSourceInspection sources)
+        => AddDiagnostics(results, project, sources);
+
+    private static void AddDiagnostics(
+        List<DiagnosticResult> results, ResolvedProject project, DoctorProjectSourceInspection? sources)
     {
         foreach (var (documentName, document) in project.Manifest.Documents.OrderBy(item => item.Key, StringComparer.OrdinalIgnoreCase))
         {
@@ -20,15 +28,16 @@ public sealed class ProjectConfigurationDiagnosticProvider : IDoctorProjectDiagn
             var binDirectory = Path.GetDirectoryName(binPath) ?? project.ProjectRoot;
             var publishDirectory = Path.GetDirectoryName(publishPath) ?? project.ProjectRoot;
 
-            results.Add(Directory.Exists(sourceSetPath)
+            var sourceExists = sources?.GetDocument(documentName).SourceDirectoryExists ?? Directory.Exists(sourceSetPath);
+            results.Add(sourceExists
                 ? DiagnosticResult.Pass($"Document source set ({documentName})", $"Found {sourceSetPath}.")
                 : DiagnosticResult.Fail($"Document source set ({documentName})", $"Create the source directory or run vba-dev new: {sourceSetPath}."));
             results.Add(File.Exists(templatePath)
                 ? DiagnosticResult.Pass($"Source template ({documentName})", $"Found {templatePath}.")
                 : DiagnosticResult.Fail($"Source template ({documentName})", $"Create the macro-enabled template workbook: {templatePath}."));
-            if (Directory.Exists(sourceSetPath))
+            if (sourceExists)
             {
-                AddDocumentSourceIdentityDiagnostics(results, documentName, sourceSetPath);
+                AddDocumentSourceIdentityDiagnostics(results, documentName, sourceSetPath, sources?.GetInventory(documentName));
             }
 
             results.Add(Directory.Exists(binDirectory)
@@ -54,9 +63,13 @@ public sealed class ProjectConfigurationDiagnosticProvider : IDoctorProjectDiagn
     private static void AddDocumentSourceIdentityDiagnostics(
         List<DiagnosticResult> results,
         string documentName,
-        string sourceSetPath)
+        string sourceSetPath,
+        IReadOnlyList<string>? inventory)
     {
-        foreach (var diagnostic in DocumentSourceSetLayout.InspectSourceIdentity(documentName, sourceSetPath))
+        var diagnostics = inventory is null
+            ? DocumentSourceSetLayout.InspectSourceIdentity(documentName, sourceSetPath)
+            : DocumentSourceSetLayout.InspectSourceIdentity(documentName, sourceSetPath, inventory);
+        foreach (var diagnostic in diagnostics)
         {
             var checkId = $"project.sourceLayout.{Uri.EscapeDataString(documentName)}.{diagnostic.Id}";
             results.Add(diagnostic.Status == DocumentSourceSetLayoutDiagnosticStatus.Fail

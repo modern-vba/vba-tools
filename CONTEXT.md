@@ -759,7 +759,8 @@ _Avoid_: path-only import, ad hoc import, project import
 
 **VbaSourceAdmission**:
 The internal sealed module that captures source authority for one explicit
-import, ordinary saved-source Build, Publish, or snapshot Build/Test invocation.
+import, ordinary saved-source Build, Publish, snapshot Build/Test, or project
+Doctor invocation.
 Its closed intents fix `GetACP` once,
 fix one recursive inventory, and read each selected text source and matching
 `.frx` once without retries or a closing stability check. Recognized UTF-8,
@@ -782,8 +783,12 @@ Issue #335 introduced explicit import, #339 adds ordinary Build including the
 stage reused by ordinary Test, #340 adds Publish, and #344 adds snapshot
 Build/Test. A snapshot's admitted bytes and syntax also supply its test
 execution input and result-location ranges without rereading caller files or
-reacquiring ACP. Ordinary/no-build result-location authority and Doctor remain
-on their existing paths; language-server admission is independently owned.
+reacquiring ACP. Issue #345 captures each Doctor document once under one run ACP;
+layout, installed CommonModules drift, and both materialization profiles reuse
+those facts. Build failures cannot contaminate a valid Publish exclusion, and
+external CommonModules repository authority stays separate. Ordinary/no-build
+result-location authority remains on its existing path; language-server
+admission is independently owned.
 Snapshot feature versions are `2.0`; staged rollout is governed by ADR 0037.
 _Avoid_: public extension point, caller-composed decoding profile, mutable source cache
 
@@ -1233,7 +1238,13 @@ A read/check-oriented `vba-dev doctor` function that reports whether the local
 Windows, Excel, COM, VBIDE, project prerequisites, profile-specific workbook
 materialization names, CommonModules state, and reference catalog availability
 can support workbook-backed project automation and editor intelligence. It does
-not diagnose native VBE debugging.
+not diagnose native VBE debugging. Project Doctor uses one run-fixed ACP and one
+captured inventory, source, and paired-sidecar authority per document for source
+layout, installed CommonModules drift, and independent Build/Publish profiles.
+Failures remain attached to the affected facts or incomplete run, without
+rereads or fallback. It inspects disposable template copies without source
+import, workbook save, output commitment, or durable caller mutation.
+Environment-only Doctor does not capture project sources or source ACP.
 _Avoid_: build, test run, repair command
 
 **GuidedProjectCreation**:

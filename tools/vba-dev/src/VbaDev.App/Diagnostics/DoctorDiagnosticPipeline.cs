@@ -1,4 +1,5 @@
 using VbaDev.App.Projects;
+using VbaDev.App.Workbooks;
 
 namespace VbaDev.App.Diagnostics;
 
@@ -26,6 +27,7 @@ public sealed class DoctorDiagnosticPipeline
     private readonly IReadOnlyList<IActiveDoctorProjectDiagnosticProvider> activeProjectDiagnosticProviders;
     private readonly IProjectMaterializationDiagnosticPort projectMaterializationDiagnosticPort;
     private readonly IEnvironmentDiagnosticPort environmentDiagnosticPort;
+    private readonly VbaSourceAdmission sourceAdmission;
 
     /// <summary>
     /// Creates a doctor diagnostic pipeline.
@@ -39,12 +41,26 @@ public sealed class DoctorDiagnosticPipeline
         IReadOnlyList<IActiveDoctorProjectDiagnosticProvider> activeProjectDiagnosticProviders,
         IProjectMaterializationDiagnosticPort projectMaterializationDiagnosticPort,
         IEnvironmentDiagnosticPort environmentDiagnosticPort)
+        : this(projectContextResolver, projectDiagnosticProviders, activeProjectDiagnosticProviders,
+            projectMaterializationDiagnosticPort, environmentDiagnosticPort,
+            new VbaSourceAdmission(ActiveWindowsAnsiCodePage.Get))
+    {
+    }
+
+    internal DoctorDiagnosticPipeline(
+        ProjectContextResolver projectContextResolver,
+        IReadOnlyList<IDoctorProjectDiagnosticProvider> projectDiagnosticProviders,
+        IReadOnlyList<IActiveDoctorProjectDiagnosticProvider> activeProjectDiagnosticProviders,
+        IProjectMaterializationDiagnosticPort projectMaterializationDiagnosticPort,
+        IEnvironmentDiagnosticPort environmentDiagnosticPort,
+        VbaSourceAdmission sourceAdmission)
     {
         this.projectContextResolver = projectContextResolver;
         this.projectDiagnosticProviders = projectDiagnosticProviders;
         this.activeProjectDiagnosticProviders = activeProjectDiagnosticProviders;
         this.projectMaterializationDiagnosticPort = projectMaterializationDiagnosticPort;
         this.environmentDiagnosticPort = environmentDiagnosticPort;
+        this.sourceAdmission = sourceAdmission;
     }
 
     /// <summary>
@@ -68,9 +84,17 @@ public sealed class DoctorDiagnosticPipeline
         else
         {
             results.Add(DiagnosticResult.Pass("Project manifest", $"Loaded {project.ManifestPath}."));
+            var sources = DoctorProjectSourceInspection.Capture(project, sourceAdmission, cancellationToken);
             foreach (var provider in projectDiagnosticProviders)
             {
-                provider.AddDiagnostics(results, project);
+                if (provider is IDoctorSourceDiagnosticProvider sourceProvider)
+                {
+                    sourceProvider.AddDiagnostics(results, project, sources);
+                }
+                else
+                {
+                    provider.AddDiagnostics(results, project);
+                }
             }
 
             try
@@ -97,9 +121,9 @@ public sealed class DoctorDiagnosticPipeline
                     Canceled: true);
             }
 
-            var materializationRun = await projectMaterializationDiagnosticPort
-                .RunAsync(project, cancellationToken)
-                .ConfigureAwait(false);
+            var materializationRun = projectMaterializationDiagnosticPort is IDoctorSourceMaterializationDiagnosticPort sourcePort
+                ? await sourcePort.RunAsync(project, sources, cancellationToken).ConfigureAwait(false)
+                : await projectMaterializationDiagnosticPort.RunAsync(project, cancellationToken).ConfigureAwait(false);
             results.AddRange(materializationRun.Results);
             if (!materializationRun.Complete)
             {

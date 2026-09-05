@@ -50,6 +50,96 @@ internal sealed class VbaSourceAdmission
         this.readAllBytes = readAllBytes ?? File.ReadAllBytes;
     }
 
+    internal DoctorSourceAdmissionRun BeginDoctorRun(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var activeCodePage = getActiveCodePage();
+        cancellationToken.ThrowIfCancellationRequested();
+        var encoding = CreateStrictActiveEncoding(activeCodePage);
+        return new DoctorSourceAdmissionRun(this, activeCodePage, encoding);
+    }
+
+    internal CapturedDoctorSourceSet CaptureDoctorDocument(
+        string sourceDirectory,
+        int activeCodePage,
+        Encoding encoding,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var root = Path.GetFullPath(sourceDirectory);
+        var exists = Directory.Exists(root);
+        ImmutableArray<string> paths;
+        try
+        {
+            if (File.Exists(root))
+            {
+                throw new InvalidOperationException($"Import source path is not a directory: {root}");
+            }
+            if (!exists)
+            {
+                throw new InvalidOperationException($"Import source directory was not found: {root}");
+            }
+            paths = inventory(root).Select(Path.GetFullPath).ToImmutableArray();
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            return new CapturedDoctorSourceSet(root, activeCodePage, exists, [], [], [], error);
+        }
+
+        var sources = ResolveSourceFiles(paths);
+        var capturedPaths = sources.Select(source => source.SourcePath)
+            .Concat(sources.Select(source => source.BinaryPath)
+                .OfType<string>())
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+        var capturedFiles = new Dictionary<string, CapturedDoctorFile>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in capturedPaths)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                capturedFiles.Add(path, new(ImmutableArray.CreateRange(readAllBytes(path)), null));
+            }
+            catch (Exception error) when (error is not OperationCanceledException)
+            {
+                capturedFiles.Add(path, new(default, error));
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
+        var facts = new List<CapturedDoctorSource>(sources.Length);
+        foreach (var source in sources.OrderBy(source => source.FileName, StringComparer.OrdinalIgnoreCase))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            DecodedSource decoded;
+            ImmutableArray<byte> bytes;
+            try
+            {
+                bytes = capturedFiles[source.SourcePath].GetBytes();
+                decoded = Decode(bytes, encoding, activeCodePage, source.SourcePath);
+            }
+            catch (Exception error) when (error is not OperationCanceledException)
+            {
+                facts.Add(new(source, null, error, null, null));
+                continue;
+            }
+
+            try
+            {
+                var admitted = AdmitSource(source, bytes, decoded,
+                    path => capturedFiles[path].GetBytes(), cancellationToken);
+                facts.Add(new(source, decoded.Text, null, admitted, null));
+            }
+            catch (Exception error) when (error is not OperationCanceledException)
+            {
+                facts.Add(new(source, decoded.Text, null, null, error));
+            }
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return new CapturedDoctorSourceSet(root, activeCodePage, exists, paths, capturedFiles, facts);
+    }
+
     internal AdmittedVbaSourceSet Admit(
         string sourceDirectory,
         VbaSourceAdmissionIntent intent,
@@ -93,20 +183,7 @@ internal sealed class VbaSourceAdmission
         cancellationToken.ThrowIfCancellationRequested();
         var paths = inventory(root).Select(Path.GetFullPath).ToArray();
         cancellationToken.ThrowIfCancellationRequested();
-        var sidecars = paths
-            .Where(path => Path.GetExtension(path).Equals(".frx", StringComparison.OrdinalIgnoreCase))
-            .ToLookup(SidecarIdentity, StringComparer.OrdinalIgnoreCase);
-        var sources = paths
-            .Where(DocumentSourceSetLayout.IsVbaSourceFile)
-            .Select(path => new VbaSourceFile(
-                path,
-                KindFromExtension(path),
-                DocumentSourceSetLayout.IsFormFile(path)
-                    ? sidecars[SidecarIdentity(path)]
-                        .OrderBy(candidate => candidate, StringComparer.OrdinalIgnoreCase)
-                        .FirstOrDefault()
-                    : null))
-            .ToArray();
+        var sources = ResolveSourceFiles(paths);
         if (sources.Length == 0 && intent == VbaSourceAdmissionIntent.ExplicitImport)
         {
             throw new InvalidOperationException($"No importable VBA source files were found in: {root}");
@@ -133,35 +210,64 @@ internal sealed class VbaSourceAdmission
             {
                 continue;
             }
-            var syntax = VbaSyntaxTree.ParseModule(new Uri(source.SourcePath).AbsoluteUri, text);
-            var projection = VbaCodeModuleProjection.Create(syntax);
-            var projectedKind = KindFromSyntax(projection.ModuleKind);
-            if (projectedKind != source.Kind)
-            {
-                throw new InvalidOperationException(
-                    $"VBA source '{source.SourcePath}' declares component kind '{projectedKind}' instead of expected '{source.Kind}'.");
-            }
-
-            cancellationToken.ThrowIfCancellationRequested();
-            var binaryBytes = source.BinaryPath is null
-                ? (ImmutableArray<byte>?)null
-                : ImmutableArray.CreateRange(readAllBytes(source.BinaryPath));
-            cancellationToken.ThrowIfCancellationRequested();
-            admitted.Add(new AdmittedVbaSource(
-                source.SourcePath,
-                source.Kind,
-                bytes,
-                text,
-                decoded.EncodingToken,
-                source.BinaryPath,
-                binaryBytes,
-                syntax,
-                projection,
-                VbeModuleIdentityMetadataReader.Read(text, source.Kind)));
+            admitted.Add(AdmitSource(source, bytes, decoded,
+                path => ImmutableArray.CreateRange(readAllBytes(path)), cancellationToken));
         }
 
         cancellationToken.ThrowIfCancellationRequested();
         return new AdmittedVbaSourceSet(intent, activeCodePage, admitted);
+    }
+
+    private static VbaSourceFile[] ResolveSourceFiles(IReadOnlyList<string> paths)
+    {
+        var sidecars = paths
+            .Where(path => Path.GetExtension(path).Equals(".frx", StringComparison.OrdinalIgnoreCase))
+            .ToLookup(SidecarIdentity, StringComparer.OrdinalIgnoreCase);
+        return paths
+            .Where(DocumentSourceSetLayout.IsVbaSourceFile)
+            .Select(path => new VbaSourceFile(
+                path,
+                KindFromExtension(path),
+                DocumentSourceSetLayout.IsFormFile(path)
+                    ? sidecars[SidecarIdentity(path)]
+                        .OrderBy(candidate => candidate, StringComparer.OrdinalIgnoreCase)
+                        .FirstOrDefault()
+                    : null))
+            .ToArray();
+    }
+
+    private static AdmittedVbaSource AdmitSource(
+        VbaSourceFile source,
+        ImmutableArray<byte> bytes,
+        DecodedSource decoded,
+        Func<string, ImmutableArray<byte>> readBinaryBytes,
+        CancellationToken cancellationToken)
+    {
+        var syntax = VbaSyntaxTree.ParseModule(new Uri(source.SourcePath).AbsoluteUri, decoded.Text);
+        var projection = VbaCodeModuleProjection.Create(syntax);
+        var projectedKind = KindFromSyntax(projection.ModuleKind);
+        if (projectedKind != source.Kind)
+        {
+            throw new InvalidOperationException(
+                $"VBA source '{source.SourcePath}' declares component kind '{projectedKind}' instead of expected '{source.Kind}'.");
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        var binaryBytes = source.BinaryPath is null
+            ? (ImmutableArray<byte>?)null
+            : readBinaryBytes(source.BinaryPath);
+        cancellationToken.ThrowIfCancellationRequested();
+        return new AdmittedVbaSource(
+            source.SourcePath,
+            source.Kind,
+            bytes,
+            decoded.Text,
+            decoded.EncodingToken,
+            source.BinaryPath,
+            binaryBytes,
+            syntax,
+            projection,
+            VbeModuleIdentityMetadataReader.Read(decoded.Text, source.Kind));
     }
 
     private static DecodedSource Decode(
@@ -300,6 +406,137 @@ internal sealed class VbaSourceAdmission
 
     private sealed record DecodedSource(string Text, string EncodingToken);
 }
+
+internal sealed class DoctorSourceAdmissionRun(
+    VbaSourceAdmission admission,
+    int activeCodePage,
+    Encoding encoding)
+{
+    internal int ActiveCodePage { get; } = activeCodePage;
+
+    internal CapturedDoctorSourceSet CaptureDocument(
+        string sourceDirectory,
+        CancellationToken cancellationToken = default)
+        => admission.CaptureDoctorDocument(sourceDirectory, ActiveCodePage, encoding, cancellationToken);
+}
+
+internal sealed class CapturedDoctorSourceSet
+{
+    private readonly ImmutableDictionary<string, CapturedDoctorFile> capturedFiles;
+    private readonly ImmutableArray<CapturedDoctorSource> sources;
+
+    internal CapturedDoctorSourceSet(
+        string sourceDirectory,
+        int activeCodePage,
+        bool sourceDirectoryExists,
+        ImmutableArray<string> inventoryPaths,
+        IEnumerable<KeyValuePair<string, CapturedDoctorFile>> capturedFiles,
+        IEnumerable<CapturedDoctorSource> sources,
+        Exception? captureFailure = null)
+    {
+        SourceDirectory = sourceDirectory;
+        ActiveCodePage = activeCodePage;
+        SourceDirectoryExists = sourceDirectoryExists;
+        InventoryPaths = inventoryPaths;
+        CaptureFailure = captureFailure;
+        this.capturedFiles = capturedFiles.ToImmutableDictionary(StringComparer.OrdinalIgnoreCase);
+        this.sources = sources.ToImmutableArray();
+    }
+
+    internal string SourceDirectory { get; }
+    internal int ActiveCodePage { get; }
+    internal bool SourceDirectoryExists { get; }
+    internal ImmutableArray<string> InventoryPaths { get; }
+    internal Exception? CaptureFailure { get; }
+
+    internal ImmutableArray<byte> GetOriginalBytes(string inventoriedPath)
+    {
+        if (CaptureFailure is not null)
+        {
+            throw CaptureFailure;
+        }
+        if (!capturedFiles.TryGetValue(Path.GetFullPath(inventoriedPath), out var file))
+        {
+            throw new InvalidOperationException($"Doctor did not capture source bytes for '{inventoriedPath}'.");
+        }
+        return file.GetBytes();
+    }
+
+    internal AdmittedVbaSourceSet AdmitBuild(CancellationToken cancellationToken = default)
+        => Admit(VbaSourceAdmissionIntent.Build, [], cancellationToken);
+
+    internal AdmittedVbaSourceSet AdmitPublish(
+        IReadOnlyList<InstalledCommonModule> commonModules,
+        CancellationToken cancellationToken = default)
+        => Admit(VbaSourceAdmissionIntent.Publish, commonModules, cancellationToken);
+
+    private AdmittedVbaSourceSet Admit(
+        VbaSourceAdmissionIntent intent,
+        IReadOnlyList<InstalledCommonModule> commonModules,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfCaptureFailed();
+        DocumentSourceSetLayout.ThrowIfDuplicateSourceFileNames(SourceDirectory,
+            sources.Select(source => source.SourceFile).ToArray());
+        var commonNames = commonModules.Select(entry => entry.ModuleFile).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var includedCommonNames = commonModules.Where(entry => !entry.TestOnly)
+            .Select(entry => entry.ModuleFile).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var admitted = new List<AdmittedVbaSource>(sources.Length);
+        foreach (var source in sources)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var isCommonModule = commonNames.Contains(source.SourceFile.FileName);
+            if (isCommonModule && !includedCommonNames.Contains(source.SourceFile.FileName))
+            {
+                continue;
+            }
+            if (source.DecodeFailure is not null)
+            {
+                throw source.DecodeFailure;
+            }
+            if (intent == VbaSourceAdmissionIntent.Publish && !isCommonModule
+                && VbaPublishExclusionMarker.IsPresent(source.DecodedText!))
+            {
+                continue;
+            }
+            if (source.AdmissionFailure is not null)
+            {
+                throw source.AdmissionFailure;
+            }
+            admitted.Add(source.Admission!);
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+        return new AdmittedVbaSourceSet(intent, ActiveCodePage, admitted);
+    }
+
+    private void ThrowIfCaptureFailed()
+    {
+        if (CaptureFailure is not null)
+        {
+            throw CaptureFailure;
+        }
+    }
+}
+
+internal sealed record CapturedDoctorFile(ImmutableArray<byte> Bytes, Exception? Failure)
+{
+    internal ImmutableArray<byte> GetBytes()
+    {
+        if (Failure is not null)
+        {
+            throw Failure;
+        }
+        return Bytes;
+    }
+}
+
+internal sealed record CapturedDoctorSource(
+    VbaSourceFile SourceFile,
+    string? DecodedText,
+    Exception? DecodeFailure,
+    AdmittedVbaSource? Admission,
+    Exception? AdmissionFailure);
 
 internal sealed class AdmittedVbaSourceSet
 {

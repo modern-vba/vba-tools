@@ -338,8 +338,9 @@ sets remain valid. The ordinary build stage of `test` uses these same rules;
 Publish shares this admission with its own exclusion rules. Snapshot Build/Test
 uses the same BOM-or-ACP admission for the complete caller-owned inventory and
 advertises both snapshot features as `2.0`; the command contract and
-`sourceSnapshot.activeWindowsCodePage` remain `1.0`. Doctor keeps its separate
-path. VbaDev independently admits bytes supplied by any caller; it neither
+`sourceSnapshot.activeWindowsCodePage` remain `1.0`. Project Doctor uses the
+same BOM-or-ACP admission and shares one captured source authority across its
+source diagnostics and Build/Publish profiles. VbaDev independently admits bytes supplied by any caller; it neither
 requires nor reads an adapter, extension, editor state, or consumer proof.
 
 Before Excel starts, build stages every selected source, requires its authoritative exported module identity, and reports all case-insensitive source conflicts. In the disposable workbook it checks the actual project, retained-component, and active-reference namespaces, removes replaceable components, normalizes references, then checks the final protected and VBE-adopted reference identities again. Any authority gap or conflict fails before source import, save, or atomic output replacement and preserves the source template and previous output. Build-before-test uses this same profile and preflight.
@@ -462,7 +463,7 @@ Import fixes the active Windows ANSI code page once. A UTF-8, UTF-16 LE, or UTF-
 
 Close the target workbook before import and keep it closed until the command finishes. Import holds the original target against writes and deletion while processing a private copy. Before flushing any component, it requires authoritative incoming module identities and compares them case-insensitively with the copy's actual `VBProject.Name`, active `Reference.Name` values, and retained document-module names. Existing standard modules, class modules, and forms are then replaced; document modules such as `ThisWorkbook` and worksheet modules remain. The target is atomically replaced only after source-mirror cleanup, imported-component verification, private workbook save, and release of the owned Excel process succeed. Any earlier failure or cancellation leaves the target bytes unchanged. If private artifacts cannot be removed, the error reports their retained paths.
 
-These encoding rules apply to explicit `import`, ordinary and snapshot `build` and `test`, and included `publish` sources. Snapshot Build/Test capabilities are version `2.0`; the command contract and active-code-page capability remain `1.0`. Doctor retains its existing source-decoding behavior.
+These encoding rules apply to explicit `import`, ordinary and snapshot `build` and `test`, included `publish` sources, and project Doctor's source inspection. Snapshot Build/Test capabilities are version `2.0`; the command contract, active-code-page capability, and Doctor schema remain `1.0`.
 
 Unlike `build`, `import` does not add, remove, or normalize manifest-defined references, does not resolve CommonModules dependencies, does not interpret `'#ExcludePublish`, and does not validate whether the workbook compiles.
 
@@ -524,9 +525,25 @@ When `commonModulesRepository` is configured, project Doctor validates its compl
 
 For each document, project Doctor evaluates build and publish namespace profiles independently. It runs source preflight before Excel, then uses one disposable template copy to remove replaceable components, normalize references, and inspect actual final project, retained-component, protected-reference, and VBE-adopted identities. It imports no source, saves no workbook, deletes the copy, and reports each profile's conflicts in deterministic order.
 
+One project Doctor run fixes Windows ACP once, then captures each document's
+recursive inventory, text sources, and matching same-directory `.frx` bytes
+once. Source layout, installed CommonModules drift, and both profiles use this
+same evidence without rereading caller files. The external CommonModules
+repository retains its independent package authority. Unpaired sidecars are
+inventoried for layout findings but their bytes are not read.
+
+Build includes test-only and locally excluded sources. Publish ignores manifest
+test-only sources before interpreting their captured content; local exclusion
+markers require successful strict decoding of the entire source, but may
+exclude later identity, kind, sidecar, or lossless-ACP-projection failures.
+Included CommonModules ignore local markers. A failed or incomplete capture is
+reported without encoding fallback, retries, or an empty-success substitute.
+Later authoring edits belong to the next run; Doctor does not lock or protect
+concurrent authoring activity or change durable source/workbook/output files.
+
 Environment scope rejects `--project`, performs no project discovery or
-project/document access, and starts one dedicated owned Excel instance for its
-active probes. It always attempts to release that owned instance and never
+project/document access or source ACP acquisition, and starts one dedicated
+owned Excel instance for its active probes. It always attempts to release that owned instance and never
 terminates a pre-existing interactive Excel process. Its output contains
 exactly these checks in order:
 

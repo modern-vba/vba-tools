@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using VbaDev.App.Build;
+using VbaDev.App.Diagnostics;
 using VbaDev.App.Import;
 using VbaDev.App.Projects;
 using VbaDev.App.References;
@@ -12,6 +13,7 @@ using VbaDev.App.Testing;
 using VbaDev.App.Workbooks;
 using VbaDev.Domain;
 using VbaDev.Infrastructure.Debugging;
+using VbaDev.Infrastructure.Diagnostics;
 using VbaDev.Infrastructure.Projects;
 using VbaDev.Infrastructure.Workbooks;
 using Xunit;
@@ -1374,6 +1376,62 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
                 File.ReadAllBytes(source.SourcePath));
         }
         await WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20));
+    }
+
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
+    public async Task DoctorInspectsBuildAndPublishProfilesWithoutChangingCallerFilesOrLeavingOwnedExcel()
+    {
+        using var temp = TempDirectory.Create();
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        var initialProcesses = CaptureExcelProcessIds();
+        var initialBootstrapFiles = CaptureBootstrapWorkbookPaths();
+        var activeCodePage = ActiveWindowsAnsiCodePage.Get();
+        try
+        {
+            var fixture = await CreateOrdinaryWorkbookFixtureAsync(temp, activeCodePage, cancellation.Token);
+            Directory.CreateDirectory(Path.GetDirectoryName(fixture.Context.BinDocumentPath)!);
+            Directory.CreateDirectory(Path.GetDirectoryName(fixture.Context.PublishDocumentPath)!);
+            File.WriteAllBytes(fixture.Context.BinDocumentPath, Encoding.ASCII.GetBytes("existing-bin-output"));
+            File.WriteAllBytes(fixture.Context.PublishDocumentPath, Encoding.ASCII.GetBytes("existing-publish-output"));
+            var callerBytes = Directory.GetFiles(fixture.Context.ProjectRoot, "*", SearchOption.AllDirectories)
+                .ToDictionary(path => path, File.ReadAllBytes, StringComparer.Ordinal);
+            var project = new ProjectContextResolver(new JsonProjectManifestStore()).ResolveProject(
+                new(fixture.Context.ProjectRoot, null, fixture.Context.ProjectRoot));
+
+            var result = await new ExcelProjectMaterializationDiagnosticPort().RunAsync(project, cancellation.Token);
+
+            Assert.True(result.Complete);
+            Assert.False(result.Canceled);
+            Assert.Collection(
+                result.Results,
+                check =>
+                {
+                    Assert.Equal("project.workbookMaterialization/AdmissionBook/build", check.Id);
+                    Assert.True(check.Status == DiagnosticStatus.Pass, $"{check.Id}: {check.Status}: {check.Message}");
+                },
+                check =>
+                {
+                    Assert.Equal("project.workbookMaterialization/AdmissionBook/publish", check.Id);
+                    Assert.True(check.Status == DiagnosticStatus.Pass, $"{check.Id}: {check.Status}: {check.Message}");
+                });
+            Assert.Equal(
+                callerBytes.Keys.Order(StringComparer.Ordinal),
+                Directory.GetFiles(fixture.Context.ProjectRoot, "*", SearchOption.AllDirectories).Order(StringComparer.Ordinal));
+            foreach (var source in callerBytes)
+            {
+                Assert.Equal(source.Value, File.ReadAllBytes(source.Key));
+            }
+
+            output.WriteLine(
+                $"Doctor profile observation: actual GetACP {activeCodePage}; seed Excel {fixture.SeedExcelVersion}; " +
+                "Build and Publish PASS; ACP/BOM sources, FRX, template, manifest, bin and publish bytes unchanged.");
+        }
+        finally
+        {
+            await WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20));
+            Assert.Equal(initialBootstrapFiles.Order(), CaptureBootstrapWorkbookPaths().Order());
+        }
     }
 
     [WindowsExcelIntegrationFact]
