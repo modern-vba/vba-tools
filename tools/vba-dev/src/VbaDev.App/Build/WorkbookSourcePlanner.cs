@@ -1,7 +1,6 @@
 using VbaDev.App.Projects;
 using VbaDev.App.Workbooks;
 using VbaDev.Domain;
-using VbaTools.Syntax;
 
 namespace VbaDev.App.Build;
 
@@ -10,13 +9,11 @@ namespace VbaDev.App.Build;
 /// </summary>
 public sealed class WorkbookSourcePlanner
 {
-    private const int PublishMarkerScanLineLimit = 32;
-    private const string PublishExclusionMarker = "'#ExcludePublish";
     private readonly Func<int> getActiveCodePage;
     private readonly VbaSourceAdmission sourceAdmission;
 
     /// <summary>
-    /// Creates a source planner that uses the active Windows code page for strict marker decoding.
+    /// Creates a source planner that uses the active Windows code page for source admission and diagnostic marker decoding.
     /// </summary>
     public WorkbookSourcePlanner()
         : this(ActiveWindowsAnsiCodePage.Get)
@@ -42,11 +39,27 @@ public sealed class WorkbookSourcePlanner
     {
         ValidateSourcePaths(context, requireTemplate: true);
         var admission = sourceAdmission.Admit(context.DocumentSourceSetPath, VbaSourceAdmissionIntent.Build, cancellationToken);
+        return OrderAdmittedSources(context, admission);
+    }
+
+    internal AdmittedWorkbookGenerationSourceInput CapturePublishSourceInput(
+        ResolvedProjectContext context,
+        CancellationToken cancellationToken)
+    {
+        ValidateSourcePaths(context, requireTemplate: true);
+        var admission = sourceAdmission.AdmitPublish(context.DocumentSourceSetPath, context.Document.CommonModules, cancellationToken);
+        return OrderAdmittedSources(context, admission);
+    }
+
+    private static AdmittedWorkbookGenerationSourceInput OrderAdmittedSources(
+        ResolvedProjectContext context,
+        AdmittedVbaSourceSet admission)
+    {
         var sourcesByName = admission.Sources.ToDictionary(source => source.FileName, StringComparer.OrdinalIgnoreCase);
         var ordered = OrderSourceFiles(
             context,
             admission.Sources.Select(source => new VbaSourceFile(source.SourcePath, source.Kind, source.BinaryPath)),
-            includeCommonModule: _ => true,
+            includeCommonModule: entry => admission.Intent != VbaSourceAdmissionIntent.Publish || !entry.TestOnly,
             selectProjectLocalSource: source => source);
         return new(new AdmittedVbaSourceSet(
             admission.Intent,
@@ -179,15 +192,9 @@ public sealed class WorkbookSourcePlanner
             File.ReadAllBytes(source.SourcePath),
             activeCodePage,
             diagnosticSourcePath);
-        foreach (var line in text
-            .Split(["\r\n", "\n", "\r"], StringSplitOptions.None)
-            .Take(PublishMarkerScanLineLimit))
+        if (VbaPublishExclusionMarker.IsPresent(text))
         {
-            if (VbaIdentifier.TrimStartWhitespace(line)
-                .StartsWith(PublishExclusionMarker, StringComparison.OrdinalIgnoreCase))
-            {
-                return null;
-            }
+            return null;
         }
 
         return source with

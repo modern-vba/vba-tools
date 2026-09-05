@@ -214,10 +214,9 @@ public sealed class BuildSourceAdmissionTests
     }
 
     [Theory]
-    [InlineData("publish")]
     [InlineData("build-snapshot")]
     [InlineData("test-snapshot")]
-    public async Task PublishAndSnapshotRoutesKeepTheirUtf8FirstDecoding(string route)
+    public async Task SnapshotRoutesKeepTheirUtf8FirstDecoding(string route)
     {
         using var temp = TempDirectory.Create();
         var context = CreateContext(temp.Path);
@@ -234,7 +233,6 @@ public sealed class BuildSourceAdmissionTests
 
         var result = route switch
         {
-            "publish" => await outputCommand.RunAsync(context, WorkbookOutputProfile.Publish, CancellationToken.None),
             "build-snapshot" => await build.RunSnapshotAsync(
                 context, context.DocumentSourceSetPath, Path.Combine(temp.Path, "custom", "Result.xlsm"), CancellationToken.None),
             _ => await test.RunAsync(context,

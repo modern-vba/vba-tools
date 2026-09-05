@@ -113,18 +113,21 @@ UTF-8 rather than failing as ambiguous. DAP text entries additionally have
 their declared encoding token revalidated before materialization.
 
 ADR 0037 supersedes that source-decoding rule for `ExplicitWorkbookImport`
-in issue #335 and ordinary saved-source Build in issue #339. Its internal
+in issue #335, ordinary saved-source Build in issue #339, and Publish in issue #340. Its internal
 `VbaSourceAdmission` fixes ACP and one inventory,
 reads each selected text source and sidecar once, and admits BOM-marked Unicode
 or BOM-less fixed-ACP text without a UTF-8 probe. Preflight, projection,
 verification, and diagnostics share the immutable admitted facts. Its
 `VbeImportSourceSet` consumes those facts without obtaining ACP again, detecting
 an encoding, or rereading caller files. Ordinary Test's existing BuildFirst call
-uses that same Build stage. Publish, snapshot inputs, test execution/result
+uses that same Build stage. Publish excludes manifest test-only inputs before
+reading them and strictly decodes complete project-local sources before marker
+selection; proved marker exclusions need not pass later import eligibility or
+ACP projection. Snapshot inputs, test execution/result
 locations, and Doctor retain their existing behavior, and snapshot capabilities
 remain version `1.0`.
 
-Every path must decode and re-encode to its original bytes before deriving its
+Every included source must decode and re-encode to its original bytes before deriving its
 VBE mirror. `VbaDev` then strict-encodes
 the resulting Unicode text into the fixed ACP and decodes it again to require
 exact text equality. An unsupported encoding, unrepresentable character,

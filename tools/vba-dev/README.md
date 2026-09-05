@@ -335,8 +335,9 @@ Changes after capture cannot affect the current build. This does not guarantee
 an atomic snapshot of concurrent authoring changes: an unreadable selected file
 fails capture, and build neither retries nor rewrites source files. Empty source
 sets remain valid. The ordinary build stage of `test` uses these same rules;
-Publish, source-snapshot inputs, and Doctor retain their separate admission
-paths. Snapshot capability versions remain `1.0`.
+Publish shares this admission with its own exclusion rules; source-snapshot
+inputs and Doctor retain their separate paths. Snapshot capability versions
+remain `1.0`.
 
 Before Excel starts, build stages every selected source, requires its authoritative exported module identity, and reports all case-insensitive source conflicts. In the disposable workbook it checks the actual project, retained-component, and active-reference namespaces, removes replaceable components, normalizes references, then checks the final protected and VBE-adopted reference identities again. Any authority gap or conflict fails before source import, save, or atomic output replacement and preserves the source template and previous output. Build-before-test uses this same profile and preflight.
 
@@ -393,6 +394,25 @@ Options:
 
 Publish runs the same two-phase namespace preflight as build over only that publishable source profile. Identity defects confined to excluded `testOnly` or `'#ExcludePublish` source do not block publish, while duplicate flat file names and other structural profile-selection failures still do.
 
+Publish fixes ACP and one recursive inventory before selection, using the same
+supported-BOM and BOM-less ACP rules as [build](#build). Flat filename collisions
+fail before any content is read or filtered. Manifest test-only sources and
+sidecars are excluded without reads; other installed CommonModules ignore
+source markers. Each project-local source must strictly decode in full and
+reproduce its original bytes before its first 32 physical lines are checked
+for a case-insensitive `'#ExcludePublish` prefix after VBA-leading whitespace
+trimming. A marker cannot excuse invalid bytes later in the source.
+
+A proved marker exclusion bypasses import eligibility, lossless ACP projection,
+and sidecar reads, so excluded BOM-marked Unicode need not be representable in
+ACP. Included sources and sidecars are captured at most once; selection,
+preflight, import, and verification share those admitted facts. Included
+CommonModules retain manifest order, then remaining sources use case-insensitive
+filename order. An empty effective source set remains valid. Later authoring
+changes cannot alter the admitted publication; an unreadable selected file
+fails without a retry, closing stability check, or authoring lock. Existing
+warnings and output commitment, including cancellation handling, are unchanged.
+
 ### export
 
 ```text
@@ -439,7 +459,7 @@ Import fixes the active Windows ANSI code page once. A UTF-8, UTF-16 LE, or UTF-
 
 Close the target workbook before import and keep it closed until the command finishes. Import holds the original target against writes and deletion while processing a private copy. Before flushing any component, it requires authoritative incoming module identities and compares them case-insensitively with the copy's actual `VBProject.Name`, active `Reference.Name` values, and retained document-module names. Existing standard modules, class modules, and forms are then replaced; document modules such as `ThisWorkbook` and worksheet modules remain. The target is atomically replaced only after source-mirror cleanup, imported-component verification, private workbook save, and release of the owned Excel process succeed. Any earlier failure or cancellation leaves the target bytes unchanged. If private artifacts cannot be removed, the error reports their retained paths.
 
-These encoding rules apply to explicit `import` and ordinary saved-source `build`, including the ordinary build stage of `test`. Publish, snapshot build and test, and Doctor retain their existing source-decoding behavior. Snapshot capability contracts remain version `1.0`.
+These encoding rules apply to explicit `import`, ordinary saved-source `build` including the ordinary build stage of `test`, and included `publish` sources. Snapshot build and test, and Doctor retain their existing source-decoding behavior. Snapshot capability contracts remain version `1.0`.
 
 Unlike `build`, `import` does not add, remove, or normalize manifest-defined references, does not resolve CommonModules dependencies, does not interpret `'#ExcludePublish`, and does not validate whether the workbook compiles.
 

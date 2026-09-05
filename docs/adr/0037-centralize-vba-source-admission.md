@@ -8,8 +8,8 @@ This decision introduces the source-admission boundary through the
 `ExplicitWorkbookImport` slice in issue #335. For explicit import, it supersedes
 the shared UTF-8-first source-decoding rule in ADR 0027 and the tool-local
 workbook-backed command model. Issue #339 extends that boundary to ordinary
-saved-source Build. Source ownership, VBE import verification, and owned
-Excel-process lifecycle contracts remain accepted.
+saved-source Build; issue #340 adds Publish. Source ownership, VBE import
+verification, and owned Excel-process lifecycle contracts remain accepted.
 
 ## Explicit import admission
 
@@ -101,11 +101,52 @@ build stage receives the same admitted Build behavior. This does not introduce
 shared admission for test execution or result-location lookup, nor does it
 change `--no-build` navigation. It does not add a parallel legacy Build route.
 
+## Publish admission
+
+Ordinary Publish uses the same sealed module's closed `Publish` intent with
+manifest-owned CommonModules metadata. It fixes ACP and one recursive inventory
+before selection. Case-insensitive flat exported-filename collisions fail
+across all candidates before content reads or exclusion decisions. Discovery,
+including hidden and tool-named directories, and same-directory form-sidecar
+pairing retain their existing rules.
+
+Installed CommonModules with `testOnly: true` are excluded before reading their
+source or sidecar bytes. Other installed CommonModules remain included even
+when their source contains a publish-exclusion marker. Orphaned entries retain
+their manifest-owned treatment; an absent entry adds no new Publish failure.
+Doctor remains responsible for CommonModules consistency checks.
+
+Each project-local candidate is read once and its entire byte sequence must
+strict-decode and reproduce exactly before the existing marker decision. The
+first 32 physical lines, split on CRLF, LF, or CR, are checked after VBA-leading
+whitespace trimming for a case-insensitive `'#ExcludePublish` prefix. An early
+marker cannot excuse invalid bytes later in the source. This marker grammar is
+shared with Doctor's legacy selector without migrating Doctor's decoder.
+
+A proved marker exclusion precedes declared-kind, identity, syntax-derived
+import eligibility, ACP projection, and sidecar capture. Consequently,
+supported BOM-marked Unicode that is not representable in ACP may still prove
+exclusion, and excluded identity or kind defects do not block Publish. Included
+sources must meet the same strict admission and lossless ACP projection rules
+as Build. Preflight, mirror generation, import verification, and diagnostics
+share their admitted Unicode, syntax, identities, provenance, and captured
+sidecars without rereading authoring files.
+
+Publish orders included CommonModules by manifest order, followed by remaining
+sources in case-insensitive filename order, and accepts an empty effective
+source set. Later authoring changes do not alter the admitted publication.
+As with Build, this is fixed-input ownership, not an atomic concurrent-author
+snapshot: unreadable selected files fail without retries, another inventory,
+closing stability checks, or new locks. Existing warnings, output schema,
+source-only and live-workbook preflight, cleanup, and output commitment remain
+unchanged. Cancellation before commitment preserves prior output; successful
+commitment remains authoritative if cancellation arrives afterward.
+
 ## Rollout boundary
 
 Issue #335 introduced `ExplicitImport`; issue #339 adds ordinary Build and the
-ordinary Build stage reused by Test. Publish, snapshot build and test, and
-Doctor retain their existing UTF-8-first decoding and capture paths until
+ordinary Build stage reused by Test; issue #340 adds Publish. Snapshot build and
+test, and Doctor retain their existing UTF-8-first decoding and capture paths until
 their own migration slices. Test execution and result-location authority also
 remain on their existing paths.
 Their existing `VbeImportSourceSet` entry point remains responsible for that
@@ -119,7 +160,8 @@ Adapter protocol and snapshot-schema contracts are unchanged. A future
 snapshot encoding migration must coordinate producer, adapter, and CLI
 compatibility in its own complete slice. `ExecutedSourceIndex`-based test
 locations, changes to `test --no-build` navigation, whole-run Doctor admission,
-and language-server source decoding are deferred; none is enabled by #335.
+and language-server source decoding are deferred; these migrations do not
+enable them.
 
 ## Conformance
 
@@ -139,8 +181,8 @@ the same corpus without changing its ownership.
   have a supported BOM or be converted to that ACP by its author.
 - Explicit-import preflight, projection, verification, and diagnostics share
   one captured source authority even if caller files change afterward.
-- Ordinary Build shares the same admitted authority without adding a second
-  source inventory, ACP decision, or authoring-file read downstream.
+- Ordinary Build and Publish share the same admitted authority without adding
+  a second source inventory, ACP decision, or authoring-file read downstream.
 - The previous target survives failures during source admission, workbook
   mutation, verification, save, and owned-process release.
 - Other source workflows keep their released behavior during the staged

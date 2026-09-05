@@ -1180,16 +1180,16 @@ The first gate run used Excel 16.0 with active ACP 932. VBE-exported `.bas`, `.c
 
 Every path that reaches `VBComponents.Import` uses a separate invocation-internal
 **VbeImportSourceSet**. This includes `build`, `publish`, build-before-test,
-snapshot test, and **ExplicitWorkbookImport**. Publish and materialized snapshot
+snapshot test, and **ExplicitWorkbookImport**. Materialized snapshot
 paths retain the existing detector: a recognized BOM first, then strict BOM-less
 UTF-8, then the strict operation ACP. A byte sequence valid as both UTF-8 and ACP
 is classified as UTF-8. DAP text entries separately revalidate their declared
 encoding token before materialization.
 
 ADR 0037 changes explicit import in issue #335 and ordinary saved-source Build
-in issue #339. Its internal sealed **VbaSourceAdmission** captures one fixed ACP,
+in issue #339, and Publish in issue #340. Its internal sealed **VbaSourceAdmission** captures one fixed ACP,
 one inventory, and each selected source or sidecar once under closed
-`ExplicitImport` and `Build` intents. A recognized UTF-8, UTF-16 LE, or UTF-16 BE
+`ExplicitImport`, `Build`, and `Publish` intents. A recognized UTF-8, UTF-16 LE, or UTF-16 BE
 BOM is authoritative; BOM-less text uses only the fixed ACP, with no UTF-8 probe
 and with ACP 65001 canonicalized as UTF-8. Malformed or unsupported BOMs fail
 closed. Immutable original bytes, Unicode, identity, kind, syntax facts, and
@@ -1199,11 +1199,26 @@ encoding, or rereading caller files. Build preserves CommonModules manifest
 order, test-only and orphaned entries, and its accepted empty source set. Later
 authoring changes cannot alter the admitted build; unreadable selected files
 fail capture without retries, a closing stability check, or an authoring lock.
-Ordinary Test's existing BuildFirst call reuses this Build path. Publish,
-snapshot inputs, test execution and result locations, and Doctor retain their
+Ordinary Test's existing BuildFirst call reuses this Build path. Snapshot
+inputs, test execution and result locations, and Doctor retain their
 released behavior; snapshot feature versions remain `1.0`.
 
-Every `.bas`, `.cls`, and `.frm` must strict-decode and re-encode to its original bytes, then strict-encode the resulting Unicode text into the operation ACP and decode the staged bytes again to require exact text equality. An unsupported encoding, unrepresentable character, best-fit substitution, or other difference fails before Excel starts. `.frx` sidecars are copied byte-for-byte beside the staged `.frm` under the same base name; explicit import and ordinary Build use the sidecar bytes captured by admission. Source or snapshot bytes are never rewritten, and the command removes only its staged mirror with invocation scratch. Source already in the operation ACP produces the same text bytes, while supported Unicode source is deliberately normalized only at this private VBE boundary. The data-only `fixtures/vba-source-encoding/cases.json` corpus covers ACP 932, 1252, and 65001 through product-local loaders without sharing product test implementations.
+Publish checks case-insensitive flat filename collisions across all candidates
+before content reads or filtering. Manifest test-only sources and sidecars are
+excluded unread, while other installed CommonModules ignore source markers.
+Each project-local candidate strict-decodes and reproduces its complete bytes
+before the existing first-32-physical-lines, VBA-leading-whitespace-trimmed,
+case-insensitive `'#ExcludePublish` prefix decision. A proved exclusion bypasses
+declared-kind, identity, syntax-derived import eligibility, ACP projection, and
+sidecar capture. Invalid bytes cannot be excused by an earlier marker, but
+excluded supported-BOM Unicode need not be representable in ACP. Publish retains
+manifest order for included CommonModules followed by remaining filenames,
+orphaned entries, absent-entry treatment, and an accepted empty effective set.
+Included source facts and captured sidecars remain authoritative through
+preflight and verification even if authoring files subsequently change. No
+retry, reinventory, closing stability fence, or authoring lock is introduced.
+
+Every included `.bas`, `.cls`, and `.frm` must strict-decode and re-encode to its original bytes, then strict-encode the resulting Unicode text into the operation ACP and decode the staged bytes again to require exact text equality. An unsupported encoding, unrepresentable character, best-fit substitution, or other difference fails before Excel starts. `.frx` sidecars are copied byte-for-byte beside the staged `.frm` under the same base name; explicit import, ordinary Build, and Publish use the sidecar bytes captured by admission. Source or snapshot bytes are never rewritten, and the command removes only its staged mirror with invocation scratch. Source already in the operation ACP produces the same text bytes, while supported Unicode source is deliberately normalized only at this private VBE boundary. The data-only `fixtures/vba-source-encoding/cases.json` corpus covers ACP 932, 1252, and 65001 through product-local loaders without sharing product test implementations.
 
 Before import, `VbaDev` derives `VbaCodeModuleProjection` from the strict-decoded Unicode source. After each component import and before workbook save, it uses that projection to exactly verify the imported component name, kind, line count, and every projected `CodeModule` line. Export-only class `VERSION` and `BEGIN`/`END` headers, `Attribute` records, UserForm designer records, and the synthetic physical line representing only a terminal newline are excluded; the known leading empty line produced by UserForm import is included. The contract assumes no automatic VBE insertion or normalization beyond this projection. Any unmodeled difference fails before save, preventing generated-output commit or explicit-import target persistence.
 
