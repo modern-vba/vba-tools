@@ -160,6 +160,21 @@ with the desktop until the complete owned Job process tree exits. There is no
 caller-desktop or best-effort fallback.
 _Avoid_: DebugExcelProcess, active Excel session, shared Excel instance
 
+**AutomationExcelProcessRuntime**:
+The sealed internal `VbaDev` lifecycle owner that executes one workbook scenario
+against one **AutomationExcelProcess** and returns only after exact process-tree
+release, private-desktop evidence, and STA dispatcher retirement are determined.
+It owns stage deadlines, cooperative and forced cleanup, and release-failure
+arbitration, but not the command's commitment boundary. Its immutable outcome
+keeps the last operation stage, operation and cleanup failures, process-release
+proof, dispatcher-retirement proof, and cleanup-time cancellation separate.
+Only the owning scenario decides whether a proved cleanup-time cancellation
+request overrides its result. The bounded scenario session exposes workbook,
+reference, module, test, save, and export work without process-lifecycle authority
+and becomes unusable before cleanup starts. The mechanism and its native
+dependencies belong wholly to `VbaDev`.
+_Avoid_: public automation framework, DebugExcelProcess owner, command transaction
+
 **AutomationDesktopIsolation**:
 The exact-PID lifecycle invariant for an `AutomationExcelProcess`: no
 user-facing top-level window owned by that process may appear on the caller's
