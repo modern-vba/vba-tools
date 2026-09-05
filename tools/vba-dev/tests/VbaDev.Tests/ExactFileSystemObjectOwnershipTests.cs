@@ -20,12 +20,13 @@ public sealed class ExactFileSystemObjectOwnershipTests
     private const int FileDispositionInfoClass = 4;
 
     [Fact]
-    public void ReceiptTypesAcceptOnlyOpaqueProvenState()
+    public void ReceiptAndPendingCaptureTypesAcceptOnlyOpaqueProvenState()
     {
         var receiptTypes = new[]
         {
             typeof(ExactFileSystemObjectOwnership.FileReceipt),
-            typeof(ExactFileSystemObjectOwnership.DirectoryReceipt)
+            typeof(ExactFileSystemObjectOwnership.DirectoryReceipt),
+            typeof(ExactFileSystemObjectOwnership.PendingFileCapture)
         };
 
         foreach (var receiptType in receiptTypes)
@@ -55,16 +56,18 @@ public sealed class ExactFileSystemObjectOwnershipTests
     {
         var receiptIssuers = typeof(ExactFileSystemObjectOwnership)
             .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+            .Where(method => !method.IsPrivate)
             .Where(method =>
                 method.ReturnType == typeof(ExactFileSystemObjectOwnership.FileReceipt)
                 || method.ReturnType == typeof(ExactFileSystemObjectOwnership.DirectoryReceipt)
-                || method.ReturnType == typeof(ExactFileSystemObjectOwnership.StableFileCapture))
+                || method.ReturnType == typeof(ExactFileSystemObjectOwnership.StableFileCapture)
+                || method.ReturnType == typeof(ExactFileSystemObjectOwnership.StableCaptureCompletion))
             .Select(method => method.Name)
             .Order(StringComparer.Ordinal)
             .ToArray();
 
         Assert.Equal(
-            ["CaptureTrustedStableFile", "CreateOnlyFile", "TryCreateOnlyDirectory"],
+            ["CaptureTrustedStableFile", "CompleteStableCapture", "CreateOnlyFile", "CreateOnlyFile", "TryCreateOnlyDirectory"],
             receiptIssuers);
     }
 
@@ -98,7 +101,284 @@ public sealed class ExactFileSystemObjectOwnershipTests
     }
 
     [Fact]
-    public void CreateOnlyFileDoesNotFollowARetargetedParentRoute()
+    public void CreateOnlyFileInExistingParentOwnsOnlyTheNewChild()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        using var ownership = ExactFileSystemObjectOwnership.Open();
+        var parent = temp.CreateDirectory("existing");
+        var original = Path.Combine(parent, "original.txt");
+        File.WriteAllText(original, "untouched");
+
+        var receipt = ownership.CreateOnlyFile(parent, "created.txt", "owned"u8);
+
+        Assert.Equal("owned", File.ReadAllText(receipt.Route));
+        Assert.True(ownership.TryDelete(receipt).Removed);
+        Assert.Equal("untouched", File.ReadAllText(original));
+        Assert.True(Directory.Exists(parent));
+    }
+
+    [Fact]
+    public void ObservePreservesUnchangedReceiptsAndTheDirectoryCreationFence()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        using var ownership = ExactFileSystemObjectOwnership.Open();
+        var directory = Assert.IsType<ExactFileSystemObjectOwnership.DirectoryReceipt>(
+            ownership.TryCreateOnlyDirectory(temp.Path, "owned"));
+        var file = ownership.CreateOnlyFile(directory, "first.txt", "first"u8);
+
+        Assert.Equal(ExactFileSystemObjectOwnership.ObservationResult.Unchanged, ownership.Observe(file));
+        Assert.Equal(ExactFileSystemObjectOwnership.ObservationResult.Unchanged, ownership.Observe(directory));
+        Assert.Equal(ExactFileSystemObjectOwnership.ObservationResult.Unchanged, ownership.Observe(file));
+        var later = ownership.CreateOnlyFile(directory, "later.txt", "later"u8);
+
+        Assert.True(ownership.TryDelete(file).Removed);
+        Assert.True(ownership.TryDelete(later).Removed);
+        Assert.True(ownership.TryDeleteEmpty(directory).Removed);
+    }
+
+    [Fact]
+    public void ObserveMissingDoesNotRetireEitherReceipt()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        using var ownership = ExactFileSystemObjectOwnership.Open();
+        var directory = Assert.IsType<ExactFileSystemObjectOwnership.DirectoryReceipt>(
+            ownership.TryCreateOnlyDirectory(temp.Path, "owned"));
+        var file = ownership.CreateOnlyFile(directory, "missing.txt", "original"u8);
+        ownership.ReleaseCreationFence(directory);
+        File.Delete(file.Route);
+        Directory.Delete(directory.Route);
+
+        Assert.Equal(ExactFileSystemObjectOwnership.ObservationResult.Missing, ownership.Observe(file));
+        Assert.Equal(ExactFileSystemObjectOwnership.ObservationResult.Missing, ownership.Observe(directory));
+        Assert.Equal(ExactFileSystemObjectOwnership.ObservationResult.Missing, ownership.Observe(file));
+        Assert.Equal(ExactFileSystemObjectOwnership.ObservationResult.Missing, ownership.Observe(directory));
+        Assert.True(ownership.TryDelete(file).Removed);
+        Assert.True(ownership.TryDeleteEmpty(directory).Removed);
+    }
+
+    [Fact]
+    public void ObserveCallbackKeepsTheProvedFileUnavailableForWriteOrDelete()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        using var ownership = ExactFileSystemObjectOwnership.Open();
+        var file = ownership.CreateOnlyFile(temp.Path, "owned.txt", "original"u8);
+        var callbackInvoked = false;
+
+        var observation = ownership.Observe(file, route =>
+        {
+            callbackInvoked = true;
+            Assert.Equal(file.Route, route);
+            Assert.ThrowsAny<IOException>(() => File.WriteAllText(route, "changed"));
+            Assert.ThrowsAny<IOException>(() => File.Delete(route));
+        });
+
+        Assert.True(callbackInvoked);
+        Assert.Equal(ExactFileSystemObjectOwnership.ObservationResult.Unchanged, observation);
+        Assert.True(ownership.TryDelete(file).Removed);
+    }
+
+    [Fact]
+    public void ObservePreservesTheCallbackFailureAndTheReceipt()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        using var ownership = ExactFileSystemObjectOwnership.Open();
+        var file = ownership.CreateOnlyFile(temp.Path, "owned.txt", "original"u8);
+        var failure = new IOException("observer failed");
+
+        Assert.Same(failure, Assert.Throws<IOException>(
+            () => ownership.Observe(file, _ => throw failure)));
+
+        Assert.Equal(ExactFileSystemObjectOwnership.ObservationResult.Unchanged, ownership.Observe(file));
+        Assert.True(ownership.TryDelete(file).Removed);
+    }
+
+    [Fact]
+    public void CreateOnlyFileCancellationStopsAfterOneChunkAndRemovesThePartialFile()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var cancellation = new CancellationTokenSource();
+        var path = Path.Combine(temp.Path, "partial.bin");
+        var created = false;
+        var lengths = new List<long>();
+
+        var failure = Assert.Throws<OperationCanceledException>(() => ownership.CreateOnlyFile(
+            temp.Path,
+            "partial.bin",
+            new byte[128 * 1024],
+            onFileCreated: route =>
+            {
+                created = true;
+                Assert.Equal(path, route);
+                Assert.Equal(0, new FileInfo(route).Length);
+            },
+            onBytesWritten: (route, length) =>
+            {
+                Assert.True(created);
+                Assert.Equal(path, route);
+                lengths.Add(length);
+                cancellation.Cancel();
+            },
+            cancellationToken: cancellation.Token));
+
+        Assert.Equal(cancellation.Token, failure.CancellationToken);
+        Assert.Equal([64 * 1024L], lengths);
+        Assert.False(File.Exists(path));
+    }
+
+    [Fact]
+    public void UnprovenCreationCleanupRollbackRetainsBothChangedAndUncertainFacts()
+    {
+        var originalFailure = new IOException("copy failed");
+        var rollbackFailure = new ExactFileSystemObjectOwnership.RollbackException("owned.bin");
+        var failure = new ExactFileSystemObjectOwnership.FileCreationCleanupException(
+            "owned.bin", null, targetChanged: true, originalFailure, rollbackFailure);
+
+        Assert.True(failure.TargetChanged);
+        Assert.True(failure.RollbackUnproven);
+        var causes = Assert.IsType<AggregateException>(failure.InnerException);
+        Assert.Equal([originalFailure, rollbackFailure], causes.InnerExceptions);
+    }
+
+    [Fact]
+    public void PartialCreationCleanupFailureRetainsTheOriginalFailureAndProvenReceipt()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        using var ownership = ExactFileSystemObjectOwnership.Open();
+        var path = Path.Combine(temp.Path, "partial.bin");
+        var originalFailure = new IOException("copy observer failed");
+        try
+        {
+            var failure = Assert.Throws<ExactFileSystemObjectOwnership.FileCreationCleanupException>(
+                () => ownership.CreateOnlyFile(
+                    temp.Path,
+                    "partial.bin",
+                    new byte[128 * 1024],
+                    onBytesWritten: (route, _) =>
+                    {
+                        File.SetAttributes(route, FileAttributes.ReadOnly);
+                        throw originalFailure;
+                    }));
+
+            Assert.Equal(path, failure.Route);
+            Assert.False(failure.TargetChanged);
+            Assert.False(failure.RollbackUnproven);
+            var aggregate = Assert.IsType<AggregateException>(failure.InnerException);
+            Assert.Contains(originalFailure, aggregate.InnerExceptions);
+            var retained = Assert.IsType<ExactFileSystemObjectOwnership.FileReceipt>(failure.RetainedReceipt);
+            Assert.Equal(64 * 1024, new FileInfo(path).Length);
+            Assert.Equal(ExactFileSystemObjectOwnership.ObservationResult.Unchanged, ownership.Observe(retained));
+            File.SetAttributes(path, FileAttributes.Normal);
+            Assert.True(ownership.TryDelete(retained).Removed);
+        }
+        finally
+        {
+            if (File.Exists(path))
+            {
+                File.SetAttributes(path, FileAttributes.Normal);
+            }
+        }
+    }
+
+    [Fact]
+    public void ObserveRechecksHardLinksAfterTheProofCallback()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        using var ownership = ExactFileSystemObjectOwnership.Open();
+        var file = ownership.CreateOnlyFile(temp.Path, "owned.txt", "original"u8);
+        var alias = Path.Combine(temp.Path, "alias.txt");
+        var aliasCreated = false;
+        var aliasError = 0;
+
+        var observation = ownership.Observe(file, route =>
+        {
+            aliasCreated = CreateHardLink(alias, route, IntPtr.Zero);
+            if (!aliasCreated)
+            {
+                aliasError = Marshal.GetLastWin32Error();
+            }
+        });
+
+        if (aliasCreated)
+        {
+            Assert.Equal(ExactFileSystemObjectOwnership.ObservationResult.Changed, observation);
+            Assert.False(ownership.TryDelete(file).Removed);
+            File.Delete(alias);
+        }
+        else
+        {
+            Assert.Equal(32, aliasError);
+            Assert.Equal(ExactFileSystemObjectOwnership.ObservationResult.Unchanged, observation);
+        }
+
+        Assert.True(ownership.TryDelete(file).Removed);
+    }
+
+    [Fact]
+    public void ObserveUnavailableFileIsInconclusiveWithoutRetiringTheReceipt()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        using var ownership = ExactFileSystemObjectOwnership.Open();
+        var file = ownership.CreateOnlyFile(temp.Path, "owned.txt", "original"u8);
+
+        using (var writer = new FileStream(file.Route, FileMode.Open, FileAccess.Write, FileShare.Read))
+        {
+            Assert.Equal(ExactFileSystemObjectOwnership.ObservationResult.Inconclusive, ownership.Observe(file));
+        }
+
+        Assert.Equal(ExactFileSystemObjectOwnership.ObservationResult.Unchanged, ownership.Observe(file));
+        Assert.True(ownership.TryDelete(file).Removed);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CreateOnlyFileDoesNotFollowARetargetedParentRoute(bool useExistingParent)
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -113,18 +393,188 @@ public sealed class ExactFileSystemObjectOwnershipTests
         var movedParent = Path.Combine(temp.Path, "scratch-moved");
         var replacementDirectory = Path.Combine(parent, "owned");
 
-        Assert.ThrowsAny<IOException>(() => ownership.CreateOnlyFile(
-            directory,
-            "Feature.bas",
-            "owned-content"u8,
-            _ =>
+        void ReplaceParent(string _)
+        {
+            Directory.Move(parent, movedParent);
+            Directory.CreateDirectory(replacementDirectory);
+        }
+
+        Assert.ThrowsAny<IOException>(() =>
+        {
+            if (useExistingParent)
             {
-                Directory.Move(parent, movedParent);
-                Directory.CreateDirectory(replacementDirectory);
-            }));
+                ownership.CreateOnlyFile(directory.Route, "Feature.bas", "owned-content"u8, ReplaceParent);
+            }
+            else
+            {
+                ownership.CreateOnlyFile(directory, "Feature.bas", "owned-content"u8, ReplaceParent);
+            }
+        });
 
         Assert.False(File.Exists(Path.Combine(replacementDirectory, "Feature.bas")));
         Assert.False(File.Exists(Path.Combine(movedParent, "owned", "Feature.bas")));
+    }
+
+    [Fact]
+    public void SavedProducerCaptureGainsReceiptAuthorityOnlyAfterTheWriterCloses()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        using var ownership = ExactFileSystemObjectOwnership.Open();
+        var path = Path.Combine(temp.Path, "saved.bin");
+        var expected = "saved producer bytes"u8.ToArray();
+        ExactFileSystemObjectOwnership.PendingFileCapture pending;
+        using (var writer = new FileStream(path, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.ReadWrite))
+        {
+            writer.Write(expected);
+            writer.Flush(flushToDisk: true);
+
+            pending = ownership.CapturePendingSavedFile(path);
+            var mutableCopy = pending.Bytes;
+            mutableCopy[0] ^= 0xff;
+            Assert.Equal(expected, pending.Bytes);
+            var blocked = ownership.CompleteStableCapture(pending);
+            Assert.Equal(ExactFileSystemObjectOwnership.ObservationResult.Inconclusive, blocked.Observation);
+            Assert.Null(blocked.Capture);
+        }
+
+        var completion = ownership.CompleteStableCapture(pending);
+        Assert.Equal(ExactFileSystemObjectOwnership.ObservationResult.Unchanged, completion.Observation);
+        var capture = Assert.IsType<ExactFileSystemObjectOwnership.StableFileCapture>(completion.Capture);
+        Assert.Equal(expected, capture.Bytes);
+        Assert.True(ownership.TryDelete(capture.Receipt).Removed);
+    }
+
+    [Fact]
+    public void PendingCaptureRejectsChangedSavedBytesWithoutIssuingAReceipt()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        using var ownership = ExactFileSystemObjectOwnership.Open();
+        var path = Path.Combine(temp.Path, "saved.bin");
+        File.WriteAllBytes(path, "generation-one"u8.ToArray());
+        var pending = ownership.CapturePendingSavedFile(path);
+        var changed = "generation-two"u8.ToArray();
+        File.WriteAllBytes(path, changed);
+
+        var completion = ownership.CompleteStableCapture(pending);
+
+        Assert.Equal(ExactFileSystemObjectOwnership.ObservationResult.Changed, completion.Observation);
+        Assert.Null(completion.Capture);
+        Assert.Equal(changed, File.ReadAllBytes(path));
+    }
+
+    [Fact]
+    public void PendingCaptureFencesSameBytesReplacementUntilCompletion()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        using var ownership = ExactFileSystemObjectOwnership.Open();
+        var path = Path.Combine(temp.Path, "saved.bin");
+        var replacement = Path.Combine(temp.Path, "replacement.bin");
+        var bytes = "same bytes, different object"u8.ToArray();
+        File.WriteAllBytes(path, bytes);
+        File.WriteAllBytes(replacement, bytes);
+        var pending = ownership.CapturePendingSavedFile(path);
+
+        var replacementFailure = Record.Exception(() => File.Move(replacement, path, overwrite: true));
+        Assert.True(replacementFailure is IOException or UnauthorizedAccessException);
+
+        var completion = ownership.CompleteStableCapture(pending);
+        Assert.Equal(ExactFileSystemObjectOwnership.ObservationResult.Unchanged, completion.Observation);
+        Assert.True(ownership.TryDelete(completion.Capture!.Receipt).Removed);
+        Assert.Equal(bytes, File.ReadAllBytes(replacement));
+    }
+
+    [Fact]
+    public void PendingCaptureDoesNotAuthorizeAdditionalHardLinks()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        using var ownership = ExactFileSystemObjectOwnership.Open();
+        var path = Path.Combine(temp.Path, "saved.bin");
+        var alias = Path.Combine(temp.Path, "alias.bin");
+        var bytes = "saved producer bytes"u8.ToArray();
+        File.WriteAllBytes(path, bytes);
+        var pending = ownership.CapturePendingSavedFile(path);
+
+        if (CreateHardLink(alias, path, IntPtr.Zero))
+        {
+            var completion = ownership.CompleteStableCapture(pending);
+            Assert.Equal(ExactFileSystemObjectOwnership.ObservationResult.Changed, completion.Observation);
+            Assert.Null(completion.Capture);
+            Assert.Equal(bytes, File.ReadAllBytes(alias));
+            Assert.Equal(bytes, File.ReadAllBytes(path));
+        }
+        else
+        {
+            Assert.Equal(32, Marshal.GetLastWin32Error());
+            var completion = ownership.CompleteStableCapture(pending);
+            Assert.Equal(ExactFileSystemObjectOwnership.ObservationResult.Unchanged, completion.Observation);
+            Assert.True(ownership.TryDelete(completion.Capture!.Receipt).Removed);
+        }
+    }
+
+    [Fact]
+    public void PendingCaptureCanBeCompletedOnlyOnceByItsIssuingSession()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var otherOwnership = ExactFileSystemObjectOwnership.Open();
+        var path = Path.Combine(temp.Path, "saved.bin");
+        File.WriteAllBytes(path, "saved bytes"u8.ToArray());
+        var pending = ownership.CapturePendingSavedFile(path);
+
+        Assert.Throws<ArgumentException>(() => otherOwnership.CompleteStableCapture(pending));
+        var completion = ownership.CompleteStableCapture(pending);
+        Assert.Equal(ExactFileSystemObjectOwnership.ObservationResult.Unchanged, completion.Observation);
+        Assert.Throws<ArgumentException>(() => ownership.CompleteStableCapture(pending));
+        Assert.True(ownership.TryDelete(completion.Capture!.Receipt).Removed);
+    }
+
+    [Fact]
+    public void SessionDisposalClosesThePendingFenceWithoutDeletingOrAdoptingTheFile()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        using var ownership = ExactFileSystemObjectOwnership.Open();
+        var path = Path.Combine(temp.Path, "saved.bin");
+        var bytes = "saved bytes"u8.ToArray();
+        File.WriteAllBytes(path, bytes);
+        var pending = ownership.CapturePendingSavedFile(path);
+        Assert.ThrowsAny<IOException>(() => File.Delete(path));
+
+        ownership.Dispose();
+
+        Assert.Equal(bytes, File.ReadAllBytes(path));
+        Assert.Throws<ObjectDisposedException>(() => ownership.CompleteStableCapture(pending));
+        File.Delete(path);
+        Assert.False(File.Exists(path));
     }
 
     [Fact]
@@ -152,8 +602,10 @@ public sealed class ExactFileSystemObjectOwnershipTests
         Assert.False(File.Exists(path));
     }
 
-    [Fact]
-    public void TrustedStableCaptureRejectsAFileThatAlreadyHasAnotherHardLink()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CaptureRejectsAFileThatAlreadyHasAnotherHardLink(bool pendingCapture)
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -169,7 +621,17 @@ public sealed class ExactFileSystemObjectOwnershipTests
             CreateHardLink(aliasPath, path, IntPtr.Zero),
             new Win32Exception(Marshal.GetLastWin32Error()).Message);
 
-        Assert.Throws<IOException>(() => ownership.CaptureTrustedStableFile(path));
+        Assert.Throws<IOException>(() =>
+        {
+            if (pendingCapture)
+            {
+                ownership.CapturePendingSavedFile(path);
+            }
+            else
+            {
+                ownership.CaptureTrustedStableFile(path);
+            }
+        });
 
         Assert.True(File.Exists(path));
         Assert.True(File.Exists(aliasPath));
@@ -194,6 +656,7 @@ public sealed class ExactFileSystemObjectOwnershipTests
         ownership.ReleaseCreationFence(directory);
         File.WriteAllBytes(receipt.Route, changed);
 
+        Assert.Equal(ExactFileSystemObjectOwnership.ObservationResult.Changed, ownership.Observe(receipt));
         var deletion = ownership.TryDelete(receipt);
 
         Assert.False(deletion.Removed);
@@ -219,6 +682,7 @@ public sealed class ExactFileSystemObjectOwnershipTests
         File.Delete(receipt.Route);
         File.WriteAllBytes(receipt.Route, content);
 
+        Assert.Equal(ExactFileSystemObjectOwnership.ObservationResult.Changed, ownership.Observe(receipt));
         var deletion = ownership.TryDelete(receipt);
 
         Assert.False(deletion.Removed);
@@ -249,6 +713,7 @@ public sealed class ExactFileSystemObjectOwnershipTests
             new Win32Exception(Marshal.GetLastWin32Error()).Message);
         File.Delete(receipt.Route);
 
+        Assert.Equal(ExactFileSystemObjectOwnership.ObservationResult.Changed, ownership.Observe(receipt));
         var deletion = ownership.TryDelete(receipt);
 
         Assert.False(deletion.Removed);

@@ -132,6 +132,8 @@ The initial manifest records the generated workbook's actual non-standard baseli
 
 When a CommonModules repository is available, the command selects its `runtime-baseline` and `test-foundation` roots, resolves dependencies in deterministic component order, and copies the selected entries under the generated document source set's `common-modules` directory. A conclusively absent package produces a warning and a baseline without CommonModules; invalid or unstable package state fails creation.
 
+Before the initial manifest commit, failure or cancellation removes only unchanged files created by this invocation, then its still-empty directories. Changed or replaced files, files with another hard link, reparse points, and foreign content are not adopted as rollback state. Unproved cleanup is reported for manual recovery; an unproved deletion rollback is never described as successful preservation. Pre-existing directories are never rollback targets. Once the manifest is committed, later cancellation cannot roll back the created project.
+
 ### common-module add
 
 ```text

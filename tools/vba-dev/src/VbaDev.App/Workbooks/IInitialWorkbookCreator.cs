@@ -1,9 +1,11 @@
+using VbaDev.App.FileSystem;
 using VbaDev.Domain;
 
 namespace VbaDev.App.Workbooks;
 
 /// <summary>
-/// Proves the object identity and exact bytes created for one initial workbook.
+/// Describes diagnostic identity and byte evidence for one initial workbook.
+/// These reconstructible values do not grant filesystem mutation authority.
 /// </summary>
 /// <param name="WorkbookPath">The absolute workbook path.</param>
 /// <param name="ObjectIdentity">The stable file identity on its volume.</param>
@@ -19,10 +21,25 @@ public sealed record InitialWorkbookArtifactEvidence(
 /// Describes a successfully created initial workbook and its default references.
 /// </summary>
 /// <param name="ReferenceNames">The reference names present in VBE order.</param>
-/// <param name="ArtifactEvidence">Trusted evidence for the exact created workbook.</param>
+/// <param name="ArtifactEvidence">Diagnostic evidence for the exact created workbook.</param>
 public sealed record InitialWorkbookCreationResult(
     IReadOnlyList<string> ReferenceNames,
-    InitialWorkbookArtifactEvidence ArtifactEvidence);
+    InitialWorkbookArtifactEvidence ArtifactEvidence)
+{
+    internal ExactFileSystemObjectOwnership.FileReceipt? OwnedArtifactReceipt { get; init; }
+}
+
+/// <summary>
+/// Creates the project artifact in the caller's invocation ownership session.
+/// Diagnostic evidence alone never grants new-project rollback authority.
+/// </summary>
+internal interface IReceiptInitialWorkbookCreator : IInitialWorkbookCreator
+{
+    Task<InitialWorkbookCreationResult> CreateInitialWorkbookAsync(
+        string workbookPath,
+        ExactFileSystemObjectOwnership ownership,
+        CancellationToken cancellationToken);
+}
 
 /// <summary>
 /// Reports a workbook path that could not be safely removed after creation failed.
@@ -54,7 +71,8 @@ public sealed class InitialWorkbookArtifactRetainedException : Exception
     public string WorkbookPath { get; }
 
     /// <summary>
-    /// Gets the trusted post-save evidence, when it could be captured.
+    /// Gets diagnostic saved-workbook evidence, when available. These values
+    /// cannot confer rollback authority.
     /// </summary>
     public InitialWorkbookArtifactEvidence? ExpectedArtifact { get; }
 

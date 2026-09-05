@@ -1,4 +1,6 @@
+using System.Runtime.InteropServices;
 using System.Text;
+using VbaDev.App.FileSystem;
 using VbaDev.App.Workbooks;
 using VbaDev.Infrastructure.Workbooks;
 using Xunit;
@@ -7,6 +9,50 @@ namespace VbaDev.Tests;
 
 public sealed class InitialWorkbookArtifactGuardTests
 {
+    [Fact]
+    public void StagingCleanupPreservesTheSavedFileWhenAnotherHardlinkWasAdded()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        var guard = new InitialWorkbookArtifactGuard();
+        using var staging = guard.CreateStagingArtifact();
+        var aliasPath = Path.Combine(temp.Path, "alias.xlsm");
+        var bytes = Encoding.UTF8.GetBytes("saved workbook");
+        try
+        {
+            File.WriteAllBytes(staging.WorkbookPath, bytes);
+            var evidence = CaptureSavedStaging(guard, staging);
+            Assert.True(CreateHardLink(aliasPath, staging.WorkbookPath, IntPtr.Zero));
+
+            var cleanup = guard.TryDeleteStaging(staging);
+
+            Assert.False(cleanup.RemovedOrAbsent);
+            Assert.True(cleanup.TargetChanged);
+            Assert.Equal(bytes, File.ReadAllBytes(staging.WorkbookPath));
+            Assert.Equal(bytes, File.ReadAllBytes(aliasPath));
+            Assert.True(Directory.Exists(staging.DirectoryPath));
+        }
+        finally
+        {
+            staging.Dispose();
+            if (Directory.Exists(staging.DirectoryPath))
+            {
+                Directory.Delete(staging.DirectoryPath, recursive: true);
+            }
+        }
+    }
+
+    [DllImport("kernel32.dll", EntryPoint = "CreateHardLinkW", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CreateHardLink(
+        string newFileName,
+        string existingFileName,
+        IntPtr securityAttributes);
+
     [Fact]
     public void AtomicStagingDirectoryHandleBlocksRenameDuringOwnershipCapture()
     {
@@ -17,7 +63,7 @@ public sealed class InitialWorkbookArtifactGuardTests
 
         var observer = new RenameStagingDirectoryObserver();
         var guard = new InitialWorkbookArtifactGuard(observer);
-        var staging = guard.CreateStagingArtifact();
+        using var staging = guard.CreateStagingArtifact();
         try
         {
             Assert.True(observer.RenameWasBlocked);
@@ -27,7 +73,7 @@ public sealed class InitialWorkbookArtifactGuardTests
         }
         finally
         {
-            _ = guard.TryDeleteStaging(staging, expectedArtifact: null);
+            _ = guard.TryDeleteStaging(staging);
         }
     }
 
@@ -60,7 +106,7 @@ public sealed class InitialWorkbookArtifactGuardTests
         }
 
         var guard = new InitialWorkbookArtifactGuard();
-        var staging = guard.CreateStagingArtifact();
+        using var staging = guard.CreateStagingArtifact();
         var displacedPath = staging.DirectoryPath + "-displaced";
         try
         {
@@ -70,11 +116,11 @@ public sealed class InitialWorkbookArtifactGuardTests
                 staging.WorkbookPath,
                 "created workbook",
                 new UTF8Encoding(false));
-            var evidence = guard.Capture(staging.WorkbookPath);
+            var evidence = CaptureSavedStaging(guard, staging);
             Assert.Throws<IOException>(() =>
                 Directory.Move(staging.DirectoryPath, displacedPath));
 
-            var cleanup = guard.TryDeleteStaging(staging, evidence);
+            var cleanup = guard.TryDeleteStaging(staging);
 
             Assert.True(cleanup.RemovedOrAbsent);
             Assert.False(Directory.Exists(staging.DirectoryPath));
@@ -84,7 +130,7 @@ public sealed class InitialWorkbookArtifactGuardTests
         {
             if (Directory.Exists(staging.DirectoryPath))
             {
-                _ = guard.TryDeleteStaging(staging, expectedArtifact: null);
+                _ = guard.TryDeleteStaging(staging);
             }
 
             if (Directory.Exists(staging.DirectoryPath))
@@ -108,7 +154,7 @@ public sealed class InitialWorkbookArtifactGuardTests
         }
 
         var guard = new InitialWorkbookArtifactGuard();
-        var staging = guard.CreateStagingArtifact();
+        using var staging = guard.CreateStagingArtifact();
         var temporarySavePath = Path.Combine(
             staging.DirectoryPath,
             "excel-save-temporary");
@@ -120,8 +166,8 @@ public sealed class InitialWorkbookArtifactGuardTests
 
             File.Move(temporarySavePath, staging.WorkbookPath);
 
-            var evidence = guard.Capture(staging.WorkbookPath);
-            var cleanup = guard.TryDeleteStaging(staging, evidence);
+            var evidence = CaptureSavedStaging(guard, staging);
+            var cleanup = guard.TryDeleteStaging(staging);
             Assert.True(cleanup.RemovedOrAbsent);
             Assert.False(Directory.Exists(staging.DirectoryPath));
         }
@@ -129,7 +175,7 @@ public sealed class InitialWorkbookArtifactGuardTests
         {
             if (Directory.Exists(staging.DirectoryPath))
             {
-                staging.TakeDirectoryOwnershipHandle()?.Dispose();
+                staging.Dispose();
                 Directory.Delete(staging.DirectoryPath, recursive: true);
             }
         }
@@ -144,13 +190,13 @@ public sealed class InitialWorkbookArtifactGuardTests
         }
 
         var guard = new InitialWorkbookArtifactGuard();
-        var staging = guard.CreateStagingArtifact();
+        using var staging = guard.CreateStagingArtifact();
         try
         {
             File.WriteAllBytes(staging.WorkbookPath, Encoding.UTF8.GetBytes("staging workbook"));
-            var evidence = guard.Capture(staging.WorkbookPath);
+            var evidence = CaptureSavedStaging(guard, staging);
 
-            var cleanup = guard.TryDeleteStaging(staging, evidence);
+            var cleanup = guard.TryDeleteStaging(staging);
 
             Assert.True(cleanup.RemovedOrAbsent);
             Assert.False(Directory.Exists(staging.DirectoryPath));
@@ -165,7 +211,7 @@ public sealed class InitialWorkbookArtifactGuardTests
     }
 
     [Fact]
-    public void ReplacedStagingDirectoryIsPreservedByItsCapturedIdentity()
+    public void SavedStagingDirectoryRemainsPinnedAfterItsCreationFenceIsReleased()
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -173,22 +219,22 @@ public sealed class InitialWorkbookArtifactGuardTests
         }
 
         var guard = new InitialWorkbookArtifactGuard();
-        var staging = guard.CreateStagingArtifact();
+        using var staging = guard.CreateStagingArtifact();
         var displacedDirectory = staging.DirectoryPath + "-displaced";
         try
         {
             File.WriteAllBytes(staging.WorkbookPath, Encoding.UTF8.GetBytes("staging workbook"));
-            var evidence = guard.Capture(staging.WorkbookPath);
-            staging.TakeDirectoryOwnershipHandle()?.Dispose();
-            Directory.Move(staging.DirectoryPath, displacedDirectory);
-            Directory.CreateDirectory(staging.DirectoryPath);
+            var evidence = CaptureSavedStaging(guard, staging);
+            staging.Ownership.ReleaseCreationFence(staging.DirectoryReceipt);
+            Assert.Throws<IOException>(() =>
+                Directory.Move(staging.DirectoryPath, displacedDirectory));
 
-            var cleanup = guard.TryDeleteStaging(staging, evidence);
+            var cleanup = guard.TryDeleteStaging(staging);
 
-            Assert.False(cleanup.RemovedOrAbsent);
-            Assert.True(cleanup.TargetChanged);
-            Assert.True(Directory.Exists(staging.DirectoryPath));
-            Assert.True(Directory.Exists(displacedDirectory));
+            Assert.True(cleanup.RemovedOrAbsent);
+            Assert.False(cleanup.TargetChanged);
+            Assert.False(Directory.Exists(staging.DirectoryPath));
+            Assert.False(Directory.Exists(displacedDirectory));
         }
         finally
         {
@@ -205,7 +251,7 @@ public sealed class InitialWorkbookArtifactGuardTests
     }
 
     [Fact]
-    public void CreateOnlyMaterializationCopiesExactBytesAndReturnsFinalEvidence()
+    public void CreateOnlyMaterializationCopiesExactBytesAndReturnsCallerOwnedReceipt()
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -213,18 +259,25 @@ public sealed class InitialWorkbookArtifactGuardTests
         }
 
         using var temp = TempDirectory.Create();
-        var stagingPath = Path.Combine(temp.Path, "staging.xlsm");
+        using var savedStaging = new TestStagingArtifact();
+        var stagingPath = savedStaging.Artifact.WorkbookPath;
         var workbookPath = Path.Combine(temp.Path, "Sample.xlsm");
         var bytes = Enumerable.Repeat((byte)0x27, 128 * 1024).ToArray();
         File.WriteAllBytes(stagingPath, bytes);
         var guard = new InitialWorkbookArtifactGuard();
-        var stagingEvidence = guard.Capture(stagingPath);
+        var stagingEvidence = CaptureSavedStaging(guard, savedStaging.Artifact);
+        using var ownership = ExactFileSystemObjectOwnership.Open();
 
-        var finalEvidence = guard.MaterializeCreateOnly(
-            stagingEvidence,
+        var artifact = guard.MaterializeCreateOnly(
+            savedStaging.Artifact,
             workbookPath,
+            ownership,
             CancellationToken.None);
 
+        var finalEvidence = artifact.Evidence;
+        Assert.Equal(
+            ExactFileSystemObjectOwnership.ObservationResult.Unchanged,
+            ownership.Observe(artifact.Receipt));
         Assert.Equal(workbookPath, finalEvidence.WorkbookPath);
         Assert.Equal(stagingEvidence.Length, finalEvidence.Length);
         Assert.Equal(stagingEvidence.Sha256, finalEvidence.Sha256);
@@ -241,19 +294,23 @@ public sealed class InitialWorkbookArtifactGuardTests
         }
 
         using var temp = TempDirectory.Create();
-        var stagingPath = Path.Combine(temp.Path, "staging.xlsm");
+        using var savedStaging = new TestStagingArtifact();
+        var stagingPath = savedStaging.Artifact.WorkbookPath;
         var workbookPath = Path.Combine(temp.Path, "Sample.xlsm");
         var movedPath = Path.Combine(temp.Path, "moved.xlsm");
         File.WriteAllBytes(stagingPath, Encoding.UTF8.GetBytes("created workbook"));
         var observer = new RenameAfterDestinationProofObserver(movedPath);
         var guard = new InitialWorkbookArtifactGuard(observer);
-        var stagingEvidence = guard.Capture(stagingPath);
+        var stagingEvidence = CaptureSavedStaging(guard, savedStaging.Artifact);
+        using var ownership = ExactFileSystemObjectOwnership.Open();
 
-        var evidence = guard.MaterializeCreateOnly(
-            stagingEvidence,
+        var artifact = guard.MaterializeCreateOnly(
+            savedStaging.Artifact,
             workbookPath,
+            ownership,
             CancellationToken.None);
 
+        var evidence = artifact.Evidence;
         Assert.True(observer.RenameWasBlocked);
         Assert.Equal(workbookPath, evidence.WorkbookPath);
         Assert.True(File.Exists(workbookPath));
@@ -271,18 +328,21 @@ public sealed class InitialWorkbookArtifactGuardTests
         }
 
         using var temp = TempDirectory.Create();
-        var stagingPath = Path.Combine(temp.Path, "staging.xlsm");
+        using var savedStaging = new TestStagingArtifact();
+        var stagingPath = savedStaging.Artifact.WorkbookPath;
         var workbookPath = Path.Combine(temp.Path, "Sample.xlsm");
         var foreignBytes = Encoding.UTF8.GetBytes("foreign workbook");
         File.WriteAllBytes(stagingPath, Encoding.UTF8.GetBytes("created workbook"));
         File.WriteAllBytes(workbookPath, foreignBytes);
         var guard = new InitialWorkbookArtifactGuard();
-        var stagingEvidence = guard.Capture(stagingPath);
+        var stagingEvidence = CaptureSavedStaging(guard, savedStaging.Artifact);
+        using var ownership = ExactFileSystemObjectOwnership.Open();
 
         var error = Assert.Throws<InitialWorkbookArtifactRetainedException>(() =>
             guard.MaterializeCreateOnly(
-                stagingEvidence,
+                savedStaging.Artifact,
                 workbookPath,
+                ownership,
                 CancellationToken.None));
 
         Assert.True(error.TargetChanged);
@@ -300,17 +360,20 @@ public sealed class InitialWorkbookArtifactGuardTests
         }
 
         using var temp = TempDirectory.Create();
-        var stagingPath = Path.Combine(temp.Path, "staging.xlsm");
+        using var savedStaging = new TestStagingArtifact();
+        var stagingPath = savedStaging.Artifact.WorkbookPath;
         var workbookPath = Path.Combine(temp.Path, "Sample.xlsm");
         File.WriteAllBytes(stagingPath, Enumerable.Repeat((byte)0x5a, 128 * 1024).ToArray());
         var guard = new InitialWorkbookArtifactGuard(
             new ThrowAfterFirstCopyObserver());
-        var stagingEvidence = guard.Capture(stagingPath);
+        var stagingEvidence = CaptureSavedStaging(guard, savedStaging.Artifact);
+        using var ownership = ExactFileSystemObjectOwnership.Open();
 
         var error = Assert.Throws<InvalidOperationException>(() =>
             guard.MaterializeCreateOnly(
-                stagingEvidence,
+                savedStaging.Artifact,
                 workbookPath,
+                ownership,
                 CancellationToken.None));
 
         Assert.Equal("synthetic copy failure", error.Message);
@@ -328,17 +391,20 @@ public sealed class InitialWorkbookArtifactGuardTests
 
         using var temp = TempDirectory.Create();
         using var cancellation = new CancellationTokenSource();
-        var stagingPath = Path.Combine(temp.Path, "staging.xlsm");
+        using var savedStaging = new TestStagingArtifact();
+        var stagingPath = savedStaging.Artifact.WorkbookPath;
         var workbookPath = Path.Combine(temp.Path, "Sample.xlsm");
         File.WriteAllBytes(stagingPath, Enumerable.Repeat((byte)0x4c, 128 * 1024).ToArray());
         var guard = new InitialWorkbookArtifactGuard(
             new CancelOnDestinationCreateObserver(cancellation));
-        var stagingEvidence = guard.Capture(stagingPath);
+        var stagingEvidence = CaptureSavedStaging(guard, savedStaging.Artifact);
+        using var ownership = ExactFileSystemObjectOwnership.Open();
 
         Assert.ThrowsAny<OperationCanceledException>(() =>
             guard.MaterializeCreateOnly(
-                stagingEvidence,
+                savedStaging.Artifact,
                 workbookPath,
+                ownership,
                 cancellation.Token));
 
         Assert.False(File.Exists(workbookPath));
@@ -354,18 +420,21 @@ public sealed class InitialWorkbookArtifactGuardTests
         }
 
         using var temp = TempDirectory.Create();
-        var stagingPath = Path.Combine(temp.Path, "staging.xlsm");
+        using var savedStaging = new TestStagingArtifact();
+        var stagingPath = savedStaging.Artifact.WorkbookPath;
         var workbookPath = Path.Combine(temp.Path, "Sample.xlsm");
         var movedOwnedPath = Path.Combine(temp.Path, "moved-owned.xlsm");
         File.WriteAllBytes(stagingPath, Enumerable.Repeat((byte)0x33, 128 * 1024).ToArray());
         var observer = new RenameDestinationObserver(movedOwnedPath);
         var guard = new InitialWorkbookArtifactGuard(observer);
-        var stagingEvidence = guard.Capture(stagingPath);
+        var stagingEvidence = CaptureSavedStaging(guard, savedStaging.Artifact);
+        using var ownership = ExactFileSystemObjectOwnership.Open();
 
         var error = Assert.Throws<InvalidOperationException>(() =>
             guard.MaterializeCreateOnly(
-                stagingEvidence,
+                savedStaging.Artifact,
                 workbookPath,
+                ownership,
                 CancellationToken.None));
 
         Assert.Equal("synthetic post-rename failure", error.Message);
@@ -387,9 +456,10 @@ public sealed class InitialWorkbookArtifactGuardTests
         var workbookPath = Path.Combine(temp.Path, "Sample.xlsm");
         File.WriteAllBytes(workbookPath, Encoding.UTF8.GetBytes("created workbook"));
         var guard = new InitialWorkbookArtifactGuard();
-        var evidence = guard.Capture(workbookPath);
+        using var ownership = ExactFileSystemObjectOwnership.Open();
+        var capture = ownership.CaptureTrustedStableFile(workbookPath);
 
-        var result = guard.TryDeleteIfUnchanged(workbookPath, evidence);
+        var result = guard.TryDeleteFinalArtifact(ownership, capture.Receipt);
 
         Assert.True(result.RemovedOrAbsent);
         Assert.False(result.TargetChanged);
@@ -411,9 +481,10 @@ public sealed class InitialWorkbookArtifactGuardTests
         File.WriteAllBytes(workbookPath, Encoding.UTF8.GetBytes("created workbook"));
         var observer = new MutationAttemptCleanupObserver(movedPath);
         var guard = new InitialWorkbookArtifactGuard(observer);
-        var evidence = guard.Capture(workbookPath);
+        using var ownership = ExactFileSystemObjectOwnership.Open();
+        var capture = ownership.CaptureTrustedStableFile(workbookPath);
 
-        var result = guard.TryDeleteIfUnchanged(workbookPath, evidence);
+        var result = guard.TryDeleteFinalArtifact(ownership, capture.Receipt);
 
         Assert.True(observer.WriteWasBlocked);
         Assert.True(observer.RenameWasBlocked);
@@ -432,9 +503,9 @@ public sealed class InitialWorkbookArtifactGuardTests
 
         var observer = new DirectoryMutationAttemptCleanupObserver();
         var guard = new InitialWorkbookArtifactGuard(observer);
-        var staging = guard.CreateStagingArtifact();
+        using var staging = guard.CreateStagingArtifact();
 
-        var result = guard.TryDeleteStaging(staging, expectedArtifact: null);
+        var result = guard.TryDeleteStaging(staging);
 
         Assert.True(observer.RenameWasBlocked);
         Assert.True(observer.DeleteWasBlocked);
@@ -453,7 +524,8 @@ public sealed class InitialWorkbookArtifactGuardTests
 
         using var temp = TempDirectory.Create();
         var sentinelPath = Path.Combine(temp.Path, "sentinel.xlsm");
-        var stagingPath = Path.Combine(temp.Path, "initial.xlsm");
+        using var savedStaging = new TestStagingArtifact();
+        var stagingPath = savedStaging.Artifact.WorkbookPath;
         var sentinelBytes = Encoding.UTF8.GetBytes("foreign sentinel");
         File.WriteAllBytes(sentinelPath, sentinelBytes);
         try
@@ -468,7 +540,7 @@ public sealed class InitialWorkbookArtifactGuardTests
 
         var guard = new InitialWorkbookArtifactGuard();
 
-        Assert.ThrowsAny<IOException>(() => guard.Capture(stagingPath));
+        Assert.ThrowsAny<IOException>(() => CaptureSavedStaging(guard, savedStaging.Artifact));
         Assert.Equal(sentinelBytes, File.ReadAllBytes(sentinelPath));
     }
 
@@ -486,7 +558,8 @@ public sealed class InitialWorkbookArtifactGuardTests
         var sentinelBytes = Encoding.UTF8.GetBytes("foreign sentinel");
         File.WriteAllText(workbookPath, "created workbook", new UTF8Encoding(false));
         var guard = new InitialWorkbookArtifactGuard();
-        var evidence = guard.Capture(workbookPath);
+        using var ownership = ExactFileSystemObjectOwnership.Open();
+        var capture = ownership.CaptureTrustedStableFile(workbookPath);
         File.Delete(workbookPath);
         File.WriteAllBytes(sentinelPath, sentinelBytes);
         try
@@ -499,7 +572,7 @@ public sealed class InitialWorkbookArtifactGuardTests
             return;
         }
 
-        var cleanup = guard.TryDeleteIfUnchanged(workbookPath, evidence);
+        var cleanup = guard.TryDeleteFinalArtifact(ownership, capture.Receipt);
 
         Assert.False(cleanup.RemovedOrAbsent);
         Assert.True(cleanup.TargetChanged);
@@ -518,11 +591,12 @@ public sealed class InitialWorkbookArtifactGuardTests
         var workbookPath = Path.Combine(temp.Path, "Sample.xlsm");
         File.WriteAllText(workbookPath, "created workbook", new UTF8Encoding(false));
         var guard = new InitialWorkbookArtifactGuard();
-        var evidence = guard.Capture(workbookPath);
+        using var ownership = ExactFileSystemObjectOwnership.Open();
+        var capture = ownership.CaptureTrustedStableFile(workbookPath);
         File.Delete(workbookPath);
         Directory.CreateDirectory(workbookPath);
 
-        var cleanup = guard.TryDeleteIfUnchanged(workbookPath, evidence);
+        var cleanup = guard.TryDeleteFinalArtifact(ownership, capture.Receipt);
 
         Assert.False(cleanup.RemovedOrAbsent);
         Assert.True(cleanup.TargetChanged);
@@ -542,15 +616,16 @@ public sealed class InitialWorkbookArtifactGuardTests
         var bytes = Encoding.UTF8.GetBytes("same workbook bytes");
         File.WriteAllBytes(workbookPath, bytes);
         var guard = new InitialWorkbookArtifactGuard();
-        var evidence = guard.Capture(workbookPath);
+        using var ownership = ExactFileSystemObjectOwnership.Open();
+        var capture = ownership.CaptureTrustedStableFile(workbookPath);
         File.Delete(workbookPath);
         File.WriteAllBytes(workbookPath, bytes);
 
-        var result = guard.TryDeleteIfUnchanged(workbookPath, evidence);
+        var result = guard.TryDeleteFinalArtifact(ownership, capture.Receipt);
 
         Assert.False(result.RemovedOrAbsent);
         Assert.True(result.TargetChanged);
-        Assert.Null(result.Failure);
+        Assert.NotNull(result.Failure);
         Assert.Equal(bytes, File.ReadAllBytes(workbookPath));
     }
 
@@ -566,15 +641,146 @@ public sealed class InitialWorkbookArtifactGuardTests
         var workbookPath = Path.Combine(temp.Path, "Sample.xlsm");
         File.WriteAllText(workbookPath, "created workbook", new UTF8Encoding(false));
         var guard = new InitialWorkbookArtifactGuard();
-        var evidence = guard.Capture(workbookPath);
+        using var ownership = ExactFileSystemObjectOwnership.Open();
+        var capture = ownership.CaptureTrustedStableFile(workbookPath);
         File.WriteAllText(workbookPath, "externally changed", new UTF8Encoding(false));
 
-        var result = guard.TryDeleteIfUnchanged(workbookPath, evidence);
+        var result = guard.TryDeleteFinalArtifact(ownership, capture.Receipt);
 
         Assert.False(result.RemovedOrAbsent);
         Assert.True(result.TargetChanged);
-        Assert.Null(result.Failure);
+        Assert.NotNull(result.Failure);
         Assert.Equal("externally changed", File.ReadAllText(workbookPath));
+    }
+
+    [Fact]
+    public void FinalArtifactCleanupUsesTheReceiptAndBlocksMutationDuringItsProof()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var savedStaging = new TestStagingArtifact();
+        var stagingPath = savedStaging.Artifact.WorkbookPath;
+        var workbookPath = Path.Combine(temp.Path, "Sample.xlsm");
+        var movedPath = Path.Combine(temp.Path, "moved.xlsm");
+        File.WriteAllBytes(stagingPath, Encoding.UTF8.GetBytes("created workbook"));
+        var observer = new MutationAttemptCleanupObserver(movedPath);
+        var guard = new InitialWorkbookArtifactGuard(observer);
+        CaptureSavedStaging(guard, savedStaging.Artifact);
+        var artifact = guard.MaterializeCreateOnly(
+            savedStaging.Artifact,
+            workbookPath,
+            ownership,
+            CancellationToken.None);
+
+        var result = guard.TryDeleteFinalArtifact(ownership, artifact.Receipt);
+
+        Assert.True(result.RemovedOrAbsent);
+        Assert.False(File.Exists(workbookPath));
+        Assert.False(File.Exists(movedPath));
+        Assert.True(File.Exists(stagingPath));
+        Assert.True(observer.WriteWasBlocked);
+        Assert.True(observer.RenameWasBlocked);
+    }
+
+    [Fact]
+    public void FinalArtifactCleanupPreservesSameByteReplacementAndTheMovedOwnedFile()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var savedStaging = new TestStagingArtifact();
+        var stagingPath = savedStaging.Artifact.WorkbookPath;
+        var workbookPath = Path.Combine(temp.Path, "Sample.xlsm");
+        var movedPath = Path.Combine(temp.Path, "moved.xlsm");
+        var bytes = Encoding.UTF8.GetBytes("created workbook");
+        File.WriteAllBytes(stagingPath, bytes);
+        var guard = new InitialWorkbookArtifactGuard();
+        CaptureSavedStaging(guard, savedStaging.Artifact);
+        var artifact = guard.MaterializeCreateOnly(
+            savedStaging.Artifact,
+            workbookPath,
+            ownership,
+            CancellationToken.None);
+        File.Move(workbookPath, movedPath);
+        File.WriteAllBytes(workbookPath, bytes);
+
+        var result = guard.TryDeleteFinalArtifact(ownership, artifact.Receipt);
+
+        Assert.False(result.RemovedOrAbsent);
+        Assert.True(result.TargetChanged);
+        Assert.Equal(bytes, File.ReadAllBytes(workbookPath));
+        Assert.Equal(bytes, File.ReadAllBytes(movedPath));
+    }
+
+    [Fact]
+    public void FinalArtifactCleanupRejectsAReceiptFromAnotherOwnershipSession()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var unrelatedOwnership = ExactFileSystemObjectOwnership.Open();
+        using var savedStaging = new TestStagingArtifact();
+        var stagingPath = savedStaging.Artifact.WorkbookPath;
+        var workbookPath = Path.Combine(temp.Path, "Sample.xlsm");
+        var bytes = Encoding.UTF8.GetBytes("created workbook");
+        File.WriteAllBytes(stagingPath, bytes);
+        var guard = new InitialWorkbookArtifactGuard();
+        CaptureSavedStaging(guard, savedStaging.Artifact);
+        var artifact = guard.MaterializeCreateOnly(
+            savedStaging.Artifact,
+            workbookPath,
+            ownership,
+            CancellationToken.None);
+
+        var result = guard.TryDeleteFinalArtifact(unrelatedOwnership, artifact.Receipt);
+
+        Assert.False(result.RemovedOrAbsent);
+        Assert.IsType<InvalidOperationException>(result.Failure);
+        Assert.Equal(bytes, File.ReadAllBytes(workbookPath));
+        Assert.Equal(
+            ExactFileSystemObjectOwnership.ObservationResult.Unchanged,
+            ownership.Observe(artifact.Receipt));
+    }
+
+    private static InitialWorkbookArtifactEvidence CaptureSavedStaging(
+        InitialWorkbookArtifactGuard guard,
+        InitialWorkbookStagingArtifact staging)
+    {
+        var evidence = guard.Capture(staging);
+        guard.CompleteCapture(staging);
+        return evidence;
+    }
+
+    private sealed class TestStagingArtifact : IDisposable
+    {
+        private readonly InitialWorkbookArtifactGuard guard = new();
+
+        internal TestStagingArtifact() => Artifact = guard.CreateStagingArtifact();
+
+        internal InitialWorkbookStagingArtifact Artifact { get; }
+
+        public void Dispose()
+        {
+            _ = guard.TryDeleteStaging(Artifact);
+            Artifact.Dispose();
+            if (Directory.Exists(Artifact.DirectoryPath))
+            {
+                Directory.Delete(Artifact.DirectoryPath, recursive: true);
+            }
+        }
     }
 
     private sealed class ThrowAfterFirstCopyObserver : IInitialWorkbookCopyObserver

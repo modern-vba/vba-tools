@@ -1,5 +1,6 @@
 using System.Text;
 using VbaDev.App.CommonModules;
+using VbaDev.App.FileSystem;
 using VbaDev.App.Projects;
 using VbaDev.App.References;
 using VbaDev.App.Workbooks;
@@ -11,6 +12,29 @@ namespace VbaDev.Tests;
 
 public sealed class NewProjectRetainedWorkbookClassificationTests
 {
+    [Fact]
+    public async Task UnprovenDispositionRollbackNeverClaimsThatChangedContentWasPreserved()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = Path.Combine(temp.Path, "UnprovenRollback");
+        var leaseProvider = new RecordingLeaseProvider();
+        var command = CreateCommand(
+            new RetainedWorkbookCreator(targetChanged: true, rollbackUnproven: true),
+            leaseProvider);
+
+        var result = await command.RunAsync(
+            CreateRequest(projectRoot, "UnprovenRollback"), CancellationToken.None);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Contains("newProjectCleanupIncomplete", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("Additional retained paths could not be determined conclusively", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("newProjectTargetChanged", result.StandardError, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreign or changed content was preserved", result.StandardError, StringComparison.Ordinal);
+        Assert.False(File.Exists(Path.Combine(projectRoot, ProjectManifest.ManifestFileName)));
+        Assert.True(leaseProvider.Released);
+    }
+
     [Fact]
     public async Task RetainedOwnedWorkbookIsReportedOnlyAsCleanupIncomplete()
     {
@@ -139,9 +163,13 @@ public sealed class NewProjectRetainedWorkbookClassificationTests
             OutputDirectorySpecified: true,
             Format: "text");
 
-    private sealed class RetainedWorkbookCreator(bool targetChanged)
-        : IInitialWorkbookCreator
+    private sealed class RetainedWorkbookCreator(bool targetChanged, bool rollbackUnproven = false)
+        : IReceiptInitialWorkbookCreator
     {
+        public Task<InitialWorkbookCreationResult> CreateInitialWorkbookAsync(
+            string workbookPath, ExactFileSystemObjectOwnership ownership, CancellationToken cancellationToken)
+            => Task.FromResult(CreateInitialWorkbook(workbookPath));
+
         public InitialWorkbookCreationResult CreateInitialWorkbook(string workbookPath)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(workbookPath)!);
@@ -149,6 +177,18 @@ public sealed class NewProjectRetainedWorkbookClassificationTests
                 workbookPath,
                 targetChanged ? "foreign workbook" : "owned workbook",
                 new UTF8Encoding(false));
+            if (rollbackUnproven)
+            {
+                throw new InitialWorkbookArtifactRetainedException(
+                    workbookPath,
+                    expectedArtifact: null,
+                    targetChanged: false,
+                    new ExactFileSystemObjectOwnership.FileCreationCleanupException(
+                        workbookPath, retainedReceipt: null, targetChanged,
+                        new OperationCanceledException("Creation was cancelled during the first copy chunk."),
+                        new ExactFileSystemObjectOwnership.RollbackException(workbookPath)));
+            }
+
             throw new InitialWorkbookArtifactRetainedException(
                 workbookPath,
                 expectedArtifact: null,
@@ -158,8 +198,12 @@ public sealed class NewProjectRetainedWorkbookClassificationTests
     }
 
     private sealed class NestedRetainedWorkbookCreator(string stagingPath)
-        : IInitialWorkbookCreator
+        : IReceiptInitialWorkbookCreator
     {
+        public Task<InitialWorkbookCreationResult> CreateInitialWorkbookAsync(
+            string workbookPath, ExactFileSystemObjectOwnership ownership, CancellationToken cancellationToken)
+            => Task.FromResult(CreateInitialWorkbook(workbookPath));
+
         public InitialWorkbookCreationResult CreateInitialWorkbook(string workbookPath)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(workbookPath)!);

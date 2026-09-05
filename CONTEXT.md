@@ -780,6 +780,22 @@ The transition from an absent **WorkbookBackedProject** to one established by
 its initial atomic **ProjectManifest** commit. Before that boundary, only
 provably invocation-owned unchanged artifacts are rollback state; pre-existing,
 unknown, externally changed, or process-surviving unproven content never is.
+New-project rollback authority is an opaque create-only receipt issued by the
+invocation's `ExactFileSystemObjectOwnership` session when each project file or
+directory is created. The initial-workbook creator uses that same session for
+its final project artifact; public diagnostic identity/hash evidence cannot be
+converted back into rollback authority. The workflow retains creation order,
+lease boundaries, commitment, and result policy and releases its receipt
+session at every terminal outcome without deleting committed project content.
+The private Excel staging directory has its own create-only receipt and
+ownership session. The saved workbook's pending capture holds fixed bytes and
+an object anchor but grants no deletion authority while Excel still owns a
+writer. After owned Excel release, the same session issues a stable-capture
+receipt only after strict identity and byte revalidation against that pending
+capture. Later materialization consumes those saved bytes, and staging
+cleanup uses the stored receipt without recapturing a path. Changed content
+and unproved deletion rollback are independent facts: uncertain rollback is
+reported as incomplete cleanup, never as proven preservation.
 _Avoid_: directory scaffolding, partial project
 
 **RequestedProjectRoot**:
@@ -801,6 +817,9 @@ both one normalized route and the exact ordinary object identity; a file receipt
 also binds length and SHA-256 content evidence. It permits only no-follow
 re-observation and same-handle deletion of that unchanged object, while the
 owning workflow retains deletion order, retry, rollback, and outcome policy.
+It also provides non-destructive receipt observation for complete target
+inventory checks. Creating a file beneath a pre-existing ordinary directory
+does not issue or imply ownership of that parent directory.
 It is implemented wholly inside `VbaDev` and adds no dependency on another
 workspace tool.
 _Avoid_: path-based ownership, recursive cleanup, generic transaction journal

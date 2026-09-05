@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using VbaDev.App.Cli;
 using VbaDev.App.CommonModules;
+using VbaDev.App.FileSystem;
 using VbaDev.App.References;
 using VbaDev.App.Workbooks;
 using VbaDev.Domain;
@@ -115,7 +116,7 @@ public sealed class NewProjectCommand
         var projectName = pathPlan.ProjectName;
         var documentName = pathPlan.DocumentName;
         var warnings = new List<NewProjectWarning>();
-        var artifacts = new NewProjectArtifactTracker();
+        using var artifacts = new NewProjectArtifactTracker();
         IProjectManifestMutationLease? lease = null;
         CommonModulesPackageSnapshot? packageSnapshot = null;
         FileSystemPathIdentity? commonModulesRepositoryRouteIdentity = null;
@@ -193,19 +194,29 @@ public sealed class NewProjectCommand
             artifacts.EnsureDirectory(publishPath);
 
             workbookPath = Path.Combine(sourceSetPath, $"{documentName}.xlsm");
-            var initialWorkbook = await initialWorkbookCreator
-                .CreateInitialWorkbookAsync(workbookPath, cancellationToken)
+            if (initialWorkbookCreator is not IReceiptInitialWorkbookCreator receiptCreator)
+            {
+                throw new InvalidOperationException(
+                    "The initial workbook creator cannot issue an invocation-owned project artifact receipt.");
+            }
+
+            var initialWorkbook = await receiptCreator
+                .CreateInitialWorkbookAsync(workbookPath, artifacts.Ownership, cancellationToken)
                 .ConfigureAwait(false);
-            if (!Path.GetFullPath(initialWorkbook.ArtifactEvidence.WorkbookPath)
+            var workbookReceipt = initialWorkbook.OwnedArtifactReceipt
+                ?? throw new NewProjectTargetChangedException(
+                    [workbookPath],
+                    new InvalidOperationException("The initial workbook creator returned no ownership receipt."));
+            if (!Path.GetFullPath(workbookReceipt.Route)
                     .Equals(Path.GetFullPath(workbookPath), PathComparison))
             {
                 throw new NewProjectTargetChangedException(
                     [workbookPath],
                     new InvalidOperationException(
-                        "The initial workbook creator returned evidence for a different path."));
+                        "The initial workbook creator returned an ownership receipt for a different path."));
             }
 
-            artifacts.RecordCreatedFile(initialWorkbook.ArtifactEvidence);
+            artifacts.RecordCreatedFile(workbookReceipt);
             var references = await CreateReferenceEntriesAsync(
                     workbookPath,
                     initialWorkbook.ReferenceNames,
@@ -610,6 +621,25 @@ public sealed class NewProjectCommand
             .ToHashSet(PathComparer);
         targetChangedPaths.UnionWith(changedWorkbookPaths);
         cleanupIncompletePaths.UnionWith(cleanupOnlyWorkbookPaths);
+        foreach (var partialCreation in failureTree
+                     .OfType<ExactFileSystemObjectOwnership.FileCreationCleanupException>())
+        {
+            if (partialCreation.TargetChanged)
+            {
+                targetChangedPaths.Add(partialCreation.Route);
+                cleanupOnlyWorkbookPaths.Remove(partialCreation.Route);
+            }
+
+            if (!partialCreation.TargetChanged || partialCreation.RollbackUnproven)
+            {
+                cleanupIncompletePaths.Add(partialCreation.Route);
+            }
+
+            retainedSetConclusive &= !partialCreation.RollbackUnproven;
+        }
+
+        retainedSetConclusive &= !failureTree
+            .OfType<ExactFileSystemObjectOwnership.RollbackException>().Any();
         foreach (var retainedSnapshot in failureTree
                      .OfType<CommonModulesPackageSnapshotRetainedException>())
         {
@@ -785,7 +815,9 @@ public sealed class NewProjectCommand
         {
             error.AppendLine(
                 "newProjectTargetChanged: The project target changed during creation; "
-                + "foreign or changed content was preserved.");
+                + (retainedSetConclusive
+                    ? "foreign or changed content was preserved."
+                    : "preservation of every foreign or changed path could not be proved."));
             foreach (var path in SortPaths(targetChangedPaths))
             {
                 error.AppendLine($"  {path}");
