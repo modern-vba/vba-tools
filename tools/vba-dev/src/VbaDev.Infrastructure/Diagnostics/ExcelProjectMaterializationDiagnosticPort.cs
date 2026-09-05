@@ -26,7 +26,7 @@ public sealed class ExcelProjectMaterializationDiagnosticPort
     /// </summary>
     public ExcelProjectMaterializationDiagnosticPort()
         : this(
-            new ExcelComWorkbookBuildAutomation(),
+            new ExcelComWorkbookGenerationAutomation(),
             StageTemplateWorkbook,
             DeleteStagedWorkbook,
             CreateProductionReferenceNormalizer(),

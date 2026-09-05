@@ -11,87 +11,111 @@ namespace VbaDev.App.Build;
 /// <summary>
 /// Runs workbook output generation for build-like commands.
 /// </summary>
-public sealed class WorkbookOutputCommand
+internal sealed class WorkbookOutputCommand
 {
-    private readonly WorkbookSourcePlanner sourcePlanner;
-    private readonly WorkbookGenerationPipeline generationPipeline;
+    private readonly WorkbookMaterializer materializer;
 
-    /// <summary>
-    /// Creates a workbook output command.
-    /// </summary>
-    /// <param name="sourcePlanner">The planner that selects source files for the output profile.</param>
-    /// <param name="generationPipeline">The pipeline that creates the workbook output.</param>
-    public WorkbookOutputCommand(
-        WorkbookSourcePlanner sourcePlanner,
-        WorkbookGenerationPipeline generationPipeline)
+    internal WorkbookOutputCommand(WorkbookMaterializer materializer)
     {
-        this.sourcePlanner = sourcePlanner;
-        this.generationPipeline = generationPipeline;
+        this.materializer = materializer;
     }
 
-    /// <summary>
-    /// Generates one workbook output using the supplied profile.
-    /// </summary>
-    /// <param name="context">The resolved document context.</param>
-    /// <param name="profile">The output profile to run.</param>
-    /// <returns>The command result for the generated workbook.</returns>
-    public CommandResult Run(ResolvedProjectContext context, WorkbookOutputProfile profile)
-        => RunAsync(context, profile, CancellationToken.None).GetAwaiter().GetResult();
+    internal CommandResult RunBuild(ResolvedProjectContext context)
+        => RunBuildAsync(context, CancellationToken.None).GetAwaiter().GetResult();
 
-    internal Task<CommandResult> RunAsync(
+    internal Task<CommandResult> RunBuildAsync(
         ResolvedProjectContext context,
-        WorkbookOutputProfile profile,
         CancellationToken cancellationToken)
         => RunAsyncCore(
             context,
-            profile,
-            () => ReferenceEquals(profile, WorkbookOutputProfile.Build)
-                ? sourcePlanner.CaptureBuildSourceInput(context, cancellationToken)
-                : ReferenceEquals(profile, WorkbookOutputProfile.Publish)
-                    ? sourcePlanner.CapturePublishSourceInput(context, cancellationToken)
-                    : new BorrowedWorkbookGenerationSourceInput(profile.ResolveSourceFiles(sourcePlanner, context)),
-            () => profile.ResolveTargetDocumentPath(context),
+            operationName: "build",
+            displayName: "Build",
+            completedVerb: "Built",
+            () => materializer.MaterializeAsync(
+                new WorkbookMaterializationIntent.ProjectBuild(context),
+                cancellationToken),
             cancellationToken);
 
-    /// <summary>
-    /// Generates one workbook output from an already planned source list.
-    /// </summary>
-    internal CommandResult Run(
-        ResolvedProjectContext context,
-        WorkbookOutputProfile profile,
-        IReadOnlyList<VbaSourceFile> sourceFiles)
-        => RunAsync(context, profile, sourceFiles, CancellationToken.None).GetAwaiter().GetResult();
+    internal CommandResult RunPublish(ResolvedProjectContext context)
+        => RunPublishAsync(context, CancellationToken.None).GetAwaiter().GetResult();
 
-    internal Task<CommandResult> RunAsync(
+    internal Task<CommandResult> RunPublishAsync(
         ResolvedProjectContext context,
-        WorkbookOutputProfile profile,
-        IReadOnlyList<VbaSourceFile> sourceFiles,
         CancellationToken cancellationToken)
         => RunAsyncCore(
             context,
-            profile,
-            () => new BorrowedWorkbookGenerationSourceInput(sourceFiles),
-            () => profile.ResolveTargetDocumentPath(context),
+            operationName: "publish",
+            displayName: "Publish",
+            completedVerb: "Published",
+            () => materializer.MaterializeAsync(
+                new WorkbookMaterializationIntent.Publish(context),
+                cancellationToken),
             cancellationToken);
 
-    internal Task<CommandResult> RunWithOwnedSourceAsync(
+    internal Task<CommandResult> RunSnapshotBuildAsync(
         ResolvedProjectContext context,
-        WorkbookOutputProfile profile,
-        Func<IWorkbookGenerationSourceInput> resolveSourceInput,
-        Func<string> resolveTargetDocumentPath,
+        string sourceSnapshotPath,
+        string outputPath,
+        BuildSourceSnapshotCaptureFactory captureFactory,
+        BuildSourceSnapshotOutputSafetyValidator outputSafetyValidator,
         CancellationToken cancellationToken)
         => RunAsyncCore(
             context,
-            profile,
-            resolveSourceInput,
-            resolveTargetDocumentPath,
+            operationName: "build",
+            displayName: "Build",
+            completedVerb: "Built",
+            () =>
+            {
+                var timeouts = ResolveTimeouts(context);
+                var validatedPaths = outputSafetyValidator.Validate(
+                    context,
+                    sourceSnapshotPath,
+                    outputPath);
+                return MaterializeCapturedSnapshotAsync(
+                    context,
+                    captureFactory.Create(
+                        validatedPaths.SourceSnapshotPath,
+                        cancellationToken),
+                    validatedPaths.OutputPath,
+                    timeouts,
+                    cancellationToken);
+            },
+            cancellationToken);
+
+    internal Task<CommandResult> RunCapturedSnapshotBuildAsync(
+        ResolvedProjectContext context,
+        string sourceSnapshotPath,
+        AdmittedVbaSourceSet admission,
+        string outputPath,
+        BuildSourceSnapshotOutputSafetyValidator outputSafetyValidator,
+        CancellationToken cancellationToken)
+        => RunAsyncCore(
+            context,
+            operationName: "build",
+            displayName: "Build",
+            completedVerb: "Built",
+            () =>
+            {
+                var timeouts = ResolveTimeouts(context);
+                var validatedPaths = outputSafetyValidator.Validate(
+                    context,
+                    sourceSnapshotPath,
+                    outputPath);
+                return MaterializeCapturedSnapshotAsync(
+                    context,
+                    new AdmittedWorkbookGenerationSourceInput(admission),
+                    validatedPaths.OutputPath,
+                    timeouts,
+                    cancellationToken);
+            },
             cancellationToken);
 
     private async Task<CommandResult> RunAsyncCore(
         ResolvedProjectContext context,
-        WorkbookOutputProfile profile,
-        Func<IWorkbookGenerationSourceInput> resolveSourceInput,
-        Func<string> resolveTargetDocumentPath,
+        string operationName,
+        string displayName,
+        string completedVerb,
+        Func<Task<WorkbookMaterializationResult>> materialize,
         CancellationToken cancellationToken)
     {
         try
@@ -104,35 +128,19 @@ public sealed class WorkbookOutputCommand
 
             if (!context.Document.Kind.Equals(ProjectDocument.ExcelKind, StringComparison.OrdinalIgnoreCase))
             {
-                return CommandResult.UsageError($"{profile.DisplayName} supports only Excel documents: {context.DocumentName}");
+                return CommandResult.UsageError($"{displayName} supports only Excel documents: {context.DocumentName}");
             }
 
-            var targetDocumentPath = resolveTargetDocumentPath();
-            var defaultTimeouts = WorkbookAutomationTimeouts.Default;
-            var timeouts = defaultTimeouts with
-            {
-                WorkbookOpen = CommandDefaultResolver.ResolveWorkbookOpenTimeout(context.Manifest),
-                WorkbookSave = CommandDefaultResolver.ResolveWorkbookSaveTimeout(context.Manifest)
-            };
-            var sourceInput = resolveSourceInput();
-            var sourceFiles = sourceInput.SourceFiles;
-            var generationResult = await generationPipeline.GenerateAsync(
-                context.DocumentName,
-                context.TemplateDocumentPath,
-                targetDocumentPath,
-                context.Document.References,
-                sourceInput,
-                timeouts,
-                cancellationToken).ConfigureAwait(false);
+            var result = await materialize().ConfigureAwait(false);
 
             return new CommandResult(
                 0,
                 RenderOutput(
-                    profile,
-                    targetDocumentPath,
-                    sourceFiles,
-                    generationResult.Warnings),
-                VbeImportWarningRenderer.Render(generationResult.VerificationReport));
+                    completedVerb,
+                    result.CommittedArtifactPath,
+                    result.ImportedSourceCount,
+                    result.Warnings),
+                VbeImportWarningRenderer.Render(result.VerificationReport));
         }
         catch (WorkbookAutomationCanceledException ex)
         {
@@ -185,9 +193,31 @@ public sealed class WorkbookOutputCommand
         {
             return CreateFailureResult(
                 ex,
-                CommandErrorMessages.ExcelComAutomationFailed(profile.OperationName, ex));
+                CommandErrorMessages.ExcelComAutomationFailed(operationName, ex));
         }
     }
+
+    private Task<WorkbookMaterializationResult> MaterializeCapturedSnapshotAsync(
+        ResolvedProjectContext context,
+        IWorkbookGenerationSourceInput sourceInput,
+        string targetDocumentPath,
+        WorkbookAutomationTimeouts timeouts,
+        CancellationToken cancellationToken)
+        => materializer.MaterializeCapturedSnapshotCompatibilityAsync(
+            context.DocumentName,
+            context.TemplateDocumentPath,
+            targetDocumentPath,
+            context.Document.References,
+            sourceInput,
+            timeouts,
+            cancellationToken);
+
+    private static WorkbookAutomationTimeouts ResolveTimeouts(ResolvedProjectContext context)
+        => WorkbookAutomationTimeouts.Default with
+        {
+            WorkbookOpen = CommandDefaultResolver.ResolveWorkbookOpenTimeout(context.Manifest),
+            WorkbookSave = CommandDefaultResolver.ResolveWorkbookSaveTimeout(context.Manifest)
+        };
 
     private static CommandResult CreateFailureResult(Exception error, string? message = null)
     {
@@ -201,14 +231,14 @@ public sealed class WorkbookOutputCommand
             : result;
 
     private static string RenderOutput(
-        WorkbookOutputProfile profile,
+        string completedVerb,
         string targetDocumentPath,
-        IReadOnlyList<VbaSourceFile> sourceFiles,
+        int importedSourceCount,
         IReadOnlyList<string> warnings)
     {
         var output = new StringBuilder();
-        output.AppendLine($"{profile.CompletedVerb} {targetDocumentPath}");
-        output.AppendLine($"Imported {sourceFiles.Count} source files.");
+        output.AppendLine($"{completedVerb} {targetDocumentPath}");
+        output.AppendLine($"Imported {importedSourceCount} source files.");
         foreach (var warning in warnings)
         {
             output.AppendLine(warning);
@@ -216,40 +246,4 @@ public sealed class WorkbookOutputCommand
 
         return output.ToString();
     }
-}
-
-/// <summary>
-/// Describes one workbook output command profile.
-/// </summary>
-/// <param name="OperationName">The lower-case operation name used in diagnostics.</param>
-/// <param name="DisplayName">The user-facing operation name used in validation messages.</param>
-/// <param name="CompletedVerb">The completed action label printed on success.</param>
-/// <param name="ResolveSourceFiles">The source-file planner operation for this output.</param>
-/// <param name="ResolveTargetDocumentPath">The target workbook path resolver for this output.</param>
-public sealed record WorkbookOutputProfile(
-    string OperationName,
-    string DisplayName,
-    string CompletedVerb,
-    Func<WorkbookSourcePlanner, ResolvedProjectContext, IReadOnlyList<VbaSourceFile>> ResolveSourceFiles,
-    Func<ResolvedProjectContext, string> ResolveTargetDocumentPath)
-{
-    /// <summary>
-    /// Gets the build output profile.
-    /// </summary>
-    public static WorkbookOutputProfile Build { get; } = new(
-        "build",
-        "Build",
-        "Built",
-        static (planner, context) => planner.ResolveBuildSourceFiles(context),
-        static context => context.BinDocumentPath);
-
-    /// <summary>
-    /// Gets the publish output profile.
-    /// </summary>
-    public static WorkbookOutputProfile Publish { get; } = new(
-        "publish",
-        "Publish",
-        "Published",
-        static (planner, context) => planner.ResolvePublishSourceFiles(context),
-        static context => context.PublishDocumentPath);
 }

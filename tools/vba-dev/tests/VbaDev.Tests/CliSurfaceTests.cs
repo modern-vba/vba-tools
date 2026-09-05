@@ -754,12 +754,12 @@ public sealed class CliSurfaceTests
     [Fact]
     public void HelpAndCapabilitiesDoNotReadProjectState()
     {
-        var workbookAutomation = new FakeWorkbookBuildAutomation();
+        var workbookAutomation = new FakeWorkbookGenerationAutomation();
         var referenceResolver = new FakeVbaProjectReferenceResolver();
         var contractOnlyApplication = CommandLineTestFactory.Create(
             Directory.GetCurrentDirectory(),
             environmentDiagnosticPort: new ThrowingEnvironmentDiagnosticPort(),
-            workbookBuildAutomation: workbookAutomation,
+            workbookGenerationAutomation: workbookAutomation,
             vbaProjectReferenceResolver: referenceResolver,
             projectManifestStore: new ThrowingProjectManifestStore());
 

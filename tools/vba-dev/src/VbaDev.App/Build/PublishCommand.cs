@@ -14,7 +14,7 @@ public sealed class PublishCommand
     /// Creates the publish command.
     /// </summary>
     /// <param name="outputCommand">The shared workbook output command implementation.</param>
-    public PublishCommand(WorkbookOutputCommand outputCommand)
+    internal PublishCommand(WorkbookOutputCommand outputCommand)
     {
         this.outputCommand = outputCommand;
     }
@@ -25,7 +25,7 @@ public sealed class PublishCommand
     /// <param name="context">The resolved project and document context.</param>
     /// <returns>The command result describing the published workbook or any user-facing failure.</returns>
     public CommandResult Run(ResolvedProjectContext context)
-        => outputCommand.Run(context, WorkbookOutputProfile.Publish);
+        => outputCommand.RunPublish(context);
 
     /// <summary>
     /// Generates the publish workbook with cooperative invocation cancellation.
@@ -33,8 +33,5 @@ public sealed class PublishCommand
     public Task<CommandResult> RunAsync(
         ResolvedProjectContext context,
         CancellationToken cancellationToken)
-        => outputCommand.RunAsync(
-            context,
-            WorkbookOutputProfile.Publish,
-            cancellationToken);
+        => outputCommand.RunPublishAsync(context, cancellationToken);
 }

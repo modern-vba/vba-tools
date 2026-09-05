@@ -70,3 +70,17 @@ manifest commitment, exact receipt-based rollback, and its before/after-commit
 cancellation policy.
 This consolidation adds no independent process loop, automatic restart, new
 ownership primitive, or concurrent-editor guarantee.
+
+Issue #347 preserves this lifecycle/scenario boundary while routing ordinary
+Project Build and Publish through the internal sealed `WorkbookMaterializer`.
+`AutomationExcelProcessRuntime` still owns process lifecycle and release proof;
+the materializer owns scenario order, repeated live-authority inspection,
+saved-staging validation, the cancellation boundary, and output commitment.
+
+The #346 migration preserved the workbook-generation interfaces that existed
+at that point. Issue #347 subsequently removes the public test-shaped
+`IWorkbookBuildAutomation` and `SynchronousWorkbookGenerationAutomation`;
+composition and tests use the production-shaped `IWorkbookGenerationAutomation`
+port instead. The public command process and result contracts are unchanged.
+This refinement adds no dependency outside VbaDev and introduces no generic
+stage DSL, transaction framework, retry, rollback, or external-write policy.

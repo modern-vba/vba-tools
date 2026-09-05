@@ -803,10 +803,31 @@ _Avoid_: public extension point, caller-composed decoding profile, mutable sourc
 **WorkbookMaterializationNamePreflight**:
 The compatibility decision required before a generated workbook accepts its
 selected source set, using authoritative source identities and the workbook's
-actual final project, active-reference, and retained-component names. A failed
+actual project, active-reference, and retained-component names. Source-only
+preflight runs before Excel. The prepared-workbook authority is checked after
+component removal and reference normalization, and the live authority is
+checked again after `VbeImportVerification`. Only verified imported identities
+are excluded from the retained-component set at that last checkpoint. A failed
 decision preserves the complete deterministic conflict set rather than only its
-first member; it is not compile verification.
+first member; a post-import failure prevents save and output commitment. This is
+not compile verification.
 _Avoid_: reference resolution, compile check, CommonModules consistency check
+
+**WorkbookMaterializer**:
+The internal sealed VbaDev operation owner for one closed `ProjectBuild` or
+`Publish` intent. It keeps source admission and static preflight, sibling
+workbook staging, repeated live-authority inspection, source import and
+verification, save, owned Excel-process release, saved-staging validation, and
+durable output commitment in one ordered workflow. Its result is established
+only after commitment and identifies the absolute committed artifact path,
+imported-source count, warnings, and verification report.
+
+Failure or cancellation before commitment disposes invocation-owned staging and
+does not replace the previous output. Commitment is attempted once. The module
+does not coordinate external target changes through locking, compare-and-swap,
+retry, rollback, or an editor fence. It is implemented wholly inside VbaDev and
+adds no dependency on another product.
+_Avoid_: configurable stage pipeline, workflow DSL, plug-in surface, external-change coordinator
 
 **ProjectManifest**:
 The project-local manifest, stored as `vba-project.json`, that identifies a
@@ -5357,7 +5378,16 @@ Dev: "Should an `ExplicitWorkbookImport` let `VBComponents.Import` discover name
 Domain Expert: "No. Before mutation, compare the admitted authoritative `ModuleIdentity` values with each other and with the private target copy's actual `VBProject.Name`, active reference project or library names, and retained component names. Invalid source metadata, incomplete target inspection, or any conflict leaves the target file unchanged. The target is replaced only after import verification, private workbook save, mirror cleanup, and owned Excel-process release succeed."
 
 Dev: "Can build, publish, or a test build complete `WorkbookMaterializationNamePreflight` before it opens Excel?"
-Domain Expert: "Only the source-metadata and source-to-source part. The final active-reference set may include protected references that remain after normalization, so finish the decision in the temporary materialization workbook. It may flush replaceable old components and normalize references there, but it must re-inspect final authority and reject conflicts before source import, save, or output replacement."
+Domain Expert: "Only the source-metadata and source-to-source part. The final active-reference set may include protected references that remain after normalization, so continue the decision in the temporary materialization workbook. It may flush replaceable old components and normalize references there, but it must re-inspect prepared authority before import and re-inspect live authority again after import verification. A new gap or conflict must fail before save or output replacement."
+
+Dev: "Can a successful pre-import authority check authorize save after `VBComponents.Import`?"
+Domain Expert: "No. Import may change the project, retained-component, or active-reference authority. After imported-component verification, re-enumerate that authority and reject any new gap or conflict before save and output commitment."
+
+Dev: "Should `WorkbookMaterializer` use target locking, compare-and-swap, retry, or rollback when another actor changes the destination?"
+Domain Expert: "No. Concurrent destination mutation is outside the command contract. Keep the destination closed. VbaDev validates its invocation-owned saved staging artifact and attempts commitment once; it neither adopts competing writes nor rolls back an already committed artifact."
+
+Dev: "Does issue #347 move snapshot Build, explicit import, and Doctor into `WorkbookMaterializer`?"
+Domain Expert: "No. Issue #347 closes only ordinary `ProjectBuild` and `Publish`. Issue #348 owns `SnapshotBuild`, #349 owns `ExplicitImport`, and #351 owns project inspection. Their current behavior remains independently owned until those slices migrate."
 
 Dev: "Should a test-only or `'#ExcludePublish` module with a conflicting `ModuleIdentity` block `publish`?"
 Domain Expert: "No. `WorkbookMaterializationNamePreflight` evaluates the effective source set selected for that output profile. Build and build-before-test include test source and may fail, while publish ignores name defects confined to excluded source; Language Server validation and Doctor may still report project-source health independently. Structural failures that prevent the command from selecting a trustworthy flat source set remain command failures."

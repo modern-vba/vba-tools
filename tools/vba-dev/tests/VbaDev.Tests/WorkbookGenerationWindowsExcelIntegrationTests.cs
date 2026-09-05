@@ -76,23 +76,33 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
 
         try
         {
-            var automation = new ExcelComWorkbookBuildAutomation();
-            using var session = automation.OpenWorkbook(
+            var automation = new ExcelComWorkbookGenerationAutomation();
+            var result = await automation.RunAsync(
                 workbookPath,
+                WorkbookAutomationTimeouts.Default,
+                async (session, cancellationToken) =>
+                {
+                    var baseline = (await session
+                            .GetReferencesAsync(cancellationToken))
+                        .ToArray();
+                    var probeResult = await ((IVbaProjectReferenceProbeSession)session)
+                        .TryResolveAsync(
+                            "Microsoft Scripting Runtime",
+                            new ResolvedVbaProjectReference(
+                                "Microsoft Scripting Runtime",
+                                ScriptingGuid,
+                                1,
+                                0),
+                            cancellationToken);
+                    Assert.Equal(
+                        baseline,
+                        await session.GetReferencesAsync(cancellationToken));
+                    return probeResult;
+                },
                 CancellationToken.None);
-            var baseline = session.GetReferences().ToArray();
-
-            var result = session.TryResolveReference(
-                "Microsoft Scripting Runtime",
-                new ResolvedVbaProjectReference(
-                    "Microsoft Scripting Runtime",
-                    ScriptingGuid,
-                    1,
-                    0));
 
             Assert.Equal(VbaProjectReferenceProbeAttemptOutcome.Accepted, result.Outcome);
             Assert.Equal(ScriptingGuid, result.Reference!.Guid);
-            Assert.Equal(baseline, session.GetReferences());
         }
         finally
         {
@@ -205,7 +215,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         var initialProcesses = CaptureExcelProcessIds();
         var templatePath = Path.Combine(temp.Path, "OwnedBuildProject.xlsm");
         CreateEmptyMacroEnabledWorkbook(templatePath);
-        var automation = new ExcelComWorkbookBuildAutomation();
+        var automation = new ExcelComWorkbookGenerationAutomation();
 
         var error = await Assert.ThrowsAsync<WorkbookAutomationProcessLostException>(() =>
             automation.RunAsync(
@@ -396,7 +406,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
             Assert.False(string.IsNullOrWhiteSpace(seedExcelVersion));
             Assert.False(string.IsNullOrWhiteSpace(directImportExcelVersion));
             Assert.False(string.IsNullOrWhiteSpace(productionExcelVersion));
-            var explicitResult = await new ImportCommand(new ExcelComWorkbookBuildAutomation()).RunAsync(
+            var explicitResult = await new ImportCommand(new ExcelComWorkbookGenerationAutomation()).RunAsync(
                 new ImportCommandRequest(explicitSourceDirectory, explicitTargetPath, temp.Path),
                 CancellationToken.None);
             Assert.True(explicitResult.ExitCode == 0, explicitResult.StandardError);
@@ -1152,7 +1162,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         byte[] malformedBomSource = [0xef, 0xbb, 0xbf, 0xc3, 0x28];
         File.WriteAllBytes(sourcePath, malformedBomSource);
 
-        var command = new ImportCommand(new ExcelComWorkbookBuildAutomation());
+        var command = new ImportCommand(new ExcelComWorkbookGenerationAutomation());
         var result = await command.RunAsync(
             new ImportCommandRequest(sourceDirectory, targetPath, temp.Path),
             CancellationToken.None);
@@ -1642,9 +1652,9 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         IWorkbookGenerationAutomation? automation,
         IWorkbookOutputTransactionFactory? transactionFactory)
         => new(
-            new WorkbookSourcePlanner(),
-            new WorkbookGenerationPipeline(
-                automation ?? new ExcelComWorkbookBuildAutomation(),
+            new WorkbookMaterializer(
+                new WorkbookSourcePlanner(),
+                automation ?? new ExcelComWorkbookGenerationAutomation(),
                 new WorkbookReferenceNormalizer(new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),
                 transactionFactory ?? new WorkbookOutputTransactionFactory(),
                 new VbeImportSourceSetFactory(ActiveWindowsAnsiCodePage.Get, sourceSetCreated)));
@@ -1805,7 +1815,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
     private sealed class RecordingOwnedWorkbookGenerationAutomation(
         CancellationTokenSource? cancelAfterRelease = null) : IWorkbookGenerationAutomation
     {
-        private readonly IWorkbookGenerationAutomation inner = new ExcelComWorkbookBuildAutomation();
+        private readonly IWorkbookGenerationAutomation inner = new ExcelComWorkbookGenerationAutomation();
 
         public int StartedRuns { get; private set; }
 
@@ -1849,9 +1859,9 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         public void Dispose() => inner.Dispose();
     }
 
-    private static WorkbookGenerationPipeline CreateGenerationPipeline()
+    private static WorkbookMaterializer CreateGenerationPipeline()
         => new(
-            (IWorkbookGenerationAutomation)new ExcelComWorkbookBuildAutomation(),
+            (IWorkbookGenerationAutomation)new ExcelComWorkbookGenerationAutomation(),
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())));
 

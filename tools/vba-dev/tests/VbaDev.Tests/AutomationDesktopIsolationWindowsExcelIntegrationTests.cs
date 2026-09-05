@@ -50,7 +50,7 @@ public sealed class AutomationDesktopIsolationWindowsExcelIntegrationTests
         var releaseOperation = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
         await using var callerDesktop = CallerDesktopSampler.Start();
-        var automation = new ExcelComWorkbookBuildAutomation();
+        var automation = new ExcelComWorkbookGenerationAutomation();
         var operation = automation.RunAsync(
             workbookPath,
             WorkbookAutomationTimeouts.Default,
@@ -130,7 +130,7 @@ public sealed class AutomationDesktopIsolationWindowsExcelIntegrationTests
         await WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20));
 
         await using var callerDesktop = CallerDesktopSampler.Start();
-        var automation = new ExcelComWorkbookBuildAutomation();
+        var automation = new ExcelComWorkbookGenerationAutomation();
         var clock = Stopwatch.StartNew();
         var execution = automation.RunWorkbookTestsAsync(
             workbookPath,
@@ -449,7 +449,7 @@ public sealed class AutomationDesktopIsolationWindowsExcelIntegrationTests
             [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
             ActiveWindowsAnsiCodePage.Get());
         var stagedSource = Assert.Single(importSourceSet.SourceFiles);
-        var automation = new ExcelComWorkbookBuildAutomation();
+        var automation = new ExcelComWorkbookGenerationAutomation();
         _ = await automation.RunAsync(
             workbookPath,
             WorkbookAutomationTimeouts.Default,

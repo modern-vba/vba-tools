@@ -402,6 +402,15 @@ cooperative cleanup 5 seconds. The prior completed output remains in place until
 reference normalization, import, verification, save, and owned-process cleanup
 have completed; only then is the selected target replaced atomically.
 
+After imported components are verified, VBA Tools re-inspects the staged
+workbook's current project, retained-component, and active-reference names. An
+authority gap or conflict introduced by import fails before save and leaves the
+completed target unchanged. After Excel releases the staged workbook, VBA Tools
+also requires the saved staging file to be readable and non-empty before
+replacement. It does not reopen the workbook, compile the VBA project, retry the
+operation, or coordinate concurrent destination changes. Keep the destination
+workbook closed until the command finishes.
+
 From the `vba-dev` terminal, run:
 
 ```text
@@ -547,9 +556,10 @@ vba-dev publish
 ```
 
 Publish is the command for producing the distributable workbook. It uses the
-same source import and reference normalization path as build, but writes to the
-document's publish output and omits CommonModules recorded with `testOnly: true`
-plus project-local files marked with `'#ExcludePublish`. Build and publish do not
+same materialization safeguards as Build while retaining its separate
+publishable-source selection and exclusion profile. It writes to the document's
+publish output and omits CommonModules recorded with `testOnly: true` plus
+project-local files marked with `'#ExcludePublish`. Build and publish do not
 consult the current CommonModules repository.
 
 Publish uses the same supported-BOM and BOM-less ACP rules as [Build](#build),

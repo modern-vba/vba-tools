@@ -94,9 +94,11 @@ Later edits, deletions, or additions to authoring paths cannot change the
 current admitted build. This is fixed-input ownership, not an atomic snapshot
 of concurrent authoring activity: a selected file that cannot be read fails
 capture. There is no retry, repeated inventory, closing stability check, or
-new authoring lock. Existing workbook staging, verification, cleanup, and output
-commitment remain unchanged, including cancellation before commitment and the
-authoritative successful result after commitment.
+new authoring lock. The admitted Build profile enters the closed `ProjectBuild`
+materialization intent. The materializer re-inspects live authority after import
+verification and, after owned-process release, requires readable, non-empty
+saved staging before commitment. Cancellation before commitment preserves the
+previous output; the successful committed result is authoritative afterward.
 
 Ordinary Test with BuildFirst already invokes ordinary BuildCommand, so its
 build stage receives the same admitted Build behavior. This does not introduce
@@ -139,10 +141,12 @@ sources in case-insensitive filename order, and accepts an empty effective
 source set. Later authoring changes do not alter the admitted publication.
 As with Build, this is fixed-input ownership, not an atomic concurrent-author
 snapshot: unreadable selected files fail without retries, another inventory,
-closing stability checks, or new locks. Existing warnings, output schema,
-source-only and live-workbook preflight, cleanup, and output commitment remain
-unchanged. Cancellation before commitment preserves prior output; successful
-commitment remains authoritative if cancellation arrives afterward.
+closing stability checks, or new locks. The admitted Publish profile enters the
+closed `Publish` materialization intent and retains its distinct collision,
+exclusion, marker, and ordering rules. It uses the same post-import authority
+and released saved-staging gates as Build. Existing warnings and public output
+schema remain unchanged. Cancellation before commitment preserves prior output;
+successful commitment remains authoritative if cancellation arrives afterward.
 
 ## Doctor source inspection
 
@@ -202,6 +206,13 @@ locations keep their existing warning behavior. This does not introduce the
 later `ExecutedSourceIndex` design or change ordinary/no-build navigation.
 Issue #345 admits Doctor as described above. Ordinary/no-build result-location
 paths remain deferred; not every VbaDev source path uses this module yet.
+
+Issue #347 consumes this admission through closed `ProjectBuild` and `Publish`
+materialization intents only. Snapshot Build/Test retains its narrow internal
+compatibility path until issue #348. Explicit import remains independently
+owned until issue #349, and Doctor retains its disposable inspection path until
+issue #351. This staged boundary does not change those commands' current public
+behavior and does not create a second generic materialization pipeline.
 
 The coordinated compatibility matrix is:
 
@@ -287,5 +298,10 @@ the same corpus without changing its ownership.
   read downstream.
 - The previous target survives failures during source admission, workbook
   mutation, verification, save, and owned-process release.
+- Ordinary Build and Publish re-inspect live authority after import verification
+  and validate the released saved staging workbook as readable and non-empty
+  before commitment.
+- This adds no source re-inventory, authoring lock, target compare-and-swap,
+  retry, or rollback of competing external changes.
 - Other source workflows keep their released behavior during the staged
   rollout; extending admission requires an explicit follow-up change.

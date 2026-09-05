@@ -49,7 +49,7 @@ public sealed class DoctorSourceAdmissionTests
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
         var expectedText = Encoding.GetEncoding(1252).GetString(bytes);
         var observedText = new List<string>();
-        var automation = new FakeWorkbookBuildAutomation { ThrowOnImport = true, ThrowOnSave = true };
+        var automation = new FakeWorkbookGenerationAutomation { ThrowOnImport = true, ThrowOnSave = true };
         var mirrors = new VbeImportSourceSetFactory(
             () => throw new InvalidOperationException("Doctor mirrors must use the admitted ACP."),
             sourceSet =>
@@ -107,7 +107,7 @@ public sealed class DoctorSourceAdmissionTests
             if (path == testOnlyPath) { testOnlyReads++; }
             return File.ReadAllBytes(path);
         });
-        var automation = new FakeWorkbookBuildAutomation { ThrowOnImport = true, ThrowOnSave = true };
+        var automation = new FakeWorkbookGenerationAutomation { ThrowOnImport = true, ThrowOnSave = true };
         var command = CreateDoctor(root, admission, automation, new VbeImportSourceSetFactory(
             () => throw new InvalidOperationException("Doctor must not reacquire ACP.")));
 
@@ -164,7 +164,7 @@ public sealed class DoctorSourceAdmissionTests
             }
             return File.ReadAllBytes(path);
         });
-        var automation = new FakeWorkbookBuildAutomation { ThrowOnImport = true, ThrowOnSave = true };
+        var automation = new FakeWorkbookGenerationAutomation { ThrowOnImport = true, ThrowOnSave = true };
         var command = CreateDoctor(root, admission, automation,
             new VbeImportSourceSetFactory(() => throw new InvalidOperationException("Unexpected ACP read.")));
 
@@ -199,7 +199,7 @@ public sealed class DoctorSourceAdmissionTests
             reads++;
             return File.ReadAllBytes(path);
         });
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         var command = CreateDoctor(root, admission, automation, new VbeImportSourceSetFactory());
 
         var result = await command.RunAsync(
@@ -228,7 +228,7 @@ public sealed class DoctorSourceAdmissionTests
         var sourcePath = Path.Combine(sourceDirectory, "Common.bas");
         File.WriteAllText(sourcePath,
             "Attribute VB_Name = \"Common\"\r\n'#ExcludePublish\r\n' \U0001f600\r\n", new UTF8Encoding(true));
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         var command = CreateDoctor(root, new VbaSourceAdmission(() => 1252), automation,
             new VbeImportSourceSetFactory());
 
@@ -269,7 +269,7 @@ public sealed class DoctorSourceAdmissionTests
             reads[path] = reads.GetValueOrDefault(path) + 1;
             return path == failedPath ? throw new IOException("captured source read failed") : File.ReadAllBytes(path);
         });
-        var automation = new FakeWorkbookBuildAutomation { ThrowOnImport = true, ThrowOnSave = true };
+        var automation = new FakeWorkbookGenerationAutomation { ThrowOnImport = true, ThrowOnSave = true };
         var command = CreateDoctor(root, admission, automation, new VbeImportSourceSetFactory());
 
         var result = await command.RunAsync(
@@ -305,7 +305,7 @@ public sealed class DoctorSourceAdmissionTests
             inventories++;
             throw new IOException("document inventory failed");
         }, path => { reads++; return File.ReadAllBytes(path); });
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         var command = CreateDoctor(root, admission, automation, new VbeImportSourceSetFactory());
 
         var result = await command.RunAsync(
@@ -341,7 +341,7 @@ public sealed class DoctorSourceAdmissionTests
             cancellation.Cancel();
             return bytes;
         });
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         var mirrors = new VbeImportSourceSetFactory(
             () => throw new InvalidOperationException("Canceled capture must not create an import mirror."));
         var command = CreateDoctor(root, admission, automation, mirrors);
@@ -383,7 +383,7 @@ public sealed class DoctorSourceAdmissionTests
             reads++;
             throw new IOException("Environment diagnostics must not read source bytes.");
         });
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         var command = CreateDoctor(root, admission, automation, new VbeImportSourceSetFactory());
 
         var result = await command.RunAsync(new DoctorCommandRequest(
@@ -436,11 +436,11 @@ public sealed class DoctorSourceAdmissionTests
     private static DoctorCommand CreateDoctor(
         string root,
         VbaSourceAdmission admission,
-        FakeWorkbookBuildAutomation automation,
+        FakeWorkbookGenerationAutomation automation,
         VbeImportSourceSetFactory mirrors)
     {
         var materialization = new ExcelProjectMaterializationDiagnosticPort(
-            new SynchronousWorkbookGenerationAutomation(automation),
+            automation,
             templatePath =>
             {
                 var staged = Path.Combine(root, "staged-" + Path.GetFileName(templatePath));

@@ -19,7 +19,7 @@ public sealed class ImportCommandTests
         var targetWorkbook = Path.Combine(temp.Path, "target.xlsm");
         File.WriteAllBytes(sourcePath, "Attribute VB_Name = \"Module1\"\r\n' é\r\n"u8.ToArray());
         File.WriteAllBytes(targetWorkbook, [1, 2, 3, 4]);
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         var command = new ImportCommand(automation, new VbeImportSourceSetFactory(() => 1252));
 
         var result = command.Run(new ImportCommandRequest(sourceDirectory, targetWorkbook, temp.Path));
@@ -181,7 +181,7 @@ public sealed class ImportCommandTests
         var targetWorkbook = Path.Combine(temp.Path, "target.xlsm");
         File.WriteAllText(Path.Combine(sourceDirectory, "Module1.bas"), "Attribute VB_Name = \"Module1\"", Encoding.UTF8);
         File.WriteAllText(targetWorkbook, "workbook", Encoding.UTF8);
-        var automation = new FakeWorkbookBuildAutomation(
+        var automation = new FakeWorkbookGenerationAutomation(
             new WorkbookModule("OldModule", WorkbookModuleKind.StandardModule),
             new WorkbookModule("OldClass", WorkbookModuleKind.ClassModule),
             new WorkbookModule("OldForm", WorkbookModuleKind.Form),
@@ -191,7 +191,7 @@ public sealed class ImportCommandTests
         var application = VbaDevCommandLine.Create(
             ToolingCompositionRoot.CreateApplicationComposition(
                 temp.Path,
-                workbookBuildAutomation: automation));
+                workbookGenerationAutomation: automation));
         using var standardOutput = new StringWriter();
         using var standardError = new StringWriter();
 
@@ -231,8 +231,8 @@ public sealed class ImportCommandTests
         File.WriteAllText(targetWorkbook, "workbook", Encoding.UTF8);
         var exactApplication = CommandLineTestFactory.Create(
             temp.Path,
-            workbookBuildAutomation: new FakeWorkbookBuildAutomation());
-        var warnedAutomation = new FakeWorkbookBuildAutomation
+            workbookGenerationAutomation: new FakeWorkbookGenerationAutomation());
+        var warnedAutomation = new FakeWorkbookGenerationAutomation
         {
             VerificationReport = new VbeImportVerificationReport(
             [
@@ -243,7 +243,7 @@ public sealed class ImportCommandTests
         };
         var warnedApplication = CommandLineTestFactory.Create(
             temp.Path,
-            workbookBuildAutomation: warnedAutomation);
+            workbookGenerationAutomation: warnedAutomation);
         var arguments = new[]
         {
             "import",
@@ -280,12 +280,12 @@ public sealed class ImportCommandTests
             Encoding.UTF8);
         var targetBytes = Encoding.UTF8.GetBytes("workbook");
         File.WriteAllBytes(targetWorkbook, targetBytes);
-        var automation = new FakeWorkbookBuildAutomation(
+        var automation = new FakeWorkbookGenerationAutomation(
             new WorkbookModule("OldModule", WorkbookModuleKind.StandardModule),
             new WorkbookModule("ThisWorkbook", WorkbookModuleKind.Document));
         var application = CommandLineTestFactory.Create(
             temp.Path,
-            workbookBuildAutomation: automation);
+            workbookGenerationAutomation: automation);
 
         var result = application.Run([
             "import",
@@ -314,13 +314,13 @@ public sealed class ImportCommandTests
             "Attribute VB_Name = \"Module1\"",
             Encoding.UTF8);
         File.WriteAllText(targetWorkbook, "workbook", Encoding.UTF8);
-        var automation = new FakeWorkbookBuildAutomation
+        var automation = new FakeWorkbookGenerationAutomation
         {
             WaitForCancellationOnOpen = true
         };
         var application = CommandLineTestFactory.Create(
             temp.Path,
-            workbookBuildAutomation: automation);
+            workbookGenerationAutomation: automation);
         using var standardInput = new SignalThenFrameStream(
             automation.CancelableOpenStarted,
             "cancel\n"u8.ToArray());
@@ -362,7 +362,7 @@ public sealed class ImportCommandTests
         var automation = new FakeNativeImportGenerationAutomation();
         var application = CommandLineTestFactory.Create(
             temp.Path,
-            workbookBuildAutomation: automation);
+            workbookGenerationAutomation: automation);
         using var standardInput = new MemoryStream("cancel\n"u8.ToArray());
         using var standardOutput = new StringWriter();
         using var standardError = new StringWriter();
@@ -384,7 +384,6 @@ public sealed class ImportCommandTests
 
         Assert.Equal(130, exitCode);
         Assert.Equal(1, automation.GenerationRuns);
-        Assert.Equal(0, automation.LegacyOpenCalls);
         Assert.Equal(WorkbookAutomationTimeouts.Default, automation.Timeouts);
         Assert.True(automation.CancellationObserved);
         Assert.True(automation.CleanupFinished);
@@ -408,7 +407,7 @@ public sealed class ImportCommandTests
         };
         var application = CommandLineTestFactory.Create(
             temp.Path,
-            workbookBuildAutomation: automation);
+            workbookGenerationAutomation: automation);
         using var standardInput = new MemoryStream("cancel\n"u8.ToArray());
         using var standardOutput = new StringWriter();
         using var standardError = new StringWriter();
@@ -430,7 +429,6 @@ public sealed class ImportCommandTests
 
         Assert.Equal(1, exitCode);
         Assert.Equal(1, automation.GenerationRuns);
-        Assert.Equal(0, automation.LegacyOpenCalls);
         Assert.True(automation.CancellationObserved);
         Assert.True(automation.CleanupFinished);
         Assert.Contains("could not be verified", standardError.ToString(), StringComparison.Ordinal);
@@ -447,8 +445,8 @@ public sealed class ImportCommandTests
         Directory.CreateDirectory(sourceDirectory);
         File.WriteAllText(Path.Combine(sourceDirectory, "Module1.bas"), "Attribute VB_Name = \"Module1\"", Encoding.UTF8);
         File.WriteAllText(targetWorkbook, "workbook", Encoding.UTF8);
-        var automation = new FakeWorkbookBuildAutomation();
-        var application = CommandLineTestFactory.Create(workingDirectory, workbookBuildAutomation: automation);
+        var automation = new FakeWorkbookGenerationAutomation();
+        var application = CommandLineTestFactory.Create(workingDirectory, workbookGenerationAutomation: automation);
 
         var result = application.Run(["import", "--from", "src", "--to", "target.xlsm"]);
 
@@ -477,8 +475,8 @@ public sealed class ImportCommandTests
         WriteBytes(Path.Combine(sourceDirectory, "nested", "Orphan.frx"), [9, 9, 9]);
         WriteText(Path.Combine(sourceDirectory, "nested", "Nested.bas"), "Attribute VB_Name = \"Nested\"");
         File.WriteAllText(targetWorkbook, "workbook", Encoding.UTF8);
-        var automation = new FakeWorkbookBuildAutomation();
-        var application = CommandLineTestFactory.Create(temp.Path, workbookBuildAutomation: automation);
+        var automation = new FakeWorkbookGenerationAutomation();
+        var application = CommandLineTestFactory.Create(temp.Path, workbookGenerationAutomation: automation);
 
         var result = application.Run(["import", "--from", sourceDirectory, "--to", targetWorkbook]);
 
@@ -501,8 +499,8 @@ public sealed class ImportCommandTests
         WriteText(Path.Combine(sourceDirectory, "first", "Shared.bas"), "Attribute VB_Name = \"Shared\"");
         WriteText(Path.Combine(sourceDirectory, "second", "shared.bas"), "Attribute VB_Name = \"shared\"");
         File.WriteAllText(targetWorkbook, "workbook", Encoding.UTF8);
-        var automation = new FakeWorkbookBuildAutomation();
-        var application = CommandLineTestFactory.Create(temp.Path, workbookBuildAutomation: automation);
+        var automation = new FakeWorkbookGenerationAutomation();
+        var application = CommandLineTestFactory.Create(temp.Path, workbookGenerationAutomation: automation);
 
         var result = application.Run(["import", "--from", sourceDirectory, "--to", targetWorkbook]);
 
@@ -525,8 +523,8 @@ public sealed class ImportCommandTests
         WriteText(zetaPath, "Attribute VB_Name = \"collisionname\"");
         var targetBytes = Encoding.UTF8.GetBytes("workbook");
         File.WriteAllBytes(targetWorkbook, targetBytes);
-        var automation = new FakeWorkbookBuildAutomation();
-        var application = CommandLineTestFactory.Create(temp.Path, workbookBuildAutomation: automation);
+        var automation = new FakeWorkbookGenerationAutomation();
+        var application = CommandLineTestFactory.Create(temp.Path, workbookGenerationAutomation: automation);
 
         var result = application.Run(["import", "--from", sourceDirectory, "--to", targetWorkbook]);
 
@@ -551,7 +549,7 @@ public sealed class ImportCommandTests
         WriteText(referenceSourcePath, "Attribute VB_Name = \"actualreference\"");
         var targetBytes = Encoding.UTF8.GetBytes("workbook");
         File.WriteAllBytes(targetWorkbook, targetBytes);
-        var automation = new FakeWorkbookBuildAutomation(
+        var automation = new FakeWorkbookGenerationAutomation(
             new WorkbookModule("OldModule", WorkbookModuleKind.StandardModule))
         {
             ProjectName = "ActualProject"
@@ -560,7 +558,7 @@ public sealed class ImportCommandTests
             "Friendly reference description",
             IsRemovable: true,
             NamespaceName: "ActualReference"));
-        var application = CommandLineTestFactory.Create(temp.Path, workbookBuildAutomation: automation);
+        var application = CommandLineTestFactory.Create(temp.Path, workbookGenerationAutomation: automation);
 
         var result = application.Run(["import", "--from", sourceDirectory, "--to", targetWorkbook]);
 
@@ -583,9 +581,9 @@ public sealed class ImportCommandTests
             "Attribute VB_Name = \"Excluded\"\n'#ExcludePublish",
             Encoding.UTF8);
         File.WriteAllText(targetWorkbook, "workbook", Encoding.UTF8);
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         automation.References.Add(new WorkbookReference("Unlisted Library", IsRemovable: true, NamespaceName: "UnlistedLibrary"));
-        var application = CommandLineTestFactory.Create(temp.Path, workbookBuildAutomation: automation);
+        var application = CommandLineTestFactory.Create(temp.Path, workbookGenerationAutomation: automation);
 
         var result = application.Run(["import", "--from", sourceDirectory, "--to", targetWorkbook]);
 
@@ -625,8 +623,8 @@ public sealed class ImportCommandTests
         File.WriteAllText(Path.Combine(validSource, "Module1.bas"), "Attribute VB_Name = \"Module1\"", Encoding.UTF8);
         File.WriteAllText(targetWorkbook, "workbook", Encoding.UTF8);
         File.WriteAllText(sourceFile, "Attribute VB_Name = \"Source\"", Encoding.UTF8);
-        var automation = new FakeWorkbookBuildAutomation();
-        var application = CommandLineTestFactory.Create(temp.Path, workbookBuildAutomation: automation);
+        var automation = new FakeWorkbookGenerationAutomation();
+        var application = CommandLineTestFactory.Create(temp.Path, workbookGenerationAutomation: automation);
 
         var missingSource = application.Run(["import", "--from", Path.Combine(temp.Path, "missing-src"), "--to", targetWorkbook]);
         var fileSource = application.Run(["import", "--from", sourceFile, "--to", targetWorkbook]);
@@ -653,8 +651,8 @@ public sealed class ImportCommandTests
         File.WriteAllText(Path.Combine(sourceDirectory, "notes.txt"), "notes", Encoding.UTF8);
         File.WriteAllBytes(Path.Combine(sourceDirectory, "Orphan.frx"), [1, 2, 3]);
         File.WriteAllText(targetWorkbook, "workbook", Encoding.UTF8);
-        var automation = new FakeWorkbookBuildAutomation();
-        var application = CommandLineTestFactory.Create(temp.Path, workbookBuildAutomation: automation);
+        var automation = new FakeWorkbookGenerationAutomation();
+        var application = CommandLineTestFactory.Create(temp.Path, workbookGenerationAutomation: automation);
 
         var result = application.Run(["import", "--from", sourceDirectory, "--to", targetWorkbook]);
 
@@ -671,11 +669,11 @@ public sealed class ImportCommandTests
         var targetWorkbook = Path.Combine(temp.Path, "target.xlsm");
         File.WriteAllText(Path.Combine(sourceDirectory, "Module1.bas"), "Attribute VB_Name = \"Module1\"", Encoding.UTF8);
         File.WriteAllText(targetWorkbook, "workbook", Encoding.UTF8);
-        var automation = new FakeWorkbookBuildAutomation(new WorkbookModule("OldModule", WorkbookModuleKind.StandardModule))
+        var automation = new FakeWorkbookGenerationAutomation(new WorkbookModule("OldModule", WorkbookModuleKind.StandardModule))
         {
             ThrowOnRemove = true
         };
-        var application = CommandLineTestFactory.Create(temp.Path, workbookBuildAutomation: automation);
+        var application = CommandLineTestFactory.Create(temp.Path, workbookGenerationAutomation: automation);
 
         var result = application.Run(["import", "--from", sourceDirectory, "--to", targetWorkbook]);
 
@@ -693,11 +691,11 @@ public sealed class ImportCommandTests
         var targetWorkbook = Path.Combine(temp.Path, "target.xlsm");
         File.WriteAllText(Path.Combine(sourceDirectory, "Module1.bas"), "Attribute VB_Name = \"Module1\"", Encoding.UTF8);
         File.WriteAllText(targetWorkbook, "workbook", Encoding.UTF8);
-        var automation = new FakeWorkbookBuildAutomation(new WorkbookModule("OldModule", WorkbookModuleKind.StandardModule))
+        var automation = new FakeWorkbookGenerationAutomation(new WorkbookModule("OldModule", WorkbookModuleKind.StandardModule))
         {
             ThrowOnImport = true
         };
-        var application = CommandLineTestFactory.Create(temp.Path, workbookBuildAutomation: automation);
+        var application = CommandLineTestFactory.Create(temp.Path, workbookGenerationAutomation: automation);
 
         var result = application.Run(["import", "--from", sourceDirectory, "--to", targetWorkbook]);
 
@@ -720,7 +718,7 @@ public sealed class ImportCommandTests
         byte[] targetBytes = [1, 2, 3, 4];
         File.WriteAllBytes(sourcePath, sourceBytes);
         File.WriteAllBytes(targetWorkbook, targetBytes);
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         var codePageReads = 0;
         var command = new ImportCommand(
             automation,
@@ -754,11 +752,11 @@ public sealed class ImportCommandTests
             "Attribute VB_Name = \"Module1\"",
             new UTF8Encoding(false));
         File.WriteAllText(targetWorkbook, "workbook", Encoding.UTF8);
-        var automation = new FakeWorkbookBuildAutomation
+        var automation = new FakeWorkbookGenerationAutomation
         {
             ThrowOnVerify = true
         };
-        var application = CommandLineTestFactory.Create(temp.Path, workbookBuildAutomation: automation);
+        var application = CommandLineTestFactory.Create(temp.Path, workbookGenerationAutomation: automation);
 
         var result = application.Run(["import", "--from", sourceDirectory, "--to", targetWorkbook]);
 
@@ -779,13 +777,13 @@ public sealed class ImportCommandTests
             "Attribute VB_Name = \"Module1\"",
             new UTF8Encoding(false));
         File.WriteAllText(targetWorkbook, "workbook", Encoding.UTF8);
-        var automation = new FakeWorkbookBuildAutomation
+        var automation = new FakeWorkbookGenerationAutomation
         {
             VerificationReport = null!
         };
         var application = CommandLineTestFactory.Create(
             temp.Path,
-            workbookBuildAutomation: automation);
+            workbookGenerationAutomation: automation);
 
         var result = application.Run(
             ["import", "--from", sourceDirectory, "--to", targetWorkbook]);
@@ -806,7 +804,7 @@ public sealed class ImportCommandTests
             "Attribute VB_Name = \"Module1\"",
             new UTF8Encoding(false));
         File.WriteAllText(targetWorkbook, "workbook", Encoding.UTF8);
-        var automation = new FakeWorkbookBuildAutomation
+        var automation = new FakeWorkbookGenerationAutomation
         {
             ThrowOnSave = true,
             VerificationReport = new VbeImportVerificationReport(
@@ -818,7 +816,7 @@ public sealed class ImportCommandTests
         };
         var application = CommandLineTestFactory.Create(
             temp.Path,
-            workbookBuildAutomation: automation);
+            workbookGenerationAutomation: automation);
 
         var result = application.Run(
             ["import", "--from", sourceDirectory, "--to", targetWorkbook]);
@@ -845,7 +843,7 @@ public sealed class ImportCommandTests
         File.WriteAllText(targetWorkbook, "workbook", Encoding.UTF8);
         FileStream? stagingLock = null;
         string? stagingPath = null;
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         automation.OnImport = () =>
         {
             var source = Assert.Single(automation.ImportedSources);
@@ -903,7 +901,7 @@ public sealed class ImportCommandTests
         File.WriteAllBytes(path, content);
     }
 
-    private sealed class SavedWorkbookAutomation : IWorkbookBuildAutomation, IWorkbookGenerationAutomation
+    private sealed class SavedWorkbookAutomation : IWorkbookGenerationAutomation
     {
         public Exception? ReleaseFailure { get; init; }
 
@@ -911,17 +909,14 @@ public sealed class ImportCommandTests
 
         public Action<string>? AfterSave { get; init; }
 
-        public IWorkbookBuildSession OpenWorkbook(string workbookPath)
-            => throw new InvalidOperationException("The native generation port must be used.");
-
         public async Task<TResult> RunAsync<TResult>(
             string workbookPath,
             WorkbookAutomationTimeouts timeouts,
             Func<IWorkbookGenerationSession, CancellationToken, Task<TResult>> operation,
             CancellationToken cancellationToken)
         {
-            var workbook = new FakeWorkbookBuildAutomation();
-            var result = await new SynchronousWorkbookGenerationAutomation(workbook).RunAsync(
+            var workbook = new FakeWorkbookGenerationAutomation();
+            var result = await workbook.RunAsync(
                 workbookPath, timeouts, operation, cancellationToken);
             Assert.Equal(1, workbook.SaveCalls);
             File.WriteAllBytes(workbookPath, SavedBytes);
@@ -935,13 +930,9 @@ public sealed class ImportCommandTests
         }
     }
 
-    private sealed class FakeNativeImportGenerationAutomation :
-        IWorkbookBuildAutomation,
-        IWorkbookGenerationAutomation
+    private sealed class FakeNativeImportGenerationAutomation : IWorkbookGenerationAutomation
     {
         public int GenerationRuns { get; private set; }
-
-        public int LegacyOpenCalls { get; private set; }
 
         public WorkbookAutomationTimeouts? Timeouts { get; private set; }
 
@@ -952,12 +943,6 @@ public sealed class ImportCommandTests
         public bool FailCleanupProof { get; init; }
 
         public List<string> Events { get; } = [];
-
-        public IWorkbookBuildSession OpenWorkbook(string workbookPath)
-        {
-            LegacyOpenCalls++;
-            throw new InvalidOperationException("The legacy import automation path was used.");
-        }
 
         public async Task<TResult> RunAsync<TResult>(
             string workbookPath,

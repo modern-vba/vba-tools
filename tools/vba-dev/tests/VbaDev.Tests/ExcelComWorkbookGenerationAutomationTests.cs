@@ -26,7 +26,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
             OnWorkbookOpened = cancellation.Cancel,
             SessionResource = resource
         };
-        var automation = new ExcelComWorkbookBuildAutomation(
+        var automation = new ExcelComWorkbookGenerationAutomation(
             new RecordingGenerationDispatcherFactory(new RecordingGenerationDispatcher(events)),
             lifecycle);
 
@@ -46,7 +46,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
         var events = new List<string>();
         var dispatcher = new RecordingGenerationDispatcher(events);
         var lifecycle = new FakeWorkbookGenerationLifecycle(events);
-        var automation = new ExcelComWorkbookBuildAutomation(
+        var automation = new ExcelComWorkbookGenerationAutomation(
             new RecordingGenerationDispatcherFactory(dispatcher),
             lifecycle);
         var runner = new ExcelComWorkbookTestRunner(automation);
@@ -80,7 +80,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
         var events = new List<string>();
         var lifecycle = new FakeWorkbookGenerationLifecycle(events);
         var runner = new ExcelComWorkbookTestRunner(
-            new ExcelComWorkbookBuildAutomation(
+            new ExcelComWorkbookGenerationAutomation(
                 new RecordingGenerationDispatcherFactory(
                     new RecordingGenerationDispatcher(events)),
                 lifecycle));
@@ -103,7 +103,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
             BlockTestUntilTermination = true
         };
         var runner = new ExcelComWorkbookTestRunner(
-            new ExcelComWorkbookBuildAutomation(
+            new ExcelComWorkbookGenerationAutomation(
                 new RecordingGenerationDispatcherFactory(
                     new AsynchronousCleanupGenerationDispatcher()),
                 lifecycle));
@@ -125,7 +125,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
     }
 
     [Fact]
-    public void ApplicationCompositionPrefersNativeGenerationAndRetainsLegacyBuildPort()
+    public void ApplicationCompositionUsesTheGenerationContract()
     {
         using var temp = TempDirectory.Create();
         var root = temp.CreateDirectory("Project");
@@ -142,16 +142,15 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
             Path.Combine(sourceDirectory, "Feature.bas"),
             "Attribute VB_Name = \"Feature\"",
             Encoding.UTF8);
-        var automation = new DualWorkbookGenerationAutomation();
+        var automation = new RecordingWorkbookGenerationAutomation();
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: automation);
+            workbookGenerationAutomation: automation);
 
         var result = application.Run(["build"]);
 
         Assert.Equal(0, result.ExitCode);
-        Assert.Equal(1, automation.NativeRunCalls);
-        Assert.Equal(0, automation.LegacyOpenCalls);
+        Assert.Equal(1, automation.RunCalls);
         Assert.Equal(["import:Feature.bas", "save"], automation.Events);
         Assert.True(File.Exists(Path.Combine(root, "bin", "Book1.xlsm")));
     }
@@ -162,7 +161,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
         var events = new List<string>();
         var dispatcher = new RecordingGenerationDispatcher(events);
         var lifecycle = new FakeWorkbookGenerationLifecycle(events);
-        var automation = new ExcelComWorkbookBuildAutomation(
+        var automation = new ExcelComWorkbookGenerationAutomation(
             new RecordingGenerationDispatcherFactory(dispatcher),
             lifecycle);
 
@@ -231,7 +230,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
         var events = new List<string>();
         var dispatcher = new RecordingGenerationDispatcher(events);
         var lifecycle = new FakeWorkbookGenerationLifecycle(events);
-        var automation = new ExcelComWorkbookBuildAutomation(
+        var automation = new ExcelComWorkbookGenerationAutomation(
             new RecordingGenerationDispatcherFactory(dispatcher),
             lifecycle);
         var candidate = new ResolvedVbaProjectReference(
@@ -266,7 +265,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
         {
             BlockSaveUntilTermination = true
         };
-        var automation = new ExcelComWorkbookBuildAutomation(
+        var automation = new ExcelComWorkbookGenerationAutomation(
             new RecordingGenerationDispatcherFactory(dispatcher),
             lifecycle);
         var timeouts = WorkbookAutomationTimeouts.Default with
@@ -300,7 +299,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
         {
             BlockGetModulesUntilTermination = true
         };
-        var automation = new ExcelComWorkbookBuildAutomation(
+        var automation = new ExcelComWorkbookGenerationAutomation(
             new RecordingGenerationDispatcherFactory(
                 new AsynchronousCleanupGenerationDispatcher()),
             lifecycle);
@@ -336,7 +335,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
             BlockSaveUntilTermination = true,
             CleanupError = cleanupError
         };
-        var automation = new ExcelComWorkbookBuildAutomation(
+        var automation = new ExcelComWorkbookGenerationAutomation(
             new RecordingGenerationDispatcherFactory(dispatcher),
             lifecycle);
         var timeouts = WorkbookAutomationTimeouts.Default with
@@ -382,7 +381,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
             CleanupError = cooperativeError
         };
         lifecycle.Owner.DisposeError = ownershipError;
-        var automation = new ExcelComWorkbookBuildAutomation(
+        var automation = new ExcelComWorkbookGenerationAutomation(
             new RecordingGenerationDispatcherFactory(
                 new RecordingGenerationDispatcher(events)),
             lifecycle);
@@ -414,7 +413,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
             CleanupError = cooperativeError
         };
         lifecycle.Owner.DisposeError = ownershipError;
-        var automation = new ExcelComWorkbookBuildAutomation(
+        var automation = new ExcelComWorkbookGenerationAutomation(
             new RecordingGenerationDispatcherFactory(
                 new RecordingGenerationDispatcher([])),
             lifecycle);
@@ -447,7 +446,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
             BlockSaveUntilTermination = true,
             CleanupError = new COMException("The RPC server is unavailable.")
         };
-        var automation = new ExcelComWorkbookBuildAutomation(
+        var automation = new ExcelComWorkbookGenerationAutomation(
             new RecordingGenerationDispatcherFactory(dispatcher),
             lifecycle);
         var timeouts = WorkbookAutomationTimeouts.Default with
@@ -480,7 +479,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
         {
             OpenError = new InvalidOperationException("open failed")
         };
-        var automation = new ExcelComWorkbookBuildAutomation(
+        var automation = new ExcelComWorkbookGenerationAutomation(
             new RecordingGenerationDispatcherFactory(dispatcher),
             lifecycle);
 
@@ -505,7 +504,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
         {
             StartError = new InvalidOperationException("start failed")
         };
-        var automation = new ExcelComWorkbookBuildAutomation(
+        var automation = new ExcelComWorkbookGenerationAutomation(
             new RecordingGenerationDispatcherFactory(dispatcher),
             lifecycle);
 
@@ -527,7 +526,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
         var events = new List<string>();
         var dispatcher = new NonReturningGenerationDispatcher();
         var lifecycle = new FakeWorkbookGenerationLifecycle(events);
-        var automation = new ExcelComWorkbookBuildAutomation(
+        var automation = new ExcelComWorkbookGenerationAutomation(
             new RecordingGenerationDispatcherFactory(dispatcher),
             lifecycle);
         var timeouts = WorkbookAutomationTimeouts.Default with
@@ -559,7 +558,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
         var events = new List<string>();
         var dispatcher = new DeferredGenerationDispatcher();
         var lifecycle = new FakeWorkbookGenerationLifecycle(events);
-        var automation = new ExcelComWorkbookBuildAutomation(
+        var automation = new ExcelComWorkbookGenerationAutomation(
             new RecordingGenerationDispatcherFactory(dispatcher),
             lifecycle);
         var timeouts = WorkbookAutomationTimeouts.Default with
@@ -588,7 +587,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
         var events = new List<string>();
         var dispatcher = new CleanupBlockingGenerationDispatcher();
         var lifecycle = new FakeWorkbookGenerationLifecycle(events);
-        var automation = new ExcelComWorkbookBuildAutomation(
+        var automation = new ExcelComWorkbookGenerationAutomation(
             new RecordingGenerationDispatcherFactory(dispatcher),
             lifecycle);
 
@@ -620,7 +619,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
             CleanupStarted = cleanupStarted,
             CleanupRelease = cleanupRelease
         };
-        var automation = new ExcelComWorkbookBuildAutomation(
+        var automation = new ExcelComWorkbookGenerationAutomation(
             new RecordingGenerationDispatcherFactory(
                 new AsynchronousCleanupGenerationDispatcher()),
             lifecycle);
@@ -692,7 +691,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
     {
         using var cancellation = new CancellationTokenSource();
         var lifecycle = new FakeWorkbookGenerationLifecycle([]);
-        var automation = new ExcelComWorkbookBuildAutomation(
+        var automation = new ExcelComWorkbookGenerationAutomation(
             new RecordingGenerationDispatcherFactory(new RecordingGenerationDispatcher([])),
             lifecycle);
 
@@ -782,7 +781,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
             StartError = new UnverifiedOwnedSessionStartFailure(startError, cleanupError),
             ExitOwnedProcessBeforeStartError = true
         };
-        var automation = new ExcelComWorkbookBuildAutomation(
+        var automation = new ExcelComWorkbookGenerationAutomation(
             new RecordingGenerationDispatcherFactory(dispatcher),
             lifecycle);
 
@@ -811,7 +810,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
             StartError = new UnverifiedOwnedSessionStartFailure(startError, cleanupError),
             ExitOwnedProcessBeforeStartError = true
         };
-        var automation = new ExcelComWorkbookBuildAutomation(
+        var automation = new ExcelComWorkbookGenerationAutomation(
             new RecordingGenerationDispatcherFactory(
                 new RecordingGenerationDispatcher(events)),
             lifecycle);
@@ -840,7 +839,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
             StartError = new InvalidOperationException("configuration failed"),
             AttachOwnerBeforeStartError = true
         };
-        var automation = new ExcelComWorkbookBuildAutomation(
+        var automation = new ExcelComWorkbookGenerationAutomation(
             new RecordingGenerationDispatcherFactory(dispatcher),
             lifecycle);
         var timeouts = WorkbookAutomationTimeouts.Default with
@@ -871,7 +870,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
         {
             CleanupError = cleanupError
         };
-        var automation = new ExcelComWorkbookBuildAutomation(
+        var automation = new ExcelComWorkbookGenerationAutomation(
             new RecordingGenerationDispatcherFactory(
                 new RecordingGenerationDispatcher(events)),
             lifecycle);
@@ -908,7 +907,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
             CleanupError = new MissingMemberException(
                 "The exited Excel process no longer exposes workbook.Close.")
         };
-        var automation = new ExcelComWorkbookBuildAutomation(
+        var automation = new ExcelComWorkbookGenerationAutomation(
             new RecordingGenerationDispatcherFactory(dispatcher),
             lifecycle);
 
@@ -1328,21 +1327,11 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
         }
     }
 
-    private sealed class DualWorkbookGenerationAutomation :
-        IWorkbookBuildAutomation,
-        IWorkbookGenerationAutomation
+    private sealed class RecordingWorkbookGenerationAutomation : IWorkbookGenerationAutomation
     {
-        public int LegacyOpenCalls { get; private set; }
-
-        public int NativeRunCalls { get; private set; }
+        public int RunCalls { get; private set; }
 
         public List<string> Events { get; } = [];
-
-        public IWorkbookBuildSession OpenWorkbook(string workbookPath)
-        {
-            LegacyOpenCalls++;
-            throw new InvalidOperationException("The legacy build port must not generate production output.");
-        }
 
         public async Task<TResult> RunAsync<TResult>(
             string workbookPath,
@@ -1350,14 +1339,14 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
             Func<IWorkbookGenerationSession, CancellationToken, Task<TResult>> operation,
             CancellationToken cancellationToken)
         {
-            NativeRunCalls++;
+            RunCalls++;
             return await operation(
-                new DualWorkbookGenerationSession(Events),
+                new RecordingWorkbookGenerationSession(Events),
                 cancellationToken);
         }
     }
 
-    private sealed class DualWorkbookGenerationSession(List<string> events)
+    private sealed class RecordingWorkbookGenerationSession(List<string> events)
         : IWorkbookGenerationSession
     {
         public Task<string> GetProjectNameAsync(CancellationToken cancellationToken)

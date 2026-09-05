@@ -26,10 +26,10 @@ public sealed class BuildCommandTests
         File.WriteAllBytes(
             Path.Combine(root, ProjectManifest.ManifestFileName),
             ProjectManifestCanonicalSerializer.SerializeToUtf16LeBytes(manifest));
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: automation);
+            workbookGenerationAutomation: automation);
 
         var result = application.Run(["build"]);
 
@@ -47,7 +47,7 @@ public sealed class BuildCommandTests
         var root = temp.CreateDirectory("Project");
         new JsonProjectManifestStore().Save(root, ProjectManifestTestData.TwoDocumentManifest(root));
         CreateWorkbookSource(root, "SecondBook", ("Local.bas", "Attribute VB_Name = \"Local\""));
-        var automation = new FakeWorkbookBuildAutomation(
+        var automation = new FakeWorkbookGenerationAutomation(
             new WorkbookModule("Standard1", WorkbookModuleKind.StandardModule),
             new WorkbookModule("Class1", WorkbookModuleKind.ClassModule),
             new WorkbookModule("Form1", WorkbookModuleKind.Form),
@@ -55,7 +55,7 @@ public sealed class BuildCommandTests
         var application = VbaDevCommandLine.Create(
             ToolingCompositionRoot.CreateApplicationComposition(
                 root,
-                workbookBuildAutomation: automation));
+                workbookGenerationAutomation: automation));
         using var standardOutput = new StringWriter();
         using var standardError = new StringWriter();
 
@@ -121,11 +121,11 @@ public sealed class BuildCommandTests
             Encoding.UTF8);
         var outputPath = Path.Combine(temp.CreateDirectory("session"), "Book1.xlsm");
         File.WriteAllText(outputPath, "previous-output", Encoding.UTF8);
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         automation.AdoptedReferenceNamespaces["Snapshot Reference"] = "SnapshotReference";
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: automation,
+            workbookGenerationAutomation: automation,
             vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
                 new ResolvedVbaProjectReference(
                     "Snapshot Reference",
@@ -179,10 +179,10 @@ public sealed class BuildCommandTests
         var optionValue = suppliedOption == "--source-snapshot"
             ? temp.CreateDirectory("snapshot")
             : Path.Combine(temp.Path, "Book1.xlsm");
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: automation);
+            workbookGenerationAutomation: automation);
 
         var result = application.Run(["build", suppliedOption, optionValue]);
 
@@ -209,10 +209,10 @@ public sealed class BuildCommandTests
         File.WriteAllText(firstPath, "Attribute VB_Name = \"Shared\"", Encoding.UTF8);
         File.WriteAllText(secondPath, "Attribute VB_Name = \"shared\"", Encoding.UTF8);
         var outputPath = Path.Combine(temp.CreateDirectory("session"), "Book1.xlsm");
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: automation);
+            workbookGenerationAutomation: automation);
 
         var result = application.Run(
         [
@@ -256,10 +256,10 @@ public sealed class BuildCommandTests
         var zetaBytes = File.ReadAllBytes(zetaPath);
         var outputPath = Path.Combine(temp.CreateDirectory("session"), "Book1.xlsm");
         File.WriteAllText(outputPath, "previous-output", Encoding.UTF8);
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: automation);
+            workbookGenerationAutomation: automation);
 
         var result = application.Run(
         [
@@ -296,10 +296,10 @@ public sealed class BuildCommandTests
             "Attribute VB_Name = \"Module1\"\r\n");
         File.WriteAllBytes(snapshotSourcePath, snapshotBytes);
         var outputPath = Path.Combine(snapshotPath, "Book1.xlsm");
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: automation);
+            workbookGenerationAutomation: automation);
 
         var result = application.Run(
         [
@@ -336,10 +336,10 @@ public sealed class BuildCommandTests
             "src",
             "SecondBook",
             "caller-output.xlsm");
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: automation);
+            workbookGenerationAutomation: automation);
 
         var result = application.Run(
         [
@@ -381,10 +381,10 @@ public sealed class BuildCommandTests
             Path.Combine(snapshotPath, "Module1.bas"),
             "Attribute VB_Name = \"Module1\"",
             Encoding.UTF8);
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: automation);
+            workbookGenerationAutomation: automation);
 
         var result = application.Run(
         [
@@ -417,10 +417,10 @@ public sealed class BuildCommandTests
             Path.Combine(snapshotPath, "Module1.bas"),
             "Attribute VB_Name = \"Module1\"",
             Encoding.UTF8);
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: automation);
+            workbookGenerationAutomation: automation);
 
         var result = application.Run(
         [
@@ -455,10 +455,10 @@ public sealed class BuildCommandTests
             Path.Combine(snapshotPath, "Module1.bas"),
             "Attribute VB_Name = \"Module1\"",
             Encoding.UTF8);
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: automation);
+            workbookGenerationAutomation: automation);
 
         var result = application.Run(
         [
@@ -493,10 +493,10 @@ public sealed class BuildCommandTests
             Path.Combine(snapshotPath, "Module1.bas"),
             "Attribute VB_Name = \"Module1\"",
             Encoding.UTF8);
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: automation);
+            workbookGenerationAutomation: automation);
 
         var result = application.Run(
         [
@@ -535,10 +535,10 @@ public sealed class BuildCommandTests
         var aliasPath = Path.Combine(temp.Path, "snapshot-alias");
         Directory.CreateSymbolicLink(aliasPath, snapshotPath);
         var outputPath = Path.Combine(aliasPath, "missing", "Book1.xlsm");
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: automation);
+            workbookGenerationAutomation: automation);
 
         var result = application.Run(
         [
@@ -573,13 +573,13 @@ public sealed class BuildCommandTests
         var outputPath = Path.Combine(outputDirectory, "Book1.xlsm");
         var outputBytes = Encoding.UTF8.GetBytes("previous-output");
         File.WriteAllBytes(outputPath, outputBytes);
-        var automation = new FakeWorkbookBuildAutomation
+        var automation = new FakeWorkbookGenerationAutomation
         {
             ThrowOnImport = true
         };
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: automation);
+            workbookGenerationAutomation: automation);
 
         var result = application.Run(
         [
@@ -619,13 +619,13 @@ public sealed class BuildCommandTests
         var outputBytes = Encoding.UTF8.GetBytes("previous-output");
         File.WriteAllBytes(outputPath, outputBytes);
         using var cancellation = new CancellationTokenSource();
-        var automation = new FakeWorkbookBuildAutomation
+        var automation = new FakeWorkbookGenerationAutomation
         {
             OnImport = cancellation.Cancel
         };
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: automation);
+            workbookGenerationAutomation: automation);
 
         var result = await application.RunAsync(
         [
@@ -671,10 +671,10 @@ public sealed class BuildCommandTests
         var brokenAliasPath = Path.Combine(temp.Path, "broken-alias");
         Directory.CreateSymbolicLink(brokenAliasPath, missingTargetPath);
         var outputPath = Path.Combine(brokenAliasPath, "Book1.xlsm");
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: automation);
+            workbookGenerationAutomation: automation);
 
         var result = application.Run(
         [
@@ -721,10 +721,10 @@ public sealed class BuildCommandTests
         var aliasPath = Path.Combine(temp.Path, "bin-alias");
         Directory.CreateSymbolicLink(aliasPath, binDirectory);
         var outputPath = Path.Combine(aliasPath, "Book1.xlsm");
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: automation);
+            workbookGenerationAutomation: automation);
 
         var result = application.Run(
         [
@@ -770,10 +770,10 @@ public sealed class BuildCommandTests
         Assert.True(
             CreateHardLinkW(outputPath, binPath, IntPtr.Zero),
             $"Could not create test hard link. Win32 error: {Marshal.GetLastWin32Error()}");
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: automation);
+            workbookGenerationAutomation: automation);
 
         var result = application.Run(
         [
@@ -806,10 +806,10 @@ public sealed class BuildCommandTests
             Encoding.UTF8);
         var outputDirectory = temp.CreateDirectory("snapshot-copy");
         var outputPath = Path.Combine(outputDirectory, "Book1.xlsm");
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: automation);
+            workbookGenerationAutomation: automation);
 
         var result = application.Run(
         [
@@ -836,11 +836,11 @@ public sealed class BuildCommandTests
         var binPath = Path.Combine(root, "bin", "Book1.xlsm");
         Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
         File.WriteAllText(binPath, "old-bin", Encoding.UTF8);
-        var automation = new FakeWorkbookBuildAutomation(new WorkbookModule("Standard1", WorkbookModuleKind.StandardModule))
+        var automation = new FakeWorkbookGenerationAutomation(new WorkbookModule("Standard1", WorkbookModuleKind.StandardModule))
         {
             ThrowOnImport = true
         };
-        var application = CommandLineTestFactory.Create(root, workbookBuildAutomation: automation);
+        var application = CommandLineTestFactory.Create(root, workbookGenerationAutomation: automation);
 
         var result = application.Run(["build"]);
 
@@ -864,11 +864,11 @@ public sealed class BuildCommandTests
         Directory.CreateDirectory(binDirectory);
         File.WriteAllText(binPath, "last-known-good", Encoding.UTF8);
         using var cancellation = new CancellationTokenSource();
-        var automation = new FakeWorkbookBuildAutomation
+        var automation = new FakeWorkbookGenerationAutomation
         {
             OnImport = cancellation.Cancel
         };
-        var pipeline = new WorkbookGenerationPipeline(
+        var pipeline = new WorkbookMaterializer(
             automation,
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())));
@@ -915,8 +915,8 @@ public sealed class BuildCommandTests
             (Path.Combine("shared", "Base.bas"), "Attribute VB_Name = \"Base\""),
             (Path.Combine("forms", "Dialog.frm"), "VERSION 5.00\r\nBegin VB.Form Dialog\r\nEnd\r\nAttribute VB_Name = \"Dialog\""));
         File.WriteAllBytes(Path.Combine(root, "src", "Book1", "forms", "Orphan.frx"), [1, 2, 3]);
-        var automation = new FakeWorkbookBuildAutomation();
-        var application = CommandLineTestFactory.Create(root, workbookBuildAutomation: automation);
+        var automation = new FakeWorkbookGenerationAutomation();
+        var application = CommandLineTestFactory.Create(root, workbookGenerationAutomation: automation);
 
         var result = application.Run(["build"]);
 
@@ -943,8 +943,8 @@ public sealed class BuildCommandTests
             new InstalledCommonModule("Missing", "Missing.bas", Requested: true, TestOnly: false));
         new JsonProjectManifestStore().Save(root, manifest);
         CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
-        var automation = new FakeWorkbookBuildAutomation();
-        var application = CommandLineTestFactory.Create(root, workbookBuildAutomation: automation);
+        var automation = new FakeWorkbookGenerationAutomation();
+        var application = CommandLineTestFactory.Create(root, workbookGenerationAutomation: automation);
 
         var result = application.Run(["build"]);
 
@@ -963,8 +963,8 @@ public sealed class BuildCommandTests
             "Book1",
             (Path.Combine("feature", "Shared.bas"), "Attribute VB_Name = \"Shared\""),
             (Path.Combine("legacy", "shared.bas"), "Attribute VB_Name = \"shared\""));
-        var automation = new FakeWorkbookBuildAutomation();
-        var application = CommandLineTestFactory.Create(root, workbookBuildAutomation: automation);
+        var automation = new FakeWorkbookGenerationAutomation();
+        var application = CommandLineTestFactory.Create(root, workbookGenerationAutomation: automation);
 
         var result = application.Run(["build"]);
 
@@ -987,8 +987,8 @@ public sealed class BuildCommandTests
             ("Dialog.frm", "VERSION 5.00\r\nBegin VB.Form Dialog\r\nEnd\r\nAttribute VB_Name = \"Dialog\""));
         var frxPath = Path.Combine(root, "src", "Book1", "Dialog.frx");
         File.WriteAllBytes(frxPath, [1, 2, 3]);
-        var automation = new FakeWorkbookBuildAutomation();
-        var application = CommandLineTestFactory.Create(root, workbookBuildAutomation: automation);
+        var automation = new FakeWorkbookGenerationAutomation();
+        var application = CommandLineTestFactory.Create(root, workbookGenerationAutomation: automation);
 
         var result = application.Run(["build"]);
 
@@ -1014,14 +1014,14 @@ public sealed class BuildCommandTests
         manifest.Documents["Book1"].References.Add(new VbaProjectReference("Microsoft Scripting Runtime"));
         new JsonProjectManifestStore().Save(root, manifest);
         CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
-        var automation = new FakeWorkbookBuildAutomation(new WorkbookModule("Standard1", WorkbookModuleKind.StandardModule));
+        var automation = new FakeWorkbookGenerationAutomation(new WorkbookModule("Standard1", WorkbookModuleKind.StandardModule));
         automation.References.Add(new WorkbookReference("Unlisted Library", IsRemovable: true, NamespaceName: "UnlistedLibrary"));
         automation.AdoptedReferenceNamespaces["Microsoft Scripting Runtime"] = "Scripting";
         var resolver = new FakeVbaProjectReferenceResolver(
             new ResolvedVbaProjectReference("Microsoft Scripting Runtime", "{420B2830-E718-11CF-893D-00A0C9054228}", 1, 0));
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: automation,
+            workbookGenerationAutomation: automation,
             vbaProjectReferenceResolver: resolver);
 
         var result = application.Run(["build"]);
@@ -1048,7 +1048,7 @@ public sealed class BuildCommandTests
         manifest.Documents["Book1"].References.Add(new VbaProjectReference("Microsoft Scripting Runtime"));
         new JsonProjectManifestStore().Save(root, manifest);
         CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
-        var automation = new FakeWorkbookBuildAutomation(new WorkbookModule("Standard1", WorkbookModuleKind.StandardModule));
+        var automation = new FakeWorkbookGenerationAutomation(new WorkbookModule("Standard1", WorkbookModuleKind.StandardModule));
         automation.References.Add(new WorkbookReference("OLE Automation", IsRemovable: false, NamespaceName: "stdole"));
         automation.References.Add(new WorkbookReference("Unlisted Library", IsRemovable: true, NamespaceName: "UnlistedLibrary"));
         automation.AdoptedReferenceNamespaces["Microsoft Scripting Runtime"] = "Scripting";
@@ -1058,7 +1058,7 @@ public sealed class BuildCommandTests
             new ResolvedVbaProjectReference("Microsoft Scripting Runtime", "{420B2830-E718-11CF-893D-00A0C9054228}", 1, 0));
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: automation,
+            workbookGenerationAutomation: automation,
             vbaProjectReferenceResolver: resolver);
 
         var result = application.Run(["build"]);
@@ -1086,10 +1086,10 @@ public sealed class BuildCommandTests
         manifest.Documents["Book1"].References.Add(new VbaProjectReference("Missing Library"));
         new JsonProjectManifestStore().Save(root, manifest);
         CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: automation,
+            workbookGenerationAutomation: automation,
             vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver());
 
         var result = application.Run(["build"]);
@@ -1107,11 +1107,11 @@ public sealed class BuildCommandTests
         var root = temp.CreateDirectory("Project");
         new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
         CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
-        var automation = new FakeWorkbookBuildAutomation
+        var automation = new FakeWorkbookGenerationAutomation
         {
             ReferenceError = new COMException("0x800A801C", unchecked((int)0x800A801C))
         };
-        var application = CommandLineTestFactory.Create(root, workbookBuildAutomation: automation);
+        var application = CommandLineTestFactory.Create(root, workbookGenerationAutomation: automation);
 
         var result = application.Run(["build"]);
 
@@ -1131,13 +1131,13 @@ public sealed class BuildCommandTests
         manifest.Documents["Book1"].References.Add(new VbaProjectReference("Ambiguous Library"));
         new JsonProjectManifestStore().Save(root, manifest);
         CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         var resolver = new FakeVbaProjectReferenceResolver(
             new ResolvedVbaProjectReference("Ambiguous Library", "{11111111-1111-1111-1111-111111111111}", 1, 0),
             new ResolvedVbaProjectReference("Ambiguous Library", "{22222222-2222-2222-2222-222222222222}", 1, 0));
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: automation,
+            workbookGenerationAutomation: automation,
             vbaProjectReferenceResolver: resolver);
 
         var result = application.Run(["build"]);
@@ -1155,9 +1155,9 @@ public sealed class BuildCommandTests
         var root = temp.CreateDirectory("Project");
         new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
         CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         automation.References.Add(new WorkbookReference("Protected Library", IsRemovable: false, NamespaceName: "ProtectedLibrary"));
-        var application = CommandLineTestFactory.Create(root, workbookBuildAutomation: automation);
+        var application = CommandLineTestFactory.Create(root, workbookGenerationAutomation: automation);
 
         var result = application.Run(["build"]);
 
@@ -1178,14 +1178,14 @@ public sealed class BuildCommandTests
             root,
             "Book1",
             ("Local.bas", "Attribute VB_Name = \"Local\""));
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         automation.References.Add(new WorkbookReference(
             "Protected Library",
             IsRemovable: false,
             NamespaceName: "ProtectedLibrary"));
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: automation);
+            workbookGenerationAutomation: automation);
         var baseline = application.Run(["build"]);
         automation.VerificationReport = new VbeImportVerificationReport(
         [
@@ -1224,8 +1224,8 @@ public sealed class BuildCommandTests
         Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
         File.WriteAllText(binPath, "locked-bin", Encoding.UTF8);
         using var lockStream = new FileStream(binPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
-        var automation = new FakeWorkbookBuildAutomation();
-        var application = CommandLineTestFactory.Create(root, workbookBuildAutomation: automation);
+        var automation = new FakeWorkbookGenerationAutomation();
+        var application = CommandLineTestFactory.Create(root, workbookGenerationAutomation: automation);
 
         var result = application.Run(["build"]);
 
@@ -1255,13 +1255,13 @@ public sealed class BuildCommandTests
     }
 }
 
-internal sealed class FakeWorkbookBuildAutomation : IWorkbookBuildAutomation
+internal sealed class FakeWorkbookGenerationAutomation : IWorkbookGenerationAutomation
 {
     private readonly IReadOnlyList<WorkbookModule> modules;
     private readonly TaskCompletionSource cancelableOpenStarted = new(
         TaskCreationOptions.RunContinuationsAsynchronously);
 
-    public FakeWorkbookBuildAutomation(params WorkbookModule[] modules)
+    public FakeWorkbookGenerationAutomation(params WorkbookModule[] modules)
     {
         this.modules = modules;
     }
@@ -1306,14 +1306,10 @@ internal sealed class FakeWorkbookBuildAutomation : IWorkbookBuildAutomation
 
     public int SaveCalls { get; private set; }
 
-    public IWorkbookBuildSession OpenWorkbook(string workbookPath)
-    {
-        OpenedWorkbooks.Add(workbookPath);
-        return new FakeWorkbookBuildSession(this, modules);
-    }
-
-    public IWorkbookBuildSession OpenWorkbook(
+    public async Task<TResult> RunAsync<TResult>(
         string workbookPath,
+        WorkbookAutomationTimeouts timeouts,
+        Func<IWorkbookGenerationSession, CancellationToken, Task<TResult>> operation,
         CancellationToken cancellationToken)
     {
         CancellationRequestedAtOpen = cancellationToken.IsCancellationRequested;
@@ -1331,49 +1327,64 @@ internal sealed class FakeWorkbookBuildAutomation : IWorkbookBuildAutomation
                 cancellationToken);
         }
 
-        return OpenWorkbook(workbookPath);
+        cancellationToken.ThrowIfCancellationRequested();
+        OpenedWorkbooks.Add(workbookPath);
+        return await operation(
+                new FakeWorkbookGenerationSession(this, modules),
+                cancellationToken)
+            .ConfigureAwait(false);
     }
 
-    private sealed class FakeWorkbookBuildSession : IWorkbookBuildSession
+    private sealed class FakeWorkbookGenerationSession : IWorkbookGenerationSession
     {
-        private readonly FakeWorkbookBuildAutomation owner;
+        private readonly FakeWorkbookGenerationAutomation owner;
         private readonly IReadOnlyList<WorkbookModule> modules;
 
-        public FakeWorkbookBuildSession(FakeWorkbookBuildAutomation owner, IReadOnlyList<WorkbookModule> modules)
+        public FakeWorkbookGenerationSession(FakeWorkbookGenerationAutomation owner, IReadOnlyList<WorkbookModule> modules)
         {
             this.owner = owner;
             this.modules = modules;
         }
 
-        public string GetProjectName() => owner.ProjectName;
+        public Task<string> GetProjectNameAsync(CancellationToken cancellationToken)
+            => FromResult(owner.ProjectName, cancellationToken);
 
-        public IReadOnlyList<WorkbookModule> GetModules() => modules;
+        public Task<IReadOnlyList<WorkbookModule>> GetModulesAsync(CancellationToken cancellationToken)
+            => FromResult(modules, cancellationToken);
 
-        public IReadOnlyList<WorkbookReference> GetReferences()
+        public Task<IReadOnlyList<WorkbookReference>> GetReferencesAsync(
+            CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (owner.ReferenceError is not null)
             {
                 throw owner.ReferenceError;
             }
 
-            return owner.References;
+            return Task.FromResult<IReadOnlyList<WorkbookReference>>(owner.References);
         }
 
-        public bool RemoveReference(string referenceName)
+        public Task<bool> RemoveReferenceAsync(
+            string referenceName,
+            CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var reference = owner.References.FirstOrDefault(item => item.Name.Equals(referenceName, StringComparison.OrdinalIgnoreCase));
             if (reference is null || !reference.IsRemovable)
             {
-                return false;
+                return Task.FromResult(false);
             }
 
             owner.References.Remove(reference);
             owner.Events.Add($"remove-ref:{reference.Name}");
-            return true;
+            return Task.FromResult(true);
         }
 
-        public void AddReference(ResolvedVbaProjectReference reference)
+        public Task AddReferenceAsync(
+            ResolvedVbaProjectReference reference,
+            CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             owner.AdoptedReferenceNamespaces.TryGetValue(
                 reference.Name,
                 out var namespaceName);
@@ -1382,20 +1393,26 @@ internal sealed class FakeWorkbookBuildAutomation : IWorkbookBuildAutomation
                 IsRemovable: true,
                 NamespaceName: namespaceName));
             owner.Events.Add($"add-ref:{reference.Name}");
+            return Task.CompletedTask;
         }
 
-        public void RemoveModule(string moduleName)
+        public Task RemoveModuleAsync(string moduleName, CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (owner.ThrowOnRemove)
             {
                 throw new InvalidOperationException("remove failed");
             }
 
             owner.Events.Add($"remove:{moduleName}");
+            return Task.CompletedTask;
         }
 
-        public void ImportModule(VbeImportSourceFile sourceFile)
+        public Task ImportModuleAsync(
+            VbeImportSourceFile sourceFile,
+            CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (owner.ThrowOnImport)
             {
                 throw new InvalidOperationException("import failed");
@@ -1404,24 +1421,25 @@ internal sealed class FakeWorkbookBuildAutomation : IWorkbookBuildAutomation
             owner.ImportedSources.Add(sourceFile);
             owner.Events.Add($"import:{Path.GetFileName(sourceFile.SourcePath)}");
             owner.OnImport?.Invoke();
+            return Task.CompletedTask;
         }
 
-        public void ExportModule(string moduleName, string destinationPath)
-            => throw new NotSupportedException();
-
-        public VbeImportVerificationReport VerifyImportedModules()
+        public Task<VbeImportVerificationReport> VerifyAsync(
+            CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             owner.VerifyCalls++;
             if (owner.ThrowOnVerify)
             {
                 throw new InvalidOperationException("verification failed");
             }
 
-            return owner.VerificationReport;
+            return Task.FromResult(owner.VerificationReport);
         }
 
-        public void Save()
+        public Task SaveAsync(CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             owner.SaveCalls++;
             if (owner.ThrowOnSave)
             {
@@ -1429,10 +1447,13 @@ internal sealed class FakeWorkbookBuildAutomation : IWorkbookBuildAutomation
             }
 
             owner.Events.Add("save");
+            return Task.CompletedTask;
         }
 
-        public void Dispose()
+        private static Task<T> FromResult<T>(T result, CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(result);
         }
     }
 }

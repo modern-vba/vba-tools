@@ -18,7 +18,7 @@ public sealed class BuildCommand
     /// Creates the build command.
     /// </summary>
     /// <param name="outputCommand">The shared workbook output command implementation.</param>
-    public BuildCommand(
+    internal BuildCommand(
         WorkbookOutputCommand outputCommand,
         IFileSystemPathIdentityResolver pathIdentityResolver)
         : this(
@@ -44,7 +44,7 @@ public sealed class BuildCommand
     /// <param name="context">The resolved project and document context.</param>
     /// <returns>The command result describing the generated workbook or any user-facing failure.</returns>
     public CommandResult Run(ResolvedProjectContext context)
-        => outputCommand.Run(context, WorkbookOutputProfile.Build);
+        => outputCommand.RunBuild(context);
 
     /// <summary>
     /// Generates the document's bin workbook with cooperative invocation cancellation.
@@ -52,28 +52,7 @@ public sealed class BuildCommand
     public Task<CommandResult> RunAsync(
         ResolvedProjectContext context,
         CancellationToken cancellationToken)
-        => outputCommand.RunAsync(
-            context,
-            WorkbookOutputProfile.Build,
-            cancellationToken);
-
-    /// <summary>
-    /// Generates the document's bin workbook from an already planned immutable source list.
-    /// </summary>
-    internal CommandResult Run(
-        ResolvedProjectContext context,
-        IReadOnlyList<VbaSourceFile> sourceFiles)
-        => outputCommand.Run(context, WorkbookOutputProfile.Build, sourceFiles);
-
-    internal Task<CommandResult> RunAsync(
-        ResolvedProjectContext context,
-        IReadOnlyList<VbaSourceFile> sourceFiles,
-        CancellationToken cancellationToken)
-        => outputCommand.RunAsync(
-            context,
-            WorkbookOutputProfile.Build,
-            sourceFiles,
-            cancellationToken);
+        => outputCommand.RunBuildAsync(context, cancellationToken);
 
     /// <summary>
     /// Generates a caller-selected workbook from a complete caller-owned source snapshot.
@@ -83,23 +62,13 @@ public sealed class BuildCommand
         string sourceSnapshotPath,
         string outputPath,
         CancellationToken cancellationToken)
-    {
-        BuildSourceSnapshotValidatedPaths? validatedPaths = null;
-        BuildSourceSnapshotValidatedPaths ResolveValidatedPaths()
-            => validatedPaths ??= snapshotOutputSafetyValidator.Validate(
-                context,
-                sourceSnapshotPath,
-                outputPath);
-
-        return outputCommand.RunWithOwnedSourceAsync(
+        => outputCommand.RunSnapshotBuildAsync(
             context,
-            WorkbookOutputProfile.Build,
-            () => snapshotCaptureFactory.Create(
-                ResolveValidatedPaths().SourceSnapshotPath,
-                cancellationToken),
-            () => ResolveValidatedPaths().OutputPath,
+            sourceSnapshotPath,
+            outputPath,
+            snapshotCaptureFactory,
+            snapshotOutputSafetyValidator,
             cancellationToken);
-    }
 
     internal Task<CommandResult> RunCapturedSnapshotAsync(
         ResolvedProjectContext context,
@@ -108,15 +77,12 @@ public sealed class BuildCommand
         string outputPath,
         CancellationToken cancellationToken)
     {
-        var validatedPaths = snapshotOutputSafetyValidator.Validate(
+        return outputCommand.RunCapturedSnapshotBuildAsync(
             context,
             sourceSnapshotPath,
-            outputPath);
-        return outputCommand.RunWithOwnedSourceAsync(
-            context,
-            WorkbookOutputProfile.Build,
-            () => new AdmittedWorkbookGenerationSourceInput(admission),
-            () => validatedPaths.OutputPath,
+            admission,
+            outputPath,
+            snapshotOutputSafetyValidator,
             cancellationToken);
     }
 }

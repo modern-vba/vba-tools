@@ -19,7 +19,7 @@ public sealed class PublishSourceAdmissionTests
         var path = Path.Combine(context.DocumentSourceSetPath, "Module1.bas");
         var bytes = new UTF8Encoding(false, true).GetBytes("Attribute VB_Name = \"Module1\"\r\n' caf\u00e9\r\n");
         File.WriteAllBytes(path, bytes);
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
 
         var result = await CreateCommand(automation, 1252).RunAsync(context, CancellationToken.None);
 
@@ -60,7 +60,7 @@ public sealed class PublishSourceAdmissionTests
             reads.Add(path);
             return File.ReadAllBytes(path);
         });
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
 
         var result = await CreateCommand(automation, 1252, admission).RunAsync(context, CancellationToken.None);
 
@@ -82,7 +82,7 @@ public sealed class PublishSourceAdmissionTests
         context.Document.CommonModules.Add(new("Excluded", "Excluded.bas", Requested: true, TestOnly: true));
         var reads = 0;
         var admission = new VbaSourceAdmission(() => 932, readAllBytes: path => { reads++; return File.ReadAllBytes(path); });
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
 
         var result = await CreateCommand(automation, 932, admission).RunAsync(context, CancellationToken.None);
 
@@ -115,7 +115,7 @@ public sealed class PublishSourceAdmissionTests
             Assert.NotEqual(sidecar, sourcePath);
             return File.ReadAllBytes(sourcePath);
         });
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
 
         var result = await CreateCommand(automation, 1252, admission).RunAsync(context, CancellationToken.None);
 
@@ -142,7 +142,7 @@ public sealed class PublishSourceAdmissionTests
         lines.Add(marker);
         lines.Add("Option Explicit");
         File.WriteAllText(Path.Combine(context.DocumentSourceSetPath, "Module1.bas"), string.Join(newline, lines));
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
 
         var result = await CreateCommand(automation, 65001).RunAsync(context, CancellationToken.None);
 
@@ -163,7 +163,7 @@ public sealed class PublishSourceAdmissionTests
         File.WriteAllBytes(path, bytes);
         Directory.CreateDirectory(Path.GetDirectoryName(context.PublishDocumentPath)!);
         File.WriteAllText(context.PublishDocumentPath, "previous-output");
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
 
         var result = await CreateCommand(automation, activeCodePage).RunAsync(context, CancellationToken.None);
 
@@ -204,7 +204,7 @@ public sealed class PublishSourceAdmissionTests
                 Assert.True(reads.TryAdd(path, bytes), $"Repeated read: {path}");
                 return bytes;
             });
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         AdmittedVbaSourceSet? captured = null;
         string? mirrorPath = null;
         var mirrorFactory = new VbeImportSourceSetFactory(
@@ -262,7 +262,7 @@ public sealed class PublishSourceAdmissionTests
         File.WriteAllBytes(sourcePath, bytes);
         Directory.CreateDirectory(Path.GetDirectoryName(context.PublishDocumentPath)!);
         File.WriteAllText(context.PublishDocumentPath, "previous-output");
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         var mirrorObserved = false;
         var mirrorFactory = new VbeImportSourceSetFactory(
             () => throw new InvalidOperationException("ACP must come from Publish admission."),
@@ -336,7 +336,7 @@ public sealed class PublishSourceAdmissionTests
                 if (stage == "source" || (stage == "sidecar" && Path.GetExtension(path) == ".frx")) cancellation.Cancel();
                 return bytes;
             });
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
 
         var result = await CreateCommand(automation, 65001, admission).RunAsync(context, cancellation.Token);
 
@@ -378,14 +378,14 @@ public sealed class PublishSourceAdmissionTests
     }
 
     private static PublishCommand CreateCommand(
-        FakeWorkbookBuildAutomation automation,
+        FakeWorkbookGenerationAutomation automation,
         int activeCodePage,
         VbaSourceAdmission? admission = null,
         VbeImportSourceSetFactory? mirrorFactory = null)
         => new(new WorkbookOutputCommand(
-            admission is null ? new WorkbookSourcePlanner(() => activeCodePage) : new WorkbookSourcePlanner(admission),
-            new WorkbookGenerationPipeline(
-                new SynchronousWorkbookGenerationAutomation(automation),
+            new WorkbookMaterializer(
+                admission is null ? new WorkbookSourcePlanner(() => activeCodePage) : new WorkbookSourcePlanner(admission),
+                automation,
                 new WorkbookReferenceNormalizer(new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),
                 new WorkbookOutputTransactionFactory(),
                 mirrorFactory ?? new VbeImportSourceSetFactory(() => activeCodePage))));

@@ -28,14 +28,14 @@ public sealed class ExcelComWorkbookTestRunner : IWorkbookTestRunner
     private const int XlUp = -4162;
     private const string UnitTestEntryPoint = "UnitTestMain";
     private const string UnitTestSheetName = "UNIT_TEST_SHEET";
-    private readonly ExcelComWorkbookBuildAutomation automation;
+    private readonly ExcelComWorkbookGenerationAutomation automation;
 
     public ExcelComWorkbookTestRunner()
-        : this(new ExcelComWorkbookBuildAutomation())
+        : this(new ExcelComWorkbookGenerationAutomation())
     {
     }
 
-    internal ExcelComWorkbookTestRunner(ExcelComWorkbookBuildAutomation automation)
+    internal ExcelComWorkbookTestRunner(ExcelComWorkbookGenerationAutomation automation)
     {
         this.automation = automation;
     }

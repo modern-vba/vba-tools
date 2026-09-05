@@ -17,19 +17,17 @@ public sealed class ImportCommand
     /// <summary>
     /// Creates the import command.
     /// </summary>
-    /// <param name="workbookBuildAutomation">The workbook automation port used to modify the target workbook.</param>
-    public ImportCommand(IWorkbookBuildAutomation workbookBuildAutomation)
-        : this(workbookBuildAutomation, new VbeImportSourceSetFactory())
+    /// <param name="workbookGenerationAutomation">The workbook automation port used to modify the target workbook.</param>
+    public ImportCommand(IWorkbookGenerationAutomation workbookGenerationAutomation)
+        : this(workbookGenerationAutomation, new VbeImportSourceSetFactory())
     {
     }
 
     internal ImportCommand(
-        IWorkbookBuildAutomation workbookBuildAutomation,
+        IWorkbookGenerationAutomation workbookGenerationAutomation,
         VbeImportSourceSetFactory importSourceSetFactory)
     {
-        workbookGenerationAutomation = workbookBuildAutomation is IWorkbookGenerationAutomation nativeAutomation
-            ? nativeAutomation
-            : new SynchronousWorkbookGenerationAutomation(workbookBuildAutomation);
+        this.workbookGenerationAutomation = workbookGenerationAutomation;
         this.importSourceSetFactory = importSourceSetFactory;
     }
 

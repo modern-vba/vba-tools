@@ -2801,7 +2801,7 @@ public sealed class DoctorCommandTests
         var application = CommandLineTestFactory.Create(
             root,
             new FakeEnvironmentDiagnosticPort(),
-            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+            workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
             vbaProjectReferenceResolver: resolver);
 
         var result = application.Run(["doctor"]);
@@ -2870,13 +2870,13 @@ public sealed class DoctorCommandTests
         var manifest = ProjectManifest.CreateDefault("Project", "Book1", root, null);
         manifest.Documents["Book1"].References.Add(new VbaProjectReference("OLE Automation"));
         new JsonProjectManifestStore().Save(root, manifest);
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         automation.References.Add(new WorkbookReference("OLE Automation", IsRemovable: false, NamespaceName: "stdole"));
         var resolver = new FakeVbaProjectReferenceResolver();
         var application = CommandLineTestFactory.Create(
             root,
             new FakeEnvironmentDiagnosticPort(),
-            workbookBuildAutomation: automation,
+            workbookGenerationAutomation: automation,
             vbaProjectReferenceResolver: resolver);
 
         var result = application.Run(["doctor"]);
@@ -2909,7 +2909,7 @@ public sealed class DoctorCommandTests
             ToolingCompositionRoot.CreateApplicationComposition(
                 root,
                 environmentDiagnosticPort: new FakeEnvironmentDiagnosticPort(),
-                workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+                workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
                 vbaProjectReferenceResolver: new FakeVbaProjectReferenceResolver(
                     resolvedIdentity,
                     new ResolvedVbaProjectReference(
@@ -2954,7 +2954,7 @@ public sealed class DoctorCommandTests
         var application = CommandLineTestFactory.Create(
             root,
             new FakeEnvironmentDiagnosticPort(),
-            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+            workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
             vbaProjectReferenceResolver: resolver);
 
         var result = application.Run(["doctor"]);
@@ -3015,7 +3015,7 @@ public sealed class DoctorCommandTests
         var application = CommandLineTestFactory.Create(
             root,
             new FakeEnvironmentDiagnosticPort(),
-            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+            workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
             vbaProjectReferenceResolver: resolver);
 
         var result = application.Run(["doctor"]);
@@ -3042,7 +3042,7 @@ public sealed class DoctorCommandTests
         var application = CommandLineTestFactory.Create(
             root,
             new FakeEnvironmentDiagnosticPort(),
-            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+            workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
             vbaProjectReferenceResolver: resolver);
 
         var result = application.Run(["doctor"]);

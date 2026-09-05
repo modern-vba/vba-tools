@@ -7,7 +7,7 @@ using Xunit;
 
 namespace VbaDev.Tests;
 
-public sealed class WorkbookGenerationPipelineTests
+public sealed class WorkbookMaterializerTests
 {
     [Fact]
     public async Task GenerationUsesOneOwnedSessionAndCommitsOnlyAfterCleanupIsProved()
@@ -58,6 +58,9 @@ public sealed class WorkbookGenerationPipelineTests
                 "get-modules",
                 "get-references",
                 "verify",
+                "get-project-name",
+                "get-modules",
+                "get-references",
                 "save",
                 "cleanup-proved"
             ],
@@ -142,6 +145,9 @@ public sealed class WorkbookGenerationPipelineTests
                 "get-modules",
                 "get-references",
                 "verify",
+                "get-project-name",
+                "get-modules",
+                "get-references",
                 "save"
             ],
             events);
@@ -231,7 +237,7 @@ public sealed class WorkbookGenerationPipelineTests
             }
         };
         var probe = new RecordingBuildAmbiguityProbe(resolvedIdentity);
-        var pipeline = new WorkbookGenerationPipeline(
+        var pipeline = new WorkbookMaterializer(
             automation,
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(
@@ -318,6 +324,8 @@ public sealed class WorkbookGenerationPipelineTests
             cancellation.Token);
 
         Assert.Empty(result.Warnings);
+        Assert.Equal(Path.GetFullPath(targetPath), result.CommittedArtifactPath);
+        Assert.Equal(0, result.ImportedSourceCount);
         Assert.True(cancellation.IsCancellationRequested);
         Assert.Equal("new-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
     }
@@ -1047,7 +1055,7 @@ public sealed class WorkbookGenerationPipelineTests
                     NamespaceName: "AdoptedNamespace")
             ]
         };
-        var pipeline = new WorkbookGenerationPipeline(
+        var pipeline = new WorkbookMaterializer(
             automation,
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(
@@ -1166,7 +1174,7 @@ public sealed class WorkbookGenerationPipelineTests
         }
     }
 
-    private static WorkbookGenerationPipeline CreatePipeline(
+    private static WorkbookMaterializer CreatePipeline(
         IWorkbookGenerationAutomation automation,
         IWorkbookOutputTransactionFactory? transactionFactory = null,
         VbeImportSourceSetFactory? importSourceSetFactory = null)

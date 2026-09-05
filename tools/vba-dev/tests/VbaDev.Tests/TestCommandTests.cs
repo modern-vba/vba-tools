@@ -462,10 +462,10 @@ public sealed class TestCommandTests
         Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
         File.WriteAllText(binPath, "bin", Encoding.UTF8);
         var runner = new FakeWorkbookTestRunner(new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
-        var buildAutomation = new FakeWorkbookBuildAutomation();
+        var buildAutomation = new FakeWorkbookGenerationAutomation();
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: buildAutomation,
+            workbookGenerationAutomation: buildAutomation,
             workbookTestRunner: runner);
 
         var result = application.Run(["test", "--no-build", "--format", "text"]);
@@ -506,10 +506,10 @@ public sealed class TestCommandTests
         new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
         CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
         var runner = new FakeWorkbookTestRunner(new WorkbookTestResultRow("Test_Foo", "Test_Bar", "OK", ""));
-        var buildAutomation = new FakeWorkbookBuildAutomation();
+        var buildAutomation = new FakeWorkbookGenerationAutomation();
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: buildAutomation,
+            workbookGenerationAutomation: buildAutomation,
             workbookTestRunner: runner);
 
         var result = application.Run(["test", "--module", "Test_Foo", "--format", "text"]);
@@ -686,10 +686,10 @@ public sealed class TestCommandTests
         new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
         CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
         var runner = new FakeWorkbookTestRunner(new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
-        var buildAutomation = new FakeWorkbookBuildAutomation();
+        var buildAutomation = new FakeWorkbookGenerationAutomation();
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: buildAutomation,
+            workbookGenerationAutomation: buildAutomation,
             workbookTestRunner: runner);
 
         var result = application.Run(["test", "--format", "text"]);
@@ -716,10 +716,10 @@ public sealed class TestCommandTests
             ("Local.bas", "Attribute VB_Name = \"Local\""));
         var runner = new FakeWorkbookTestRunner(
             new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
-        var buildAutomation = new FakeWorkbookBuildAutomation();
+        var buildAutomation = new FakeWorkbookGenerationAutomation();
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: buildAutomation,
+            workbookGenerationAutomation: buildAutomation,
             workbookTestRunner: runner);
 
         var exactResult = application.Run(["test", "--format", format]);
@@ -759,10 +759,10 @@ public sealed class TestCommandTests
                 "Test_Fails",
                 "NG",
                 "Expected 1 but was 2"));
-        var buildAutomation = new FakeWorkbookBuildAutomation();
+        var buildAutomation = new FakeWorkbookGenerationAutomation();
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: buildAutomation,
+            workbookGenerationAutomation: buildAutomation,
             workbookTestRunner: runner);
 
         var exactResult = application.Run(["test", "--format", "ndjson"]);
@@ -801,10 +801,10 @@ public sealed class TestCommandTests
         Directory.CreateDirectory(Path.GetDirectoryName(binPath)!);
         File.WriteAllText(binPath, "previous-bin", Encoding.UTF8);
         var runner = new FakeWorkbookTestRunner();
-        var buildAutomation = new FakeWorkbookBuildAutomation();
+        var buildAutomation = new FakeWorkbookGenerationAutomation();
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: buildAutomation,
+            workbookGenerationAutomation: buildAutomation,
             workbookTestRunner: runner);
 
         var result = application.Run(["test", "--format", "text"]);
@@ -845,12 +845,12 @@ public sealed class TestCommandTests
         var snapshotBytes = Encoding.UTF8.GetBytes(
             "Attribute VB_Name = \"Test_Module\"\nPublic Sub Test_Passes()\nEnd Sub\n");
         File.WriteAllBytes(snapshotSourcePath, snapshotBytes);
-        var buildAutomation = new FakeWorkbookBuildAutomation();
+        var buildAutomation = new FakeWorkbookGenerationAutomation();
         var runner = new FakeWorkbookTestRunner(
             new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: buildAutomation,
+            workbookGenerationAutomation: buildAutomation,
             workbookTestRunner: runner);
 
         var result = application.Run(
@@ -907,11 +907,11 @@ public sealed class TestCommandTests
             "Attribute VB_Name = \"collisionname\"\r\n");
         File.WriteAllBytes(firstSourcePath, firstSourceBytes);
         File.WriteAllBytes(secondSourcePath, secondSourceBytes);
-        var buildAutomation = new FakeWorkbookBuildAutomation();
+        var buildAutomation = new FakeWorkbookGenerationAutomation();
         var runner = new FakeWorkbookTestRunner();
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: buildAutomation,
+            workbookGenerationAutomation: buildAutomation,
             workbookTestRunner: runner);
 
         var result = application.Run(
@@ -944,11 +944,11 @@ public sealed class TestCommandTests
             root,
             ProjectManifest.CreateDefault("Project", "Book1", root, null));
         var snapshotPath = temp.CreateDirectory("caller-snapshot");
-        var buildAutomation = new FakeWorkbookBuildAutomation();
+        var buildAutomation = new FakeWorkbookGenerationAutomation();
         var runner = new FakeWorkbookTestRunner();
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: buildAutomation,
+            workbookGenerationAutomation: buildAutomation,
             workbookTestRunner: runner);
 
         var result = application.Run(
@@ -979,11 +979,11 @@ public sealed class TestCommandTests
         var templatePath = Path.Combine(root, "src", "Book1", "Book1.xlsm");
         Directory.CreateDirectory(Path.GetDirectoryName(templatePath)!);
         File.WriteAllText(templatePath, "snapshot-test-template", Encoding.UTF8);
-        var buildAutomation = new FakeWorkbookBuildAutomation();
+        var buildAutomation = new FakeWorkbookGenerationAutomation();
         var runner = new FakeWorkbookTestRunner();
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: buildAutomation,
+            workbookGenerationAutomation: buildAutomation,
             workbookTestRunner: runner);
 
         var result = application.Run(
@@ -1048,7 +1048,7 @@ public sealed class TestCommandTests
         var runner = new FakeWorkbookTestRunner();
         var composition = ToolingCompositionRoot.CreateApplicationComposition(
             root,
-            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+            workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
             workbookTestRunner: runner);
         var testCommand = new TestCommand(
             composition.BuildCommand,
@@ -1103,7 +1103,7 @@ public sealed class TestCommandTests
             Encoding.UTF8);
         var runner = new FakeWorkbookTestRunner(
             new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
-        var buildAutomation = new FakeWorkbookBuildAutomation
+        var buildAutomation = new FakeWorkbookGenerationAutomation
         {
             OnImport = () => File.WriteAllText(
                 snapshotSourcePath,
@@ -1112,7 +1112,7 @@ public sealed class TestCommandTests
         };
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: buildAutomation,
+            workbookGenerationAutomation: buildAutomation,
             workbookTestRunner: runner);
 
         var result = application.Run(
@@ -1172,7 +1172,7 @@ public sealed class TestCommandTests
             new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+            workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
             workbookTestRunner: runner);
 
         var result = application.Run(
@@ -1214,7 +1214,7 @@ public sealed class TestCommandTests
             new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
         var application = CommandLineTestFactory.Create(
             root,
-            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+            workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
             workbookTestRunner: runner);
 
         var result = application.Run(
@@ -1266,7 +1266,7 @@ public sealed class TestCommandTests
                 workbookOutcome == "OK" ? "" : "synthetic assertion failure"));
         var composition = ToolingCompositionRoot.CreateApplicationComposition(
             root,
-            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+            workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
             workbookTestRunner: runner);
         var fileSystem = new AlwaysFailingSnapshotWorkspaceFileSystem();
         var testCommand = new TestCommand(
@@ -1320,7 +1320,7 @@ public sealed class TestCommandTests
         var runner = new FakeWorkbookTestRunner();
         var composition = ToolingCompositionRoot.CreateApplicationComposition(
             root,
-            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+            workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
             workbookTestRunner: runner);
         var fileSystem = new AlwaysFailingSnapshotWorkspaceFileSystem();
         var testCommand = new TestCommand(
@@ -1376,7 +1376,7 @@ public sealed class TestCommandTests
         var runner = new FakeWorkbookTestRunner();
         var composition = ToolingCompositionRoot.CreateApplicationComposition(
             root,
-            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+            workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
             workbookTestRunner: runner);
         var testCommand = new TestCommand(
             composition.BuildCommand,
@@ -1431,7 +1431,7 @@ public sealed class TestCommandTests
         var captureFactory = new PathReportingFailingSnapshotSourceCaptureFactory();
         var composition = ToolingCompositionRoot.CreateApplicationComposition(
             root,
-            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+            workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
             workbookTestRunner: runner);
         var testCommand = new TestCommand(
             composition.BuildCommand,
@@ -1494,7 +1494,7 @@ public sealed class TestCommandTests
             new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
         var composition = ToolingCompositionRoot.CreateApplicationComposition(
             root,
-            workbookBuildAutomation: new CleanupFailingWorkbookGenerationAutomation(),
+            workbookGenerationAutomation: new CleanupFailingWorkbookGenerationAutomation(),
             workbookTestRunner: runner);
         var testCommand = new TestCommand(
             composition.BuildCommand,
@@ -1541,7 +1541,7 @@ public sealed class TestCommandTests
         var runner = new FakeWorkbookTestRunner();
         var composition = ToolingCompositionRoot.CreateApplicationComposition(
             root,
-            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+            workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
             workbookTestRunner: runner);
         var testCommand = new TestCommand(
             composition.BuildCommand,
@@ -1595,7 +1595,7 @@ public sealed class TestCommandTests
             Guid.NewGuid().ToString("N"));
         var composition = ToolingCompositionRoot.CreateApplicationComposition(
             root,
-            workbookBuildAutomation: new PathReportingFailingWorkbookBuildAutomation(
+            workbookGenerationAutomation: new PathReportingFailingWorkbookGenerationAutomation(
                 privateVbePath),
             workbookTestRunner: runner);
         var testCommand = new TestCommand(
@@ -1654,7 +1654,7 @@ public sealed class TestCommandTests
         };
         var composition = ToolingCompositionRoot.CreateApplicationComposition(
             root,
-            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+            workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
             workbookTestRunner: runner);
         var testCommand = new TestCommand(
             composition.BuildCommand,
@@ -1705,7 +1705,7 @@ public sealed class TestCommandTests
         };
         var composition = ToolingCompositionRoot.CreateApplicationComposition(
             root,
-            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+            workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
             workbookTestRunner: runner);
         var testCommand = new TestCommand(
             composition.BuildCommand,
@@ -1754,7 +1754,7 @@ public sealed class TestCommandTests
         };
         var composition = ToolingCompositionRoot.CreateApplicationComposition(
             root,
-            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+            workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
             workbookTestRunner: runner);
         var testCommand = new TestCommand(
             composition.BuildCommand,
@@ -1798,7 +1798,7 @@ public sealed class TestCommandTests
         var runner = new PathReportingFailingWorkbookTestRunner();
         var composition = ToolingCompositionRoot.CreateApplicationComposition(
             root,
-            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+            workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
             workbookTestRunner: runner);
         var testCommand = new TestCommand(
             composition.BuildCommand,
@@ -1849,7 +1849,7 @@ public sealed class TestCommandTests
         var runner = new PathMessageWorkbookTestRunner();
         var composition = ToolingCompositionRoot.CreateApplicationComposition(
             root,
-            workbookBuildAutomation: new FakeWorkbookBuildAutomation(),
+            workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
             workbookTestRunner: runner);
         var testCommand = new TestCommand(
             composition.BuildCommand,
@@ -2243,12 +2243,8 @@ internal sealed class PathReportingFailingSnapshotSourceCaptureFactory
 }
 
 internal sealed class CleanupFailingWorkbookGenerationAutomation :
-    IWorkbookBuildAutomation,
     IWorkbookGenerationAutomation
 {
-    public IWorkbookBuildSession OpenWorkbook(string workbookPath)
-        => throw new InvalidOperationException("The native generation path must be used.");
-
     public Task<TResult> RunAsync<TResult>(
         string workbookPath,
         WorkbookAutomationTimeouts timeouts,
@@ -2258,15 +2254,19 @@ internal sealed class CleanupFailingWorkbookGenerationAutomation :
             "The owned Excel process could not be verified as released."));
 }
 
-internal sealed class PathReportingFailingWorkbookBuildAutomation(string privateVbePath)
-    : IWorkbookBuildAutomation
+internal sealed class PathReportingFailingWorkbookGenerationAutomation(string privateVbePath)
+    : IWorkbookGenerationAutomation
 {
-    public IWorkbookBuildSession OpenWorkbook(string workbookPath)
+    public Task<TResult> RunAsync<TResult>(
+        string workbookPath,
+        WorkbookAutomationTimeouts timeouts,
+        Func<IWorkbookGenerationSession, CancellationToken, Task<TResult>> operation,
+        CancellationToken cancellationToken)
     {
         var workbookUri = new Uri(workbookPath).AbsoluteUri;
         var privateVbeUri = new Uri(privateVbePath).AbsoluteUri;
-        throw new InvalidOperationException(
+        return Task.FromException<TResult>(new InvalidOperationException(
             $"synthetic workbook automation failure for '{workbookPath}' ({workbookUri}) "
-            + $"after staging '{privateVbePath}' ({privateVbeUri}).");
+            + $"after staging '{privateVbePath}' ({privateVbeUri})."));
     }
 }

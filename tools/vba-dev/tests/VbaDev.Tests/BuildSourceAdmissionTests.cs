@@ -23,7 +23,7 @@ public sealed class BuildSourceAdmissionTests
         var originalBytes = new UTF8Encoding(false, true).GetBytes(
             "Attribute VB_Name = \"Module1\"\r\n' caf\u00e9\r\n");
         File.WriteAllBytes(sourcePath, originalBytes);
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         var command = new BuildCommand(
             CreateOutputCommand(automation, 1252),
             new BuildSourceSnapshotCaptureFactory(
@@ -51,7 +51,7 @@ public sealed class BuildSourceAdmissionTests
         const string utf8Text = "Attribute VB_Name = \"Module1\"\r\n' caf\u00e9\r\n";
         var originalBytes = new UTF8Encoding(false, true).GetBytes(utf8Text);
         File.WriteAllBytes(sourcePath, originalBytes);
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         var command = CreateCommand(automation, 1252);
 
         var result = await command.RunAsync(context, CancellationToken.None);
@@ -69,7 +69,7 @@ public sealed class BuildSourceAdmissionTests
     {
         using var temp = TempDirectory.Create();
         var context = CreateContext(temp.Path);
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
 
         var result = await CreateCommand(automation, 65001).RunAsync(context, CancellationToken.None);
 
@@ -116,7 +116,7 @@ public sealed class BuildSourceAdmissionTests
                 Assert.True(reads.TryAdd(path, bytes), $"Source was read again: {path}");
                 return bytes;
             });
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         AdmittedVbaSourceSet? captured = null;
         var mirrorFactory = new VbeImportSourceSetFactory(
             () => throw new InvalidOperationException("Mirror requested ACP again."),
@@ -176,7 +176,7 @@ public sealed class BuildSourceAdmissionTests
             cancellation.Cancel();
             return bytes;
         });
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
 
         var result = await CreateCommand(automation, 1252, new WorkbookSourcePlanner(admission))
             .RunAsync(context, cancellation.Token);
@@ -202,7 +202,7 @@ public sealed class BuildSourceAdmissionTests
         File.WriteAllBytes(sourcePath, bytes);
         Directory.CreateDirectory(Path.GetDirectoryName(context.BinDocumentPath)!);
         File.WriteAllText(context.BinDocumentPath, "previous-output");
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         var mirrorObserved = false;
         var mirrorFactory = new VbeImportSourceSetFactory(() => activeCodePage, mirror =>
         {
@@ -252,7 +252,7 @@ public sealed class BuildSourceAdmissionTests
         const string text = "Attribute VB_Name = \"Module1\"\r\n' caf\u00e9\r\n";
         var bytes = new UTF8Encoding(false, true).GetBytes(text);
         File.WriteAllBytes(sourcePath, bytes);
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         var mirrorFactory = new VbeImportSourceSetFactory(() => 1252);
         var outputCommand = CreateOutputCommand(automation, 1252, mirrorFactory: mirrorFactory);
         var build = new BuildCommand(outputCommand, new FileSystemPathIdentityResolver());
@@ -305,7 +305,7 @@ public sealed class BuildSourceAdmissionTests
         var admission = new VbaSourceAdmission(
             () => { acpCalls++; return activeCodePage; },
             readAllBytes: path => { readCalls++; Assert.Equal(sourcePath, path); return File.ReadAllBytes(path); });
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         var mirrorObserved = false;
         var mirrorFactory = new VbeImportSourceSetFactory(
             () => throw new InvalidOperationException("Mirror requested ACP again."),
@@ -375,7 +375,7 @@ public sealed class BuildSourceAdmissionTests
         File.WriteAllText(context.BinDocumentPath, "previous-output");
         var acpCalls = 0;
         var admission = new VbaSourceAdmission(() => { acpCalls++; return 1252; });
-        var automation = new FakeWorkbookBuildAutomation();
+        var automation = new FakeWorkbookGenerationAutomation();
         var runner = new FakeWorkbookTestRunner();
         var test = new TestCommand(
             CreateCommand(automation, 1252, new WorkbookSourcePlanner(admission)),
@@ -412,7 +412,7 @@ public sealed class BuildSourceAdmissionTests
         var admission = new VbaSourceAdmission(
             () => { acpCalls++; return 1252; },
             readAllBytes: path => { readCalls++; return File.ReadAllBytes(path); });
-        var automation = new FakeWorkbookBuildAutomation
+        var automation = new FakeWorkbookGenerationAutomation
         {
             OnImport = () =>
             {
@@ -477,21 +477,21 @@ public sealed class BuildSourceAdmissionTests
     }
 
     private static BuildCommand CreateCommand(
-        FakeWorkbookBuildAutomation automation,
+        FakeWorkbookGenerationAutomation automation,
         int activeCodePage,
         WorkbookSourcePlanner? planner = null,
         VbeImportSourceSetFactory? mirrorFactory = null)
         => new(CreateOutputCommand(automation, activeCodePage, planner, mirrorFactory), new FileSystemPathIdentityResolver());
 
     private static WorkbookOutputCommand CreateOutputCommand(
-        FakeWorkbookBuildAutomation automation,
+        FakeWorkbookGenerationAutomation automation,
         int activeCodePage,
         WorkbookSourcePlanner? planner = null,
         VbeImportSourceSetFactory? mirrorFactory = null)
         => new(
-            planner ?? new WorkbookSourcePlanner(() => activeCodePage),
-            new WorkbookGenerationPipeline(
-                new SynchronousWorkbookGenerationAutomation(automation),
+            new WorkbookMaterializer(
+                planner ?? new WorkbookSourcePlanner(() => activeCodePage),
+                automation,
                 new WorkbookReferenceNormalizer(new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),
                 new WorkbookOutputTransactionFactory(),
                 mirrorFactory ?? new VbeImportSourceSetFactory(() => activeCodePage)));
