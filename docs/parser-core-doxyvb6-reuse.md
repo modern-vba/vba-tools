@@ -41,10 +41,11 @@ non-command library or invoke its public command process contract, without a
 reverse reference from VbaDev. `npm run verify:architecture` checks these
 project, assembly, linked-source, and product-contract import boundaries.
 
-The internal `MsOvbaCompression` helper is carried mechanically during the
-project move only. It is not part of the public syntax interface. Issue #362
-owns its final private placement with the neutral workbook metadata reader;
-this move does not add metadata parsing to the reusable syntax contract.
+MS-OVBA decompression is private to `VbaTools.ProjectMetadata`, the neutral
+workbook package metadata reader introduced by ADR 0040. It is not part of
+the syntax module or any public decompression interface. Package consumers
+use the metadata reader's immutable facts and failure kinds; the reusable
+syntax contract does not include workbook metadata parsing.
 
 The reusable incremental Interface is
 `VbaSyntaxTree.ParseOrUpdate(uri, source, previousSyntaxTree)`. It returns a
@@ -115,4 +116,5 @@ consume outside VbaLanguageServer.
 - PRD: `docs/prd/full-vba-syntax-tree.md`
 - ADR 0010: `docs/adr/0010-use-hand-written-reusable-csharp-vba-parser-core.md`
 - ADR 0039: `docs/adr/0039-keep-vba-dev-independent-of-product-owned-modules.md`
+- ADR 0040: `docs/adr/0040-share-strict-vba-project-package-metadata.md`
 - ADR 0009: `docs/adr/0009-csharp-vba-language-server-architecture.md`

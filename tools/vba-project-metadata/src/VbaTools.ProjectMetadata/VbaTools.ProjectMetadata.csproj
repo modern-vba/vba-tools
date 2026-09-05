@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="OpenMcdf" Version="3.1.4" />
+    <ProjectReference Include="..\..\..\vba-syntax\src\VbaTools.Syntax\VbaTools.Syntax.csproj" />
+  </ItemGroup>
+
+</Project>

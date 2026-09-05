@@ -98,17 +98,6 @@
           "xunit.extensibility.core": "[2.9.3]"
         }
       },
-      "vba-debug-adapter": {
-        "type": "Project",
-        "dependencies": {
-          "VbaTools.ContentLengthFraming": "[1.0.0, )",
-          "VbaTools.ProjectMetadata": "[1.0.0, )",
-          "VbaTools.Syntax": "[1.0.0, )"
-        }
-      },
-      "vbatools.contentlengthframing": {
-        "type": "Project"
-      },
       "vbatools.projectmetadata": {
         "type": "Project",
         "dependencies": {
