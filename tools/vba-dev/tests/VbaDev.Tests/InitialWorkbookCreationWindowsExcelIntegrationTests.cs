@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Xml.Linq;
@@ -17,7 +18,7 @@ public sealed class InitialWorkbookCreationWindowsExcelIntegrationTests
     public async Task RealExcelReturnsTheInvocationsCreateOnlyReceiptForProjectRollback()
     {
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var workbookPath = Path.Combine(temp.Path, "OwnedSample.xlsm");
         var initialProcesses = CaptureExcelProcessIds();

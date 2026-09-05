@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using VbaDev.App.Projects;
 using VbaDev.Domain;
 
@@ -134,7 +135,8 @@ public sealed class ProjectManifestAtomicWriter : IProjectManifestAtomicWriter
             _ = DocumentSourceSetIsolationValidator.ResolveAndValidate(
                 manifest,
                 manifestPath,
-                ProjectManifest.ManifestFileName);
+                ProjectManifest.ManifestFileName,
+                new FileSystemPathIdentityResolver());
             return ProjectManifestCanonicalSerializer.SerializeToUtf16LeBytes(manifest);
         }
         catch (VbaProjectManifestException ex)

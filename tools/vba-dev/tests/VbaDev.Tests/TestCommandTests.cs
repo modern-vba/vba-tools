@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using System.Text;
 using System.Text.Json;
 using System.Runtime.InteropServices;
@@ -1052,7 +1053,7 @@ public sealed class TestCommandTests
             runner,
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(scratchRoot));
+            new SnapshotTestExecutionWorkspaceFactory(new FileSystemPathIdentityResolver(), scratchRoot));
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -1272,6 +1273,7 @@ public sealed class TestCommandTests
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
             new SnapshotTestExecutionWorkspaceFactory(
+                new FileSystemPathIdentityResolver(),
                 temp.CreateDirectory("snapshot-test-scratch"),
                 fileSystem,
                 cleanupAttempts: 3,
@@ -1325,6 +1327,7 @@ public sealed class TestCommandTests
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
             new SnapshotTestExecutionWorkspaceFactory(
+                new FileSystemPathIdentityResolver(),
                 scratchRoot,
                 fileSystem,
                 cleanupAttempts: 3,
@@ -1379,6 +1382,7 @@ public sealed class TestCommandTests
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
             new SnapshotTestExecutionWorkspaceFactory(
+                new FileSystemPathIdentityResolver(),
                 scratchRoot,
                 new SnapshotTestWorkspaceFileSystem(),
                 cleanupAttempts: 3,
@@ -1433,6 +1437,7 @@ public sealed class TestCommandTests
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
             new SnapshotTestExecutionWorkspaceFactory(
+                new FileSystemPathIdentityResolver(),
                 scratchRoot,
                 new SnapshotTestWorkspaceFileSystem(),
                 cleanupAttempts: 3,
@@ -1494,7 +1499,7 @@ public sealed class TestCommandTests
             runner,
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(scratchRoot));
+            new SnapshotTestExecutionWorkspaceFactory(new FileSystemPathIdentityResolver(), scratchRoot));
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -1541,7 +1546,7 @@ public sealed class TestCommandTests
             runner,
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(scratchRoot));
+            new SnapshotTestExecutionWorkspaceFactory(new FileSystemPathIdentityResolver(), scratchRoot));
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -1596,7 +1601,7 @@ public sealed class TestCommandTests
             runner,
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(scratchRoot));
+            new SnapshotTestExecutionWorkspaceFactory(new FileSystemPathIdentityResolver(), scratchRoot));
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -1654,7 +1659,7 @@ public sealed class TestCommandTests
             runner,
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(scratchRoot));
+            new SnapshotTestExecutionWorkspaceFactory(new FileSystemPathIdentityResolver(), scratchRoot));
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -1705,7 +1710,7 @@ public sealed class TestCommandTests
             runner,
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(scratchRoot));
+            new SnapshotTestExecutionWorkspaceFactory(new FileSystemPathIdentityResolver(), scratchRoot));
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -1754,7 +1759,7 @@ public sealed class TestCommandTests
             runner,
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(scratchRoot));
+            new SnapshotTestExecutionWorkspaceFactory(new FileSystemPathIdentityResolver(), scratchRoot));
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -1798,7 +1803,7 @@ public sealed class TestCommandTests
             runner,
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(scratchRoot));
+            new SnapshotTestExecutionWorkspaceFactory(new FileSystemPathIdentityResolver(), scratchRoot));
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -1849,7 +1854,7 @@ public sealed class TestCommandTests
             runner,
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(scratchRoot));
+            new SnapshotTestExecutionWorkspaceFactory(new FileSystemPathIdentityResolver(), scratchRoot));
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(

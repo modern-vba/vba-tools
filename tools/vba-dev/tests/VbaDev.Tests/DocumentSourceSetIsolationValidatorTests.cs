@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using System.Diagnostics;
 using VbaDev.Domain;
 using Xunit;
@@ -20,7 +21,8 @@ public sealed class DocumentSourceSetIsolationValidatorTests
             DocumentSourceSetIsolationValidator.ResolveAndValidate(
                 manifest,
                 manifestPath,
-                ProjectManifest.ManifestFileName));
+                ProjectManifest.ManifestFileName,
+                new FileSystemPathIdentityResolver()));
 
         Assert.Equal(
             "Project manifest document source roots overlap: document 'Book1' sourcePath 'src/Shared' conflicts with document 'Book2' sourcePath 'src/Shared': vba-project.json",
@@ -45,7 +47,8 @@ public sealed class DocumentSourceSetIsolationValidatorTests
             DocumentSourceSetIsolationValidator.ResolveAndValidate(
                 manifest,
                 Path.Combine(root, ProjectManifest.ManifestFileName),
-                ProjectManifest.ManifestFileName));
+                ProjectManifest.ManifestFileName,
+                new FileSystemPathIdentityResolver()));
 
         Assert.Contains("document 'Book1' sourcePath '../SharedSource'", error.Message, StringComparison.Ordinal);
         Assert.Contains("document 'Book2' sourcePath 'src/Alias'", error.Message, StringComparison.Ordinal);
@@ -75,7 +78,8 @@ public sealed class DocumentSourceSetIsolationValidatorTests
             DocumentSourceSetIsolationValidator.ResolveAndValidate(
                 manifest,
                 Path.Combine(root, ProjectManifest.ManifestFileName),
-                ProjectManifest.ManifestFileName));
+                ProjectManifest.ManifestFileName,
+                new FileSystemPathIdentityResolver()));
 
         Assert.Contains("document 'Book1' sourcePath '../SharedSource'", error.Message, StringComparison.Ordinal);
         Assert.Contains("document 'Book2' sourcePath 'src/JunctionAlias'", error.Message, StringComparison.Ordinal);
@@ -101,7 +105,8 @@ public sealed class DocumentSourceSetIsolationValidatorTests
             DocumentSourceSetIsolationValidator.ResolveAndValidate(
                 manifest,
                 Path.Combine(root, ProjectManifest.ManifestFileName),
-                ProjectManifest.ManifestFileName));
+                ProjectManifest.ManifestFileName,
+                new FileSystemPathIdentityResolver()));
 
         Assert.Contains("sourcePath 'src/CaseRoot'", error.Message, StringComparison.Ordinal);
         Assert.Contains("sourcePath 'SRC/caseroot'", error.Message, StringComparison.Ordinal);
@@ -142,7 +147,8 @@ public sealed class DocumentSourceSetIsolationValidatorTests
         var identities = DocumentSourceSetIsolationValidator.ResolveAndValidate(
             manifest,
             Path.Combine(root, ProjectManifest.ManifestFileName),
-            ProjectManifest.ManifestFileName);
+            ProjectManifest.ManifestFileName,
+            new FileSystemPathIdentityResolver());
 
         Assert.Equal(2, identities.Count);
         Assert.False(FileSystemPathIdentityRelations.RootsOverlap(

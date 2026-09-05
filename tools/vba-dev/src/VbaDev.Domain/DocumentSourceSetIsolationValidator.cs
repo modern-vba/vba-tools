@@ -6,23 +6,6 @@ namespace VbaDev.Domain;
 public static class DocumentSourceSetIsolationValidator
 {
     /// <summary>
-    /// Resolves source roots and rejects source sets that identify the same filesystem root.
-    /// </summary>
-    /// <param name="manifest">The structurally valid project manifest.</param>
-    /// <param name="manifestPath">The absolute or relative manifest path.</param>
-    /// <param name="manifestName">The display name retained in diagnostics.</param>
-    /// <returns>Filesystem identities keyed by the original document names.</returns>
-    public static IReadOnlyDictionary<string, FileSystemPathIdentity> ResolveAndValidate(
-        ProjectManifest manifest,
-        string manifestPath,
-        string manifestName)
-        => ResolveAndValidate(
-            manifest,
-            manifestPath,
-            manifestName,
-            new FileSystemPathIdentityResolver());
-
-    /// <summary>
     /// Resolves source roots with an explicit filesystem identity boundary.
     /// </summary>
     /// <param name="manifest">The structurally valid project manifest.</param>

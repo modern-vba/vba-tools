@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using System.Runtime.InteropServices;
 using System.Text;
 using VbaDev.App.FileSystem;
@@ -266,7 +267,7 @@ public sealed class InitialWorkbookArtifactGuardTests
         File.WriteAllBytes(stagingPath, bytes);
         var guard = new InitialWorkbookArtifactGuard();
         var stagingEvidence = CaptureSavedStaging(guard, savedStaging.Artifact);
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
 
         var artifact = guard.MaterializeCreateOnly(
             savedStaging.Artifact,
@@ -302,7 +303,7 @@ public sealed class InitialWorkbookArtifactGuardTests
         var observer = new RenameAfterDestinationProofObserver(movedPath);
         var guard = new InitialWorkbookArtifactGuard(observer);
         var stagingEvidence = CaptureSavedStaging(guard, savedStaging.Artifact);
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
 
         var artifact = guard.MaterializeCreateOnly(
             savedStaging.Artifact,
@@ -336,7 +337,7 @@ public sealed class InitialWorkbookArtifactGuardTests
         File.WriteAllBytes(workbookPath, foreignBytes);
         var guard = new InitialWorkbookArtifactGuard();
         var stagingEvidence = CaptureSavedStaging(guard, savedStaging.Artifact);
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
 
         var error = Assert.Throws<InitialWorkbookArtifactRetainedException>(() =>
             guard.MaterializeCreateOnly(
@@ -367,7 +368,7 @@ public sealed class InitialWorkbookArtifactGuardTests
         var guard = new InitialWorkbookArtifactGuard(
             new ThrowAfterFirstCopyObserver());
         var stagingEvidence = CaptureSavedStaging(guard, savedStaging.Artifact);
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
 
         var error = Assert.Throws<InvalidOperationException>(() =>
             guard.MaterializeCreateOnly(
@@ -398,7 +399,7 @@ public sealed class InitialWorkbookArtifactGuardTests
         var guard = new InitialWorkbookArtifactGuard(
             new CancelOnDestinationCreateObserver(cancellation));
         var stagingEvidence = CaptureSavedStaging(guard, savedStaging.Artifact);
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
 
         Assert.ThrowsAny<OperationCanceledException>(() =>
             guard.MaterializeCreateOnly(
@@ -428,7 +429,7 @@ public sealed class InitialWorkbookArtifactGuardTests
         var observer = new RenameDestinationObserver(movedOwnedPath);
         var guard = new InitialWorkbookArtifactGuard(observer);
         var stagingEvidence = CaptureSavedStaging(guard, savedStaging.Artifact);
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
 
         var error = Assert.Throws<InvalidOperationException>(() =>
             guard.MaterializeCreateOnly(
@@ -456,7 +457,7 @@ public sealed class InitialWorkbookArtifactGuardTests
         var workbookPath = Path.Combine(temp.Path, "Sample.xlsm");
         File.WriteAllBytes(workbookPath, Encoding.UTF8.GetBytes("created workbook"));
         var guard = new InitialWorkbookArtifactGuard();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var capture = ownership.CaptureTrustedStableFile(workbookPath);
 
         var result = guard.TryDeleteFinalArtifact(ownership, capture.Receipt);
@@ -481,7 +482,7 @@ public sealed class InitialWorkbookArtifactGuardTests
         File.WriteAllBytes(workbookPath, Encoding.UTF8.GetBytes("created workbook"));
         var observer = new MutationAttemptCleanupObserver(movedPath);
         var guard = new InitialWorkbookArtifactGuard(observer);
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var capture = ownership.CaptureTrustedStableFile(workbookPath);
 
         var result = guard.TryDeleteFinalArtifact(ownership, capture.Receipt);
@@ -558,7 +559,7 @@ public sealed class InitialWorkbookArtifactGuardTests
         var sentinelBytes = Encoding.UTF8.GetBytes("foreign sentinel");
         File.WriteAllText(workbookPath, "created workbook", new UTF8Encoding(false));
         var guard = new InitialWorkbookArtifactGuard();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var capture = ownership.CaptureTrustedStableFile(workbookPath);
         File.Delete(workbookPath);
         File.WriteAllBytes(sentinelPath, sentinelBytes);
@@ -591,7 +592,7 @@ public sealed class InitialWorkbookArtifactGuardTests
         var workbookPath = Path.Combine(temp.Path, "Sample.xlsm");
         File.WriteAllText(workbookPath, "created workbook", new UTF8Encoding(false));
         var guard = new InitialWorkbookArtifactGuard();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var capture = ownership.CaptureTrustedStableFile(workbookPath);
         File.Delete(workbookPath);
         Directory.CreateDirectory(workbookPath);
@@ -616,7 +617,7 @@ public sealed class InitialWorkbookArtifactGuardTests
         var bytes = Encoding.UTF8.GetBytes("same workbook bytes");
         File.WriteAllBytes(workbookPath, bytes);
         var guard = new InitialWorkbookArtifactGuard();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var capture = ownership.CaptureTrustedStableFile(workbookPath);
         File.Delete(workbookPath);
         File.WriteAllBytes(workbookPath, bytes);
@@ -641,7 +642,7 @@ public sealed class InitialWorkbookArtifactGuardTests
         var workbookPath = Path.Combine(temp.Path, "Sample.xlsm");
         File.WriteAllText(workbookPath, "created workbook", new UTF8Encoding(false));
         var guard = new InitialWorkbookArtifactGuard();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var capture = ownership.CaptureTrustedStableFile(workbookPath);
         File.WriteAllText(workbookPath, "externally changed", new UTF8Encoding(false));
 
@@ -662,7 +663,7 @@ public sealed class InitialWorkbookArtifactGuardTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         using var savedStaging = new TestStagingArtifact();
         var stagingPath = savedStaging.Artifact.WorkbookPath;
         var workbookPath = Path.Combine(temp.Path, "Sample.xlsm");
@@ -696,7 +697,7 @@ public sealed class InitialWorkbookArtifactGuardTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         using var savedStaging = new TestStagingArtifact();
         var stagingPath = savedStaging.Artifact.WorkbookPath;
         var workbookPath = Path.Combine(temp.Path, "Sample.xlsm");
@@ -730,8 +731,8 @@ public sealed class InitialWorkbookArtifactGuardTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
-        using var unrelatedOwnership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
+        using var unrelatedOwnership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         using var savedStaging = new TestStagingArtifact();
         var stagingPath = savedStaging.Artifact.WorkbookPath;
         var workbookPath = Path.Combine(temp.Path, "Sample.xlsm");

@@ -119,9 +119,11 @@ candidate with `vba-dev capabilities --format json` and requires `reference
 list` output schema `1.0`. It never searches `PATH`, infers a sibling
 executable, or substitutes a failed candidate. Both capability inspection and
 CLI-backed reference discovery use the language-server-local one-shot process
-lifecycle. This adds no reverse dependency to `vba-dev`; the pre-existing
-language-server-owned parser reference remains a separate migration tracked by
-issue 361.
+lifecycle. This adds no reverse dependency to `vba-dev`. Syntax comes from the
+neutral `VbaTools.Syntax` module. Existing physical project/source-path identity
+checks reuse the public resolver in `VbaDev.Infrastructure`; this downstream
+library reference does not launch the CLI or initialize Excel. Closed-source
+decoding remains language-server-local and does not call VbaDev admission.
 
 The VS Code extension owns one environment-scoped UserForm Event catalog. It
 sends `vba/intrinsicHostEventCatalog` schema `1.0` notifications containing a

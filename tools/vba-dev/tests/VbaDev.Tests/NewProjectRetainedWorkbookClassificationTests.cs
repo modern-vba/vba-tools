@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using System.Text;
 using VbaDev.App.CommonModules;
 using VbaDev.App.FileSystem;
@@ -143,6 +144,7 @@ public sealed class NewProjectRetainedWorkbookClassificationTests
     {
         var manifestReader = new CommonModulesManifestReader();
         return new NewProjectCommand(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             new JsonProjectManifestStore(),
             workbookCreator,
             manifestReader,

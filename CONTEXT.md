@@ -855,6 +855,13 @@ inventory checks. Creating a file beneath a pre-existing ordinary directory
 does not issue or imply ownership of that parent directory.
 It is implemented wholly inside `VbaDev` and adds no dependency on another
 workspace tool.
+Application consumes an injected ownership-session factory and opaque
+receipts. Infrastructure alone owns native handles, identity proofs, receipt
+hashes, no-follow observation, and exact deletion. Domain retains pure path
+identities and comparisons; its concrete path resolver is supplied by
+Infrastructure. Existing language-server consumers reference that same
+resolver in the allowed `VbaLanguageServer`-to-`VbaDev` direction rather than
+copying it. This does not invoke the CLI or initialize Excel.
 _Avoid_: path-based ownership, recursive cleanup, generic transaction journal
 
 **InitialProjectTarget**:
@@ -900,6 +907,13 @@ commit or through pre-commit rollback of in-target artifacts. Terminal creation
 outcome is determined only after lease release and marker and directory cleanup;
 the lease serializes `VbaDev` writers without covering long read-only discovery
 or controlling independent editors.
+The live authority is its exclusive OS handle. Marker creation keeps that same
+create-only handle open while issuing an exact-ownership receipt; advisory
+metadata is never authority. An unowned stale marker is deleted only after
+trusted stable capture, and post-release cleanup uses the original receipt.
+Both cleanup paths retain any changed or unproved marker. Native DeleteOnClose
+crash cleanup, the thirty-second acquisition bound, cancellation, and existing
+warning/result policy remain separate workflow decisions.
 _Avoid_: whole-command project lock, manifest version, editor lock
 
 **ProjectManifestMutationPreflight**:

@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -464,6 +465,7 @@ public sealed class NewProjectTransactionContractTests
         var scratchRoot = temp.CreateDirectory("snapshot-scratch");
         var modulePath = Path.Combine(repository, "OptionalFeature.bas");
         var packageSnapshotFactory = new CommonModulesPackageSnapshotFactory(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             new CommonModulesPackageReader(new CommonModulesManifestReader()),
             scratchRoot,
             () => File.WriteAllText(
@@ -508,6 +510,7 @@ public sealed class NewProjectTransactionContractTests
         string? stagingPath = null;
         FileStream? stagingLock = null;
         var packageSnapshotFactory = new CommonModulesPackageSnapshotFactory(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             new CommonModulesPackageReader(new CommonModulesManifestReader()),
             scratchRoot,
             () =>
@@ -748,6 +751,7 @@ public sealed class NewProjectTransactionContractTests
         string? stagingPath = null;
         FileStream? snapshotLock = null;
         var packageSnapshotFactory = new CommonModulesPackageSnapshotFactory(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             new CommonModulesPackageReader(new CommonModulesManifestReader()),
             scratchRoot,
             () =>
@@ -867,6 +871,7 @@ public sealed class NewProjectTransactionContractTests
     {
         var manifestReader = new CommonModulesManifestReader();
         return new NewProjectCommand(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             new JsonProjectManifestStore(),
             workbookCreator,
             manifestReader,
@@ -947,7 +952,7 @@ public sealed class NewProjectTransactionContractTests
 
         public InitialWorkbookCreationResult CreateInitialWorkbook(string workbookPath)
         {
-            using var ownership = ExactFileSystemObjectOwnership.Open();
+            using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
             return CreateInitialWorkbookAsync(workbookPath, ownership, CancellationToken.None).GetAwaiter().GetResult();
         }
 

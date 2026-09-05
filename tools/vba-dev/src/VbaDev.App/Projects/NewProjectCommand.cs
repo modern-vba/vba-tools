@@ -28,6 +28,7 @@ public sealed class NewProjectCommand
         ? StringComparer.OrdinalIgnoreCase
         : StringComparer.Ordinal;
 
+    private readonly IExactFileSystemObjectOwnershipFactory ownershipFactory;
     private readonly IProjectManifestStore manifestStore;
     private readonly IInitialWorkbookCreator initialWorkbookCreator;
     private readonly CommonModulesManifestReader commonModulesManifestReader;
@@ -44,30 +45,36 @@ public sealed class NewProjectCommand
     /// <param name="initialWorkbookCreator">The workbook creator used to generate the source template workbook.</param>
     /// <param name="commonModulesManifestReader">The reader used to discover initial CommonModules files.</param>
     public NewProjectCommand(
+        IExactFileSystemObjectOwnershipFactory ownershipFactory,
         IProjectManifestStore manifestStore,
         IInitialWorkbookCreator initialWorkbookCreator,
         CommonModulesManifestReader commonModulesManifestReader,
         VbaProjectReferencePlanner referencePlanner,
-        IProjectManifestMutationLeaseProvider leaseProvider)
+        IProjectManifestMutationLeaseProvider leaseProvider,
+        IFileSystemPathIdentityResolver pathIdentityResolver)
         : this(
+            ownershipFactory,
             manifestStore,
             initialWorkbookCreator,
             commonModulesManifestReader,
             referencePlanner,
             leaseProvider,
-            new FileSystemPathIdentityResolver())
+            pathIdentityResolver,
+            packageSnapshotFactory: null)
     {
     }
 
     internal NewProjectCommand(
+        IExactFileSystemObjectOwnershipFactory ownershipFactory,
         IProjectManifestStore manifestStore,
         IInitialWorkbookCreator initialWorkbookCreator,
         CommonModulesManifestReader commonModulesManifestReader,
         VbaProjectReferencePlanner referencePlanner,
         IProjectManifestMutationLeaseProvider leaseProvider,
         IFileSystemPathIdentityResolver pathIdentityResolver,
-        CommonModulesPackageSnapshotFactory? packageSnapshotFactory = null)
+        CommonModulesPackageSnapshotFactory? packageSnapshotFactory)
     {
+        this.ownershipFactory = ownershipFactory;
         this.manifestStore = manifestStore;
         this.initialWorkbookCreator = initialWorkbookCreator;
         this.commonModulesManifestReader = commonModulesManifestReader;
@@ -76,6 +83,7 @@ public sealed class NewProjectCommand
         this.pathIdentityResolver = pathIdentityResolver;
         this.packageSnapshotFactory = packageSnapshotFactory
             ?? new CommonModulesPackageSnapshotFactory(
+                ownershipFactory,
                 new CommonModulesPackageReader(commonModulesManifestReader));
         ancestorSourceSetIsolation = new NewProjectAncestorSourceSetIsolation(
             manifestStore,
@@ -116,7 +124,7 @@ public sealed class NewProjectCommand
         var projectName = pathPlan.ProjectName;
         var documentName = pathPlan.DocumentName;
         var warnings = new List<NewProjectWarning>();
-        using var artifacts = new NewProjectArtifactTracker();
+        using var artifacts = new NewProjectArtifactTracker(ownershipFactory);
         IProjectManifestMutationLease? lease = null;
         CommonModulesPackageSnapshot? packageSnapshot = null;
         FileSystemPathIdentity? commonModulesRepositoryRouteIdentity = null;
@@ -235,7 +243,8 @@ public sealed class NewProjectCommand
             var manifestStage = NewProjectInitialManifestStager.Stage(
                 lease.ManifestPath,
                 manifest,
-                artifacts);
+                artifacts,
+                pathIdentityResolver);
             ancestorSourceSetIsolation.ValidateFinal(
                 projectRoot,
                 lease.ProjectIdentity);

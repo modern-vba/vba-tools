@@ -18,6 +18,7 @@
     <ProjectReference Include="..\..\..\vba-project-metadata\src\VbaTools.ProjectMetadata\VbaTools.ProjectMetadata.csproj" />
     <ProjectReference Include="..\..\..\vba-protocol-framing\src\VbaTools.ContentLengthFraming\VbaTools.ContentLengthFraming.csproj" />
     <ProjectReference Include="..\..\..\vba-dev\src\VbaDev.Domain\VbaDev.Domain.csproj" />
+    <ProjectReference Include="..\..\..\vba-dev\src\VbaDev.Infrastructure\VbaDev.Infrastructure.csproj" />
     <ProjectReference Include="..\..\..\vba-dev\src\VbaTools.TypeLibRegistry\VbaTools.TypeLibRegistry.csproj" />
   </ItemGroup>
 

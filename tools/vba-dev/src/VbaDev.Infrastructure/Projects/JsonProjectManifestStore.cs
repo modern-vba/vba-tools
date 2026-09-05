@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using System.Text;
 using VbaDev.App.Projects;
 using VbaDev.Domain;
@@ -43,7 +44,8 @@ public sealed class JsonProjectManifestStore : IProjectManifestStore
             _ = DocumentSourceSetIsolationValidator.ResolveAndValidate(
                 manifest,
                 manifestPath,
-                manifestPath);
+                manifestPath,
+                new FileSystemPathIdentityResolver());
             return manifest;
         }
         catch (VbaProjectManifestException ex)

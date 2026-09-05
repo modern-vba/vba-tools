@@ -17,6 +17,7 @@ public sealed class CommonModulesPackageSnapshotFactory
     private static readonly StringComparer PathComparer = OperatingSystem.IsWindows()
         ? StringComparer.OrdinalIgnoreCase
         : StringComparer.Ordinal;
+    private readonly IExactFileSystemObjectOwnershipFactory ownershipFactory;
     private readonly CommonModulesPackageReader packageReader;
     private readonly string scratchRoot;
     private readonly Action? beforePackageLoad;
@@ -26,8 +27,11 @@ public sealed class CommonModulesPackageSnapshotFactory
     /// <summary>
     /// Creates a factory that stores snapshots in the command's temporary workspace.
     /// </summary>
-    public CommonModulesPackageSnapshotFactory(CommonModulesPackageReader packageReader)
+    public CommonModulesPackageSnapshotFactory(
+        IExactFileSystemObjectOwnershipFactory ownershipFactory,
+        CommonModulesPackageReader packageReader)
         : this(
+            ownershipFactory,
             packageReader,
             Path.Combine(Path.GetTempPath(), "vba-dev-common-modules-snapshot"))
     {
@@ -37,9 +41,11 @@ public sealed class CommonModulesPackageSnapshotFactory
     /// Creates a factory that stores snapshots beneath the specified scratch root.
     /// </summary>
     public CommonModulesPackageSnapshotFactory(
+        IExactFileSystemObjectOwnershipFactory ownershipFactory,
         CommonModulesPackageReader packageReader,
         string scratchRoot)
         : this(
+            ownershipFactory,
             packageReader,
             scratchRoot,
             beforePackageLoad: null,
@@ -49,10 +55,12 @@ public sealed class CommonModulesPackageSnapshotFactory
     }
 
     internal CommonModulesPackageSnapshotFactory(
+        IExactFileSystemObjectOwnershipFactory ownershipFactory,
         CommonModulesPackageReader packageReader,
         string scratchRoot,
         Action? beforeLiveStabilityProof)
         : this(
+            ownershipFactory,
             packageReader,
             scratchRoot,
             beforePackageLoad: null,
@@ -62,11 +70,13 @@ public sealed class CommonModulesPackageSnapshotFactory
     }
 
     internal CommonModulesPackageSnapshotFactory(
+        IExactFileSystemObjectOwnershipFactory ownershipFactory,
         CommonModulesPackageReader packageReader,
         string scratchRoot,
         Action? beforeLiveStabilityProof,
         ICommonModulesPackageSnapshotCleanupObserver cleanupObserver)
         : this(
+            ownershipFactory,
             packageReader,
             scratchRoot,
             beforePackageLoad: null,
@@ -76,12 +86,14 @@ public sealed class CommonModulesPackageSnapshotFactory
     }
 
     internal CommonModulesPackageSnapshotFactory(
+        IExactFileSystemObjectOwnershipFactory ownershipFactory,
         CommonModulesPackageReader packageReader,
         string scratchRoot,
         Action? beforePackageLoad,
         Action? beforeLiveStabilityProof,
         ICommonModulesPackageSnapshotCleanupObserver cleanupObserver)
     {
+        this.ownershipFactory = ownershipFactory;
         this.packageReader = packageReader
             ?? throw new ArgumentNullException(nameof(packageReader));
         ArgumentException.ThrowIfNullOrWhiteSpace(scratchRoot);
@@ -102,7 +114,7 @@ public sealed class CommonModulesPackageSnapshotFactory
         ArgumentException.ThrowIfNullOrWhiteSpace(commonModulesRepositoryPath);
         cancellationToken.ThrowIfCancellationRequested();
         var repositoryPath = Path.GetFullPath(commonModulesRepositoryPath);
-        var ownership = ExactFileSystemObjectOwnership.Open();
+        var ownership = ownershipFactory.Open();
         CommonModulesPackageSnapshotStagingState? staging = null;
         var ownershipTransferred = false;
         try

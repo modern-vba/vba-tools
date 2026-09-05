@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Text;
@@ -1410,7 +1411,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         Action<VbeImportSourceSet> sourceSetCreated,
         IWorkbookGenerationAutomation? automation = null,
         IWorkbookOutputTransactionFactory? transactionFactory = null)
-        => new(CreateOrdinaryOutputCommand(sourceSetCreated, automation, transactionFactory));
+        => new(CreateOrdinaryOutputCommand(sourceSetCreated, automation, transactionFactory), new FileSystemPathIdentityResolver());
 
     private static PublishCommand CreateOrdinaryPublishCommand(
         Action<VbeImportSourceSet> sourceSetCreated,

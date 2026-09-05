@@ -3,6 +3,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 using VbaDev.App.FileSystem;
+using VbaDev.Infrastructure.FileSystem;
 using Xunit;
 
 namespace VbaDev.Tests;
@@ -75,7 +76,7 @@ public sealed class ExactFileSystemObjectOwnershipTests
     public void DeleteDispositionUsesTheNativeOneByteBooleanLayout()
     {
         var dispositionType = Assert.IsAssignableFrom<Type>(
-            typeof(ExactFileSystemObjectOwnership).GetNestedType(
+            typeof(WindowsExactFileSystemObjectOwnership).GetNestedType(
                 "FileDispositionInformation",
                 BindingFlags.NonPublic));
 
@@ -91,7 +92,7 @@ public sealed class ExactFileSystemObjectOwnershipTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var existing = temp.CreateDirectory("existing");
 
         var receipt = ownership.TryCreateOnlyDirectory(temp.Path, "existing");
@@ -109,7 +110,7 @@ public sealed class ExactFileSystemObjectOwnershipTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var parent = temp.CreateDirectory("existing");
         var original = Path.Combine(parent, "original.txt");
         File.WriteAllText(original, "untouched");
@@ -131,7 +132,7 @@ public sealed class ExactFileSystemObjectOwnershipTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var directory = Assert.IsType<ExactFileSystemObjectOwnership.DirectoryReceipt>(
             ownership.TryCreateOnlyDirectory(temp.Path, "owned"));
         var file = ownership.CreateOnlyFile(directory, "first.txt", "first"u8);
@@ -155,7 +156,7 @@ public sealed class ExactFileSystemObjectOwnershipTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var directory = Assert.IsType<ExactFileSystemObjectOwnership.DirectoryReceipt>(
             ownership.TryCreateOnlyDirectory(temp.Path, "owned"));
         var file = ownership.CreateOnlyFile(directory, "missing.txt", "original"u8);
@@ -180,7 +181,7 @@ public sealed class ExactFileSystemObjectOwnershipTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var file = ownership.CreateOnlyFile(temp.Path, "owned.txt", "original"u8);
         var callbackInvoked = false;
 
@@ -206,7 +207,7 @@ public sealed class ExactFileSystemObjectOwnershipTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var file = ownership.CreateOnlyFile(temp.Path, "owned.txt", "original"u8);
         var failure = new IOException("observer failed");
 
@@ -226,7 +227,7 @@ public sealed class ExactFileSystemObjectOwnershipTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         using var cancellation = new CancellationTokenSource();
         var path = Path.Combine(temp.Path, "partial.bin");
         var created = false;
@@ -279,7 +280,7 @@ public sealed class ExactFileSystemObjectOwnershipTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var path = Path.Combine(temp.Path, "partial.bin");
         var originalFailure = new IOException("copy observer failed");
         try
@@ -324,7 +325,7 @@ public sealed class ExactFileSystemObjectOwnershipTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var file = ownership.CreateOnlyFile(temp.Path, "owned.txt", "original"u8);
         var alias = Path.Combine(temp.Path, "alias.txt");
         var aliasCreated = false;
@@ -363,7 +364,7 @@ public sealed class ExactFileSystemObjectOwnershipTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var file = ownership.CreateOnlyFile(temp.Path, "owned.txt", "original"u8);
 
         using (var writer = new FileStream(file.Route, FileMode.Open, FileAccess.Write, FileShare.Read))
@@ -386,7 +387,7 @@ public sealed class ExactFileSystemObjectOwnershipTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var parent = temp.CreateDirectory("scratch");
         var directory = Assert.IsType<ExactFileSystemObjectOwnership.DirectoryReceipt>(
             ownership.TryCreateOnlyDirectory(parent, "owned"));
@@ -424,7 +425,7 @@ public sealed class ExactFileSystemObjectOwnershipTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var path = Path.Combine(temp.Path, "saved.bin");
         var expected = "saved producer bytes"u8.ToArray();
         ExactFileSystemObjectOwnership.PendingFileCapture pending;
@@ -458,7 +459,7 @@ public sealed class ExactFileSystemObjectOwnershipTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var path = Path.Combine(temp.Path, "saved.bin");
         File.WriteAllBytes(path, "generation-one"u8.ToArray());
         var pending = ownership.CapturePendingSavedFile(path);
@@ -481,7 +482,7 @@ public sealed class ExactFileSystemObjectOwnershipTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var path = Path.Combine(temp.Path, "saved.bin");
         var replacement = Path.Combine(temp.Path, "replacement.bin");
         var bytes = "same bytes, different object"u8.ToArray();
@@ -507,7 +508,7 @@ public sealed class ExactFileSystemObjectOwnershipTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var path = Path.Combine(temp.Path, "saved.bin");
         var alias = Path.Combine(temp.Path, "alias.bin");
         var bytes = "saved producer bytes"u8.ToArray();
@@ -540,8 +541,8 @@ public sealed class ExactFileSystemObjectOwnershipTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
-        using var otherOwnership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
+        using var otherOwnership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var path = Path.Combine(temp.Path, "saved.bin");
         File.WriteAllBytes(path, "saved bytes"u8.ToArray());
         var pending = ownership.CapturePendingSavedFile(path);
@@ -562,7 +563,7 @@ public sealed class ExactFileSystemObjectOwnershipTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var path = Path.Combine(temp.Path, "saved.bin");
         var bytes = "saved bytes"u8.ToArray();
         File.WriteAllBytes(path, bytes);
@@ -586,7 +587,7 @@ public sealed class ExactFileSystemObjectOwnershipTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var path = Path.Combine(temp.Path, "stable.bas");
         var expected = "stable-content"u8.ToArray();
         File.WriteAllBytes(path, expected);
@@ -613,7 +614,7 @@ public sealed class ExactFileSystemObjectOwnershipTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var path = Path.Combine(temp.Path, "linked.bas");
         var aliasPath = Path.Combine(temp.Path, "linked-alias.bas");
         File.WriteAllText(path, "linked-content");
@@ -646,7 +647,7 @@ public sealed class ExactFileSystemObjectOwnershipTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var directory = Assert.IsType<ExactFileSystemObjectOwnership.DirectoryReceipt>(
             ownership.TryCreateOnlyDirectory(temp.Path, "owned"));
         var original = "generation-one"u8.ToArray();
@@ -673,7 +674,7 @@ public sealed class ExactFileSystemObjectOwnershipTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var directory = Assert.IsType<ExactFileSystemObjectOwnership.DirectoryReceipt>(
             ownership.TryCreateOnlyDirectory(temp.Path, "owned"));
         var content = "same-content"u8.ToArray();
@@ -699,7 +700,7 @@ public sealed class ExactFileSystemObjectOwnershipTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var directory = Assert.IsType<ExactFileSystemObjectOwnership.DirectoryReceipt>(
             ownership.TryCreateOnlyDirectory(temp.Path, "owned"));
         var receipt = ownership.CreateOnlyFile(
@@ -731,7 +732,7 @@ public sealed class ExactFileSystemObjectOwnershipTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var directory = Assert.IsType<ExactFileSystemObjectOwnership.DirectoryReceipt>(
             ownership.TryCreateOnlyDirectory(temp.Path, "owned"));
         var content = "owned-content"u8.ToArray();
@@ -780,7 +781,7 @@ public sealed class ExactFileSystemObjectOwnershipTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var directory = Assert.IsType<ExactFileSystemObjectOwnership.DirectoryReceipt>(
             ownership.TryCreateOnlyDirectory(temp.Path, "owned"));
         var content = "owned-content"u8.ToArray();
@@ -805,7 +806,7 @@ public sealed class ExactFileSystemObjectOwnershipTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var directory = Assert.IsType<ExactFileSystemObjectOwnership.DirectoryReceipt>(
             ownership.TryCreateOnlyDirectory(temp.Path, "owned"));
         var content = "owned-content"u8.ToArray();
@@ -837,7 +838,7 @@ public sealed class ExactFileSystemObjectOwnershipTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var directory = Assert.IsType<ExactFileSystemObjectOwnership.DirectoryReceipt>(
             ownership.TryCreateOnlyDirectory(temp.Path, "owned"));
         var receipt = ownership.CreateOnlyFile(
@@ -871,7 +872,7 @@ public sealed class ExactFileSystemObjectOwnershipTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var directory = Assert.IsType<ExactFileSystemObjectOwnership.DirectoryReceipt>(
             ownership.TryCreateOnlyDirectory(temp.Path, "owned"));
         var content = "owned-content"u8.ToArray();
@@ -900,7 +901,7 @@ public sealed class ExactFileSystemObjectOwnershipTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var directory = Assert.IsType<ExactFileSystemObjectOwnership.DirectoryReceipt>(
             ownership.TryCreateOnlyDirectory(temp.Path, "owned"));
         ownership.ReleaseCreationFence(directory);
@@ -926,7 +927,7 @@ public sealed class ExactFileSystemObjectOwnershipTests
         }
 
         using var temp = TempDirectory.Create();
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var directory = Assert.IsType<ExactFileSystemObjectOwnership.DirectoryReceipt>(
             ownership.TryCreateOnlyDirectory(temp.Path, "owned"));
         var receipt = ownership.CreateOnlyFile(
@@ -956,8 +957,8 @@ public sealed class ExactFileSystemObjectOwnershipTests
         }
 
         using var temp = TempDirectory.Create();
-        using var issuer = ExactFileSystemObjectOwnership.Open();
-        using var foreignSession = ExactFileSystemObjectOwnership.Open();
+        using var issuer = new WindowsExactFileSystemObjectOwnershipFactory().Open();
+        using var foreignSession = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var directory = Assert.IsType<ExactFileSystemObjectOwnership.DirectoryReceipt>(
             issuer.TryCreateOnlyDirectory(temp.Path, "owned"));
         var receipt = issuer.CreateOnlyFile(

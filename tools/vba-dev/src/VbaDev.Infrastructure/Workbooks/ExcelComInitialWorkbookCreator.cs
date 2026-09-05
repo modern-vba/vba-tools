@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using System.Runtime.ExceptionServices;
 using VbaDev.App.FileSystem;
 using VbaDev.App.Workbooks;
@@ -119,7 +120,7 @@ public sealed class ExcelComInitialWorkbookCreator : IReceiptInitialWorkbookCrea
         cancellationToken.ThrowIfCancellationRequested();
         var absoluteWorkbookPath = Path.GetFullPath(workbookPath);
         Directory.CreateDirectory(Path.GetDirectoryName(absoluteWorkbookPath)!);
-        using var ownership = ExactFileSystemObjectOwnership.Open();
+        using var ownership = new WindowsExactFileSystemObjectOwnershipFactory().Open();
         var result = await CreateInitialWorkbookAsync(
             absoluteWorkbookPath,
             ownership,

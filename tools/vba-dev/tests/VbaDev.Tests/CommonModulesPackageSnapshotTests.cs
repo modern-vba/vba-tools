@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -45,6 +46,7 @@ public sealed class CommonModulesPackageSnapshotTests
         var expectedDialogBytes = File.ReadAllBytes(Path.Combine(repository, "Dialog.frm"));
         var scratchRoot = temp.CreateDirectory("scratch");
         var snapshot = new CommonModulesPackageSnapshotFactory(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             new CommonModulesPackageReader(new CommonModulesManifestReader()),
             scratchRoot)
             .Capture(repository, CancellationToken.None);
@@ -103,6 +105,7 @@ public sealed class CommonModulesPackageSnapshotTests
             CommonModulesManifestReader.ManifestFileName));
         var scratchRoot = temp.CreateDirectory("scratch");
         var factory = new CommonModulesPackageSnapshotFactory(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             new CommonModulesPackageReader(new CommonModulesManifestReader()),
             scratchRoot,
             beforePackageLoad: () =>
@@ -134,6 +137,7 @@ public sealed class CommonModulesPackageSnapshotTests
         WriteSource(repository, "Feature.bas", "feature generation one");
         var scratchRoot = temp.CreateDirectory("scratch");
         var factory = new CommonModulesPackageSnapshotFactory(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             new CommonModulesPackageReader(new CommonModulesManifestReader()),
             scratchRoot,
             () => WriteSource(repository, "Feature.bas", "feature generation two"));
@@ -159,6 +163,7 @@ public sealed class CommonModulesPackageSnapshotTests
         File.WriteAllBytes(sourcePath, invalidBytes);
         var scratchRoot = temp.CreateDirectory("scratch");
         var factory = new CommonModulesPackageSnapshotFactory(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             new CommonModulesPackageReader(new CommonModulesManifestReader()),
             scratchRoot);
 
@@ -185,6 +190,7 @@ public sealed class CommonModulesPackageSnapshotTests
         var expectedBytes = File.ReadAllBytes(sourcePath);
         var scratchRoot = temp.CreateDirectory("scratch");
         var factory = new CommonModulesPackageSnapshotFactory(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             new CommonModulesPackageReader(new CommonModulesManifestReader()),
             scratchRoot);
         using var sourceLock = File.Open(
@@ -221,6 +227,7 @@ public sealed class CommonModulesPackageSnapshotTests
         string? stagingPath = null;
         var foreignBytes = Encoding.UTF8.GetBytes("foreign staging content");
         var factory = new CommonModulesPackageSnapshotFactory(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             new CommonModulesPackageReader(new CommonModulesManifestReader()),
             scratchRoot,
             () =>
@@ -266,6 +273,7 @@ public sealed class CommonModulesPackageSnapshotTests
         string? stagingPath = null;
         FileStream? stagingLock = null;
         var factory = new CommonModulesPackageSnapshotFactory(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             new CommonModulesPackageReader(new CommonModulesManifestReader()),
             scratchRoot,
             () =>
@@ -316,6 +324,7 @@ public sealed class CommonModulesPackageSnapshotTests
         var scratchRoot = temp.CreateDirectory("scratch");
         var observer = new FileMutationAttemptCleanupObserver("Feature.bas");
         var snapshot = new CommonModulesPackageSnapshotFactory(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             new CommonModulesPackageReader(new CommonModulesManifestReader()),
             scratchRoot,
             beforeLiveStabilityProof: null,
@@ -346,6 +355,7 @@ public sealed class CommonModulesPackageSnapshotTests
         var scratchRoot = temp.CreateDirectory("scratch");
         var observer = new HardLinkAfterProofCleanupObserver("Feature.bas");
         var snapshot = new CommonModulesPackageSnapshotFactory(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             new CommonModulesPackageReader(new CommonModulesManifestReader()),
             scratchRoot,
             beforeLiveStabilityProof: null,
@@ -387,6 +397,7 @@ public sealed class CommonModulesPackageSnapshotTests
         var scratchRoot = temp.CreateDirectory("scratch");
         var observer = new DirectoryMutationAttemptCleanupObserver();
         var snapshot = new CommonModulesPackageSnapshotFactory(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             new CommonModulesPackageReader(new CommonModulesManifestReader()),
             scratchRoot,
             beforeLiveStabilityProof: null,
@@ -417,6 +428,7 @@ public sealed class CommonModulesPackageSnapshotTests
         WriteSource(repository, "Feature.bas", "feature generation one");
         var scratchRoot = temp.CreateDirectory("scratch");
         var snapshot = new CommonModulesPackageSnapshotFactory(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             new CommonModulesPackageReader(new CommonModulesManifestReader()),
             scratchRoot)
             .Capture(repository, CancellationToken.None);
@@ -451,6 +463,7 @@ public sealed class CommonModulesPackageSnapshotTests
         WriteSource(repository, "Feature.bas", "feature generation one");
         var scratchRoot = temp.CreateDirectory("scratch");
         var snapshot = new CommonModulesPackageSnapshotFactory(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             new CommonModulesPackageReader(new CommonModulesManifestReader()),
             scratchRoot)
             .Capture(repository, CancellationToken.None);
@@ -485,6 +498,7 @@ public sealed class CommonModulesPackageSnapshotTests
         WriteSource(repository, "Feature.bas", "feature generation one");
         var scratchRoot = temp.CreateDirectory("scratch");
         var snapshot = new CommonModulesPackageSnapshotFactory(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             new CommonModulesPackageReader(new CommonModulesManifestReader()),
             scratchRoot)
             .Capture(repository, CancellationToken.None);
@@ -516,6 +530,7 @@ public sealed class CommonModulesPackageSnapshotTests
         WriteSource(repository, "Feature.bas", "feature generation one");
         var scratchRoot = temp.CreateDirectory("scratch");
         var snapshot = new CommonModulesPackageSnapshotFactory(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             new CommonModulesPackageReader(new CommonModulesManifestReader()),
             scratchRoot)
             .Capture(repository, CancellationToken.None);
@@ -550,6 +565,7 @@ public sealed class CommonModulesPackageSnapshotTests
         WriteSource(repository, "Feature.bas", "feature generation one");
         var scratchRoot = temp.CreateDirectory("scratch");
         var snapshot = new CommonModulesPackageSnapshotFactory(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             new CommonModulesPackageReader(new CommonModulesManifestReader()),
             scratchRoot)
             .Capture(repository, CancellationToken.None);
@@ -579,6 +595,7 @@ public sealed class CommonModulesPackageSnapshotTests
         WriteSource(repository, "Feature.bas", "feature generation one");
         var scratchRoot = temp.CreateDirectory("scratch");
         var snapshot = new CommonModulesPackageSnapshotFactory(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             new CommonModulesPackageReader(new CommonModulesManifestReader()),
             scratchRoot)
             .Capture(repository, CancellationToken.None);
@@ -606,6 +623,7 @@ public sealed class CommonModulesPackageSnapshotTests
         WriteSource(repository, "Feature.bas", "feature generation one");
         var scratchRoot = temp.CreateDirectory("scratch");
         var snapshot = new CommonModulesPackageSnapshotFactory(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             new CommonModulesPackageReader(new CommonModulesManifestReader()),
             scratchRoot)
             .Capture(repository, CancellationToken.None);
@@ -633,6 +651,7 @@ public sealed class CommonModulesPackageSnapshotTests
         WriteSource(repository, "Feature.bas", "feature generation one");
         var scratchRoot = Path.Combine(temp.Path, "scratch-not-created");
         var factory = new CommonModulesPackageSnapshotFactory(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             new CommonModulesPackageReader(new CommonModulesManifestReader()),
             scratchRoot);
 

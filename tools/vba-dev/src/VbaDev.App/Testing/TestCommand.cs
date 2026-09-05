@@ -4,6 +4,7 @@ using VbaDev.App.Build;
 using VbaDev.App.Cli;
 using VbaDev.App.Projects;
 using VbaDev.App.Workbooks;
+using VbaDev.Domain;
 
 namespace VbaDev.App.Testing;
 
@@ -29,13 +30,14 @@ public sealed class TestCommand
         BuildCommand buildCommand,
         IWorkbookTestRunner workbookTestRunner,
         TestResultOutputFormatter outputFormatter,
-        TestProcedureSourceLocator sourceLocator)
+        TestProcedureSourceLocator sourceLocator,
+        IFileSystemPathIdentityResolver pathIdentityResolver)
         : this(
             buildCommand,
             workbookTestRunner,
             outputFormatter,
             sourceLocator,
-            new SnapshotTestExecutionWorkspaceFactory())
+            new SnapshotTestExecutionWorkspaceFactory(pathIdentityResolver))
     {
     }
 

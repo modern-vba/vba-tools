@@ -1,11 +1,11 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Reflection;
-using System.Runtime.InteropServices;
 using System.Text.Json;
-using Microsoft.Win32.SafeHandles;
+using VbaDev.App.FileSystem;
 using VbaDev.App.Projects;
 using VbaDev.Domain;
+using VbaDev.Infrastructure.FileSystem;
 
 namespace VbaDev.Infrastructure.Projects;
 
@@ -22,15 +22,6 @@ public sealed class ProjectManifestMutationLeaseProvider : IProjectManifestMutat
     private const int WindowsErrorPathNotFound = 3;
     private const int WindowsErrorSharingViolation = 32;
     private const int WindowsErrorLockViolation = 33;
-    private const uint GenericRead = 0x80000000;
-    private const uint DeleteAccess = 0x00010000;
-    private const uint FileShareRead = 0x00000001;
-    private const uint OpenExisting = 3;
-    private const uint FileAttributeNormal = 0x00000080;
-    private const uint FileAttributeDirectory = 0x00000010;
-    private const uint FileAttributeReparsePoint = 0x00000400;
-    private const uint FileFlagOpenReparsePoint = 0x00200000;
-    private const int FileDispositionInfoClass = 4;
 
     private static readonly JsonSerializerOptions MetadataJsonOptions = new()
     {
@@ -148,28 +139,24 @@ public sealed class ProjectManifestMutationLeaseProvider : IProjectManifestMutat
 
             attemptedAcquisition = true;
             FileStream? ownerStream = null;
+            WindowsExactFileSystemObjectOwnership? markerOwnership = null;
             try
             {
                 var markerExistedBeforeCreate = RejectUnsafeMarkerEntry(
                     markerPath,
                     manifestPath);
+                markerOwnership = WindowsExactFileSystemObjectOwnership.Open();
                 try
                 {
-                    ownerStream = createOwnerStreamOverride?.Invoke(markerPath)
-                        ?? new FileStream(
-                            markerPath,
-                            FileMode.CreateNew,
-                            FileAccess.ReadWrite,
-                            FileShare.Read,
-                            bufferSize: 4096,
-                            FileOptions.WriteThrough |
-                            (useDeleteOnClose
-                                ? FileOptions.DeleteOnClose
-                                : FileOptions.None));
+                    ownerStream = markerOwnership.CreateOnlyLeaseMarker(
+                        markerPath,
+                        useDeleteOnClose,
+                        createOwnerStreamOverride);
                 }
                 catch (IOException ex)
                 {
                     var reclaimResult = TryRemoveUnownedMarker(
+                        markerOwnership,
                         markerPath,
                         manifestPath);
                     if (reclaimResult == MarkerReclaimResult.Removed
@@ -203,6 +190,7 @@ public sealed class ProjectManifestMutationLeaseProvider : IProjectManifestMutat
 
                 var leaseId = Guid.NewGuid();
                 WriteOwnerMetadata(ownerStream, leaseId, command);
+                var markerReceipt = markerOwnership.CaptureCreatedLeaseMarker(ownerStream);
                 var markerIdentity = pathIdentityResolver.Resolve(markerPath);
                 var lease = new Lease(
                     ownerStream,
@@ -211,10 +199,13 @@ public sealed class ProjectManifestMutationLeaseProvider : IProjectManifestMutat
                     markerPath,
                     leaseId,
                     markerIdentity,
+                    markerOwnership,
+                    markerReceipt,
                     pathIdentityResolver,
                     afterOwnerRelease);
                 lease.ProveOwnershipContinuity();
                 ownerStream = null;
+                markerOwnership = null;
                 return lease;
             }
             catch (ProjectManifestMutationException)
@@ -235,7 +226,7 @@ public sealed class ProjectManifestMutationLeaseProvider : IProjectManifestMutat
                     throw CreateBusyException(markerPath, manifestPath);
                 }
             }
-            catch (Exception ex) when (ex is IOException or JsonException)
+            catch (Exception ex) when (ex is IOException or JsonException or Win32Exception)
             {
                 throw new ProjectManifestMutationException(
                     "manifestMutationLeaseFailed",
@@ -254,6 +245,10 @@ public sealed class ProjectManifestMutationLeaseProvider : IProjectManifestMutat
                         "manifestMutationReleaseFailed",
                         $"Project manifest mutation ownership release could not be proved: {manifestPath}",
                         ex);
+                }
+                finally
+                {
+                    markerOwnership?.Dispose();
                 }
             }
 
@@ -330,153 +325,52 @@ public sealed class ProjectManifestMutationLeaseProvider : IProjectManifestMutat
     }
 
     private static MarkerReclaimResult TryRemoveUnownedMarker(
+        WindowsExactFileSystemObjectOwnership markerOwnership,
         string markerPath,
         string manifestPath)
     {
-        if (OperatingSystem.IsWindows())
+        try
         {
-            try
+            var staleMarker = markerOwnership.CaptureTrustedStaleLeaseMarker(markerPath);
+            if (markerOwnership.TryDelete(staleMarker.Receipt).Removed)
             {
-                using var staleMarker = OpenMarkerForDisposition(
-                    markerPath,
-                    manifestPath,
-                    out _,
-                    out var isOrdinary);
-                if (!isOrdinary)
-                {
-                    throw new ProjectManifestMutationException(
-                        "manifestMutationLeaseFailed",
-                        $"Project manifest mutation ownership marker is not an ordinary sibling file: {manifestPath}");
-                }
-
-                SetMarkerDisposition(staleMarker.SafeFileHandle, markerPath);
                 return MarkerReclaimResult.Removed;
             }
-            catch (Win32Exception exception) when (
-                exception.NativeErrorCode is WindowsErrorFileNotFound
-                    or WindowsErrorPathNotFound)
-            {
-                return MarkerReclaimResult.Missing;
-            }
-            catch (Win32Exception exception) when (
-                exception.NativeErrorCode is WindowsErrorSharingViolation
-                    or WindowsErrorLockViolation)
-            {
-                return MarkerReclaimResult.Owned;
-            }
-            catch (ProjectManifestMutationException)
-            {
-                throw;
-            }
-            catch (Exception exception) when (
-                exception is IOException
-                    or UnauthorizedAccessException
-                    or Win32Exception)
-            {
-                throw new ProjectManifestMutationException(
-                    "manifestMutationLeaseFailed",
-                    $"Project manifest mutation ownership marker could not be reclaimed safely: {manifestPath}",
-                    exception);
-            }
-        }
 
-        if (!RejectUnsafeMarkerEntry(markerPath, manifestPath))
+            throw new ProjectManifestMutationException(
+                "manifestMutationLeaseFailed",
+                $"Project manifest mutation ownership marker could not be proved unchanged for cleanup: {manifestPath}");
+        }
+        catch (Win32Exception exception) when (
+            exception.NativeErrorCode is WindowsErrorFileNotFound
+                or WindowsErrorPathNotFound)
         {
             return MarkerReclaimResult.Missing;
         }
-
-        try
+        catch (Win32Exception exception) when (
+            exception.NativeErrorCode is WindowsErrorSharingViolation
+                or WindowsErrorLockViolation)
         {
-            using var staleMarker = new FileStream(
-                markerPath,
-                FileMode.Open,
-                FileAccess.ReadWrite,
-                FileShare.Read | FileShare.Delete);
-            File.Delete(markerPath);
-            return MarkerReclaimResult.Removed;
+            return MarkerReclaimResult.Owned;
         }
         catch (FileNotFoundException)
         {
             return MarkerReclaimResult.Missing;
         }
-        catch (DirectoryNotFoundException ex)
+        catch (ProjectManifestMutationException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (
+            exception is IOException
+                or UnauthorizedAccessException
+                or Win32Exception
+                or ExactFileSystemObjectOwnership.RollbackException)
         {
             throw new ProjectManifestMutationException(
                 "manifestMutationLeaseFailed",
-                $"Project manifest mutation ownership marker parent disappeared: {manifestPath}",
-                ex);
-        }
-        catch (IOException)
-        {
-            return MarkerReclaimResult.Owned;
-        }
-    }
-
-    private static FileStream OpenMarkerForDisposition(
-        string markerPath,
-        string manifestPath,
-        out FileSystemObjectIdentity identity,
-        out bool isOrdinary)
-    {
-        var handle = CreateFile(
-            markerPath,
-            GenericRead | DeleteAccess,
-            FileShareRead,
-            IntPtr.Zero,
-            OpenExisting,
-            FileAttributeNormal | FileFlagOpenReparsePoint,
-            IntPtr.Zero);
-        if (handle.IsInvalid)
-        {
-            var error = Marshal.GetLastWin32Error();
-            handle.Dispose();
-            throw new Win32Exception(
-                error,
-                $"The project manifest mutation ownership marker could not be opened safely: {manifestPath}");
-        }
-
-        try
-        {
-            if (!GetFileInformationByHandle(handle, out var information))
-            {
-                throw new Win32Exception(
-                    Marshal.GetLastWin32Error(),
-                    $"The project manifest mutation ownership marker identity could not be read: {manifestPath}");
-            }
-
-            identity = new FileSystemObjectIdentity(
-                information.VolumeSerialNumber,
-                ((ulong)information.FileIndexHigh << 32) |
-                information.FileIndexLow);
-            isOrdinary = (information.FileAttributes
-                & (FileAttributeDirectory | FileAttributeReparsePoint)) == 0;
-            return new FileStream(
-                handle,
-                FileAccess.Read,
-                bufferSize: 4096,
-                isAsync: false);
-        }
-        catch
-        {
-            handle.Dispose();
-            throw;
-        }
-    }
-
-    private static void SetMarkerDisposition(
-        SafeFileHandle handle,
-        string markerPath)
-    {
-        var disposition = new FileDispositionInformation { DeleteFile = true };
-        if (!SetFileInformationByHandle(
-                handle,
-                FileDispositionInfoClass,
-                ref disposition,
-                (uint)Marshal.SizeOf<FileDispositionInformation>()))
-        {
-            throw new Win32Exception(
-                Marshal.GetLastWin32Error(),
-                $"The exact project manifest mutation ownership marker could not be removed: {markerPath}");
+                $"Project manifest mutation ownership marker could not be reclaimed safely: {manifestPath}",
+                exception);
         }
     }
 
@@ -642,53 +536,6 @@ public sealed class ProjectManifestMutationLeaseProvider : IProjectManifestMutat
                .ToString()
            ?? "unknown";
 
-    [DllImport("kernel32.dll", EntryPoint = "CreateFileW", SetLastError = true,
-        CharSet = CharSet.Unicode)]
-    private static extern SafeFileHandle CreateFile(
-        string fileName,
-        uint desiredAccess,
-        uint shareMode,
-        IntPtr securityAttributes,
-        uint creationDisposition,
-        uint flagsAndAttributes,
-        IntPtr templateFile);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetFileInformationByHandle(
-        SafeFileHandle file,
-        out ByHandleFileInformation fileInformation);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool SetFileInformationByHandle(
-        SafeFileHandle file,
-        int fileInformationClass,
-        ref FileDispositionInformation fileInformation,
-        uint bufferSize);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct FileDispositionInformation
-    {
-        [MarshalAs(UnmanagedType.Bool)]
-        public bool DeleteFile;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct ByHandleFileInformation
-    {
-        public uint FileAttributes;
-        public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
-        public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
-        public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
-        public uint VolumeSerialNumber;
-        public uint FileSizeHigh;
-        public uint FileSizeLow;
-        public uint NumberOfLinks;
-        public uint FileIndexHigh;
-        public uint FileIndexLow;
-    }
-
     private sealed record LeaseOwnerMetadata(
         string SchemaVersion,
         Guid LeaseId,
@@ -713,6 +560,8 @@ public sealed class ProjectManifestMutationLeaseProvider : IProjectManifestMutat
         string markerPath,
         Guid leaseId,
         FileSystemPathIdentity markerIdentity,
+        WindowsExactFileSystemObjectOwnership markerOwnership,
+        ExactFileSystemObjectOwnership.FileReceipt markerReceipt,
         IFileSystemPathIdentityResolver pathIdentityResolver,
         Action<string>? afterOwnerRelease)
         : IProjectManifestMutationLease
@@ -780,148 +629,67 @@ public sealed class ProjectManifestMutationLeaseProvider : IProjectManifestMutat
 
             try
             {
-                stream.Dispose();
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                throw new ProjectManifestMutationException(
-                    "manifestMutationReleaseFailed",
-                    $"Project manifest mutation ownership release could not be proved: {ManifestPath}",
-                    ex);
-            }
+                try
+                {
+                    stream.Dispose();
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    throw new ProjectManifestMutationException(
+                        "manifestMutationReleaseFailed",
+                        $"Project manifest mutation ownership release could not be proved: {ManifestPath}",
+                        ex);
+                }
 
-            afterOwnerRelease?.Invoke(markerPath);
-            var warning = TryRemoveOwnedMarker(
-                markerPath,
-                leaseId,
-                markerIdentity,
-                ManifestPath);
-            return ValueTask.FromResult(new ProjectManifestLeaseRelease(
-                warning is null ? [] : [warning]));
+                var removedOnClose = markerOwnership.CompleteReleasedLeaseMarker(stream);
+                afterOwnerRelease?.Invoke(markerPath);
+                var warning = removedOnClose ? null : TryRemoveOwnedMarker();
+                return ValueTask.FromResult(new ProjectManifestLeaseRelease(
+                    warning is null ? [] : [warning]));
+            }
+            finally
+            {
+                markerOwnership.Dispose();
+            }
         }
 
-        private static ProjectManifestMutationWarning? TryRemoveOwnedMarker(
-            string markerPath,
-            Guid leaseId,
-            FileSystemPathIdentity markerIdentity,
-            string manifestPath)
+        private ProjectManifestMutationWarning? TryRemoveOwnedMarker()
         {
-            FileStream cleanupStream;
-            FileSystemObjectIdentity? cleanupIdentity = null;
-            var cleanupMarkerIsOrdinary = true;
             try
             {
-                if (OperatingSystem.IsWindows())
+                if (markerOwnership.TryDelete(markerReceipt).Removed)
                 {
-                    cleanupStream = OpenMarkerForDisposition(
-                        markerPath,
-                        manifestPath,
-                        out var openedIdentity,
-                        out cleanupMarkerIsOrdinary);
-                    cleanupIdentity = openedIdentity;
-                }
-                else
-                {
-                    cleanupStream = new FileStream(
-                        markerPath,
-                        FileMode.Open,
-                        FileAccess.ReadWrite,
-                        FileShare.Read);
+                    return null;
                 }
             }
-            catch (Win32Exception ex) when (
-                ex.NativeErrorCode is WindowsErrorFileNotFound
-                    or WindowsErrorPathNotFound)
-            {
-                return null;
-            }
-            catch (Win32Exception ex)
-            {
-                var retainedLeaseId = TryReadLeaseId(markerPath);
-                return retainedLeaseId is not null && retainedLeaseId != leaseId
-                    ? null
-                    : CleanupWarning(markerPath, ex);
-            }
-            catch (FileNotFoundException)
-            {
-                return null;
-            }
-            catch (IOException ex)
-            {
-                var retainedLeaseId = TryReadLeaseId(markerPath);
-                return retainedLeaseId is not null && retainedLeaseId != leaseId
-                    ? null
-                    : CleanupWarning(markerPath, ex);
-            }
-            catch (UnauthorizedAccessException ex)
+            catch (ExactFileSystemObjectOwnership.RollbackException ex)
             {
                 return CleanupWarning(markerPath, ex);
             }
 
-            if (OperatingSystem.IsWindows()
-                && (markerIdentity.ObjectIdentity is null
-                    || cleanupIdentity != markerIdentity.ObjectIdentity))
+            try
             {
-                cleanupStream.Dispose();
-                return null;
-            }
-
-            if (!cleanupMarkerIsOrdinary)
-            {
-                cleanupStream.Dispose();
-                return CleanupWarning(
-                    markerPath,
-                    new IOException(
-                        $"The released lease marker is no longer an ordinary sibling file: {manifestPath}"));
-            }
-
-            using (cleanupStream)
-            {
-                try
+                var currentIdentity = pathIdentityResolver.Resolve(markerPath);
+                if (currentIdentity.ObjectIdentity is not null
+                    && !SameExactMarkerObject(markerIdentity, currentIdentity))
                 {
-                    using var document = ParseBoundedMarkerJson(cleanupStream);
-                    if (document.RootElement.ValueKind != JsonValueKind.Object
-                        || !document.RootElement.TryGetProperty("leaseId", out var value)
-                        || value.ValueKind != JsonValueKind.String
-                        || !Guid.TryParse(value.GetString(), out var currentLeaseId))
-                    {
-                        return CleanupWarning(
-                            markerPath,
-                            new JsonException(
-                                "The released lease marker did not contain a valid leaseId."));
-                    }
-
-                    if (currentLeaseId != leaseId)
-                    {
-                        return null;
-                    }
-
-                }
-                catch (JsonException ex)
-                {
-                    return CleanupWarning(markerPath, ex);
-                }
-
-                try
-                {
-                    if (OperatingSystem.IsWindows())
-                    {
-                        SetMarkerDisposition(
-                            cleanupStream.SafeFileHandle,
-                            markerPath);
-                    }
-                    else
-                    {
-                        File.Delete(markerPath);
-                    }
                     return null;
                 }
-                catch (Exception ex) when (
-                    ex is IOException or UnauthorizedAccessException or Win32Exception)
-                {
-                    return CleanupWarning(markerPath, ex);
-                }
             }
+            catch (Exception ex) when (ex is IOException
+                or UnauthorizedAccessException
+                or Win32Exception
+                or NotSupportedException
+                or InvalidOperationException
+                or ArgumentException
+                or System.Security.SecurityException)
+            {
+                return CleanupWarning(markerPath, ex);
+            }
+
+            return CleanupWarning(
+                markerPath,
+                new IOException("The released lease marker could not be proved to be the unchanged ordinary single-link file."));
         }
 
         private static Guid? TryReadLeaseId(string markerPath)

@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using System.Runtime.InteropServices;
 using System.Text;
 using VbaDev.App.FileSystem;
@@ -19,7 +20,7 @@ public sealed class NewProjectArtifactTrackerTests
         using var temp = TempDirectory.Create();
         var projectRoot = Path.Combine(temp.Path, "Project");
         var workbookPath = Path.Combine(projectRoot, "Book1.xlsm");
-        using var tracker = new NewProjectArtifactTracker();
+        using var tracker = new NewProjectArtifactTracker(new WindowsExactFileSystemObjectOwnershipFactory());
         tracker.EnsureDirectory(projectRoot);
         var failure = new ExactFileSystemObjectOwnership.FileCreationCleanupException(
             workbookPath,
@@ -57,7 +58,7 @@ public sealed class NewProjectArtifactTrackerTests
         using var temp = TempDirectory.Create();
         var projectRoot = Path.Combine(temp.Path, "Project");
         var workbookPath = Path.Combine(projectRoot, "Book1.xlsm");
-        using var tracker = new NewProjectArtifactTracker();
+        using var tracker = new NewProjectArtifactTracker(new WindowsExactFileSystemObjectOwnershipFactory());
         tracker.EnsureDirectory(projectRoot);
         var bytes = Enumerable.Repeat((byte)7, 80 * 1024).ToArray();
 
@@ -106,7 +107,7 @@ public sealed class NewProjectArtifactTrackerTests
         var workbookPath = Path.Combine(projectRoot, "Book1.xlsm");
         var aliasPath = Path.Combine(temp.Path, "linked.xlsm");
         var bytes = Encoding.UTF8.GetBytes("owned workbook");
-        using var tracker = new NewProjectArtifactTracker();
+        using var tracker = new NewProjectArtifactTracker(new WindowsExactFileSystemObjectOwnershipFactory());
         tracker.EnsureDirectory(projectRoot);
         tracker.CreateFile(workbookPath, bytes);
         Assert.True(CreateHardLink(aliasPath, workbookPath, IntPtr.Zero));
@@ -133,7 +134,7 @@ public sealed class NewProjectArtifactTrackerTests
         var projectRoot = Path.Combine(temp.Path, "Project");
         var workbookPath = Path.Combine(projectRoot, "Book1.xlsm");
         var bytes = Encoding.UTF8.GetBytes("same workbook bytes");
-        using var tracker = new NewProjectArtifactTracker();
+        using var tracker = new NewProjectArtifactTracker(new WindowsExactFileSystemObjectOwnershipFactory());
         tracker.EnsureDirectory(projectRoot);
         var receipt = tracker.Ownership.CreateOnlyFile(projectRoot, "Book1.xlsm", bytes);
         File.Delete(workbookPath);
@@ -159,7 +160,7 @@ public sealed class NewProjectArtifactTrackerTests
         using var temp = TempDirectory.Create();
         var projectRoot = Path.Combine(temp.Path, "Project");
         var workbookPath = Path.Combine(projectRoot, "Book1.xlsm");
-        using var tracker = new NewProjectArtifactTracker();
+        using var tracker = new NewProjectArtifactTracker(new WindowsExactFileSystemObjectOwnershipFactory());
         tracker.EnsureDirectory(projectRoot);
         var receipt = tracker.Ownership.CreateOnlyFile(
             projectRoot,
@@ -181,7 +182,7 @@ public sealed class NewProjectArtifactTrackerTests
         var sourceSet = Path.Combine(projectRoot, "src", "Book1");
         var workbookPath = Path.Combine(sourceSet, "Book1.xlsm");
         var leaseMarkerPath = Path.Combine(projectRoot, "vba-project.json.vba-dev.lock");
-        using var tracker = new NewProjectArtifactTracker();
+        using var tracker = new NewProjectArtifactTracker(new WindowsExactFileSystemObjectOwnershipFactory());
         tracker.EnsureDirectory(sourceSet);
         tracker.CreateFile(workbookPath, Encoding.UTF8.GetBytes("owned workbook"));
         File.WriteAllText(leaseMarkerPath, "owned lease", new UTF8Encoding(false));
@@ -199,7 +200,7 @@ public sealed class NewProjectArtifactTrackerTests
         var projectRoot = Path.Combine(temp.Path, "Project");
         var workbookPath = Path.Combine(projectRoot, "Book1.xlsm");
         var leaseMarkerPath = Path.Combine(projectRoot, "vba-project.json.vba-dev.lock");
-        using var tracker = new NewProjectArtifactTracker();
+        using var tracker = new NewProjectArtifactTracker(new WindowsExactFileSystemObjectOwnershipFactory());
         tracker.EnsureDirectory(projectRoot);
         tracker.CreateFile(workbookPath, Encoding.UTF8.GetBytes("owned workbook"));
         File.WriteAllText(leaseMarkerPath, "owned lease", new UTF8Encoding(false));
@@ -217,7 +218,7 @@ public sealed class NewProjectArtifactTrackerTests
         var projectRoot = Path.Combine(temp.Path, "Project");
         var sourceSet = Path.Combine(projectRoot, "src", "Book1");
         var workbookPath = Path.Combine(sourceSet, "Book1.xlsm");
-        using var tracker = new NewProjectArtifactTracker();
+        using var tracker = new NewProjectArtifactTracker(new WindowsExactFileSystemObjectOwnershipFactory());
         tracker.EnsureDirectory(sourceSet);
         tracker.CreateFile(workbookPath, Encoding.UTF8.GetBytes("owned workbook"));
 
@@ -234,7 +235,7 @@ public sealed class NewProjectArtifactTrackerTests
         using var temp = TempDirectory.Create();
         var projectRoot = Path.Combine(temp.Path, "Project");
         var workbookPath = Path.Combine(projectRoot, "Book1.xlsm");
-        using var tracker = new NewProjectArtifactTracker();
+        using var tracker = new NewProjectArtifactTracker(new WindowsExactFileSystemObjectOwnershipFactory());
         tracker.EnsureDirectory(projectRoot);
         tracker.CreateFile(workbookPath, Encoding.UTF8.GetBytes("owned workbook"));
         var foreignBytes = Encoding.UTF8.GetBytes("foreign replacement");
@@ -253,7 +254,7 @@ public sealed class NewProjectArtifactTrackerTests
         using var temp = TempDirectory.Create();
         var projectRoot = Path.Combine(temp.Path, "Project");
         var leaseMarkerPath = Path.Combine(projectRoot, "vba-project.json.vba-dev.lock");
-        using var tracker = new NewProjectArtifactTracker();
+        using var tracker = new NewProjectArtifactTracker(new WindowsExactFileSystemObjectOwnershipFactory());
         tracker.EnsureDirectory(projectRoot);
         File.WriteAllText(leaseMarkerPath, "owned lease", new UTF8Encoding(false));
         Directory.Delete(projectRoot, recursive: true);
@@ -272,7 +273,7 @@ public sealed class NewProjectArtifactTrackerTests
         var projectRoot = Path.Combine(temp.Path, "Project");
         var workbookPath = Path.Combine(projectRoot, "Book1.xlsm");
         var leaseMarkerPath = Path.Combine(projectRoot, "vba-project.json.vba-dev.lock");
-        using var tracker = new NewProjectArtifactTracker();
+        using var tracker = new NewProjectArtifactTracker(new WindowsExactFileSystemObjectOwnershipFactory());
         tracker.EnsureDirectory(projectRoot);
         tracker.CreateFile(workbookPath, Encoding.UTF8.GetBytes("owned workbook"));
         File.WriteAllText(leaseMarkerPath, "owned lease", new UTF8Encoding(false));
@@ -301,7 +302,7 @@ public sealed class NewProjectArtifactTrackerTests
         using var temp = TempDirectory.Create();
         var projectRoot = Path.Combine(temp.Path, "Project");
         var workbookPath = Path.Combine(projectRoot, "Book1.xlsm");
-        using var tracker = new NewProjectArtifactTracker();
+        using var tracker = new NewProjectArtifactTracker(new WindowsExactFileSystemObjectOwnershipFactory());
         tracker.EnsureDirectory(projectRoot);
         tracker.CreateFile(workbookPath, Encoding.UTF8.GetBytes("owned workbook"));
         NewProjectRollbackResult blocked;
@@ -334,7 +335,7 @@ public sealed class NewProjectArtifactTrackerTests
         using var temp = TempDirectory.Create();
         var projectRoot = Path.Combine(temp.Path, "Project");
         var workbookPath = Path.Combine(projectRoot, "Book1.xlsm");
-        using var tracker = new NewProjectArtifactTracker();
+        using var tracker = new NewProjectArtifactTracker(new WindowsExactFileSystemObjectOwnershipFactory());
         tracker.EnsureDirectory(projectRoot);
         tracker.CreateFile(workbookPath, Encoding.UTF8.GetBytes("owned workbook"));
         NewProjectRollbackResult underLease;
@@ -381,7 +382,7 @@ public sealed class NewProjectArtifactTrackerTests
                 throw new IOException("child directory delete is blocked");
             }
         });
-        using var tracker = new NewProjectArtifactTracker(observer);
+        using var tracker = new NewProjectArtifactTracker(new WindowsExactFileSystemObjectOwnershipFactory(), observer);
         tracker.EnsureDirectory(childDirectory);
 
         var underLease = tracker.RollbackUnderLease(projectRoot);
@@ -424,7 +425,7 @@ public sealed class NewProjectArtifactTrackerTests
                 observerWriteBlocked = true;
             }
         });
-        using var tracker = new NewProjectArtifactTracker(observer);
+        using var tracker = new NewProjectArtifactTracker(new WindowsExactFileSystemObjectOwnershipFactory(), observer);
         tracker.EnsureDirectory(projectRoot);
         tracker.CreateFile(workbookPath, Encoding.UTF8.GetBytes("owned workbook"));
 
@@ -477,7 +478,7 @@ public sealed class NewProjectArtifactTrackerTests
                 replacementBlocked = true;
             }
         });
-        using var tracker = new NewProjectArtifactTracker(observer);
+        using var tracker = new NewProjectArtifactTracker(new WindowsExactFileSystemObjectOwnershipFactory(), observer);
         tracker.EnsureDirectory(projectRoot);
         tracker.CreateFile(workbookPath, Encoding.UTF8.GetBytes("owned workbook"));
 
@@ -535,7 +536,7 @@ public sealed class NewProjectArtifactTrackerTests
                 replacementBlocked = true;
             }
         });
-        using var tracker = new NewProjectArtifactTracker(observer);
+        using var tracker = new NewProjectArtifactTracker(new WindowsExactFileSystemObjectOwnershipFactory(), observer);
         tracker.EnsureDirectory(projectRoot);
 
         var result = tracker.Rollback();
@@ -560,7 +561,7 @@ public sealed class NewProjectArtifactTrackerTests
         var workbookPath = Path.Combine(projectRoot, "Book1.xlsm");
         var sentinelPath = Path.Combine(temp.Path, "sentinel.xlsm");
         var sentinelBytes = Encoding.UTF8.GetBytes("foreign sentinel");
-        using var tracker = new NewProjectArtifactTracker();
+        using var tracker = new NewProjectArtifactTracker(new WindowsExactFileSystemObjectOwnershipFactory());
         tracker.EnsureDirectory(projectRoot);
         tracker.CreateFile(workbookPath, Encoding.UTF8.GetBytes("owned workbook"));
         File.WriteAllBytes(sentinelPath, sentinelBytes);
@@ -581,7 +582,7 @@ public sealed class NewProjectArtifactTrackerTests
         using var temp = TempDirectory.Create();
         var projectRoot = Path.Combine(temp.Path, "Project");
         var leaseMarkerPath = Path.Combine(projectRoot, "vba-project.json.vba-dev.lock");
-        using var tracker = new NewProjectArtifactTracker();
+        using var tracker = new NewProjectArtifactTracker(new WindowsExactFileSystemObjectOwnershipFactory());
         tracker.EnsureDirectory(projectRoot);
         File.WriteAllText(leaseMarkerPath, "owned lease", new UTF8Encoding(false));
         tracker.AllowLeaseMarker(projectRoot, leaseMarkerPath);
@@ -600,7 +601,7 @@ public sealed class NewProjectArtifactTrackerTests
     {
         using var temp = TempDirectory.Create();
         var projectRoot = Path.Combine(temp.Path, "RacedProject");
-        using var tracker = new NewProjectArtifactTracker(path =>
+        using var tracker = new NewProjectArtifactTracker(new WindowsExactFileSystemObjectOwnershipFactory(), path =>
         {
             Directory.CreateDirectory(path);
             throw new IOException("exclusive create lost the race");
@@ -626,7 +627,7 @@ public sealed class NewProjectArtifactTrackerTests
         var projectRoot = Path.Combine(temp.Path, "Project");
         var movedRoot = Path.Combine(temp.Path, "MovedProject");
         var observer = new DirectoryCreationBoundaryObserver(movedRoot);
-        using var tracker = new NewProjectArtifactTracker(observer);
+        using var tracker = new NewProjectArtifactTracker(new WindowsExactFileSystemObjectOwnershipFactory(), observer);
 
         tracker.EnsureDirectory(projectRoot);
         var rollback = tracker.Rollback();

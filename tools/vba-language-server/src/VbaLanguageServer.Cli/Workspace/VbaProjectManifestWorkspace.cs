@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using VbaLanguageServer.ProjectModel;
 
 namespace VbaLanguageServer.Workspace;
@@ -1892,7 +1893,8 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
             DocumentSourceSetIsolationValidator.ResolveAndValidate(
                 manifest,
                 manifestPath,
-                uri);
+                uri,
+                new FileSystemPathIdentityResolver());
         var manifestDirectory = Path.GetDirectoryName(
                 Path.GetFullPath(manifestPath))
             ?? throw new VbaProjectManifestException(

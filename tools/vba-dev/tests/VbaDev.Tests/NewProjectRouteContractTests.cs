@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using System.Text;
 using System.Text.Json;
 using VbaDev.App.CommonModules;
@@ -429,6 +430,7 @@ public sealed class NewProjectRouteContractTests
             AfterCreate = _ => identityResolver.Arm()
         };
         var command = new NewProjectCommand(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             new JsonProjectManifestStore(),
             workbookCreator,
             new CommonModulesManifestReader(),
@@ -530,6 +532,7 @@ public sealed class NewProjectRouteContractTests
         var leaseProvider = new TestProjectCreationLeaseProvider(
             displacedOwnedRoot);
         var command = new NewProjectCommand(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             new JsonProjectManifestStore(),
             workbookCreator,
             new CommonModulesManifestReader(),
@@ -588,6 +591,7 @@ public sealed class NewProjectRouteContractTests
         FakeInitialWorkbookCreator workbookCreator,
         IFileSystemPathIdentityResolver identityResolver)
         => new(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             new JsonProjectManifestStore(),
             workbookCreator,
             new CommonModulesManifestReader(),
