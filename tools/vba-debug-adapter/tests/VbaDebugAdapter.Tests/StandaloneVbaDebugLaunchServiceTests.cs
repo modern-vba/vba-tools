@@ -29,7 +29,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         var events = new List<string>();
         var visibleSession = new RecordingVbeDebugSession(events);
         var service = new StandaloneVbaDebugLaunchService(
-            new TransportedDebugSourceSnapshotValidator(932),
+            new DebugSourceAdmission(932),
             new RecordingWorkbookBuilder(
                 events,
                 new VbaDevSnapshotBuildResult(fixture.GenerationWorkspace)),
@@ -74,8 +74,6 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         Assert.Empty(plan.GetType().GetConstructors());
         sources.Clear();
         breakpoints.Clear();
-        Assert.Single(plan.Snapshot.SourceInventory.Sources);
-        Assert.Single(plan.Snapshot.SourceInventory.Breakpoints);
         Assert.Equal(new DebugSourcePosition(sourceUri, 2, 4), plan.Snapshot.ActiveSource);
         Assert.Equal(new DebugTargetProcedure("Module1", "Run"), plan.Snapshot.Target);
         Assert.Equal(DebugGenerationId.Initial, plan.Snapshot.GenerationId);
@@ -108,7 +106,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         var oldSession = new RecordingRunningSession(events, "old");
         var visibleSession = new RecordingVbeDebugSession(events);
         var service = new StandaloneVbaDebugLaunchService(
-            new TransportedDebugSourceSnapshotValidator(932),
+            new DebugSourceAdmission(932),
             new RecordingWorkbookBuilder(
                 events,
                 new VbaDevSnapshotBuildResult(fixture.GenerationWorkspace)),
@@ -158,7 +156,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         var oldSession = new GatedRunningSession(events, "old");
         var visibleSession = new RecordingVbeDebugSession(events);
         var service = new StandaloneVbaDebugLaunchService(
-            new TransportedDebugSourceSnapshotValidator(932),
+            new DebugSourceAdmission(932),
             new RecordingWorkbookBuilder(
                 events,
                 new VbaDevSnapshotBuildResult(fixture.GenerationWorkspace)),
@@ -255,7 +253,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             preparationId,
             restartGeneration);
         var service = new StandaloneVbaDebugLaunchService(
-            new TransportedDebugSourceSnapshotValidator(932),
+            new DebugSourceAdmission(932),
             new RecordingWorkbookBuilder(
                 events,
                 new VbaDevSnapshotBuildResult(fixture.GenerationWorkspace)),
@@ -311,9 +309,10 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
     }
 
     [Theory]
+    [InlineData("invalid-source")]
     [InlineData("removed-target")]
     [InlineData("unmappable-breakpoint")]
-    public async Task PreparationFailsBeforeBuildForIndeterminateTargetOrBreakpoint(
+    public async Task PreparationFailsBeforeBuildForInvalidSourceTargetOrBreakpoint(
         string invalidEvidence)
     {
         await using var fixture = await LeaseIssuedGenerationFixture.CreateAsync();
@@ -322,22 +321,33 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         var content = invalidEvidence == "removed-target"
             ? "Attribute VB_Name = \"Module1\"\r\nPublic Sub Other()\r\nEnd Sub\r\n"
             : "Attribute VB_Name = \"Module1\"\r\nPublic Sub Run()\r\n\r\nEnd Sub\r\n";
+        var sources = new List<TransportedDebugSource>();
+        if (invalidEvidence == "invalid-source")
+        {
+            sources.Add(new TransportedDebugSource(
+                "Broken.bas",
+                "file:///C:/persistent/Broken.bas",
+                "utf8bom",
+                Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
+                    "Attribute VB_Name = \"Broken\"\r\n" +
+                    "Attribute VB_Name = \"Duplicate\"\r\n" +
+                    "Public Sub Other()\r\nEnd Sub\r\n"))));
+        }
+        sources.Add(new TransportedDebugSource(
+            "Module1.bas",
+            sourceUri,
+            "utf8bom",
+            Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(content))));
         var snapshot = new TransportedDebugSourceSnapshot(
             2,
-            [
-                new TransportedDebugSource(
-                    "Module1.bas",
-                    sourceUri,
-                    "utf8bom",
-                    Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(content)))
-            ])
+            sources)
         {
             Breakpoints = invalidEvidence == "unmappable-breakpoint"
                 ? [new TransportedDebugSourceBreakpoint(sourceUri, 2)]
                 : []
         };
         var service = new StandaloneVbaDebugLaunchService(
-            new TransportedDebugSourceSnapshotValidator(932),
+            new DebugSourceAdmission(932),
             new RecordingWorkbookBuilder(
                 events,
                 new VbaDevSnapshotBuildResult(fixture.GenerationWorkspace)),
@@ -398,7 +408,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
                 restartGeneration)
         };
         var service = new StandaloneVbaDebugLaunchService(
-            new TransportedDebugSourceSnapshotValidator(932),
+            new DebugSourceAdmission(932),
             new RecordingWorkbookBuilder(
                 events,
                 new VbaDevSnapshotBuildResult(fixture.GenerationWorkspace)),
@@ -432,7 +442,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         await using var fixture = await LeaseIssuedGenerationFixture.CreateAsync();
         var events = new List<string>();
         var service = new StandaloneVbaDebugLaunchService(
-            new TransportedDebugSourceSnapshotValidator(932),
+            new DebugSourceAdmission(932),
             new RecordingWorkbookBuilder(
                 events,
                 new VbaDevSnapshotBuildResult(fixture.GenerationWorkspace)),
@@ -489,7 +499,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             preparationId,
             restartGeneration);
         var service = new StandaloneVbaDebugLaunchService(
-            new TransportedDebugSourceSnapshotValidator(932),
+            new DebugSourceAdmission(932),
             new RecordingWorkbookBuilder(
                 events,
                 new VbaDevSnapshotBuildResult(fixture.GenerationWorkspace)),
@@ -531,7 +541,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         await using var fixture = await LeaseIssuedGenerationFixture.CreateAsync();
         var events = new List<string>();
         var service = new StandaloneVbaDebugLaunchService(
-            new TransportedDebugSourceSnapshotValidator(932),
+            new DebugSourceAdmission(932),
             new RecordingWorkbookBuilder(
                 events,
                 new VbaDevSnapshotBuildResult(fixture.GenerationWorkspace)),
@@ -564,7 +574,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             events,
             new RecordingVbeDebugSession(events));
         var service = new StandaloneVbaDebugLaunchService(
-            new TransportedDebugSourceSnapshotValidator(932),
+            new DebugSourceAdmission(932),
             new RecordingWorkbookBuilder(
                 events,
                 new VbaDevSnapshotBuildResult(fixture.GenerationWorkspace)),
@@ -595,7 +605,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         await using var fixture = await LeaseIssuedGenerationFixture.CreateAsync();
         var events = new List<string>();
         var service = new StandaloneVbaDebugLaunchService(
-            new TransportedDebugSourceSnapshotValidator(932),
+            new DebugSourceAdmission(932),
             new ThrowingWorkbookBuilder(events),
             new RecordingVbeDebugSessionFactory(
                 events,
@@ -650,10 +660,9 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             CanonicalProjectRoot = projectRoot
         };
         var service = new StandaloneVbaDebugLaunchService(
-            new TransportedDebugSourceSnapshotValidator(932),
+            new DebugSourceAdmission(932),
             new VbaDevSnapshotWorkbookBuilder(
-                new FailingVbaDevBuildProcess(events),
-                new TransportedDebugSourceSnapshotValidator(932)),
+                new FailingVbaDevBuildProcess(events)),
             new RecordingVbeDebugSessionFactory(
                 events,
                 new RecordingVbeDebugSession(events)));
@@ -688,7 +697,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
                     events,
                     new InvalidOperationException("Synthetic workbook-open failure.")));
         var service = new StandaloneVbaDebugLaunchService(
-            new TransportedDebugSourceSnapshotValidator(932),
+            new DebugSourceAdmission(932),
             new RecordingWorkbookBuilder(
                 events,
                 new VbaDevSnapshotBuildResult(fixture.GenerationWorkspace)),
@@ -735,7 +744,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             preparationId,
             restartGeneration);
         var service = new StandaloneVbaDebugLaunchService(
-            new TransportedDebugSourceSnapshotValidator(932),
+            new DebugSourceAdmission(932),
             new RecordingWorkbookBuilder(
                 events,
                 new VbaDevSnapshotBuildResult(fixture.GenerationWorkspace)),
@@ -782,7 +791,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         var visibleSession = new RecordingVbeDebugSession(events);
         var lifecycleSink = new RecordingDebugLifecycleSink();
         var service = new StandaloneVbaDebugLaunchService(
-            new TransportedDebugSourceSnapshotValidator(932),
+            new DebugSourceAdmission(932),
             builder,
             new RecordingVbeDebugSessionFactory(events, visibleSession));
         var sourceBytes = DebugSnapshotTestEncoding.Utf8BomBytes(
@@ -844,7 +853,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         var events = new List<string>();
         var visibleSession = new RecordingVbeDebugSession(events);
         var service = new StandaloneVbaDebugLaunchService(
-            new TransportedDebugSourceSnapshotValidator(932),
+            new DebugSourceAdmission(932),
             new RecordingWorkbookBuilder(events, buildResult),
             new RecordingVbeDebugSessionFactory(
                 events,
@@ -905,7 +914,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         var visibleSession = new RecordingVbeDebugSession(events);
         var generationCapability = fixture.GenerationWorkspace;
         var service = new StandaloneVbaDebugLaunchService(
-            new TransportedDebugSourceSnapshotValidator(932),
+            new DebugSourceAdmission(932),
             new RecordingWorkbookBuilder(
                 events,
                 new VbaDevSnapshotBuildResult(generationCapability)),
@@ -964,7 +973,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         var generationCapability = fixture.GenerationWorkspace;
         var buildResult = new VbaDevSnapshotBuildResult(generationCapability);
         var service = new StandaloneVbaDebugLaunchService(
-            new TransportedDebugSourceSnapshotValidator(932),
+            new DebugSourceAdmission(932),
             new RecordingWorkbookBuilder(
                 events,
                 buildResult),
@@ -1010,7 +1019,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         var visibleSession = new RecordingVbeDebugSession(events);
         var generationCapability = fixture.GenerationWorkspace;
         var service = new StandaloneVbaDebugLaunchService(
-            new TransportedDebugSourceSnapshotValidator(932),
+            new DebugSourceAdmission(932),
             new RecordingWorkbookBuilder(
                 events,
                 new VbaDevSnapshotBuildResult(generationCapability)),
@@ -1064,7 +1073,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         var visibleSession = new RecordingVbeDebugSession(events);
         var generationCapability = fixture.GenerationWorkspace;
         var service = new StandaloneVbaDebugLaunchService(
-            new TransportedDebugSourceSnapshotValidator(932),
+            new DebugSourceAdmission(932),
             new RecordingWorkbookBuilder(
                 events,
                 new VbaDevSnapshotBuildResult(generationCapability)),
@@ -1124,15 +1133,13 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         var generationCapability = fixture.GenerationWorkspace;
         var generationWorkspacePath = generationCapability.GenerationWorkspacePath;
         var service = new StandaloneVbaDebugLaunchService(
-            new TransportedDebugSourceSnapshotValidator(932),
+            new DebugSourceAdmission(932),
             new RecordingWorkbookBuilder(
                 [],
                 new VbaDevSnapshotBuildResult(generationCapability)),
             new RecordingVbeDebugSessionFactory([], new RecordingVbeDebugSession([])),
-            breakpointSourceMapper: null,
             compilationSettingsReader: new ThrowingCompilationSettingsReader(),
-            compilationEnvironmentFactory: new DebugCompilationEnvironmentFactory(),
-            conditionalCompilationPreflight: new DebugConditionalCompilationPreflight());
+            compilationEnvironmentFactory: new DebugCompilationEnvironmentFactory());
         var sourceBytes = DebugSnapshotTestEncoding.Utf8BomBytes(string.Join('\n',
         [
             "Attribute VB_Name = \"Module1\"",
@@ -1189,15 +1196,13 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         var generationCapability = fixture.GenerationWorkspace;
         var generationWorkspacePath = generationCapability.GenerationWorkspacePath;
         var service = new StandaloneVbaDebugLaunchService(
-            new TransportedDebugSourceSnapshotValidator(932),
+            new DebugSourceAdmission(932),
             new RecordingWorkbookBuilder(
                 events,
                 new VbaDevSnapshotBuildResult(generationCapability)),
             new RecordingVbeDebugSessionFactory(events, visibleSession),
-            breakpointSourceMapper: null,
             compilationSettingsReader: new ConstantCompilationSettingsReader(settings),
-            compilationEnvironmentFactory: new DebugCompilationEnvironmentFactory(),
-            conditionalCompilationPreflight: new DebugConditionalCompilationPreflight());
+            compilationEnvironmentFactory: new DebugCompilationEnvironmentFactory());
         var sourceBytes = DebugSnapshotTestEncoding.Utf8BomBytes(string.Join('\n',
         [
             "Attribute VB_Name = \"Module1\"",
@@ -1232,13 +1237,112 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
                         ])),
                 restartBinding: null,
                 CancellationToken.None);
-            Assert.True(plan.Snapshot.RequiresConditionalCompilationPreflight);
+            Assert.True(plan.Snapshot.RequiresConditionalCompilationVerification);
             var exception = await Assert.ThrowsAsync<DebugSetupException>(() =>
                 plan.CommitAsync(restartBinding: null, CancellationToken.None));
 
             Assert.Contains("inactive", exception.Message, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("open:Book1.xlsm", events);
             Assert.DoesNotContain("run:Module1.LegacyTarget", events);
+            Assert.False(Directory.Exists(generationWorkspacePath));
+        }
+        finally
+        {
+            await fixture.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task LaunchRejectsAnInactiveBreakpointAfterOpeningTheBuiltWorkbookBeforeNativeExecution()
+    {
+        var fixture = await LeaseIssuedGenerationFixture.CreateAsync();
+        var events = new List<string>();
+        var visibleSession = new RecordingVbeDebugSession(events);
+        var settings = new DebugCompilationSettings(
+            VbaProjectSystemKind.Win64,
+            1252,
+            [],
+            new string('A', 64));
+        var generationCapability = fixture.GenerationWorkspace;
+        var generationWorkspacePath = generationCapability.GenerationWorkspacePath;
+        var service = new StandaloneVbaDebugLaunchService(
+            new DebugSourceAdmission(932),
+            new RecordingWorkbookBuilder(
+                events,
+                new VbaDevSnapshotBuildResult(generationCapability)),
+            new RecordingVbeDebugSessionFactory(events, visibleSession),
+            compilationSettingsReader: new ConstantCompilationSettingsReader(settings),
+            compilationEnvironmentFactory: new DebugCompilationEnvironmentFactory());
+        const string sourceUri = "file:///C:/persistent/Module1.bas";
+        var sourceBytes = DebugSnapshotTestEncoding.Utf8BomBytes(string.Join('\n',
+        [
+            "Attribute VB_Name = \"Module1\"",
+            "Public Sub Run()",
+            "    Debug.Print \"target\"",
+            "End Sub",
+            "#If VBA7 Then",
+            "Public Sub ModernHelper()",
+            "    Debug.Print \"modern\"",
+            "End Sub",
+            "#Else",
+            "Public Sub LegacyHelper()",
+            "    Debug.Print \"legacy\"",
+            "End Sub",
+            "#End If"
+        ]));
+
+        try
+        {
+            await using var plan = await service.PrepareAsync(
+                Path.GetFullPath("vba-dev.exe"),
+                fixture.WorkspaceLease,
+                new StandaloneVbaDebugLaunchRequest(
+                    Path.GetFullPath("project"),
+                    "Book1",
+                    "Book1.xlsm",
+                    "Module1",
+                    "Run",
+                    new TransportedDebugSourceSnapshot(
+                        2,
+                        [
+                            new TransportedDebugSource(
+                                "Module1.bas",
+                                sourceUri,
+                                "utf8bom",
+                                Convert.ToBase64String(sourceBytes))
+                        ])
+                    {
+                        Breakpoints =
+                        [
+                            new TransportedDebugSourceBreakpoint(sourceUri, Line: 10)
+                        ]
+                    }),
+                restartBinding: null,
+                CancellationToken.None);
+
+            Assert.Equal(["build:Book1.xlsm"], events);
+            Assert.Equal(new DebugTargetProcedure("Module1", "Run"), plan.Snapshot.Target);
+            Assert.Empty(plan.Snapshot.Target.ConditionalCompilationPath.Branches);
+            Assert.NotEmpty(Assert.Single(plan.Snapshot.MappedBreakpoints)
+                .ConditionalCompilationPath.Branches);
+            Assert.True(plan.Snapshot.RequiresConditionalCompilationVerification);
+
+            var exception = await Assert.ThrowsAsync<DebugSetupException>(() =>
+                plan.CommitAsync(restartBinding: null, CancellationToken.None));
+
+            Assert.Contains("breakpoint", exception.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("inactive", exception.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(
+                [
+                    "build:Book1.xlsm",
+                    "start-visible",
+                    "open:Book1.xlsm",
+                    "terminate",
+                    "dispose"
+                ],
+                events);
+            Assert.Empty(visibleSession.Breakpoints);
+            Assert.Null(visibleSession.Target);
             Assert.False(Directory.Exists(generationWorkspacePath));
         }
         finally

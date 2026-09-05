@@ -364,18 +364,31 @@ unsupported.
 Every launch follows these phases:
 
 1. Capture the selected document's immutable `DebugSourceSnapshot`.
-2. Ask the live `DebugWorkspaceLease` to issue a create-new
+2. Admit that transport once for the launch generation, parsing each text source
+   once and deriving the target, active position, input-ordered breakpoints,
+   deferred conditional evidence, and opaque exact-byte build source set.
+3. Ask the live `DebugWorkspaceLease` to issue a create-new
    `DebugGenerationWorkspace`, materialize the snapshot at its exact source
    path, and supply that inventory to `vba-dev build`, which generates the
    workbook at the capability's exact workbook path in a dedicated hidden Excel
    process on an invocation-scoped private desktop and exits.
-3. Close the build process, transfer the same generation capability to the new
+4. Close the build process, transfer the same generation capability to the new
    `VbeDebugSession`, and open its workbook in a new dedicated visible
    `DebugExcelProcess`.
-4. Verify and transfer participating breakpoints.
-5. Select and run the `DebugTargetProcedure` in the VBE.
-6. Keep the session active until its Excel process exits or the session is
+5. Verify the admitted conditional evidence against the generated workbook's
+   actual compilation context, then verify and transfer participating
+   breakpoints.
+6. Select and run the `DebugTargetProcedure` in the VBE.
+7. Keep the session active until its Excel process exits or the session is
    stopped.
+
+`DebugSourceAdmission` is the adapter's sole source-analysis authority for one
+generation. Its builder receives only the opaque admitted bytes and performs no
+DAP validation or parsing. `VbaDev` then independently admits the materialized
+snapshot through its public process contract; no adapter proof, syntax tree, or
+runtime DTO crosses that boundary, and no `VbaDev` dependency points back to the
+adapter. Admission does not add retries, source locks, editor coordination, or
+external-change protection.
 
 The build and debug Excel processes are never reused or attached to an existing
 user Excel session. Reusing the build process after programmatic VBIDE edits can
@@ -416,7 +429,8 @@ launch.
 
 `.bas`, `.cls`, and `.frm` source lines may participate. `.frx` files do not.
 `BreakpointSourceMap` uses the product-neutral `VbaTools.Syntax` parser core
-to exclude export-only class headers, attributes, and form designer records,
+through the generation's already parsed source to exclude export-only class
+headers, attributes, and form designer records,
 then verifies the projected source against the generated workbook's
 `CodeModule`. The projection includes the known UserForm leading blank and
 assumes no other automatic VBE insertion or normalization. A fixed line offset
@@ -431,7 +445,9 @@ statement on the physical line.
 The generated workbook's actual `DebugCompilationContext` determines active
 conditional-compilation branches. An inactive target or participating
 breakpoint invalidates setup. Launch configuration cannot override compiler
-constants or select a sibling branch.
+constants or select a sibling branch. The adapter verifies the deferred
+generation-bound evidence after workbook open establishes that context and
+before it issues native breakpoint commands or executes the target.
 
 DAP breakpoints remain unverified while build and VBE setup are pending. An
 exact source map and successful native VBE `Toggle Breakpoint` command form the

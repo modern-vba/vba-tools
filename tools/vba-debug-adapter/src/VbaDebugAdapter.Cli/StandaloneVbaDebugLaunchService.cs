@@ -7,34 +7,27 @@ namespace VbaDebugAdapter.Cli;
 
 internal sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunchService
 {
-    private readonly TransportedDebugSourceSnapshotValidator snapshotValidator;
+    private readonly DebugSourceAdmission sourceAdmission;
     private readonly IVbaDebugWorkbookBuilder workbookBuilder;
     private readonly IVbeDebugSessionFactory vbeDebugSessionFactory;
-    private readonly DebugLaunchRequestResolver launchRequestResolver = new();
-    private readonly IBreakpointSourceMapper breakpointSourceMapper;
     private readonly IDebugCompilationSettingsReader? compilationSettingsReader;
     private readonly DebugCompilationEnvironmentFactory? compilationEnvironmentFactory;
-    private readonly DebugConditionalCompilationPreflight? conditionalCompilationPreflight;
 
-    public StandaloneVbaDebugLaunchService(
-        TransportedDebugSourceSnapshotValidator snapshotValidator,
+    internal StandaloneVbaDebugLaunchService(
+        DebugSourceAdmission sourceAdmission,
         IVbaDebugWorkbookBuilder workbookBuilder,
         IVbeDebugSessionFactory vbeDebugSessionFactory,
-        IBreakpointSourceMapper? breakpointSourceMapper = null,
         IDebugCompilationSettingsReader? compilationSettingsReader = null,
-        DebugCompilationEnvironmentFactory? compilationEnvironmentFactory = null,
-        DebugConditionalCompilationPreflight? conditionalCompilationPreflight = null)
+        DebugCompilationEnvironmentFactory? compilationEnvironmentFactory = null)
     {
-        this.snapshotValidator = snapshotValidator
-            ?? throw new ArgumentNullException(nameof(snapshotValidator));
+        this.sourceAdmission = sourceAdmission
+            ?? throw new ArgumentNullException(nameof(sourceAdmission));
         this.workbookBuilder = workbookBuilder
             ?? throw new ArgumentNullException(nameof(workbookBuilder));
         this.vbeDebugSessionFactory = vbeDebugSessionFactory
             ?? throw new ArgumentNullException(nameof(vbeDebugSessionFactory));
-        this.breakpointSourceMapper = breakpointSourceMapper ?? new BreakpointSourceMapper();
         this.compilationSettingsReader = compilationSettingsReader;
         this.compilationEnvironmentFactory = compilationEnvironmentFactory;
-        this.conditionalCompilationPreflight = conditionalCompilationPreflight;
     }
 
     public async Task<IPreparedDebugLaunchPlan> PrepareAsync(
@@ -48,45 +41,18 @@ internal sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunc
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(workspaceLease);
         cancellationToken.ThrowIfCancellationRequested();
-        var frozenTransport = Freeze(request.SourceSnapshot);
-        var validatedSnapshot = snapshotValidator.Validate(frozenTransport);
-        var sourceSnapshot = new DebugSourceSnapshot(
-            validatedSnapshot.SchemaVersion,
-            validatedSnapshot.Sources
-                .Where(source => source.Text is not null)
-                .Select(source => new DebugSourceFileSnapshot(
-                    source.RelativePath,
-                    source.SourceUri!,
-                    source.Text!))
-                .ToImmutableArray(),
-            validatedSnapshot.ActiveSource is null
-                ? null
-                : new DebugSourcePosition(
-                    validatedSnapshot.ActiveSource.SourceUri,
-                    validatedSnapshot.ActiveSource.Line,
-                    validatedSnapshot.ActiveSource.Character))
-        {
-            Breakpoints = validatedSnapshot.Breakpoints
-                .Select(breakpoint => new DebugSourceBreakpoint(
-                    breakpoint.SourceUri,
-                    breakpoint.Line))
-                .ToImmutableArray()
-        };
-        var launchRequest = launchRequestResolver.Resolve(
-            sourceSnapshot,
+        var generationId = DebugGenerationId.FromValue(
+            request.RestartPreparation?.Generation.Value ?? 0);
+        var admittedSource = sourceAdmission.Admit(
+            request.SourceSnapshot,
             request.ModuleName,
-            request.ProcedureName);
-        var mappedBreakpoints = sourceSnapshot.Breakpoints
-            .Select(breakpoint => breakpointSourceMapper.Map(sourceSnapshot, breakpoint))
-            .ToImmutableArray();
-        var requiresConditionalCompilationPreflight =
-            launchRequest.Target.ConditionalCompilationPath.Branches.Count != 0 ||
-            mappedBreakpoints.Any(breakpoint =>
-                breakpoint.ConditionalCompilationPath.Branches.Count != 0);
-        if (requiresConditionalCompilationPreflight &&
+            request.ProcedureName,
+            generationId);
+        var requiresConditionalCompilationVerification =
+            admittedSource.RequiresConditionalCompilationVerification;
+        if (requiresConditionalCompilationVerification &&
             (compilationSettingsReader is null ||
-             compilationEnvironmentFactory is null ||
-             conditionalCompilationPreflight is null))
+             compilationEnvironmentFactory is null))
         {
             throw new DebugSetupException(
                 "Conditional-compilation debug participants require generated-workbook and " +
@@ -96,11 +62,9 @@ internal sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunc
         ValidateRestartBinding(
             request,
             canonicalProjectRoot,
-            launchRequest.Target,
+            admittedSource.Target,
             workspaceLease.SessionId,
             restartBinding);
-        var generationId = DebugGenerationId.FromValue(
-            request.RestartPreparation?.Generation.Value ?? 0);
         VbaDevSnapshotBuildResult? buildResult = null;
         try
         {
@@ -111,10 +75,7 @@ internal sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunc
                     canonicalProjectRoot,
                     request.DocumentName,
                     request.WorkbookFileName,
-                    frozenTransport)
-                {
-                    GenerationId = generationId
-                },
+                    admittedSource.BuildSources),
                 cancellationToken).ConfigureAwait(false);
             if (buildResult.GenerationId != generationId)
             {
@@ -130,16 +91,11 @@ internal sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunc
                         .ConfigureAwait(false);
                 }
             }
-            var builtCompilationSettings = requiresConditionalCompilationPreflight
+            var builtCompilationSettings = requiresConditionalCompilationVerification
                 ? compilationSettingsReader!.Read(buildResult.WorkbookPath)
                 : null;
             var snapshot = new PreparedDebugLaunchPlanSnapshot(
-                frozenTransport,
-                sourceSnapshot.ActiveSource,
-                launchRequest.Target,
-                mappedBreakpoints,
-                requiresConditionalCompilationPreflight,
-                generationId,
+                admittedSource,
                 buildResult.GenerationWorkspacePath,
                 new PreparedDebugLaunchSettings(
                     canonicalProjectRoot,
@@ -154,12 +110,10 @@ internal sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunc
             var plan = new PreparedDebugLaunchPlan(
                 snapshot,
                 buildResult,
-                launchRequest,
                 builtCompilationSettings,
                 vbeDebugSessionFactory,
                 compilationSettingsReader,
                 compilationEnvironmentFactory,
-                conditionalCompilationPreflight,
                 lifecycleSink);
             buildResult = null;
             return plan;
@@ -172,23 +126,6 @@ internal sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunc
             }
             throw;
         }
-    }
-
-    private static TransportedDebugSourceSnapshot Freeze(
-        TransportedDebugSourceSnapshot snapshot)
-    {
-        ArgumentNullException.ThrowIfNull(snapshot);
-        return new TransportedDebugSourceSnapshot(
-            snapshot.SchemaVersion,
-            snapshot.Sources.Select(source => source with { }).ToImmutableArray())
-        {
-            ActiveSource = snapshot.ActiveSource is null
-                ? null
-                : snapshot.ActiveSource with { },
-            Breakpoints = snapshot.Breakpoints
-                .Select(breakpoint => breakpoint with { })
-                .ToImmutableArray()
-        };
     }
 
     private static string CanonicalizeProjectRoot(string projectRoot)
@@ -302,12 +239,10 @@ internal sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunc
         private const int Consumed = 3;
 
         private readonly VbaDevSnapshotBuildResult buildResult;
-        private readonly DebugLaunchRequest launchRequest;
         private readonly DebugCompilationSettings? builtCompilationSettings;
         private readonly IVbeDebugSessionFactory vbeDebugSessionFactory;
         private readonly IDebugCompilationSettingsReader? compilationSettingsReader;
         private readonly DebugCompilationEnvironmentFactory? compilationEnvironmentFactory;
-        private readonly DebugConditionalCompilationPreflight? conditionalCompilationPreflight;
         private readonly IDebugLifecycleSink? lifecycleSink;
         private int state;
         private int restartSessionReleased;
@@ -319,22 +254,18 @@ internal sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunc
         internal PreparedDebugLaunchPlan(
             PreparedDebugLaunchPlanSnapshot snapshot,
             VbaDevSnapshotBuildResult buildResult,
-            DebugLaunchRequest launchRequest,
             DebugCompilationSettings? builtCompilationSettings,
             IVbeDebugSessionFactory vbeDebugSessionFactory,
             IDebugCompilationSettingsReader? compilationSettingsReader,
             DebugCompilationEnvironmentFactory? compilationEnvironmentFactory,
-            DebugConditionalCompilationPreflight? conditionalCompilationPreflight,
             IDebugLifecycleSink? lifecycleSink)
         {
             Snapshot = snapshot;
             this.buildResult = buildResult;
-            this.launchRequest = launchRequest;
             this.builtCompilationSettings = builtCompilationSettings;
             this.vbeDebugSessionFactory = vbeDebugSessionFactory;
             this.compilationSettingsReader = compilationSettingsReader;
             this.compilationEnvironmentFactory = compilationEnvironmentFactory;
-            this.conditionalCompilationPreflight = conditionalCompilationPreflight;
             this.lifecycleSink = lifecycleSink;
         }
 
@@ -384,7 +315,7 @@ internal sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunc
                 await visibleSession
                     .OpenGeneratedWorkbookAsync(lifecycleSink, cancellationToken)
                     .ConfigureAwait(false);
-                if (Snapshot.RequiresConditionalCompilationPreflight)
+                if (Snapshot.RequiresConditionalCompilationVerification)
                 {
                     var openedCompilationSettings = compilationSettingsReader!.Read(
                         buildResult.WorkbookPath);
@@ -402,10 +333,7 @@ internal sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunc
                     var environment = compilationEnvironmentFactory!.Create(
                         builtCompilationSettings,
                         hostFacts);
-                    conditionalCompilationPreflight!.Validate(
-                        launchRequest,
-                        Snapshot.MappedBreakpoints,
-                        environment);
+                    Snapshot.SourceAdmission.VerifyConditionalCompilation(environment);
                 }
                 if (!Snapshot.MappedBreakpoints.IsEmpty)
                 {
@@ -494,15 +422,23 @@ internal sealed record PreparedDebugLaunchSettings(
     RestartPreparationDescriptor? RestartPreparation);
 
 internal sealed record PreparedDebugLaunchPlanSnapshot(
-    TransportedDebugSourceSnapshot SourceInventory,
-    DebugSourcePosition? ActiveSource,
-    DebugTargetProcedure Target,
-    ImmutableArray<VbeBreakpoint> MappedBreakpoints,
-    bool RequiresConditionalCompilationPreflight,
-    DebugGenerationId GenerationId,
+    AdmittedDebugSourceSnapshot SourceAdmission,
     string GenerationWorkspacePath,
     PreparedDebugLaunchSettings LaunchSettings,
-    DebugRestartLaunchBinding? RestartBinding);
+    DebugRestartLaunchBinding? RestartBinding)
+{
+    internal DebugSourcePosition? ActiveSource => SourceAdmission.ActiveSource;
+
+    internal DebugTargetProcedure Target => SourceAdmission.Target;
+
+    internal ImmutableArray<VbeBreakpoint> MappedBreakpoints =>
+        SourceAdmission.MappedBreakpoints;
+
+    internal bool RequiresConditionalCompilationVerification =>
+        SourceAdmission.RequiresConditionalCompilationVerification;
+
+    internal DebugGenerationId GenerationId => SourceAdmission.GenerationId;
+}
 
 internal sealed record DebugRestartLaunchBinding(
     DebugSessionId SessionId,

@@ -1,8 +1,8 @@
-using System.Collections.Immutable;
 using System.Security.Cryptography;
 using System.Text;
 using VbaDebugAdapter.Debugging;
 using VbaDebugAdapter.Infrastructure;
+using VbaTools.Syntax;
 
 namespace VbaDebugAdapter.Diagnostics;
 
@@ -386,15 +386,8 @@ internal sealed class VbeDebugEnvironmentProbe(
             new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
             cancellationToken).ConfigureAwait(false);
         var sourceUri = new Uri(Path.GetFullPath(fixtureSourcePath)).AbsoluteUri;
-        var snapshot = new DebugSourceSnapshot(
-            DebugSourceSnapshot.CurrentSchemaVersion,
-            ImmutableArray.Create(new DebugSourceFileSnapshot(
-                Path.GetFileName(fixtureSourcePath),
-                sourceUri,
-                ProbeSource)),
-            ActiveSource: null);
-        breakpoint = new BreakpointSourceMapper().Map(
-            snapshot,
+        var syntaxTree = VbaSyntaxTree.ParseModule(sourceUri, ProbeSource);
+        breakpoint = DebugBreakpointProjection.Create(syntaxTree).Map(
             new DebugSourceBreakpoint(
                 sourceUri,
                 CompletionAssignmentEditorLine));

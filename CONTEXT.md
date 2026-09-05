@@ -340,12 +340,23 @@ _Avoid_: adapter debug state, session defaults, managed VBE profile
 
 **DebugSourceSnapshot**:
 The immutable selected-document source state from which one `VbeDebugLaunch`
-resolves its target, breakpoints, source map, and `BuildSourceSnapshot`. The
+admits its target, breakpoints, source map, and `BuildSourceSnapshot`. The
 extension captures its `SnapshotSourceInventory` without saving or rewriting
 the `DocumentSourceSet`; text entries carry persistent source identity and
 `SnapshotSourceEncoding`, while the adapter alone materializes and owns the
 transported bytes.
 _Avoid_: mutable editor state, stale build input, workspace-wide snapshot
+
+**DebugSourceAdmission**:
+The internal sealed `VbaDebugAdapter` boundary that freezes and validates one
+transported `DebugSourceSnapshot`, parses each text source once, and derives one
+opaque generation-bound target, active position, request-ordered breakpoint
+mapping, deferred conditional-compilation proof, and exact-byte build source
+set. A failed admission returns no partial value or build request. The builder
+can consume only the opaque source set; after materialization, `VbaDev`
+independently admits the bytes through its public process contract and receives
+no adapter proof, syntax tree, or runtime DTO.
+_Avoid_: public admission interface, reusable launch cache, repeated source parser, VbaDev reverse dependency
 
 **SnapshotSourceInventory**:
 The complete selected-document source set fixed at capture start from one disk
@@ -523,7 +534,7 @@ _Avoid_: new launch target, active-editor retargeting, project-only restart toke
 
 **PreparedDebugLaunchPlan**:
 The adapter-internal immutable one-shot launch capability produced after one
-initial or restart source snapshot, target procedure, mapped breakpoints,
+initial or restart `DebugSourceAdmission`, target procedure, mapped breakpoints,
 conditional-compilation participation, generation, and any restart binding have
 been validated together. For Restart, preparation builds that generation while
 the current `VbeDebugSession` remains active and produces the plan only after

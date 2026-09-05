@@ -1,66 +1,57 @@
-using System.Collections.Immutable;
+using VbaDebugAdapter.Build;
 using VbaDebugAdapter.Debugging;
+using VbaDebugAdapter.Infrastructure;
 using VbaTools.Syntax;
 using Xunit;
 
 namespace VbaDebugAdapter.Tests;
 
-public sealed class DebugConditionalCompilationPreflightCoverageTests
+public sealed class DebugSourceAdmissionConditionalCompilationTests
 {
     [Fact]
-    public void ActiveBreakpointPassesAndInactiveSiblingFailsWithoutRelocation()
+    public void DeferredProofAcceptsAnActiveBreakpointAndRejectsTheInactiveSiblingInRequestOrder()
     {
-        var sourcePath = Path.GetFullPath(Path.Combine("DebugProject", "DebugModule.bas"));
+        const string sourceUri = "file:///C:/persistent/DebugModule.bas";
         var source = CreateConditionalSource();
-        var activeSource = new DebugSourceBreakpoint(SourceUri(sourcePath), EditorLine: 5);
-        var inactiveSource = new DebugSourceBreakpoint(SourceUri(sourcePath), EditorLine: 9);
-        var snapshot = Snapshot(sourcePath, source, [activeSource, inactiveSource]);
-        var mapper = new BreakpointSourceMapper();
-        var active = mapper.Map(snapshot, activeSource);
-        var inactive = mapper.Map(snapshot, inactiveSource);
-        var request = Request(snapshot);
-        var preflight = new DebugConditionalCompilationPreflight();
         var environment = CreateWindows64Vba7Environment();
+        var admission = new DebugSourceAdmission(932);
+        var active = admission.Admit(
+            Snapshot(sourceUri, source, [new(sourceUri, Line: 5)]),
+            "DebugModule",
+            "RunTarget",
+            DebugGenerationId.Initial);
+        var activeAndInactive = admission.Admit(
+            Snapshot(
+                sourceUri,
+                source,
+                [new(sourceUri, Line: 5), new(sourceUri, Line: 9)]),
+            "DebugModule",
+            "RunTarget",
+            DebugGenerationId.FromValue(1));
 
-        preflight.Validate(request, [active], environment);
+        active.VerifyConditionalCompilation(environment);
         var error = Assert.Throws<DebugSetupException>(() =>
-            preflight.Validate(request, [active, inactive], environment));
+            activeAndInactive.VerifyConditionalCompilation(environment));
 
         Assert.Contains("invalid breakpoint", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("inactive", error.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains($":{inactiveSource.EditorLine + 1}'", error.Message, StringComparison.Ordinal);
+        Assert.Contains(":10'", error.Message, StringComparison.Ordinal);
         Assert.Contains("actual generated workbook compilation context", error.Message);
         Assert.Contains("not relocated", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public void InactiveConditionalTargetFailsBeforeNativeExecution()
+    public void DeferredProofRejectsAnInactiveTargetBeforeNativeExecution()
     {
-        var sourcePath = Path.GetFullPath(Path.Combine("DebugProject", "DebugModule.bas"));
-        var source = CreateConditionalSource();
-        var snapshot = Snapshot(sourcePath, source, []);
-        var tree = VbaSyntaxTree.ParseModule(new Uri(sourcePath).AbsoluteUri, source);
-        var targetDeclaration = Assert.Single(
-            tree.Module.CallableDeclarations,
-            declaration => declaration.Name == "LegacyTarget");
-        Assert.True(VbaConditionalCompilationBranchFacts.TryGetPath(
-            tree,
-            targetDeclaration.Range,
-            requireCompleteStructure: true,
-            out var targetPath));
-        var request = Request(snapshot) with
-        {
-            Target = new DebugTargetProcedure("DebugModule", "LegacyTarget")
-            {
-                ConditionalCompilationPath = targetPath
-            }
-        };
+        const string sourceUri = "file:///C:/persistent/DebugModule.bas";
+        var admitted = new DebugSourceAdmission(932).Admit(
+            Snapshot(sourceUri, CreateConditionalSource(), []),
+            "DebugModule",
+            "LegacyTarget",
+            DebugGenerationId.Initial);
 
         var error = Assert.Throws<DebugSetupException>(() =>
-            new DebugConditionalCompilationPreflight().Validate(
-                request,
-                [],
-                CreateWindows64Vba7Environment()));
+            admitted.VerifyConditionalCompilation(CreateWindows64Vba7Environment()));
 
         Assert.Contains("target", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("inactive", error.Message, StringComparison.OrdinalIgnoreCase);
@@ -72,11 +63,11 @@ public sealed class DebugConditionalCompilationPreflightCoverageTests
     [InlineData("&H1^", true)]
     [InlineData("1^", false)]
     [InlineData("&H1^", false)]
-    public void LongLongConditionalTargetFailsPreflightInVerifiedX86Context(
+    public void DeferredProofRejectsLongLongConditionsInAVerifiedX86Context(
         string literal,
         bool vba7)
     {
-        var sourcePath = Path.GetFullPath(Path.Combine("DebugProject", "DebugModule.bas"));
+        const string sourceUri = "file:///C:/persistent/DebugModule.bas";
         var source = string.Join('\n',
         [
             "Attribute VB_Name = \"DebugModule\"",
@@ -85,21 +76,11 @@ public sealed class DebugConditionalCompilationPreflightCoverageTests
             "End Sub",
             "#End If"
         ]);
-        var snapshot = Snapshot(sourcePath, source, []);
-        var tree = VbaSyntaxTree.ParseModule(new Uri(sourcePath).AbsoluteUri, source);
-        var targetDeclaration = Assert.Single(tree.Module.CallableDeclarations);
-        Assert.True(VbaConditionalCompilationBranchFacts.TryGetPath(
-            tree,
-            targetDeclaration.Range,
-            requireCompleteStructure: true,
-            out var targetPath));
-        var request = Request(snapshot) with
-        {
-            Target = new DebugTargetProcedure("DebugModule", "LongLongTarget")
-            {
-                ConditionalCompilationPath = targetPath
-            }
-        };
+        var admitted = new DebugSourceAdmission(932).Admit(
+            Snapshot(sourceUri, source, []),
+            "DebugModule",
+            "LongLongTarget",
+            DebugGenerationId.Initial);
         var environment = new DebugCompilationEnvironmentFactory().Create(
             new DebugCompilationSettings(
                 VbaProjectSystemKind.Win32,
@@ -116,7 +97,7 @@ public sealed class DebugConditionalCompilationPreflightCoverageTests
                 UnavailableReason: null));
 
         var error = Assert.Throws<DebugSetupException>(() =>
-            new DebugConditionalCompilationPreflight().Validate(request, [], environment));
+            admitted.VerifyConditionalCompilation(environment));
 
         Assert.False(environment.SupportsLongLong);
         Assert.Contains("target", error.Message, StringComparison.OrdinalIgnoreCase);
@@ -126,6 +107,23 @@ public sealed class DebugConditionalCompilationPreflightCoverageTests
             error.Message,
             StringComparison.Ordinal);
     }
+
+    private static TransportedDebugSourceSnapshot Snapshot(
+        string sourceUri,
+        string source,
+        IReadOnlyList<TransportedDebugSourceBreakpoint> breakpoints)
+        => new(
+            2,
+            [
+                new TransportedDebugSource(
+                    "DebugModule.bas",
+                    sourceUri,
+                    "utf8bom",
+                    Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(source)))
+            ])
+        {
+            Breakpoints = breakpoints
+        };
 
     private static VbaConditionalCompilationEnvironment CreateWindows64Vba7Environment()
     {
@@ -161,24 +159,4 @@ public sealed class DebugConditionalCompilationPreflightCoverageTests
             "End Sub",
             "#End If"
         ]);
-
-    private static DebugSourceSnapshot Snapshot(
-        string sourcePath,
-        string source,
-        ImmutableArray<DebugSourceBreakpoint> breakpoints)
-        => new(
-            DebugSourceSnapshot.CurrentSchemaVersion,
-            [new DebugSourceFileSnapshot(Path.GetFileName(sourcePath), SourceUri(sourcePath), source)],
-            null)
-        {
-            Breakpoints = breakpoints
-        };
-
-    private static DebugLaunchRequest Request(DebugSourceSnapshot snapshot)
-        => new(
-            new DebugTargetProcedure("DebugModule", "RunTarget"),
-            snapshot);
-
-    private static string SourceUri(string sourcePath)
-        => new Uri(Path.GetFullPath(sourcePath)).AbsoluteUri;
 }
