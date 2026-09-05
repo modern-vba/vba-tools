@@ -105,13 +105,24 @@ narrowing the accepted source encodings.
 
 Every `VbaDev` path that reaches `VBComponents.Import`, including ordinary and
 snapshot build, publish, build-before-test, snapshot test, and explicit import,
-creates an invocation-internal `VbeImportSourceSet`. `VbaDev` fixes `GetACP`
-once for the operation. For ordinary `DocumentSourceSet`, explicit-import, and
-materialized snapshot files, it recognizes a supported BOM first, then tries
-strict BOM-less UTF-8, then the strict fixed ACP; a byte sequence valid as both
-uses UTF-8 rather than failing as ambiguous. DAP text entries additionally have
-their declared encoding token revalidated before materialization. Every path
-must decode and re-encode to its original bytes. `VbaDev` then strict-encodes
+creates an invocation-internal `VbeImportSourceSet`. For ordinary
+`DocumentSourceSet` and materialized snapshot files, `VbaDev` fixes `GetACP`
+once for the operation, recognizes a supported BOM first, then tries strict
+BOM-less UTF-8, then the strict fixed ACP; a byte sequence valid as both uses
+UTF-8 rather than failing as ambiguous. DAP text entries additionally have
+their declared encoding token revalidated before materialization.
+
+ADR 0037 supersedes that source-decoding rule only for `ExplicitWorkbookImport`
+in issue #335. Its internal `VbaSourceAdmission` fixes ACP and one inventory,
+reads each selected text source and sidecar once, and admits BOM-marked Unicode
+or BOM-less fixed-ACP text without a UTF-8 probe. Preflight, projection,
+verification, and diagnostics share the immutable admitted facts. Its
+`VbeImportSourceSet` consumes those facts without obtaining ACP again, detecting
+an encoding, or rereading caller files. Ordinary, snapshot, and Doctor paths
+retain their existing behavior, and snapshot capabilities remain version `1.0`.
+
+Every path must decode and re-encode to its original bytes before deriving its
+VBE mirror. `VbaDev` then strict-encodes
 the resulting Unicode text into the fixed ACP and decodes it again to require
 exact text equality. An unsupported encoding, unrepresentable character,
 best-fit substitution, or any other difference fails before Excel starts.
@@ -131,8 +142,11 @@ serialization records: a class module's `VERSION` and `BEGIN`/`END` header,
 line that only represents a terminal newline. It also models the one known
 leading empty `CodeModule` line produced by UserForm import. The contract
 assumes no automatic VBE insertion or normalization beyond this projection.
-Any unmodeled difference fails before save, so a generated output is not
-committed and an explicit-import target is not saved.
+Any unmodeled difference fails before save, so a generated output or an
+explicit-import target is not committed. Explicit import operates on a private
+target copy and replaces the original only after verification, save, mirror
+cleanup, and owned Excel-process release all succeed. Earlier failures leave
+the target unchanged and report any retained private artifacts.
 
 That per-invocation proof deliberately stops at component identity, component
 kind, and projected code. `VbaDev` does not re-export each imported component,

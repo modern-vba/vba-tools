@@ -1,4 +1,5 @@
 using System.Text;
+using VbaDev.App.Cli;
 using VbaDev.App.Import;
 using VbaDev.App.Workbooks;
 using VbaDev.Cli;
@@ -9,6 +10,169 @@ namespace VbaDev.Tests;
 
 public sealed class ImportCommandTests
 {
+    [Fact]
+    public void ImportInterpretsBomlessUtf8BytesOnlyAsTheCapturedAcp()
+    {
+        using var temp = TempDirectory.Create();
+        var sourceDirectory = temp.CreateDirectory("src");
+        var sourcePath = Path.Combine(sourceDirectory, "Module1.bas");
+        var targetWorkbook = Path.Combine(temp.Path, "target.xlsm");
+        File.WriteAllBytes(sourcePath, "Attribute VB_Name = \"Module1\"\r\n' é\r\n"u8.ToArray());
+        File.WriteAllBytes(targetWorkbook, [1, 2, 3, 4]);
+        var automation = new FakeWorkbookBuildAutomation();
+        var command = new ImportCommand(automation, new VbeImportSourceSetFactory(() => 1252));
+
+        var result = command.Run(new ImportCommandRequest(sourceDirectory, targetWorkbook, temp.Path));
+
+        Assert.Equal(0, result.ExitCode);
+        var source = Assert.Single(automation.ImportedSources);
+        Assert.Equal("windows-1252", source.ImportVerification.OriginalEncoding);
+        Assert.Contains("' Ã©", source.ImportVerification.CodeModuleLines);
+    }
+
+    [Fact]
+    public void ImportCommitsSavedWorkbookOnlyAfterOwnedReleaseReturnsSuccessfully()
+    {
+        using var temp = TempDirectory.Create();
+        var sourceDirectory = temp.CreateDirectory("src");
+        var targetWorkbook = Path.Combine(temp.Path, "target.xlsm");
+        File.WriteAllText(Path.Combine(sourceDirectory, "Module1.bas"), "Attribute VB_Name = \"Module1\"", new UTF8Encoding(false));
+        byte[] targetBytes = [1, 2, 3, 4];
+        File.WriteAllBytes(targetWorkbook, targetBytes);
+        var automation = new SavedWorkbookAutomation
+        {
+            AfterSave = path =>
+            {
+                Assert.NotEqual(targetWorkbook, path);
+                Assert.Equal(targetBytes, File.ReadAllBytes(targetWorkbook));
+            }
+        };
+        var command = new ImportCommand(automation, new VbeImportSourceSetFactory(() => 65001));
+
+        var result = command.Run(new ImportCommandRequest(sourceDirectory, targetWorkbook, temp.Path));
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(automation.SavedBytes, File.ReadAllBytes(targetWorkbook));
+        Assert.Single(Directory.GetFiles(temp.Path, "*.xlsm"));
+    }
+
+    [Fact]
+    public async Task ImportCancellationAfterSaveButBeforeCommitPreservesTarget()
+    {
+        using var temp = TempDirectory.Create();
+        using var cancellation = new CancellationTokenSource();
+        var sourceDirectory = temp.CreateDirectory("src");
+        var targetWorkbook = Path.Combine(temp.Path, "target.xlsm");
+        File.WriteAllText(Path.Combine(sourceDirectory, "Module1.bas"), "Attribute VB_Name = \"Module1\"");
+        byte[] targetBytes = [1, 2, 3, 4];
+        File.WriteAllBytes(targetWorkbook, targetBytes);
+        var automation = new SavedWorkbookAutomation { AfterSave = _ => cancellation.Cancel() };
+        var command = new ImportCommand(automation, new VbeImportSourceSetFactory(() => 65001));
+
+        var result = await command.RunAsync(
+            new ImportCommandRequest(sourceDirectory, targetWorkbook, temp.Path), cancellation.Token);
+
+        Assert.Equal(130, result.ExitCode);
+        Assert.Equal(targetBytes, File.ReadAllBytes(targetWorkbook));
+        Assert.Single(Directory.GetFiles(temp.Path, "*.xlsm"));
+    }
+
+    [Fact]
+    public void ImportPreventsConcurrentTargetWritesAndReplacementWhileProcessingPrivateCopy()
+    {
+        using var temp = TempDirectory.Create();
+        var sourceDirectory = temp.CreateDirectory("src");
+        var targetWorkbook = Path.Combine(temp.Path, "target.xlsm");
+        var replacementPath = Path.Combine(temp.Path, "replacement.xlsm");
+        File.WriteAllText(Path.Combine(sourceDirectory, "Module1.bas"), "Attribute VB_Name = \"Module1\"");
+        File.WriteAllBytes(targetWorkbook, [1, 2, 3, 4]);
+        File.WriteAllBytes(replacementPath, [9, 9, 9]);
+        var automation = new SavedWorkbookAutomation
+        {
+            AfterSave = _ =>
+            {
+                Assert.Throws<IOException>(() => File.WriteAllBytes(targetWorkbook, [9, 9, 9]));
+                var replacementError = Record.Exception(() => File.Move(replacementPath, targetWorkbook, overwrite: true));
+                Assert.True(replacementError is IOException or UnauthorizedAccessException);
+                Assert.Equal(new byte[] { 1, 2, 3, 4 }, File.ReadAllBytes(targetWorkbook));
+            }
+        };
+        var command = new ImportCommand(automation, new VbeImportSourceSetFactory(() => 65001));
+
+        var result = command.Run(new ImportCommandRequest(sourceDirectory, targetWorkbook, temp.Path));
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(automation.SavedBytes, File.ReadAllBytes(targetWorkbook));
+        Assert.True(File.Exists(replacementPath));
+    }
+
+    [Fact]
+    public void ImportReportsRetainedWorkbookWithoutLosingOwnedReleaseFailure()
+    {
+        using var temp = TempDirectory.Create();
+        var sourceDirectory = temp.CreateDirectory("src");
+        var targetWorkbook = Path.Combine(temp.Path, "target.xlsm");
+        File.WriteAllText(Path.Combine(sourceDirectory, "Module1.bas"), "Attribute VB_Name = \"Module1\"", new UTF8Encoding(false));
+        byte[] targetBytes = [1, 2, 3, 4];
+        File.WriteAllBytes(targetWorkbook, targetBytes);
+        FileStream? workbookLock = null;
+        string? retainedPath = null;
+        var automation = new SavedWorkbookAutomation
+        {
+            ReleaseFailure = new WorkbookAutomationCleanupException("Owned Excel release could not be verified."),
+            AfterSave = path =>
+            {
+                retainedPath = path;
+                workbookLock = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            }
+        };
+        var command = new ImportCommand(automation, new VbeImportSourceSetFactory(() => 65001));
+
+        try
+        {
+            var result = command.Run(new ImportCommandRequest(sourceDirectory, targetWorkbook, temp.Path));
+
+            Assert.Equal(1, result.ExitCode);
+            Assert.Equal(OwnedProcessReleaseProof.Unproven, result.OwnedProcessReleaseProof);
+            Assert.Contains("release could not be verified", result.StandardError, StringComparison.Ordinal);
+            Assert.NotNull(retainedPath);
+            Assert.Contains(retainedPath, result.StandardError, StringComparison.Ordinal);
+            Assert.True(File.Exists(retainedPath));
+            Assert.Equal(targetBytes, File.ReadAllBytes(targetWorkbook));
+        }
+        finally
+        {
+            workbookLock?.Dispose();
+            if (retainedPath is not null && retainedPath != targetWorkbook)
+            {
+                File.Delete(retainedPath);
+            }
+        }
+    }
+
+    [Fact]
+    public void ImportPreservesTargetWhenOwnedReleaseFailsAfterWorkbookSave()
+    {
+        using var temp = TempDirectory.Create();
+        var sourceDirectory = temp.CreateDirectory("src");
+        var targetWorkbook = Path.Combine(temp.Path, "target.xlsm");
+        File.WriteAllText(Path.Combine(sourceDirectory, "Module1.bas"), "Attribute VB_Name = \"Module1\"", new UTF8Encoding(false));
+        byte[] targetBytes = [1, 2, 3, 4];
+        File.WriteAllBytes(targetWorkbook, targetBytes);
+        var automation = new SavedWorkbookAutomation
+        {
+            ReleaseFailure = new WorkbookAutomationCleanupException("Owned Excel release could not be verified.")
+        };
+        var command = new ImportCommand(automation, new VbeImportSourceSetFactory(() => 65001));
+
+        var result = command.Run(new ImportCommandRequest(sourceDirectory, targetWorkbook, temp.Path));
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("release could not be verified", result.StandardError, StringComparison.Ordinal);
+        Assert.Equal(targetBytes, File.ReadAllBytes(targetWorkbook));
+        Assert.Single(Directory.GetFiles(temp.Path, "*.xlsm"));
+    }
+
     [Fact]
     public async Task ImportCommandDoesNotRequireProjectContextAndSavesAfterSuccessfulImport()
     {
@@ -42,7 +206,7 @@ public sealed class ImportCommandTests
         Assert.Contains(sourceDirectory, standardOutput.ToString(), StringComparison.Ordinal);
         Assert.Contains(targetWorkbook, standardOutput.ToString(), StringComparison.Ordinal);
         Assert.Empty(standardError.ToString());
-        Assert.Equal([targetWorkbook], automation.OpenedWorkbooks);
+        AssertReleasedStagingWorkbook(targetWorkbook, automation.OpenedWorkbooks);
         Assert.Equal(
             [
                 "remove:OldModule",
@@ -134,7 +298,7 @@ public sealed class ImportCommandTests
         Assert.Equal(1, result.ExitCode);
         Assert.Contains("retained component 'ThisWorkbook'", result.StandardError, StringComparison.Ordinal);
         Assert.Contains(sourcePath, result.StandardError, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal([targetWorkbook], automation.OpenedWorkbooks);
+        AssertReleasedStagingWorkbook(targetWorkbook, automation.OpenedWorkbooks);
         Assert.Empty(automation.Events);
         Assert.Equal(targetBytes, File.ReadAllBytes(targetWorkbook));
     }
@@ -289,7 +453,7 @@ public sealed class ImportCommandTests
         var result = application.Run(["import", "--from", "src", "--to", "target.xlsm"]);
 
         Assert.Equal(0, result.ExitCode);
-        Assert.Equal([targetWorkbook], automation.OpenedWorkbooks);
+        AssertReleasedStagingWorkbook(targetWorkbook, automation.OpenedWorkbooks);
         var importedSource = Assert.Single(automation.ImportedSources);
         Assert.Equal("Module1.bas", importedSource.FileName);
         Assert.NotEqual(Path.Combine(sourceDirectory, "Module1.bas"), importedSource.SourcePath);
@@ -403,7 +567,7 @@ public sealed class ImportCommandTests
         Assert.Equal(1, result.ExitCode);
         Assert.Contains("containing project 'ActualProject'", result.StandardError, StringComparison.Ordinal);
         Assert.Contains("active reference 'ActualReference'", result.StandardError, StringComparison.Ordinal);
-        Assert.Equal([targetWorkbook], automation.OpenedWorkbooks);
+        AssertReleasedStagingWorkbook(targetWorkbook, automation.OpenedWorkbooks);
         Assert.Empty(automation.Events);
         Assert.Equal(targetBytes, File.ReadAllBytes(targetWorkbook));
     }
@@ -551,7 +715,8 @@ public sealed class ImportCommandTests
         var sourcePath = Path.Combine(sourceDirectory, "Lossy.bas");
         var targetWorkbook = Path.Combine(temp.Path, "target.xlsm");
         const string sourceText = "Attribute VB_Name = \"Lossy\"\r\nPublic Const Minus As String = \"−\"\r\n";
-        var sourceBytes = new UTF8Encoding(false, true).GetBytes(sourceText);
+        var sourceBytes = new UTF8Encoding(true, true).GetPreamble()
+            .Concat(new UTF8Encoding(false, true).GetBytes(sourceText)).ToArray();
         byte[] targetBytes = [1, 2, 3, 4];
         File.WriteAllBytes(sourcePath, sourceBytes);
         File.WriteAllBytes(targetWorkbook, targetBytes);
@@ -668,7 +833,7 @@ public sealed class ImportCommandTests
     }
 
     [Fact]
-    public void ImportMirrorCleanupFailurePreventsVerificationAndInPlaceSave()
+    public void ImportMirrorCleanupFailurePreventsVerificationSaveAndTargetCommit()
     {
         using var temp = TempDirectory.Create();
         var sourceDirectory = temp.CreateDirectory("src");
@@ -700,6 +865,10 @@ public sealed class ImportCommandTests
 
             Assert.Equal(1, result.ExitCode);
             Assert.Contains("could not be removed", result.StandardError, StringComparison.OrdinalIgnoreCase);
+            Assert.NotNull(stagingPath);
+            Assert.True(Path.IsPathFullyQualified(stagingPath));
+            Assert.Contains(stagingPath, result.StandardError, StringComparison.Ordinal);
+            Assert.True(Directory.Exists(stagingPath));
             Assert.Equal(0, automation.VerifyCalls);
             Assert.Equal(0, automation.SaveCalls);
             Assert.Equal("workbook", File.ReadAllText(targetWorkbook, Encoding.UTF8));
@@ -714,6 +883,14 @@ public sealed class ImportCommandTests
         }
     }
 
+    private static void AssertReleasedStagingWorkbook(string targetWorkbook, IReadOnlyList<string> openedWorkbooks)
+    {
+        var stagedWorkbook = Assert.Single(openedWorkbooks);
+        Assert.NotEqual(targetWorkbook, stagedWorkbook);
+        Assert.Equal(Path.GetDirectoryName(targetWorkbook), Path.GetDirectoryName(stagedWorkbook));
+        Assert.False(File.Exists(stagedWorkbook));
+    }
+
     private static void WriteText(string path, string content)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
@@ -724,6 +901,38 @@ public sealed class ImportCommandTests
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllBytes(path, content);
+    }
+
+    private sealed class SavedWorkbookAutomation : IWorkbookBuildAutomation, IWorkbookGenerationAutomation
+    {
+        public Exception? ReleaseFailure { get; init; }
+
+        public byte[] SavedBytes { get; } = [5, 6, 7, 8];
+
+        public Action<string>? AfterSave { get; init; }
+
+        public IWorkbookBuildSession OpenWorkbook(string workbookPath)
+            => throw new InvalidOperationException("The native generation port must be used.");
+
+        public async Task<TResult> RunAsync<TResult>(
+            string workbookPath,
+            WorkbookAutomationTimeouts timeouts,
+            Func<IWorkbookGenerationSession, CancellationToken, Task<TResult>> operation,
+            CancellationToken cancellationToken)
+        {
+            var workbook = new FakeWorkbookBuildAutomation();
+            var result = await new SynchronousWorkbookGenerationAutomation(workbook).RunAsync(
+                workbookPath, timeouts, operation, cancellationToken);
+            Assert.Equal(1, workbook.SaveCalls);
+            File.WriteAllBytes(workbookPath, SavedBytes);
+            AfterSave?.Invoke(workbookPath);
+            if (ReleaseFailure is not null)
+            {
+                throw ReleaseFailure;
+            }
+
+            return result;
+        }
     }
 
     private sealed class FakeNativeImportGenerationAutomation :

@@ -1,0 +1,250 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "id": "ascii-acp-932",
+      "activeCodePage": 932,
+      "fileName": "Module1.bas",
+      "bytesBase64": "QXR0cmlidXRlIFZCX05hbWUgPSAiTW9kdWxlMSINCk9wdGlvbiBFeHBsaWNpdA0KJyBBU0NJSQ0K",
+      "expectedText": "Attribute VB_Name = \"Module1\"\r\nOption Explicit\r\n' ASCII\r\n",
+      "expectedEncoding": "windows-932"
+    },
+    {
+      "id": "ascii-acp-1252",
+      "activeCodePage": 1252,
+      "fileName": "Module1.bas",
+      "bytesBase64": "QXR0cmlidXRlIFZCX05hbWUgPSAiTW9kdWxlMSINCk9wdGlvbiBFeHBsaWNpdA0KJyBBU0NJSQ0K",
+      "expectedText": "Attribute VB_Name = \"Module1\"\r\nOption Explicit\r\n' ASCII\r\n",
+      "expectedEncoding": "windows-1252"
+    },
+    {
+      "id": "ascii-acp-65001",
+      "activeCodePage": 65001,
+      "fileName": "Module1.bas",
+      "bytesBase64": "QXR0cmlidXRlIFZCX05hbWUgPSAiTW9kdWxlMSINCk9wdGlvbiBFeHBsaWNpdA0KJyBBU0NJSQ0K",
+      "expectedText": "Attribute VB_Name = \"Module1\"\r\nOption Explicit\r\n' ASCII\r\n",
+      "expectedEncoding": "utf8"
+    },
+    {
+      "id": "ambiguous-utf8-bytes-as-acp-932",
+      "activeCodePage": 932,
+      "fileName": "Module1.bas",
+      "bytesBase64": "QXR0cmlidXRlIFZCX05hbWUgPSAiTW9kdWxlMSINCk9wdGlvbiBFeHBsaWNpdA0KJyDDqQ0K",
+      "expectedText": "Attribute VB_Name = \"Module1\"\r\nOption Explicit\r\n' ﾃｩ\r\n",
+      "expectedEncoding": "windows-932"
+    },
+    {
+      "id": "ambiguous-utf8-bytes-as-acp-1252",
+      "activeCodePage": 1252,
+      "fileName": "Module1.bas",
+      "bytesBase64": "QXR0cmlidXRlIFZCX05hbWUgPSAiTW9kdWxlMSINCk9wdGlvbiBFeHBsaWNpdA0KJyDDqQ0K",
+      "expectedText": "Attribute VB_Name = \"Module1\"\r\nOption Explicit\r\n' Ã©\r\n",
+      "expectedEncoding": "windows-1252"
+    },
+    {
+      "id": "raw-acp-932-japanese",
+      "activeCodePage": 932,
+      "fileName": "Module1.bas",
+      "bytesBase64": "QXR0cmlidXRlIFZCX05hbWUgPSAiTW9kdWxlMSINCk9wdGlvbiBFeHBsaWNpdA0KJyCT+pZ7jOoNCg==",
+      "expectedText": "Attribute VB_Name = \"Module1\"\r\nOption Explicit\r\n' 日本語\r\n",
+      "expectedEncoding": "windows-932"
+    },
+    {
+      "id": "raw-acp-1252-accent",
+      "activeCodePage": 1252,
+      "fileName": "Module1.bas",
+      "bytesBase64": "QXR0cmlidXRlIFZCX05hbWUgPSAiTW9kdWxlMSINCk9wdGlvbiBFeHBsaWNpdA0KJyBjYWbpDQo=",
+      "expectedText": "Attribute VB_Name = \"Module1\"\r\nOption Explicit\r\n' café\r\n",
+      "expectedEncoding": "windows-1252"
+    },
+    {
+      "id": "canonical-bomless-utf8-acp-65001",
+      "activeCodePage": 65001,
+      "fileName": "Module1.bas",
+      "bytesBase64": "QXR0cmlidXRlIFZCX05hbWUgPSAiTW9kdWxlMSINCk9wdGlvbiBFeHBsaWNpdA0KJyDml6XmnKzoqp4gY2Fmw6kg8J+YgA0K",
+      "expectedText": "Attribute VB_Name = \"Module1\"\r\nOption Explicit\r\n' 日本語 café 😀\r\n",
+      "expectedEncoding": "utf8"
+    },
+    {
+      "id": "utf8bom-acp-932",
+      "activeCodePage": 932,
+      "fileName": "Module1.bas",
+      "bytesBase64": "77u/QXR0cmlidXRlIFZCX05hbWUgPSAiTW9kdWxlMSINCk9wdGlvbiBFeHBsaWNpdA0KJyDml6XmnKzoqp4NCg==",
+      "expectedText": "Attribute VB_Name = \"Module1\"\r\nOption Explicit\r\n' 日本語\r\n",
+      "expectedEncoding": "utf8bom"
+    },
+    {
+      "id": "utf8bom-acp-1252",
+      "activeCodePage": 1252,
+      "fileName": "Module1.bas",
+      "bytesBase64": "77u/QXR0cmlidXRlIFZCX05hbWUgPSAiTW9kdWxlMSINCk9wdGlvbiBFeHBsaWNpdA0KJyBjYWbDqQ0K",
+      "expectedText": "Attribute VB_Name = \"Module1\"\r\nOption Explicit\r\n' café\r\n",
+      "expectedEncoding": "utf8bom"
+    },
+    {
+      "id": "utf8bom-acp-65001",
+      "activeCodePage": 65001,
+      "fileName": "Module1.bas",
+      "bytesBase64": "77u/QXR0cmlidXRlIFZCX05hbWUgPSAiTW9kdWxlMSINCk9wdGlvbiBFeHBsaWNpdA0KJyDwn5iADQo=",
+      "expectedText": "Attribute VB_Name = \"Module1\"\r\nOption Explicit\r\n' 😀\r\n",
+      "expectedEncoding": "utf8bom"
+    },
+    {
+      "id": "utf16le-acp-932",
+      "activeCodePage": 932,
+      "fileName": "Module1.bas",
+      "bytesBase64": "//5BAHQAdAByAGkAYgB1AHQAZQAgAFYAQgBfAE4AYQBtAGUAIAA9ACAAIgBNAG8AZAB1AGwAZQAxACIADQAKAE8AcAB0AGkAbwBuACAARQB4AHAAbABpAGMAaQB0AA0ACgAnACAA5WUsZ56KDQAKAA==",
+      "expectedText": "Attribute VB_Name = \"Module1\"\r\nOption Explicit\r\n' 日本語\r\n",
+      "expectedEncoding": "utf16le"
+    },
+    {
+      "id": "utf16le-acp-1252",
+      "activeCodePage": 1252,
+      "fileName": "Module1.bas",
+      "bytesBase64": "//5BAHQAdAByAGkAYgB1AHQAZQAgAFYAQgBfAE4AYQBtAGUAIAA9ACAAIgBNAG8AZAB1AGwAZQAxACIADQAKAE8AcAB0AGkAbwBuACAARQB4AHAAbABpAGMAaQB0AA0ACgAnACAAYwBhAGYA6QANAAoA",
+      "expectedText": "Attribute VB_Name = \"Module1\"\r\nOption Explicit\r\n' café\r\n",
+      "expectedEncoding": "utf16le"
+    },
+    {
+      "id": "utf16le-acp-65001",
+      "activeCodePage": 65001,
+      "fileName": "Module1.bas",
+      "bytesBase64": "//5BAHQAdAByAGkAYgB1AHQAZQAgAFYAQgBfAE4AYQBtAGUAIAA9ACAAIgBNAG8AZAB1AGwAZQAxACIADQAKAE8AcAB0AGkAbwBuACAARQB4AHAAbABpAGMAaQB0AA0ACgAnACAAPdgA3g0ACgA=",
+      "expectedText": "Attribute VB_Name = \"Module1\"\r\nOption Explicit\r\n' 😀\r\n",
+      "expectedEncoding": "utf16le"
+    },
+    {
+      "id": "utf16be-acp-932",
+      "activeCodePage": 932,
+      "fileName": "Module1.bas",
+      "bytesBase64": "/v8AQQB0AHQAcgBpAGIAdQB0AGUAIABWAEIAXwBOAGEAbQBlACAAPQAgACIATQBvAGQAdQBsAGUAMQAiAA0ACgBPAHAAdABpAG8AbgAgAEUAeABwAGwAaQBjAGkAdAANAAoAJwAgZeVnLIqeAA0ACg==",
+      "expectedText": "Attribute VB_Name = \"Module1\"\r\nOption Explicit\r\n' 日本語\r\n",
+      "expectedEncoding": "utf16be"
+    },
+    {
+      "id": "utf16be-acp-1252",
+      "activeCodePage": 1252,
+      "fileName": "Module1.bas",
+      "bytesBase64": "/v8AQQB0AHQAcgBpAGIAdQB0AGUAIABWAEIAXwBOAGEAbQBlACAAPQAgACIATQBvAGQAdQBsAGUAMQAiAA0ACgBPAHAAdABpAG8AbgAgAEUAeABwAGwAaQBjAGkAdAANAAoAJwAgAGMAYQBmAOkADQAK",
+      "expectedText": "Attribute VB_Name = \"Module1\"\r\nOption Explicit\r\n' café\r\n",
+      "expectedEncoding": "utf16be"
+    },
+    {
+      "id": "utf16be-acp-65001",
+      "activeCodePage": 65001,
+      "fileName": "Module1.bas",
+      "bytesBase64": "/v8AQQB0AHQAcgBpAGIAdQB0AGUAIABWAEIAXwBOAGEAbQBlACAAPQAgACIATQBvAGQAdQBsAGUAMQAiAA0ACgBPAHAAdABpAG8AbgAgAEUAeABwAGwAaQBjAGkAdAANAAoAJwAg2D3eAAANAAo=",
+      "expectedText": "Attribute VB_Name = \"Module1\"\r\nOption Explicit\r\n' 😀\r\n",
+      "expectedEncoding": "utf16be"
+    },
+    {
+      "id": "unsupported-utf32le-bom",
+      "activeCodePage": 932,
+      "fileName": "Module1.bas",
+      "bytesBase64": "//4AAEEAAAB0AAAAdAAAAHIAAABpAAAAYgAAAHUAAAB0AAAAZQAAACAAAABWAAAAQgAAAF8AAABOAAAAYQAAAG0AAABlAAAAIAAAAD0AAAAgAAAAIgAAAE0AAABvAAAAZAAAAHUAAABsAAAAZQAAADEAAAAiAAAADQAAAAoAAABPAAAAcAAAAHQAAABpAAAAbwAAAG4AAAAgAAAARQAAAHgAAABwAAAAbAAAAGkAAABjAAAAaQAAAHQAAAANAAAACgAAACcAAAAgAAAAQQAAAFMAAABDAAAASQAAAEkAAAANAAAACgAAAA==",
+      "expectedFailure": true
+    },
+    {
+      "id": "unsupported-utf32be-bom",
+      "activeCodePage": 932,
+      "fileName": "Module1.bas",
+      "bytesBase64": "AAD+/wAAAEEAAAB0AAAAdAAAAHIAAABpAAAAYgAAAHUAAAB0AAAAZQAAACAAAABWAAAAQgAAAF8AAABOAAAAYQAAAG0AAABlAAAAIAAAAD0AAAAgAAAAIgAAAE0AAABvAAAAZAAAAHUAAABsAAAAZQAAADEAAAAiAAAADQAAAAoAAABPAAAAcAAAAHQAAABpAAAAbwAAAG4AAAAgAAAARQAAAHgAAABwAAAAbAAAAGkAAABjAAAAaQAAAHQAAAANAAAACgAAACcAAAAgAAAAQQAAAFMAAABDAAAASQAAAEkAAAANAAAACg==",
+      "expectedFailure": true
+    },
+    {
+      "id": "unsupported-utf7-signature-38",
+      "activeCodePage": 1252,
+      "fileName": "Module1.bas",
+      "bytesBase64": "Ky92OC1BdHRyaWJ1dGUgVkJfTmFtZSA9ICJNb2R1bGUxIg0KT3B0aW9uIEV4cGxpY2l0DQonIEFTQ0lJDQo=",
+      "expectedFailure": true
+    },
+    {
+      "id": "unsupported-utf7-signature-39",
+      "activeCodePage": 1252,
+      "fileName": "Module1.bas",
+      "bytesBase64": "Ky92OS1BdHRyaWJ1dGUgVkJfTmFtZSA9ICJNb2R1bGUxIg0KT3B0aW9uIEV4cGxpY2l0DQonIEFTQ0lJDQo=",
+      "expectedFailure": true
+    },
+    {
+      "id": "unsupported-utf7-signature-2b",
+      "activeCodePage": 1252,
+      "fileName": "Module1.bas",
+      "bytesBase64": "Ky92Ky1BdHRyaWJ1dGUgVkJfTmFtZSA9ICJNb2R1bGUxIg0KT3B0aW9uIEV4cGxpY2l0DQonIEFTQ0lJDQo=",
+      "expectedFailure": true
+    },
+    {
+      "id": "unsupported-utf7-signature-2f",
+      "activeCodePage": 1252,
+      "fileName": "Module1.bas",
+      "bytesBase64": "Ky92Ly1BdHRyaWJ1dGUgVkJfTmFtZSA9ICJNb2R1bGUxIg0KT3B0aW9uIEV4cGxpY2l0DQonIEFTQ0lJDQo=",
+      "expectedFailure": true
+    },
+    {
+      "id": "truncated-utf8-bom",
+      "activeCodePage": 1252,
+      "fileName": "Module1.bas",
+      "bytesBase64": "77s=",
+      "expectedFailure": true
+    },
+    {
+      "id": "malformed-utf8-bom-payload",
+      "activeCodePage": 1252,
+      "fileName": "Module1.bas",
+      "bytesBase64": "77u/QXR0cmlidXRlIFZCX05hbWUgPSAiTW9kdWxlMSINCk9wdGlvbiBFeHBsaWNpdA0KJyDDKA0K",
+      "expectedFailure": true
+    },
+    {
+      "id": "truncated-utf16le-bom-payload",
+      "activeCodePage": 932,
+      "fileName": "Module1.bas",
+      "bytesBase64": "//5BAHQAdAByAGkAYgB1AHQAZQAgAFYAQgBfAE4AYQBtAGUAIAA9ACAAIgBNAG8AZAB1AGwAZQAxACIADQAKAE8AcAB0AGkAbwBuACAARQB4AHAAbABpAGMAaQB0AA0ACgAnACAAQQ==",
+      "expectedFailure": true
+    },
+    {
+      "id": "malformed-utf16be-bom-payload",
+      "activeCodePage": 65001,
+      "fileName": "Module1.bas",
+      "bytesBase64": "/v8AQQB0AHQAcgBpAGIAdQB0AGUAIABWAEIAXwBOAGEAbQBlACAAPQAgACIATQBvAGQAdQBsAGUAMQAiAA0ACgBPAHAAdABpAG8AbgAgAEUAeABwAGwAaQBjAGkAdAANAAoAJwAg2AA=",
+      "expectedFailure": true
+    },
+    {
+      "id": "invalid-acp-932-lead-byte",
+      "activeCodePage": 932,
+      "fileName": "Module1.bas",
+      "bytesBase64": "QXR0cmlidXRlIFZCX05hbWUgPSAiTW9kdWxlMSINCk9wdGlvbiBFeHBsaWNpdA0KJyCBDQo=",
+      "expectedFailure": true
+    },
+    {
+      "id": "invalid-bomless-utf8-acp-65001",
+      "activeCodePage": 65001,
+      "fileName": "Module1.bas",
+      "bytesBase64": "QXR0cmlidXRlIFZCX05hbWUgPSAiTW9kdWxlMSINCk9wdGlvbiBFeHBsaWNpdA0KJyDDKA0K",
+      "expectedFailure": true
+    },
+    {
+      "id": "noncanonical-acp-932-duplicate-mapping",
+      "activeCodePage": 932,
+      "fileName": "Module1.bas",
+      "bytesBase64": "QXR0cmlidXRlIFZCX05hbWUgPSAiTW9kdWxlMSINCk9wdGlvbiBFeHBsaWNpdA0KJyCHkA0K",
+      "expectedFailure": true
+    },
+    {
+      "id": "utf8bom-unrepresentable-in-acp-932",
+      "activeCodePage": 932,
+      "fileName": "Module1.bas",
+      "bytesBase64": "77u/QXR0cmlidXRlIFZCX05hbWUgPSAiTW9kdWxlMSINCk9wdGlvbiBFeHBsaWNpdA0KJyDwn5iADQo=",
+      "expectedText": "Attribute VB_Name = \"Module1\"\r\nOption Explicit\r\n' 😀\r\n",
+      "expectedEncoding": "utf8bom",
+      "expectedProjectionFailure": true
+    },
+    {
+      "id": "utf16le-unrepresentable-in-acp-1252",
+      "activeCodePage": 1252,
+      "fileName": "Module1.bas",
+      "bytesBase64": "//5BAHQAdAByAGkAYgB1AHQAZQAgAFYAQgBfAE4AYQBtAGUAIAA9ACAAIgBNAG8AZAB1AGwAZQAxACIADQAKAE8AcAB0AGkAbwBuACAARQB4AHAAbABpAGMAaQB0AA0ACgAnACAA5WUsZ56KDQAKAA==",
+      "expectedText": "Attribute VB_Name = \"Module1\"\r\nOption Explicit\r\n' 日本語\r\n",
+      "expectedEncoding": "utf16le",
+      "expectedProjectionFailure": true
+    }
+  ]
+}
