@@ -15,7 +15,8 @@ internal sealed record AutomationExcelProcessEvidence(
     bool CancellationRequestedDuringCleanup,
     bool ProcessReleaseVerified,
     bool DispatcherRetired,
-    string? IsolationDiagnostics);
+    string? IsolationDiagnostics,
+    bool DispatcherCreated = true);
 
 /// <summary>
 /// Withholds the operation value until runtime release and terminal failures

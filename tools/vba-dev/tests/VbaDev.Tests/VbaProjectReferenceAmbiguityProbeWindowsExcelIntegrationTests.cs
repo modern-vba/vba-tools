@@ -1,8 +1,10 @@
 using System.Diagnostics;
 using System.IO.Compression;
+using System.Runtime.InteropServices;
 using System.Text;
 using VbaDev.App.References;
 using VbaDev.App.Workbooks;
+using VbaDev.Infrastructure.Debugging;
 using VbaDev.Infrastructure.Workbooks;
 using Xunit;
 
@@ -13,6 +15,235 @@ public sealed class VbaProjectReferenceAmbiguityProbeWindowsExcelIntegrationTest
 {
     private const string ScriptingGuid = "420b2830-e718-11cf-893d-00a0c9054228";
     private const string WindowsScriptHostGuid = "f935dc20-1cf0-11d0-adb9-00c04fd58a0b";
+    private const string UnavailableGuid = "11111111-2222-3333-4444-555555555555";
+
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
+    public async Task UniqueRegistryIdentityDoesNotStartExcelOrCreateProbeWorkspace()
+    {
+        using var temp = TempDirectory.Create();
+        var missingTemplatePath = Path.Combine(temp.Path, "MissingTemplate.xlsm");
+        var initialProcesses = CaptureExcelProcessIds();
+        var initialProbeWorkspaces = CaptureProbeWorkspaces();
+        var lifecycle = new ObservingReferenceProbeLifecycle();
+        var planner = new VbaProjectReferencePlanner(
+            new RegistryVbaProjectReferenceResolver(),
+            new VbaProjectReferenceAmbiguityProbe(
+                new ExcelComVbaProjectReferenceProbeAutomation(
+                    new StaComDispatcherFactory(),
+                    lifecycle)));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+
+        VbaProjectReferenceResolutionBatch result;
+        try
+        {
+            result = await planner.ResolveReferencesAsync(
+                missingTemplatePath,
+                ["Microsoft Scripting Runtime"],
+                cancellation.Token);
+        }
+        finally
+        {
+            await WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20));
+        }
+
+        Assert.True(result.Complete);
+        Assert.Empty(result.Diagnostics);
+        Assert.Equal(ScriptingGuid, Assert.Single(Assert.Single(result.References).Matches).Guid);
+        Assert.Equal(0, lifecycle.StartCalls);
+        Assert.False(File.Exists(missingTemplatePath));
+        Assert.True(initialProbeWorkspaces.SetEquals(CaptureProbeWorkspaces()));
+        Assert.True(initialProcesses.SetEquals(CaptureExcelProcessIds()));
+    }
+
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
+    public async Task RealRejectedCandidateClosesBeforeTheNextFreshReferenceBaseline()
+    {
+        var initialProcesses = CaptureExcelProcessIds();
+        var initialProbeWorkspaces = CaptureProbeWorkspaces();
+        var lifecycle = new ObservingReferenceProbeLifecycle();
+        var probe = new VbaProjectReferenceAmbiguityProbe(
+            new ExcelComVbaProjectReferenceProbeAutomation(
+                new StaComDispatcherFactory(),
+                lifecycle));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+
+        VbaProjectReferenceResolutionBatch result;
+        try
+        {
+            result = await probe.ResolveAsync(
+                VbaProjectReferenceProbeBaseline.BlankWorkbook,
+                CreateRegistryResolution(),
+                cancellation.Token);
+        }
+        finally
+        {
+            await WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20));
+        }
+
+        Assert.True(result.Complete);
+        Assert.Empty(result.Diagnostics);
+        Assert.Equal(ScriptingGuid, Assert.Single(result.References[0].Matches).Guid);
+        Assert.Equal([ScriptingGuid, WindowsScriptHostGuid], result.References[1].Matches.Select(match => match.Guid));
+        Assert.Equal(1, lifecycle.StartCalls);
+        Assert.Contains(UnavailableGuid, lifecycle.RejectedCandidateGuids);
+        Assert.True(lifecycle.BaselineSignatures.Count >= 4);
+        Assert.NotEmpty(lifecycle.BaselineSignatures[0]);
+        Assert.All(lifecycle.BaselineSignatures, baseline =>
+            Assert.Equal(lifecycle.BaselineSignatures[0], baseline));
+        Assert.Equal(
+            Enumerable.Range(0, lifecycle.BaselineSignatures.Count),
+            lifecycle.CompletedClosesBeforeOpen);
+        Assert.Equal(lifecycle.BaselineSignatures.Count, lifecycle.CompletedCloses);
+        Assert.True(initialProbeWorkspaces.SetEquals(CaptureProbeWorkspaces()));
+        Assert.True(initialProcesses.SetEquals(CaptureExcelProcessIds()));
+    }
+
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
+    public async Task RealReferenceAdditionCancellationStopsLaterCandidatesAndReleasesOwnedExcel()
+    {
+        var initialProcesses = CaptureExcelProcessIds();
+        var initialProbeWorkspaces = CaptureProbeWorkspaces();
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var lifecycle = new ObservingReferenceProbeLifecycle
+        {
+            AfterReferenceAdded = cancellation.Cancel
+        };
+        var probe = new VbaProjectReferenceAmbiguityProbe(
+            new ExcelComVbaProjectReferenceProbeAutomation(
+                new StaComDispatcherFactory(),
+                lifecycle));
+
+        VbaProjectReferenceResolutionBatch result;
+        try
+        {
+            result = await probe.ResolveAsync(
+                VbaProjectReferenceProbeBaseline.BlankWorkbook,
+                CreateTwoNameResolution(),
+                cancellation.Token);
+        }
+        finally
+        {
+            await WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20));
+        }
+
+        Assert.False(result.Complete);
+        Assert.All(result.References, reference =>
+        {
+            Assert.Equal("cancelled", reference.UnverifiedReasonCode);
+            Assert.Empty(reference.Matches);
+        });
+        Assert.Equal("operationCancelled", Assert.Single(result.Diagnostics).Code);
+        Assert.Equal(1, lifecycle.StartCalls);
+        Assert.Equal(1, lifecycle.AddCalls);
+        Assert.Equal(1, lifecycle.CompletedAdds);
+        Assert.True(initialProbeWorkspaces.SetEquals(CaptureProbeWorkspaces()));
+        Assert.True(initialProcesses.SetEquals(CaptureExcelProcessIds()));
+    }
+
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
+    public async Task RealProbeAttemptTimeoutStopsLaterCandidatesAndReleasesOwnedExcel()
+    {
+        var initialProcesses = CaptureExcelProcessIds();
+        var initialProbeWorkspaces = CaptureProbeWorkspaces();
+        var lifecycle = new ObservingReferenceProbeLifecycle
+        {
+            // Bound the test-only lifecycle stall; real startup, workbook creation,
+            // and baseline reference inspection have already completed.
+            BeforeReferenceAdded = () => Thread.Sleep(TimeSpan.FromSeconds(1))
+        };
+        var probe = new VbaProjectReferenceAmbiguityProbe(
+            new ExcelComVbaProjectReferenceProbeAutomation(
+                new StaComDispatcherFactory(),
+                lifecycle),
+            WorkbookAutomationTimeouts.Default with
+            {
+                ReferenceAttempt = TimeSpan.FromMilliseconds(100)
+            });
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+
+        VbaProjectReferenceResolutionBatch result;
+        try
+        {
+            result = await probe.ResolveAsync(
+                VbaProjectReferenceProbeBaseline.BlankWorkbook,
+                CreateTwoNameResolution(),
+                cancellation.Token);
+        }
+        finally
+        {
+            await WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20));
+        }
+
+        Assert.False(result.Complete);
+        Assert.Equal("probeTimeout", result.References[0].UnverifiedReasonCode);
+        Assert.Contains("reference attempt", result.References[0].Message, StringComparison.Ordinal);
+        Assert.Equal("probeAborted", result.References[1].UnverifiedReasonCode);
+        Assert.All(result.References, reference => Assert.Empty(reference.Matches));
+        Assert.Equal("probeProcessUntrusted", Assert.Single(result.Diagnostics).Code);
+        Assert.False(cancellation.IsCancellationRequested);
+        Assert.Equal(1, lifecycle.StartCalls);
+        Assert.Equal(1, lifecycle.AddCalls);
+        Assert.NotEmpty(Assert.Single(lifecycle.BaselineSignatures));
+        Assert.True(initialProbeWorkspaces.SetEquals(CaptureProbeWorkspaces()));
+        Assert.True(initialProcesses.SetEquals(CaptureExcelProcessIds()));
+    }
+
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
+    public async Task RealCandidateRejectionCannotContinueAfterBaselineReleaseBecomesUncertain()
+    {
+        var initialProcesses = CaptureExcelProcessIds();
+        var initialProbeWorkspaces = CaptureProbeWorkspaces();
+        var cleanupFaults = 0;
+        var lifecycle = new ObservingReferenceProbeLifecycle
+        {
+            AfterWorkbookClosed = () =>
+            {
+                // Native close and COM release really ran. Inject only the
+                // uncertainty reported at that lifecycle boundary.
+                if (++cleanupFaults == 1)
+                {
+                    throw new COMException("Test-only baseline COM-release uncertainty.");
+                }
+            }
+        };
+        var probe = new VbaProjectReferenceAmbiguityProbe(
+            new ExcelComVbaProjectReferenceProbeAutomation(
+                new StaComDispatcherFactory(),
+                lifecycle));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+
+        VbaProjectReferenceResolutionBatch result;
+        try
+        {
+            result = await probe.ResolveAsync(
+                VbaProjectReferenceProbeBaseline.BlankWorkbook,
+                CreateTwoNameResolution(firstCandidateGuid: UnavailableGuid),
+                cancellation.Token);
+        }
+        finally
+        {
+            await WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20));
+        }
+
+        Assert.False(result.Complete);
+        Assert.Equal("cleanupFailure", result.References[0].UnverifiedReasonCode);
+        Assert.Equal("probeAborted", result.References[1].UnverifiedReasonCode);
+        Assert.All(result.References, reference => Assert.Empty(reference.Matches));
+        Assert.Equal("probeProcessUntrusted", Assert.Single(result.Diagnostics).Code);
+        Assert.Equal(1, lifecycle.StartCalls);
+        Assert.Equal(1, lifecycle.AddCalls);
+        Assert.Equal(UnavailableGuid, Assert.Single(lifecycle.RejectedCandidateGuids));
+        Assert.Equal(1, lifecycle.CompletedCloses);
+        Assert.Equal(1, cleanupFaults);
+        Assert.NotEmpty(Assert.Single(lifecycle.BaselineSignatures));
+        Assert.True(initialProbeWorkspaces.SetEquals(CaptureProbeWorkspaces()));
+        Assert.True(initialProcesses.SetEquals(CaptureExcelProcessIds()));
+    }
 
     [WindowsExcelIntegrationFact]
     [Trait("Category", "WindowsExcelIntegration")]
@@ -96,7 +327,6 @@ public sealed class VbaProjectReferenceAmbiguityProbeWindowsExcelIntegrationTest
 
     private static VbaProjectReferenceResolutionBatch CreateRegistryResolution()
     {
-        var unavailableGuid = "11111111-2222-3333-4444-555555555555";
         var scriptingHigh = new ResolvedVbaProjectReference(
             "Microsoft Scripting Runtime",
             ScriptingGuid,
@@ -105,7 +335,7 @@ public sealed class VbaProjectReferenceAmbiguityProbeWindowsExcelIntegrationTest
         var scriptingInstalled = scriptingHigh with { Major = 1 };
         var unavailable = new ResolvedVbaProjectReference(
             "Microsoft Scripting Runtime",
-            unavailableGuid,
+            UnavailableGuid,
             1,
             0);
         var scriptingAmbiguity = new ResolvedVbaProjectReference(
@@ -133,7 +363,7 @@ public sealed class VbaProjectReferenceAmbiguityProbeWindowsExcelIntegrationTest
                             ScriptingGuid,
                             [scriptingHigh, scriptingInstalled]),
                         new VbaProjectReferenceCandidateLineage(
-                            unavailableGuid,
+                            UnavailableGuid,
                             [unavailable])
                     ]),
                 new VbaProjectReferenceNameResolution(
@@ -142,6 +372,146 @@ public sealed class VbaProjectReferenceAmbiguityProbeWindowsExcelIntegrationTest
                     true,
                     [scriptingAmbiguity, windowsScriptHost])
             ]);
+    }
+
+    private static VbaProjectReferenceResolutionBatch CreateTwoNameResolution(
+        string firstCandidateGuid = ScriptingGuid)
+        => new(
+            true,
+            [],
+            null,
+            new[] { "Native fault probe", "Later native probe" }
+                .Select((name, index) => new VbaProjectReferenceNameResolution(
+                    name,
+                    name,
+                    true,
+                    [
+                        new ResolvedVbaProjectReference(name, index == 0 ? firstCandidateGuid : ScriptingGuid, 1, 0),
+                        new ResolvedVbaProjectReference(name, WindowsScriptHostGuid, 1, 0)
+                    ]))
+                .ToArray());
+
+    private sealed class ObservingReferenceProbeLifecycle : IExcelComVbaProjectReferenceProbeLifecycle
+    {
+        private readonly ExcelComVbaProjectReferenceProbeAutomation.ExcelComVbaProjectReferenceProbeLifecycle inner = new();
+
+        public int StartCalls { get; private set; }
+
+        public int CompletedCloses { get; private set; }
+
+        public int AddCalls { get; private set; }
+
+        public int CompletedAdds { get; private set; }
+
+        public Action? AfterReferenceAdded { get; init; }
+
+        public Action? BeforeReferenceAdded { get; init; }
+
+        public Action? AfterWorkbookClosed { get; init; }
+
+        public List<int> CompletedClosesBeforeOpen { get; } = [];
+
+        public List<string[]> BaselineSignatures { get; } = [];
+
+        public List<string> RejectedCandidateGuids { get; } = [];
+
+        public object Start(
+            OwnedExcelTerminationController terminationController,
+            CancellationToken cancellationToken)
+        {
+            StartCalls++;
+            return inner.Start(terminationController, cancellationToken);
+        }
+
+        public object OpenWorkbook(object host, string workbookPath)
+            => inner.OpenWorkbook(host, workbookPath);
+
+        public object CreateBlankWorkbook(object host)
+        {
+            CompletedClosesBeforeOpen.Add(CompletedCloses);
+            var workbook = inner.CreateBlankWorkbook(host);
+            try
+            {
+                BaselineSignatures.Add(CaptureReferenceSignature(workbook));
+                return workbook;
+            }
+            catch
+            {
+                inner.CloseWorkbookWithoutSave(workbook);
+                throw;
+            }
+        }
+
+        public object? FindReference(object workbook, string referenceName)
+            => inner.FindReference(workbook, referenceName);
+
+        public object AddReference(object workbook, ResolvedVbaProjectReference candidate)
+        {
+            AddCalls++;
+            BeforeReferenceAdded?.Invoke();
+            try
+            {
+                var reference = inner.AddReference(workbook, candidate);
+                CompletedAdds++;
+                AfterReferenceAdded?.Invoke();
+                return reference;
+            }
+            catch (VbaProjectReferenceCandidateRejectedException)
+            {
+                RejectedCandidateGuids.Add(candidate.Guid);
+                throw;
+            }
+        }
+
+        public ResolvedVbaProjectReference ReadIdentity(object reference, string referenceName)
+            => inner.ReadIdentity(reference, referenceName);
+
+        public void ReleaseReference(object? reference)
+            => inner.ReleaseReference(reference);
+
+        public void CloseWorkbookWithoutSave(object workbook)
+        {
+            inner.CloseWorkbookWithoutSave(workbook);
+            CompletedCloses++;
+            AfterWorkbookClosed?.Invoke();
+        }
+
+        public void DisposeHost(object host, TimeSpan cleanupGrace)
+            => inner.DisposeHost(host, cleanupGrace);
+
+        private static string[] CaptureReferenceSignature(object workbook)
+        {
+            object? project = null;
+            object? references = null;
+            try
+            {
+                project = ((dynamic)workbook).VBProject;
+                references = ((dynamic)project).References;
+                var signatures = new List<string>();
+                var count = (int)((dynamic)references).Count;
+                for (var index = 1; index <= count; index++)
+                {
+                    object? reference = null;
+                    try
+                    {
+                        reference = ((dynamic)references).Item(index);
+                        dynamic value = reference;
+                        signatures.Add($"{Guid.Parse((string)value.Guid):D}:{(int)value.Major}:{(int)value.Minor}");
+                    }
+                    finally
+                    {
+                        ComObjectReleaser.Release(reference);
+                    }
+                }
+
+                return signatures.Order(StringComparer.Ordinal).ToArray();
+            }
+            finally
+            {
+                ComObjectReleaser.Release(references);
+                ComObjectReleaser.Release(project);
+            }
+        }
     }
 
     private static void CreateEmptyMacroEnabledWorkbook(string path)

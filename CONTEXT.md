@@ -199,6 +199,14 @@ request overrides its result. The bounded scenario session exposes workbook,
 reference, module, test, save, and export work without process-lifecycle authority
 and becomes unusable before cleanup starts. The mechanism and its native
 dependencies belong wholly to `VbaDev`.
+Workbook generation and reference probing share one process startup, termination,
+cleanup, and dispatcher-retirement loop. The narrow reference scenario exposes
+bounded COM execution, not dispatcher or process-control authority. The reference
+workflow still owns fresh baseline copies or blank workbooks, candidate rejection,
+baseline cleanup, coalescing, and public ambiguity/unavailability diagnostics.
+Runtime evidence distinguishes a dispatcher that was never created from one
+whose retirement failed, without making reference-result policy part of the
+runtime. No automatic Excel restart is introduced.
 _Avoid_: public automation framework, DebugExcelProcess owner, command transaction
 
 **AutomationDesktopIsolation**:
@@ -1734,6 +1742,12 @@ evaluated conclusively, one distinct usable result is selected, no usable
 result is unavailable, and more than one distinct usable result remains
 ambiguous. The probe removes all temporary state and never saves a project
 workbook.
+Its native work runs through `AutomationExcelProcessRuntime`; registry-unique
+selection still bypasses that runtime. A later candidate may run only after
+the prior baseline's COM and workspace cleanup succeeds. Process or release
+uncertainty stops further probing rather than becoming a conclusive rejection.
+The workflow retains cancellation and partial-result classification, including
+cleanup failures that must override an otherwise conclusive probe result.
 If a same-name reference already exists in a fresh ambiguity-probe baseline,
 its concrete GUID, major, and minor identity is adopted instead of adding a
 duplicate. Build, publish, test-build, and Doctor build/publish materialization
