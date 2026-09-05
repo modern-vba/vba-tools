@@ -207,6 +207,16 @@ baseline cleanup, coalescing, and public ambiguity/unavailability diagnostics.
 Runtime evidence distinguishes a dispatcher that was never created from one
 whose retirement failed, without making reference-result policy part of the
 runtime. No automatic Excel restart is introduced.
+Initial workbook creation also uses this runtime through a narrow scenario
+that establishes, saves, and verifies the existing initial identity baseline.
+The creator retains staging observation, release-gated receipt completion, and
+create-only final materialization. The scenario cannot commit a project or
+decide rollback; `NewProjectCommand` retains those decisions and its existing
+before/after-manifest-commit cancellation boundary. Unproved process release or
+dispatcher retirement withholds successful creation and project commitment.
+Unexpected process exit after the final operation but before runtime cleanup
+uses the runtime's existing process-loss classification, even if a saved
+workbook is available; no additional watcher or retry is introduced.
 _Avoid_: public automation framework, DebugExcelProcess owner, command transaction
 
 **AutomationDesktopIsolation**:

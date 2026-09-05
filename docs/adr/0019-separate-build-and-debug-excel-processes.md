@@ -45,6 +45,21 @@ scenario's commitment. The generation adapter preserves its existing
 pre-commit cancellation behavior only after mandatory cleanup verification;
 other scenarios can classify the same released evidence against their own
 commitment boundaries. This migration preserves the public command and workbook
-generation interfaces and adds no dependency outside VbaDev. It does not migrate
-the separate initial-workbook, reference-probe, or Host Event adapters yet, or
-change the intentionally visible debug-process lifecycle.
+generation interfaces and adds no dependency outside VbaDev. Reference probing
+and initial workbook creation now use the same lifecycle. Host Event automation
+and the intentionally visible debug-process lifecycle remain separate.
+
+The initial-workbook scenario establishes and verifies the existing identity
+baseline and saves its staging workbook. The creator, not the process runtime,
+owns pending artifact observation, release-gated receipt completion, and
+create-only final materialization. A stalled or failed dispatcher retirement
+withholds successful creation even after Excel has saved and its process has
+exited. Unproved process release never grants cleanup authority. The scenario
+uses the runtime's existing process-loss result for unexpected exit between
+the final operation and cleanup, rather than accepting saved work alone.
+This reuses the existing lifecycle observation without adding a watcher.
+The scenario has no project-commit capability: `NewProjectCommand` retains
+manifest commitment, exact receipt-based rollback, and its before/after-commit
+cancellation policy.
+This consolidation adds no independent process loop, automatic restart, new
+ownership primitive, or concurrent-editor guarantee.
