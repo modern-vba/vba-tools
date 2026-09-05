@@ -25,13 +25,15 @@ latest committed value and performs no synchronous Host Event inspection.
 
 Cold snapshot materialization, watched source reloads, and background reconciliation use one shared `VbaProjectDiskInventory` instance. Its cold capture may reuse decoded text when stable file metadata and the source invalidation generation are unchanged. Its reconciliation observation always performs a stable byte read, even when length and last-write time match the previous observation, so a missed watcher event with unchanged metadata can still converge.
 
-Closed disk source uses one `DiskSourceDecoding` contract. A recognized UTF-8
-or UTF-16 BOM selects its strict decoder; BOM-less input tries strict UTF-8
-first and then, on Windows only, the active ANSI code page captured once at
-language-server process start. ACP 65001 is canonical UTF-8. A non-Windows
-process does not assume CP932 or another legacy code page, and invalid input is
-reported rather than decoded with replacement characters. Open LSP documents
-are already Unicode and remain authoritative. The resulting Unicode text is
+Closed disk source uses one `DiskSourceDecoding` contract. ADR 0037 and issue
+#341 supersede the former UTF-8-first rule: supported UTF-8, UTF-16 LE, and
+UTF-16 BE BOMs select strict Unicode decoding, while Windows BOM-less source
+uses only the active ANSI code page obtained directly from `GetACP` once at
+language-server process start. ACP 65001 is canonical UTF-8. Strict decoding
+must reproduce the exact original bytes; there is no probing or fallback.
+A non-Windows process rejects all BOM-less closed source, including ASCII and
+empty input, because it has no Windows ACP authority. Open LSP documents are
+already Unicode and remain authoritative. The resulting Unicode text is
 eligible for every `VbaIdentifierForm`; its disk encoding never selects or
 limits identifier syntax.
 
@@ -50,7 +52,11 @@ Snapshot cache and reconciliation Interfaces accept structural project, authorit
 Closing an open source ends its buffer authority. If the URI remains in the
 resolved project scope and its disk source still exists, the workspace captures
 that disk source and makes it authoritative before rebuilding project-aware
-diagnostics. Close alone does not remove diagnostics. Delete, project
+diagnostics. Close invalidates any prior disk-decoding failure hidden by the
+buffer along with cached disk text. The fresh capture must publish an unchanged
+failure again or accept repaired disk text; a hidden prior failure cannot
+suppress that new lifecycle's diagnostic. Close alone does not remove
+diagnostics. Delete, project
 membership departure, or loss of a tracked disk source clears the URI, and a
 later reopen establishes a new open-buffer lifecycle.
 

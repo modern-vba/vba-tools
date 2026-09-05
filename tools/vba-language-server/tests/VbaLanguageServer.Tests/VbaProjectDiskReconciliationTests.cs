@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using VbaLanguageServer.Lsp;
 using VbaLanguageServer.ProjectModel;
@@ -74,8 +75,13 @@ public sealed class VbaProjectDiskReconciliationTests
         Assert.Same(candidate, selected);
     }
 
-    [Fact]
-    public async Task Reconciliation_commits_decode_failure_without_reusing_previous_text()
+    [Theory]
+    [InlineData(932, "日本語")]
+    [InlineData(1252, "Café")]
+    [InlineData(65001, "日本語 Café")]
+    public async Task Reconciliation_commits_decode_failure_and_recovers_with_fixed_acp_despite_unchanged_metadata(
+        int activeCodePage,
+        string documentation)
     {
         var projectRoot = Directory.CreateTempSubdirectory(
             "vba-ls-reconcile-invalid-source-").FullName;
@@ -87,8 +93,16 @@ public sealed class VbaProjectDiskReconciliationTests
             var helperPath = Path.Combine(sourceRoot, "Helper.bas");
             var helperUri = ToFileUri(helperPath);
             const string callerText = "Public Sub Run()\nEnd Sub\n";
-            var helperText = CreateModule("Helper", "BuildBefore");
-            File.WriteAllText(helperPath, helperText);
+            Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+            var encoding = Encoding.GetEncoding(
+                activeCodePage,
+                EncoderFallback.ExceptionFallback,
+                DecoderFallback.ExceptionFallback);
+            var helperText = CreateModule("Helper", "BuildBefore")
+                + $"' {documentation}\n";
+            var initialBytes = encoding.GetBytes(helperText);
+            File.WriteAllBytes(helperPath, initialBytes);
+            var initialLastWriteTimeUtc = File.GetLastWriteTimeUtc(helperPath);
             var workspace = new VbaLanguageWorkspace(
                 new VbaProjectReferenceCatalogCache(
                     VbaProjectReferenceCatalogSet.CreateBundled()),
@@ -98,11 +112,21 @@ public sealed class VbaProjectDiskReconciliationTests
                 SystemVbaProjectFileSystem.Instance,
                 reconciliationAuthorityLeaseObserver: null,
                 sourceDecoding: new DiskSourceDecoding(
-                    supportsLegacyFallback: false,
-                    activeCodePage: 65001));
+                    hasWindowsAcpAuthority: true,
+                    activeCodePage));
             workspace.UpdateDocument(callerUri, callerText);
-            _ = workspace.CreateProjectSnapshot(callerUri);
-            File.WriteAllBytes(helperPath, [0xC3, 0x28]);
+            var initialSnapshot = workspace.CreateProjectSnapshot(callerUri);
+            Assert.Equal(helperText, initialSnapshot.SourceDocuments[helperUri]);
+            Assert.Contains(
+                initialSnapshot.SemanticInventory.GetWorkspaceSymbols("BuildBefore"),
+                symbol => symbol.Uri == helperUri);
+            var invalidBytes = initialBytes.ToArray();
+            byte[] invalidPrefix = [0xEF, 0xBB, 0xBF, 0xC3, 0x28];
+            invalidPrefix.CopyTo(invalidBytes, 0);
+            File.WriteAllBytes(helperPath, invalidBytes);
+            File.SetLastWriteTimeUtc(helperPath, initialLastWriteTimeUtc);
+            Assert.Equal(initialBytes.Length, new FileInfo(helperPath).Length);
+            Assert.Equal(initialLastWriteTimeUtc.Ticks, File.GetLastWriteTimeUtc(helperPath).Ticks);
             var diagnostics = new RecordingDiagnostics();
             await using var scheduler = CreateSerialScheduler();
             await using var reconciler = new VbaProjectReconciler(
@@ -122,16 +146,22 @@ public sealed class VbaProjectDiskReconciliationTests
                     .SemanticInventory
                     .GetWorkspaceSymbols("BuildBefore"));
 
-            var recoveredText = CreateModule("Helper", "BuildAfter");
-            File.WriteAllText(helperPath, recoveredText);
+            var recoveredText = CreateModule("Helper", "BuildAfterX")
+                + $"' {documentation}\n";
+            var recoveredBytes = encoding.GetBytes(recoveredText);
+            Assert.Equal(initialBytes.Length, recoveredBytes.Length);
+            File.WriteAllBytes(helperPath, recoveredBytes);
+            File.SetLastWriteTimeUtc(helperPath, initialLastWriteTimeUtc);
+            Assert.Equal(initialBytes.Length, new FileInfo(helperPath).Length);
+            Assert.Equal(initialLastWriteTimeUtc.Ticks, File.GetLastWriteTimeUtc(helperPath).Ticks);
             await reconciler.ReconcileAsync()
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.Null(workspace.GetDiskSourceFailure(helperUri));
+            var recoveredSnapshot = workspace.CreateProjectSnapshot(callerUri);
+            Assert.Equal(recoveredText, recoveredSnapshot.SourceDocuments[helperUri]);
             Assert.Contains(
-                workspace.CreateProjectSnapshot(callerUri)
-                    .SemanticInventory
-                    .GetWorkspaceSymbols("BuildAfter"),
+                recoveredSnapshot.SemanticInventory.GetWorkspaceSymbols("BuildAfterX"),
                 symbol => symbol.Uri == helperUri);
         }
         finally

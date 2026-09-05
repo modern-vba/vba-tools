@@ -69,13 +69,17 @@ warm snapshot is valid.
 
 Closed `.bas`, `.cls`, and `.frm` bytes use one process-wide
 `DiskSourceDecoding` service. Recognized UTF-8, UTF-16 LE, and UTF-16 BE BOMs
-select strict decoders; BOM-less bytes try strict UTF-8 first. Only a Windows
-process then tries the `GetACP` code page captured once at process start, and
-ACP 65001 remains the canonical UTF-8 path. Non-Windows hosts have no implicit
-legacy fallback. Invalid bytes become an `invalid-disk-source-encoding`
-diagnostic and never become parsed or semantic text. Existing open paths are
-still ownership facts, but their authoritative LSP Unicode text bypasses disk
-reads and decoding during cold capture and reconciliation.
+select strict decoders and require exact byte reproduction. Windows BOM-less
+bytes use only the `GetACP` code page captured once at process start; ACP 65001
+is the only canonical BOM-less UTF-8 case. No UTF-8 probe or fallback runs.
+Non-Windows hosts reject all BOM-less source because they have no Windows ACP
+authority. Unsupported or malformed BOMs, invalid bytes, and non-reproducible
+decoding become `invalid-disk-source-encoding` diagnostics, never parsed or
+semantic substitute text. Cold capture, watched reload, reconciliation, and
+close-to-disk transition share this decoder. Valid reload or deletion clears
+the diagnostic. Existing open paths remain ownership facts, but their
+authoritative LSP Unicode text bypasses disk reads and decoding during cold
+capture and reconciliation.
 
 This policy ends when source bytes have become Unicode. `VbaIdentifier`
 continues to recognize every MS-VBAL `VbaIdentifierForm` independently of the
@@ -314,8 +318,9 @@ editor requests neither invoke this
 Module nor wait for it. Debug-adapter Job ownership and stdin-based cooperative
 cancellation remain separate Seams. This lifecycle adds a dependency only from
 the language server to the public `vba-dev` process contract and adds no reverse
-dependency to `VbaDev`. The pre-existing parser reference from `VbaDev` to a
-language-server-owned project is a separate migration tracked by issue 361.
+dependency to `VbaDev`. Issue #361 moved reusable parsing to the neutral
+`VbaTools.Syntax` foundation; `VbaDev` does not depend on a language-server-owned
+parser project.
 
 ### Interactive work scheduler
 

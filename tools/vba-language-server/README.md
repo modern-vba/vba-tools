@@ -67,12 +67,20 @@ fences. Neither editor readiness nor background project validation invokes
 
 ## Closed source encoding
 
-Closed exported source is decoded strictly by a process-wide policy: a
-recognized UTF-8 or UTF-16 BOM wins, otherwise valid UTF-8 wins, and only on
-Windows may invalid UTF-8 fall back to the active ANSI code page captured once
-with `GetACP`. ACP 65001 is UTF-8 and non-Windows hosts have no implicit legacy
-fallback. Invalid bytes produce `invalid-disk-source-encoding`; they are not
-replaced, guessed, or parsed as different text.
+Closed exported source uses a process-wide BOM-or-ACP policy. A supported
+UTF-8, UTF-16 LE, or UTF-16 BE BOM selects strict Unicode decoding. Without a
+BOM, Windows uses only its active ANSI code page, captured directly with
+`GetACP` once at language-server startup. ACP 65001 is the only canonical
+BOM-less UTF-8 case; no UTF-8 probe or fallback is used. To use UTF-8 on another
+ACP, save the file with a UTF-8 BOM. Non-Windows hosts require a supported BOM
+for every closed source, including ASCII or empty files.
+
+Decoded text must reproduce the exact original bytes. Unsupported or malformed
+BOMs, invalid bytes, and failed byte reproduction produce
+`invalid-disk-source-encoding`; no replacement, guessed, empty, or
+last-known-good text is substituted. Cold capture, watched reload,
+reconciliation, and returning to disk after closing an editor use the same
+policy. A later valid reload or deletion clears the diagnostic.
 
 Open editor documents are already authoritative Unicode and bypass this byte
 decoder. Encoding never selects the accepted VBA identifier forms. The

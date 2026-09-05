@@ -1181,7 +1181,7 @@ public sealed class VbaLspRequestExecutionCancellationTests
                 new VbaProjectReferenceCatalogCache(
                     VbaProjectReferenceCatalogSet.CreateBundled()),
                 new DiskSourceDecoding(
-                    supportsLegacyFallback: false,
+                    hasWindowsAcpAuthority: true,
                     activeCodePage: 65001));
             workspace.OpenDocument(activeUri, version: 1, activeText);
             await using var output = new MemoryStream();
@@ -1239,7 +1239,7 @@ public sealed class VbaLspRequestExecutionCancellationTests
                 new VbaProjectReferenceCatalogCache(
                     VbaProjectReferenceCatalogSet.CreateBundled()),
                 new DiskSourceDecoding(
-                    supportsLegacyFallback: false,
+                    hasWindowsAcpAuthority: true,
                     activeCodePage: 65001));
             workspace.OpenDocument(activeUri, version: 1, activeText);
             await using var output = new MemoryStream();
@@ -1315,7 +1315,7 @@ public sealed class VbaLspRequestExecutionCancellationTests
                 new VbaProjectReferenceCatalogCache(
                     VbaProjectReferenceCatalogSet.CreateBundled()),
                 new DiskSourceDecoding(
-                    supportsLegacyFallback: false,
+                    hasWindowsAcpAuthority: true,
                     activeCodePage: 65001));
             workspace.OpenDocument(activeUri, version: 1, activeText);
             await using var output = new MemoryStream();

@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.Workspace;
 using Xunit;
@@ -119,22 +120,22 @@ public sealed class VbaProjectDiskInventoryTests
     }
 
     [Fact]
-    public void Cold_capture_prefers_bomless_utf8_to_injected_active_code_page()
+    public void Cold_capture_uses_acp_for_ambiguous_bomless_utf8_bytes()
     {
         const string sourceText =
             "Attribute VB_Name = \"Module1\"\n"
-            + "Public Sub 日本語()\n"
+            + "Public Sub Café()\n"
             + "End Sub\n";
         var fileSystem = new MutableSourceFileSystem(sourceText);
         var inventory = new VbaFileSystemProjectDiskInventory(
             fileSystem,
             new DiskSourceDecoding(
-                supportsLegacyFallback: true,
+                hasWindowsAcpAuthority: true,
                 activeCodePage: 1252));
 
         var source = CaptureSingleColdSource(inventory, fileSystem.Path);
 
-        Assert.Equal(sourceText, source.Text);
+        Assert.Equal(sourceText.Replace("Café", "CafÃ©"), source.Text);
     }
 
     [Theory]
@@ -169,7 +170,7 @@ public sealed class VbaProjectDiskInventoryTests
         var inventory = new VbaFileSystemProjectDiskInventory(
             fileSystem,
             new DiskSourceDecoding(
-                supportsLegacyFallback: true,
+                hasWindowsAcpAuthority: true,
                 activeCodePage: 1252));
 
         var source = CaptureSingleColdSource(inventory, fileSystem.Path);
@@ -178,7 +179,7 @@ public sealed class VbaProjectDiskInventoryTests
     }
 
     [Fact]
-    public void Cold_capture_uses_injected_windows_acp_after_invalid_utf8()
+    public void Cold_capture_uses_injected_windows_acp_without_utf8_probing()
     {
         const string sourceText =
             "Attribute VB_Name = \"Module1\"\n"
@@ -190,7 +191,7 @@ public sealed class VbaProjectDiskInventoryTests
         var inventory = new VbaFileSystemProjectDiskInventory(
             fileSystem,
             new DiskSourceDecoding(
-                supportsLegacyFallback: true,
+                hasWindowsAcpAuthority: true,
                 activeCodePage: 1252));
 
         var source = CaptureSingleColdSource(inventory, fileSystem.Path);
@@ -205,7 +206,7 @@ public sealed class VbaProjectDiskInventoryTests
         var inventory = new VbaFileSystemProjectDiskInventory(
             fileSystem,
             new DiskSourceDecoding(
-                supportsLegacyFallback: false,
+                hasWindowsAcpAuthority: false,
                 activeCodePage: 65001));
 
         var capture = CaptureColdSources(inventory, fileSystem.Path);
@@ -224,7 +225,7 @@ public sealed class VbaProjectDiskInventoryTests
         var inventory = new VbaFileSystemProjectDiskInventory(
             fileSystem,
             new DiskSourceDecoding(
-                supportsLegacyFallback: false,
+                hasWindowsAcpAuthority: false,
                 activeCodePage: 65001));
         var resolution = new VbaProjectResolution(
             VbaProjectResolutionKind.AdHoc,
@@ -255,7 +256,7 @@ public sealed class VbaProjectDiskInventoryTests
         var inventory = new VbaFileSystemProjectDiskInventory(
             fileSystem,
             new DiskSourceDecoding(
-                supportsLegacyFallback: true,
+                hasWindowsAcpAuthority: true,
                 activeCodePage: 65001));
 
         var capture = CaptureColdSources(inventory, fileSystem.Path);
@@ -273,13 +274,83 @@ public sealed class VbaProjectDiskInventoryTests
         var inventory = new VbaFileSystemProjectDiskInventory(
             fileSystem,
             new DiskSourceDecoding(
-                supportsLegacyFallback: false,
+                hasWindowsAcpAuthority: false,
                 activeCodePage: 932));
 
         var capture = CaptureColdSources(inventory, fileSystem.Path);
 
         Assert.Empty(capture.Sources);
         Assert.Single(capture.Failures);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("Public Sub Ascii()\nEnd Sub\n")]
+    [InlineData("Public Sub 日本語()\nEnd Sub\n")]
+    public void Non_windows_policy_rejects_all_bomless_source(string sourceText)
+    {
+        var fileSystem = new MutableSourceFileSystem(sourceText);
+        var inventory = new VbaFileSystemProjectDiskInventory(
+            fileSystem,
+            new DiskSourceDecoding(
+                hasWindowsAcpAuthority: false,
+                activeCodePage: 65001));
+
+        var capture = CaptureColdSources(inventory, fileSystem.Path);
+
+        Assert.Empty(capture.Sources);
+        var failure = Assert.Single(capture.Failures);
+        Assert.Contains("BOM", failure.DiagnosticMessage);
+        Assert.Contains(fileSystem.Path, failure.DiagnosticMessage);
+    }
+
+    [Theory]
+    [InlineData(932)]
+    [InlineData(1252)]
+    [InlineData(65001)]
+    public void Windows_acp_authority_accepts_empty_bomless_source(int activeCodePage)
+    {
+        var fileSystem = new MutableSourceFileSystem("");
+        var inventory = new VbaFileSystemProjectDiskInventory(
+            fileSystem,
+            new DiskSourceDecoding(
+                hasWindowsAcpAuthority: true,
+                activeCodePage: activeCodePage));
+
+        var capture = CaptureColdSources(inventory, fileSystem.Path);
+
+        Assert.Empty(capture.Failures);
+        Assert.Equal("", Assert.Single(capture.Sources).Text);
+    }
+
+    [Theory]
+    [InlineData("utf-8", "")]
+    [InlineData("utf-8", "' 日本語 😀\n")]
+    [InlineData("utf-16-le", "")]
+    [InlineData("utf-16-le", "' 日本語 😀\n")]
+    [InlineData("utf-16-be", "")]
+    [InlineData("utf-16-be", "' 日本語 😀\n")]
+    public void Non_windows_policy_accepts_supported_bom_source(string encodingName, string sourceText)
+    {
+        Encoding encoding = encodingName switch
+        {
+            "utf-8" => new UTF8Encoding(true, true),
+            "utf-16-le" => new UnicodeEncoding(false, true, true),
+            "utf-16-be" => new UnicodeEncoding(true, true, true),
+            _ => throw new InvalidOperationException($"Unknown encoding: {encodingName}")
+        };
+        var fileSystem = new MutableSourceFileSystem(
+            [.. encoding.GetPreamble(), .. encoding.GetBytes(sourceText)]);
+        var inventory = new VbaFileSystemProjectDiskInventory(
+            fileSystem,
+            new DiskSourceDecoding(
+                hasWindowsAcpAuthority: false,
+                activeCodePage: 1252));
+
+        var capture = CaptureColdSources(inventory, fileSystem.Path);
+
+        Assert.Empty(capture.Failures);
+        Assert.Equal(sourceText, Assert.Single(capture.Sources).Text);
     }
 
     [Fact]
@@ -295,14 +366,14 @@ public sealed class VbaProjectDiskInventoryTests
             new VbaFileSystemProjectDiskInventory(
                 cp932FileSystem,
                 new DiskSourceDecoding(
-                    supportsLegacyFallback: true,
+                    hasWindowsAcpAuthority: true,
                     activeCodePage: 932)),
             cp932FileSystem.Path);
         var unicodeOnlyCapture = CaptureColdSources(
             new VbaFileSystemProjectDiskInventory(
                 unicodeOnlyFileSystem,
                 new DiskSourceDecoding(
-                    supportsLegacyFallback: false,
+                    hasWindowsAcpAuthority: false,
                     activeCodePage: 932)),
             unicodeOnlyFileSystem.Path);
 
@@ -319,7 +390,37 @@ public sealed class VbaProjectDiskInventoryTests
         var inventory = new VbaFileSystemProjectDiskInventory(
             fileSystem,
             new DiskSourceDecoding(
-                supportsLegacyFallback: true,
+                hasWindowsAcpAuthority: true,
+                activeCodePage: 1252));
+
+        var capture = CaptureColdSources(inventory, fileSystem.Path);
+
+        Assert.Empty(capture.Sources);
+        Assert.Single(capture.Failures);
+    }
+
+    [Theory]
+    [InlineData("2B2F7638")]
+    [InlineData("2B2F7639")]
+    [InlineData("2B2F762B")]
+    [InlineData("2B2F762F")]
+    [InlineData("EF")]
+    [InlineData("EFBB")]
+    [InlineData("FF")]
+    [InlineData("FE")]
+    [InlineData("00")]
+    [InlineData("0000")]
+    [InlineData("0000FE")]
+    [InlineData("2B")]
+    [InlineData("2B2F")]
+    [InlineData("2B2F76")]
+    public void Unsupported_or_truncated_bom_never_becomes_acp_text(string bytesHex)
+    {
+        var fileSystem = new MutableSourceFileSystem(Convert.FromHexString(bytesHex));
+        var inventory = new VbaFileSystemProjectDiskInventory(
+            fileSystem,
+            new DiskSourceDecoding(
+                hasWindowsAcpAuthority: true,
                 activeCodePage: 1252));
 
         var capture = CaptureColdSources(inventory, fileSystem.Path);
@@ -347,7 +448,7 @@ public sealed class VbaProjectDiskInventoryTests
         var inventory = new VbaFileSystemProjectDiskInventory(
             fileSystem,
             new DiskSourceDecoding(
-                supportsLegacyFallback: true,
+                hasWindowsAcpAuthority: true,
                 activeCodePage: 1252));
 
         var capture = CaptureColdSources(inventory, fileSystem.Path);
@@ -363,13 +464,73 @@ public sealed class VbaProjectDiskInventoryTests
         var inventory = new VbaFileSystemProjectDiskInventory(
             fileSystem,
             new DiskSourceDecoding(
-                supportsLegacyFallback: true,
+                hasWindowsAcpAuthority: true,
                 activeCodePage: 932));
 
         var capture = CaptureColdSources(inventory, fileSystem.Path);
 
         Assert.Empty(capture.Sources);
         Assert.Single(capture.Failures);
+    }
+
+    [Fact]
+    public void Noncanonical_acp_bytes_never_become_decoded_source()
+    {
+        var fileSystem = new MutableSourceFileSystem([0x87, 0x90]);
+        var inventory = new VbaFileSystemProjectDiskInventory(
+            fileSystem,
+            new DiskSourceDecoding(
+                hasWindowsAcpAuthority: true,
+                activeCodePage: 932));
+
+        var capture = CaptureColdSources(inventory, fileSystem.Path);
+
+        Assert.Empty(capture.Sources);
+        Assert.Single(capture.Failures);
+        Assert.Equal(0, inventory.Count);
+    }
+
+    public static IEnumerable<object[]> SourceEncodingCases()
+    {
+        var path = Path.Combine(
+            AppContext.BaseDirectory,
+            "fixtures",
+            "vba-source-encoding",
+            "cases.json");
+        using var document = JsonDocument.Parse(File.ReadAllBytes(path));
+        Assert.Equal(1, document.RootElement.GetProperty("schemaVersion").GetInt32());
+        foreach (var item in document.RootElement.GetProperty("cases").EnumerateArray())
+        {
+            yield return [item.GetProperty("id").GetString()!, item.GetRawText()];
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(SourceEncodingCases))]
+    public void Closed_source_conforms_to_neutral_byte_decoding_corpus(string id, string caseJson)
+    {
+        using var document = JsonDocument.Parse(caseJson);
+        var item = document.RootElement;
+        var bytes = Convert.FromBase64String(item.GetProperty("bytesBase64").GetString()!);
+        var fileSystem = new MutableSourceFileSystem(bytes);
+        var inventory = new VbaFileSystemProjectDiskInventory(
+            fileSystem,
+            new DiskSourceDecoding(
+                hasWindowsAcpAuthority: true,
+                activeCodePage: item.GetProperty("activeCodePage").GetInt32()));
+
+        var capture = CaptureColdSources(inventory, fileSystem.Path);
+
+        if (item.TryGetProperty("expectedFailure", out var failure) && failure.GetBoolean())
+        {
+            Assert.Empty(capture.Sources);
+            Assert.Single(capture.Failures);
+            return;
+        }
+
+        // VBE projection failures do not reject valid language-server Unicode.
+        Assert.True(capture.Failures.Count == 0, $"Encoding case '{id}' must decode without source failures.");
+        Assert.Equal(item.GetProperty("expectedText").GetString(), Assert.Single(capture.Sources).Text);
     }
 
     [Fact]
@@ -380,7 +541,7 @@ public sealed class VbaProjectDiskInventoryTests
         var inventory = new VbaFileSystemProjectDiskInventory(
             fileSystem,
             new DiskSourceDecoding(
-                supportsLegacyFallback: false,
+                hasWindowsAcpAuthority: true,
                 activeCodePage: 65001));
         var utf8 = CaptureSingleColdSource(inventory, fileSystem.Path);
         var utf16 = new UnicodeEncoding(
@@ -450,7 +611,7 @@ public sealed class VbaProjectDiskInventoryTests
         var inventory = new VbaFileSystemProjectDiskInventory(
             fileSystem,
             new DiskSourceDecoding(
-                supportsLegacyFallback: true,
+                hasWindowsAcpAuthority: true,
                 activeCodePage: 1252));
         var first = CaptureSingleColdSource(inventory, fileSystem.Path);
         fileSystem.ReplaceSource(
@@ -472,7 +633,7 @@ public sealed class VbaProjectDiskInventoryTests
         var inventory = new VbaFileSystemProjectDiskInventory(
             fileSystem,
             new DiskSourceDecoding(
-                supportsLegacyFallback: false,
+                hasWindowsAcpAuthority: true,
                 activeCodePage: 65001));
         var first = CaptureSingleColdSource(inventory, fileSystem.Path);
         fileSystem.ReplaceSource(
@@ -495,7 +656,7 @@ public sealed class VbaProjectDiskInventoryTests
         var inventory = new VbaFileSystemProjectDiskInventory(
             fileSystem,
             new DiskSourceDecoding(
-                supportsLegacyFallback: false,
+                hasWindowsAcpAuthority: false,
                 activeCodePage: 65001));
         var request = new VbaProjectDiskObservationRequest(
             new VbaProjectDiskProjectScope(
@@ -639,7 +800,7 @@ public sealed class VbaProjectDiskInventoryTests
         var inventory = new VbaFileSystemProjectDiskInventory(
             fileSystem,
             new DiskSourceDecoding(
-                supportsLegacyFallback: false,
+                hasWindowsAcpAuthority: true,
                 activeCodePage: 65001));
 
         var olderLoad = Task.Factory.StartNew(
@@ -724,7 +885,7 @@ public sealed class VbaProjectDiskInventoryTests
         var inventory = new VbaFileSystemProjectDiskInventory(
             fileSystem,
             new DiskSourceDecoding(
-                supportsLegacyFallback: false,
+                hasWindowsAcpAuthority: false,
                 activeCodePage: 65001));
         var resolution = new VbaProjectResolution(
             VbaProjectResolutionKind.AdHoc,
