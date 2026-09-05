@@ -30,13 +30,16 @@ closed schema below. The capability document advertises:
 
 | Exit code | Meaning |
 | --- | --- |
-| `0` | One complete catalog was produced after all owned Excel resources were released. |
-| `1` | Discovery, validation, serialization, or required cleanup failed. No catalog is emitted. |
-| `130` | Cooperative cancellation completed required cleanup. No catalog is emitted. |
+| `0` | One complete catalog was produced after exact process release and STA dispatcher retirement were proved. |
+| `1` | Discovery, validation, serialization, timeout, catalog work, required cleanup, or either release proof failed. No catalog is emitted. |
+| `130` | Cooperative cancellation completed all mandatory cleanup, including proved process release and STA dispatcher retirement. No catalog is emitted. |
 
 The catalog is all-or-nothing. There are no partial, unverified, or
 last-known-good entries. Diagnostics use stderr and never share stdout with a
 partial JSON object.
+Diagnostics preserve operation timeout and stage, catalog failure,
+released-process cooperative cleanup failure, unproved process release, and
+unproved STA dispatcher retirement as distinct terminal conditions.
 
 ## JSON result
 
@@ -134,7 +137,10 @@ two behaviors are separate facts, and both flags must be known.
 
 ## Safety and cleanup boundary
 
-One invocation owns exactly one hidden Excel process on a unique private Windows
+One invocation delegates its process, private-desktop, STA, deadline, cleanup,
+and release lifecycle to the same sealed `AutomationExcelProcessRuntime` used by
+workbook generation, initial workbook creation, and reference probing. That
+runtime owns exactly one hidden Excel process on a unique private Windows
 desktop. The process is created suspended with atomic Job ownership; exact-PID
 observation starts before its primary thread resumes, and native object-model
 binding enumerates only that private desktop. There is no caller-desktop or
@@ -145,15 +151,19 @@ inspected nor mutated, and is closed and deleted before catalog discovery
 begins. Catalog discovery fails closed unless the owned process then has zero
 open workbooks.
 
-The catalog phase creates exactly one unsaved generated blank workbook and one
-temporary empty UserForm. It verifies that the workbook inventory changes from
+The narrow catalog scenario owns only automation security and Event
+configuration, exactly one unsaved generated blank workbook, one temporary empty
+UserForm, catalog projection, component removal, and close without save. It
+never attaches to a user Excel process or workbook. It verifies that the
+workbook inventory changes from
 zero to one and that the generated workbook has no path. It adds no controls,
 imports no source, enumerates no project worksheets or user controls, opens no
-source template, and saves nothing. The temporary component, workbook, COM
-references, process tree, and bootstrap artifact are released deterministically
-on success, failure, and cancellation. The bootstrap workbook and catalog
-workbook never overlap. A catalog is serialized only after the owned process is
-proved released.
+source template, and saves nothing. Cleanup is attempted for the temporary
+component, workbook, COM references, process tree, private desktop, bootstrap
+artifact, and STA dispatcher on success, failure, and cancellation; any
+unproved release is reported as lifecycle uncertainty. The bootstrap workbook
+and catalog workbook never overlap. A catalog is serialized only after both the
+owned process-tree release and STA dispatcher retirement are proved.
 
 The command requires desktop Excel and trusted access to the VBA project object
 model. A discovery failure is environment-level unavailable state; callers must

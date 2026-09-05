@@ -18,7 +18,8 @@ public sealed class HostEventListCommand(IHostEventCatalogAutomation catalogAuto
     };
 
     /// <summary>
-    /// Reads and renders the intrinsic catalog after owned process release.
+    /// Reads and renders the intrinsic catalog after exact owned-process release
+    /// and STA dispatcher retirement.
     /// </summary>
     public async Task<CommandResult> RunAsync(string format, CancellationToken cancellationToken)
     {

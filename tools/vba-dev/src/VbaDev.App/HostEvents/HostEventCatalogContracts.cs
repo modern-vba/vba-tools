@@ -6,7 +6,8 @@ namespace VbaDev.App.HostEvents;
 public interface IHostEventCatalogAutomation
 {
     /// <summary>
-    /// Returns an authoritative catalog only after the owned Excel process has been released.
+    /// Returns an authoritative catalog only after exact owned-process release
+    /// and STA dispatcher retirement have been proved.
     /// </summary>
     Task<IntrinsicHostEventCatalog> ReadAsync(CancellationToken cancellationToken);
 }

@@ -64,13 +64,15 @@ script after moving or replacing that executable.
 
 Document-scoped commands use the manifest `primaryDocument` when `--document` is omitted.
 
-Every non-debug Excel or VBIDE automation path creates each owned Excel process
-suspended on a unique invocation-scoped private Windows desktop. Exact-PID
-observation starts before primary-thread resume, native object-model binding is
-restricted to that desktop, and the desktop remains owned until the complete
-Job process tree exits. This contract covers project creation, build, every test
-mode, publish, import, export, Host Event discovery, reference probes, and
-active Doctor probes. It has no command switch, best-effort mode, or
+Every non-debug Excel or VBIDE automation path delegates process launch,
+private-desktop ownership, STA dispatch, deadlines, cleanup, and release proof
+to the same sealed `AutomationExcelProcessRuntime`. It creates each owned Excel
+process suspended on a unique invocation-scoped private Windows desktop.
+Exact-PID observation starts before primary-thread resume, native object-model
+binding is restricted to that desktop, and the desktop remains owned until the
+complete Job process tree exits. This contract covers project creation, build,
+every test mode, publish, import, export, Host Event discovery, reference probes,
+and active Doctor probes. It has no command switch, best-effort mode, or
 caller-desktop fallback. A blocked prompt remains private and becomes a bounded
 failure with available PID, HWND, desktop, class, title, and lifecycle-phase
 evidence.
@@ -289,14 +291,17 @@ Options:
   --format <text|json>, -f <text|json> Host-event output format.
 ```
 
-The command accepts no project or document selector. Its shared exact-process
-launcher may briefly open one generated macro-free `.xlsx` bootstrap, which is
-confined to the invocation's private desktop and closed and deleted before
+The command accepts no project or document selector. Its shared sealed
+`AutomationExcelProcessRuntime` may briefly open one generated macro-free
+`.xlsx` bootstrap, which is confined to the invocation's private desktop and
+closed and deleted before
 catalog discovery. The catalog phase then creates one unsaved generated blank
 workbook and one temporary empty UserForm on the same private desktop; it opens
-and imports no user source and closes without saving. Text is the default. JSON
-uses the closed schema version `1.0` and is published only after deterministic
-component, workbook, COM, process, desktop, and bootstrap-artifact cleanup. See
+and imports no user source, never attaches to a user process or workbook, and
+closes without saving. Text is the default. JSON uses the closed schema version
+`1.0` and is published only after component and workbook cleanup, exact
+process-tree and private-desktop release, bootstrap-artifact cleanup, and STA
+dispatcher retirement are proved. See
 [Host-event list and JSON schema 1.0](docs/host-event-list.md) for the catalog
 shape, failure and cancellation behavior, safety boundary, and consumer
 responsibilities.

@@ -45,9 +45,16 @@ scenario's commitment. The generation adapter preserves its existing
 pre-commit cancellation behavior only after mandatory cleanup verification;
 other scenarios can classify the same released evidence against their own
 commitment boundaries. This migration preserves the public command and workbook
-generation interfaces and adds no dependency outside VbaDev. Reference probing
-and initial workbook creation now use the same lifecycle. Host Event automation
-and the intentionally visible debug-process lifecycle remain separate.
+generation interfaces and adds no dependency outside VbaDev. Reference probing,
+initial workbook creation, and Host Event catalog discovery now use the same
+sealed runtime lifecycle as workbook generation. The Host Event scenario owns
+only automation security and Event configuration, one unsaved blank workbook,
+one temporary UserForm, catalog projection, component removal, and close without
+save. It does not attach to a user process or workbook, and it publishes no
+catalog until both process release and dispatcher retirement are proved.
+Timeout, cancellation, catalog failure, cooperative cleanup failure, and either
+lifecycle uncertainty remain distinct terminal evidence. Only the intentionally
+visible `DebugExcelProcess` and debug-session lifetime remain separate.
 
 The initial-workbook scenario establishes and verifies the existing identity
 baseline and saves its staging workbook. The creator, not the process runtime,

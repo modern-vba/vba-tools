@@ -598,14 +598,17 @@ and publish apply those references to generated workbooks.
 In a trusted workspace, activation starts at most one asynchronous
 environment-scoped UserForm Event discovery after the language client is
 operational. It uses the same validated, session-pinned `vba-dev` resolution as
-commands and reference discovery. `vba-dev host-event list --format json` owns
-one hidden Excel process, creates one unsaved blank workbook and one temporary
-empty UserForm, reads the installed built-in UserForm Event surface, and closes
-without saving. The process uses an invocation-scoped private desktop, so
-Excel, the blank workbook, and any unexpected UI are not shown on the
-interactive desktop. It never opens, copies, imports, scans, or falls back to a
-project source template. Language-client startup and editor requests do not
-wait for companion resolution or Excel.
+commands and reference discovery. `vba-dev host-event list --format json`
+delegates process, private-desktop, STA, deadline, and release ownership to the
+same sealed runtime used by workbook generation, initial workbook creation, and
+reference probing. Its narrow scenario creates one unsaved blank workbook and
+one temporary empty UserForm, reads the installed built-in UserForm Event
+surface, and closes without saving. It never attaches to a user Excel process or
+workbook, and the catalog is published only after exact process release and STA
+dispatcher retirement are both proved. Excel, the blank workbook, and any
+unexpected UI are not shown on the interactive desktop. It never opens, copies,
+imports, scans, or falls back to a project source template. Language-client
+startup and editor requests do not wait for companion resolution or Excel.
 
 The resulting current catalog is shared by every authoritative `.frm`
 `FormModule`, including ad-hoc forms, by source kind rather than workbook

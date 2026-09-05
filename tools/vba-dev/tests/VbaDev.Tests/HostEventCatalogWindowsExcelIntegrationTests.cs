@@ -233,11 +233,6 @@ public sealed class HostEventCatalogWindowsExcelIntegrationTests
 
         public HostEventCatalogLifecycleCounters Counters => inner.Counters;
 
-        public object Start(
-            OwnedExcelTerminationController terminationController,
-            CancellationToken cancellationToken)
-            => inner.Start(terminationController, cancellationToken);
-
         public void ForceDisableAutomationSecurity(object host)
         {
             inner.ForceDisableAutomationSecurity(host);
@@ -273,8 +268,5 @@ public sealed class HostEventCatalogWindowsExcelIntegrationTests
 
         public void CloseWorkbookWithoutSave(object workbook)
             => inner.CloseWorkbookWithoutSave(workbook);
-
-        public void DisposeHost(object host, TimeSpan cleanupGrace)
-            => inner.DisposeHost(host, cleanupGrace);
     }
 }

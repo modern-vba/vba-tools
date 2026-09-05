@@ -1,5 +1,6 @@
 using System.Text.Json;
 using VbaDev.App.HostEvents;
+using VbaDev.App.Workbooks;
 using Xunit;
 
 namespace VbaDev.Tests;
@@ -209,6 +210,27 @@ public sealed class HostEventCommandTests
         Assert.Equal(1, failed.ExitCode);
         Assert.Empty(failed.StandardOutput);
         Assert.Contains("catalog unavailable", failed.StandardError, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task InspectionTimeoutPublishesNoCatalogAndRetainsItsStage()
+    {
+        var command = new HostEventListCommand(
+            new FailingHostEventCatalogAutomation(
+                new WorkbookAutomationTimeoutException(
+                    new WorkbookAutomationStage(
+                        WorkbookAutomationStageKind.HostEventInspection),
+                    TimeSpan.FromSeconds(60))));
+
+        var result = await command.RunAsync("json", CancellationToken.None);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Contains("timed out", result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(
+            "Host Event inspection",
+            result.StandardError,
+            StringComparison.Ordinal);
     }
 
     private static IntrinsicHostEventCatalog CreateEmptyCatalog()

@@ -220,6 +220,14 @@ dispatcher retirement withholds successful creation and project commitment.
 Unexpected process exit after the final operation but before runtime cleanup
 uses the runtime's existing process-loss classification, even if a saved
 workbook is available; no additional watcher or retry is introduced.
+Host Event catalog discovery is the fourth narrow runtime scenario. It owns only
+automation security and Event configuration, creation of one unsaved blank
+workbook and one empty UserForm, catalog projection, UserForm removal, and close
+without save. It cannot launch, attach to, terminate, or dispose an Excel
+process. Successful catalog, timeout, cancellation, catalog failure,
+cooperative cleanup failure, process-release uncertainty, and
+dispatcher-retirement uncertainty remain separately classified, and no catalog
+is exposed before both release proofs succeed.
 _Avoid_: public automation framework, DebugExcelProcess owner, command transaction
 
 **AutomationDesktopIsolation**:
@@ -1668,10 +1676,13 @@ select workbooks and never opens a user source template as fallback.
 _Avoid_: project-scoped discovery, source-template catalog ownership
 
 **IntrinsicHostEventCatalogDiscovery**:
-The environment-scoped observation performed in one owned Excel process by
-creating an unsaved blank workbook and one temporary UserForm, without importing
-user source or saving a workbook. Failure leaves UserForm host Event evidence
-unavailable rather than causing project-template inspection.
+The environment-scoped observation performed through the sealed
+`AutomationExcelProcessRuntime` by creating an unsaved blank workbook and one
+temporary UserForm, without importing user source or saving a workbook. It never
+attaches to a user Excel process or workbook and exposes no catalog until exact
+process release and STA dispatcher retirement are proved. Failure leaves
+UserForm host Event evidence unavailable rather than causing project-template
+inspection.
 _Avoid_: source-template inspection, UserForm source import, user-workbook discovery
 
 **UserFormHostEventBinding**:
@@ -1755,7 +1766,9 @@ The environment-scoped `vba-dev host-event list` operation that creates one
 unsaved blank workbook and temporary UserForm in an owned Excel process and
 returns the complete local `IntrinsicHostEventCatalog` as text or
 schema-versioned JSON. It accepts no project or document selector and opens,
-imports, changes, or saves no user artifact.
+imports, changes, or saves no user artifact. It uses the shared sealed runtime,
+never attaches to a user process or workbook, and emits no catalog until
+process release and dispatcher retirement are both proved.
 _Avoid_: document inspection, template Event export, user-workbook inspection
 
 **IntrinsicHostEventCatalogRefresh**:
@@ -4423,7 +4436,7 @@ Dev: "Should semantic highlighting wait for `vba-dev capabilities` so reference 
 Domain Expert: "No. Start and initialize the language client first. In a trusted window resolve the companion afterward, publish the validated path through `vba/companionExecutable`, and let reference catalogs and the UserForm Event catalog refresh in the background. Restricted Mode performs none of that managed process work but retains safe source language assistance."
 
 Dev: "Does discovery open each project document or source template?"
-Domain Expert: "No. One owned Excel process creates an unsaved blank workbook and one temporary UserForm, observes the locally installed UserForm Event surface, and closes everything without saving. It opens no user workbook, imports no user source, accepts no project or document selector, and never falls back to source-template inspection."
+Domain Expert: "No. The same sealed runtime used by other non-debug Excel automation owns one isolated process, while the narrow discovery scenario creates an unsaved blank workbook and one temporary UserForm, observes the locally installed UserForm Event surface, and closes both without saving. It never attaches to a user Excel process or workbook, imports no user source, accepts no project or document selector, and never falls back to source-template inspection. A catalog is returned only after exact process release and STA dispatcher retirement are both proved."
 
 Dev: "What is the public CLI for environment Event discovery?"
 Domain Expert: "Use `vba-dev host-event list --format json`. It returns the complete environment-scoped `IntrinsicHostEventCatalog`, has no project or document selector, and advertises its own versioned command and catalog contract. Project labels, workbook paths, form identities, and `VBProject.Name` are absent from that result."
