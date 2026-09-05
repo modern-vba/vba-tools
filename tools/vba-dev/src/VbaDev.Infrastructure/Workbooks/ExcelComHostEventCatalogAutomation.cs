@@ -24,10 +24,6 @@ internal interface IExcelComHostEventCatalogLifecycle
 {
     HostEventCatalogLifecycleCounters Counters { get; }
 
-    object Start(
-        OwnedExcelTerminationController terminationController,
-        CancellationToken cancellationToken);
-
     void ForceDisableAutomationSecurity(object host);
 
     void DisableExcelEvents(object host);
@@ -44,18 +40,15 @@ internal interface IExcelComHostEventCatalogLifecycle
     void RemoveUserForm(object workbook, object userForm);
 
     void CloseWorkbookWithoutSave(object workbook);
-
-    void DisposeHost(object host, TimeSpan cleanupGrace);
 }
 
 /// <summary>
-/// Owns the isolated hidden Excel environment used to discover generic UserForm Events.
+/// Discovers generic UserForm Events through the shared owned-process runtime while
+/// owning only the catalog-specific COM work.
 /// </summary>
 public sealed class ExcelComHostEventCatalogAutomation : IHostEventCatalogAutomation
 {
-    private static readonly TimeSpan DispatcherAbandonmentObservation =
-        TimeSpan.FromMilliseconds(100);
-    private readonly IStaComDispatcherFactory dispatcherFactory;
+    private readonly AutomationExcelProcessRuntime runtime;
     private readonly IExcelComHostEventCatalogLifecycle lifecycle;
     private readonly HostEventCatalogTimeouts timeouts;
 
@@ -64,7 +57,7 @@ public sealed class ExcelComHostEventCatalogAutomation : IHostEventCatalogAutoma
     /// </summary>
     public ExcelComHostEventCatalogAutomation()
         : this(
-            new StaComDispatcherFactory(),
+            new AutomationExcelProcessRuntime(),
             new ExcelComHostEventCatalogLifecycle(),
             HostEventCatalogTimeouts.Default)
     {
@@ -74,11 +67,34 @@ public sealed class ExcelComHostEventCatalogAutomation : IHostEventCatalogAutoma
         IStaComDispatcherFactory dispatcherFactory,
         IExcelComHostEventCatalogLifecycle lifecycle,
         HostEventCatalogTimeouts timeouts)
+        : this(
+            new AutomationExcelProcessRuntime(dispatcherFactory),
+            lifecycle,
+            timeouts)
     {
-        ArgumentNullException.ThrowIfNull(dispatcherFactory);
+    }
+
+    internal ExcelComHostEventCatalogAutomation(
+        IStaComDispatcherFactory dispatcherFactory,
+        IAutomationExcelProcessHostLifecycle processLifecycle,
+        IExcelComHostEventCatalogLifecycle lifecycle,
+        HostEventCatalogTimeouts timeouts)
+        : this(
+            new AutomationExcelProcessRuntime(dispatcherFactory, processLifecycle),
+            lifecycle,
+            timeouts)
+    {
+    }
+
+    internal ExcelComHostEventCatalogAutomation(
+        AutomationExcelProcessRuntime runtime,
+        IExcelComHostEventCatalogLifecycle lifecycle,
+        HostEventCatalogTimeouts timeouts)
+    {
+        ArgumentNullException.ThrowIfNull(runtime);
         ArgumentNullException.ThrowIfNull(lifecycle);
         ArgumentNullException.ThrowIfNull(timeouts);
-        this.dispatcherFactory = dispatcherFactory;
+        this.runtime = runtime;
         this.lifecycle = lifecycle;
         this.timeouts = timeouts;
     }
@@ -90,229 +106,67 @@ public sealed class ExcelComHostEventCatalogAutomation : IHostEventCatalogAutoma
     public async Task<IntrinsicHostEventCatalog> ReadAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var dispatcher = dispatcherFactory.Create();
-        using var terminationController = new OwnedExcelTerminationController();
-        var stageExecutor = new WorkbookAutomationStageExecutor(
-            () => terminationController.HasAttachedProcessExited,
-            terminationController.RequestForcedTermination,
-            getOwnedProcessCompletion: () => terminationController.AttachedProcessCompletion,
-            captureAutomationStage: terminationController.CaptureAutomationStage,
-            describeIsolationEvidence: terminationController.DescribeIsolationEvidence);
-        object? host = null;
         object? workbook = null;
         object? userForm = null;
-        IntrinsicHostEventCatalog? catalog = null;
-        Exception? operationError = null;
-        try
-        {
-            await stageExecutor.ExecuteAsync(
-                new WorkbookAutomationStage(WorkbookAutomationStageKind.ExcelStartup),
-                timeouts.ExcelProcessStart,
-                timeouts.CooperativeCleanup,
-                cancellationToken,
-                stageCancellation => dispatcher.InvokeAsync(
-                    () =>
-                    {
-                        host = lifecycle.Start(terminationController, stageCancellation);
-                        lifecycle.ForceDisableAutomationSecurity(host);
-                        lifecycle.DisableExcelEvents(host);
-                        return true;
-                    },
-                    stageCancellation)).ConfigureAwait(false);
-
-            await stageExecutor.ExecuteAsync(
-                new WorkbookAutomationStage(WorkbookAutomationStageKind.WorkbookCreate),
-                timeouts.WorkbookCreate,
-                timeouts.CooperativeCleanup,
-                cancellationToken,
-                stageCancellation => dispatcher.InvokeAsync(
-                    () =>
-                    {
-                        workbook = lifecycle.CreateUnsavedBlankWorkbook(host!);
-                        return true;
-                    },
-                    stageCancellation)).ConfigureAwait(false);
-
-            await stageExecutor.ExecuteAsync(
-                new WorkbookAutomationStage(WorkbookAutomationStageKind.UserFormCreate),
-                timeouts.UserFormCreate,
-                timeouts.CooperativeCleanup,
-                cancellationToken,
-                stageCancellation => dispatcher.InvokeAsync(
-                    () =>
-                    {
-                        userForm = lifecycle.AddEmptyUserForm(workbook!);
-                        return true;
-                    },
-                    stageCancellation)).ConfigureAwait(false);
-
-            catalog = await stageExecutor.ExecuteAsync(
-                new WorkbookAutomationStage(WorkbookAutomationStageKind.HostEventInspection),
-                timeouts.EventInspection,
-                timeouts.CooperativeCleanup,
-                cancellationToken,
-                stageCancellation => dispatcher.InvokeAsync(
-                    () => lifecycle.InspectEmptyUserForm(host!, workbook!, userForm!),
-                    stageCancellation)).ConfigureAwait(false);
-        }
-        catch (Exception exception)
-        {
-            operationError = exception;
-        }
-
-        var release = await ReleaseOwnedHostAsync(
-            dispatcher,
-            terminationController,
-            stageExecutor,
-            host,
-            workbook,
-            userForm,
-            operationError).ConfigureAwait(false);
-        var dispatcherError = await DisposeDispatcherAsync(
-            dispatcher,
-            stageExecutor.HasAbandonedOperation).ConfigureAwait(false);
-        var cooperativeCleanupError = CombineErrors(
-            release.CooperativeError,
-            dispatcherError);
-        if (release.ProofError is not null)
-        {
-            var cleanupError = CombineErrors(
-                release.ProofError,
-                cooperativeCleanupError)!;
-            throw new WorkbookAutomationCleanupException(
-                "The owned Excel process used for Host Event catalog acquisition could not be verified as released.",
-                operationError is null
-                    ? cleanupError
-                    : new AggregateException(operationError, cleanupError));
-        }
-
-        if (cooperativeCleanupError is not null)
-        {
-            throw new WorkbookAutomationReleasedProcessCleanupException(
-                "The Host Event catalog process was released, but cooperative COM or " +
-                "STA dispatcher cleanup did not complete cleanly.",
-                operationError is null
-                    ? cooperativeCleanupError
-                    : new AggregateException(operationError, cooperativeCleanupError));
-        }
-
-        if (operationError is not null)
-        {
-            ExceptionDispatchInfo.Capture(operationError).Throw();
-        }
-
+        var outcome = await runtime.RunHostEventCatalogAsync(
+            lifecycle,
+            timeouts,
+            (_, _) => DisposeCatalogSession(workbook, userForm),
+            async (session, operationCancellationToken) =>
+            {
+                workbook = await session.ExecuteAsync(
+                    new WorkbookAutomationStage(WorkbookAutomationStageKind.WorkbookCreate),
+                    timeouts.WorkbookCreate,
+                    operationCancellationToken,
+                    lifecycle.CreateUnsavedBlankWorkbook).ConfigureAwait(false);
+                userForm = await session.ExecuteAsync(
+                    new WorkbookAutomationStage(WorkbookAutomationStageKind.UserFormCreate),
+                    timeouts.UserFormCreate,
+                    operationCancellationToken,
+                    _ => lifecycle.AddEmptyUserForm(workbook)).ConfigureAwait(false);
+                return await session.ExecuteAsync(
+                    new WorkbookAutomationStage(WorkbookAutomationStageKind.HostEventInspection),
+                    timeouts.EventInspection,
+                    operationCancellationToken,
+                    host => lifecycle.InspectEmptyUserForm(host, workbook, userForm))
+                    .ConfigureAwait(false);
+            },
+            cancellationToken).ConfigureAwait(false);
+        var catalog = outcome.GetReleasedResult();
         cancellationToken.ThrowIfCancellationRequested();
         return catalog
             ?? throw new InvalidOperationException(
                 "Excel did not produce an intrinsic UserForm Event catalog.");
     }
 
-    private async Task<OwnedHostReleaseResult> ReleaseOwnedHostAsync(
-        IStaComDispatcher dispatcher,
-        OwnedExcelTerminationController terminationController,
-        WorkbookAutomationStageExecutor stageExecutor,
-        object? host,
+    private void DisposeCatalogSession(
         object? workbook,
-        object? userForm,
-        Exception? operationError)
+        object? userForm)
     {
-        var cleanupStage = new WorkbookAutomationStage(
-            WorkbookAutomationStageKind.ProcessCleanup);
-        terminationController.CaptureAutomationStage(cleanupStage);
-        Exception? cooperativeError = null;
-        if (!stageExecutor.HasAbandonedOperation && host is not null)
+        var cleanupErrors = new List<Exception>();
+        if (userForm is not null && workbook is not null)
         {
-            terminationController.RequestForcedTermination(timeouts.CooperativeCleanup);
-            try
-            {
-                var cleanupTask = dispatcher.InvokeAsync(
-                    () =>
-                    {
-                        var cleanupErrors = new List<Exception>();
-                        if (userForm is not null && workbook is not null)
-                        {
-                            TryCleanup(
-                                () => lifecycle.RemoveUserForm(workbook, userForm),
-                                cleanupErrors);
-                        }
-
-                        if (workbook is not null)
-                        {
-                            TryCleanup(
-                                () => lifecycle.CloseWorkbookWithoutSave(workbook),
-                                cleanupErrors);
-                        }
-
-                        TryCleanup(
-                            () => lifecycle.DisposeHost(host, timeouts.CooperativeCleanup),
-                            cleanupErrors);
-                        if (cleanupErrors.Count == 1)
-                        {
-                            ExceptionDispatchInfo.Capture(cleanupErrors[0]).Throw();
-                        }
-
-                        if (cleanupErrors.Count > 1)
-                        {
-                            throw new AggregateException(cleanupErrors);
-                        }
-
-                        return true;
-                    },
-                    CancellationToken.None);
-                var completed = await Task.WhenAny(
-                    cleanupTask,
-                    Task.Delay(
-                        timeouts.CooperativeCleanup +
-                        PrivateDesktopOwnedExcelProcessControl.ForcedCleanupObservationAllowance))
-                    .ConfigureAwait(false);
-                if (completed == cleanupTask)
-                {
-                    await cleanupTask.ConfigureAwait(false);
-                }
-                else
-                {
-                    stageExecutor.MarkOperationAbandoned();
-                    WorkbookAutomationStageExecutor.ObserveFault(cleanupTask);
-                    cooperativeError = new WorkbookAutomationTimeoutException(
-                        cleanupStage,
-                        timeouts.CooperativeCleanup,
-                        isolationDiagnostics:
-                            terminationController.DescribeIsolationEvidence());
-                }
-            }
-            catch (Exception exception)
-            {
-                cooperativeError = exception;
-            }
+            TryCleanup(
+                () => lifecycle.RemoveUserForm(workbook, userForm),
+                cleanupErrors);
         }
 
-        try
+        if (workbook is not null)
         {
-            terminationController.RequestForcedTermination(timeouts.CooperativeCleanup);
-            await terminationController.ObserveCleanupWithinAsync(
-                PrivateDesktopOwnedExcelProcessControl.ForcedCleanupObservationAllowance)
-                .ConfigureAwait(false);
-        }
-        catch (WorkbookAutomationReleasedProcessCleanupException exception)
-        {
-            return new OwnedHostReleaseResult(
-                ProofError: null,
-                CooperativeError: CombineErrors(cooperativeError, exception));
-        }
-        catch (Exception exception)
-        {
-            return new OwnedHostReleaseResult(exception, cooperativeError);
+            TryCleanup(
+                () => lifecycle.CloseWorkbookWithoutSave(workbook),
+                cleanupErrors);
         }
 
-        return new OwnedHostReleaseResult(
-            ProofError: null,
-            CooperativeError:
-                cooperativeError is not null &&
-                ReleasedAutomationCleanupPolicy.CanPreservePrimaryFailure(
-                    operationError,
-                    cooperativeError)
-                    ? null
-                    : cooperativeError);
+        if (cleanupErrors.Count == 1)
+        {
+            ExceptionDispatchInfo.Capture(cleanupErrors[0]).Throw();
+        }
+
+        if (cleanupErrors.Count > 1)
+        {
+            throw new AggregateException(cleanupErrors);
+        }
     }
 
     private static void TryCleanup(Action cleanup, ICollection<Exception> errors)
@@ -327,50 +181,6 @@ public sealed class ExcelComHostEventCatalogAutomation : IHostEventCatalogAutoma
         }
     }
 
-    private static Exception? CombineErrors(Exception? first, Exception? second)
-        => first is null
-            ? second
-            : second is null
-                ? first
-                : new AggregateException(first, second);
-
-    private static async Task<Exception?> DisposeDispatcherAsync(
-        IStaComDispatcher dispatcher,
-        bool allowAbandonment)
-    {
-        try
-        {
-            var disposalTask = dispatcher.DisposeAsync().AsTask();
-            if (!allowAbandonment)
-            {
-                await disposalTask.ConfigureAwait(false);
-                return null;
-            }
-
-            var completed = await Task.WhenAny(
-                disposalTask,
-                Task.Delay(DispatcherAbandonmentObservation)).ConfigureAwait(false);
-            if (completed == disposalTask)
-            {
-                await disposalTask.ConfigureAwait(false);
-            }
-            else
-            {
-                WorkbookAutomationStageExecutor.ObserveFault(disposalTask);
-            }
-
-            return null;
-        }
-        catch (Exception exception)
-        {
-            return exception;
-        }
-    }
-
-    private sealed record OwnedHostReleaseResult(
-        Exception? ProofError,
-        Exception? CooperativeError);
-
     internal sealed class ExcelComHostEventCatalogLifecycle
         : IExcelComHostEventCatalogLifecycle
     {
@@ -379,17 +189,6 @@ public sealed class ExcelComHostEventCatalogAutomation : IHostEventCatalogAutoma
         private const int VbextCtMsForm = 3;
 
         public HostEventCatalogLifecycleCounters Counters { get; } = new();
-
-        public object Start(
-            OwnedExcelTerminationController terminationController,
-            CancellationToken cancellationToken)
-        {
-            var host = ExcelComWorkbookSession.StartOwnedForGeneration(
-                terminationController,
-                cancellationToken);
-            Counters.RecordOwnedExcelProcessStarted();
-            return host;
-        }
 
         public void ForceDisableAutomationSecurity(object host)
         {
@@ -553,10 +352,6 @@ public sealed class ExcelComHostEventCatalogAutomation : IHostEventCatalogAutoma
             }
         }
 
-        public void DisposeHost(object host, TimeSpan cleanupGrace)
-            => ExcelComWorkbookSession.DisposeOwnedGenerationHost(
-                (ExcelComWorkbookSession.ExcelComHostObjects)host,
-                cleanupGrace);
     }
 }
 

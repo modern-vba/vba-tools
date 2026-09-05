@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using VbaDev.App.Cli;
 using VbaDev.App.HostEvents;
 using VbaDev.App.Workbooks;
 using VbaDev.Infrastructure.Debugging;
@@ -10,7 +11,9 @@ namespace VbaDev.Tests;
 public sealed class ExcelComHostEventCatalogAutomationTests
 {
     [Theory]
+    [InlineData(FailurePoint.ExcelStartup)]
     [InlineData(FailurePoint.SecurityConfiguration)]
+    [InlineData(FailurePoint.EventConfiguration)]
     [InlineData(FailurePoint.WorkbookCreation)]
     [InlineData(FailurePoint.UserFormCreation)]
     [InlineData(FailurePoint.EventInspection)]
@@ -21,13 +24,22 @@ public sealed class ExcelComHostEventCatalogAutomationTests
         var lifecycle = new RecordingHostEventLifecycle(events, failurePoint);
         var automation = new ExcelComHostEventCatalogAutomation(
             new RecordingDispatcherFactory(events),
+            lifecycle.ProcessLifecycle,
             lifecycle,
             CreateTimeouts());
 
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => automation.ReadAsync(CancellationToken.None));
 
-        Assert.Contains("quit", events);
+        if (failurePoint == FailurePoint.ExcelStartup)
+        {
+            Assert.DoesNotContain("quit", events);
+        }
+        else
+        {
+            Assert.Contains("quit", events);
+        }
+
         Assert.Contains("process-exit-proved", events);
         Assert.Contains("dispatcher-dispose", events);
         if (failurePoint >= FailurePoint.UserFormCreation)
@@ -52,6 +64,7 @@ public sealed class ExcelComHostEventCatalogAutomationTests
         var lifecycle = new RecordingHostEventLifecycle(events, failurePoint);
         var automation = new ExcelComHostEventCatalogAutomation(
             new RecordingDispatcherFactory(events),
+            lifecycle.ProcessLifecycle,
             lifecycle,
             CreateTimeouts());
 
@@ -78,6 +91,7 @@ public sealed class ExcelComHostEventCatalogAutomationTests
                 "The released Excel server rejected Quit."));
         var automation = new ExcelComHostEventCatalogAutomation(
             new RecordingDispatcherFactory(events),
+            lifecycle.ProcessLifecycle,
             lifecycle,
             CreateTimeouts());
 
@@ -104,15 +118,14 @@ public sealed class ExcelComHostEventCatalogAutomationTests
                 new InvalidOperationException("Unexpected cleanup defect.")));
         var automation = new ExcelComHostEventCatalogAutomation(
             new RecordingDispatcherFactory(events),
+            lifecycle.ProcessLifecycle,
             lifecycle,
             CreateTimeouts());
 
         var error = await Assert.ThrowsAsync<WorkbookAutomationReleasedProcessCleanupException>(
             () => automation.ReadAsync(CancellationToken.None));
 
-        var failures = Assert.IsType<AggregateException>(error.InnerException)
-            .Flatten()
-            .InnerExceptions;
+        var failures = EnumerateFailures(error);
         Assert.Contains(failures, failure => failure is WorkbookAutomationProcessLostException);
         Assert.Contains(failures, failure => failure is COMException);
         Assert.Contains(failures, failure => failure is InvalidOperationException);
@@ -137,6 +150,7 @@ public sealed class ExcelComHostEventCatalogAutomationTests
             ownerDisposeError: proofError);
         var automation = new ExcelComHostEventCatalogAutomation(
             new RecordingDispatcherFactory(events, dispatcherError),
+            lifecycle.ProcessLifecycle,
             lifecycle,
             CreateTimeouts());
 
@@ -144,9 +158,7 @@ public sealed class ExcelComHostEventCatalogAutomationTests
             () => automation.ReadAsync(CancellationToken.None));
 
         Assert.True(WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error));
-        var failures = Assert.IsType<AggregateException>(error.InnerException)
-            .Flatten()
-            .InnerExceptions;
+        var failures = EnumerateFailures(error);
         Assert.Contains(failures, failure => ReferenceEquals(failure, cooperativeError));
         Assert.Contains(failures, failure => ReferenceEquals(failure, proofError));
         Assert.Contains(failures, failure => ReferenceEquals(failure, dispatcherError));
@@ -161,6 +173,7 @@ public sealed class ExcelComHostEventCatalogAutomationTests
         var lifecycle = new RecordingHostEventLifecycle(events);
         var automation = new ExcelComHostEventCatalogAutomation(
             new PausingDispatcherFactory(events, paused, invocationToPause: 4),
+            lifecycle.ProcessLifecycle,
             lifecycle,
             CreateTimeouts());
         using var cancellation = new CancellationTokenSource();
@@ -170,6 +183,29 @@ public sealed class ExcelComHostEventCatalogAutomationTests
         cancellation.Cancel();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => reading);
+        Assert.Contains("process-exit-proved", events);
+        Assert.Contains("dispatcher-dispose", events);
+        Assert.Equal(1, automation.LifecycleMetrics.EmptyUserFormsRemoved);
+        Assert.Equal(1, automation.LifecycleMetrics.WorkbooksClosedWithoutSave);
+    }
+
+    [Fact]
+    public async Task CancellationDuringCleanupPublishesNoCatalogAfterMandatoryRelease()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var events = new List<string>();
+        var lifecycle = new RecordingHostEventLifecycle(
+            events,
+            userFormRemovalObserver: cancellation.Cancel);
+        var automation = new ExcelComHostEventCatalogAutomation(
+            new RecordingDispatcherFactory(events),
+            lifecycle.ProcessLifecycle,
+            lifecycle,
+            CreateTimeouts());
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => automation.ReadAsync(cancellation.Token));
+
         Assert.Contains("process-exit-proved", events);
         Assert.Contains("dispatcher-dispose", events);
         Assert.Equal(1, automation.LifecycleMetrics.EmptyUserFormsRemoved);
@@ -193,6 +229,7 @@ public sealed class ExcelComHostEventCatalogAutomationTests
         var lifecycle = new RecordingHostEventLifecycle(events);
         var automation = new ExcelComHostEventCatalogAutomation(
             new RecordingDispatcherFactory(events),
+            lifecycle.ProcessLifecycle,
             lifecycle,
             CreateTimeouts());
         var application = CommandLineTestFactory.Create(
@@ -262,6 +299,7 @@ public sealed class ExcelComHostEventCatalogAutomationTests
         var lifecycle = new RecordingHostEventLifecycle(events);
         var automation = new ExcelComHostEventCatalogAutomation(
             new RecordingDispatcherFactory(events),
+            lifecycle.ProcessLifecycle,
             lifecycle,
             CreateTimeouts());
 
@@ -286,6 +324,42 @@ public sealed class ExcelComHostEventCatalogAutomationTests
             [.. events, "return"]);
     }
 
+    [Fact]
+    public async Task PublicCommandWithholdsCatalogWhenDispatcherRetirementStalls()
+    {
+        var events = new List<string>();
+        var lifecycle = new RecordingHostEventLifecycle(events);
+        var dispatcher = new DisposalBlockedDispatcher(events);
+        var automation = new ExcelComHostEventCatalogAutomation(
+            new DisposalBlockedDispatcherFactory(dispatcher),
+            lifecycle.ProcessLifecycle,
+            lifecycle,
+            CreateTimeouts() with
+            {
+                CooperativeCleanup = TimeSpan.FromMilliseconds(20)
+            });
+        var command = new HostEventListCommand(automation);
+
+        var execution = command.RunAsync("json", CancellationToken.None);
+        CommandResult result;
+        try
+        {
+            result = await execution.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+        finally
+        {
+            dispatcher.AllowRetirement();
+            await execution.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Contains(
+            "dispatcher retirement could not be proved",
+            result.StandardError,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
     private static HostEventCatalogTimeouts CreateTimeouts()
         => new(
             ExcelProcessStart: TimeSpan.FromSeconds(30),
@@ -293,6 +367,30 @@ public sealed class ExcelComHostEventCatalogAutomationTests
             UserFormCreate: TimeSpan.FromSeconds(30),
             EventInspection: TimeSpan.FromSeconds(60),
             CooperativeCleanup: TimeSpan.FromSeconds(5));
+
+    private static IReadOnlyList<Exception> EnumerateFailures(Exception root)
+    {
+        var failures = new List<Exception>();
+        var pending = new Stack<Exception>();
+        pending.Push(root);
+        while (pending.TryPop(out var current))
+        {
+            failures.Add(current);
+            if (current is AggregateException aggregate)
+            {
+                foreach (var inner in aggregate.InnerExceptions)
+                {
+                    pending.Push(inner);
+                }
+            }
+            else if (current.InnerException is not null)
+            {
+                pending.Push(current.InnerException);
+            }
+        }
+
+        return failures;
+    }
 
     private sealed class RecordingDispatcherFactory(
         List<string> events,
@@ -322,27 +420,51 @@ public sealed class ExcelComHostEventCatalogAutomationTests
         }
     }
 
+    private sealed class DisposalBlockedDispatcherFactory(IStaComDispatcher dispatcher)
+        : IStaComDispatcherFactory
+    {
+        public IStaComDispatcher Create()
+            => dispatcher;
+    }
+
+    private sealed class DisposalBlockedDispatcher(List<string> events)
+        : IStaComDispatcher
+    {
+        private readonly TaskCompletionSource disposal =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task<T> InvokeAsync<T>(Func<T> operation, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(operation());
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            events.Add("dispatcher-dispose");
+            return new ValueTask(disposal.Task);
+        }
+
+        public void AllowRetirement() => disposal.TrySetResult();
+    }
+
     private sealed class RecordingHostEventLifecycle(
         List<string> events,
         FailurePoint failAt = FailurePoint.None,
         Exception? eventInspectionError = null,
         Exception? disposeHostError = null,
-        Exception? ownerDisposeError = null)
+        Exception? ownerDisposeError = null,
+        Action? userFormRemovalObserver = null)
         : IExcelComHostEventCatalogLifecycle
     {
-        private readonly RecordingOwnedProcess owner = new(events, ownerDisposeError);
-
         public HostEventCatalogLifecycleCounters Counters { get; } = new();
 
-        public object Start(
-            OwnedExcelTerminationController terminationController,
-            CancellationToken cancellationToken)
-        {
-            events.Add("start-owned-hidden-excel");
-            terminationController.Attach(owner);
-            Counters.RecordOwnedExcelProcessStarted();
-            return new object();
-        }
+        public IAutomationExcelProcessHostLifecycle ProcessLifecycle { get; } =
+            new RecordingHostProcessLifecycle(
+                events,
+                failAt,
+                disposeHostError,
+                ownerDisposeError);
 
         public void ForceDisableAutomationSecurity(object host)
         {
@@ -351,7 +473,10 @@ public sealed class ExcelComHostEventCatalogAutomationTests
         }
 
         public void DisableExcelEvents(object host)
-            => events.Add("events-off");
+        {
+            events.Add("events-off");
+            ThrowIf(FailurePoint.EventConfiguration);
+        }
 
         public object CreateUnsavedBlankWorkbook(object host)
         {
@@ -395,6 +520,7 @@ public sealed class ExcelComHostEventCatalogAutomationTests
         public void RemoveUserForm(object workbook, object userForm)
         {
             events.Add("remove-userform");
+            userFormRemovalObserver?.Invoke();
             ThrowIf(FailurePoint.UserFormRemoval);
             Counters.RecordEmptyUserFormRemoved();
         }
@@ -406,6 +532,40 @@ public sealed class ExcelComHostEventCatalogAutomationTests
             Counters.RecordWorkbookClosedWithoutSave();
         }
 
+        private void ThrowIf(FailurePoint point)
+        {
+            if (failAt == point)
+            {
+                throw new InvalidOperationException($"Injected failure: {point}.");
+            }
+        }
+    }
+
+    private sealed class RecordingHostProcessLifecycle(
+        List<string> events,
+        FailurePoint failAt,
+        Exception? disposeHostError,
+        Exception? ownerDisposeError)
+        : IAutomationExcelProcessHostLifecycle
+    {
+        private readonly RecordingOwnedProcess owner = new(events, ownerDisposeError);
+
+        public object Start(
+            OwnedExcelTerminationController terminationController,
+            bool enableAutomationSecurityLow,
+            CancellationToken cancellationToken)
+        {
+            events.Add("start-owned-hidden-excel");
+            terminationController.Attach(owner);
+            if (failAt == FailurePoint.ExcelStartup)
+            {
+                throw new InvalidOperationException(
+                    $"Injected failure: {FailurePoint.ExcelStartup}.");
+            }
+
+            return new object();
+        }
+
         public void DisposeHost(object host, TimeSpan cleanupGrace)
         {
             events.Add("quit");
@@ -415,14 +575,10 @@ public sealed class ExcelComHostEventCatalogAutomationTests
                 throw disposeHostError;
             }
 
-            ThrowIf(FailurePoint.HostDispose);
-        }
-
-        private void ThrowIf(FailurePoint point)
-        {
-            if (failAt == point)
+            if (failAt == FailurePoint.HostDispose)
             {
-                throw new InvalidOperationException($"Injected failure: {point}.");
+                throw new InvalidOperationException(
+                    $"Injected failure: {FailurePoint.HostDispose}.");
             }
         }
     }
@@ -500,7 +656,9 @@ public sealed class ExcelComHostEventCatalogAutomationTests
     public enum FailurePoint
     {
         None,
+        ExcelStartup,
         SecurityConfiguration,
+        EventConfiguration,
         WorkbookCreation,
         UserFormCreation,
         EventInspection,

@@ -1,33 +1,39 @@
+using System.Runtime.ExceptionServices;
 using VbaDev.App.Workbooks;
 using VbaDev.App.Testing;
 using VbaDev.Infrastructure.Debugging;
 
 namespace VbaDev.Infrastructure.Workbooks;
 
-internal interface IExcelComWorkbookGenerationLifecycle
+internal interface IAutomationExcelProcessHostLifecycle
 {
     object Start(
         OwnedExcelTerminationController terminationController,
         bool enableAutomationSecurityLow,
         CancellationToken cancellationToken);
 
-    IWorkbookBuildSession Open(object host, string workbookPath);
-
     void DisposeHost(object host, TimeSpan cleanupGrace);
+}
+
+internal interface IExcelComWorkbookGenerationLifecycle
+    : IAutomationExcelProcessHostLifecycle
+{
+    IWorkbookBuildSession Open(object host, string workbookPath);
 
     void DisposeSession(IWorkbookBuildSession session, TimeSpan cleanupGrace);
 }
 
 /// <summary>
 /// Owns the native process, private desktop, STA, deadlines, and cleanup for
-/// bounded workbook and reference scenarios without deciding workflow results.
+/// bounded automation scenarios without deciding workflow results.
 /// </summary>
 internal sealed class AutomationExcelProcessRuntime
 {
     private static readonly TimeSpan DispatcherRetirementObservation =
         TimeSpan.FromMilliseconds(100);
-    private readonly IStaComDispatcherFactory generationDispatcherFactory;
-    private readonly IExcelComWorkbookGenerationLifecycle generationLifecycle;
+    private readonly IStaComDispatcherFactory dispatcherFactory;
+    private readonly IAutomationExcelProcessHostLifecycle processLifecycle;
+    private readonly IExcelComWorkbookGenerationLifecycle? generationLifecycle;
 
     /// <summary>
     /// Creates the production runtime over the native Windows ownership boundary.
@@ -46,11 +52,24 @@ internal sealed class AutomationExcelProcessRuntime
     }
 
     internal AutomationExcelProcessRuntime(
-        IStaComDispatcherFactory generationDispatcherFactory,
+        IStaComDispatcherFactory dispatcherFactory,
         IExcelComWorkbookGenerationLifecycle generationLifecycle)
     {
-        this.generationDispatcherFactory = generationDispatcherFactory;
+        ArgumentNullException.ThrowIfNull(dispatcherFactory);
+        ArgumentNullException.ThrowIfNull(generationLifecycle);
+        this.dispatcherFactory = dispatcherFactory;
+        processLifecycle = generationLifecycle;
         this.generationLifecycle = generationLifecycle;
+    }
+
+    internal AutomationExcelProcessRuntime(
+        IStaComDispatcherFactory dispatcherFactory,
+        IAutomationExcelProcessHostLifecycle processLifecycle)
+    {
+        ArgumentNullException.ThrowIfNull(dispatcherFactory);
+        ArgumentNullException.ThrowIfNull(processLifecycle);
+        this.dispatcherFactory = dispatcherFactory;
+        this.processLifecycle = processLifecycle;
     }
 
     internal Task<AutomationExcelProcessOutcome<TResult>> RunReferenceProbeAsync<TResult>(
@@ -61,6 +80,37 @@ internal sealed class AutomationExcelProcessRuntime
         => RunProcessAsync(
             timeouts, lifecycle.Start, lifecycle.DisposeHost, operation, cancellationToken,
             ProcessScenario.ReferenceProbe);
+
+    internal Task<AutomationExcelProcessOutcome<TResult>> RunHostEventCatalogAsync<TResult>(
+        IExcelComHostEventCatalogLifecycle lifecycle,
+        HostEventCatalogTimeouts timeouts,
+        Action<object, TimeSpan> disposeScenarioResources,
+        Func<AutomationExcelProcessSession, CancellationToken, Task<TResult>> operation,
+        CancellationToken cancellationToken)
+        => RunProcessAsync(
+            timeouts.ExcelProcessStart,
+            timeouts.CooperativeCleanup,
+            (terminationController, stageCancellation) =>
+            {
+                var host = processLifecycle.Start(
+                    terminationController,
+                    enableAutomationSecurityLow: false,
+                    stageCancellation);
+                lifecycle.Counters.RecordOwnedExcelProcessStarted();
+                return host;
+            },
+            host =>
+            {
+                lifecycle.ForceDisableAutomationSecurity(host);
+                lifecycle.DisableExcelEvents(host);
+            },
+            (host, cleanupGrace) => DisposeHostAfterScenarioResources(
+                host,
+                cleanupGrace,
+                disposeScenarioResources),
+            operation,
+            cancellationToken,
+            ProcessScenario.HostEventCatalog);
 
     internal Task<AutomationExcelProcessOutcome<TResult>> RunInitialWorkbookAsync<TResult>(
         string workbookName,
@@ -120,21 +170,23 @@ internal sealed class AutomationExcelProcessRuntime
         ArgumentException.ThrowIfNullOrWhiteSpace(workbookPath);
         ArgumentNullException.ThrowIfNull(timeouts);
         ArgumentNullException.ThrowIfNull(operation);
+        var lifecycle = generationLifecycle ?? throw new InvalidOperationException(
+            "This runtime was not configured for workbook generation.");
 
         IWorkbookBuildSession? buildSession = null;
         return await RunProcessAsync(
             timeouts,
-            (controller, token) => generationLifecycle.Start(
+            (controller, token) => lifecycle.Start(
                 controller, enableAutomationSecurityLow, token),
             (host, grace) =>
             {
                 if (buildSession is null)
                 {
-                    generationLifecycle.DisposeHost(host, grace);
+                    lifecycle.DisposeHost(host, grace);
                 }
                 else
                 {
-                    generationLifecycle.DisposeSession(buildSession, grace);
+                    lifecycle.DisposeSession(buildSession, grace);
                 }
             },
             async (execution, token) =>
@@ -147,7 +199,7 @@ internal sealed class AutomationExcelProcessRuntime
                     token,
                     host =>
                     {
-                        buildSession = generationLifecycle.Open(host, workbookPath);
+                        buildSession = lifecycle.Open(host, workbookPath);
                         return true;
                     }).ConfigureAwait(false);
                 var session = new BoundedWorkbookGenerationSession(
@@ -158,9 +210,64 @@ internal sealed class AutomationExcelProcessRuntime
             ProcessScenario.Workbook).ConfigureAwait(false);
     }
 
-    private async Task<AutomationExcelProcessOutcome<TResult>> RunProcessAsync<TResult>(
+    private void DisposeHostAfterScenarioResources(
+        object host,
+        TimeSpan cleanupGrace,
+        Action<object, TimeSpan> disposeScenarioResources)
+    {
+        Exception? scenarioError = null;
+        try
+        {
+            disposeScenarioResources(host, cleanupGrace);
+        }
+        catch (Exception exception)
+        {
+            scenarioError = exception;
+        }
+
+        Exception? hostError = null;
+        try
+        {
+            processLifecycle.DisposeHost(host, cleanupGrace);
+        }
+        catch (Exception exception)
+        {
+            hostError = exception;
+        }
+
+        if (scenarioError is not null && hostError is not null)
+        {
+            throw new AggregateException(scenarioError, hostError);
+        }
+
+        if ((scenarioError ?? hostError) is { } error)
+        {
+            ExceptionDispatchInfo.Capture(error).Throw();
+        }
+    }
+
+    private Task<AutomationExcelProcessOutcome<TResult>> RunProcessAsync<TResult>(
         WorkbookAutomationTimeouts timeouts,
         Func<OwnedExcelTerminationController, CancellationToken, object> start,
+        Action<object, TimeSpan> disposeHost,
+        Func<AutomationExcelProcessSession, CancellationToken, Task<TResult>> operation,
+        CancellationToken cancellationToken,
+        ProcessScenario scenario)
+        => RunProcessAsync(
+            timeouts.ExcelStartup,
+            timeouts.ProcessCleanup,
+            start,
+            initializeHost: null,
+            disposeHost,
+            operation,
+            cancellationToken,
+            scenario);
+
+    private async Task<AutomationExcelProcessOutcome<TResult>> RunProcessAsync<TResult>(
+        TimeSpan startupTimeout,
+        TimeSpan cleanupTimeout,
+        Func<OwnedExcelTerminationController, CancellationToken, object> start,
+        Action<object>? initializeHost,
         Action<object, TimeSpan> disposeHost,
         Func<AutomationExcelProcessSession, CancellationToken, Task<TResult>> operation,
         CancellationToken cancellationToken,
@@ -170,7 +277,7 @@ internal sealed class AutomationExcelProcessRuntime
         IStaComDispatcher dispatcher;
         try
         {
-            dispatcher = generationDispatcherFactory.Create();
+            dispatcher = dispatcherFactory.Create();
         }
         catch (Exception exception)
         {
@@ -209,19 +316,20 @@ internal sealed class AutomationExcelProcessRuntime
             lifecycleStage = startupStage;
             await stageExecutor.ExecuteAsync(
                 startupStage,
-                timeouts.ExcelStartup,
-                timeouts.ProcessCleanup,
+                startupTimeout,
+                cleanupTimeout,
                 cancellationToken,
                 stageCancellation => dispatcher.InvokeAsync(
                     () =>
                     {
                         host = start(terminationController, stageCancellation);
+                        initializeHost?.Invoke(host);
                         return true;
                     },
                     stageCancellation)).ConfigureAwait(false);
 
             processSession = new AutomationExcelProcessSession(
-                dispatcher, stageExecutor, host!, timeouts.ProcessCleanup,
+                dispatcher, stageExecutor, host!, cleanupTimeout,
                 () => terminationController.HasAttachedProcessExited);
             result = await operation(processSession, cancellationToken).ConfigureAwait(false);
         }
@@ -255,13 +363,13 @@ internal sealed class AutomationExcelProcessRuntime
             terminationController,
             host,
             disposeHost,
-            timeouts.ProcessCleanup,
+            cleanupTimeout,
             stageExecutor,
             operationError,
             scenario).ConfigureAwait(false);
         var dispatcherError = await DisposeDispatcherAsync(
             dispatcher,
-            timeouts.ProcessCleanup).ConfigureAwait(false);
+            cleanupTimeout).ConfigureAwait(false);
         return new AutomationExcelProcessOutcome<TResult>(
             result,
             new AutomationExcelProcessEvidence(
@@ -307,7 +415,8 @@ internal sealed class AutomationExcelProcessRuntime
             WorkbookAutomationStageKind.ProcessCleanup);
         terminationController.CaptureAutomationStage(cleanupStage);
         if (stageExecutor.HasAbandonedOperation
-            || (scenario != ProcessScenario.Workbook
+            || (scenario is ProcessScenario.ReferenceProbe or
+                    ProcessScenario.InitialWorkbook
                 && terminationController.HasAttachedProcessExited))
         {
             return await CleanupOwnedProcessOnlyAsync(
@@ -356,11 +465,12 @@ internal sealed class AutomationExcelProcessRuntime
         }
         catch (Exception ex)
         {
-            cooperativeCleanupError = scenario != ProcessScenario.Workbook
-                ? ex
-                : new WorkbookAutomationReleasedProcessCleanupException(
-                    "Cooperative workbook automation cleanup failed.",
-                    ex);
+            cooperativeCleanupError = scenario is ProcessScenario.Workbook or
+                ProcessScenario.HostEventCatalog
+                ? new WorkbookAutomationReleasedProcessCleanupException(
+                    "Cooperative Excel automation cleanup failed.",
+                    ex)
+                : ex;
         }
 
         var ownershipCleanupError = await CleanupOwnedProcessOnlyAsync(
@@ -552,7 +662,8 @@ internal sealed class AutomationExcelProcessRuntime
     {
         Workbook,
         ReferenceProbe,
-        InitialWorkbook
+        InitialWorkbook,
+        HostEventCatalog
     }
 
     internal sealed class InitialWorkbookAutomationSession(

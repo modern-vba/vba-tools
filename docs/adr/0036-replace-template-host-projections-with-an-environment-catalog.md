@@ -15,6 +15,17 @@ desktop. It opens no user workbook, imports no user source, does not block
 language-server startup, and shares the resulting catalog with every
 authoritative `.frm` source in the session.
 
+Discovery delegates process launch, private-desktop ownership, STA dispatch,
+deadlines, forced cleanup, exact process release, and dispatcher retirement to
+the same sealed `AutomationExcelProcessRuntime` used by workbook generation,
+initial workbook creation, and reference probing. Its narrow scenario owns only
+automation security and Event configuration, blank-workbook and temporary-form
+COM work, catalog projection, and close without save. It never attaches to a
+user Excel process or workbook. A catalog is publishable only after process and
+dispatcher release are both proved; timeout, cancellation, catalog failure,
+cooperative cleanup failure, and lifecycle uncertainty keep separate terminal
+classification.
+
 Worksheet and `ThisWorkbook` code-behind are outside the supported source and
 intrinsic Event model, while `.frm`/`.frx` import, export, build, and debug
 remain supported independently. Control-specific Events such as
