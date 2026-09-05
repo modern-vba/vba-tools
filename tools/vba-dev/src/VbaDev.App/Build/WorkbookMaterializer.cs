@@ -173,6 +173,7 @@ internal sealed class WorkbookMaterializer
         bool guardExistingTarget,
         CancellationToken cancellationToken)
     {
+        var sourceAdmission = sourceInput.Admission;
         var preparedSource = CreateImportSourceSetAndReleaseInput(
             sourceInput,
             cancellationToken);
@@ -337,7 +338,8 @@ internal sealed class WorkbookMaterializer
                 Path.GetFullPath(targetWorkbookPath),
                 sessionResult.ImportedSourceCount,
                 sessionResult.OutputWarnings,
-                sessionResult.VerificationReport);
+                sessionResult.VerificationReport,
+                sourceAdmission);
         }
         catch (Exception operationError)
         {

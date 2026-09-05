@@ -145,10 +145,15 @@ an encoding, or rereading caller files. Ordinary Test's existing BuildFirst call
 uses that same Build stage. Publish excludes manifest test-only inputs before
 reading them and strictly decodes complete project-local sources before marker
 selection; proved marker exclusions need not pass later import eligibility or
-ACP projection. Snapshot test execution input and result locations share the
-same admitted snapshot facts without reacquiring ACP, decoding, or reading
-source again. Ordinary/no-build result locations and Doctor retain their
-existing behavior. Snapshot Build and Test feature versions are `2.0`.
+ACP projection. Under issue #350, ordinary and snapshot build-before-test
+locations come only from an immutable `ExecutedSourceIndex` copied from the
+exact admission paired with the committed test workbook. Location resolution
+does not reacquire ACP, decode, parse, read, or existence-check source. A
+no-build run has no such admission, inspects no project source for navigation,
+and always omits locations with one fixed non-failing warning after a completed
+run. Doctor retains its existing behavior. Snapshot Build and Test feature
+versions are `2.0`; the optional location shape and NDJSON schema `1.2` remain
+unchanged.
 
 Every included source must decode and re-encode to its original bytes before deriving its
 VBE mirror. `VbaDev` then strict-encodes

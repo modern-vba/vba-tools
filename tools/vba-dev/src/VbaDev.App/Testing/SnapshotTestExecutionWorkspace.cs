@@ -284,7 +284,6 @@ internal sealed class SnapshotTestExecutionWorkspaceFactory
 internal sealed class SnapshotTestExecutionWorkspace : IDisposable
 {
     private BuildSourceSnapshotCapture? sourceCapture;
-    private readonly AdmittedVbaSourceSet admission;
     private readonly string sourceRootPath;
     private readonly ISnapshotTestWorkspaceFileSystem fileSystem;
     private readonly int cleanupAttempts;
@@ -339,7 +338,6 @@ internal sealed class SnapshotTestExecutionWorkspace : IDisposable
         }
 
         this.sourceCapture = sourceCapture;
-        admission = sourceCapture.Admission;
         sourceRootPath = sourceCapture.SourceRootPath;
         WorkbookPath = absoluteWorkbookPath;
         this.fileSystem = fileSystem;
@@ -348,8 +346,6 @@ internal sealed class SnapshotTestExecutionWorkspace : IDisposable
     }
 
     public string WorkspacePath { get; }
-
-    internal AdmittedVbaSourceSet Admission => admission;
 
     internal string SourceRootPath => sourceRootPath;
 

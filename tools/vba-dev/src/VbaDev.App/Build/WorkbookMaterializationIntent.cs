@@ -49,4 +49,5 @@ internal sealed record WorkbookMaterializationResult(
     string CommittedArtifactPath,
     int ImportedSourceCount,
     IReadOnlyList<string> Warnings,
-    VbaDev.App.Workbooks.VbeImportVerificationReport VerificationReport);
+    VbeImportVerificationReport VerificationReport,
+    AdmittedVbaSourceSet SourceAdmission);

@@ -396,6 +396,92 @@ public sealed class BuildSourceAdmissionTests
         Assert.Equal(invalidUtf8, File.ReadAllBytes(sourcePath));
     }
 
+    [Theory]
+    [InlineData("edit")]
+    [InlineData("replace")]
+    [InlineData("delete")]
+    public async Task OrdinaryTestKeepsAdmittedLocationsAfterSourceFilesChangeAfterMaterialization(
+        string mutation)
+    {
+        using var temp = TempDirectory.Create();
+        var context = CreateContext(temp.Path);
+        var sourcePath = Path.Combine(context.DocumentSourceSetPath, "Test_Module.bas");
+        File.WriteAllText(
+            sourcePath,
+            "Attribute VB_Name = \"Test_Module\"\r\n' admitted before materialization\r\nPublic Sub Test_Passes()\r\nEnd Sub\r\n",
+            new UTF8Encoding(false));
+        var activeCodePageCalls = 0;
+        var sourceReadCalls = 0;
+        var admission = new VbaSourceAdmission(
+            () =>
+            {
+                activeCodePageCalls++;
+                return 65001;
+            },
+            readAllBytes: path =>
+            {
+                sourceReadCalls++;
+                return File.ReadAllBytes(path);
+            });
+        var automation = new FakeWorkbookGenerationAutomation();
+        var mutationCalls = 0;
+        var runner = new FakeWorkbookTestRunner(
+            new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""))
+        {
+            OnRun = () =>
+            {
+                mutationCalls++;
+                const string replacement =
+                    "Attribute VB_Name = \"Test_Module\"\r\nPublic Sub Test_Passes()\r\nEnd Sub\r\n";
+                switch (mutation)
+                {
+                    case "edit":
+                        File.WriteAllText(sourcePath, replacement, new UTF8Encoding(false));
+                        break;
+                    case "replace":
+                        var replacementPath = Path.Combine(
+                            Path.GetDirectoryName(sourcePath)!,
+                            "replacement.bas");
+                        File.WriteAllText(replacementPath, replacement, new UTF8Encoding(false));
+                        File.Move(replacementPath, sourcePath, overwrite: true);
+                        break;
+                    case "delete":
+                        File.Delete(sourcePath);
+                        break;
+                    default:
+                        throw new InvalidOperationException($"Unsupported mutation: {mutation}");
+                }
+            }
+        };
+        var test = new TestCommand(
+            CreateCommand(
+                automation,
+                65001,
+                new WorkbookSourcePlanner(admission)),
+            runner,
+            new TestResultOutputFormatter(),
+            new TestProcedureSourceLocator(),
+            new FileSystemPathIdentityResolver());
+
+        var result = await test.RunAsync(
+            context,
+            new TestCommandRequest("ndjson", true, new()),
+            CancellationToken.None);
+
+        Assert.Equal(0, result.ExitCode);
+        var completed = result.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Single(line => line.Contains("\"type\":\"testFinished\"", StringComparison.Ordinal));
+        using var document = JsonDocument.Parse(completed);
+        var location = document.RootElement.GetProperty("location");
+        Assert.Equal(new Uri(sourcePath).AbsoluteUri, location.GetProperty("uri").GetString());
+        Assert.Equal(2, location.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(11, location.GetProperty("range").GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(1, mutationCalls);
+        Assert.Equal(1, activeCodePageCalls);
+        Assert.Equal(1, sourceReadCalls);
+        Assert.Equal(string.Empty, result.StandardError);
+    }
+
     [Fact]
     public async Task SnapshotTestKeepsAdmittedLocationsAfterSourceFilesDisappear()
     {
@@ -412,18 +498,12 @@ public sealed class BuildSourceAdmissionTests
         var admission = new VbaSourceAdmission(
             () => { acpCalls++; return 1252; },
             readAllBytes: path => { readCalls++; return File.ReadAllBytes(path); });
-        var automation = new FakeWorkbookGenerationAutomation
+        var automation = new FakeWorkbookGenerationAutomation();
+        var runner = new FakeWorkbookTestRunner(
+            new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""))
         {
-            OnImport = () =>
-            {
-                File.Delete(sourcePath);
-                foreach (var capturedPath in Directory.EnumerateFiles(scratchRoot, "*.bas", SearchOption.AllDirectories))
-                {
-                    File.Delete(capturedPath);
-                }
-            }
+            OnRun = () => File.Delete(sourcePath)
         };
-        var runner = new FakeWorkbookTestRunner(new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
         var test = new TestCommand(
             CreateCommand(automation, 1252, mirrorFactory: new VbeImportSourceSetFactory(
                 () => throw new InvalidOperationException("Mirror requested ACP again."))),

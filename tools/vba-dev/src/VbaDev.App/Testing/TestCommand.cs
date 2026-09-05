@@ -13,6 +13,9 @@ namespace VbaDev.App.Testing;
 /// </summary>
 public sealed class TestCommand
 {
+    private const string NoBuildSourceLocationWarning =
+        "Warning: Source locations were omitted because --no-build runs an existing workbook without a proved source capture.";
+
     private readonly BuildCommand buildCommand;
     private readonly IWorkbookTestRunner workbookTestRunner;
     private readonly TestResultOutputFormatter outputFormatter;
@@ -73,6 +76,7 @@ public sealed class TestCommand
         CancellationToken cancellationToken)
     {
         SnapshotTestExecutionWorkspace? snapshotWorkspace = null;
+        ExecutedSourceIndex? executedSourceIndex = null;
         var hasCompletedTestRunOutput = false;
         var successfulBuildStandardError = string.Empty;
         CommandResult result;
@@ -175,7 +179,6 @@ public sealed class TestCommand
         async Task<CommandResult> RunCoreAsync()
         {
             var workbookPath = context.BinDocumentPath;
-            var sourceLocationPath = context.DocumentSourceSetPath;
             if (request.SourceSnapshotPath is not null)
             {
                 snapshotWorkspace = snapshotWorkspaceFactory.Create(
@@ -199,17 +202,34 @@ public sealed class TestCommand
                 workbookPath = buildResult.CommittedArtifactPath
                     ?? throw new InvalidOperationException(
                         "Snapshot materialization succeeded without a committed workbook path.");
+                executedSourceIndex = sourceLocator.CreateIndex(
+                    buildResult.SourceAdmission
+                        ?? throw new InvalidOperationException(
+                            "Snapshot materialization succeeded without its admitted source capture."),
+                    snapshotWorkspace.SourceRootPath,
+                    context.DocumentSourceSetPath);
             }
             else if (request.BuildFirst)
             {
-                var buildResult = await buildCommand.RunAsync(context, cancellationToken)
+                var buildResult = await buildCommand.RunTestBuildIntentAsync(
+                        context,
+                        cancellationToken)
                     .ConfigureAwait(false);
-                if (buildResult.ExitCode != 0)
+                if (buildResult.CommandResult.ExitCode != 0)
                 {
-                    return buildResult;
+                    return buildResult.CommandResult;
                 }
 
-                successfulBuildStandardError = buildResult.StandardError;
+                successfulBuildStandardError = buildResult.CommandResult.StandardError;
+                workbookPath = buildResult.CommittedArtifactPath
+                    ?? throw new InvalidOperationException(
+                        "Test materialization succeeded without a committed workbook path.");
+                executedSourceIndex = sourceLocator.CreateIndex(
+                    buildResult.SourceAdmission
+                        ?? throw new InvalidOperationException(
+                            "Test materialization succeeded without its admitted source capture."),
+                    context.DocumentSourceSetPath,
+                    context.DocumentSourceSetPath);
             }
 
             if (!File.Exists(workbookPath))
@@ -236,23 +256,16 @@ public sealed class TestCommand
                     ? result
                     : SanitizeSnapshotTestResult(result, snapshotWorkspace))
                 .ToArray();
-            var locatedResults = request.SourceSnapshotPath is null
-                ? sourceLocator.Locate(
-                    sourceLocationPath,
-                    context.DocumentSourceSetPath,
-                    results)
-                : sourceLocator.LocateSnapshot(
-                    snapshotWorkspace!.Admission,
-                    snapshotWorkspace.SourceRootPath,
-                    context.DocumentSourceSetPath,
-                    results);
+            var locatedResults = executedSourceIndex is null
+                ? results
+                : sourceLocator.Locate(executedSourceIndex, results);
             var testRun = TestRun.FromResults(
                 context.Manifest.ProjectName,
                 context.DocumentName,
                 locatedResults);
             var output = outputFormatter.Format(request.Format, testRun);
-            var locationWarnings = request.SourceSnapshotPath is null
-                ? string.Empty
+            var locationWarnings = executedSourceIndex is null
+                ? $"{NoBuildSourceLocationWarning}{Environment.NewLine}"
                 : RenderSourceLocationWarnings(locatedResults);
 
             var commandResult = testRun.HasFailures
@@ -317,7 +330,7 @@ public sealed class TestCommand
                 .Select(result => $"{result.Category}.{result.TestName}")
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .Select(identity =>
-                    $"Warning: Source location for '{identity}' was omitted because it could not be mapped safely or unambiguously from the invocation snapshot to the persistent source set.{Environment.NewLine}"));
+                    $"Warning: Source location for '{identity}' was omitted because it could not be mapped safely or unambiguously from the executed source capture to the persistent source set.{Environment.NewLine}"));
 
     private static TestResultRecord SanitizeSnapshotTestResult(
         TestResultRecord result,
