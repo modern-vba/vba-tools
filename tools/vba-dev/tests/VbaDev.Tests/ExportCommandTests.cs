@@ -1,5 +1,6 @@
 using System.Text;
 using VbaDev.App.Export;
+using VbaDev.App.Projects;
 using VbaDev.App.Workbooks;
 using VbaDev.Cli;
 using VbaDev.Composition;
@@ -37,6 +38,10 @@ public sealed class ExportCommandTests
         var result = application.Run(["export"]);
 
         Assert.Equal(0, result.ExitCode);
+        Assert.Equal(
+            $"Exported {binPath} to {sourceSet}{Environment.NewLine}",
+            result.StandardOutput);
+        Assert.Empty(result.StandardError);
         var call = Assert.Single(exporter.Calls);
         Assert.Equal(binPath, call.WorkbookPath);
         Assert.NotEqual(sourceSet, call.DestinationDirectory);
@@ -136,11 +141,18 @@ public sealed class ExportCommandTests
             ("Module1.bas", "new"),
             ("Dialog.frm", "VERSION 5.00"),
             ("Dialog.frx", "frx"));
-        var application = CommandLineTestFactory.Create(temp.Path, workbookModuleExporter: exporter);
+        var application = CommandLineTestFactory.Create(
+            temp.Path,
+            workbookModuleExporter: exporter,
+            projectManifestStore: new ThrowingProjectManifestStore());
 
         var result = application.Run(["export", "--from", explicitWorkbook]);
 
         Assert.Equal(0, result.ExitCode);
+        Assert.Equal(
+            $"Exported {explicitWorkbook} to {Path.GetFullPath(temp.Path)}{Environment.NewLine}",
+            result.StandardOutput);
+        Assert.Empty(result.StandardError);
         Assert.Equal(explicitWorkbook, Assert.Single(exporter.Calls).WorkbookPath);
         Assert.Equal("old", File.ReadAllText(Path.Combine(temp.Path, "Old.bas"), Encoding.UTF8));
         Assert.Equal("new", File.ReadAllText(Path.Combine(temp.Path, "Module1.bas"), Encoding.UTF8));
@@ -270,9 +282,9 @@ public sealed class ExportCommandTests
         var command = new ExportCommand(
             new FakeWorkbookModuleExporter(("Module1.bas", "new module")));
 
-        var result = command.RunExplicit(new ExportCommandRequest(
-            FromPath: explicitWorkbook,
-            ToPath: null,
+        var result = command.RunExplicit(new ExplicitWorkbookExportCommandRequest(
+            SourceWorkbook: explicitWorkbook,
+            DestinationDirectory: null,
             WorkingDirectory: temp.Path));
 
         Assert.Equal(0, result.ExitCode);
@@ -305,13 +317,16 @@ public sealed class ExportCommandTests
     [Theory]
     [InlineData("--project")]
     [InlineData("--document")]
-    public void ExplicitWorkbookExportRejectsProjectContextOptions(string optionName)
+    public void ExplicitWorkbookExportUsesCanonicalConflictFailure(string optionName)
     {
         using var temp = TempDirectory.Create();
         var explicitWorkbook = Path.Combine(temp.Path, "explicit.xlsm");
         File.WriteAllText(explicitWorkbook, "workbook", Encoding.UTF8);
         var exporter = new FakeWorkbookModuleExporter(("Module1.bas", "new"));
-        var application = CommandLineTestFactory.Create(temp.Path, workbookModuleExporter: exporter);
+        var application = CommandLineTestFactory.Create(
+            temp.Path,
+            workbookModuleExporter: exporter,
+            projectManifestStore: new ThrowingProjectManifestStore());
 
         var optionValue = optionName.Equals("--project", StringComparison.Ordinal)
             ? temp.Path
@@ -319,7 +334,11 @@ public sealed class ExportCommandTests
         var result = application.Run(["export", "--from", explicitWorkbook, optionName, optionValue]);
 
         Assert.Equal(1, result.ExitCode);
-        Assert.Contains($"{optionName} cannot be used with --from.", result.StandardError, StringComparison.Ordinal);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(
+            $"Error: Options '--from' and '{optionName}' cannot be used together.{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev export --help' for usage.{Environment.NewLine}",
+            result.StandardError);
         Assert.Empty(exporter.Calls);
     }
 
@@ -939,7 +958,37 @@ public sealed class ExportCommandTests
         var result = application.Run(["export", "--from="]);
 
         Assert.Equal(1, result.ExitCode);
-        Assert.Contains("--from", result.StandardError, StringComparison.Ordinal);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(
+            $"Error: Option '--from' requires a value.{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev export --help' for usage.{Environment.NewLine}",
+            result.StandardError);
+        Assert.Empty(exporter.Calls);
+    }
+
+    [Theory]
+    [InlineData("--project")]
+    [InlineData("--document")]
+    [InlineData("--from")]
+    [InlineData("--to")]
+    public void ExportRejectsEmptyOptionValuesBeforeProjectOrFilesystemAccess(
+        string optionName)
+    {
+        using var temp = TempDirectory.Create();
+        var exporter = new FakeWorkbookModuleExporter(("Module1.bas", "new"));
+        var application = CommandLineTestFactory.Create(
+            temp.Path,
+            workbookModuleExporter: exporter,
+            projectManifestStore: new ThrowingProjectManifestStore());
+
+        var result = application.Run(["export", optionName, ""]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(
+            $"Error: Option '{optionName}' requires a non-empty value.{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev export --help' for usage.{Environment.NewLine}",
+            result.StandardError);
         Assert.Empty(exporter.Calls);
     }
 
@@ -995,6 +1044,15 @@ public sealed class ExportCommandTests
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllBytes(path, content);
+    }
+
+    private sealed class ThrowingProjectManifestStore : IProjectManifestStore
+    {
+        public ProjectManifest Load(string manifestPath)
+            => throw new InvalidOperationException("Grammar failures must not load project state.");
+
+        public void Save(string projectRoot, ProjectManifest manifest)
+            => throw new InvalidOperationException("Grammar failures must not save project state.");
     }
 }
 

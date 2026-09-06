@@ -80,6 +80,8 @@ parallel compatibility grammar:
 - Doctor and capabilities accept `-f` as the alias of `--format`;
 - snapshot Build accepts `-o` as the alias of `--output`;
 - Import `--from` and `--to` are required and nonempty;
+- supplied Export `--project`, `--document`, `--from`, and `--to` values are
+  nonempty, while omission retains the established defaults;
 - Build source snapshot and output are `AllOrNone`;
 - Test procedure `Requires` module, while source snapshot `Conflicts` with
   no-build;
@@ -91,6 +93,21 @@ Shared relationships are limited to the closed internal forms `Requires`,
 `Conflicts`, and `AllOrNone`. They attach actual symbols to the one graph and
 do not become a general validation DSL. A grammar-valid parse binds once to a
 shell-neutral closed command intent before domain resolution or side effects.
+
+Issue #354 establishes the first sealed family module for Import and Export.
+It declares their actual leaves on the shared root, reuses the canonical
+project/document symbol constructor, and registers validation, binding,
+actions, completion, and capability metadata beside those leaves. Import binds
+one intent containing a non-null source directory and target workbook. Export
+binds one closed union: either an explicit workbook source with an optional
+destination, or optional project/document selection with an optional
+destination. The action consumes only that bound intent; it does not inspect
+option presence again.
+
+The Application projection preserves the same distinction. Project Export and
+explicit-workbook Export use separate request types, and Import receives
+non-null source and target paths. Application commands therefore do not carry
+option spellings or reinterpret nullable source paths as command modes.
 
 ## Grammar-failure contract
 
@@ -138,10 +155,10 @@ results with their established output schemas and exit rules; the grammar
 router does not reinterpret them.
 
 The central router and its closed cardinality, value, relationship, and intent-
-binding primitives are established in issue #353. That slice does not claim
-that every command family already declares its final public grammar. Issues
-#354 through #360 migrate those family declarations onto the primitives without
-creating another router or compatibility grammar.
+binding primitives are established in issue #353. Import and Export migrate in
+issue #354. Issues #355 through #360 migrate the remaining family declarations
+onto the same primitives without creating another router or compatibility
+grammar.
 
 ## Consequences
 

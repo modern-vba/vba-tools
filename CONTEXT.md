@@ -84,6 +84,16 @@ action dispatch use that same root instance; each command-line composition
 receives its own graph rather than a global singleton.
 _Avoid_: parallel help graph, reconstructed option symbol, process-wide graph cache
 
+**VbaDevImportExportCommandFamily**:
+The internal sealed command-family module that adds the actual Import and
+Export leaves to the single `VbaDevCommandGrammar` graph. The family owns their
+descriptions, symbols, static completion, grammar rules, typed binding, action
+connection, and capability registrations. Import binds one required
+source-directory and target-workbook intent. Export binds either a
+project/document-source intent or an explicit-workbook-source intent; neither
+Application request can represent the other mode.
+_Avoid_: nullable export mode flag, Application option parsing, second command root
+
 **VbaDevGrammarFailureRouter**:
 The VbaDev-owned invocation-boundary component that selects one deterministic
 grammar failure from a completed `VbaDevCommandGraph`. It freezes its closed

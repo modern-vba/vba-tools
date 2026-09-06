@@ -16,8 +16,9 @@ depend on those consumers. A failure owned by the central grammar router exits
 canonical diagnostic and one short command-local help hint, with a final
 newline. The router applies deterministic phase ordering to structural parsing
 and cardinality checks and to value, relationship, standalone, and closed-intent
-rules as their actual command declarations register them. Existing
-command-family checks move onto those primitives in the staged follow-up work
+rules as their actual command declarations register them. The sealed Import and
+Export family owns those leaves, their closed command intents, and their action
+connections on the same graph; the remaining staged family migrations are
 described by [ADR 0038](docs/adr/0038-establish-the-vba-dev-command-grammar.md).
 Valid help, standalone version, completion, and capabilities requests remain
 side-effect-free terminal successes on stdout; failed Test runs and failed

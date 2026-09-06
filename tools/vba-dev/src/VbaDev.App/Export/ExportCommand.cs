@@ -40,7 +40,7 @@ public sealed class ExportCommand
     /// <param name="context">The resolved project and document context.</param>
     /// <param name="request">The export command request.</param>
     /// <returns>The command result describing the export operation or validation error.</returns>
-    public CommandResult Run(ResolvedProjectContext context, ExportCommandRequest request)
+    public CommandResult Run(ResolvedProjectContext context, ProjectExportCommandRequest request)
         => RunAsync(context, request, CancellationToken.None)
             .GetAwaiter()
             .GetResult();
@@ -54,17 +54,15 @@ public sealed class ExportCommand
     /// <returns>The command result describing the export operation or validation error.</returns>
     public async Task<CommandResult> RunAsync(
         ResolvedProjectContext context,
-        ExportCommandRequest request,
+        ProjectExportCommandRequest request,
         CancellationToken cancellationToken)
     {
         try
         {
-            var sourceWorkbookPath = string.IsNullOrWhiteSpace(request.FromPath)
-                ? context.BinDocumentPath
-                : ResolveOptionPath(request.WorkingDirectory, request.FromPath);
-            var destinationDirectory = string.IsNullOrWhiteSpace(request.ToPath)
+            var sourceWorkbookPath = context.BinDocumentPath;
+            var destinationDirectory = request.DestinationDirectory is null
                 ? context.DocumentSourceSetPath
-                : ResolveOptionPath(request.WorkingDirectory, request.ToPath);
+                : ResolvePath(request.WorkingDirectory, request.DestinationDirectory);
             var cleanDestination = true;
             var automationTimeouts = WorkbookAutomationTimeouts.Default with
             {
@@ -116,9 +114,9 @@ public sealed class ExportCommand
     /// <summary>
     /// Exports from an explicit workbook path without project manifest resolution.
     /// </summary>
-    /// <param name="request">The export command request containing the required --from path.</param>
+    /// <param name="request">The export command request containing the required workbook path.</param>
     /// <returns>The command result describing the export operation or validation error.</returns>
-    public CommandResult RunExplicit(ExportCommandRequest request)
+    public CommandResult RunExplicit(ExplicitWorkbookExportCommandRequest request)
         => RunExplicitAsync(request, CancellationToken.None)
             .GetAwaiter()
             .GetResult();
@@ -126,25 +124,20 @@ public sealed class ExportCommand
     /// <summary>
     /// Exports from an explicit workbook path with cooperative cancellation.
     /// </summary>
-    /// <param name="request">The export command request containing the required --from path.</param>
+    /// <param name="request">The export command request containing the required workbook path.</param>
     /// <param name="cancellationToken">Cancels workbook automation before destination mutation.</param>
     /// <returns>The command result describing the export operation or validation error.</returns>
     public async Task<CommandResult> RunExplicitAsync(
-        ExportCommandRequest request,
+        ExplicitWorkbookExportCommandRequest request,
         CancellationToken cancellationToken)
     {
         try
         {
-            if (string.IsNullOrWhiteSpace(request.FromPath))
-            {
-                return CommandResult.UsageError("--from requires a workbook path.");
-            }
-
-            var sourceWorkbookPath = ResolveOptionPath(request.WorkingDirectory, request.FromPath!);
-            var destinationDirectory = string.IsNullOrWhiteSpace(request.ToPath)
+            var sourceWorkbookPath = ResolvePath(request.WorkingDirectory, request.SourceWorkbook);
+            var destinationDirectory = request.DestinationDirectory is null
                 ? Path.GetFullPath(request.WorkingDirectory)
-                : ResolveOptionPath(request.WorkingDirectory, request.ToPath);
-            var cleanDestination = !string.IsNullOrWhiteSpace(request.ToPath);
+                : ResolvePath(request.WorkingDirectory, request.DestinationDirectory);
+            var cleanDestination = request.DestinationDirectory is not null;
 
             return await RunCoreAsync(
                     sourceWorkbookPath,
@@ -262,7 +255,7 @@ public sealed class ExportCommand
         }
     }
 
-    private static string ResolveOptionPath(string workingDirectory, string path)
+    private static string ResolvePath(string workingDirectory, string path)
         => Path.GetFullPath(Path.IsPathRooted(path) ? path : Path.Combine(workingDirectory, path));
 
     private static CommandResult CreateFailureResult(Exception error)

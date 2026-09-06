@@ -670,11 +670,79 @@ public sealed class ImportCommandTests
         Assert.Contains("Unlisted Library", automation.References.Select(reference => reference.Name));
     }
 
+    [Fact]
+    public void ImportMissingFromUsesCanonicalGrammarFailure()
+    {
+        using var temp = TempDirectory.Create();
+        var automation = new FakeWorkbookGenerationAutomation();
+        var application = CommandLineTestFactory.Create(
+            temp.Path,
+            workbookGenerationAutomation: automation);
+
+        var result = application.Run(["import", "--to", "target.xlsm"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(
+            $"Error: Option '--from' is required for command 'vba-dev import'.{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev import --help' for usage.{Environment.NewLine}",
+            result.StandardError);
+        Assert.Empty(automation.OpenedWorkbooks);
+        Assert.Empty(automation.Events);
+    }
+
     [Theory]
-    [InlineData(new[] { "import", "--to", "target.xlsm" }, "--from is required.")]
-    [InlineData(new[] { "import", "--from", "src" }, "--to is required.")]
-    [InlineData(new[] { "import", "--from=", "--to", "target.xlsm" }, "target.xlsm")]
+    [InlineData(new[] { "import", "--from", "src" }, "Option '--to' is required for command 'vba-dev import'.")]
+    [InlineData(new[] { "import", "--from", "", "--to", "target.xlsm" }, "Option '--from' requires a non-empty value.")]
+    [InlineData(new[] { "import", "--from", "src", "--to", "" }, "Option '--to' requires a non-empty value.")]
+    public void ImportMissingOrEmptyValuesUseCanonicalGrammarFailure(
+        string[] args,
+        string diagnostic)
+    {
+        using var temp = TempDirectory.Create();
+        var automation = new FakeWorkbookGenerationAutomation();
+        var application = CommandLineTestFactory.Create(
+            temp.Path,
+            workbookGenerationAutomation: automation);
+
+        var result = application.Run(args);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(
+            $"Error: {diagnostic}{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev import --help' for usage.{Environment.NewLine}",
+            result.StandardError);
+        Assert.Empty(automation.OpenedWorkbooks);
+        Assert.Empty(automation.Events);
+    }
+
+    [Theory]
+    [InlineData(new[] { "import", "--from=" }, "--from")]
     [InlineData(new[] { "import", "--from", "src", "--to=" }, "--to")]
+    public void ImportMissingOptionValuesUseCanonicalCardinalityFailure(
+        string[] args,
+        string optionName)
+    {
+        using var temp = TempDirectory.Create();
+        var automation = new FakeWorkbookGenerationAutomation();
+        var application = CommandLineTestFactory.Create(
+            temp.Path,
+            workbookGenerationAutomation: automation);
+
+        var result = application.Run(args);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(
+            $"Error: Option '{optionName}' requires a value.{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev import --help' for usage.{Environment.NewLine}",
+            result.StandardError);
+        Assert.Empty(automation.OpenedWorkbooks);
+        Assert.Empty(automation.Events);
+    }
+
+    [Theory]
     [InlineData(new[] { "import", "-f", "src", "--to", "target.xlsm" }, "-f")]
     [InlineData(new[] { "import", "--from", "src", "-t", "target.xlsm" }, "-t")]
     [InlineData(new[] { "import", "--from", "src", "--to", "target.xlsm", "--project", "." }, "--project")]
