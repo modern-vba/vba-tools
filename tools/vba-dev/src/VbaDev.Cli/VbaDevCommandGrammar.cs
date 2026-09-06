@@ -10,7 +10,6 @@ using VbaDev.App.Cli;
 using VbaDev.App.Diagnostics;
 using VbaDev.App.HostEvents;
 using VbaDev.App.Projects;
-using VbaDev.App.Testing;
 using VbaDev.Composition;
 
 namespace VbaDev.Cli;
@@ -365,60 +364,11 @@ internal static class VbaDevCommandGrammar
             grammarFailureRules,
             capabilityCommands);
         buildPublishCommandFamily.RegisterBuild(rootCommand);
-        var testCommand = AddCapabilityCommand(
+        _ = VbaDevTestCommandFamily.Register(
             rootCommand,
-            "test",
-            "Run VBA unit tests for the selected document.",
-            "test",
-            "1.2",
+            composition,
+            grammarFailureRules,
             capabilityCommands);
-        var testProjectOptions = AddProjectDocumentOptions(testCommand);
-        var testFormatOption = CreateStringOption(
-            "--format",
-            "Test output format.",
-            "text|ndjson",
-            ["text", "ndjson"],
-            "-f");
-        var testNoBuildOption = new Option<bool>("--no-build")
-        {
-            Description = "Skip building before running tests."
-        };
-        var testSourceSnapshotOption = CreateStringOption(
-            "--source-snapshot",
-            "Complete caller-owned source snapshot directory.",
-            "dir");
-        var testTimeoutOption = new Option<int?>("--timeout-seconds")
-        {
-            Description = "Test macro execution timeout in positive whole seconds.",
-            HelpName = "seconds"
-        };
-        var testModuleOption = CreateStringOption("--module", "Run tests from one test module.", "name");
-        var testProcedureOption = CreateStringOption(
-            "--procedure",
-            "Run one test procedure. Requires --module.",
-            "name");
-        testCommand.Add(testFormatOption);
-        testCommand.Add(testNoBuildOption);
-        testCommand.Add(testSourceSnapshotOption);
-        testCommand.Add(testTimeoutOption);
-        testCommand.Add(testModuleOption);
-        testCommand.Add(testProcedureOption);
-        var testOptions = new TestCommandOptions(
-            testProjectOptions,
-            testFormatOption,
-            testNoBuildOption,
-            testSourceSnapshotOption,
-            testTimeoutOption,
-            testModuleOption,
-            testProcedureOption);
-        testCommand.SetAction(async (parseResult, cancellationToken) => WriteCommandResult(
-            parseResult,
-            await RunTestCommandAsync(
-                    parseResult,
-                    composition,
-                    testOptions,
-                    cancellationToken)
-                .ConfigureAwait(false)));
         buildPublishCommandFamily.RegisterPublish(rootCommand);
         _ = VbaDevImportExportCommandFamily.Register(
             rootCommand,
@@ -869,72 +819,6 @@ internal static class VbaDevCommandGrammar
         }
     }
 
-    private static Task<CommandResult> RunTestCommandAsync(
-        ParseResult parseResult,
-        ToolingApplicationComposition composition,
-        TestCommandOptions options,
-        CancellationToken cancellationToken)
-    {
-        var moduleName = parseResult.GetValue(options.Module);
-        var procedureName = parseResult.GetValue(options.Procedure);
-        if (!string.IsNullOrEmpty(procedureName) && string.IsNullOrEmpty(moduleName))
-        {
-            return Task.FromResult(CommandResult.UsageError("--procedure requires --module."));
-        }
-
-        var hasSourceSnapshot = parseResult.GetResult(options.SourceSnapshot) is not null;
-        var sourceSnapshotValue = parseResult.GetValue(options.SourceSnapshot);
-        if (hasSourceSnapshot && string.IsNullOrWhiteSpace(sourceSnapshotValue))
-        {
-            return Task.FromResult(CommandResult.UsageError(
-                "--source-snapshot requires a non-empty directory path."));
-        }
-
-        if (hasSourceSnapshot && parseResult.GetValue(options.NoBuild))
-        {
-            return Task.FromResult(CommandResult.UsageError(
-                "--source-snapshot cannot be used with --no-build."));
-        }
-
-        return ResolveDocumentContextAsync(
-            parseResult,
-            composition,
-            options.Project,
-            async (context, operationCancellationToken) =>
-            {
-                try
-                {
-                    var format = CommandDefaultResolver.ResolveTestFormat(
-                        context.Manifest,
-                        parseResult.GetValue(options.Format));
-                    var executionTimeout = CommandDefaultResolver.ResolveTestExecutionTimeout(
-                        context.Manifest,
-                        parseResult.GetValue(options.TimeoutSeconds));
-                    return await composition.TestCommand.RunAsync(
-                            context,
-                            new TestCommandRequest(
-                            format,
-                            !parseResult.GetValue(options.NoBuild),
-                            new WorkbookTestSelector(
-                                string.IsNullOrEmpty(moduleName) ? null : moduleName,
-                                string.IsNullOrEmpty(procedureName) ? null : procedureName),
-                            executionTimeout,
-                            !hasSourceSnapshot
-                                ? null
-                                : Path.GetFullPath(
-                                    sourceSnapshotValue!,
-                                    composition.WorkingDirectory)),
-                            operationCancellationToken)
-                        .ConfigureAwait(false);
-                }
-                catch (InvalidOperationException ex)
-                {
-                    return CommandResult.UsageError(ex.Message);
-                }
-            },
-            cancellationToken);
-    }
-
     private sealed class CanonicalVersionAction(string version) : SynchronousCommandLineAction
     {
         public override bool Terminating => true;
@@ -969,15 +853,6 @@ internal static class VbaDevCommandGrammar
     internal sealed record ProjectDocumentOptions(
         Option<string> Project,
         Option<string> Document);
-
-    private sealed record TestCommandOptions(
-        ProjectDocumentOptions Project,
-        Option<string> Format,
-        Option<bool> NoBuild,
-        Option<string> SourceSnapshot,
-        Option<int?> TimeoutSeconds,
-        Option<string> Module,
-        Option<string> Procedure);
 
     private sealed record ToolCapabilities(
         string ToolVersion,

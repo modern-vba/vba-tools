@@ -17,9 +17,9 @@ canonical diagnostic and one short command-local help hint, with a final
 newline. The router applies deterministic phase ordering to structural parsing
 and cardinality checks and to value, relationship, standalone, and closed-intent
 rules as their actual command declarations register them. The sealed Build and
-Publish family and the sealed Import and Export family own those leaves, their
-closed command intents, and their action connections on the same graph; the
-remaining staged family migrations are described by
+Publish family, the sealed Import and Export family, and the sealed Test family
+own those leaves, their closed command intents, and their action connections on
+the same graph; the remaining staged family migrations are described by
 [ADR 0038](docs/adr/0038-establish-the-vba-dev-command-grammar.md).
 Valid help, standalone version, completion, and capabilities requests remain
 side-effect-free terminal successes on stdout; failed Test runs and failed
@@ -286,7 +286,11 @@ vba-dev test --module Test_Sample --procedure Test_Target_Condition_ExpectedResu
 
 `vba-dev test` builds the selected document before running tests by default. Use
 `--no-build` only when you intentionally want to rerun tests against the
-existing bin workbook.
+existing bin workbook. `--procedure` requires `--module`, and
+`--source-snapshot` cannot be combined with `--no-build`. Explicit output
+formats remain `text` and `ndjson`, explicit timeout values must be positive
+whole seconds, and supplied project, document, and snapshot paths must be
+nonempty.
 
 ---
 

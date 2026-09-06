@@ -106,6 +106,19 @@ or format override. Application resolves caller-relative snapshot paths, while
 `WorkbookMaterializer` retains staging and output commitment.
 _Avoid_: Boolean build mode, nullable snapshot/output pair, CLI output commitment, second command root
 
+**VbaDevTestCommandFamily**:
+The internal sealed command-family module that attaches the actual Test leaf
+between Build and Publish on the single `VbaDevCommandGrammar` graph. It owns
+the leaf's descriptions, symbols, static completion, grammar rules, accepted
+explicit formats, closed command-intent binding, action connection, and
+capability registration. One cached command intent contains an independent
+closed source intent for persistent build, source-snapshot build, or existing-
+workbook no-build, and a closed selector intent for all tests, one module, or
+one procedure with its module. Manifest format and timeout defaults remain
+Application concerns after project resolution; the family action projects the
+closed cases to the established Application and workbook-runner contracts.
+_Avoid_: Boolean CLI source mode, nullable CLI selector pair, Application option parsing, second command root
+
 **VbaDevGrammarFailureRouter**:
 The VbaDev-owned invocation-boundary component that selects one deterministic
 grammar failure from a completed `VbaDevCommandGraph`. It freezes its closed
