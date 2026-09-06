@@ -10,7 +10,7 @@ public sealed class VbaDevCommandLine
 {
     private readonly VbaDevCommandGraph commandGraph;
 
-    private VbaDevCommandLine(VbaDevCommandGraph commandGraph)
+    internal VbaDevCommandLine(VbaDevCommandGraph commandGraph)
     {
         this.commandGraph = commandGraph;
     }
@@ -83,7 +83,19 @@ public sealed class VbaDevCommandLine
             ProcessTerminationTimeout = Timeout.InfiniteTimeSpan
         };
         var parseResult = commandGraph.RootCommand.Parse(args);
-        if (parseResult.Errors.Count > 0 ||
+        var clearsParseErrors = parseResult.Action?.ClearsParseErrors is true;
+        var isExplicitHelp = parseResult.Action is IVbaDevExplicitHelpAction or
+            System.CommandLine.Help.HelpAction;
+        if ((!clearsParseErrors || isExplicitHelp) &&
+            commandGraph.GrammarFailureRouter.TryWriteFailure(
+                parseResult,
+                standardError,
+                isExplicitHelp))
+        {
+            return 1;
+        }
+
+        if (clearsParseErrors || isExplicitHelp ||
             !string.Equals(
                 parseResult.GetValue(commandGraph.CancellationTransportOption),
                 "stdin-v1",

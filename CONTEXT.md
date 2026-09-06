@@ -78,11 +78,24 @@ _Avoid_: command DSL, reflection binder, generated parser, public command catalo
 
 **VbaDevCommandGraph**:
 The single constructed `RootCommand`, its exact hidden cancellation-transport
-symbol, and its completed-graph-validated capability registrations. Parsing,
-help, version, completion, and action dispatch use that same root instance;
-each command-line composition receives its own graph rather than a global
-singleton.
+symbol, its single grammar-failure router, and its completed-graph-validated
+capability registrations. Parsing, validation, help, version, completion, and
+action dispatch use that same root instance; each command-line composition
+receives its own graph rather than a global singleton.
 _Avoid_: parallel help graph, reconstructed option symbol, process-wide graph cache
+
+**VbaDevGrammarFailureRouter**:
+The VbaDev-owned invocation-boundary component that selects one deterministic
+grammar failure from a completed `VbaDevCommandGraph`. It freezes its closed
+rule registrations, validates their command and symbol ownership, and applies
+parsing, cardinality, value, relationship, then closed-intent-binding phases
+before any domain resolution or side effect. A failure exits `1`, leaves stdout
+empty, and writes exactly one diagnostic line plus one command-local hint line,
+including the final platform newline. Valid help, standalone version,
+completion, and capabilities remain side-effect-free terminal successes. The
+router supplies shared primitives; command-family declarations are migrated in
+their own slices rather than being implied by the router itself.
+_Avoid_: parse-error message matching, mutable runtime rule catalog, consumer-owned CLI validation
 
 **PublicToolProcessContract**:
 The versioned executable boundary through which one product consumes another's
