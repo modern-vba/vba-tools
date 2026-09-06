@@ -313,6 +313,25 @@ internal sealed class VbaDevGrammarFailureRouter
                 $"Option '{rule.Option.Name}' requires a non-empty value."));
         }
 
+        foreach (var rule in rules.NonEmptyArguments)
+        {
+            var result = parseResult.GetResult(rule.Argument);
+            var emptyToken = result?.Tokens.FirstOrDefault(token =>
+                string.IsNullOrWhiteSpace(token.Value));
+            if (emptyToken is null)
+            {
+                continue;
+            }
+
+            candidates.Add(new VbaDevGrammarFailureCandidate(
+                tokenOrder.GetIndex(emptyToken),
+                VbaDevGrammarSymbolKind.Argument,
+                GetArgumentDisplayOrder(command, rule.Argument),
+                int.MaxValue,
+                rule.DeclarationOrder,
+                $"Argument '{FormatArgument(rule.Argument)}' requires a non-empty value."));
+        }
+
         foreach (var rule in rules.PositiveOptions)
         {
             var result = parseResult.GetResult(rule.Option);
@@ -767,6 +786,7 @@ internal sealed class VbaDevGrammarFailureRouter
 internal sealed class VbaDevGrammarFailureRules
 {
     private readonly List<VbaDevGrammarNonEmptyOption> nonEmptyOptions = [];
+    private readonly List<VbaDevGrammarNonEmptyArgument> nonEmptyArguments = [];
     private readonly List<VbaDevGrammarPositiveOption> positiveOptions = [];
     private readonly List<VbaDevGrammarRelationship> relationships = [];
     private readonly List<VbaDevGrammarIntentBinding> intentBindings = [];
@@ -778,6 +798,18 @@ internal sealed class VbaDevGrammarFailureRules
         ArgumentNullException.ThrowIfNull(option);
         EnsureNew(nonEmptyOptions.Any(rule => ReferenceEquals(rule.Option, option)), option, "non-empty");
         nonEmptyOptions.Add(new VbaDevGrammarNonEmptyOption(option, nextDeclarationOrder++));
+    }
+
+    internal void RequireNonEmpty(Argument<string[]> argument)
+    {
+        ArgumentNullException.ThrowIfNull(argument);
+        EnsureNew(
+            nonEmptyArguments.Any(rule => ReferenceEquals(rule.Argument, argument)),
+            argument,
+            "non-empty");
+        nonEmptyArguments.Add(new VbaDevGrammarNonEmptyArgument(
+            argument,
+            nextDeclarationOrder++));
     }
 
     internal void RequirePositive(Option<int?> option)
@@ -835,11 +867,19 @@ internal sealed class VbaDevGrammarFailureRules
         var optionSet = commandSet
             .SelectMany(command => command.Options)
             .ToHashSet<Option>(ReferenceEqualityComparer.Instance);
+        var argumentSet = commandSet
+            .SelectMany(command => command.Arguments)
+            .ToHashSet<Argument>(ReferenceEqualityComparer.Instance);
 
         foreach (var option in nonEmptyOptions.Select(rule => (Option)rule.Option)
                      .Concat(positiveOptions.Select(rule => (Option)rule.Option)))
         {
             EnsureReachable(option, optionSet);
+        }
+
+        foreach (var argument in nonEmptyArguments.Select(rule => (Argument)rule.Argument))
+        {
+            EnsureReachable(argument, argumentSet);
         }
 
         foreach (var standalone in standaloneOptions)
@@ -874,6 +914,7 @@ internal sealed class VbaDevGrammarFailureRules
 
         return new VbaDevGrammarFailureRuleSnapshot(
             Array.AsReadOnly(nonEmptyOptions.ToArray()),
+            Array.AsReadOnly(nonEmptyArguments.ToArray()),
             Array.AsReadOnly(positiveOptions.ToArray()),
             Array.AsReadOnly(relationships.ToArray()),
             Array.AsReadOnly(intentBindings.ToArray()),
@@ -922,6 +963,15 @@ internal sealed class VbaDevGrammarFailureRules
         {
             throw new InvalidOperationException(
                 $"Option '{option.Name}' has more than one {rule} rule.");
+        }
+    }
+
+    private static void EnsureNew(bool duplicate, Argument argument, string rule)
+    {
+        if (duplicate)
+        {
+            throw new InvalidOperationException(
+                $"Argument '{argument.Name}' has more than one {rule} rule.");
         }
     }
 
@@ -1160,6 +1210,10 @@ internal sealed record VbaDevGrammarNonEmptyOption(
     Option<string> Option,
     int DeclarationOrder);
 
+internal sealed record VbaDevGrammarNonEmptyArgument(
+    Argument<string[]> Argument,
+    int DeclarationOrder);
+
 internal sealed record VbaDevGrammarPositiveOption(
     Option<int?> Option,
     int DeclarationOrder);
@@ -1256,6 +1310,7 @@ internal sealed record VbaDevGrammarStandaloneOption(
 
 internal sealed record VbaDevGrammarFailureRuleSnapshot(
     IReadOnlyList<VbaDevGrammarNonEmptyOption> NonEmptyOptions,
+    IReadOnlyList<VbaDevGrammarNonEmptyArgument> NonEmptyArguments,
     IReadOnlyList<VbaDevGrammarPositiveOption> PositiveOptions,
     IReadOnlyList<VbaDevGrammarRelationship> Relationships,
     IReadOnlyList<VbaDevGrammarIntentBinding> IntentBindings,

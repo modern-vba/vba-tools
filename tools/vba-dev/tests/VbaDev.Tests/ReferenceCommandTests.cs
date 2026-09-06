@@ -1347,12 +1347,12 @@ public sealed class ReferenceCommandTests
             "--format",
             "json"]);
 
-        Assert.NotEqual(0, result.ExitCode);
+        Assert.Equal(1, result.ExitCode);
         Assert.Empty(result.StandardOutput);
-        Assert.Contains(
-            "--no-resolve cannot be combined with --available.",
-            result.StandardError,
-            StringComparison.Ordinal);
+        Assert.Equal(
+            $"Error: Options '--available' and '--no-resolve' cannot be used together.{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev reference list --help' for usage.{Environment.NewLine}",
+            result.StandardError);
     }
 
     [Fact]

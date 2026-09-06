@@ -57,6 +57,37 @@ public sealed class VbaDevGrammarFailureRouterTests
     }
 
     [Fact]
+    public void NonEmptyVariadicArgumentUsesTheLeftmostInvalidTokenAndSkipsTheAction()
+    {
+        var root = new RootCommand();
+        var command = new Command("probe");
+        var valuesArgument = new Argument<string[]>("values")
+        {
+            Arity = ArgumentArity.OneOrMore
+        };
+        var actionCount = 0;
+        command.Add(valuesArgument);
+        command.SetAction(_ =>
+        {
+            actionCount++;
+            return 0;
+        });
+        root.Add(command);
+        var rules = new VbaDevGrammarFailureRules();
+        rules.RequireNonEmpty(valuesArgument);
+
+        var result = Invoke(root, rules, ["probe", "valid", " ", ""]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(
+            $"Error: Argument '<values>...' requires a non-empty value.{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev probe --help' for usage.{Environment.NewLine}",
+            result.StandardError);
+        Assert.Equal(0, actionCount);
+    }
+
+    [Fact]
     public void PositiveScalarFailureUsesTheCanonicalSymbolAndCommandPath()
     {
         var root = new RootCommand();
