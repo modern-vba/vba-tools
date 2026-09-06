@@ -87,6 +87,12 @@ parallel compatibility grammar:
   persistent-build defaults;
 - supplied Publish `--project` and `--document` values are nonempty, while
   omission retains the established selection defaults;
+- supplied Test `--project`, `--document`, and `--source-snapshot` values are
+  nonempty, while omission retains the established selection and persistent-
+  build defaults;
+- an explicitly empty Test module or procedure does not collapse to an omitted
+  selector, while exact nonempty VBA identifiers retain their existing
+  Application validation;
 - Build source snapshot and output are `AllOrNone` actual symbols;
 - Test procedure `Requires` module, while source snapshot `Conflicts` with
   no-build;
@@ -129,6 +135,23 @@ The CLI family does not capture source, select a target, stage a workbook, or
 commit output. Existing `WorkbookMaterializationIntent` variants and the
 `WorkbookMaterializer` retain those responsibilities for persistent Build,
 snapshot Build, and Publish.
+
+Issue #356 establishes the sealed family module for Test at its established
+root position between Build and Publish. Its single cached command intent
+contains two independent closed unions: source selection is persistent build,
+source-snapshot build with a non-null caller path, or existing-workbook no-
+build; selector selection is all tests, one module, or one procedure with its
+required module. The actual procedure and module symbols carry one `Requires`
+relationship, the actual snapshot and no-build symbols carry one `Conflicts`
+relationship, and an explicit timeout carries the positive-scalar rule.
+
+The family retains `text` and `ndjson` as the only explicit formats and defers
+omitted format and timeout defaults until the selected manifest is resolved.
+Its action exhaustively projects the two closed unions to the established
+`TestCommandRequest` and `WorkbookTestSelector` Application contracts; those
+compatibility types do not become a second CLI-mode authority. Grammar failure
+therefore precedes project resolution and workbook work, while a completed run
+containing failed tests remains an ordinary text or NDJSON 1.2 result.
 
 ## Grammar-failure contract
 
@@ -178,7 +201,7 @@ router does not reinterpret them.
 The central router and its closed cardinality, value, relationship, and intent-
 binding primitives are established in issue #353. Import and Export migrate in
 issue #354, and Build and Publish migrate in issue #355. The declarations in
-issues #356 through #360 migrate onto the same primitives without creating
+issues #357 through #360 migrate onto the same primitives without creating
 another router or compatibility grammar.
 
 ## Consequences

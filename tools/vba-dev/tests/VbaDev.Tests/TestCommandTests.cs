@@ -741,7 +741,10 @@ public sealed class TestCommandTests
             .Run(["test", "--procedure", "Test_Bar"]);
 
         Assert.Equal(1, result.ExitCode);
-        Assert.Contains("--procedure requires --module.", result.StandardError, StringComparison.Ordinal);
+        Assert.Equal(
+            $"Error: Option '--procedure' requires option '--module'.{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev test --help' for usage.{Environment.NewLine}",
+            result.StandardError);
     }
 
     [Fact]

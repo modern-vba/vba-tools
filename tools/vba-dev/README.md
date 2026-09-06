@@ -69,6 +69,12 @@ must be nonempty; omission retains their established selection defaults. Build
 and Publish are declared by one sealed internal command family, but remain
 separate materialization modes: Publish has no `--output` or `--format`
 override.
+Test is declared by its own sealed internal command family. Its source mode is
+exactly persistent build, source-snapshot build, or existing-workbook no-build,
+and its selector mode is exactly all tests, one module, or one procedure with
+its required module. The family owns those CLI distinctions without moving
+source capture, materialization, Excel execution, or result formatting out of
+their existing Application and Infrastructure modules.
 
 Every non-debug Excel or VBIDE automation path delegates process launch,
 private-desktop ownership, STA dispatch, deadlines, cleanup, and release proof
@@ -389,7 +395,11 @@ Options:
 `test` builds before running tests by default. The private-desktop build process
 exits before a distinct private-desktop execution process starts. `--no-build`
 starts only the execution process. The default output format is `text`. Use
-`--format ndjson` for machine-readable newline-delimited JSON.
+`--format ndjson` for machine-readable newline-delimited JSON. Supplied
+`--project`, `--document`, and `--source-snapshot` values must be nonempty.
+An explicitly empty module or procedure is invalid rather than selecting all
+tests; omission still selects all tests, and exact valid VBA identifiers retain
+their existing code-page-sensitive spelling.
 
 Supplying `--source-snapshot` builds and tests a same-filename workbook inside a unique command-owned workspace without reading persistent source or touching the manifest bin workbook. It cannot be combined with `--no-build`, and `test` does not accept `--output`. Snapshot declaration ranges come from the fixed snapshot bytes while emitted locations use the corresponding persistent source URIs. The command releases its owned Excel processes before removing the workspace; a post-release deletion failure is warning-only and reports the retained absolute path without changing test outcomes, exit status, or the complete NDJSON 1.2 batch.
 
