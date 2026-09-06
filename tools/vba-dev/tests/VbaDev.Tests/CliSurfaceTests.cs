@@ -515,7 +515,8 @@ public sealed class CliSurfaceTests
                 "--document <name>",
                 "-d",
                 "--source-snapshot <dir>",
-                "--output <workbook>"
+                "--output <workbook>",
+                "-o"
             ],
             ["test"] =
             [

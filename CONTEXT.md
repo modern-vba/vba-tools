@@ -94,6 +94,18 @@ project/document-source intent or an explicit-workbook-source intent; neither
 Application request can represent the other mode.
 _Avoid_: nullable export mode flag, Application option parsing, second command root
 
+**VbaDevBuildPublishCommandFamily**:
+The internal sealed command-family module that attaches the actual Build and
+Publish leaves at their established positions on the single
+`VbaDevCommandGrammar` graph. It owns their descriptions, symbols, static
+completion, grammar rules, closed command-intent binding, action connection,
+and capability registrations. Build binds either a persistent-build intent or
+a source-snapshot-build intent with a complete non-null source/output pair;
+Publish binds its project/document materialization intent and exposes no output
+or format override. Application resolves caller-relative snapshot paths, while
+`WorkbookMaterializer` retains staging and output commitment.
+_Avoid_: Boolean build mode, nullable snapshot/output pair, CLI output commitment, second command root
+
 **VbaDevGrammarFailureRouter**:
 The VbaDev-owned invocation-boundary component that selects one deterministic
 grammar failure from a completed `VbaDevCommandGraph`. It freezes its closed

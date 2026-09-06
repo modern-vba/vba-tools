@@ -1,6 +1,7 @@
 using System.Text;
 using System.Runtime.InteropServices;
 using VbaDev.App.Build;
+using VbaDev.App.Projects;
 using VbaDev.App.References;
 using VbaDev.App.Workbooks;
 using VbaDev.Cli;
@@ -68,6 +69,10 @@ public sealed class BuildCommandTests
         Assert.Equal(0, exitCode);
         Assert.Empty(standardError.ToString());
         var expectedBin = Path.Combine(root, "bin", "SecondBook.xlsm");
+        Assert.Equal(
+            $"Built {expectedBin}{Environment.NewLine}" +
+            $"Imported 1 source files.{Environment.NewLine}",
+            standardOutput.ToString());
         Assert.True(File.Exists(expectedBin));
         Assert.Equal("template:SecondBook", File.ReadAllText(expectedBin, Encoding.UTF8));
         Assert.Single(automation.OpenedWorkbooks);
@@ -138,11 +143,15 @@ public sealed class BuildCommandTests
             "build",
             "--source-snapshot",
             snapshotPath,
-            "--output",
+            "-o",
             outputPath
         ]);
 
         Assert.Equal(0, result.ExitCode);
+        Assert.Equal(
+            $"Built {outputPath}{Environment.NewLine}" +
+            $"Imported 1 source files.{Environment.NewLine}",
+            result.StandardOutput);
         Assert.Empty(result.StandardError);
         Assert.Equal("snapshot-template", File.ReadAllText(outputPath, Encoding.UTF8));
         Assert.Equal("existing-bin", File.ReadAllText(binPath, Encoding.UTF8));
@@ -170,26 +179,88 @@ public sealed class BuildCommandTests
     }
 
     [Theory]
-    [InlineData("--source-snapshot")]
-    [InlineData("--output")]
-    public void SnapshotBuildOptionsMustBeSuppliedTogether(string suppliedOption)
+    [InlineData("--source-snapshot", "snapshot")]
+    [InlineData("--output", "Book1.xlsm")]
+    public void SnapshotBuildOptionsMustBeSuppliedTogether(
+        string suppliedOption,
+        string optionValue)
     {
         using var temp = TempDirectory.Create();
-        var root = temp.CreateDirectory("Project");
-        var optionValue = suppliedOption == "--source-snapshot"
-            ? temp.CreateDirectory("snapshot")
-            : Path.Combine(temp.Path, "Book1.xlsm");
         var automation = new FakeWorkbookGenerationAutomation();
         var application = CommandLineTestFactory.Create(
-            root,
-            workbookGenerationAutomation: automation);
+            temp.Path,
+            workbookGenerationAutomation: automation,
+            projectManifestStore: new ThrowingProjectManifestStore());
+        var initialEntries = Directory.GetFileSystemEntries(temp.Path);
 
         var result = application.Run(["build", suppliedOption, optionValue]);
 
         Assert.Equal(1, result.ExitCode);
-        Assert.Contains("--source-snapshot", result.StandardError, StringComparison.Ordinal);
-        Assert.Contains("--output", result.StandardError, StringComparison.Ordinal);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(
+            $"Error: Options '--source-snapshot' and '--output' must be supplied together.{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev build --help' for usage.{Environment.NewLine}",
+            result.StandardError);
         Assert.Empty(automation.OpenedWorkbooks);
+        Assert.Equal(initialEntries, Directory.GetFileSystemEntries(temp.Path));
+    }
+
+    [Theory]
+    [InlineData(new[] { "build", "--project", "" }, "--project")]
+    [InlineData(new[] { "build", "--document", "" }, "--document")]
+    [InlineData(new[] { "build", "--source-snapshot", "", "--output", "Book1.xlsm" }, "--source-snapshot")]
+    [InlineData(new[] { "build", "--source-snapshot", "snapshot", "--output", "" }, "--output")]
+    public void BuildRejectsEmptyPathsBeforeProjectOrFilesystemAccess(
+        string[] args,
+        string optionName)
+    {
+        using var temp = TempDirectory.Create();
+        var automation = new FakeWorkbookGenerationAutomation();
+        var application = CommandLineTestFactory.Create(
+            temp.Path,
+            workbookGenerationAutomation: automation,
+            projectManifestStore: new ThrowingProjectManifestStore());
+        var initialEntries = Directory.GetFileSystemEntries(temp.Path);
+
+        var result = application.Run(args);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(
+            $"Error: Option '{optionName}' requires a non-empty value.{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev build --help' for usage.{Environment.NewLine}",
+            result.StandardError);
+        Assert.Empty(automation.OpenedWorkbooks);
+        Assert.Equal(initialEntries, Directory.GetFileSystemEntries(temp.Path));
+    }
+
+    [Theory]
+    [InlineData(new[] { "build", "--project" }, "--project")]
+    [InlineData(new[] { "build", "--document" }, "--document")]
+    [InlineData(new[] { "build", "--source-snapshot" }, "--source-snapshot")]
+    [InlineData(new[] { "build", "--output" }, "--output")]
+    public void BuildRejectsMissingPathValuesBeforeProjectOrFilesystemAccess(
+        string[] args,
+        string optionName)
+    {
+        using var temp = TempDirectory.Create();
+        var automation = new FakeWorkbookGenerationAutomation();
+        var application = CommandLineTestFactory.Create(
+            temp.Path,
+            workbookGenerationAutomation: automation,
+            projectManifestStore: new ThrowingProjectManifestStore());
+        var initialEntries = Directory.GetFileSystemEntries(temp.Path);
+
+        var result = application.Run(args);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(
+            $"Error: Option '{optionName}' requires a value.{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev build --help' for usage.{Environment.NewLine}",
+            result.StandardError);
+        Assert.Empty(automation.OpenedWorkbooks);
+        Assert.Equal(initialEntries, Directory.GetFileSystemEntries(temp.Path));
     }
 
     [Fact]
@@ -1242,6 +1313,17 @@ public sealed class BuildCommandTests
         string newFileName,
         string existingFileName,
         IntPtr securityAttributes);
+
+    private sealed class ThrowingProjectManifestStore : IProjectManifestStore
+    {
+        public ProjectManifest Load(string manifestPath)
+            => throw new InvalidOperationException(
+                "Grammar failures must not load project state.");
+
+        public void Save(string projectRoot, ProjectManifest manifest)
+            => throw new InvalidOperationException(
+                "Grammar failures must not save project state.");
+    }
 
     private static void CreateWorkbookSource(string root, string documentName, params (string FileName, string Content)[] sources)
     {

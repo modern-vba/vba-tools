@@ -82,7 +82,12 @@ parallel compatibility grammar:
 - Import `--from` and `--to` are required and nonempty;
 - supplied Export `--project`, `--document`, `--from`, and `--to` values are
   nonempty, while omission retains the established defaults;
-- Build source snapshot and output are `AllOrNone`;
+- supplied Build `--project`, `--document`, `--source-snapshot`, and `--output`
+  values are nonempty, while omission retains the established selection and
+  persistent-build defaults;
+- supplied Publish `--project` and `--document` values are nonempty, while
+  omission retains the established selection defaults;
+- Build source snapshot and output are `AllOrNone` actual symbols;
 - Test procedure `Requires` module, while source snapshot `Conflicts` with
   no-build;
 - Reference available `Conflicts` with no-resolve;
@@ -108,6 +113,22 @@ The Application projection preserves the same distinction. Project Export and
 explicit-workbook Export use separate request types, and Import receives
 non-null source and target paths. Application commands therefore do not carry
 option spellings or reinterpret nullable source paths as command modes.
+
+Issue #355 establishes the sealed family module for Build and Publish. The
+family attaches each leaf at its established root position, so Test remains
+between them in help and completion order. Build binds one closed union: either
+an optional project/document persistent build or an optional project/document
+snapshot build with required non-null source and output paths. Publish binds
+one project/document intent and declares neither output nor format. Actions
+consume only these cached intents and never reconstruct option relationships.
+
+Snapshot Build projects its paths through a
+`SourceSnapshotBuildCommandRequest`; Application resolves both relative to the
+request working directory before source capture or output safety validation.
+The CLI family does not capture source, select a target, stage a workbook, or
+commit output. Existing `WorkbookMaterializationIntent` variants and the
+`WorkbookMaterializer` retain those responsibilities for persistent Build,
+snapshot Build, and Publish.
 
 ## Grammar-failure contract
 
@@ -156,9 +177,9 @@ router does not reinterpret them.
 
 The central router and its closed cardinality, value, relationship, and intent-
 binding primitives are established in issue #353. Import and Export migrate in
-issue #354. Issues #355 through #360 migrate the remaining family declarations
-onto the same primitives without creating another router or compatibility
-grammar.
+issue #354, and Build and Publish migrate in issue #355. The declarations in
+issues #356 through #360 migrate onto the same primitives without creating
+another router or compatibility grammar.
 
 ## Consequences
 
@@ -167,8 +188,8 @@ grammar.
 - Capability additions require an explicit actual-leaf registration and a
   completed-graph invariant check; adding another leaf does not advertise it
   implicitly.
-- The CLI gains the additive capabilities `-f` spelling without changing its
-  machine output or existing long spelling.
+- The CLI gains the additive `-f` aliases and Build `-o` alias without changing
+  machine output or existing long spellings.
 - Later command-family slices can move declarations behind small internal
   modules while preserving one root and one invocation boundary.
 - Deterministic grammar diagnostics can replace library-dependent mixed output

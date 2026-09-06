@@ -360,34 +360,11 @@ internal static class VbaDevCommandGrammar
                     cancellationToken)
                 .ConfigureAwait(false)));
 
-        var buildCommand = AddCapabilityCommand(
-            rootCommand,
-            "build",
-            "Build the selected document into bin output.",
-            "build",
-            "1.0",
+        var buildPublishCommandFamily = VbaDevBuildPublishCommandFamily.Create(
+            composition,
+            grammarFailureRules,
             capabilityCommands);
-        var buildOptions = AddProjectDocumentOptions(buildCommand);
-        var buildSourceSnapshotOption = CreateStringOption(
-            "--source-snapshot",
-            "Complete caller-owned source snapshot directory.",
-            "dir");
-        var buildOutputOption = CreateStringOption(
-            "--output",
-            "Caller-owned workbook output path for snapshot builds.",
-            "workbook");
-        buildCommand.Add(buildSourceSnapshotOption);
-        buildCommand.Add(buildOutputOption);
-        buildCommand.SetAction(async (parseResult, cancellationToken) => WriteCommandResult(
-            parseResult,
-            await RunBuildCommandAsync(
-                    parseResult,
-                    composition,
-                    buildOptions,
-                    buildSourceSnapshotOption,
-                    buildOutputOption,
-                    cancellationToken)
-                .ConfigureAwait(false)));
+        buildPublishCommandFamily.RegisterBuild(rootCommand);
         var testCommand = AddCapabilityCommand(
             rootCommand,
             "test",
@@ -442,23 +419,7 @@ internal static class VbaDevCommandGrammar
                     testOptions,
                     cancellationToken)
                 .ConfigureAwait(false)));
-        var publishCommand = AddCapabilityCommand(
-            rootCommand,
-            "publish",
-            "Publish the selected document.",
-            "publish",
-            "1.0",
-            capabilityCommands);
-        var publishOptions = AddProjectDocumentOptions(publishCommand);
-        publishCommand.SetAction(async (parseResult, cancellationToken) => WriteCommandResult(
-            parseResult,
-            await ResolveDocumentContextAsync(
-                    parseResult,
-                    composition,
-                    publishOptions,
-                    composition.PublishCommand.RunAsync,
-                    cancellationToken)
-                .ConfigureAwait(false)));
+        buildPublishCommandFamily.RegisterPublish(rootCommand);
         _ = VbaDevImportExportCommandFamily.Register(
             rootCommand,
             composition,
@@ -865,42 +826,6 @@ internal static class VbaDevCommandGrammar
         {
             return CommandResult.UsageError(exception.Message);
         }
-    }
-
-    private static Task<CommandResult> RunBuildCommandAsync(
-        ParseResult parseResult,
-        ToolingApplicationComposition composition,
-        ProjectDocumentOptions options,
-        Option<string> sourceSnapshotOption,
-        Option<string> outputOption,
-        CancellationToken cancellationToken)
-    {
-        var hasSourceSnapshot = parseResult.GetResult(sourceSnapshotOption) is not null;
-        var hasOutput = parseResult.GetResult(outputOption) is not null;
-        if (hasSourceSnapshot != hasOutput)
-        {
-            return Task.FromResult(CommandResult.UsageError(
-                "--source-snapshot and --output must be supplied together."));
-        }
-
-        return ResolveDocumentContextAsync(
-            parseResult,
-            composition,
-            options,
-            (context, operationCancellationToken) => hasSourceSnapshot
-                ? composition.BuildCommand.RunSnapshotAsync(
-                    context,
-                    Path.GetFullPath(
-                        parseResult.GetValue(sourceSnapshotOption)!,
-                        composition.WorkingDirectory),
-                    Path.GetFullPath(
-                        parseResult.GetValue(outputOption)!,
-                        composition.WorkingDirectory),
-                    operationCancellationToken)
-                : composition.BuildCommand.RunAsync(
-                    context,
-                    operationCancellationToken),
-            cancellationToken);
     }
 
     private static CommandResult ResolveProject(
