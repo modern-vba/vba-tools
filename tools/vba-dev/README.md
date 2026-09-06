@@ -164,7 +164,7 @@ vba-dev common-module add
 Copy CommonModules entries into the selected document source set.
 
 Usage:
-  vba-dev common-module add [modules...] [options]
+  vba-dev common-module add <modules>... [options]
 
 Options:
   --project <path>               Project root containing vba-project.json.
@@ -173,7 +173,10 @@ Options:
   --format <text|json>, -f <text|json> CommonModules mutation output format.
 ```
 
-CommonModuleName values are extensionless module base names resolved through the CommonModules manifest. Dependencies are copied with the requested entries and recorded in `vba-project.json`.
+Supply one or more nonblank CommonModules requests. Each request may use the
+extensionless CommonModuleName or the exact manifest module file name.
+Dependencies are copied with the requested entries and recorded in
+`vba-project.json`.
 
 `common-module add` searches the selected document source set recursively for existing `.bas`, `.cls`, and `.frm` files with the same exported file name. Without `--force`, any match is a conflict. With `--force`, exactly one match is overwritten in place, no match copies to the source set's `common-modules` directory using the entry's file name, and multiple matches fail before file or manifest mutation.
 

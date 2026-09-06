@@ -86,98 +86,11 @@ internal static class VbaDevCommandGrammar
                     cancellationToken)
                 .ConfigureAwait(false)));
 
-        var commonModuleCommand = AddCommand(rootCommand, "common-module", "Manage CommonModules entries.");
-        var commonModuleAddCommand = AddCapabilityCommand(
-            commonModuleCommand,
-            "add",
-            "Copy CommonModules entries into the selected document source set.",
-            "common-module add",
-            "1.0",
+        _ = VbaDevCommonModuleCommandFamily.Register(
+            rootCommand,
+            composition,
+            grammarFailureRules,
             capabilityCommands);
-        var commonModuleAddOptions = AddProjectDocumentOptions(commonModuleAddCommand);
-        var commonModuleArguments = new Argument<string[]>("modules")
-        {
-            Arity = ArgumentArity.ZeroOrMore,
-            Description = "CommonModules entries to add."
-        };
-        var commonModuleForceOption = new Option<bool>("--force")
-        {
-            Description = "Overwrite conflicting source files."
-        };
-        var commonModuleAddFormatOption = CreateStringOption(
-            "--format",
-            "CommonModules mutation output format.",
-            "text|json",
-            ["text", "json"],
-            "-f");
-        commonModuleAddCommand.Add(commonModuleArguments);
-        commonModuleAddCommand.Add(commonModuleForceOption);
-        commonModuleAddCommand.Add(commonModuleAddFormatOption);
-        commonModuleAddCommand.SetAction(async (parseResult, cancellationToken) => WriteCommandResult(
-            parseResult,
-            await ResolveDocumentContextAsync(
-                    parseResult,
-                    composition,
-                    commonModuleAddOptions,
-                    (context, operationCancellationToken) => composition.CommonModulesService.AddAsync(
-                        context,
-                        parseResult.GetValue(commonModuleArguments) ?? [],
-                        parseResult.GetValue(commonModuleForceOption),
-                        parseResult.GetValue(commonModuleAddFormatOption) ?? "text",
-                        operationCancellationToken),
-                    cancellationToken)
-                .ConfigureAwait(false)));
-        var commonModuleListCommand = AddCapabilityCommand(
-            commonModuleCommand,
-            "list",
-            "List CommonModules entries for the selected document.",
-            "common-module list",
-            "1.0",
-            capabilityCommands);
-        var commonModuleListOptions = AddProjectDocumentOptions(commonModuleListCommand);
-        var commonModuleListFormatOption = CreateStringOption(
-            "--format",
-            "CommonModules output format.",
-            "text|json",
-            ["text", "json"],
-            "-f");
-        commonModuleListCommand.Add(commonModuleListFormatOption);
-        commonModuleListCommand.SetAction(parseResult => WriteCommandResult(
-            parseResult,
-            ResolveDocumentContext(
-                parseResult,
-                composition,
-                commonModuleListOptions,
-                context => composition.CommonModulesService.List(
-                    context,
-                    parseResult.GetValue(commonModuleListFormatOption) ?? "text"))));
-        var commonModuleUpdateCommand = AddCapabilityCommand(
-            commonModuleCommand,
-            "update",
-            "Update installed CommonModules entries.",
-            "common-module update",
-            "1.0",
-            capabilityCommands);
-        var commonModuleUpdateProjectOption = AddProjectOption(commonModuleUpdateCommand);
-        var commonModuleUpdateFormatOption = CreateStringOption(
-            "--format",
-            "CommonModules mutation output format.",
-            "text|json",
-            ["text", "json"],
-            "-f");
-        commonModuleUpdateCommand.Add(commonModuleUpdateFormatOption);
-        commonModuleUpdateCommand.SetAction(async (parseResult, cancellationToken) => WriteCommandResult(
-            parseResult,
-            await ResolveProjectAsync(
-                    parseResult,
-                    composition,
-                    commonModuleUpdateProjectOption,
-                    (project, operationCancellationToken) => composition.CommonModulesService.UpdateAsync(
-                        project,
-                        parseResult.GetValue(commonModuleUpdateFormatOption) ?? "text",
-                        operationCancellationToken),
-                    cancellationToken)
-                .ConfigureAwait(false)));
 
         var completionsCommand = AddCommand(rootCommand, "completions", "Generate shell completion setup.");
         var completionsScriptCommand = AddCommand(
@@ -445,7 +358,7 @@ internal static class VbaDevCommandGrammar
         return new ProjectDocumentOptions(projectOption, documentOption);
     }
 
-    private static Option<string> AddProjectOption(Command command)
+    internal static Option<string> AddProjectOption(Command command)
     {
         var option = CreateStringOption(
             "--project",
@@ -513,17 +426,17 @@ internal static class VbaDevCommandGrammar
         return result.ExitCode;
     }
 
-    private static CommandResult ResolveDocumentContext(
-        ParseResult parseResult,
+    internal static CommandResult ResolveDocumentContext(
         ToolingApplicationComposition composition,
-        ProjectDocumentOptions options,
+        string? projectRoot,
+        string? documentName,
         Func<ResolvedProjectContext, CommandResult> run)
     {
         try
         {
             var context = composition.ProjectContextResolver.Resolve(new ProjectResolutionRequest(
-                parseResult.GetValue(options.Project),
-                parseResult.GetValue(options.Document),
+                projectRoot,
+                documentName,
                 composition.WorkingDirectory));
             return run(context);
         }
@@ -532,19 +445,6 @@ internal static class VbaDevCommandGrammar
             return CommandResult.UsageError(ex.Message);
         }
     }
-
-    private static Task<CommandResult> ResolveDocumentContextAsync(
-        ParseResult parseResult,
-        ToolingApplicationComposition composition,
-        ProjectDocumentOptions options,
-        Func<ResolvedProjectContext, CancellationToken, Task<CommandResult>> run,
-        CancellationToken cancellationToken)
-        => ResolveDocumentContextAsync(
-            composition,
-            parseResult.GetValue(options.Project),
-            parseResult.GetValue(options.Document),
-            run,
-            cancellationToken);
 
     internal static async Task<CommandResult> ResolveDocumentContextAsync(
         ToolingApplicationComposition composition,
@@ -567,37 +467,16 @@ internal static class VbaDevCommandGrammar
         }
     }
 
-    private static CommandResult ResolveProject(
-        ParseResult parseResult,
+    internal static async Task<CommandResult> ResolveProjectAsync(
         ToolingApplicationComposition composition,
-        Option<string> projectOption,
-        Func<ResolvedProject, CommandResult> run)
-    {
-        try
-        {
-            var project = composition.ProjectContextResolver.ResolveProject(new ProjectResolutionRequest(
-                parseResult.GetValue(projectOption),
-                null,
-                composition.WorkingDirectory));
-            return run(project);
-        }
-        catch (ProjectManifestException ex)
-        {
-            return CommandResult.UsageError(ex.Message);
-        }
-    }
-
-    private static async Task<CommandResult> ResolveProjectAsync(
-        ParseResult parseResult,
-        ToolingApplicationComposition composition,
-        Option<string> projectOption,
+        string? projectRoot,
         Func<ResolvedProject, CancellationToken, Task<CommandResult>> run,
         CancellationToken cancellationToken)
     {
         try
         {
             var project = composition.ProjectContextResolver.ResolveProject(new ProjectResolutionRequest(
-                parseResult.GetValue(projectOption),
+                projectRoot,
                 null,
                 composition.WorkingDirectory));
             return await run(project, cancellationToken).ConfigureAwait(false);

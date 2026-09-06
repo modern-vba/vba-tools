@@ -131,6 +131,19 @@ one-or-more nonempty raw names while Application retains trimming,
 deduplication, project resolution, mutation, and result formatting.
 _Avoid_: Boolean reference-list mode, eager registry completion, Application option parsing, second command root
 
+**VbaDevCommonModuleCommandFamily**:
+The internal sealed command-family module that attaches the actual CommonModules
+group and its Add, List, and Update leaves to the single
+`VbaDevCommandGrammar` graph. It owns their descriptions, symbols, static
+completion, grammar rules, cached command-intent binding, action connection,
+and capability registrations. Add binds ordered, one-or-more nonempty raw
+requests as either an ordinary or force-authorized closed intent. List and
+Update bind their document- and project-scoped intents. Application retains
+VBA-whitespace normalization, package and reference planning, source and
+manifest mutation, and result formatting; it does not reinterpret command
+options or validate a missing request list.
+_Avoid_: Boolean CLI force mode, Application option parsing, package planning in the CLI, second command root
+
 **VbaDevGrammarFailureRouter**:
 The VbaDev-owned invocation-boundary component that selects one deterministic
 grammar failure from a completed `VbaDevCommandGraph`. It freezes its closed
