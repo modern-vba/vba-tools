@@ -76,7 +76,9 @@ execute an operational command action.
 The graph converges on these command-local declarations without adding a
 parallel compatibility grammar:
 
-- `common-module add <modules>...` has one-or-more cardinality;
+- `common-module add <modules>...` requires one or more requests and rejects
+  an empty or whitespace-only supplied value before project, package, or
+  filesystem resolution;
 - Doctor and capabilities accept `-f` as the alias of `--format`;
 - snapshot Build accepts `-o` as the alias of `--output`;
 - Import `--from` and `--to` are required and nonempty;
@@ -175,6 +177,23 @@ behavior, but is not evaluated for static command or option completion. No
 registry scan is performed by graph construction, help, version, capabilities,
 or grammar failure.
 
+Issue #358 establishes the sealed family module for the CommonModules group and
+its Add, List, and Update leaves. Add binds an ordered, one-or-more raw request
+list as either an ordinary add or a force-authorized add; List binds optional
+project/document selection and format, while Update binds optional project
+selection and format. The actual variadic argument owns the shared nonempty-
+value rule. `--force` is attached only to Add and selects a distinct closed
+intent; it does not add a new general relationship form.
+
+The family projects the cached intents to the established CommonModules
+Application services. Application retains valid-request VBA-whitespace
+normalization, package and required-reference planning, target-conflict policy,
+source and manifest mutation, warnings, and result formatting. It no longer
+filters an empty request list or reconstructs a command mode. Grammar failure
+therefore precedes project, manifest, package, or filesystem access, while
+`--force` remains the existing target authorization rather than an
+unconditional overwrite or concurrency guarantee.
+
 ## Grammar-failure contract
 
 A grammar failure exits `1`, writes nothing to standard output, and writes
@@ -223,7 +242,7 @@ router does not reinterpret them.
 The central router and its closed cardinality, value, relationship, and intent-
 binding primitives are established in issue #353. Import and Export migrate in
 issue #354, and Build and Publish migrate in issue #355. The declarations in
-issues #358 through #360 migrate onto the same primitives without creating
+issues #359 and #360 migrate onto the same primitives without creating
 another router or compatibility grammar.
 
 ## Consequences

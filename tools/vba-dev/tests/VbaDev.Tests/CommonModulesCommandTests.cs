@@ -308,7 +308,39 @@ public sealed class CommonModulesCommandTests
     }
 
     [Fact]
-    public void AddRejectsWhitespaceOnlyCommonModuleIdentity()
+    public void AddInstallsMultipleRequestedModulesInOrder()
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = CreateProjectWithCommonModules(temp, "Project");
+        var commonRepo = Path.Combine(temp.Path, "common_modules_repo");
+        WriteManifest(
+            commonRepo,
+            ("Alpha.bas", "optional", ""),
+            ("Beta.cls", "optional", ""));
+        WriteModule(commonRepo, "Alpha.bas", "alpha");
+        WriteModule(commonRepo, "Beta.cls", "beta");
+        var application = CommandLineTestFactory.Create(projectRoot);
+
+        var result = application.Run(
+            ["common-module", "add", "Alpha", "Beta"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.StandardError);
+        var sourceSet = Path.Combine(projectRoot, "src", "Book1", "common-modules");
+        Assert.Equal("alpha", ReadModuleBody(Path.Combine(sourceSet, "Alpha.bas")));
+        Assert.Equal("beta", ReadModuleBody(Path.Combine(sourceSet, "Beta.cls")));
+        var manifest = new JsonProjectManifestStore().Load(
+            Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
+        Assert.Equal(
+            [
+                Installed("Alpha", requested: true),
+                Installed("Beta", requested: true, moduleFile: "Beta.cls")
+            ],
+            manifest.Documents["Book1"].CommonModules);
+    }
+
+    [Fact]
+    public void AddRejectsWhitespaceOnlyNameInTheGrammar()
     {
         using var temp = TempDirectory.Create();
         var projectRoot = CreateProjectWithCommonModules(temp, "Project");
@@ -320,7 +352,10 @@ public sealed class CommonModulesCommandTests
         var result = application.Run(["common-module", "add", "\u00A0"]);
 
         Assert.Equal(1, result.ExitCode);
-        Assert.Contains("invalid flat ModuleFile", result.StandardError, StringComparison.Ordinal);
+        Assert.Equal(
+            $"Error: Argument '<modules>...' requires a non-empty value.{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev common-module add --help' for usage.{Environment.NewLine}",
+            result.StandardError);
         var manifest = new JsonProjectManifestStore().Load(
             Path.Combine(projectRoot, ProjectManifest.ManifestFileName));
         Assert.Empty(manifest.Documents["Book1"].CommonModules);

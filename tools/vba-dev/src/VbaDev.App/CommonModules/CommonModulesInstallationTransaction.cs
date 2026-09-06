@@ -106,12 +106,7 @@ public sealed class CommonModulesInstallationTransaction
     {
         var normalizedRequestedModules = requestedModules
             .Select(VbaIdentifier.TrimWhitespace)
-            .Where(module => module.Length > 0)
             .ToArray();
-        if (normalizedRequestedModules.Length == 0)
-        {
-            throw new CommonModulesManifestException("common-module add requires at least one CommonModules module name.");
-        }
 
         var invocationDocument = ProjectManifestEditor.GetDocument(
             context.Manifest,
