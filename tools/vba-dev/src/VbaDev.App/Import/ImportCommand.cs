@@ -24,7 +24,7 @@ public sealed class ImportCommand
     /// <summary>
     /// Replaces importable modules in the target workbook with source files from a directory.
     /// </summary>
-    /// <param name="request">The import command input containing required --from and --to paths.</param>
+    /// <param name="request">The import command input containing required source and target paths.</param>
     /// <returns>The command result describing the import operation or validation error.</returns>
     public CommandResult Run(ImportCommandRequest request)
         => RunAsync(request, CancellationToken.None).GetAwaiter().GetResult();
@@ -32,7 +32,7 @@ public sealed class ImportCommand
     /// <summary>
     /// Replaces importable modules while observing cooperative cancellation of owned Excel.
     /// </summary>
-    /// <param name="request">The import command input containing required --from and --to paths.</param>
+    /// <param name="request">The import command input containing required source and target paths.</param>
     /// <param name="cancellationToken">Cancels the owned workbook automation session.</param>
     /// <returns>The command result describing the import operation or validation error.</returns>
     public Task<CommandResult> RunAsync(
@@ -44,28 +44,8 @@ public sealed class ImportCommand
         ImportCommandRequest request,
         CancellationToken cancellationToken)
     {
-        if (request.FromPath is null)
-        {
-            return CommandResult.UsageError("--from is required.");
-        }
-
-        if (string.IsNullOrWhiteSpace(request.FromPath))
-        {
-            return CommandResult.UsageError("--from requires a source directory path.");
-        }
-
-        if (request.ToPath is null)
-        {
-            return CommandResult.UsageError("--to is required.");
-        }
-
-        if (string.IsNullOrWhiteSpace(request.ToPath))
-        {
-            return CommandResult.UsageError("--to requires a target workbook path.");
-        }
-
-        var sourceDirectory = ResolveOptionPath(request.WorkingDirectory, request.FromPath);
-        var targetWorkbookPath = ResolveOptionPath(request.WorkingDirectory, request.ToPath);
+        var sourceDirectory = ResolvePath(request.WorkingDirectory, request.SourceDirectory);
+        var targetWorkbookPath = ResolvePath(request.WorkingDirectory, request.TargetWorkbook);
         ValidateTargetWorkbook(targetWorkbookPath);
         var admission = sourceAdmission.Admit(
             sourceDirectory,
@@ -174,6 +154,6 @@ public sealed class ImportCommand
         }
     }
 
-    private static string ResolveOptionPath(string workingDirectory, string path)
+    private static string ResolvePath(string workingDirectory, string path)
         => Path.GetFullPath(Path.IsPathRooted(path) ? path : Path.Combine(workingDirectory, path));
 }

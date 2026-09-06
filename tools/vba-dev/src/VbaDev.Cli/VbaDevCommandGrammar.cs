@@ -8,9 +8,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using VbaDev.App.Cli;
 using VbaDev.App.Diagnostics;
-using VbaDev.App.Export;
 using VbaDev.App.HostEvents;
-using VbaDev.App.Import;
 using VbaDev.App.Projects;
 using VbaDev.App.Testing;
 using VbaDev.Composition;
@@ -461,62 +459,11 @@ internal static class VbaDevCommandGrammar
                     composition.PublishCommand.RunAsync,
                     cancellationToken)
                 .ConfigureAwait(false)));
-        var exportCommand = AddCapabilityCommand(
+        _ = VbaDevImportExportCommandFamily.Register(
             rootCommand,
-            "export",
-            "Export modules from a workbook into source.",
-            "export",
-            "1.0",
+            composition,
+            grammarFailureRules,
             capabilityCommands);
-        var exportProjectOptions = AddProjectDocumentOptions(exportCommand);
-        var exportFromOption = CreateStringOption(
-            "--from",
-            "Workbook to export from; skips project resolution when supplied.",
-            "path");
-        var exportToOption = CreateStringOption(
-            "--to",
-            "Directory to export to; defaults to the selected document source set, or the current directory with --from.",
-            "dir");
-        exportCommand.Add(exportFromOption);
-        exportCommand.Add(exportToOption);
-        var exportOptions = new ExportCommandOptions(
-            exportProjectOptions,
-            exportFromOption,
-            exportToOption);
-        exportCommand.SetAction(async (parseResult, cancellationToken) => WriteCommandResult(
-            parseResult,
-            await RunExportCommandAsync(
-                    parseResult,
-                    composition,
-                    exportOptions,
-                    cancellationToken)
-                .ConfigureAwait(false)));
-        var importCommand = AddCapabilityCommand(
-            rootCommand,
-            "import",
-            "Run a path-only import of VBA sources into an existing workbook; unlike build, it does not use vba-project.json.",
-            "import",
-            "1.0",
-            capabilityCommands);
-        var importFromOption = CreateStringOption(
-            "--from",
-            "Source directory containing .bas, .cls, and .frm files.",
-            "dir");
-        var importToOption = CreateStringOption(
-            "--to",
-            "Existing workbook file to update in place.",
-            "path");
-        importCommand.Add(importFromOption);
-        importCommand.Add(importToOption);
-        importCommand.SetAction(async (parseResult, cancellationToken) => WriteCommandResult(
-            parseResult,
-            await composition.ImportCommand.RunAsync(
-                    new ImportCommandRequest(
-                        parseResult.GetValue(importFromOption),
-                        parseResult.GetValue(importToOption),
-                        composition.WorkingDirectory),
-                    cancellationToken)
-                .ConfigureAwait(false)));
         var checkCommand = AddCommand(
             rootCommand,
             "check",
@@ -634,7 +581,7 @@ internal static class VbaDevCommandGrammar
         return command;
     }
 
-    private static Command AddCapabilityCommand(
+    internal static Command AddCapabilityCommand(
         Command parent,
         string name,
         string description,
@@ -711,7 +658,7 @@ internal static class VbaDevCommandGrammar
         }
     }
 
-    private static ProjectDocumentOptions AddProjectDocumentOptions(Command command)
+    internal static ProjectDocumentOptions AddProjectDocumentOptions(Command command)
     {
         var projectOption = AddProjectOption(command);
         var documentOption = CreateStringOption(
@@ -733,7 +680,7 @@ internal static class VbaDevCommandGrammar
         return option;
     }
 
-    private static Option<string> CreateStringOption(
+    internal static Option<string> CreateStringOption(
         string name,
         string description,
         string helpName,
@@ -776,7 +723,7 @@ internal static class VbaDevCommandGrammar
         return option;
     }
 
-    private static int WriteCommandResult(ParseResult parseResult, CommandResult result)
+    internal static int WriteCommandResult(ParseResult parseResult, CommandResult result)
     {
         if (!string.IsNullOrEmpty(result.StandardOutput))
         {
@@ -811,18 +758,31 @@ internal static class VbaDevCommandGrammar
         }
     }
 
-    private static async Task<CommandResult> ResolveDocumentContextAsync(
+    private static Task<CommandResult> ResolveDocumentContextAsync(
         ParseResult parseResult,
         ToolingApplicationComposition composition,
         ProjectDocumentOptions options,
+        Func<ResolvedProjectContext, CancellationToken, Task<CommandResult>> run,
+        CancellationToken cancellationToken)
+        => ResolveDocumentContextAsync(
+            composition,
+            parseResult.GetValue(options.Project),
+            parseResult.GetValue(options.Document),
+            run,
+            cancellationToken);
+
+    internal static async Task<CommandResult> ResolveDocumentContextAsync(
+        ToolingApplicationComposition composition,
+        string? projectRoot,
+        string? documentName,
         Func<ResolvedProjectContext, CancellationToken, Task<CommandResult>> run,
         CancellationToken cancellationToken)
     {
         try
         {
             var context = composition.ProjectContextResolver.Resolve(new ProjectResolutionRequest(
-                parseResult.GetValue(options.Project),
-                parseResult.GetValue(options.Document),
+                projectRoot,
+                documentName,
                 composition.WorkingDirectory));
             return await run(context, cancellationToken).ConfigureAwait(false);
         }
@@ -1050,42 +1010,6 @@ internal static class VbaDevCommandGrammar
             cancellationToken);
     }
 
-    private static Task<CommandResult> RunExportCommandAsync(
-        ParseResult parseResult,
-        ToolingApplicationComposition composition,
-        ExportCommandOptions options,
-        CancellationToken cancellationToken)
-    {
-        var request = new ExportCommandRequest(
-            parseResult.GetValue(options.From),
-            parseResult.GetValue(options.To),
-            composition.WorkingDirectory);
-        if (parseResult.GetResult(options.From) is not null)
-        {
-            if (parseResult.GetResult(options.Project.Project) is not null)
-            {
-                return Task.FromResult(CommandResult.UsageError("--project cannot be used with --from."));
-            }
-
-            if (parseResult.GetResult(options.Project.Document) is not null)
-            {
-                return Task.FromResult(CommandResult.UsageError("--document cannot be used with --from."));
-            }
-
-            return composition.ExportCommand.RunExplicitAsync(request, cancellationToken);
-        }
-
-        return ResolveDocumentContextAsync(
-            parseResult,
-            composition,
-            options.Project,
-            (context, operationCancellationToken) => composition.ExportCommand.RunAsync(
-                context,
-                request,
-                operationCancellationToken),
-            cancellationToken);
-    }
-
     private sealed class CanonicalVersionAction(string version) : SynchronousCommandLineAction
     {
         public override bool Terminating => true;
@@ -1117,7 +1041,7 @@ internal static class VbaDevCommandGrammar
         public override int Invoke(ParseResult parseResult) => helpAction.Invoke(parseResult);
     }
 
-    private sealed record ProjectDocumentOptions(
+    internal sealed record ProjectDocumentOptions(
         Option<string> Project,
         Option<string> Document);
 
@@ -1129,11 +1053,6 @@ internal static class VbaDevCommandGrammar
         Option<int?> TimeoutSeconds,
         Option<string> Module,
         Option<string> Procedure);
-
-    private sealed record ExportCommandOptions(
-        ProjectDocumentOptions Project,
-        Option<string> From,
-        Option<string> To);
 
     private sealed record ToolCapabilities(
         string ToolVersion,
