@@ -64,7 +64,7 @@ public sealed class DoctorCommandTests
             projectManifestStore: new ThrowingProjectManifestStore());
 
         var result = await application.RunAsync(
-            ["doctor", "--scope", "environment", "--format", "json"]);
+            ["doctor", "--scope", "environment", "-f", "JSON"]);
 
         Assert.Equal(0, result.ExitCode);
         Assert.Empty(result.StandardError);
@@ -509,10 +509,10 @@ public sealed class DoctorCommandTests
 
         Assert.Equal(1, result.ExitCode);
         Assert.Empty(result.StandardOutput);
-        Assert.Contains(
-            "--project cannot be used with --scope environment",
-            result.StandardError,
-            StringComparison.Ordinal);
+        Assert.Equal(
+            $"Error: Options '--scope' and '--project' cannot be used together.{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev doctor --help' for usage.{Environment.NewLine}",
+            result.StandardError);
     }
 
     [Fact]
@@ -997,6 +997,32 @@ public sealed class DoctorCommandTests
                 .TakeLast(DoctorDiagnosticPipeline.EnvironmentCheckIds.Count)
                 .Select(check => check.GetProperty("id").GetString()!)
                 .ToArray());
+    }
+
+    [Fact]
+    public async Task DoctorExplicitProjectScopeAcceptsExplicitProjectSelection()
+    {
+        using var temp = TempDirectory.Create();
+        var root = CreateDoctorProjectWithoutRepository(temp);
+        var application = CommandLineTestFactory.Create(
+            temp.Path,
+            new FakeEnvironmentDiagnosticPort());
+
+        var result = await application.RunAsync(
+            [
+                "doctor",
+                "--scope", "PROJECT",
+                "--project", root,
+                "-f", "JSON"
+            ]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.StandardError);
+        using var output = JsonDocument.Parse(result.StandardOutput);
+        Assert.Equal("project", output.RootElement.GetProperty("scope").GetString());
+        Assert.Equal(
+            Path.GetFullPath(root),
+            output.RootElement.GetProperty("project").GetString());
     }
 
     [Fact]

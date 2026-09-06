@@ -18,9 +18,10 @@ newline. The router applies deterministic phase ordering to structural parsing
 and cardinality checks and to value, relationship, standalone, and closed-intent
 rules as their actual command declarations register them. The sealed Build and
 Publish family, the sealed Import and Export family, the sealed Test family,
-the sealed Reference family, and the sealed CommonModules family own those
+the sealed Reference family, the sealed CommonModules family, the sealed Host
+Event family, and the sealed Check and Doctor inspection family own those
 leaves, their closed command intents, and their action connections on the same
-graph; the remaining staged family migrations are described by
+graph; the remaining staged family migration is described by
 [ADR 0038](docs/adr/0038-establish-the-vba-dev-command-grammar.md).
 Valid help, standalone version, completion, and capabilities requests remain
 side-effect-free terminal successes on stdout; failed Test runs and failed

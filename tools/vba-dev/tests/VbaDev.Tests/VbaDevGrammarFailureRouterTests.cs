@@ -192,6 +192,84 @@ public sealed class VbaDevGrammarFailureRouterTests
     }
 
     [Fact]
+    public void ConditionalConflictAppliesOnlyToTheCanonicalTriggerValue()
+    {
+        var root = new RootCommand();
+        var command = new Command("probe");
+        var scopeOption = new VbaDevStringOption(
+            "--scope",
+            [],
+            ["project", "environment"]);
+        var projectOption = new Option<string>("--project");
+        var actionCount = 0;
+        command.Add(scopeOption);
+        command.Add(projectOption);
+        command.SetAction(_ =>
+        {
+            actionCount++;
+            return 0;
+        });
+        root.Add(command);
+        var rules = new VbaDevGrammarFailureRules();
+        rules.ConflictsWhenValue(command, scopeOption, "environment", projectOption);
+        var cancellationTransportOption = AddCancellationTransport(root);
+        var commandLine = new VbaDevCommandLine(new VbaDevCommandGraph(
+            root,
+            cancellationTransportOption,
+            [],
+            new VbaDevGrammarFailureRouter(root, rules)));
+
+        var environmentResult = Invoke(
+            commandLine,
+            ["probe", "--scope", "ENVIRONMENT", "--project", "project-root"]);
+        var projectResult = Invoke(
+            commandLine,
+            ["probe", "--scope", "project", "--project", "project-root"]);
+
+        Assert.Equal(1, environmentResult.ExitCode);
+        Assert.Empty(environmentResult.StandardOutput);
+        Assert.Equal(
+            $"Error: Options '--scope' and '--project' cannot be used together.{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev probe --help' for usage.{Environment.NewLine}",
+            environmentResult.StandardError);
+        Assert.Equal(0, projectResult.ExitCode);
+        Assert.Empty(projectResult.StandardError);
+        Assert.Equal(1, actionCount);
+    }
+
+    [Fact]
+    public void InvalidConditionalConflictValueRemainsAnAcceptedValueFailure()
+    {
+        var root = new RootCommand();
+        var command = new Command("probe");
+        var scopeOption = VbaDevCommandGrammar.CreateStringOption(
+            "--scope",
+            "Inspection scope.",
+            "project|environment",
+            ["project", "environment"]);
+        var projectOption = new Option<string>("--project");
+        command.Add(scopeOption);
+        command.Add(projectOption);
+        command.SetAction(_ => 0);
+        root.Add(command);
+        var rules = new VbaDevGrammarFailureRules();
+        rules.ConflictsWhenValue(command, scopeOption, "environment", projectOption);
+
+        var result = Invoke(
+            root,
+            rules,
+            ["probe", "--scope", "machine", "--project", "project-root"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(
+            $"Error: Option '--scope' does not accept value 'machine'. " +
+            $"Accepted values: project, environment.{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev probe --help' for usage.{Environment.NewLine}",
+            result.StandardError);
+    }
+
+    [Fact]
     public void AllOrNoneRelationshipUsesCanonicalOptionNames()
     {
         var root = new RootCommand();

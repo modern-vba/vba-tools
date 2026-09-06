@@ -29,7 +29,7 @@ public sealed class HostEventCommandTests
             temp.Path,
             hostEventCatalogAutomation: automation);
 
-        var result = application.Run(["host-event", "list", "--format", "json"]);
+        var result = application.Run(["host-event", "list", "-f", "JSON"]);
 
         Assert.Equal(0, result.ExitCode);
         Assert.Empty(result.StandardError);
@@ -38,6 +38,24 @@ public sealed class HostEventCommandTests
         Assert.Equal("UserForm", parsed.RootElement.GetProperty("intrinsicEventSourceName").GetString());
         Assert.False(parsed.RootElement.TryGetProperty("project", out _));
         Assert.False(parsed.RootElement.TryGetProperty("document", out _));
+    }
+
+    [Fact]
+    public void CliListUsesTextWhenFormatIsOmitted()
+    {
+        using var temp = TempDirectory.Create();
+        var automation = new StubHostEventCatalogAutomation(CreateCatalog());
+        var application = CommandLineTestFactory.Create(
+            temp.Path,
+            hostEventCatalogAutomation: automation);
+
+        var result = application.Run(["host-event", "list"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.StandardError);
+        Assert.Equal(1, automation.ReadCount);
+        Assert.StartsWith("Source kind: userForm", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("  Initialize()", result.StandardOutput, StringComparison.Ordinal);
     }
 
     [Theory]

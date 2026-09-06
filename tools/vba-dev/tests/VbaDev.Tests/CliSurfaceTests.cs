@@ -531,7 +531,7 @@ public sealed class CliSurfaceTests
             ["export"] = ["--project <path>", "--document <name>", "--from <path>", "--to <dir>"],
             ["import"] = ["--from <dir>", "--to <path>"],
             ["check"] = ["--project <path>"],
-            ["doctor"] = ["--project <path>", "--scope <project|environment>", "--format <text|json>"],
+            ["doctor"] = ["--project <path>", "--scope <project|environment>", "--format <text|json>", "-f"],
             ["capabilities"] = ["--format <json>", "-f"]
         };
 
@@ -614,6 +614,18 @@ public sealed class CliSurfaceTests
             Assert.Contains("--project", result.StandardOutput, StringComparison.Ordinal);
             Assert.DoesNotContain("--document", result.StandardOutput, StringComparison.Ordinal);
         }
+    }
+
+    [Fact]
+    public void CheckHelpExposesNoFormatOption()
+    {
+        var result = application.Run(["check", "--help"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.StandardError);
+        Assert.Contains("--project <path>", result.StandardOutput, StringComparison.Ordinal);
+        Assert.DoesNotContain("--format", result.StandardOutput, StringComparison.Ordinal);
+        Assert.DoesNotContain("-f", result.StandardOutput, StringComparison.Ordinal);
     }
 
     [Fact]

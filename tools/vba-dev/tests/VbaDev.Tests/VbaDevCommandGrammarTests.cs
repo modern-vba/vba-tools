@@ -102,6 +102,7 @@ public sealed class VbaDevCommandGrammarTests
             ("reference remove", "--document", "-d"),
             ("reference remove", "--format", "-f"),
             ("host-event list", "--format", "-f"),
+            ("doctor", "--format", "-f"),
             ("build", "--document", "-d"),
             ("build", "--output", "-o"),
             ("test", "--document", "-d"),
@@ -120,6 +121,30 @@ public sealed class VbaDevCommandGrammarTests
 
             Assert.Equal([expectation.Alias], option.Aliases);
         }
+    }
+
+    [Fact]
+    public void CommandGraphKeepsTheCanonicalRootCommandOrder()
+    {
+        var graph = CommandLineTestFactory.Create().CommandGraph;
+
+        Assert.Equal(
+            [
+                "new",
+                "common-module",
+                "completions",
+                "reference",
+                "host-event",
+                "build",
+                "test",
+                "publish",
+                "export",
+                "import",
+                "check",
+                "doctor",
+                "capabilities"
+            ],
+            graph.RootCommand.Subcommands.Select(command => command.Name));
     }
 
     [Fact]

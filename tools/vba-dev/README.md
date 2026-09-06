@@ -83,6 +83,14 @@ Registry-backed name completion is evaluated only while interactively
 completing a reference-name argument; graph construction, help, version,
 capabilities, grammar failures, and static command or option completion do not
 scan the registry.
+Host Event List is declared by its own sealed internal command family and binds
+exactly one text or JSON intent. Check and Doctor are declared by a sealed
+inspection family: Check exposes only project selection, while Doctor binds a
+closed project or environment intent and a typed text or JSON format. Doctor
+scope omission remains project scope, and `--project` conflicts only with an
+explicit environment scope. These CLI families delegate catalog and diagnostic
+work to VbaDev's existing Application services and do not depend on another
+product.
 
 Every non-debug Excel or VBIDE automation path delegates process launch,
 private-desktop ownership, STA dispatch, deadlines, cleanup, and release proof
@@ -546,7 +554,8 @@ Usage:
 Options:
   --project <path>               Project root containing vba-project.json.
   --scope <project|environment>  Diagnostic scope. Default: project.
-  --format <text|json>           Output format. Default: text.
+  --format <text|json>, -f <text|json>
+                                 Output format. Default: text.
 ```
 
 Project scope is the default. It requires an explicit project or one resolved
