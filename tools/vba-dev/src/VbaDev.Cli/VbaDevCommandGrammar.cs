@@ -29,11 +29,14 @@ internal static class VbaDevCommandGrammar
         ArgumentException.ThrowIfNullOrWhiteSpace(generatingExecutablePath);
         var rootCommand = new RootCommand("VBA development tooling.");
         var helpOption = rootCommand.Options.OfType<HelpOption>().Single();
-        rootCommand.Action = new RootHelpAction(
-            helpOption.Action as HelpAction
-            ?? throw new InvalidOperationException("System.CommandLine root help action is missing."));
+        var systemHelpAction = helpOption.Action as HelpAction
+            ?? throw new InvalidOperationException("System.CommandLine root help action is missing.");
+        rootCommand.Action = new RootHelpAction(systemHelpAction);
+        helpOption.Action = new ExplicitHelpAction(systemHelpAction);
         var versionOption = rootCommand.Options.OfType<VersionOption>().Single();
         versionOption.Action = new CanonicalVersionAction(ReleaseVersion);
+        var grammarFailureRules = new VbaDevGrammarFailureRules();
+        grammarFailureRules.RequireStandalone(versionOption);
         var cancellationTransportOption = CreateStringOption(
             "--cancellation-transport",
             "Caller-owned cooperative cancellation transport.",
@@ -614,7 +617,8 @@ internal static class VbaDevCommandGrammar
         return new VbaDevCommandGraph(
             rootCommand,
             cancellationTransportOption,
-            completedCapabilities);
+            completedCapabilities,
+            new VbaDevGrammarFailureRouter(rootCommand, grammarFailureRules));
     }
 
     private static string ReleaseVersion
@@ -736,13 +740,16 @@ internal static class VbaDevCommandGrammar
         IReadOnlyList<string>? acceptedValues = null,
         params string[] aliases)
     {
-        var option = new Option<string>(name, aliases)
+        var option = new VbaDevStringOption(name, aliases, acceptedValues)
         {
             Description = description,
             HelpName = helpName
         };
         if (acceptedValues is not null)
         {
+            var frozenAcceptedValues = option.AcceptedValues
+                ?? throw new InvalidOperationException(
+                    $"Accepted values for option '{name}' are unavailable.");
             option.CustomParser = result =>
             {
                 if (result.Tokens.Count == 0)
@@ -751,18 +758,19 @@ internal static class VbaDevCommandGrammar
                 }
 
                 var suppliedValue = result.Tokens[0].Value;
-                var acceptedValue = acceptedValues.FirstOrDefault(candidate =>
+                var acceptedValue = frozenAcceptedValues.FirstOrDefault(candidate =>
                     candidate.Equals(suppliedValue, StringComparison.OrdinalIgnoreCase));
                 if (acceptedValue is null)
                 {
                     result.AddError(
                         $"Unsupported value '{suppliedValue}' for {name}. " +
-                        $"Accepted values: {string.Join(", ", acceptedValues)}.");
+                        $"Accepted values: {string.Join(", ", frozenAcceptedValues)}.");
                 }
 
                 return acceptedValue;
             };
-            option.CompletionSources.Add(_ => acceptedValues.Select(value => new CompletionItem(value)));
+            option.CompletionSources.Add(_ =>
+                frozenAcceptedValues.Select(value => new CompletionItem(value)));
         }
 
         return option;
@@ -1086,14 +1094,6 @@ internal static class VbaDevCommandGrammar
 
         public override int Invoke(ParseResult parseResult)
         {
-            if (parseResult.Tokens.Count != 1 ||
-                !parseResult.Tokens[0].Value.Equals("--version", StringComparison.Ordinal))
-            {
-                parseResult.InvocationConfiguration.Error.Write(
-                    $"Option '--version' cannot be combined with other arguments.{Environment.NewLine}");
-                return 1;
-            }
-
             parseResult.InvocationConfiguration.Output.Write(
                 $"vba-dev {version}{Environment.NewLine}");
             return 0;
@@ -1102,6 +1102,16 @@ internal static class VbaDevCommandGrammar
 
     private sealed class RootHelpAction(HelpAction helpAction) : SynchronousCommandLineAction
     {
+        public override bool ClearsParseErrors => false;
+
+        public override int Invoke(ParseResult parseResult) => helpAction.Invoke(parseResult);
+    }
+
+    private sealed class ExplicitHelpAction(HelpAction helpAction)
+        : SynchronousCommandLineAction, IVbaDevExplicitHelpAction
+    {
+        public override bool Terminating => true;
+
         public override bool ClearsParseErrors => false;
 
         public override int Invoke(ParseResult parseResult) => helpAction.Invoke(parseResult);
@@ -1154,7 +1164,8 @@ internal sealed class VbaDevCommandGraph
     internal VbaDevCommandGraph(
         RootCommand rootCommand,
         Option<string> cancellationTransportOption,
-        IReadOnlyList<VbaDevCommandCapabilityRegistration> capabilityRegistrations)
+        IReadOnlyList<VbaDevCommandCapabilityRegistration> capabilityRegistrations,
+        VbaDevGrammarFailureRouter grammarFailureRouter)
     {
         if (!rootCommand.Options.Any(option => ReferenceEquals(option, cancellationTransportOption)))
         {
@@ -1162,9 +1173,16 @@ internal sealed class VbaDevCommandGraph
                 "The cancellation transport symbol is not part of the completed root graph.");
         }
 
+        if (!ReferenceEquals(rootCommand, grammarFailureRouter.RootCommand))
+        {
+            throw new InvalidOperationException(
+                "The grammar failure router does not own the completed root graph.");
+        }
+
         RootCommand = rootCommand;
         CancellationTransportOption = cancellationTransportOption;
         CapabilityRegistrations = capabilityRegistrations;
+        GrammarFailureRouter = grammarFailureRouter;
     }
 
     internal RootCommand RootCommand { get; }
@@ -1172,9 +1190,31 @@ internal sealed class VbaDevCommandGraph
     internal Option<string> CancellationTransportOption { get; }
 
     internal IReadOnlyList<VbaDevCommandCapabilityRegistration> CapabilityRegistrations { get; }
+
+    internal VbaDevGrammarFailureRouter GrammarFailureRouter { get; }
+}
+
+internal interface IVbaDevExplicitHelpAction
+{
 }
 
 internal sealed record VbaDevCommandCapabilityRegistration(
     Command Command,
     string CommandPath,
     string OutputSchemaVersion);
+
+internal sealed class VbaDevStringOption : Option<string>
+{
+    internal VbaDevStringOption(
+        string name,
+        string[] aliases,
+        IReadOnlyList<string>? acceptedValues)
+        : base(name, aliases)
+    {
+        AcceptedValues = acceptedValues is null
+            ? null
+            : Array.AsReadOnly(acceptedValues.ToArray());
+    }
+
+    internal IReadOnlyList<string>? AcceptedValues { get; }
+}

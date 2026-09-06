@@ -66,6 +66,26 @@ public sealed class CliSurfaceTests
     }
 
     [Fact]
+    public async Task VersionOptionWithKnownOptionUsesCanonicalGrammarFailureContract()
+    {
+        using var standardOutput = new StringWriter();
+        using var standardError = new StringWriter();
+
+        var exitCode = await application.InvokeAsync(
+            ["--version", "--cancellation-transport", "stdin-v1"],
+            standardOutput,
+            standardError,
+            CancellationToken.None);
+
+        Assert.Equal(1, exitCode);
+        Assert.Empty(standardOutput.ToString());
+        Assert.Equal(
+            $"Error: Option '--version' cannot be combined with other arguments.{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev --help' for usage.{Environment.NewLine}",
+            standardError.ToString());
+    }
+
+    [Fact]
     public async Task CapabilitiesRunThroughPublicCommandLineBoundary()
     {
         using var standardOutput = new StringWriter();
@@ -295,6 +315,26 @@ public sealed class CliSurfaceTests
             "--cancellation-transport",
             completion.StandardOutput,
             StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ExplicitHelpWithCancellationTransportDoesNotReadStandardInput()
+    {
+        using var standardInput = new ThrowingReadStream();
+        using var standardOutput = new StringWriter();
+        using var standardError = new StringWriter();
+
+        var exitCode = await application.InvokeAsync(
+            ["test", "--help", "--cancellation-transport", "stdin-v1"],
+            standardInput,
+            standardOutput,
+            standardError,
+            CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        Assert.NotEmpty(standardOutput.ToString());
+        Assert.Empty(standardError.ToString());
+        Assert.False(standardInput.ReadAttempted);
     }
 
     [Fact]
@@ -858,6 +898,61 @@ public sealed class CliSurfaceTests
     }
 
     [Fact]
+    public async Task GrammarFailuresDoNotExecuteOperationalActionsOrReadExternalState()
+    {
+        using var temp = TempDirectory.Create();
+        using var standardInput = new ThrowingReadStream();
+        using var standardOutput = new StringWriter();
+        using var standardError = new StringWriter();
+        var initialWorkbookCreator = new FakeInitialWorkbookCreator();
+        var workbookAutomation = new FakeWorkbookGenerationAutomation();
+        var workbookTestRunner = new FakeWorkbookTestRunner();
+        var workbookExporter = new FakeWorkbookModuleExporter();
+        var referenceResolver = new CountingReferenceResolver();
+        var hostEventAutomation = new CountingHostEventCatalogAutomation();
+        var commandLine = CommandLineTestFactory.Create(
+            temp.Path,
+            environmentDiagnosticPort: new ThrowingEnvironmentDiagnosticPort(),
+            initialWorkbookCreator: initialWorkbookCreator,
+            workbookGenerationAutomation: workbookAutomation,
+            workbookTestRunner: workbookTestRunner,
+            workbookModuleExporter: workbookExporter,
+            vbaProjectReferenceResolver: referenceResolver,
+            projectManifestStore: new ThrowingProjectManifestStore(),
+            hostEventCatalogAutomation: hostEventAutomation);
+        var initialEntries = Directory.GetFileSystemEntries(temp.Path);
+
+        var exitCode = await commandLine.InvokeAsync(
+            [
+                "test",
+                "-f",
+                "json",
+                "--cancellation-transport",
+                "stdin-v1"
+            ],
+            standardInput,
+            standardOutput,
+            standardError,
+            CancellationToken.None);
+
+        Assert.Equal(1, exitCode);
+        Assert.Empty(standardOutput.ToString());
+        Assert.Equal(
+            $"Error: Option '--format' does not accept value 'json'. Accepted values: text, ndjson.{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev test --help' for usage.{Environment.NewLine}",
+            standardError.ToString());
+        Assert.False(standardInput.ReadAttempted);
+        Assert.Equal(initialEntries, Directory.GetFileSystemEntries(temp.Path));
+        Assert.Empty(initialWorkbookCreator.CreatedPaths);
+        Assert.Empty(workbookAutomation.OpenedWorkbooks);
+        Assert.Empty(workbookTestRunner.Workbooks);
+        Assert.Empty(workbookExporter.Calls);
+        Assert.Equal(0, referenceResolver.ResolveAvailableCount);
+        Assert.Equal(0, referenceResolver.ResolveCount);
+        Assert.Equal(0, hostEventAutomation.ReadCount);
+    }
+
+    [Fact]
     public void ReferenceHelpDoesNotEvaluateDynamicCompletionSources()
     {
         using var temp = TempDirectory.Create();
@@ -1018,12 +1113,108 @@ public sealed class CliSurfaceTests
     }
 
     [Fact]
-    public void UnknownCommandReturnsUsageError()
+    public void UnknownCommandUsesCanonicalGrammarFailureContract()
     {
         var result = application.Run(["missing"]);
 
         Assert.Equal(1, result.ExitCode);
-        Assert.Contains("missing", result.StandardError, StringComparison.Ordinal);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(
+            $"Error: Unrecognized token 'missing' for command 'vba-dev'.{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev --help' for usage.{Environment.NewLine}",
+            result.StandardError);
+    }
+
+    [Fact]
+    public void UnknownTokenWithExplicitHelpUsesCanonicalGrammarFailureContract()
+    {
+        var result = application.Run(["test", "--unknown", "--help"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(
+            $"Error: Unrecognized token '--unknown' for command 'vba-dev test'.{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev test --help' for usage.{Environment.NewLine}",
+            result.StandardError);
+    }
+
+    [Fact]
+    public void InvalidValueWithExplicitHelpUsesCanonicalGrammarFailureContract()
+    {
+        var result = application.Run(["test", "--format", "json", "--help"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(
+            $"Error: Option '--format' does not accept value 'json'. Accepted values: text, ndjson.{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev test --help' for usage.{Environment.NewLine}",
+            result.StandardError);
+    }
+
+    [Fact]
+    public void InvalidTypedValueWithExplicitHelpUsesCanonicalGrammarFailureContract()
+    {
+        var result = application.Run(
+            ["test", "--timeout-seconds", "not-a-number", "--help"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(
+            $"Error: Value 'not-a-number' for option '--timeout-seconds' is invalid.{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev test --help' for usage.{Environment.NewLine}",
+            result.StandardError);
+    }
+
+    [Fact]
+    public void MissingOptionValueWithExplicitHelpUsesCanonicalGrammarFailureContract()
+    {
+        var result = application.Run(["test", "--help", "--format"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(
+            $"Error: Option '--format' requires a value.{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev test --help' for usage.{Environment.NewLine}",
+            result.StandardError);
+    }
+
+    [Fact]
+    public void VersionCombinedWithExplicitHelpUsesCanonicalGrammarFailureContract()
+    {
+        var result = application.Run(["--version", "--help"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(
+            $"Error: Option '--version' cannot be combined with other arguments.{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev --help' for usage.{Environment.NewLine}",
+            result.StandardError);
+    }
+
+    [Fact]
+    public void MissingRequiredArgumentUsesCanonicalGrammarFailureContract()
+    {
+        var result = application.Run(["reference", "add"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(
+            $"Error: Argument '<references>...' is required for command 'vba-dev reference add'.{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev reference add --help' for usage.{Environment.NewLine}",
+            result.StandardError);
+    }
+
+    [Fact]
+    public void MissingOptionValueUsesCanonicalGrammarFailureContract()
+    {
+        var result = application.Run(["test", "--format"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(
+            $"Error: Option '--format' requires a value.{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev test --help' for usage.{Environment.NewLine}",
+            result.StandardError);
     }
 
     [Fact]
@@ -1032,9 +1223,73 @@ public sealed class CliSurfaceTests
         var result = application.Run(["test", "--format", "json"]);
 
         Assert.Equal(1, result.ExitCode);
-        Assert.Contains("json", result.StandardError, StringComparison.Ordinal);
-        Assert.Contains("text", result.StandardError, StringComparison.Ordinal);
-        Assert.Contains("ndjson", result.StandardError, StringComparison.Ordinal);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(
+            $"Error: Option '--format' does not accept value 'json'. Accepted values: text, ndjson.{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev test --help' for usage.{Environment.NewLine}",
+            result.StandardError);
+    }
+
+    [Fact]
+    public void SamePhaseGrammarFailuresUseTheLeftmostSuppliedToken()
+    {
+        var result = application.Run(
+            ["doctor", "--format", "yaml", "--scope", "machine"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(
+            $"Error: Option '--format' does not accept value 'yaml'. Accepted values: text, json.{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev doctor --help' for usage.{Environment.NewLine}",
+            result.StandardError);
+    }
+
+    [Fact]
+    public void GrammarFailureThroughAliasUsesTheCanonicalOptionName()
+    {
+        var result = application.Run(["test", "-f", "json"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(
+            $"Error: Option '--format' does not accept value 'json'. Accepted values: text, ndjson.{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev test --help' for usage.{Environment.NewLine}",
+            result.StandardError);
+    }
+
+    [Fact]
+    public void EarlierGrammarPhaseWinsOverAnEarlierSuppliedToken()
+    {
+        var result = application.Run(
+            ["test", "--format", "json", "--timeout-seconds", "not-a-number"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(
+            $"Error: Value 'not-a-number' for option '--timeout-seconds' is invalid.{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev test --help' for usage.{Environment.NewLine}",
+            result.StandardError);
+    }
+
+    [Theory]
+    [InlineData(
+        new[] { "test", "--timeout-seconds", "not-a-number", "--unknown" },
+        "Value 'not-a-number' for option '--timeout-seconds' is invalid.")]
+    [InlineData(
+        new[] { "test", "--unknown", "--timeout-seconds", "not-a-number" },
+        "Unrecognized token '--unknown' for command 'vba-dev test'.")]
+    public void ParsingFailuresUseTheLeftmostSuppliedToken(
+        string[] arguments,
+        string expectedDiagnostic)
+    {
+        var result = application.Run(arguments);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(
+            $"Error: {expectedDiagnostic}{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev test --help' for usage.{Environment.NewLine}",
+            result.StandardError);
     }
 
     [Fact]

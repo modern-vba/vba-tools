@@ -22,6 +22,13 @@ singleton. The same root instance is the only runtime model for command and
 option symbols, parsing, validation, help, version output, static and dynamic
 completion, typed binding, and action connection.
 
+The graph also owns one `VbaDevGrammarFailureRouter`. Grammar construction
+registers only the closed validation primitives admitted by this decision, then
+the router copies those registrations into an immutable snapshot and validates
+that every referenced command and symbol belongs to the completed root. Runtime
+selection therefore cannot observe later registration changes or consult a
+second command description.
+
 `VbaDevCommandLine` owns only invocation, standard-stream configuration,
 cooperative cancellation monitoring, `Timeout.InfiniteTimeSpan` process
 termination configuration, and terminal dispatch through the constructed
@@ -93,9 +100,11 @@ command-local help hint to standard error. The diagnostic names canonical
 command, argument, and option spellings rather than echoing an alias as the
 contract identity. The hint directs the user to the command-local `--help`
 invocation, or root help when no command path was admitted. No full help or
-usage document is appended. The text remains human-facing; the stable contract
-is the exit status, stream separation, two-item shape, and canonical symbol
-identity rather than a machine-readable error schema.
+usage document is appended. Each item occupies one physical line and the second
+line has the platform newline terminator. Supplied token text is escaped when
+needed so it cannot add another physical line. The text remains human-facing;
+the stable contract is the exit status, stream separation, two-line shape, and
+canonical symbol identity rather than a machine-readable error schema.
 
 Validation and execution use this strict phase order:
 
@@ -120,10 +129,19 @@ cardinality, or value defect.
 
 Explicit valid help, the standalone version invocation, and completion remain
 successful terminal modes on standard output. They do not enter domain
-resolution or side effects. A grammar-valid Test result containing failed tests
-and a grammar-valid Doctor result containing failed checks remain ordinary
-command results with their established output schemas and exit rules; the
-grammar router does not reinterpret them.
+resolution or side effects. Explicit help suppresses only unsupplied required
+symbols and incomplete command structure needed to render that help; defects in
+supplied non-help input still use the grammar-failure contract, and help does not
+bind a command intent. A grammar-valid Test result containing failed tests and a
+grammar-valid Doctor result containing failed checks remain ordinary command
+results with their established output schemas and exit rules; the grammar
+router does not reinterpret them.
+
+The central router and its closed cardinality, value, relationship, and intent-
+binding primitives are established in issue #353. That slice does not claim
+that every command family already declares its final public grammar. Issues
+#354 through #360 migrate those family declarations onto the primitives without
+creating another router or compatibility grammar.
 
 ## Consequences
 
@@ -140,4 +158,6 @@ grammar router does not reinterpret them.
   without changing grammar-valid command results or introducing a serialized
   failure schema.
 - VbaDev remains independently buildable and has no dependency on a product
-  that consumes its public process contract.
+  that consumes its public process contract. The grammar graph, rule snapshot,
+  router, and diagnostics are all VbaDev-owned; consumers may depend on the
+  executable contract, but VbaDev never depends on those consumers.

@@ -9,6 +9,20 @@ For workbook-backed projects, the extension uses a bundled `vba-dev` command to
 build, test, publish, export, and validate Excel macro workbooks from a
 `vba-project.json` manifest.
 
+`vba-dev` remains an independently buildable command-line product. The
+extension and other tools consume its public process contract; the CLI does not
+depend on those consumers. A failure owned by the central grammar router exits
+`1`, leaves stdout empty, and writes exactly two physical stderr lines: one
+canonical diagnostic and one short command-local help hint, with a final
+newline. The router applies deterministic phase ordering to structural parsing
+and cardinality checks and to value, relationship, standalone, and closed-intent
+rules as their actual command declarations register them. Existing
+command-family checks move onto those primitives in the staged follow-up work
+described by [ADR 0038](docs/adr/0038-establish-the-vba-dev-command-grammar.md).
+Valid help, standalone version, completion, and capabilities requests remain
+side-effect-free terminal successes on stdout; failed Test runs and failed
+Doctor checks remain command results rather than grammar failures.
+
 ---
 
 ## Key Features
