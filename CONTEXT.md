@@ -119,6 +119,18 @@ Application concerns after project resolution; the family action projects the
 closed cases to the established Application and workbook-runner contracts.
 _Avoid_: Boolean CLI source mode, nullable CLI selector pair, Application option parsing, second command root
 
+**VbaDevReferenceCommandFamily**:
+The internal sealed command-family module that attaches the actual Reference
+group and its Add, List, and Remove leaves to the single
+`VbaDevCommandGrammar` graph. It owns their descriptions, symbols, lazy
+registry-backed completion attachment, grammar rules, cached command-intent
+binding, action connection, and capability registrations. List binds exactly
+one closed intent for selected-and-resolved references, the stored selection
+without resolution, or the available catalog. Add and Remove bind ordered,
+one-or-more nonempty raw names while Application retains trimming,
+deduplication, project resolution, mutation, and result formatting.
+_Avoid_: Boolean reference-list mode, eager registry completion, Application option parsing, second command root
+
 **VbaDevGrammarFailureRouter**:
 The VbaDev-owned invocation-boundary component that selects one deterministic
 grammar failure from a completed `VbaDevCommandGraph`. It freezes its closed

@@ -195,147 +195,11 @@ internal static class VbaDevCommandGrammar
             return 0;
         });
 
-        var referenceCommand = AddCommand(rootCommand, "reference", "Manage VBA project references.");
-        var referenceAddCommand = AddCapabilityCommand(
-            referenceCommand,
-            "add",
-            "Add VBA project references to the selected document manifest.",
-            "reference add",
-            "1.0",
+        _ = VbaDevReferenceCommandFamily.Register(
+            rootCommand,
+            composition,
+            grammarFailureRules,
             capabilityCommands);
-        var referenceAddOptions = AddProjectDocumentOptions(referenceAddCommand);
-        var referenceAddArguments = new Argument<string[]>("references")
-        {
-            Arity = ArgumentArity.OneOrMore,
-            Description = "VBA project reference names to add."
-        };
-        referenceAddArguments.CompletionSources.Add(completionContext =>
-        {
-            if (completionContext is not TextCompletionContext)
-            {
-                return [];
-            }
-
-            return composition.ReferenceCompletionService.CompleteAdd(
-                    new ProjectResolutionRequest(
-                        completionContext.ParseResult.GetValue(referenceAddOptions.Project),
-                        completionContext.ParseResult.GetValue(referenceAddOptions.Document),
-                        composition.WorkingDirectory),
-                    completionContext.ParseResult.GetResult(referenceAddArguments)?.Tokens
-                        .Select(token => token.Value)
-                        .ToArray()
-                    ?? [])
-                .Select(name => new CompletionItem(name));
-        });
-        referenceAddCommand.Add(referenceAddArguments);
-        var referenceAddFormatOption = CreateStringOption(
-            "--format",
-            "Reference mutation output format.",
-            "text|json",
-            ["text", "json"],
-            "-f");
-        referenceAddCommand.Add(referenceAddFormatOption);
-        referenceAddCommand.SetAction(async (parseResult, cancellationToken) => WriteCommandResult(
-            parseResult,
-            await ResolveDocumentContextAsync(
-                    parseResult,
-                    composition,
-                    referenceAddOptions,
-                    (context, operationCancellationToken) => composition.ReferenceService.AddAsync(
-                        context,
-                        parseResult.GetValue(referenceAddArguments) ?? [],
-                        parseResult.GetValue(referenceAddFormatOption) ?? "text",
-                        operationCancellationToken),
-                    cancellationToken)
-                .ConfigureAwait(false)));
-        var referenceListCommand = AddCapabilityCommand(
-            referenceCommand,
-            "list",
-            "List VBA project references for the selected document.",
-            "reference list",
-            "1.0",
-            capabilityCommands);
-        var referenceListOptions = AddProjectDocumentOptions(referenceListCommand);
-        var referenceListAvailableOption = new Option<bool>("--available")
-        {
-            Description = "List registered references not selected by the document."
-        };
-        referenceListCommand.Add(referenceListAvailableOption);
-        var referenceListNoResolveOption = new Option<bool>("--no-resolve")
-        {
-            Description = "List the stored document reference selection without resolving references."
-        };
-        referenceListCommand.Add(referenceListNoResolveOption);
-        var referenceListFormatOption = CreateStringOption(
-            "--format",
-            "Reference output format.",
-            "text|json",
-            ["text", "json"],
-            "-f");
-        referenceListCommand.Add(referenceListFormatOption);
-        referenceListCommand.SetAction(async (parseResult, cancellationToken) => WriteCommandResult(
-            parseResult,
-            await RunReferenceListAsync(
-                    parseResult,
-                    composition,
-                    referenceListOptions,
-                    referenceListAvailableOption,
-                    referenceListNoResolveOption,
-                    referenceListFormatOption,
-                    cancellationToken)
-                .ConfigureAwait(false)));
-        var referenceRemoveCommand = AddCapabilityCommand(
-            referenceCommand,
-            "remove",
-            "Remove VBA project references from the selected document manifest.",
-            "reference remove",
-            "1.0",
-            capabilityCommands);
-        var referenceRemoveOptions = AddProjectDocumentOptions(referenceRemoveCommand);
-        var referenceRemoveArguments = new Argument<string[]>("references")
-        {
-            Arity = ArgumentArity.OneOrMore,
-            Description = "VBA project reference names to remove."
-        };
-        referenceRemoveArguments.CompletionSources.Add(completionContext =>
-        {
-            if (completionContext is not TextCompletionContext)
-            {
-                return [];
-            }
-
-            return composition.ReferenceCompletionService.CompleteRemove(
-                    new ProjectResolutionRequest(
-                        completionContext.ParseResult.GetValue(referenceRemoveOptions.Project),
-                        completionContext.ParseResult.GetValue(referenceRemoveOptions.Document),
-                        composition.WorkingDirectory),
-                    completionContext.ParseResult.GetResult(referenceRemoveArguments)?.Tokens
-                        .Select(token => token.Value)
-                        .ToArray()
-                    ?? [])
-                .Select(name => new CompletionItem(name));
-        });
-        referenceRemoveCommand.Add(referenceRemoveArguments);
-        var referenceRemoveFormatOption = CreateStringOption(
-            "--format",
-            "Reference mutation output format.",
-            "text|json",
-            ["text", "json"],
-            "-f");
-        referenceRemoveCommand.Add(referenceRemoveFormatOption);
-        referenceRemoveCommand.SetAction(async (parseResult, cancellationToken) => WriteCommandResult(
-            parseResult,
-            await ResolveDocumentContextAsync(
-                    parseResult,
-                    composition,
-                    referenceRemoveOptions,
-                    (context, operationCancellationToken) => composition.ReferenceService.RemoveAsync(
-                        context,
-                        parseResult.GetValue(referenceRemoveArguments) ?? [],
-                        parseResult.GetValue(referenceRemoveFormatOption) ?? "text",
-                        operationCancellationToken),
-                    cancellationToken)
-                .ConfigureAwait(false)));
 
         var hostEventCommand = AddCommand(rootCommand, "host-event", "Inspect generic intrinsic host Events.");
         var hostEventListCommand = AddCapabilityCommand(
@@ -485,7 +349,7 @@ internal static class VbaDevCommandGrammar
                .InformationalVersion
            ?? throw new InvalidOperationException("vba-dev informational version metadata is missing.");
 
-    private static Command AddCommand(Command parent, string name, string description)
+    internal static Command AddCommand(Command parent, string name, string description)
     {
         var command = new Command(name, description);
         parent.Add(command);
@@ -700,81 +564,6 @@ internal static class VbaDevCommandGrammar
         catch (ProjectManifestException ex)
         {
             return CommandResult.UsageError(ex.Message);
-        }
-    }
-
-    private static async Task<CommandResult> RunReferenceListAsync(
-        ParseResult parseResult,
-        ToolingApplicationComposition composition,
-        ProjectDocumentOptions options,
-        Option<bool> availableOption,
-        Option<bool> noResolveOption,
-        Option<string> formatOption,
-        CancellationToken cancellationToken)
-    {
-        var available = parseResult.GetValue(availableOption);
-        var noResolve = parseResult.GetValue(noResolveOption);
-        var format = parseResult.GetValue(formatOption) ?? "text";
-        if (available && noResolve)
-        {
-            return CommandResult.UsageError(
-                "--no-resolve cannot be combined with --available.");
-        }
-
-        if (noResolve)
-        {
-            return await ResolveDocumentContextAsync(
-                    parseResult,
-                    composition,
-                    options,
-                    (context, _) => Task.FromResult(
-                        composition.ReferenceService.ListSelection(context, format)),
-                    cancellationToken)
-                .ConfigureAwait(false);
-        }
-
-        if (!available ||
-            parseResult.GetResult(options.Project) is not null ||
-            parseResult.GetResult(options.Document) is not null)
-        {
-            return await ResolveDocumentContextAsync(
-                    parseResult,
-                    composition,
-                    options,
-                    (context, operationCancellationToken) => available
-                        ? composition.ReferenceService.ListAvailableAsync(
-                            context,
-                            format,
-                            operationCancellationToken)
-                        : composition.ReferenceService.ListAsync(
-                            context,
-                            format,
-                            operationCancellationToken),
-                    cancellationToken)
-                .ConfigureAwait(false);
-        }
-
-        try
-        {
-            if (composition.ProjectContextResolver.TryResolveImplicitDocumentContext(
-                    composition.WorkingDirectory,
-                    out var context))
-            {
-                return await composition.ReferenceService.ListAvailableAsync(
-                        context!,
-                        format,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-            }
-
-            return await composition.ReferenceService.ListAvailableEnvironmentAsync(
-                    format,
-                    cancellationToken)
-                .ConfigureAwait(false);
-        }
-        catch (ProjectManifestException exception)
-        {
-            return CommandResult.UsageError(exception.Message);
         }
     }
 

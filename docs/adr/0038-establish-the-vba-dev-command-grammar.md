@@ -93,6 +93,9 @@ parallel compatibility grammar:
 - an explicitly empty Test module or procedure does not collapse to an omitted
   selector, while exact nonempty VBA identifiers retain their existing
   Application validation;
+- `reference add <references>...` and `reference remove <references>...`
+  require one or more names and reject an empty or whitespace-only supplied
+  name before project or registry resolution;
 - Build source snapshot and output are `AllOrNone` actual symbols;
 - Test procedure `Requires` module, while source snapshot `Conflicts` with
   no-build;
@@ -153,6 +156,25 @@ compatibility types do not become a second CLI-mode authority. Grammar failure
 therefore precedes project resolution and workbook work, while a completed run
 containing failed tests remains an ordinary text or NDJSON 1.2 result.
 
+Issue #357 establishes the sealed family module for the Reference group and its
+Add, List, and Remove leaves. List binds exactly one closed intent: selected
+references with resolution by default, the stored selection without resolution
+under `--no-resolve`, or the available catalog under `--available`. The actual
+available and no-resolve symbols carry one `Conflicts` relationship. Add and
+Remove bind ordered, one-or-more raw name lists and reject every empty or
+whitespace-only supplied name through the shared argument-value rule before
+project, registry, filesystem, or Excel work.
+
+The family projects those intents to the established reference Application
+services. Project and document selection therefore retains its ordinary
+resolution, while bare available-catalog mode first tries implicit project
+discovery and otherwise retains the environment inventory fallback. Dynamic
+Add and Remove name completion remains attached to the actual variadic
+arguments and keeps its existing candidates, ordering, and quiet failure
+behavior, but is not evaluated for static command or option completion. No
+registry scan is performed by graph construction, help, version, capabilities,
+or grammar failure.
+
 ## Grammar-failure contract
 
 A grammar failure exits `1`, writes nothing to standard output, and writes
@@ -201,7 +223,7 @@ router does not reinterpret them.
 The central router and its closed cardinality, value, relationship, and intent-
 binding primitives are established in issue #353. Import and Export migrate in
 issue #354, and Build and Publish migrate in issue #355. The declarations in
-issues #357 through #360 migrate onto the same primitives without creating
+issues #358 through #360 migrate onto the same primitives without creating
 another router or compatibility grammar.
 
 ## Consequences

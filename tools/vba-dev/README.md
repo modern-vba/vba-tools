@@ -75,6 +75,14 @@ and its selector mode is exactly all tests, one module, or one procedure with
 its required module. The family owns those CLI distinctions without moving
 source capture, materialization, Excel execution, or result formatting out of
 their existing Application and Infrastructure modules.
+Reference Add, List, and Remove are declared by one sealed internal command
+family. List binds exactly one mode: selected-and-resolved by default, the
+stored selection under `--no-resolve`, or the available catalog under
+`--available`. Add and Remove require at least one nonblank reference name.
+Registry-backed name completion is evaluated only while interactively
+completing a reference-name argument; graph construction, help, version,
+capabilities, grammar failures, and static command or option completion do not
+scan the registry.
 
 Every non-debug Excel or VBIDE automation path delegates process launch,
 private-desktop ownership, STA dispatch, deadlines, cleanup, and release proof
@@ -226,7 +234,7 @@ vba-dev reference add
 Add VBA project references to the selected document manifest.
 
 Usage:
-  vba-dev reference add [references...] [options]
+  vba-dev reference add <references>... [options]
 
 Options:
   --project <path>               Project root containing vba-project.json.
@@ -234,7 +242,9 @@ Options:
   --format <text|json>, -f <text|json> Reference mutation output format.
 ```
 
-Reference names are human-visible `Reference.Description`-style names. The command edits `vba-project.json` only. `Visual Basic For Applications` is always active and cannot be selected explicitly.
+Supply one or more nonblank human-visible `Reference.Description`-style names.
+The command edits `vba-project.json` only. `Visual Basic For Applications` is
+always active and cannot be selected explicitly.
 
 ### reference list
 
@@ -277,7 +287,7 @@ vba-dev reference remove
 Remove VBA project references from the selected document manifest.
 
 Usage:
-  vba-dev reference remove [references...] [options]
+  vba-dev reference remove <references>... [options]
 
 Options:
   --project <path>               Project root containing vba-project.json.
@@ -285,7 +295,8 @@ Options:
   --format <text|json>, -f <text|json> Reference mutation output format.
 ```
 
-Removing an absent reference succeeds and leaves the manifest unchanged.
+Supply one or more nonblank reference names. Removing an absent reference
+succeeds and leaves the manifest unchanged.
 
 Add and remove trim and case-insensitively deduplicate names, then apply one rebased crash-atomic manifest mutation. JSON output uses schema version `1.0` and returns one ordered result per normalized request. Add statuses are `added`, `promoted`, and `alreadyPresent`; remove statuses are `removed` and `alreadyAbsent`.
 
