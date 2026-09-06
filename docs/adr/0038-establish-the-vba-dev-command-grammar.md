@@ -103,12 +103,16 @@ parallel compatibility grammar:
   no-build;
 - Reference available `Conflicts` with no-resolve;
 - Export from `Conflicts` with project and document; and
-- Doctor environment scope `Conflicts` with project.
+- Doctor scope `environment` `Conflicts` with project, while scope `project`
+  and project remain valid together.
 
 Shared relationships are limited to the closed internal forms `Requires`,
 `Conflicts`, and `AllOrNone`. They attach actual symbols to the one graph and
-do not become a general validation DSL. A grammar-valid parse binds once to a
-shell-neutral closed command intent before domain resolution or side effects.
+do not become a general validation DSL. A `Conflicts` relation may be gated by
+one canonical accepted value of its first string option; this remains the same
+relationship kind and is evaluated after accepted-value validation. A grammar-
+valid parse binds once to a shell-neutral closed command intent before domain
+resolution or side effects.
 
 Issue #354 establishes the first sealed family module for Import and Export.
 It declares their actual leaves on the shared root, reuses the canonical
@@ -194,6 +198,25 @@ therefore precedes project, manifest, package, or filesystem access, while
 `--force` remains the existing target authorization rather than an
 unconditional overwrite or concurrency guarantee.
 
+Issue #359 establishes two sealed family modules for inspection commands. The
+Host Event family attaches the actual `host-event list` leaf at its established
+root position and binds exactly one closed text or JSON intent. Only omission
+selects text; explicit `--format` or `-f` input must bind one of the existing
+accepted values before the environment catalog or Excel is touched.
+
+The Inspection family attaches the adjacent Check and Doctor leaves at their
+established root positions. Check binds only its optional project selection,
+keeps its text result, and declares no format option. Doctor binds either a
+project intent carrying optional project selection or an environment intent
+that cannot carry project selection; both carry the existing typed text or JSON
+format. Scope omission continues to select project, `--scope project` remains
+valid with `--project`, and only canonical `--scope environment` activates the
+actual-symbol `Conflicts` relationship with `--project`. Doctor gains the
+additive `-f` alias. Failed Doctor checks remain ordinary Doctor results rather
+than grammar failures. Both families project to the existing VbaDev Application
+commands and create no dependency on an extension, language server, debug
+adapter, or other product.
+
 ## Grammar-failure contract
 
 A grammar failure exits `1`, writes nothing to standard output, and writes
@@ -242,8 +265,8 @@ router does not reinterpret them.
 The central router and its closed cardinality, value, relationship, and intent-
 binding primitives are established in issue #353. Import and Export migrate in
 issue #354, and Build and Publish migrate in issue #355. The declarations in
-issues #359 and #360 migrate onto the same primitives without creating
-another router or compatibility grammar.
+issue #360 migrate onto the same primitives without creating another router or
+compatibility grammar.
 
 ## Consequences
 

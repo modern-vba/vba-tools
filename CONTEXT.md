@@ -144,6 +144,26 @@ manifest mutation, and result formatting; it does not reinterpret command
 options or validate a missing request list.
 _Avoid_: Boolean CLI force mode, Application option parsing, package planning in the CLI, second command root
 
+**VbaDevHostEventCommandFamily**:
+The internal sealed command-family module that attaches the actual Host Event
+group and List leaf to the single `VbaDevCommandGrammar` graph. It owns the
+descriptions, symbols, closed text-or-JSON command intent, action connection,
+and capability registration. Omitted format alone selects text; an explicit
+format must bind one of the two canonical values before environment catalog or
+Excel work begins.
+_Avoid_: nullable host-event format mode, environment catalog work during binding, second command root
+
+**VbaDevInspectionCommandFamily**:
+The internal sealed command-family module that attaches the actual Check and
+Doctor leaves to the single `VbaDevCommandGrammar` graph. Check binds only its
+optional project selection and exposes no format. Doctor binds a closed project
+or environment intent with a typed text-or-JSON format. Scope omission selects
+project; only canonical environment scope conflicts with an explicit project
+through the actual option symbols. The family projects those intents to the
+existing VbaDev Application commands and introduces no dependency on another
+product.
+_Avoid_: Boolean Doctor scope, Application option parsing, unconditional scope/project conflict, cross-product command dependency
+
 **VbaDevGrammarFailureRouter**:
 The VbaDev-owned invocation-boundary component that selects one deterministic
 grammar failure from a completed `VbaDevCommandGraph`. It freezes its closed

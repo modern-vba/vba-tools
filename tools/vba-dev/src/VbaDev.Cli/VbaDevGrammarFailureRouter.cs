@@ -367,7 +367,10 @@ internal sealed class VbaDevGrammarFailureRouter
             var violated = relationship.Kind switch
             {
                 VbaDevGrammarRelationshipKind.Requires => first is not null && second is null,
-                VbaDevGrammarRelationshipKind.Conflicts => first is not null && second is not null,
+                VbaDevGrammarRelationshipKind.Conflicts =>
+                    first is not null &&
+                    second is not null &&
+                    MatchesRequiredFirstValue(parseResult, relationship),
                 VbaDevGrammarRelationshipKind.AllOrNone => (first is null) != (second is null),
                 _ => throw new InvalidOperationException(
                     $"Unsupported grammar relationship '{relationship.Kind}'.")
@@ -396,6 +399,15 @@ internal sealed class VbaDevGrammarFailureRouter
 
         return candidates;
     }
+
+    private static bool MatchesRequiredFirstValue(
+        ParseResult parseResult,
+        VbaDevGrammarRelationship relationship)
+        => relationship.RequiredFirstValue is null ||
+           string.Equals(
+               parseResult.GetValue((Option<string>)relationship.First),
+               relationship.RequiredFirstValue,
+               StringComparison.OrdinalIgnoreCase);
 
     private IReadOnlyList<VbaDevGrammarFailureCandidate> BuildBindingCandidates(
         ParseResult parseResult,
@@ -825,6 +837,40 @@ internal sealed class VbaDevGrammarFailureRules
     internal void Conflicts(Command command, Option first, Option second)
         => AddRelationship(command, VbaDevGrammarRelationshipKind.Conflicts, first, second);
 
+    internal void ConflictsWhenValue(
+        Command command,
+        Option<string> first,
+        string requiredFirstValue,
+        Option second)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        ArgumentNullException.ThrowIfNull(first);
+        ArgumentNullException.ThrowIfNull(second);
+        ArgumentException.ThrowIfNullOrEmpty(requiredFirstValue);
+        if (first is not VbaDevStringOption stringOption ||
+            stringOption.AcceptedValues is null)
+        {
+            throw new InvalidOperationException(
+                $"Conditional conflict option '{first.Name}' must have accepted values.");
+        }
+
+        var canonicalValue = stringOption.AcceptedValues.FirstOrDefault(value =>
+            value.Equals(requiredFirstValue, StringComparison.OrdinalIgnoreCase));
+        if (canonicalValue is null)
+        {
+            throw new InvalidOperationException(
+                $"Conditional conflict value '{requiredFirstValue}' is not accepted by " +
+                $"option '{first.Name}'.");
+        }
+
+        AddRelationship(
+            command,
+            VbaDevGrammarRelationshipKind.Conflicts,
+            first,
+            second,
+            canonicalValue);
+    }
+
     internal void AllOrNone(Command command, Option first, Option second)
         => AddRelationship(command, VbaDevGrammarRelationshipKind.AllOrNone, first, second);
 
@@ -925,7 +971,8 @@ internal sealed class VbaDevGrammarFailureRules
         Command command,
         VbaDevGrammarRelationshipKind kind,
         Option first,
-        Option second)
+        Option second,
+        string? requiredFirstValue = null)
     {
         ArgumentNullException.ThrowIfNull(command);
         ArgumentNullException.ThrowIfNull(first);
@@ -954,6 +1001,7 @@ internal sealed class VbaDevGrammarFailureRules
             kind,
             first,
             second,
+            requiredFirstValue,
             nextDeclarationOrder++));
     }
 
@@ -1223,6 +1271,7 @@ internal sealed record VbaDevGrammarRelationship(
     VbaDevGrammarRelationshipKind Kind,
     Option First,
     Option Second,
+    string? RequiredFirstValue,
     int DeclarationOrder);
 
 internal abstract class VbaDevGrammarIntentBinding

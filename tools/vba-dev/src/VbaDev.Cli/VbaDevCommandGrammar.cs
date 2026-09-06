@@ -7,8 +7,6 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using VbaDev.App.Cli;
-using VbaDev.App.Diagnostics;
-using VbaDev.App.HostEvents;
 using VbaDev.App.Projects;
 using VbaDev.Composition;
 
@@ -114,27 +112,11 @@ internal static class VbaDevCommandGrammar
             grammarFailureRules,
             capabilityCommands);
 
-        var hostEventCommand = AddCommand(rootCommand, "host-event", "Inspect generic intrinsic host Events.");
-        var hostEventListCommand = AddCapabilityCommand(
-            hostEventCommand,
-            "list",
-            "List the environment's generic UserForm Event catalog.",
-            "host-event list",
-            "1.0",
+        _ = VbaDevHostEventCommandFamily.Register(
+            rootCommand,
+            composition,
+            grammarFailureRules,
             capabilityCommands);
-        var hostEventListFormatOption = CreateStringOption(
-            "--format",
-            "Host Event catalog output format.",
-            "text|json",
-            ["text", "json"],
-            "-f");
-        hostEventListCommand.Add(hostEventListFormatOption);
-        hostEventListCommand.SetAction(async (parseResult, cancellationToken) => WriteCommandResult(
-            parseResult,
-            await composition.HostEventListCommand.RunAsync(
-                    parseResult.GetValue(hostEventListFormatOption) ?? "text",
-                    cancellationToken)
-                .ConfigureAwait(false)));
 
         var buildPublishCommandFamily = VbaDevBuildPublishCommandFamily.Create(
             composition,
@@ -152,63 +134,11 @@ internal static class VbaDevCommandGrammar
             composition,
             grammarFailureRules,
             capabilityCommands);
-        var checkCommand = AddCommand(
+        _ = VbaDevInspectionCommandFamily.Register(
             rootCommand,
-            "check",
-            "Validate deterministic project facts without starting Excel.");
-        var checkProjectOption = AddProjectOption(checkCommand);
-        checkCommand.SetAction(parseResult => WriteCommandResult(
-            parseResult,
-            composition.StaticProjectCheckCommand.Run(
-                new StaticProjectCheckRequest(
-                    parseResult.GetValue(checkProjectOption),
-                    composition.WorkingDirectory))));
-
-        var doctorCommand = AddCapabilityCommand(
-            rootCommand,
-            "doctor",
-            "Check project and machine prerequisites.",
-            "doctor",
-            "1.0",
+            composition,
+            grammarFailureRules,
             capabilityCommands);
-        var doctorProjectOption = AddProjectOption(doctorCommand);
-        var doctorScopeOption = CreateStringOption(
-            "--scope",
-            "Diagnostic scope.",
-            "project|environment",
-            ["project", "environment"]);
-        var doctorFormatOption = CreateStringOption(
-            "--format",
-            "Doctor output format.",
-            "text|json",
-            ["text", "json"]);
-        doctorCommand.Add(doctorScopeOption);
-        doctorCommand.Add(doctorFormatOption);
-        doctorCommand.SetAction(async (parseResult, cancellationToken) =>
-        {
-            var environmentScope = parseResult.GetValue(doctorScopeOption) == "environment";
-            if (environmentScope &&
-                parseResult.GetResult(doctorProjectOption) is not null)
-            {
-                return WriteCommandResult(
-                    parseResult,
-                    CommandResult.UsageError(
-                        "--project cannot be used with --scope environment."));
-            }
-
-            return WriteCommandResult(
-                parseResult,
-                await composition.DoctorCommand.RunAsync(new DoctorCommandRequest(
-                    parseResult.GetValue(doctorProjectOption),
-                    composition.WorkingDirectory,
-                    environmentScope
-                        ? DoctorScope.Environment
-                        : DoctorScope.Project,
-                    parseResult.GetValue(doctorFormatOption) == "json"
-                        ? DoctorOutputFormat.Json
-                        : DoctorOutputFormat.Text),
-                    cancellationToken).ConfigureAwait(false));
-        });
 
         var capabilitiesCommand = new Command(
             "capabilities",
