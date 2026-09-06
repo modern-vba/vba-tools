@@ -31,7 +31,13 @@ public sealed class BuildSourceAdmissionTests
             new BuildSourceSnapshotOutputSafetyValidator(new FileSystemPathIdentityResolver()));
         var outputPath = Path.Combine(temp.Path, "output", "Book1.xlsm");
 
-        var result = await command.RunSnapshotAsync(context, snapshotPath, outputPath, CancellationToken.None);
+        var result = await command.RunSnapshotAsync(
+            context,
+            new SourceSnapshotBuildCommandRequest(
+                "snapshot",
+                Path.Combine("output", "Book1.xlsm"),
+                temp.Path),
+            CancellationToken.None);
 
         Assert.Equal(0, result.ExitCode);
         var imported = Assert.Single(automation.ImportedSources);
@@ -334,7 +340,10 @@ public sealed class BuildSourceAdmissionTests
                 sourceCaptureFactory: new SnapshotSourceCaptureFactory(admission)));
 
         var result = command == "build"
-            ? await build.RunSnapshotAsync(context, snapshotPath, outputPath, CancellationToken.None)
+            ? await build.RunSnapshotAsync(
+                context,
+                new SourceSnapshotBuildCommandRequest(snapshotPath, outputPath, temp.Path),
+                CancellationToken.None)
             : await test.RunAsync(context,
                 new TestCommandRequest("ndjson", true, new(), TimeSpan.FromMinutes(1), snapshotPath), CancellationToken.None);
 

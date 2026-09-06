@@ -90,6 +90,47 @@ export async function createStandaloneVbaDevArchive({
     throw new Error('Standalone vba-dev --help must expose the command usage without stderr.');
   }
 
+  const buildHelpProbe = await runCommand(
+    extractedExecutablePath,
+    ['build', '--help'],
+    extractionDirectory
+  );
+  const normalizedBuildHelp = normalizeNewlines(buildHelpProbe.stdout);
+  const hasBuildSurface = normalizedBuildHelp
+    .split('\n')
+    .some((line) => line.trim() === 'vba-dev build [options]')
+    && normalizedBuildHelp.includes('--source-snapshot <dir>')
+    && normalizedBuildHelp.includes('--output <workbook>')
+    && /(^|[\s,])-o([\s,]|$)/m.test(normalizedBuildHelp);
+  if (!hasBuildSurface || buildHelpProbe.stderr !== '') {
+    throw new Error(
+      'Standalone vba-dev build --help must expose snapshot input and the canonical output alias without stderr.'
+    );
+  }
+
+  const publishHelpProbe = await runCommand(
+    extractedExecutablePath,
+    ['publish', '--help'],
+    extractionDirectory
+  );
+  const normalizedPublishHelp = normalizeNewlines(publishHelpProbe.stdout);
+  const hasPublishInvocation = normalizedPublishHelp
+    .split('\n')
+    .some((line) => line.trim() === 'vba-dev publish [options]');
+  const hasPublishSelection = normalizedPublishHelp.includes('--project <path>')
+    && normalizedPublishHelp.includes('--document <name>');
+  const hasPublishOverride = /(^|\s)--(?:output|format)(?:\s|$)/m.test(normalizedPublishHelp);
+  if (
+    !hasPublishInvocation
+    || !hasPublishSelection
+    || hasPublishOverride
+    || publishHelpProbe.stderr !== ''
+  ) {
+    throw new Error(
+      'Standalone vba-dev publish --help must expose only project selection and no output or format override.'
+    );
+  }
+
   const capabilitiesProbe = await runCommand(
     extractedExecutablePath,
     ['capabilities', '--format', 'json'],

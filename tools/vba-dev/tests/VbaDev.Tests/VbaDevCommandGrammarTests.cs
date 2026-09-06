@@ -103,6 +103,7 @@ public sealed class VbaDevCommandGrammarTests
             ("reference remove", "--format", "-f"),
             ("host-event list", "--format", "-f"),
             ("build", "--document", "-d"),
+            ("build", "--output", "-o"),
             ("test", "--document", "-d"),
             ("test", "--format", "-f"),
             ("publish", "--document", "-d"),
@@ -119,6 +120,20 @@ public sealed class VbaDevCommandGrammarTests
 
             Assert.Equal([expectation.Alias], option.Aliases);
         }
+    }
+
+    [Fact]
+    public void BuildTestAndPublishKeepTheirRootDisplayOrder()
+    {
+        var commandNames = CommandLineTestFactory.Create()
+            .CommandGraph
+            .RootCommand
+            .Subcommands
+            .Select(command => command.Name)
+            .ToArray();
+
+        Assert.True(Array.IndexOf(commandNames, "build") < Array.IndexOf(commandNames, "test"));
+        Assert.True(Array.IndexOf(commandNames, "test") < Array.IndexOf(commandNames, "publish"));
     }
 
     private static Command ResolveCommand(RootCommand rootCommand, string commandPath)

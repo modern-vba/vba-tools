@@ -1478,7 +1478,14 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
                 admittedSources = sourceSet.SourceFiles.ToArray();
             }, automation);
 
-            var result = await command.RunSnapshotAsync(fixture.Context, snapshotPath, outputPath, cancellation.Token);
+            var request = new SourceSnapshotBuildCommandRequest(
+                snapshotPath,
+                outputPath,
+                temp.Path);
+            var result = await command.RunSnapshotAsync(
+                fixture.Context,
+                request,
+                cancellation.Token);
 
             Assert.True(result.ExitCode == 0, result.StandardError);
             Assert.NotNull(admittedSources);
@@ -1504,7 +1511,10 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
             foreach (var invalidBytes in failures)
             {
                 File.WriteAllBytes(badSourcePath, invalidBytes);
-                var failed = await command.RunSnapshotAsync(fixture.Context, snapshotPath, outputPath, cancellation.Token);
+                var failed = await command.RunSnapshotAsync(
+                    fixture.Context,
+                    request,
+                    cancellation.Token);
                 Assert.Equal(1, failed.ExitCode);
                 Assert.Equal(1, automation.StartedRuns);
                 Assert.Equal(1, automation.CompletedRuns);

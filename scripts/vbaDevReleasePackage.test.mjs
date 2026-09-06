@@ -96,6 +96,36 @@ test('standalone vba-dev archive is versioned complete and probed after clean ex
         stderr: ''
       };
     }
+    if (args[0] === 'build') {
+      return {
+        stdout: [
+          'Usage:',
+          '  vba-dev build [options]',
+          '',
+          'Options:',
+          '  --project <path>',
+          '  --document <name>, -d <name>',
+          '  --source-snapshot <dir>',
+          '  --output <workbook>, -o <workbook>',
+          ''
+        ].join('\n'),
+        stderr: ''
+      };
+    }
+    if (args[0] === 'publish') {
+      return {
+        stdout: [
+          'Usage:',
+          '  vba-dev publish [options]',
+          '',
+          'Options:',
+          '  --project <path>',
+          '  --document <name>, -d <name>',
+          ''
+        ].join('\n'),
+        stderr: ''
+      };
+    }
 
     return {
       stdout: JSON.stringify({
@@ -131,6 +161,8 @@ test('standalone vba-dev archive is versioned complete and probed after clean ex
   assert.deepEqual(probes.map(({ args }) => args), [
     ['--version'],
     ['--help'],
+    ['build', '--help'],
+    ['publish', '--help'],
     ['capabilities', '--format', 'json']
   ]);
   assert.ok(probes.every(({ file }) => file.startsWith(result.extractionDirectory)));

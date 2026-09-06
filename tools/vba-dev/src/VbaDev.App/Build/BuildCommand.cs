@@ -59,16 +59,22 @@ public sealed class BuildCommand
     /// </summary>
     public Task<CommandResult> RunSnapshotAsync(
         ResolvedProjectContext context,
-        string sourceSnapshotPath,
-        string outputPath,
+        SourceSnapshotBuildCommandRequest request,
         CancellationToken cancellationToken)
-        => outputCommand.RunSnapshotBuildAsync(
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return outputCommand.RunSnapshotBuildAsync(
             context,
-            sourceSnapshotPath,
-            outputPath,
+            Path.GetFullPath(
+                request.SourceSnapshotDirectory,
+                request.WorkingDirectory),
+            Path.GetFullPath(
+                request.OutputWorkbook,
+                request.WorkingDirectory),
             snapshotCaptureFactory,
             snapshotOutputSafetyValidator,
             cancellationToken);
+    }
 
     internal Task<TestWorkbookBuildCommandResult> RunTestBuildIntentAsync(
         ResolvedProjectContext context,

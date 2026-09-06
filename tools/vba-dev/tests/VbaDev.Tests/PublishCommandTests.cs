@@ -34,6 +34,11 @@ public sealed class PublishCommandTests
 
         Assert.Equal(0, result.ExitCode);
         var expectedPublish = Path.Combine(root, "publish", "SecondBook.xlsm");
+        Assert.Equal(
+            $"Published {expectedPublish}{Environment.NewLine}" +
+            $"Imported 1 source files.{Environment.NewLine}",
+            result.StandardOutput);
+        Assert.Empty(result.StandardError);
         Assert.True(File.Exists(expectedPublish));
         Assert.Equal("template:SecondBook", File.ReadAllText(expectedPublish, Encoding.UTF8));
         Assert.Single(automation.OpenedWorkbooks);
@@ -77,6 +82,58 @@ public sealed class PublishCommandTests
             "[WARN] vbeIdentifierRecased: Imported component 'Local' identifier casing (source -> VBE): 'FileName' -> 'Filename'."
             + Environment.NewLine,
             warnedResult.StandardError);
+    }
+
+    [Theory]
+    [InlineData("--project")]
+    [InlineData("--document")]
+    public void PublishRejectsEmptySelectionPathsBeforeProjectOrFilesystemAccess(
+        string optionName)
+    {
+        using var temp = TempDirectory.Create();
+        var automation = new FakeWorkbookGenerationAutomation();
+        var application = CommandLineTestFactory.Create(
+            temp.Path,
+            workbookGenerationAutomation: automation,
+            projectManifestStore: new ThrowingProjectManifestStore());
+        var initialEntries = Directory.GetFileSystemEntries(temp.Path);
+
+        var result = application.Run(["publish", optionName, ""]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(
+            $"Error: Option '{optionName}' requires a non-empty value.{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev publish --help' for usage.{Environment.NewLine}",
+            result.StandardError);
+        Assert.Empty(automation.OpenedWorkbooks);
+        Assert.Equal(initialEntries, Directory.GetFileSystemEntries(temp.Path));
+    }
+
+    [Theory]
+    [InlineData("--project")]
+    [InlineData("--document")]
+    public void PublishRejectsMissingSelectionValuesBeforeProjectOrFilesystemAccess(
+        string optionName)
+    {
+        using var temp = TempDirectory.Create();
+        var automation = new FakeWorkbookGenerationAutomation();
+        var application = CommandLineTestFactory.Create(
+            temp.Path,
+            workbookGenerationAutomation: automation,
+            projectManifestStore: new ThrowingProjectManifestStore());
+        var initialEntries = Directory.GetFileSystemEntries(temp.Path);
+
+        var result = application.Run(["publish", optionName]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(
+            $"Error: Option '{optionName}' requires a value.{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev publish --help' for usage.{Environment.NewLine}",
+            result.StandardError);
+        Assert.Empty(automation.OpenedWorkbooks);
+        Assert.Equal(initialEntries, Directory.GetFileSystemEntries(temp.Path));
     }
 
     [Fact]
@@ -459,5 +516,16 @@ public sealed class PublishCommandTests
             Directory.CreateDirectory(Path.GetDirectoryName(sourcePath)!);
             File.WriteAllText(sourcePath, source.Content, Encoding.UTF8);
         }
+    }
+
+    private sealed class ThrowingProjectManifestStore : IProjectManifestStore
+    {
+        public ProjectManifest Load(string manifestPath)
+            => throw new InvalidOperationException(
+                "Grammar failures must not load project state.");
+
+        public void Save(string projectRoot, ProjectManifest manifest)
+            => throw new InvalidOperationException(
+                "Grammar failures must not save project state.");
     }
 }
