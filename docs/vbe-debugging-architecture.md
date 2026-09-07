@@ -640,18 +640,22 @@ source-snapshot payload moves to schema 2:
    identities independently.
 2. On a DAP `restart` request containing that marker, the adapter keeps serving
    requests, advances a typed session-local `DebugRestartGeneration`, parks the
-   restart, and retains the old session.
+   restart, and retains the old session. Additional Restart requests during
+   preparation, build, or swap receive `DebugLaunchBusy`; they do not change
+   counters, cancel or recapture preparation, or enter a queue.
 3. The extension resolves the marker only against that original binding and
    captures a fresh immutable source snapshot for the bound document without
    saving project files. The active editor cannot select another document or
    target.
 4. The extension sends `vba/restartPrepared` with the original
    `restartRequestSequence`, matching `preparationId`, adapter-issued
-   `restartGeneration`, the fresh snapshot, `success`, and an optional failure
+   `generation`, the fresh snapshot, `success`, and an optional failure
    message. The numeric generation on the wire is parsed back into
    `DebugRestartGeneration`, which launch preparation explicitly maps to a
    `DebugGenerationId`; neither identity is used directly as cleanup authority.
-5. The adapter validates all bound identities, snapshot structure and encoding,
+5. The adapter first correlates session ID, preparation ID, request sequence,
+   and generation. Only a complete exact match consumes the pending request.
+   It then validates all bound identities, snapshot structure and encoding,
    and the continued existence of the same target module and procedure in the
    fresh source, then fixes that evidence for one-shot launch preparation.
 6. Preparation supplies the fresh inventory to snapshot-aware `vba-dev build`.
@@ -666,9 +670,19 @@ source-snapshot payload moves to schema 2:
    terminated immediately before a replacement visible Excel process opens the
    built workbook, transfers breakpoints, and runs the target.
 
-A stale request sequence or restart generation cannot consume the pending
-preparation. A missing or malformed marker, wrong bound identity, wrong
-document or target, target removal, downstream snapshot revalidation failure,
+A stale or future request sequence or generation, wrong session or preparation
+ID, malformed correlation, or duplicate notification cannot consume pending
+preparation or advance its counters. Missing, mistyped, out-of-range, and
+duplicate correlation keys establish no ownership. Such notifications receive
+a successful receipt acknowledgement without payload validation; the adapter
+neither follows future values nor adds a notification timeout. With no awaiting
+request, notifications are acknowledged without repeating a build or response.
+JSON syntax and DAP framing failures remain transport failures.
+
+Receipt acknowledgement is distinct from the original Restart response. An
+exactly correlated notification consumes its request once; a reported failure,
+invalid payload, missing or malformed launch marker, wrong launch binding,
+wrong document or target, target removal, downstream snapshot revalidation failure,
 build failure, or restart-only cancellation before the swap fails that restart,
 cleans any new generation, and retains the old session. If the old session exits
 during the build, its completion cleans the new generation and starts no
@@ -676,6 +690,12 @@ replacement. The unreleased protocol has no marker-less compatibility path
 because it could not capture a fresh editor snapshot. If replacement startup
 fails after the swap, the old session remains terminated and the new generation
 is cleaned; neither process nor generation is revived or reused.
+
+The adapter's `DebugRestartPreparation` module owns pending consumption,
+monotonic counters, the binding captured when Restart begins, and swap authority.
+Launch preparation and commit reuse its binding policy while retaining their
+separate pre-build and immediately-before-swap checks. The runner owns DAP
+transport and the launch service owns build and prepared-plan execution.
 
 Disconnect, terminate, session release, or notification-transport failure
 cancels pending preparation and ends the owned session. If the old Excel process
