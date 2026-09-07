@@ -3,9 +3,6 @@ using System.CommandLine.Completions;
 using System.CommandLine.Help;
 using System.CommandLine.Invocation;
 using System.Reflection;
-using System.Runtime.InteropServices;
-using System.Text.Json;
-using System.Text.Json.Serialization;
 using VbaDev.App.Cli;
 using VbaDev.App.Projects;
 using VbaDev.Composition;
@@ -42,148 +39,80 @@ internal static class VbaDevCommandGrammar
         rootCommand.Add(cancellationTransportOption);
         var capabilityCommands = new List<VbaDevCommandCapabilityRegistration>();
         IReadOnlyList<VbaDevCommandCapabilityRegistration>? completedCapabilities = null;
+        var commandFamilyOwnership = new VbaDevCommandFamilyOwnership();
+        var contractCommandFamily = VbaDevContractCommandFamily.Create(
+            generatingExecutablePath,
+            ReleaseVersion,
+            () => completedCapabilities
+                ?? throw new InvalidOperationException("The vba-dev command graph is incomplete."),
+            commandFamilyOwnership);
 
-        var newCommand = AddCommand(rootCommand, "new", "Create a VBA project.");
-        var newExcelCommand = AddCapabilityCommand(
-            newCommand,
-            "excel",
-            "Create an Excel workbook-backed VBA project.",
-            "new excel",
-            "1.0",
-            capabilityCommands);
-        var newNameOption = CreateStringOption(
-            "--name",
-            "Project and document base name.",
-            "name",
-            aliases: "-n");
-        var newOutputOption = CreateStringOption(
-            "--output",
-            "Project root output directory.",
-            "dir",
-            aliases: "-o");
-        var newFormatOption = CreateStringOption(
-            "--format",
-            "Project creation receipt format.",
-            "text|json",
-            ["text", "json"],
-            "-f");
-        newExcelCommand.Add(newNameOption);
-        newExcelCommand.Add(newOutputOption);
-        newExcelCommand.Add(newFormatOption);
-        newExcelCommand.SetAction(async (parseResult, cancellationToken) => WriteCommandResult(
-            parseResult,
-            await composition.NewProjectCommand.RunAsync(
-                    new NewProjectCommandRequest(
-                        parseResult.GetValue(newNameOption),
-                        null,
-                        parseResult.GetValue(newOutputOption),
-                        composition.WorkingDirectory,
-                        ProjectNameSpecified: parseResult.GetResult(newNameOption) is not null,
-                        OutputDirectorySpecified: parseResult.GetResult(newOutputOption) is not null,
-                        Format: parseResult.GetValue(newFormatOption) ?? "text"),
-                    cancellationToken)
-                .ConfigureAwait(false)));
+        _ = VbaDevProjectCreationCommandFamily.Register(
+            rootCommand,
+            composition,
+            grammarFailureRules,
+            capabilityCommands,
+            commandFamilyOwnership);
 
         _ = VbaDevCommonModuleCommandFamily.Register(
             rootCommand,
             composition,
             grammarFailureRules,
-            capabilityCommands);
+            capabilityCommands,
+            commandFamilyOwnership);
 
-        var completionsCommand = AddCommand(rootCommand, "completions", "Generate shell completion setup.");
-        var completionsScriptCommand = AddCommand(
-            completionsCommand,
-            "script",
-            "Write a shell completion registration script.");
-        var completionsPowerShellCommand = AddCommand(
-            completionsScriptCommand,
-            "pwsh",
-            "Write a PowerShell completion registration script.");
-        completionsPowerShellCommand.SetAction(parseResult =>
-        {
-            parseResult.InvocationConfiguration.Output.Write(
-                PowerShellCompletionScriptRenderer.Render(generatingExecutablePath));
-            return 0;
-        });
+        contractCommandFamily.RegisterCompletions(rootCommand);
 
         _ = VbaDevReferenceCommandFamily.Register(
             rootCommand,
             composition,
             grammarFailureRules,
-            capabilityCommands);
+            capabilityCommands,
+            commandFamilyOwnership);
 
         _ = VbaDevHostEventCommandFamily.Register(
             rootCommand,
             composition,
             grammarFailureRules,
-            capabilityCommands);
+            capabilityCommands,
+            commandFamilyOwnership);
 
         var buildPublishCommandFamily = VbaDevBuildPublishCommandFamily.Create(
             composition,
             grammarFailureRules,
-            capabilityCommands);
+            capabilityCommands,
+            commandFamilyOwnership);
         buildPublishCommandFamily.RegisterBuild(rootCommand);
         _ = VbaDevTestCommandFamily.Register(
             rootCommand,
             composition,
             grammarFailureRules,
-            capabilityCommands);
+            capabilityCommands,
+            commandFamilyOwnership);
         buildPublishCommandFamily.RegisterPublish(rootCommand);
         _ = VbaDevImportExportCommandFamily.Register(
             rootCommand,
             composition,
             grammarFailureRules,
-            capabilityCommands);
+            capabilityCommands,
+            commandFamilyOwnership);
         _ = VbaDevInspectionCommandFamily.Register(
             rootCommand,
             composition,
             grammarFailureRules,
-            capabilityCommands);
+            capabilityCommands,
+            commandFamilyOwnership);
 
-        var capabilitiesCommand = new Command(
-            "capabilities",
-            "Print the command contract supported by this executable.");
-        var capabilitiesFormatOption = CreateStringOption(
-            "--format",
-            "Capabilities output format.",
-            "json",
-            ["json"],
-            "-f");
-        capabilitiesCommand.Add(capabilitiesFormatOption);
-        capabilitiesCommand.SetAction(parseResult =>
-        {
-            var capabilities = new ToolCapabilities(
-                ReleaseVersion,
-                "1.0",
-                new Dictionary<string, string>(StringComparer.Ordinal)
-                {
-                    ["build.sourceSnapshot"] = "2.0",
-                    ["test.sourceSnapshot"] = "2.0",
-                    ["invocation.stdinCancellation"] = "1.0",
-                    ["sourceSnapshot.activeWindowsCodePage"] = "1.0",
-                    ["projectCreation.pathValidation"] = "1.0",
-                    ["hostEvent.list"] = "1.0"
-                },
-                GetActiveWindowsCodePage(),
-                (completedCapabilities
-                 ?? throw new InvalidOperationException("The vba-dev command graph is incomplete."))
-                    .OrderBy(registration => registration.CommandPath, StringComparer.OrdinalIgnoreCase)
-                    .ToDictionary(
-                        registration => registration.CommandPath,
-                        registration => new CommandCapability(registration.OutputSchemaVersion),
-                        StringComparer.OrdinalIgnoreCase));
-            parseResult.InvocationConfiguration.Output.Write(
-                JsonSerializer.Serialize(capabilities, CapabilitiesJsonOptions) + Environment.NewLine);
-            return 0;
-        });
-        rootCommand.Add(capabilitiesCommand);
+        contractCommandFamily.RegisterCapabilities(rootCommand);
 
         completedCapabilities = ValidateCapabilityRegistrations(rootCommand, capabilityCommands);
+        var completedFamilyOwnership = commandFamilyOwnership.Complete(rootCommand);
         return new VbaDevCommandGraph(
             rootCommand,
             cancellationTransportOption,
             completedCapabilities,
-            new VbaDevGrammarFailureRouter(rootCommand, grammarFailureRules));
+            new VbaDevGrammarFailureRouter(rootCommand, grammarFailureRules),
+            completedFamilyOwnership);
     }
 
     private static string ReleaseVersion
@@ -452,28 +381,6 @@ internal static class VbaDevCommandGrammar
         Option<string> Project,
         Option<string> Document);
 
-    private sealed record ToolCapabilities(
-        string ToolVersion,
-        string ContractVersion,
-        IReadOnlyDictionary<string, string> FeatureVersions,
-        int? ActiveWindowsCodePage,
-        IReadOnlyDictionary<string, CommandCapability> Commands);
-
-    private sealed record CommandCapability(string OutputSchemaVersion);
-
-    private static readonly JsonSerializerOptions CapabilitiesJsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
-    };
-
-    private static int? GetActiveWindowsCodePage()
-        => OperatingSystem.IsWindows()
-            ? checked((int)GetACP())
-            : null;
-
-    [DllImport("kernel32.dll")]
-    private static extern uint GetACP();
 }
 
 internal sealed class VbaDevCommandGraph
@@ -482,7 +389,8 @@ internal sealed class VbaDevCommandGraph
         RootCommand rootCommand,
         Option<string> cancellationTransportOption,
         IReadOnlyList<VbaDevCommandCapabilityRegistration> capabilityRegistrations,
-        VbaDevGrammarFailureRouter grammarFailureRouter)
+        VbaDevGrammarFailureRouter grammarFailureRouter,
+        IReadOnlyList<VbaDevCommandFamilyOwnershipRegistration>? familyOwnershipRegistrations = null)
     {
         if (!rootCommand.Options.Any(option => ReferenceEquals(option, cancellationTransportOption)))
         {
@@ -500,6 +408,7 @@ internal sealed class VbaDevCommandGraph
         CancellationTransportOption = cancellationTransportOption;
         CapabilityRegistrations = capabilityRegistrations;
         GrammarFailureRouter = grammarFailureRouter;
+        FamilyOwnershipRegistrations = familyOwnershipRegistrations ?? [];
     }
 
     internal RootCommand RootCommand { get; }
@@ -509,6 +418,9 @@ internal sealed class VbaDevCommandGraph
     internal IReadOnlyList<VbaDevCommandCapabilityRegistration> CapabilityRegistrations { get; }
 
     internal VbaDevGrammarFailureRouter GrammarFailureRouter { get; }
+
+    internal IReadOnlyList<VbaDevCommandFamilyOwnershipRegistration>
+        FamilyOwnershipRegistrations { get; }
 }
 
 internal interface IVbaDevExplicitHelpAction

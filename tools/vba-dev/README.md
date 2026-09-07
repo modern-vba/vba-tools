@@ -92,6 +92,22 @@ explicit environment scope. These CLI families delegate catalog and diagnostic
 work to VbaDev's existing Application services and do not depend on another
 product.
 
+Project creation is declared by the sealed internal
+`VbaDevProjectCreationCommandFamily`, which owns the actual `new excel` symbols,
+its closed intent, action, and existing capability registration. Name and output
+each remain either omitted or specified, so an explicit empty value is not
+reinterpreted as omission; only omitted format selects text, while explicit
+format is the closed text-or-JSON choice. The sealed
+`VbaDevContractCommandFamily` owns `capabilities` and
+`completions script pwsh`, registers them in stages to retain root order, and
+preserves Capabilities' JSON-only format. A narrow family-ownership ledger
+stores only sealed family types and actual command references and proves all
+seventeen leaves have exactly one owner. It does not duplicate command
+metadata; the fourteen previously advertised leaves and the three unadvertised
+leaves remain unchanged. `VbaDevCommandGrammar` composes these families plus help,
+version, and cancellation; it declares no leaf and creates no dependency on
+another product.
+
 Every non-debug Excel or VBIDE automation path delegates process launch,
 private-desktop ownership, STA dispatch, deadlines, cleanup, and release proof
 to the same sealed `AutomationExcelProcessRuntime`. It creates each owned Excel
@@ -156,7 +172,7 @@ Options:
   --format <text|json>, -f <text|json> Creation receipt format.
 ```
 
-`--output` selects the project root directory. `--name` selects the generated project and document base name; when omitted, it is derived from the output directory. `--format json` emits the version `1.0` success receipt; failures never emit a partial success receipt.
+`--output` selects the project root directory. `--name` selects the generated project and document base name; when omitted, it is derived from the output directory. An explicitly supplied empty name or output remains supplied and is rejected by the existing project-creation validation rather than activating an omission default. Only omitted format selects text; an explicit format must be `text` or `json`. `--format json` emits the version `1.0` success receipt; failures never emit a partial success receipt.
 
 The initial manifest records the generated workbook's actual non-standard baseline references plus references required by the selected CommonModules package. It does not add Scripting Runtime or VBScript Regular Expressions unless a selected package entry requires them.
 

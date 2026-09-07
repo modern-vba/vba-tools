@@ -33,7 +33,8 @@ public sealed class VbaDevInspectionCommandFamilyTests
             root,
             ToolingCompositionRoot.CreateApplicationComposition(temp.Path),
             rules,
-            capabilities);
+            capabilities,
+            new VbaDevCommandFamilyOwnership());
         var snapshot = rules.CreateSnapshot([root, family.CheckCommand, family.DoctorCommand]);
 
         Assert.Equal(["check", "doctor"], root.Subcommands.Select(command => command.Name));
@@ -75,7 +76,8 @@ public sealed class VbaDevInspectionCommandFamilyTests
             root,
             ToolingCompositionRoot.CreateApplicationComposition(temp.Path),
             rules,
-            new List<VbaDevCommandCapabilityRegistration>());
+            new List<VbaDevCommandCapabilityRegistration>(),
+            new VbaDevCommandFamilyOwnership());
         var router = new VbaDevGrammarFailureRouter(root, rules);
 
         var check = family.CheckIntentBinding.GetRequiredIntent(
@@ -131,7 +133,8 @@ public sealed class VbaDevInspectionCommandFamilyTests
             root,
             ToolingCompositionRoot.CreateApplicationComposition(temp.Path),
             rules,
-            capabilities);
+            capabilities,
+            new VbaDevCommandFamilyOwnership());
         var router = new VbaDevGrammarFailureRouter(root, rules);
 
         Assert.Same(
@@ -203,16 +206,19 @@ public sealed class VbaDevInspectionCommandFamilyTests
         root.Add(cancellationTransportOption);
         var rules = new VbaDevGrammarFailureRules();
         var capabilities = new List<VbaDevCommandCapabilityRegistration>();
+        var commandFamilyOwnership = new VbaDevCommandFamilyOwnership();
         var inspection = VbaDevInspectionCommandFamily.Register(
             root,
             ToolingCompositionRoot.CreateApplicationComposition(temp.Path),
             rules,
-            capabilities);
+            capabilities,
+            commandFamilyOwnership);
         var hostEvent = VbaDevHostEventCommandFamily.Register(
             root,
             ToolingCompositionRoot.CreateApplicationComposition(temp.Path),
             rules,
-            capabilities);
+            capabilities,
+            commandFamilyOwnership);
         var actionCount = 0;
         foreach (var command in new[]
                  {

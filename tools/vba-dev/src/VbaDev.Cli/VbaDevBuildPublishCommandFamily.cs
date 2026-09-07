@@ -14,15 +14,18 @@ internal sealed class VbaDevBuildPublishCommandFamily
     private readonly ToolingApplicationComposition composition;
     private readonly VbaDevGrammarFailureRules grammarFailureRules;
     private readonly ICollection<VbaDevCommandCapabilityRegistration> capabilityRegistrations;
+    private readonly VbaDevCommandFamilyOwnership commandFamilyOwnership;
 
     private VbaDevBuildPublishCommandFamily(
         ToolingApplicationComposition composition,
         VbaDevGrammarFailureRules grammarFailureRules,
-        ICollection<VbaDevCommandCapabilityRegistration> capabilityRegistrations)
+        ICollection<VbaDevCommandCapabilityRegistration> capabilityRegistrations,
+        VbaDevCommandFamilyOwnership commandFamilyOwnership)
     {
         this.composition = composition;
         this.grammarFailureRules = grammarFailureRules;
         this.capabilityRegistrations = capabilityRegistrations;
+        this.commandFamilyOwnership = commandFamilyOwnership;
     }
 
     internal Command BuildCommand { get; private set; } = null!;
@@ -50,15 +53,18 @@ internal sealed class VbaDevBuildPublishCommandFamily
     internal static VbaDevBuildPublishCommandFamily Create(
         ToolingApplicationComposition composition,
         VbaDevGrammarFailureRules grammarFailureRules,
-        ICollection<VbaDevCommandCapabilityRegistration> capabilityRegistrations)
+        ICollection<VbaDevCommandCapabilityRegistration> capabilityRegistrations,
+        VbaDevCommandFamilyOwnership commandFamilyOwnership)
     {
         ArgumentNullException.ThrowIfNull(composition);
         ArgumentNullException.ThrowIfNull(grammarFailureRules);
         ArgumentNullException.ThrowIfNull(capabilityRegistrations);
+        ArgumentNullException.ThrowIfNull(commandFamilyOwnership);
         return new VbaDevBuildPublishCommandFamily(
             composition,
             grammarFailureRules,
-            capabilityRegistrations);
+            capabilityRegistrations,
+            commandFamilyOwnership);
     }
 
     internal void RegisterBuild(RootCommand rootCommand)
@@ -100,6 +106,7 @@ internal sealed class VbaDevBuildPublishCommandFamily
             VbaDevCommandGrammar.WriteCommandResult(
                 parseResult,
                 await RunBuildAsync(parseResult, cancellationToken).ConfigureAwait(false)));
+        commandFamilyOwnership.Register(this, BuildCommand);
     }
 
     internal void RegisterPublish(RootCommand rootCommand)
@@ -124,6 +131,7 @@ internal sealed class VbaDevBuildPublishCommandFamily
             VbaDevCommandGrammar.WriteCommandResult(
                 parseResult,
                 await RunPublishAsync(parseResult, cancellationToken).ConfigureAwait(false)));
+        commandFamilyOwnership.Register(this, PublishCommand);
     }
 
     private VbaDevGrammarIntentBindResult<VbaDevBuildCommandIntent> BindBuildIntent(

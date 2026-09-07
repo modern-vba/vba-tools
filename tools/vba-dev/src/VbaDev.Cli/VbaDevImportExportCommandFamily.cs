@@ -18,7 +18,8 @@ internal sealed class VbaDevImportExportCommandFamily
         RootCommand rootCommand,
         ToolingApplicationComposition composition,
         VbaDevGrammarFailureRules grammarFailureRules,
-        ICollection<VbaDevCommandCapabilityRegistration> capabilityRegistrations)
+        ICollection<VbaDevCommandCapabilityRegistration> capabilityRegistrations,
+        VbaDevCommandFamilyOwnership commandFamilyOwnership)
     {
         this.composition = composition;
 
@@ -90,6 +91,8 @@ internal sealed class VbaDevImportExportCommandFamily
             VbaDevCommandGrammar.WriteCommandResult(
                 parseResult,
                 await RunImportAsync(parseResult, cancellationToken).ConfigureAwait(false)));
+        commandFamilyOwnership.Register(this, ExportCommand);
+        commandFamilyOwnership.Register(this, ImportCommand);
     }
 
     internal Command ExportCommand { get; }
@@ -116,17 +119,20 @@ internal sealed class VbaDevImportExportCommandFamily
         RootCommand rootCommand,
         ToolingApplicationComposition composition,
         VbaDevGrammarFailureRules grammarFailureRules,
-        ICollection<VbaDevCommandCapabilityRegistration> capabilityRegistrations)
+        ICollection<VbaDevCommandCapabilityRegistration> capabilityRegistrations,
+        VbaDevCommandFamilyOwnership commandFamilyOwnership)
     {
         ArgumentNullException.ThrowIfNull(rootCommand);
         ArgumentNullException.ThrowIfNull(composition);
         ArgumentNullException.ThrowIfNull(grammarFailureRules);
         ArgumentNullException.ThrowIfNull(capabilityRegistrations);
+        ArgumentNullException.ThrowIfNull(commandFamilyOwnership);
         return new VbaDevImportExportCommandFamily(
             rootCommand,
             composition,
             grammarFailureRules,
-            capabilityRegistrations);
+            capabilityRegistrations,
+            commandFamilyOwnership);
     }
 
     private VbaDevGrammarIntentBindResult<VbaDevImportCommandIntent> BindImportIntent(

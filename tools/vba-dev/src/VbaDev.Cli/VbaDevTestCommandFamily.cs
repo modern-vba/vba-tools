@@ -18,7 +18,8 @@ internal sealed class VbaDevTestCommandFamily
         RootCommand rootCommand,
         ToolingApplicationComposition composition,
         VbaDevGrammarFailureRules grammarFailureRules,
-        ICollection<VbaDevCommandCapabilityRegistration> capabilityRegistrations)
+        ICollection<VbaDevCommandCapabilityRegistration> capabilityRegistrations,
+        VbaDevCommandFamilyOwnership commandFamilyOwnership)
     {
         this.composition = composition;
 
@@ -78,6 +79,7 @@ internal sealed class VbaDevTestCommandFamily
             VbaDevCommandGrammar.WriteCommandResult(
                 parseResult,
                 await RunAsync(parseResult, cancellationToken).ConfigureAwait(false)));
+        commandFamilyOwnership.Register(this, TestCommand);
     }
 
     internal Command TestCommand { get; }
@@ -104,17 +106,20 @@ internal sealed class VbaDevTestCommandFamily
         RootCommand rootCommand,
         ToolingApplicationComposition composition,
         VbaDevGrammarFailureRules grammarFailureRules,
-        ICollection<VbaDevCommandCapabilityRegistration> capabilityRegistrations)
+        ICollection<VbaDevCommandCapabilityRegistration> capabilityRegistrations,
+        VbaDevCommandFamilyOwnership commandFamilyOwnership)
     {
         ArgumentNullException.ThrowIfNull(rootCommand);
         ArgumentNullException.ThrowIfNull(composition);
         ArgumentNullException.ThrowIfNull(grammarFailureRules);
         ArgumentNullException.ThrowIfNull(capabilityRegistrations);
+        ArgumentNullException.ThrowIfNull(commandFamilyOwnership);
         return new VbaDevTestCommandFamily(
             rootCommand,
             composition,
             grammarFailureRules,
-            capabilityRegistrations);
+            capabilityRegistrations,
+            commandFamilyOwnership);
     }
 
     private VbaDevGrammarIntentBindResult<VbaDevTestCommandIntent> BindIntent(

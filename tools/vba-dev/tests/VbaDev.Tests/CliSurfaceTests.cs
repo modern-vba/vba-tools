@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Reflection;
 using System.Text.Json;
 using VbaDev.App.Diagnostics;
@@ -502,6 +503,7 @@ public sealed class CliSurfaceTests
                 "--format <text|json>",
                 "-f"
             ],
+            ["completions script pwsh"] = [],
             ["common-module add"] = ["--project <path>", "--document <name>", "-d", "--force", "--format <text|json>", "-f"],
             ["common-module list"] = ["--project <path>", "--document <name>", "--format <text|json>", "-f"],
             ["common-module update"] = ["--project <path>", "--format <text|json>", "-f"],
@@ -629,15 +631,60 @@ public sealed class CliSurfaceTests
     }
 
     [Fact]
-    public void NewExcelHelpExposesNameAndOutputOptions()
+    public void NewExcelHelpMatchesTheIndependentGoldenContract()
     {
-        var result = application.Run(["new", "excel", "--help"]);
+        var result = WithInvariantCulture(() =>
+            application.Run(["new", "excel", "--help"]));
+        var executableName = Path.GetFileNameWithoutExtension(
+            Environment.ProcessPath
+            ?? throw new InvalidOperationException("Test process path is unavailable."));
+        var normalizedOutput = result.StandardOutput.Replace(
+            $"  {executableName} new excel [options]",
+            "  <executable> new excel [options]",
+            StringComparison.Ordinal);
 
         Assert.Equal(0, result.ExitCode);
-        Assert.Contains("--name", result.StandardOutput, StringComparison.Ordinal);
-        Assert.Contains("-n", result.StandardOutput, StringComparison.Ordinal);
-        Assert.Contains("--output", result.StandardOutput, StringComparison.Ordinal);
-        Assert.Contains("-o", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Equal(
+            "Description:" + Environment.NewLine +
+            "  Create an Excel workbook-backed VBA project." + Environment.NewLine +
+            Environment.NewLine +
+            "Usage:" + Environment.NewLine +
+            "  <executable> new excel [options]" + Environment.NewLine +
+            Environment.NewLine +
+            "Options:" + Environment.NewLine +
+            "  -n, --name <name>         Project and document base name." + Environment.NewLine +
+            "  -o, --output <dir>        Project root output directory." + Environment.NewLine +
+            "  -f, --format <text|json>  Project creation receipt format." + Environment.NewLine +
+            "  -?, -h, --help            Show help and usage information" + Environment.NewLine +
+            Environment.NewLine,
+            normalizedOutput);
+        Assert.Empty(result.StandardError);
+    }
+
+    [Fact]
+    public void NewExcelCompletionMatchesTheIndependentGoldenContract()
+    {
+        var commandResult = application.Run(["[suggest:4]", "new "]);
+        var optionResult = application.Run(["[suggest:12]", "new excel --"]);
+
+        Assert.Equal(0, commandResult.ExitCode);
+        Assert.Equal(
+            "--help" + Environment.NewLine +
+            "-?" + Environment.NewLine +
+            "-h" + Environment.NewLine +
+            "/?" + Environment.NewLine +
+            "/h" + Environment.NewLine +
+            "excel" + Environment.NewLine,
+            commandResult.StandardOutput);
+        Assert.Empty(commandResult.StandardError);
+        Assert.Equal(0, optionResult.ExitCode);
+        Assert.Equal(
+            "--format" + Environment.NewLine +
+            "--help" + Environment.NewLine +
+            "--name" + Environment.NewLine +
+            "--output" + Environment.NewLine,
+            optionResult.StandardOutput);
+        Assert.Empty(optionResult.StandardError);
     }
 
     [Fact]
@@ -1329,6 +1376,23 @@ public sealed class CliSurfaceTests
             var result = application.Run(args);
 
             Assert.NotEqual(0, result.ExitCode);
+        }
+    }
+
+    private static T WithInvariantCulture<T>(Func<T> action)
+    {
+        var originalCulture = CultureInfo.CurrentCulture;
+        var originalUiCulture = CultureInfo.CurrentUICulture;
+        try
+        {
+            CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+            CultureInfo.CurrentUICulture = CultureInfo.InvariantCulture;
+            return action();
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = originalCulture;
+            CultureInfo.CurrentUICulture = originalUiCulture;
         }
     }
 

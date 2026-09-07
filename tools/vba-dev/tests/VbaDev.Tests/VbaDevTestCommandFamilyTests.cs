@@ -31,7 +31,8 @@ public sealed class VbaDevTestCommandFamilyTests
             root,
             ToolingCompositionRoot.CreateApplicationComposition(temp.Path),
             rules,
-            capabilities);
+            capabilities,
+            new VbaDevCommandFamilyOwnership());
         var ruleSnapshot = rules.CreateSnapshot(root.Subcommands.Prepend(root));
         var router = new VbaDevGrammarFailureRouter(root, rules);
 

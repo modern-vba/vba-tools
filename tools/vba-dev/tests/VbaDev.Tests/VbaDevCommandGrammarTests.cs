@@ -23,8 +23,58 @@ public sealed class VbaDevCommandGrammarTests
 
         var fields = typeof(VbaDevCommandLine).GetFields(
             BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.Single(fields);
         Assert.Single(fields, field => field.FieldType == typeof(VbaDevCommandGraph));
         Assert.DoesNotContain(fields, field => field.FieldType == typeof(RootCommand));
+    }
+
+    [Fact]
+    public void EveryPublicLeafHasExactlyOneSealedInternalFamilyOwner()
+    {
+        var graph = CommandLineTestFactory.Create().CommandGraph;
+        var expected = new Dictionary<string, Type>(StringComparer.Ordinal)
+        {
+            ["new excel"] = typeof(VbaDevProjectCreationCommandFamily),
+            ["common-module add"] = typeof(VbaDevCommonModuleCommandFamily),
+            ["common-module list"] = typeof(VbaDevCommonModuleCommandFamily),
+            ["common-module update"] = typeof(VbaDevCommonModuleCommandFamily),
+            ["completions script pwsh"] = typeof(VbaDevContractCommandFamily),
+            ["reference add"] = typeof(VbaDevReferenceCommandFamily),
+            ["reference list"] = typeof(VbaDevReferenceCommandFamily),
+            ["reference remove"] = typeof(VbaDevReferenceCommandFamily),
+            ["host-event list"] = typeof(VbaDevHostEventCommandFamily),
+            ["build"] = typeof(VbaDevBuildPublishCommandFamily),
+            ["test"] = typeof(VbaDevTestCommandFamily),
+            ["publish"] = typeof(VbaDevBuildPublishCommandFamily),
+            ["export"] = typeof(VbaDevImportExportCommandFamily),
+            ["import"] = typeof(VbaDevImportExportCommandFamily),
+            ["check"] = typeof(VbaDevInspectionCommandFamily),
+            ["doctor"] = typeof(VbaDevInspectionCommandFamily),
+            ["capabilities"] = typeof(VbaDevContractCommandFamily)
+        };
+
+        Assert.Equal(
+            expected.Keys.Order(StringComparer.Ordinal),
+            EnumerateLeafPaths(graph.RootCommand).Order(StringComparer.Ordinal));
+        Assert.Equal(expected.Count, graph.FamilyOwnershipRegistrations.Count);
+        Assert.Equal(
+            graph.FamilyOwnershipRegistrations.Count,
+            graph.FamilyOwnershipRegistrations
+                .Select(registration => registration.Command)
+                .Distinct(ReferenceEqualityComparer.Instance)
+                .Count());
+
+        foreach (var expectation in expected)
+        {
+            var command = ResolveCommand(graph.RootCommand, expectation.Key);
+            var registration = Assert.Single(
+                graph.FamilyOwnershipRegistrations,
+                candidate => ReferenceEquals(candidate.Command, command));
+
+            Assert.Equal(expectation.Value, registration.FamilyType);
+            Assert.True(registration.FamilyType.IsSealed);
+            Assert.False(registration.FamilyType.IsPublic);
+        }
     }
 
     [Fact]
@@ -82,6 +132,148 @@ public sealed class VbaDevCommandGrammarTests
     }
 
     [Fact]
+    public void CommandGraphKeepsCanonicalArgumentAndRequiredOptionCardinality()
+    {
+        var graph = CommandLineTestFactory.Create().CommandGraph;
+        var expectedArguments = new Dictionary<string, (int Minimum, int Maximum)>(
+            StringComparer.Ordinal)
+        {
+            ["common-module add <modules>"] =
+                (1, ArgumentArity.OneOrMore.MaximumNumberOfValues),
+            ["reference add <references>"] =
+                (1, ArgumentArity.OneOrMore.MaximumNumberOfValues),
+            ["reference remove <references>"] =
+                (1, ArgumentArity.OneOrMore.MaximumNumberOfValues)
+        };
+        var actualArguments = EnumerateLeafPaths(graph.RootCommand)
+            .Select(path => (Path: path, Command: ResolveCommand(graph.RootCommand, path)))
+            .SelectMany(entry => entry.Command.Arguments.Select(argument => new
+            {
+                Key = $"{entry.Path} <{argument.Name}>",
+                argument.Arity.MinimumNumberOfValues,
+                argument.Arity.MaximumNumberOfValues
+            }))
+            .ToDictionary(
+                entry => entry.Key,
+                entry => (entry.MinimumNumberOfValues, entry.MaximumNumberOfValues),
+                StringComparer.Ordinal);
+
+        Assert.Equal(expectedArguments, actualArguments);
+
+        var requiredOptions = EnumerateLeafPaths(graph.RootCommand)
+            .Select(path => (Path: path, Command: ResolveCommand(graph.RootCommand, path)))
+            .SelectMany(entry => entry.Command.Options
+                .Where(option => option.Required)
+                .Select(option => $"{entry.Path} {option.Name}"))
+            .Order(StringComparer.Ordinal);
+        Assert.Equal(["import --from", "import --to"], requiredOptions);
+    }
+
+    [Fact]
+    public void CommandGraphKeepsCanonicalOptionCardinality()
+    {
+        var graph = CommandLineTestFactory.Create().CommandGraph;
+        var expectedOptions = new Dictionary<string, string[]>(StringComparer.Ordinal)
+        {
+            ["new excel"] = ["--format", "--name", "--output"],
+            ["common-module add"] = ["--document", "--force", "--format", "--project"],
+            ["common-module list"] = ["--document", "--format", "--project"],
+            ["common-module update"] = ["--format", "--project"],
+            ["completions script pwsh"] = [],
+            ["reference add"] = ["--document", "--format", "--project"],
+            ["reference list"] =
+                ["--available", "--document", "--format", "--no-resolve", "--project"],
+            ["reference remove"] = ["--document", "--format", "--project"],
+            ["host-event list"] = ["--format"],
+            ["build"] = ["--document", "--output", "--project", "--source-snapshot"],
+            ["test"] =
+            [
+                "--document",
+                "--format",
+                "--module",
+                "--no-build",
+                "--procedure",
+                "--project",
+                "--source-snapshot",
+                "--timeout-seconds"
+            ],
+            ["publish"] = ["--document", "--project"],
+            ["export"] = ["--document", "--from", "--project", "--to"],
+            ["import"] = ["--from", "--to"],
+            ["check"] = ["--project"],
+            ["doctor"] = ["--format", "--project", "--scope"],
+            ["capabilities"] = ["--format"]
+        };
+        var expectedFlags = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "common-module add --force",
+            "reference list --available",
+            "reference list --no-resolve",
+            "test --no-build"
+        };
+        var actual = EnumerateLeafPaths(graph.RootCommand)
+            .Select(path => (Path: path, Command: ResolveCommand(graph.RootCommand, path)))
+            .SelectMany(entry => entry.Command.Options.Select(option => new
+            {
+                Key = $"{entry.Path} {option.Name}",
+                option.Arity.MinimumNumberOfValues,
+                option.Arity.MaximumNumberOfValues,
+                option.AllowMultipleArgumentsPerToken
+            }))
+            .ToDictionary(entry => entry.Key, StringComparer.Ordinal);
+        var expectedKeys = expectedOptions
+            .SelectMany(entry => entry.Value.Select(option => $"{entry.Key} {option}"))
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(
+            expectedOptions.Keys.Order(StringComparer.Ordinal),
+            EnumerateLeafPaths(graph.RootCommand).Order(StringComparer.Ordinal));
+        Assert.Equal(expectedKeys, actual.Keys.Order(StringComparer.Ordinal));
+        foreach (var entry in actual)
+        {
+            var expectedMinimum = expectedFlags.Contains(entry.Key) ? 0 : 1;
+            Assert.Equal(expectedMinimum, entry.Value.MinimumNumberOfValues);
+            Assert.Equal(1, entry.Value.MaximumNumberOfValues);
+            Assert.False(entry.Value.AllowMultipleArgumentsPerToken);
+        }
+    }
+
+    [Fact]
+    public void EveryDeclaredRelationshipStopsBeforeItsActualLeafAction()
+    {
+        var commandLine = CommandLineTestFactory.Create();
+        (string CommandPath, string[] Arguments)[] invalidRelationships =
+        [
+            ("build", ["build", "--source-snapshot", "source"]),
+            ("test", ["test", "--procedure", "Procedure1"]),
+            ("test", ["test", "--source-snapshot", "source", "--no-build"]),
+            ("reference list", ["reference", "list", "--available", "--no-resolve"]),
+            ("export", ["export", "--from", "book.xlsm", "--project", "project"]),
+            ("export", ["export", "--from", "book.xlsm", "--document", "Book1"]),
+            ("doctor", ["doctor", "--scope", "environment", "--project", "project"])
+        ];
+
+        foreach (var invalidRelationship in invalidRelationships)
+        {
+            var actionCount = 0;
+            ResolveCommand(commandLine.CommandGraph.RootCommand, invalidRelationship.CommandPath)
+                .SetAction(_ =>
+                {
+                    actionCount++;
+                    return 0;
+                });
+
+            var result = commandLine.Run(invalidRelationship.Arguments);
+
+            Assert.Equal(1, result.ExitCode);
+            Assert.Empty(result.StandardOutput);
+            Assert.StartsWith("Error: ", result.StandardError, StringComparison.Ordinal);
+            Assert.Equal(0, actionCount);
+        }
+    }
+
+    [Fact]
     public void CommandGraphKeepsTheCanonicalShortAliasesBesideTheirOptions()
     {
         var graph = CommandLineTestFactory.Create().CommandGraph;
@@ -111,6 +303,21 @@ public sealed class VbaDevCommandGrammarTests
             ("export", "--document", "-d"),
             ("capabilities", "--format", "-f")
         ];
+
+        var actual = EnumerateLeafPaths(graph.RootCommand)
+            .Select(path => (Path: path, Command: ResolveCommand(graph.RootCommand, path)))
+            .SelectMany(entry => entry.Command.Options.SelectMany(option =>
+                option.Aliases.Select(alias =>
+                    (CommandPath: entry.Path, OptionName: option.Name, Alias: alias))))
+            .OrderBy(entry => entry.CommandPath, StringComparer.Ordinal)
+            .ThenBy(entry => entry.OptionName, StringComparer.Ordinal)
+            .ThenBy(entry => entry.Alias, StringComparer.Ordinal);
+        Assert.Equal(
+            expected
+                .OrderBy(entry => entry.CommandPath, StringComparer.Ordinal)
+                .ThenBy(entry => entry.OptionName, StringComparer.Ordinal)
+                .ThenBy(entry => entry.Alias, StringComparer.Ordinal),
+            actual);
 
         foreach (var expectation in expected)
         {
