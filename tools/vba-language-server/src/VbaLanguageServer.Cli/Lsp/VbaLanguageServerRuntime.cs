@@ -28,6 +28,7 @@ internal sealed class VbaLanguageServerRuntime
     private readonly TaskCompletionSource initialized = new(
         TaskCreationOptions.RunContinuationsAsynchronously);
     private int startupWarningPublished;
+    private VbaLanguageWorkspace? OwnedWorkspace { get; init; }
 
     /// <summary>
     /// Creates a language-server runtime from transport, request, and lifecycle components.
@@ -133,7 +134,10 @@ internal sealed class VbaLanguageServerRuntime
                     catalogDiscovery,
                     () => workspace.GetOpenDocumentUris(),
                     catalogRefresh),
-            vbaDevStartupResolver: vbaDevStartupResolver);
+            vbaDevStartupResolver: vbaDevStartupResolver)
+        {
+            OwnedWorkspace = workspace
+        };
     }
 
     internal static SessionPinnedVbaDevReferenceCatalogDiscovery
@@ -422,8 +426,15 @@ internal sealed class VbaLanguageServerRuntime
                 }
                 finally
                 {
-                    hostCancellationRegistration.Dispose();
-                    await responseCancellation.ObserveAsync();
+                    try
+                    {
+                        hostCancellationRegistration.Dispose();
+                        await responseCancellation.ObserveAsync();
+                    }
+                    finally
+                    {
+                        OwnedWorkspace?.Dispose();
+                    }
                 }
             }
         }

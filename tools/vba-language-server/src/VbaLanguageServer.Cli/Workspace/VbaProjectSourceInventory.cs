@@ -12,7 +12,8 @@ internal static class VbaProjectSourceInventory
         IReadOnlyDictionary<VbaDocumentIdentity, VbaTrackedDocument>
             trackedDocumentsByIdentity,
         VbaProjectSourceDocumentCache diskDocumentCache,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IReadOnlyDictionary<VbaDocumentIdentity, VbaTrackedDocument>? reusableDocuments = null)
     {
         var documents = new Dictionary<string, VbaTrackedDocument>(
             StringComparer.OrdinalIgnoreCase);
@@ -32,9 +33,11 @@ internal static class VbaProjectSourceInventory
                 continue;
             }
 
-            var diskDocument = diskDocumentCache.GetOrCreateDocument(
-                source,
-                cancellationToken);
+            var diskDocument = reusableDocuments is not null
+                && reusableDocuments.TryGetValue(source.DocumentIdentity, out var reusable)
+                && reusable.Text.Equals(source.Text, StringComparison.Ordinal)
+                    ? reusable
+                    : diskDocumentCache.GetOrCreateDocument(source, cancellationToken);
             documents[source.Uri] = diskDocument;
             documentsByIdentity[source.DocumentIdentity] = diskDocument;
         }

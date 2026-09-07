@@ -30,20 +30,24 @@ internal sealed class VbaProjectSnapshotBuilder
         IReadOnlySet<VbaDocumentIdentity> excludedSourceIdentities,
         IReadOnlyDictionary<VbaDocumentIdentity, bool>
             manifestBarrierOverrides,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyDictionary<VbaDocumentIdentity, VbaTrackedDocument>? reusableDocuments = null,
+        bool validateContent = false)
     {
         var diskCapture = diskInventory.CaptureColdSources(
             resolution,
             workspaceDocumentsByIdentity.Keys.ToArray(),
             excludedSourceIdentities,
             manifestBarrierOverrides,
-            cancellationToken);
+            cancellationToken,
+            validateContent);
         var inventorySnapshot =
             VbaProjectSourceInventory.CreateInventorySnapshot(
                 diskCapture,
                 workspaceDocumentsByIdentity,
                 diskDocumentCache,
-                cancellationToken);
+                cancellationToken,
+                reusableDocuments);
         if (!inventorySnapshot.DocumentsByIdentity.ContainsKey(
                 activeDocument.Identity)
             && workspaceDocumentsByIdentity.TryGetValue(
