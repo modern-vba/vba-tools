@@ -4,7 +4,8 @@
 
 This document summarizes the latency-sensitive C# language-server path and the
 fallbacks that preserve correctness when an optimized path cannot prove that it
-is safe. The detailed decisions remain in ADRs 0003 and 0011 through 0018.
+is safe. The detailed decisions remain in ADRs 0003, 0011 through 0018, and
+0040.
 
 The interactive infrastructure is host-neutral. A project manifest selects
 references, and reference catalogs provide types, members, constants, and
@@ -259,12 +260,15 @@ collection has a separate two-stage lifecycle:
    `ProjectDiagnosticRevision`. It does not read, hash, or parse the workbook
    package.
 2. A typed `VbaProjectAuthorityIdentity` latest-only mailbox reads the fenced
-   source-template bytes and derives exact project-identity evidence, then runs
-   the bounded `workspace/diagnostic` validation against the snapshot's
-   existing `VbaSemanticInventory`. Both phases observe cancellation. Only
-   after the complete current result exists does it partition by URI and post
-   complete current sets to the separate `textDocument/diagnostic` publication
-   mailboxes. Content equality is not a transport-suppression contract.
+   source-template bytes and passes that fixed package to the product-neutral
+   `VbaProjectPackageMetadata` reader. The language-server Adapter binds its
+   strict project-name and code-page facts to the whole-package content
+   identity, then runs the bounded `workspace/diagnostic` validation against
+   the snapshot's existing `VbaSemanticInventory`. Both phases observe
+   cancellation. Only after the complete current result exists does it
+   partition by URI and post complete current sets to the separate
+   `textDocument/diagnostic` publication mailboxes. Content equality is not a
+   transport-suppression contract.
 
 A newer source, manifest, catalog, close, or retirement state replaces pending
 work and cancels obsolete active validation for that authority. Collectors

@@ -161,6 +161,8 @@ Expected capabilities:
 - capture a caller-owned complete source snapshot without saving editor buffers
   and invoke `vba-dev test --source-snapshot <snapshot-directory> --format
   ndjson` for the default run profile;
+- require CLI features `test.sourceSnapshot` version `2.0` and
+  `sourceSnapshot.activeWindowsCodePage` version `1.0` before snapshot capture;
 - fix debug and test snapshot inventories at capture start from one complete
   disk inventory overlaid by every then-open source-set-contained dirty
   file-backed editor, including an in-scope path not yet on disk; capture each
@@ -204,17 +206,17 @@ Expected capabilities:
   execution, but omit its stale module/procedure discovery and locations and
   report a non-failing Test Run warning;
 - preserve exact disk bytes for clean source and sidecars, encode dirty source
-  as UTF-8 with or without BOM, BOM-marked UTF-16 LE or BE, or the
-  operation-fixed active Windows ANSI code page according to its current editor
-  encoding, require a lossless round trip, and remove the caller-owned snapshot
-  directory after `vba-dev test` exits;
+  as BOM-marked UTF-8, BOM-marked UTF-16 LE or BE, or the operation-fixed active
+  Windows ANSI code page without a BOM according to its current editor encoding,
+  reject BOM-less UTF-8 unless ACP is 65001, require a lossless round trip, and
+  remove the caller-owned snapshot directory after `vba-dev test` exits;
 - apply bounded retries to extension-owned snapshot deletion and report a
   retained absolute path as a housekeeping warning without changing completed
   test outcomes;
-- detect every ordinary, explicit-import, and snapshot text source through a
-  recognized BOM, strict UTF-8, then strict operation-fixed `GetACP` encoding
-  without replacement-character or detection fallback; choose UTF-8 for
-  dual-valid bytes and canonicalize ACP 65001 as UTF-8;
+- admit every ordinary, explicit-import, and snapshot text source through a
+  recognized supported BOM or, without a BOM, only the strict operation-fixed
+  `GetACP` encoding; never probe BOM-less UTF-8 or fall back after a malformed
+  BOM, and canonicalize ACP 65001 as UTF-8;
 - before implementing that encoding path, probe `VBComponents.Import` in real
   Excel with equivalent non-ASCII ACP, BOM-less UTF-8, BOM-marked UTF-8, and
   BOM-marked UTF-16 LE and BE `.bas`, `.cls`, and `.frm` plus `.frx` inputs;
