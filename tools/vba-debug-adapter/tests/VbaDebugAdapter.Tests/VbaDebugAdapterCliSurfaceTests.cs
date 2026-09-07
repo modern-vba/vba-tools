@@ -1132,8 +1132,14 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         Assert.True(launchResponse.GetProperty("success").GetBoolean());
     }
 
-    [Fact]
-    public async Task FailedRestartPreparationRetainsTheOwnedSession()
+    [Theory]
+    [InlineData("reported-failure", "Synthetic snapshot capture failure.")]
+    [InlineData("invalid-success", "Boolean 'success'")]
+    [InlineData("missing-launch", "requires a fresh launch snapshot")]
+    [InlineData("unknown-property", "unexpected")]
+    public async Task FailedRestartPreparationRetainsTheOwnedSession(
+        string notificationCase,
+        string expectedMessage)
     {
         const string sessionId = "0123456789abcdef0123456789abcdef";
         const string preparationId = "fedcba9876543210fedcba9876543210";
@@ -1154,6 +1160,27 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             id = preparationId,
             generation = 0
         };
+        var notificationArguments = new Dictionary<string, object?>
+        {
+            ["sessionId"] = sessionId,
+            ["restartRequestSequence"] = 3,
+            ["preparationId"] = preparationId,
+            ["generation"] = 1,
+            ["success"] = false,
+            ["message"] = "Synthetic snapshot capture failure."
+        };
+        if (notificationCase == "invalid-success")
+        {
+            notificationArguments["success"] = "invalid";
+        }
+        else if (notificationCase == "missing-launch")
+        {
+            notificationArguments["success"] = true;
+        }
+        else if (notificationCase == "unknown-property")
+        {
+            notificationArguments["unexpected"] = true;
+        }
         using var inputPrefix = CreateDapInput(
             new { seq = 1, type = "request", command = "launch", arguments = launchArguments },
             new { seq = 2, type = "request", command = "configurationDone", arguments = new { } },
@@ -1163,15 +1190,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 seq = 4,
                 type = "request",
                 command = "vba/restartPrepared",
-                arguments = new
-                {
-                    sessionId,
-                    restartRequestSequence = 3,
-                    preparationId,
-                    generation = 1,
-                    success = false,
-                    message = "Synthetic snapshot capture failure."
-                }
+                arguments = notificationArguments
             });
         using var standardInput = new BlockingTailStream(inputPrefix.ToArray());
         using var standardOutput = new MemoryStream();
@@ -1204,8 +1223,8 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 message => message.TryGetProperty("request_seq", out var sequence) &&
                            sequence.GetInt32() == 3);
             Assert.False(restartResponse.GetProperty("success").GetBoolean());
-            Assert.Equal(
-                "Synthetic snapshot capture failure.",
+            Assert.Contains(
+                expectedMessage,
                 restartResponse.GetProperty("message").GetString());
             Assert.Equal(0, runningSession.TerminateCalls);
             Assert.Equal(0, runningSession.DisposeCalls);
@@ -1217,8 +1236,20 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         }
     }
 
-    [Fact]
-    public async Task StaleRestartPreparationFailsOnlyRestartAndRetainsTheOwnedSession()
+    [Theory]
+    [InlineData("future-generation")]
+    [InlineData("stale-generation")]
+    [InlineData("future-sequence")]
+    [InlineData("stale-sequence")]
+    [InlineData("wrong-session")]
+    [InlineData("wrong-preparation")]
+    [InlineData("missing-correlation")]
+    [InlineData("invalid-correlation-type")]
+    [InlineData("out-of-range-generation")]
+    [InlineData("duplicate-correlation")]
+    [InlineData("uncorrelated-invalid-payload")]
+    public async Task UnrelatedRestartPreparationPreservesThePendingRestartAndOwnedSession(
+        string notificationCase)
     {
         const string sessionId = "0123456789abcdef0123456789abcdef";
         const string preparationId = "fedcba9876543210fedcba9876543210";
@@ -1238,6 +1269,36 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             id = preparationId,
             generation = 0
         };
+        var notificationArguments = new Dictionary<string, object?>
+        {
+            ["sessionId"] = sessionId,
+            ["restartRequestSequence"] = 3,
+            ["preparationId"] = preparationId,
+            ["generation"] = 1,
+            ["success"] = true
+        };
+        switch (notificationCase)
+        {
+            case "future-generation": notificationArguments["generation"] = 2; break;
+            case "stale-generation": notificationArguments["generation"] = 0; break;
+            case "future-sequence": notificationArguments["restartRequestSequence"] = 4; break;
+            case "stale-sequence": notificationArguments["restartRequestSequence"] = 2; break;
+            case "wrong-session": notificationArguments["sessionId"] = preparationId; break;
+            case "wrong-preparation": notificationArguments["preparationId"] = sessionId; break;
+            case "missing-correlation": notificationArguments.Remove("sessionId"); break;
+            case "invalid-correlation-type": notificationArguments["generation"] = "1"; break;
+            case "out-of-range-generation": notificationArguments["generation"] = 2147483648L; break;
+            case "uncorrelated-invalid-payload":
+                notificationArguments["generation"] = 2;
+                notificationArguments["success"] = "invalid";
+                break;
+        }
+        var notificationJson = JsonSerializer.Serialize(notificationArguments);
+        if (notificationCase == "duplicate-correlation")
+        {
+            notificationJson = "{\"generation\":1," + notificationJson[1..];
+        }
+        using var notification = JsonDocument.Parse(notificationJson);
         using var inputPrefix = CreateDapInput(
             new { seq = 1, type = "request", command = "launch", arguments = launchArguments },
             new { seq = 2, type = "request", command = "configurationDone", arguments = new { } },
@@ -1247,28 +1308,14 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 seq = 4,
                 type = "request",
                 command = "vba/restartPrepared",
-                arguments = new
-                {
-                    sessionId,
-                    restartRequestSequence = 3,
-                    preparationId,
-                    generation = 2,
-                    success = true
-                }
+                arguments = notification.RootElement
             },
             new
             {
                 seq = 5,
                 type = "request",
                 command = "vba/restartPrepared",
-                arguments = new
-                {
-                    sessionId,
-                    restartRequestSequence = 3,
-                    preparationId,
-                    generation = 2,
-                    success = true
-                }
+                arguments = notification.RootElement
             });
         using var standardInput = new BlockingTailStream(inputPrefix.ToArray());
         using var standardOutput = new MemoryStream();
@@ -1295,20 +1342,15 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                 messages,
                 message => message.TryGetProperty("request_seq", out var sequence) &&
                            sequence.GetInt32() == 4);
-            var restartResponse = Assert.Single(
-                messages,
-                message => message.TryGetProperty("request_seq", out var sequence) &&
-                           sequence.GetInt32() == 3);
             Assert.True(preparationResponse.GetProperty("success").GetBoolean());
             Assert.True(Assert.Single(
                 messages,
                 message => message.TryGetProperty("request_seq", out var sequence) &&
                            sequence.GetInt32() == 5).GetProperty("success").GetBoolean());
-            Assert.False(restartResponse.GetProperty("success").GetBoolean());
-            Assert.Contains(
-                "generation",
-                restartResponse.GetProperty("message").GetString(),
-                StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(
+                messages,
+                message => message.TryGetProperty("request_seq", out var sequence) &&
+                           sequence.GetInt32() == 3);
             Assert.Equal(0, runningSession.TerminateCalls);
             Assert.Equal(0, runningSession.DisposeCalls);
         }
@@ -1620,7 +1662,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
     }
 
     [Fact]
-    public async Task MatchingRestartPreparationReplacesTheOwnedSessionWithTheFreshSnapshot()
+    public async Task MatchingRestartPreparationAfterUnrelatedNotificationsSwapsExactlyOnce()
     {
         const string sessionId = "0123456789abcdef0123456789abcdef";
         const string preparationId = "fedcba9876543210fedcba9876543210";
@@ -1657,6 +1699,15 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             id = preparationId,
             generation = 1
         };
+        var preparedNotification = new
+        {
+            sessionId,
+            restartRequestSequence = 3,
+            preparationId,
+            generation = 1,
+            success = true,
+            launch = freshLaunch
+        };
         using var standardInput = CreateDapInput(
             new { seq = 1, type = "request", command = "launch", arguments = initialLaunch },
             new { seq = 2, type = "request", command = "configurationDone", arguments = new { } },
@@ -1665,18 +1716,26 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             {
                 seq = 4,
                 type = "request",
+                command = "restart",
+                arguments = new { }
+            },
+            new
+            {
+                seq = 5,
+                type = "request",
                 command = "vba/restartPrepared",
                 arguments = new
                 {
                     sessionId,
                     restartRequestSequence = 3,
                     preparationId,
-                    generation = 1,
-                    success = true,
-                    launch = freshLaunch
+                    generation = 2,
+                    success = "invalid uncorrelated payload"
                 }
             },
-            new { seq = 5, type = "request", command = "disconnect", arguments = new { } });
+            new { seq = 6, type = "request", command = "vba/restartPrepared", arguments = preparedNotification },
+            new { seq = 7, type = "request", command = "vba/restartPrepared", arguments = preparedNotification },
+            new { seq = 8, type = "request", command = "disconnect", arguments = new { } });
         using var standardOutput = new MemoryStream();
 
         var exitCode = await commandLine.InvokeAsync(
@@ -1702,10 +1761,17 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             ["launch:1", "old:terminate", "old:dispose", "launch:2", "fresh:terminate", "fresh:dispose"],
             events);
         var messages = ReadDapMessages(standardOutput);
-        Assert.True(Assert.Single(
+        Assert.False(Assert.Single(
             messages,
             message => message.TryGetProperty("request_seq", out var sequence) &&
                        sequence.GetInt32() == 4).GetProperty("success").GetBoolean());
+        foreach (var acknowledgedSequence in new[] { 5, 6, 7 })
+        {
+            Assert.True(Assert.Single(
+                messages,
+                message => message.TryGetProperty("request_seq", out var sequence) &&
+                           sequence.GetInt32() == acknowledgedSequence).GetProperty("success").GetBoolean());
+        }
         Assert.True(Assert.Single(
             messages,
             message => message.TryGetProperty("request_seq", out var sequence) &&

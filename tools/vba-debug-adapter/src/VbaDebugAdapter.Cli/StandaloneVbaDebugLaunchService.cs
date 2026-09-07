@@ -59,12 +59,11 @@ internal sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunc
                 "visible Excel/VBE compiler context services.");
         }
         var canonicalProjectRoot = CanonicalizeProjectRoot(request.ProjectRoot);
-        ValidateRestartBinding(
+        restartBinding?.ValidateLaunch(
             request,
             canonicalProjectRoot,
             admittedSource.Target,
-            workspaceLease.SessionId,
-            restartBinding);
+            workspaceLease.SessionId);
         VbaDevSnapshotBuildResult? buildResult = null;
         try
         {
@@ -144,60 +143,6 @@ internal sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunc
         {
             throw new DebugSetupException(
                 "The VBA launch project must be a valid absolute path.");
-        }
-    }
-
-    private static void ValidateRestartBinding(
-        StandaloneVbaDebugLaunchRequest request,
-        string canonicalProjectRoot,
-        DebugTargetProcedure target,
-        DebugSessionId workspaceSessionId,
-        DebugRestartLaunchBinding? restartBinding)
-    {
-        if (restartBinding is null)
-        {
-            return;
-        }
-
-        var descriptor = request.RestartPreparation;
-        if (descriptor is null ||
-            restartBinding.SessionId != workspaceSessionId ||
-            descriptor.Id != restartBinding.PreparationId ||
-            descriptor.Generation != restartBinding.Generation ||
-            !canonicalProjectRoot.Equals(
-                restartBinding.CanonicalProjectRoot,
-                StringComparison.OrdinalIgnoreCase) ||
-            !request.DocumentName.Equals(
-                restartBinding.DocumentName,
-                StringComparison.OrdinalIgnoreCase) ||
-            !request.WorkbookFileName.Equals(
-                restartBinding.WorkbookFileName,
-                StringComparison.OrdinalIgnoreCase) ||
-            !target.ModuleName.Equals(
-                restartBinding.TargetModuleName,
-                StringComparison.OrdinalIgnoreCase) ||
-            !target.ProcedureName.Equals(
-                restartBinding.TargetProcedureName,
-                StringComparison.OrdinalIgnoreCase) ||
-            (restartBinding.RequestedModuleName is not null &&
-             !restartBinding.RequestedModuleName.Equals(
-                 restartBinding.TargetModuleName,
-                 StringComparison.OrdinalIgnoreCase)) ||
-            (restartBinding.RequestedProcedureName is not null &&
-             !restartBinding.RequestedProcedureName.Equals(
-                 restartBinding.TargetProcedureName,
-                 StringComparison.OrdinalIgnoreCase)) ||
-            !restartBinding.BoundSession.TargetModuleName.Equals(
-                restartBinding.TargetModuleName,
-                StringComparison.OrdinalIgnoreCase) ||
-            !restartBinding.BoundSession.TargetProcedureName.Equals(
-                restartBinding.TargetProcedureName,
-                StringComparison.OrdinalIgnoreCase) ||
-            restartBinding.DapRequestSequence < 0 ||
-            restartBinding.BoundSession.Completion.IsCompleted)
-        {
-            throw new DebugSetupException(
-                "The fresh VBA restart launch does not match its bound session, target, or request identity.");
         }
     }
 
@@ -438,63 +383,6 @@ internal sealed record PreparedDebugLaunchPlanSnapshot(
         SourceAdmission.RequiresConditionalCompilationVerification;
 
     internal DebugGenerationId GenerationId => SourceAdmission.GenerationId;
-}
-
-internal sealed record DebugRestartLaunchBinding(
-    DebugSessionId SessionId,
-    IStandaloneVbaDebugRunningSession BoundSession,
-    string CanonicalProjectRoot,
-    string DocumentName,
-    string WorkbookFileName,
-    string TargetModuleName,
-    string TargetProcedureName,
-    string? RequestedModuleName,
-    string? RequestedProcedureName,
-    DebugRestartPreparationId PreparationId,
-    DebugRestartGeneration Generation,
-    int DapRequestSequence)
-{
-    public bool IsBoundSessionCurrent =>
-        !BoundSession.Completion.IsCompleted &&
-        BoundSession.TargetModuleName.Equals(
-            TargetModuleName,
-            StringComparison.OrdinalIgnoreCase) &&
-        BoundSession.TargetProcedureName.Equals(
-            TargetProcedureName,
-            StringComparison.OrdinalIgnoreCase);
-
-    public bool HasSameIdentityAs(DebugRestartLaunchBinding other)
-    {
-        ArgumentNullException.ThrowIfNull(other);
-        return ReferenceEquals(BoundSession, other.BoundSession) &&
-               SessionId == other.SessionId &&
-               CanonicalProjectRoot.Equals(
-                   other.CanonicalProjectRoot,
-                   StringComparison.OrdinalIgnoreCase) &&
-               DocumentName.Equals(
-                   other.DocumentName,
-                   StringComparison.OrdinalIgnoreCase) &&
-               WorkbookFileName.Equals(
-                   other.WorkbookFileName,
-                   StringComparison.OrdinalIgnoreCase) &&
-               TargetModuleName.Equals(
-                   other.TargetModuleName,
-                   StringComparison.OrdinalIgnoreCase) &&
-               TargetProcedureName.Equals(
-                   other.TargetProcedureName,
-                   StringComparison.OrdinalIgnoreCase) &&
-               string.Equals(
-                   RequestedModuleName,
-                   other.RequestedModuleName,
-                   StringComparison.OrdinalIgnoreCase) &&
-               string.Equals(
-                   RequestedProcedureName,
-                   other.RequestedProcedureName,
-                   StringComparison.OrdinalIgnoreCase) &&
-               PreparationId == other.PreparationId &&
-               Generation == other.Generation &&
-               DapRequestSequence == other.DapRequestSequence;
-    }
 }
 
 internal interface IPreparedDebugLaunchPlan : IAsyncDisposable

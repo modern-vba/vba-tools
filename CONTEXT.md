@@ -690,8 +690,17 @@ _Avoid_: lease ID, project ID, adapter-generated cleanup handle
 The transaction that captures and validates a fresh `DebugSourceSnapshot`
 before replacing an active `VbeDebugSession`. Its identity is bound to the
 session, canonical project, selected document, original target module and
-procedure, restart generation, and DAP request sequence; any mismatch or
-missing target retains the current session.
+procedure, restart generation, and DAP request sequence. One adapter-owned
+module retains the pending request, monotonic counters, fixed launch binding,
+and one-shot swap authority. Additional Restart requests while preparation,
+build, or swap is active fail with `DebugLaunchBusy` without changing that state.
+Notification correlation precedes payload validation: only an exact match of
+session ID, preparation ID, request sequence, and generation consumes the
+pending preparation. Unrelated, malformed-correlation, stale, future, or
+duplicate notifications are acknowledged without consuming it. A matching
+notification with an invalid payload or missing/changed target fails only its
+Restart and retains the usable current session. Session termination invalidates
+preparation and prevents a late build from launching a replacement.
 _Avoid_: new launch target, active-editor retargeting, project-only restart token
 
 **PreparedDebugLaunchPlan**:
