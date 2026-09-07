@@ -42,7 +42,7 @@ public sealed record VbaProjectSnapshot(
 /// <summary>
 /// Maintains open document text and creates project snapshots for language-server features.
 /// </summary>
-public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCapture
+public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCapture, IDisposable
 {
     private const long MaximumSourceTemplateIdentityReadLength =
         512L * 1024 * 1024;
@@ -146,7 +146,8 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         IVbaProjectReconciliationAuthorityLeaseObserver?
             reconciliationAuthorityLeaseObserver = null,
         DiskSourceDecoding? sourceDecoding = null,
-        IVbaProjectIdentityReader? projectIdentityReader = null)
+        IVbaProjectIdentityReader? projectIdentityReader = null,
+        VbaRetainedAnalysisLimits? retainedAnalysisLimits = null)
     {
         this.analysisBuildObserver = analysisBuildObserver;
         this.projectFileSystem = projectFileSystem;
@@ -167,7 +168,8 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
             lifecycleObserver,
             snapshotBuildObserver,
             reconciliationAuthorityLeaseObserver,
-            intrinsicHostEventCatalogStore);
+            intrinsicHostEventCatalogStore,
+            retainedAnalysisLimits);
     }
 
     /// <summary>
@@ -207,6 +209,30 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
 
     internal int RetainedProjectSnapshotCount
         => snapshotProvider.RetainedProjectSnapshotCount;
+
+    internal int RetainedReusableAnalysisCount
+        => snapshotProvider.RetainedReusableAnalysisCount;
+
+    internal long RetainedReusableAnalysisBytes
+        => snapshotProvider.RetainedReusableAnalysisBytes;
+
+    /// <summary>
+    /// Releases analysis owned by this workspace when its server is torn down.
+    /// </summary>
+    public void Dispose()
+    {
+        snapshotProvider.Dispose();
+        lock (gate)
+        {
+            documents.Clear();
+            acceptedRevisions.Clear();
+            excludedSourceIdentities.Clear();
+            diskSourceFailures.Clear();
+            workspaceSnapshotState = null;
+            workspaceVersion++;
+            Monitor.PulseAll(gate);
+        }
+    }
 
     internal int RetainedProjectScopeInvalidationStateCount
         => snapshotProvider.RetainedScopeInvalidationStateCount;
@@ -248,6 +274,7 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
     {
         cancellationToken.ThrowIfCancellationRequested();
         var document = RequireIdentifiedDocument(uri);
+        RetireClosedSourceAuthorityBeforeOpen(document.Identity);
         DocumentAnalysisReservation reservation;
         lock (gate)
         {
@@ -293,6 +320,7 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
     {
         cancellationToken.ThrowIfCancellationRequested();
         var document = RequireIdentifiedDocument(uri);
+        RetireClosedSourceAuthorityBeforeOpen(document.Identity);
         DocumentAnalysisReservation reservation;
         lock (gate)
         {
@@ -601,7 +629,9 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
 
         if (remainingTrackedDocuments is not null)
         {
-            RetireInactiveProjectScopes(remainingTrackedDocuments);
+            RetireInactiveProjectScopes(
+                remainingTrackedDocuments,
+                retireClosedSourceAuthority: true);
         }
 
         return true;
@@ -2861,11 +2891,96 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                 pair.Value.Document.Uri))
             .ToArray();
 
-    private void RetireInactiveProjectScopes(
-        IReadOnlyList<VbaIdentifiedDocument> remainingTrackedDocuments)
+    private void RetireClosedSourceAuthorityBeforeOpen(VbaDocumentIdentity documentIdentity)
     {
-        snapshotProvider.RetireInactiveScopes(
-            remainingTrackedDocuments);
+        IReadOnlyList<VbaIdentifiedDocument> trackedDocuments;
+        lock (gate)
+        {
+            if (GetAcceptedRevisionState(documentIdentity)?.Authority == WorkspaceDocumentAuthority.OpenBuffer
+                || GetDocumentState(documentIdentity)?.Authority == WorkspaceDocumentAuthority.OpenBuffer)
+            {
+                return;
+            }
+
+            trackedDocuments = CaptureTrackedDocuments();
+        }
+
+        // A watcher can materialize a scope while every editor is closed.
+        // A new buffer must reestablish that scope against current disk content.
+        // Existing open scopes keep their authority until reconciliation
+        // completes any transfer caused by changed manifest barriers.
+        RetireInactiveProjectScopes(
+            trackedDocuments,
+            retireClosedSourceAuthority: true,
+            preserveAnchoredScopes: true);
+    }
+
+    private void RetireInactiveProjectScopes(
+        IReadOnlyList<VbaIdentifiedDocument> remainingTrackedDocuments,
+        bool retireClosedSourceAuthority = false,
+        bool preserveAnchoredScopes = false)
+    {
+        var scopeAnchors = remainingTrackedDocuments;
+        if (retireClosedSourceAuthority)
+        {
+            lock (gate)
+            {
+                scopeAnchors = CaptureOpenDocuments()
+                    .Concat(acceptedRevisions.Values
+                        .Where(state => state.Authority == WorkspaceDocumentAuthority.OpenBuffer)
+                        .Select(state => state.Document))
+                    .DistinctBy(document => document.Identity)
+                    .ToArray();
+            }
+        }
+
+        var retired = snapshotProvider.RetireInactiveScopes(
+            scopeAnchors,
+            preserveAnchoredScopes);
+        lock (gate)
+        {
+            if (retireClosedSourceAuthority)
+            {
+                foreach (var identity in documents.Keys.Concat(acceptedRevisions.Keys).Distinct().ToArray())
+                {
+                    var existing = GetDocumentState(identity);
+                    var accepted = GetAcceptedRevisionState(identity);
+                    if (existing?.Authority == WorkspaceDocumentAuthority.OpenBuffer
+                        || accepted?.Authority == WorkspaceDocumentAuthority.OpenBuffer
+                        || snapshotProvider.HasActiveSourceScope(identity))
+                    {
+                        continue;
+                    }
+
+                    var document = accepted?.Document
+                        ?? new VbaIdentifiedDocument(identity, existing!.Document.Uri);
+                    if (!retired.Any(resolution => resolution.ContainsUri(document.Uri)))
+                    {
+                        continue;
+                    }
+
+                    documents.Remove(identity);
+                    acceptedRevisions.Remove(identity);
+                    ClearDiskSourceFailure(identity);
+                    InvalidateDiskDocument(identity);
+                    MarkWorkspaceChanged(document);
+                }
+
+                remainingTrackedDocuments = CaptureTrackedDocuments();
+                Monitor.PulseAll(gate);
+            }
+
+            // A retired scope no longer owns earlier watcher deletions. Its
+            // next lifecycle must discover recreated files from current disk.
+            if (excludedSourceIdentities.RemoveWhere(identity => identity.IsLocalFile
+                && !snapshotProvider.HasActiveSourceScope(identity)
+                && retired.Any(resolution => resolution.ContainsUri(
+                    new Uri(identity.CanonicalValue).AbsoluteUri))) > 0)
+            {
+                workspaceSnapshotState = null;
+            }
+        }
+
         ManifestWorkspace.RetireInactiveState(
             remainingTrackedDocuments,
             snapshotProvider.CaptureManifestRetentionScopes());

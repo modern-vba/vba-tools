@@ -26154,6 +26154,7 @@ public sealed class LanguageServerProcessTests
             const string openAfterDeleteText = "Public Sub OpenAfterDelete()\nEnd Sub\n";
             await process.SendNotificationAsync("textDocument/didOpen",
                 CreateOpenDocument(encodedUri, openAfterDeleteText, version: 6));
+            File.Delete(sourcePath);
             await process.SendNotificationAsync("workspace/didChangeWatchedFiles",
                 new
                 {

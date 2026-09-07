@@ -13,6 +13,95 @@ namespace VbaLanguageServer.Tests;
 public sealed class VbaLanguageServerRuntimeTests
 {
     [Fact]
+    public async Task Default_runtime_owns_its_workspace_until_protocol_shutdown_completes()
+    {
+        var previousExitCode = Environment.ExitCode;
+        await using var input = new ControlledInputStream();
+        await using var output = new SynchronizedCaptureStream();
+        using var hostCancellation = new CancellationTokenSource();
+        Task? run = null;
+        try
+        {
+            var sourceUri = new Uri(Path.Combine(
+                Path.GetTempPath(),
+                $"vba-runtime-factory-{Guid.NewGuid():N}",
+                "RuntimeFactory.bas")).AbsoluteUri;
+            var runtime = VbaLanguageServerRuntime.CreateDefault(input, output);
+            run = runtime.RunAsync(hostCancellation.Token);
+            input.Enqueue(
+                new
+                {
+                    jsonrpc = "2.0",
+                    id = 1,
+                    method = "initialize",
+                    @params = new { capabilities = new { } }
+                });
+            var initializeResponse = await WaitForResponseAsync(output, 1);
+            Assert.Null(initializeResponse["error"]);
+            Assert.NotNull(initializeResponse["result"]?["capabilities"]?["semanticTokensProvider"]);
+
+            input.Enqueue(
+                new
+                {
+                    jsonrpc = "2.0",
+                    method = "initialized",
+                    @params = new { }
+                },
+                new
+                {
+                    jsonrpc = "2.0",
+                    method = "textDocument/didOpen",
+                    @params = new
+                    {
+                        textDocument = new
+                        {
+                            uri = sourceUri,
+                            languageId = "vba",
+                            version = 1,
+                            text = "Attribute VB_Name = \"RuntimeFactory\"\nPublic Sub Run()\nEnd Sub\n"
+                        }
+                    }
+                },
+                new
+                {
+                    jsonrpc = "2.0",
+                    id = 2,
+                    method = "textDocument/semanticTokens/full",
+                    @params = new { textDocument = new { uri = sourceUri } }
+                });
+
+            var semanticResponse = await WaitForResponseAsync(output, 2);
+            Assert.Null(semanticResponse["error"]);
+            Assert.NotEmpty(Assert.IsType<JsonArray>(semanticResponse["result"]?["data"]));
+
+            input.Enqueue(
+                new { jsonrpc = "2.0", id = 3, method = "shutdown" },
+                new { jsonrpc = "2.0", method = "exit" });
+            var shutdownResponse = await WaitForResponseAsync(output, 3);
+            Assert.Null(shutdownResponse["error"]);
+            await run.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(0, Environment.ExitCode);
+        }
+        finally
+        {
+            input.Complete();
+            hostCancellation.Cancel();
+            if (run is not null)
+            {
+                try
+                {
+                    await run.WaitAsync(TimeSpan.FromSeconds(5));
+                }
+                catch (Exception)
+                {
+                }
+            }
+
+            Environment.ExitCode = previousExitCode;
+        }
+    }
+
+    [Fact]
     public async Task Companion_executable_notification_is_routed_before_shutdown()
     {
         var previousExitCode = Environment.ExitCode;

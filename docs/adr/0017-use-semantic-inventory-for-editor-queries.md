@@ -98,9 +98,14 @@ library Interface. If editor-query semantics later need a reusable Interface,
 that Interface must be designed deliberately in a separate
 library project rather than inferred from public types in the executable.
 
-Because inventory shards are scoped to one committed project snapshot, any
-declaration-shape, visibility, type, module identity, manifest,
-source-membership, or reference-catalog change creates a new inventory and
-conservatively invalidates occurrence and token shards. Future member-local
-reuse may carry forward unchanged shards only when a private semantic
-fingerprint proves the declaration environment and member identity are stable.
+ADR 0042 permits completed immutable analysis and atomically published editor
+shards to outlive active snapshot retirement in a bounded process-local store.
+Reopening creates fresh snapshot and validation ownership; it never promotes an
+old active snapshot. Reuse requires a private proof of exact current source
+content, structural document identity and membership, project identity, reference selection/catalogs,
+and intrinsic host-event metadata. Declaration-shape, visibility, type, module
+identity, manifest, membership, or reference-catalog changes that fail that proof
+create a new inventory and conservatively invalidate occurrence/token shards.
+Validation state and publication rights never cross the retention boundary.
+Future member-local reuse still requires a private semantic fingerprint that
+proves the declaration environment and member identity are stable.

@@ -16,6 +16,13 @@ Open buffers remain authoritative over equivalent disk sources. A watched reload
 
 Warm snapshot reuse does not stat known source files or reread disk. Raw disk writes that do not arrive through a watcher may therefore remain stale until a later reconciliation or explicit watched reload admits the change. This is an intentional watcher-first freshness model and preserves interactive latency. The full-text LSP synchronization contract remains unchanged.
 
+ADR 0042 adds a separate bounded store for completed analysis after active
+scope retirement. Inactive reactivation has a stronger freshness boundary:
+refresh relevant closed manifest content and enumerate/read current closed
+source content before proving reuse. Metadata equality alone is insufficient.
+An active project keeps the watcher-first path above. Retained data supplies no
+active snapshot, reconciliation authority, background job, or publication right.
+
 An accepted extension-owned `HostClassProjectionSnapshot` is another immutable
 project-snapshot input. Its exact manifest-document context and document-local
 revision are retained outside source text. Replacing or clearing it invalidates

@@ -1,0 +1,89 @@
+{
+  "issue": 365,
+  "measurement": "One fresh vstest process for each source revision; one sample, no warmups, no exclusions. Windows filesystem cache uncontrolled; shared builds/tests paused, ambient OS/user load uncontrolled. No statistical speedup claim.",
+  "fixture": "Release_CommonModules_cold_interactive_semantic_readiness_is_within_budget",
+  "boundary": "CreateProjectSnapshot request to snapshot returned; openDocument and subsequent semanticTokenProjection reported separately.",
+  "budgetMilliseconds": 9981.4,
+  "corpusCommit": "2e497ef979fb51cea79cf9386b635719172f2e70",
+  "corpus": {
+    "sourceDocuments": 94,
+    "physicalLines": 50846,
+    "argumentLists": 49097,
+    "semanticTokens": 5016
+  },
+  "machine": {
+    "operatingSystem": "Windows_NT 10.0.26200",
+    "architecture": "x64",
+    "cpu": "Intel(R) Core(TM) 7 150U",
+    "logicalProcessors": 12,
+    "totalMemoryBytes": 34040168448,
+    "freeMemoryBytes": 19607744512,
+    "vscodeVersion": "1.125.0",
+    "node": "24.15.0",
+    "electron": "42.2.0"
+  },
+  "dotnetSdk": "10.0.300",
+  "dotnetRuntime": "10.0.8",
+  "build": "Release net10.0",
+  "powerScheme": "�d���ݒ�� GUID: e5a464aa-8081-4ad0-8124-3568713d901d  (�J�X�^�� �v����)",
+  "hostTargetFrameworkNote": "AppContext reports vstest host .NETCoreApp v8.0; tested projects target net10.0, execution runtime10.0.8",
+  "before": {
+    "sourceCommit": "58b179e84d270c134c3af478b53205b6b1e345bc",
+    "productionInputsTreeSha256": "03c20b13f38554fa1e157080bf569744911c831b2f3b373327da22d9e8591c67",
+    "testAssembly": ".tmp\\issue-365-baseline\\tools\\vba-language-server\\tests\\VbaLanguageServer.Tests\\bin\\Release\\net10.0\\VbaLanguageServer.Tests.dll",
+    "testAssemblySha256": "141e7ccb53891f244f25c213f1deaa784de150961895353a07a74e40896a1211",
+    "originalRawTrx": "cold-before-exact.trx",
+    "originalRawTrxSha256": "248a2c21f2ae083c07dd3eab8fb6af154affb462627e40bd867aa95fdb2954e2",
+    "referencePreparationMilliseconds": 0,
+    "referencePreparation": "Bundled catalogs only; this workspace fixture performs no external reference preparation.",
+    "command": "VBA_TOOLS_COMMON_MODULES_ACTIVE_SOURCE=<CommonModules>/src/CommonModules/Lib_Common.bas dotnet vstest .tmp\\issue-365-baseline\\tools\\vba-language-server\\tests\\VbaLanguageServer.Tests\\bin\\Release\\net10.0\\VbaLanguageServer.Tests.dll --TestCaseFilter:FullyQualifiedName~VbaInteractiveSemanticReadinessPerformanceTests",
+    "timingsMilliseconds": {
+      "openDocument": 1272.429,
+      "capture": 335.674,
+      "scopeCapture": 334.763,
+      "snapshotAdmission": 0.911,
+      "diskInventory": 3309.737,
+      "semanticInventory": 86.975,
+      "storeReturn": 9.095,
+      "interactiveSemanticReadiness": 3741.5,
+      "tokenProjection": 2185.979
+    },
+    "trxArtifact": "issue-365-cold-before.trx",
+    "trxArtifactSha256": "7d3d0569da6305269e68df9ca631bcf9b91fff9a47440b810be774336d83d1a5",
+    "trxArtifactNote": "Same XML content normalized to repository UTF-8 without BOM and LF; original raw file hash retained separately."
+  },
+  "after": {
+    "sourceCommit": "1f7ee51e67376f256eac8426ce4ffba18c208fe1",
+    "productionInputsTreeSha256": "bc25ecdab9579ba595c662b162bf0c127cfe47d9838b7691f38a5561679bf420",
+    "testAssembly": "tools\\vba-language-server\\tests\\VbaLanguageServer.Tests\\bin\\Release\\net10.0\\VbaLanguageServer.Tests.dll",
+    "testAssemblySha256": "cd5b225162f36af5273fd0b1ae0c869c4fb1889c0bf700e830ea533574f0bc71",
+    "originalRawTrx": "cold-after-final.trx",
+    "originalRawTrxSha256": "8ab59e9ec46f158315c535ab0407b9174eb7be69d3c544f452c9d635897b8381",
+    "referencePreparationMilliseconds": 0,
+    "referencePreparation": "Bundled catalogs only; this workspace fixture performs no external reference preparation.",
+    "command": "VBA_TOOLS_COMMON_MODULES_ACTIVE_SOURCE=<CommonModules>/src/CommonModules/Lib_Common.bas dotnet vstest tools\\vba-language-server\\tests\\VbaLanguageServer.Tests\\bin\\Release\\net10.0\\VbaLanguageServer.Tests.dll --TestCaseFilter:FullyQualifiedName~VbaInteractiveSemanticReadinessPerformanceTests",
+    "timingsMilliseconds": {
+      "openDocument": 1095.402,
+      "capture": 59.794,
+      "scopeCapture": 58.638,
+      "snapshotAdmission": 1.156,
+      "diskInventory": 3014.188,
+      "semanticInventory": 128.31,
+      "storeReturn": 8.703,
+      "interactiveSemanticReadiness": 3211,
+      "tokenProjection": 2118.793
+    },
+    "trxArtifact": "issue-365-cold-after.trx",
+    "trxArtifactSha256": "91dfc6d620990928390c1d849c4e76d57afbbe87256198b1847ff0c08afd6a4d",
+    "trxArtifactNote": "Same XML content normalized to repository UTF-8 without BOM and LF; original raw file hash retained separately."
+  },
+  "afterRetainedAnalysis": {
+    "entries": 1,
+    "accountedBytes": 371541492,
+    "inventoryEstimateBytes": 367424512,
+    "managedHeapBytesAfterForcedCollection": 134288408
+  },
+  "externalReferenceComparison": "See coldExplorerPreparation in issue-365-preview-before.json and issue-365-preview-final.json for actual registry/catalog preparation in fresh VS Code processes; those phases overlap and are not additive to this bundled-reference fixture.",
+  "powerSchemeGuid": "e5a464aa-8081-4ad0-8124-3568713d901d",
+  "powerSchemeOutputNote": "The GUID is intact. The localized powercfg label was decoded incorrectly during command capture; the original captured string is preserved above."
+}

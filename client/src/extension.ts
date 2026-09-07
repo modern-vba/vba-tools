@@ -2,6 +2,7 @@ import * as path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { Buffer } from 'node:buffer';
+import { previewSemanticTokensProbe } from './previewSemanticTokensProbe';
 
 import {
   CancellationTokenSource,
@@ -662,6 +663,17 @@ export async function activate(
         )
       })
     );
+
+    if (previewSemanticTokensProbe !== undefined) {
+      const probe = previewSemanticTokensProbe;
+      clientOptions.middleware = {
+        ...clientOptions.middleware,
+        provideDocumentSemanticTokens: (document, token, next) => (
+          probe.observe(document, () => next(document, token),
+            () => token.isCancellationRequested)
+        )
+      };
+    }
 
     client = new LanguageClient(
       'vbaLanguageServer',

@@ -93,6 +93,8 @@ public sealed class VbaInteractiveSemanticReadinessPerformanceTests
                 .ArgumentLists
                 .Count);
         var timings = observer.GetTimings();
+        output.WriteLine(
+            $"retention entries={workspace.RetainedReusableAnalysisCount}, accountedBytes={workspace.RetainedReusableAnalysisBytes}, inventoryEstimateBytes={snapshot.SemanticInventory.EstimateRetainedAnalysisBytes()}, managedHeapBytes={GC.GetTotalMemory(forceFullCollection: true)}");
         var improvement = 1d
             - (timings.InteractiveSemanticReadiness.TotalSeconds
                 / EagerValidationBaselineSeconds);

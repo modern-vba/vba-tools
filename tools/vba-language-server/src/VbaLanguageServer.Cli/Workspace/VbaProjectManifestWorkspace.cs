@@ -126,6 +126,15 @@ internal interface IVbaProjectManifestResolutionSource
         }
     }
 
+    VbaProjectManifestResolutionCapture CaptureFreshResolution(
+        VbaIdentifiedDocument activeDocument,
+        string? retainedRootPath,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return CaptureResolution(activeDocument.Uri);
+    }
+
     VbaProjectManifestBarrierSnapshot CaptureScopeBarriers(
         VbaIdentifiedDocument activeDocument,
         VbaProjectResolution resolution)
@@ -351,6 +360,128 @@ internal sealed class VbaProjectManifestWorkspace : IVbaProjectManifestResolutio
     public VbaProjectManifestResolutionCapture CaptureResolution(
         string activeUri)
         => CaptureResolution(activeUri, CancellationToken.None);
+
+    /// <summary>
+    /// Refreshes disk authority before considering a retained project snapshot.
+    /// Open manifest overlays remain authoritative.
+    /// </summary>
+    public VbaProjectManifestResolutionCapture CaptureFreshResolution(
+        VbaIdentifiedDocument activeDocument,
+        string? retainedRootPath,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (activeDocument.Identity.IsLocalFile)
+        {
+            var activeDirectory = Path.GetDirectoryName(
+                activeDocument.Identity.CanonicalValue);
+            for (var directory = activeDirectory is null
+                    ? null
+                    : new DirectoryInfo(activeDirectory);
+                directory is not null;
+                directory = directory.Parent)
+            {
+                var manifestPath = Path.Combine(directory.FullName, ManifestFileName);
+                var manifestIdentity = IdentifyManifestDocument(manifestPath);
+                RefreshDiskManifest(
+                    manifestIdentity,
+                    cancellationToken);
+                var candidate = CaptureReconciliationState(
+                    new VbaIdentifiedDocument(manifestIdentity, new Uri(manifestPath).AbsoluteUri));
+                if (candidate.EffectiveManifestText is not null
+                    || candidate.Revision == 0 && fileSystem.FileExists(manifestPath))
+                {
+                    break;
+                }
+            }
+        }
+
+        RefreshKnownScopeManifests(retainedRootPath, cancellationToken);
+        var captured = CaptureResolution(activeDocument.Uri, cancellationToken);
+        if (!string.Equals(
+                retainedRootPath,
+                captured.Resolution.RootPath,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            RefreshKnownScopeManifests(captured.Resolution.RootPath, cancellationToken);
+            captured = CaptureResolution(activeDocument.Uri, cancellationToken);
+        }
+
+        return captured;
+    }
+
+    private void RefreshKnownScopeManifests(
+        string? rootPath,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(rootPath))
+        {
+            return;
+        }
+
+        VbaDocumentIdentity[] knownManifests;
+        lock (gate)
+        {
+            knownManifests = states.Keys
+                .Concat(reconciliationBaselines.Keys)
+                .Concat(lastKnownGoodDiskManifests.Keys)
+                .Distinct()
+                .Where(identity => IsManifestWithinScope(identity.CanonicalValue, rootPath))
+                .ToArray();
+        }
+
+        foreach (var manifestIdentity in knownManifests)
+        {
+            RefreshDiskManifest(manifestIdentity, cancellationToken);
+        }
+    }
+
+    private void RefreshDiskManifest(
+        VbaDocumentIdentity manifestIdentity,
+        CancellationToken cancellationToken)
+    {
+        var manifest = new VbaIdentifiedDocument(
+            manifestIdentity,
+            new Uri(manifestIdentity.CanonicalValue).AbsoluteUri);
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var captured = CaptureReconciliationState(manifest);
+            if (captured.HasOpenOverlay)
+            {
+                return;
+            }
+
+            // Cold resolution owns initial parsing and its invalid-manifest diagnostic.
+            if (captured.Revision == 0)
+            {
+                return;
+            }
+
+            var exists = fileSystem.FileExists(manifestIdentity.CanonicalValue);
+            var text = exists
+                ? fileSystem.ReadManifestText(
+                    manifestIdentity.CanonicalValue,
+                    cancellationToken)
+                : null;
+            if (captured.Baseline.Exists == exists
+                && string.Equals(
+                    captured.Baseline.Text,
+                    text,
+                    StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            var update = exists
+                ? ReloadReconciledManifest(manifest, text!, captured.Revision)
+                : DeleteReconciledManifest(manifest, captured.Revision);
+            if (update.Status != VbaProjectManifestReconciliationStatus.Rejected)
+            {
+                return;
+            }
+        }
+    }
 
     internal VbaProjectManifestResolutionCapture CaptureResolution(
         string activeUri,

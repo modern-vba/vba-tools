@@ -1640,6 +1640,19 @@ cache and reconciliation boundaries as `VbaDocumentIdentity` or
 data rather than the identity accepted by those Interfaces.
 _Avoid_: project authority, disk content identity, mutable cache key
 
+**VbaRetainedProjectAnalysis**:
+Completed immutable project analysis retained separately from active document,
+snapshot, reconciliation, and diagnostic ownership. Only a successfully committed
+snapshot may supply an entry. Inactive reopening refreshes current manifest and
+closed-source content, then privately proves exact membership, structural document
+identity, text, project identity, references/catalog revision, and intrinsic host-event revision before
+reuse. The new lifecycle owns a fresh snapshot and validation shell; editor
+definitions, resolution, and atomic occurrence/token caches may be shared.
+The process-local store has finite entry and accounted-structure size limits,
+deterministic LRU eviction, oversized cold fallback, and teardown release.
+Idle time alone does not expire an entry. See ADR 0042.
+_Avoid_: current snapshot, retained authority, hidden anchor document, persisted cache
+
 **VbaProjectDiskInventory**:
 The syntax-free disk capture for one resolved `VbaProject`. It owns `.bas`,
 `.cls`, and `.frm` enumeration, recursive versus top-directory scope,
@@ -1648,8 +1661,9 @@ source decoding, decoded-text reuse, and manifest probes. Cold snapshot capture
 may reuse decoded text only while file metadata and the explicit invalidation
 generation remain unchanged. Watched-source capture performs ownership
 validation, invalidation, and one stable source read without enumerating the
-project. `ProjectReconciliation` always rereads source bytes even when metadata
-is unchanged. Its one-method reconciliation observation Seam accepts an
+project. `ProjectReconciliation` and inactive retained-analysis validation always
+reread closed source bytes even when metadata is unchanged. Its one-method
+reconciliation observation Seam accepts an
 immutable disk-only request containing the resolved project disk scope,
 ordered typed manifest probes, typed barrier overrides, typed observed-barrier
 document identities, and typed open-source exclusions. The shared filesystem

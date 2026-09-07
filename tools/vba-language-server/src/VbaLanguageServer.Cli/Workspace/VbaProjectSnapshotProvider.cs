@@ -332,7 +332,7 @@ internal sealed class VbaProjectSnapshotIdentity
 /// <summary>
 /// Creates and caches immutable project snapshots from workspace state.
 /// </summary>
-internal sealed class VbaProjectSnapshotProvider
+internal sealed class VbaProjectSnapshotProvider : IDisposable
 {
     internal sealed class ProjectSnapshotOwnership
     {
@@ -392,6 +392,12 @@ internal sealed class VbaProjectSnapshotProvider
     private readonly object gate = new();
     private readonly Dictionary<VbaProjectSnapshotIdentity, CachedProjectSnapshot>
         cache = new();
+    private readonly Dictionary<VbaProjectSnapshotIdentity, VbaRetainedProjectAnalysis>
+        retainedAnalysis = new();
+    private readonly List<VbaProjectSnapshotIdentity> retainedAnalysisRecency = [];
+    private readonly VbaRetainedAnalysisLimits retainedAnalysisLimits;
+    private long retainedAnalysisBytes;
+    private bool disposed;
     private readonly Dictionary<VbaProjectAuthorityIdentity, ReconciliationBaseline>
         reconciliationBaselines = new();
     private readonly Dictionary<VbaDocumentIdentity, VbaProjectAuthorityIdentity>
@@ -429,8 +435,12 @@ internal sealed class VbaProjectSnapshotProvider
         IVbaProjectSnapshotBuildObserver? buildObserver = null,
         IVbaProjectReconciliationAuthorityLeaseObserver?
             reconciliationAuthorityLeaseObserver = null,
-        VbaIntrinsicHostEventCatalogStore? intrinsicHostEventCatalogStore = null)
+        VbaIntrinsicHostEventCatalogStore? intrinsicHostEventCatalogStore = null,
+        VbaRetainedAnalysisLimits? retainedAnalysisLimits = null)
     {
+        this.retainedAnalysisLimits = retainedAnalysisLimits ?? new();
+        ArgumentOutOfRangeException.ThrowIfNegative(this.retainedAnalysisLimits.MaximumEntries);
+        ArgumentOutOfRangeException.ThrowIfNegative(this.retainedAnalysisLimits.MaximumBytes);
         this.referenceCatalogCache = referenceCatalogCache;
         this.diskInventory = diskInventory;
         this.diskDocumentCache = diskDocumentCache;
@@ -459,7 +469,8 @@ internal sealed class VbaProjectSnapshotProvider
         cancellationToken.ThrowIfCancellationRequested();
         var authorityLookup = CaptureScopeAuthorityLookup(
             cancellationToken);
-        var capture = CaptureKnownProjectScope(
+        var capture = CaptureRetainedProjectScope(activeDocument, cancellationToken)
+            ?? CaptureKnownProjectScope(
                 activeDocument,
                 authorityLookup,
                 cancellationToken,
@@ -477,9 +488,54 @@ internal sealed class VbaProjectSnapshotProvider
         cancellationToken.ThrowIfCancellationRequested();
         lock (gate)
         {
+            ObjectDisposedException.ThrowIf(disposed, this);
             return new CapturedProjectScopeAuthorityLookup(
                 scopeAuthorityLookup);
         }
+    }
+
+    private ProjectScopeCapture? CaptureRetainedProjectScope(
+        VbaIdentifiedDocument activeDocument,
+        CancellationToken cancellationToken)
+    {
+        KeyValuePair<VbaProjectSnapshotIdentity, VbaRetainedProjectAnalysis> candidate;
+        lock (gate)
+        {
+            var activeScope = scopeAuthorityLookup.Resolve(activeDocument.Identity);
+            if (activeScope is not null
+                && scopeInvalidationStates.TryGetValue(activeScope.CacheIdentity, out var state)
+                && state.IsMaterialized)
+            {
+                return null;
+            }
+
+            candidate = retainedAnalysis
+                .Where(pair => pair.Value.Resolution.ContainsUri(activeDocument.Uri))
+                .OrderByDescending(pair => pair.Value.Resolution.RootPath.Length)
+                .FirstOrDefault();
+            if (candidate.Value is null || cache.ContainsKey(candidate.Key))
+            {
+                return null;
+            }
+        }
+
+        var manifest = manifestResolutionSource.CaptureFreshResolution(
+            activeDocument, candidate.Value.Resolution.RootPath, cancellationToken);
+        var resolution = manifest.Resolution;
+        return new ProjectScopeCapture(
+            activeDocument,
+            resolution,
+            manifest.Barriers,
+            referenceCatalogCache.CaptureSelectionState(
+                resolution.ReferenceEntries,
+                VbaProjectReferenceCatalogScopeIdentity.TryCreate(resolution, out var scope)
+                    ? scope : null),
+            intrinsicHostEventCatalogStore.CaptureState(),
+            VbaProjectSnapshotIdentity.Create(activeDocument.Identity, resolution),
+            candidate.Key)
+        {
+            ValidateRetainedContent = true
+        };
     }
 
     private ProjectScopeCapture? CaptureKnownProjectScope(
@@ -538,7 +594,8 @@ internal sealed class VbaProjectSnapshotProvider
         foreach (var activeDocument in activeDocuments)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var capture = CaptureKnownProjectScope(
+            var capture = CaptureRetainedProjectScope(activeDocument, cancellationToken)
+                ?? CaptureKnownProjectScope(
                     activeDocument,
                     authorityLookup,
                     cancellationToken,
@@ -612,13 +669,20 @@ internal sealed class VbaProjectSnapshotProvider
             buildObserver.BeforeBuildProjectSnapshot(
                 capture.ActiveUri,
                 cancellationToken);
+            VbaRetainedProjectAnalysis? retained;
+            lock (gate)
+            {
+                retainedAnalysis.TryGetValue(capture.CacheIdentity, out retained);
+            }
             var inventorySnapshot = snapshotBuilder.CreateInventorySnapshot(
                 capture.ActiveDocument,
                 capture.Resolution,
                 workspaceState.DocumentsByIdentity,
                 workspaceState.ExcludedSourceIdentities,
                 capture.ManifestBarriers.Overrides,
-                cancellationToken);
+                cancellationToken,
+                retained?.Documents,
+                capture.ValidateRetainedContent);
             var sourceIdentities =
                 inventorySnapshot.DocumentsByIdentity.Keys.ToArray();
             RegisterScopeSources(
@@ -626,10 +690,34 @@ internal sealed class VbaProjectSnapshotProvider
                 capturedInvalidation,
                 sourceIdentities);
 
-            buildObserver.BeforeBuildSemanticInventory(
-                capture.ActiveUri,
-                cancellationToken);
-            var snapshot = snapshotBuilder.BuildSnapshot(
+            var reuseFailure = retained is null ? "missing" : retained.GetReuseFailure(
+                capture.CacheIdentity,
+                capture.Resolution,
+                capture.ReferenceCatalogState.Revision,
+                capture.IntrinsicHostEventCatalogState.Revision,
+                inventorySnapshot);
+            var canReuse = reuseFailure is null;
+            VbaRetainedAnalysisTrace.Record("capture", capture.ActiveUri,
+                reuseFailure ?? "reused", retained?.EstimatedBytes ?? 0);
+            if (!canReuse)
+            {
+                buildObserver.BeforeBuildSemanticInventory(capture.ActiveUri, cancellationToken);
+            }
+
+            var snapshot = (canReuse
+                ? new VbaProjectSnapshot(
+                    capture.Resolution,
+                    inventorySnapshot.Documents.ToDictionary(
+                        pair => pair.Key, pair => pair.Value.Text, StringComparer.OrdinalIgnoreCase),
+                    LanguageServerManifestResolution.Create(
+                        capture.Resolution, capture.ReferenceCatalogState.CatalogSet).ReferenceSelection,
+                    retained!.Inventory.CreateFromRetainedAnalysis(capture.ActiveUri, buildObserver))
+                {
+                    DiskSources = inventorySnapshot.DiskSources,
+                    DiskSourceFailures = inventorySnapshot.Failures,
+                    ExistingOpenSourceIdentities = inventorySnapshot.ExistingOpenSourceIdentities
+                }
+                : snapshotBuilder.BuildSnapshot(
                 capture.ActiveUri,
                 capture.Resolution,
                 inventorySnapshot.Documents,
@@ -641,7 +729,7 @@ internal sealed class VbaProjectSnapshotProvider
                 capture.IntrinsicHostEventCatalogState.Catalog,
                 capture.ReferenceCatalogState.Identities,
                 capture.ReferenceCatalogState.AuthoritativeProjectNames,
-                cancellationToken) with
+                cancellationToken)) with
             {
                 ManifestBarrierOverrides =
                     capture.ManifestBarriers.Overrides,
@@ -659,6 +747,17 @@ internal sealed class VbaProjectSnapshotProvider
                     capturedInvalidation.State,
                     sourceIdentities)
             };
+            var reusableAnalysis = canReuse
+                ? retained
+                : snapshot.DiskSourceFailures.Count == 0
+                    ? new VbaRetainedProjectAnalysis(
+                        capture.CacheIdentity,
+                        capture.Resolution,
+                        capture.ReferenceCatalogState.Revision,
+                        capture.IntrinsicHostEventCatalogState.Revision,
+                        inventorySnapshot.DocumentsByIdentity,
+                        snapshot.SemanticInventory)
+                    : null;
             buildObserver.BeforeStore(workspaceState.Version, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             StoreCachedSnapshot(
@@ -676,7 +775,8 @@ internal sealed class VbaProjectSnapshotProvider
                     .Select(pair => new VbaIdentifiedDocument(
                         pair.Key,
                         pair.Value.Uri))
-                    .ToArray());
+                    .ToArray(),
+                reusableAnalysis);
             return snapshot;
         }
         finally
@@ -693,8 +793,44 @@ internal sealed class VbaProjectSnapshotProvider
         {
             fullInvalidationGeneration++;
             cache.Clear();
+            retainedAnalysis.Clear();
+            retainedAnalysisRecency.Clear();
+            retainedAnalysisBytes = 0;
             scopeAuthoritySeeds.Clear();
             scopeAuthorityLookup = ProjectScopeAuthorityLookup.Empty;
+        }
+    }
+
+    public void Dispose()
+    {
+        VbaDocumentIdentity[] sourceIdentities;
+        lock (gate)
+        {
+            if (disposed)
+            {
+                return;
+            }
+
+            disposed = true;
+            sourceIdentities = scopeInvalidationStates.Values
+                .SelectMany(state => state.SourceIdentities).Distinct().ToArray();
+            fullInvalidationGeneration++;
+            cache.Clear();
+            retainedAnalysis.Clear();
+            retainedAnalysisRecency.Clear();
+            retainedAnalysisBytes = 0;
+            scopeInvalidationStates.Clear();
+            scopeAuthoritySeeds.Clear();
+            scopeAuthorityLookup = ProjectScopeAuthorityLookup.Empty;
+            reconciliationBaselines.Clear();
+            reconciliationAuthoritiesByActiveUri.Clear();
+            manifestResolutionCache.Clear();
+        }
+
+        foreach (var identity in sourceIdentities)
+        {
+            diskInventory.InvalidateSource(identity);
+            diskDocumentCache.Invalidate(identity);
         }
     }
 
@@ -774,6 +910,16 @@ internal sealed class VbaProjectSnapshotProvider
         }
     }
 
+    internal int RetainedReusableAnalysisCount
+    {
+        get { lock (gate) { return retainedAnalysis.Count; } }
+    }
+
+    internal long RetainedReusableAnalysisBytes
+    {
+        get { lock (gate) { return retainedAnalysisBytes; } }
+    }
+
     public int RetainedScopeInvalidationStateCount
     {
         get
@@ -818,11 +964,13 @@ internal sealed class VbaProjectSnapshotProvider
         }
     }
 
-    public void RetireInactiveScopes(
-        IReadOnlyList<VbaIdentifiedDocument> remainingTrackedDocuments)
+    public IReadOnlyList<VbaProjectResolution> RetireInactiveScopes(
+        IReadOnlyList<VbaIdentifiedDocument> remainingTrackedDocuments,
+        bool preserveAnchoredScopes = false)
     {
         var diskIdentitiesToInvalidate =
             new HashSet<VbaDocumentIdentity>();
+        var retiredResolutions = new List<VbaProjectResolution>();
         lock (gate)
         {
             var remainingDocuments = remainingTrackedDocuments
@@ -847,7 +995,8 @@ internal sealed class VbaProjectSnapshotProvider
                 document =>
                 {
                     var seed = scopeAuthorityLookup.Resolve(document.Identity);
-                    if (seed is not null
+                    if (!preserveAnchoredScopes
+                        && seed is not null
                         && manifestResolutionSource.CaptureScopeBarriers(
                                 document,
                                 seed.Resolution)
@@ -924,6 +1073,7 @@ internal sealed class VbaProjectSnapshotProvider
             {
                 if (cache.TryGetValue(cacheIdentity, out var cached))
                 {
+                    retiredResolutions.Add(cached.Snapshot.Resolution);
                     foreach (var sourceIdentity in
                         cached.DiskSourceIdentities)
                     {
@@ -935,6 +1085,7 @@ internal sealed class VbaProjectSnapshotProvider
                     cacheIdentity,
                     out var scopeState))
                 {
+                    retiredResolutions.Add(scopeState.Resolution);
                     foreach (var sourceIdentity in
                         scopeState.SourceIdentities)
                     {
@@ -1033,6 +1184,16 @@ internal sealed class VbaProjectSnapshotProvider
         {
             diskInventory.InvalidateSource(diskIdentity);
             diskDocumentCache.Invalidate(diskIdentity);
+        }
+
+        return retiredResolutions;
+    }
+
+    internal bool HasActiveSourceScope(VbaDocumentIdentity identity)
+    {
+        lock (gate)
+        {
+            return scopeAuthorityLookup.Resolve(identity) is not null;
         }
     }
 
@@ -1684,7 +1845,8 @@ internal sealed class VbaProjectSnapshotProvider
         IReadOnlyList<VbaDocumentIdentity> sourceIdentities,
         IReadOnlyDictionary<VbaDocumentIdentity, VbaTrackedDocument>
             sourceDocumentsByIdentity,
-        IReadOnlyList<VbaIdentifiedDocument> trackedDocuments)
+        IReadOnlyList<VbaIdentifiedDocument> trackedDocuments,
+        VbaRetainedProjectAnalysis? reusableAnalysis)
     {
         lock (gate)
         {
@@ -1716,6 +1878,11 @@ internal sealed class VbaProjectSnapshotProvider
                     .Select(source => source.DocumentIdentity)
                     .ToArray(),
                 snapshot);
+            StoreRetainedAnalysis(cacheIdentity, reusableAnalysis);
+            VbaRetainedAnalysisTrace.Record("admission", snapshot.DiagnosticsOwnership.ActiveUri,
+                retainedAnalysis.ContainsKey(cacheIdentity) ? "retained" : "notRetained",
+                reusableAnalysis?.EstimatedBytes ?? 0, retainedAnalysisLimits.MaximumBytes,
+                retainedAnalysis.Count);
             scopeState.IsMaterialized = true;
             scopeAuthoritySeeds[cacheIdentity] =
                 new WarmProjectScopeSeed(
@@ -1751,7 +1918,7 @@ internal sealed class VbaProjectSnapshotProvider
     private bool IsCurrentProjectSnapshotCore(
         ProjectSnapshotOwnership ownership)
     {
-        return fullInvalidationGeneration
+        return !disposed && fullInvalidationGeneration
                 == ownership.FullInvalidationGeneration
             && scopeInvalidationStates.TryGetValue(
                 ownership.CacheIdentity,
@@ -1777,6 +1944,39 @@ internal sealed class VbaProjectSnapshotProvider
                 ownership.SourceIdentities)
             && CaptureReferenceCatalogRevision(ownership)
                 == ownership.ReferenceCatalogRevision;
+    }
+
+    private void StoreRetainedAnalysis(
+        VbaProjectSnapshotIdentity identity,
+        VbaRetainedProjectAnalysis? analysis)
+    {
+        RemoveRetainedAnalysis(identity);
+        if (analysis is null
+            || retainedAnalysisLimits.MaximumEntries == 0
+            || analysis.EstimatedBytes == long.MaxValue
+            || analysis.EstimatedBytes > retainedAnalysisLimits.MaximumBytes)
+        {
+            return;
+        }
+
+        while (retainedAnalysis.Count >= retainedAnalysisLimits.MaximumEntries
+            || retainedAnalysisBytes > retainedAnalysisLimits.MaximumBytes - analysis.EstimatedBytes)
+        {
+            RemoveRetainedAnalysis(retainedAnalysisRecency[0]);
+        }
+
+        retainedAnalysis.Add(identity, analysis);
+        retainedAnalysisRecency.Add(identity);
+        retainedAnalysisBytes += analysis.EstimatedBytes;
+    }
+
+    private void RemoveRetainedAnalysis(VbaProjectSnapshotIdentity identity)
+    {
+        if (retainedAnalysis.Remove(identity, out var removed))
+        {
+            retainedAnalysisBytes -= removed.EstimatedBytes;
+            retainedAnalysisRecency.Remove(identity);
+        }
     }
 
     private long CaptureReferenceCatalogRevision(
@@ -1934,6 +2134,7 @@ internal sealed class VbaProjectSnapshotProvider
     {
         lock (gate)
         {
+            ObjectDisposedException.ThrowIf(disposed, this);
             if (!scopeInvalidationStates.TryGetValue(
                     cacheIdentity,
                     out var scopeState))
@@ -2118,6 +2319,8 @@ internal sealed class VbaProjectSnapshotProvider
         VbaProjectSnapshotIdentity? SupersededCacheIdentity)
     {
         public string ActiveUri => ActiveDocument.Uri;
+
+        public bool ValidateRetainedContent { get; init; }
     }
 
     private sealed record CapturedProjectScopeAuthorityLookup(

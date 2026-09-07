@@ -38,6 +38,202 @@ public sealed class VbaSemanticInventory
     private readonly string? validationActiveUri;
     private readonly IVbaProjectSnapshotBuildObserver? validationBuildObserver;
 
+    /// <summary>
+    /// Detaches immutable analysis and cancellation-safe semantic caches from
+    /// the validation lifecycle before bounded inactive retention.
+    /// </summary>
+    internal VbaSemanticInventory CreateForRetainedAnalysis()
+        => new(this, validationActiveUri: null, validationBuildObserver: null);
+
+    /// <summary>
+    /// Starts a fresh validation lifecycle after the snapshot provider proves
+    /// equality of every current semantic input with retained analysis.
+    /// </summary>
+    internal VbaSemanticInventory CreateFromRetainedAnalysis(
+        string activeUri,
+        IVbaProjectSnapshotBuildObserver observer)
+        => new(this, activeUri, observer);
+
+    /// <summary>
+    /// Estimates the complete retained analysis footprint, including capacity
+    /// for occurrence and token caches that have not been requested yet.
+    /// Shared objects are deliberately charged to every retained scope. This
+    /// is a conservative admission estimate, not a CLR heap measurement.
+    /// </summary>
+    internal long EstimateRetainedAnalysisBytes()
+    {
+        long bytes = 16 * 1024;
+        foreach (var document in sourceDocuments)
+        {
+            if (document.SyntaxTree is not { } tree)
+            {
+                // There is no bounded syntax inventory for this projection.
+                return long.MaxValue;
+            }
+
+            var module = tree.Module;
+            var syntaxNodeCount = (long)module.Attributes.Count
+                + module.Options.Count + module.Members.Count
+                + module.Declarations.Count + module.CallableDeclarations.Count
+                + module.Statements.Count + module.Expressions.Count
+                + module.ArgumentLists.Count + module.Blocks.Count
+                + module.LineLabels.Count + module.PreprocessorDirectives.Count
+                + module.PreprocessorBlocks.Count
+                + module.ImplementsRelationships.Count
+                + module.DefTypeDirectives.Count + tree.Diagnostics.Count;
+            bytes += 4096 + EstimateRetainedTextBytes(document.Text)
+                + EstimateRetainedTextBytes(document.Uri)
+                + syntaxNodeCount * 512;
+            // Reserve lexical/range indexes, two resolved occurrences and
+            // forward/reverse maps, token objects and encoded LSP integers
+            // for every token, independently of which lazy shards are warm.
+            bytes += (long)tree.TokenStream.Tokens.Count * 512;
+            foreach (var definition in document.Definitions)
+            {
+                bytes += EstimateRetainedDefinitionBytes(definition);
+            }
+        }
+
+        foreach (var candidate in definitionCandidates.GetReferenceCandidates(null))
+        {
+            bytes += EstimateRetainedDefinitionBytes(candidate.Definition);
+        }
+
+        // The captured catalog set retains inactive catalogs and structural
+        // TypeLib Event metadata as well as projected active definitions.
+        foreach (var name in referenceCatalogs.ReferenceNames)
+        {
+            var catalog = referenceCatalogs.FindCatalog(name)!;
+            bytes += 4096 + EstimateRetainedTextBytes(name)
+                + EstimateRetainedTextBytes(catalog.ReferencedVbaProjectName);
+            foreach (var qualifier in catalog.QualifierAliases)
+            {
+                bytes += 256 + EstimateRetainedTextBytes(qualifier);
+            }
+
+            foreach (var definition in catalog.Definitions)
+            {
+                bytes += 2048L * (1 + catalog.QualifierAliases.Count)
+                    + EstimateRetainedTextBytes(definition.Name)
+                    + EstimateRetainedTextBytes(definition.Documentation)
+                    + EstimateRetainedTextBytes(definition.ParentTypeName)
+                    + EstimateRetainedTypeBytes(definition.TypeReference)
+                    + EstimateRetainedSignatureBytes(definition.Signature);
+            }
+
+            foreach (var type in catalog.TypeLibTypes ?? [])
+            {
+                bytes += 2048 + EstimateRetainedTextBytes(type.Name)
+                    + EstimateRetainedTextBytes(type.Documentation);
+                foreach (var member in type.Members)
+                {
+                    bytes += EstimateRetainedCatalogMemberBytes(member);
+                }
+
+                foreach (var relationship in type.Metadata?.ImplementedInterfaces ?? [])
+                {
+                    bytes += 1024 + EstimateRetainedTextBytes(relationship.Name);
+                    foreach (var member in relationship.CallableMembers)
+                    {
+                        bytes += EstimateRetainedCatalogMemberBytes(member);
+                    }
+                }
+            }
+        }
+
+        if (intrinsicHostEventCatalog is { } hostCatalog)
+        {
+            bytes += 4096 + EstimateRetainedTextBytes(hostCatalog.IntrinsicEventSourceName);
+            foreach (var hostEvent in hostCatalog.Events)
+            {
+                bytes += 2048 + EstimateRetainedTextBytes(hostEvent.Name)
+                    + EstimateRetainedTextBytes(hostEvent.Documentation);
+                foreach (var parameter in hostEvent.Parameters)
+                {
+                    bytes += 1024 + EstimateRetainedTextBytes(parameter.Name)
+                        + (parameter.Type switch
+                        {
+                            VbaIntrinsicHostEventParameterType intrinsic =>
+                                EstimateRetainedTextBytes(intrinsic.Name),
+                            VbaTypeLibraryHostEventParameterType library =>
+                                EstimateRetainedTextBytes(library.Name)
+                                    + EstimateRetainedTextBytes(library.LibraryGuid),
+                            VbaUnresolvedHostEventParameterType unresolved =>
+                                EstimateRetainedTextBytes(unresolved.DisplayName),
+                            _ => 0
+                        });
+                }
+            }
+        }
+
+        return bytes;
+    }
+
+    private static long EstimateRetainedDefinitionBytes(VbaSourceDefinition definition)
+        => 2048 + EstimateRetainedTextBytes(definition.Name)
+            + EstimateRetainedTextBytes(definition.Uri)
+            + EstimateRetainedTextBytes(definition.ModuleName)
+            + EstimateRetainedTextBytes(definition.ParentProcedureName)
+            + EstimateRetainedTextBytes(definition.ParentTypeName)
+            + EstimateRetainedTextBytes(definition.Documentation)
+            + EstimateRetainedTextBytes(definition.DeclarationLabel)
+            + EstimateRetainedTypeBytes(definition.TypeReference)
+            + EstimateRetainedSignatureBytes(definition.Signature)
+            + (definition.ConditionalCompilationPath?.Branches.Count ?? 0) * 128L;
+
+    private static long EstimateRetainedCatalogMemberBytes(TypeLibCatalogMember member)
+        => 2048 + EstimateRetainedTextBytes(member.Name)
+            + EstimateRetainedTextBytes(member.Documentation)
+            + EstimateRetainedTypeBytes(member.TypeReference)
+            + EstimateRetainedSignatureBytes(member.Signature);
+
+    private static long EstimateRetainedSignatureBytes(VbaCallableSignature? signature)
+        => signature is null
+            ? 0
+            : 512 + EstimateRetainedTextBytes(signature.Label)
+                + EstimateRetainedTextBytes(signature.Documentation)
+                + signature.Parameters.Sum(parameter =>
+                    512 + EstimateRetainedTextBytes(parameter.Name)
+                        + EstimateRetainedTextBytes(parameter.Documentation)
+                        + EstimateRetainedTextBytes(parameter.DisplayLabel)
+                        + EstimateRetainedTextBytes(parameter.DefaultExpression)
+                        + EstimateRetainedTypeBytes(parameter.TypeReference));
+
+    private static long EstimateRetainedTypeBytes(VbaTypeReference? type)
+        => type is null
+            ? 0
+            : 128 + EstimateRetainedTextBytes(type.Name)
+                + EstimateRetainedTextBytes(type.Qualifier);
+
+    private static long EstimateRetainedTextBytes(string? text)
+        => text is null ? 0 : 32 + text.Length * 8L;
+
+    private VbaSemanticInventory(
+        VbaSemanticInventory retained,
+        string? validationActiveUri,
+        IVbaProjectSnapshotBuildObserver? validationBuildObserver)
+    {
+        sourceDocuments = retained.sourceDocuments;
+        definitionCandidates = retained.definitionCandidates;
+        resolutionPolicy = retained.resolutionPolicy;
+        semanticResolution = retained.semanticResolution;
+        resolvedOccurrences = retained.resolvedOccurrences;
+        sourceFormatter = retained.sourceFormatter;
+        referenceSelection = retained.referenceSelection;
+        referenceCatalogs = retained.referenceCatalogs;
+        referenceCatalogSources = retained.referenceCatalogSources;
+        referenceCatalogIdentities = retained.referenceCatalogIdentities;
+        projectResolution = retained.projectResolution;
+        authoritativeReferencedProjectNames =
+            retained.authoritativeReferencedProjectNames;
+        intrinsicHostEventCatalog = retained.intrinsicHostEventCatalog;
+        semanticTokenCacheGate = retained.semanticTokenCacheGate;
+        semanticTokenCache = retained.semanticTokenCache;
+        semanticTokenDataCache = retained.semanticTokenDataCache;
+        this.validationActiveUri = validationActiveUri;
+        this.validationBuildObserver = validationBuildObserver;
+    }
+
     private VbaSemanticInventory(
         IReadOnlyList<VbaSourceDocument> sourceDocuments,
         VbaNameCandidateInventory definitionCandidates,
