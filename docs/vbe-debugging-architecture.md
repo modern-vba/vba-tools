@@ -5,7 +5,8 @@
 This is the developer-facing implementation and maintenance contract for the
 VS Code-to-VBE debug workflow. README documents only the user-visible workflow,
 requirements, limitations, and data-loss behavior. Decision rationale remains
-in ADRs 0019 through 0021, 0024, 0025, and 0027. ADR 0022 is superseded.
+in ADRs 0019 through 0021, 0024, 0025, 0027, 0040, and 0041. ADR 0022 is
+superseded.
 
 ## Ownership boundary
 
@@ -749,6 +750,14 @@ weakening production ownership. DAP tests use in-memory byte streams and
 held-open input to verify framing, ordering, cancellation, and background-task
 failure.
 
+Source-admission tests prove that `N` text sources are parsed exactly `N` times
+for any breakpoint count, that validation and build bytes come from one frozen
+generation, and that a rejected admission never reaches the build Adapter.
+Product-neutral package tests prove strict OPC topology, bounded CFB and
+MS-OVBA handling, LCID and LIBFLAGS rules, and all shared metadata facts once;
+debug tests retain only file capture, projection, identity fencing, and
+product-specific failure behavior.
+
 Opt-in `WindowsExcelIntegration` tests use real Excel, VBIDE, native command IDs,
 Job Objects, modal prompts, DAP Stop/Restart, adapter death, and Excel-initiated
 exit. They are serialized and require
@@ -793,6 +802,13 @@ dependencies without prohibiting consumer-to-provider reuse.
 - Keep source mapping in the reusable syntax core and verify generated
   `CodeModule` content. Do not introduce fixed offsets, neighboring-line repair,
   or a debug-only parser.
+- Extend `AdmittedDebugSourceSnapshot` when new source-derived launch facts are
+  required. Do not add another transport validator, per-breakpoint source walk,
+  conditional parse, or builder-side source interpretation beside that
+  authority.
+- Keep OPC, CFB, MS-OVBA decompression, and directory-record meaning in
+  `VbaTools.ProjectMetadata`. Debug-specific file I/O and errors remain in its
+  Adapter; do not add a permissive topology mode or return raw format layers.
 - Establish PID and kill-on-close Job ownership before workbook open, prompts,
   breakpoint transfer, or target execution. Every new terminal path needs a
   test proving Job disposal and launch-guard release.
