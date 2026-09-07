@@ -65,6 +65,21 @@ Both phases consume the same immutable Semantic Inventory and exact revision
 fences. Neither editor readiness nor background project validation invokes
 `vba-dev`, launches Excel, or reads a live workbook.
 
+## Preview analysis retention
+
+Closing the last VBA editor retires active project and diagnostic ownership.
+Completed analysis can remain in a separate process-local cache, bounded by four
+entries and 1 GiB of accounted analysis with deterministic least-recently-used
+eviction. Reopening first validates current manifest authority, source membership,
+source content, and reference/host metadata. Matching inputs reuse immutable
+analysis and token shards under fresh ownership; changed or evicted inputs rebuild.
+Idle time alone does not expire an entry. Workspace/server teardown releases it.
+
+The [retention decision](../../docs/adr/0042-retain-analysis-without-retaining-project-authority.md)
+defines the private reuse proof and size accounting. The
+[Explorer preview measurement](../../docs/preview-analysis-performance.md)
+documents the Windows Release procedure, exact-token oracle, and results.
+
 ## Closed source encoding
 
 Closed exported source uses a process-wide BOM-or-ACP policy. A supported

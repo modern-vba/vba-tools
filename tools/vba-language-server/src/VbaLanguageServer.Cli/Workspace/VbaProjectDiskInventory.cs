@@ -232,7 +232,8 @@ internal interface IVbaProjectDiskInventory : IVbaProjectDiskObservationSource
         IReadOnlySet<VbaDocumentIdentity> excludedSourceIdentities,
         IReadOnlyDictionary<VbaDocumentIdentity, bool>
             manifestBarrierOverrides,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        bool validateContent = false);
 
     VbaProjectDiskSource? CaptureWatchedSource(
         VbaProjectResolution resolution,
@@ -317,7 +318,8 @@ internal sealed class VbaFileSystemProjectDiskInventory
         IReadOnlySet<VbaDocumentIdentity> excludedSourceIdentities,
         IReadOnlyDictionary<VbaDocumentIdentity, bool>
             manifestBarrierOverrides,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool validateContent = false)
     {
         var excludedPaths = CreateLocalPathSet(excludedSourceIdentities);
         var candidatePaths = CreateLocalPathSet(candidateSourceIdentities);
@@ -348,7 +350,7 @@ internal sealed class VbaFileSystemProjectDiskInventory
 
             if (TryCaptureSource(
                 path,
-                forceStableRead: false,
+                forceStableRead: validateContent,
                 cancellationToken,
                 out var source,
                 out var failure))
