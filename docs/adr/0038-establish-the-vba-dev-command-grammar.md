@@ -6,9 +6,10 @@ status: accepted
 
 ADR 0028 established `System.CommandLine` as the command model. This decision
 defines the internal ownership and deterministic validation contract used to
-complete that migration. ADR 0039 independently keeps VbaDev free of reverse
-dependencies on the extension, language server, debug adapter, and other
-products.
+complete that migration; every public leaf is now owned exactly once by a
+sealed internal command family. ADR 0039 independently keeps VbaDev free of
+reverse dependencies on the extension, language server, debug adapter, and
+other products.
 
 ## Decision
 
@@ -33,12 +34,30 @@ second command description.
 cooperative cancellation monitoring, `Timeout.InfiniteTimeSpan` process
 termination configuration, and terminal dispatch through the constructed
 graph. It does not reconstruct or search for command symbols by name.
+It declares no leaf, command-specific relationship, accepted-value set, or
+typed command binding.
 
-Command-family modules may later localize groups of declarations, but they add
-their actual symbols to this one graph. They do not create independently
-invokable roots. The CLI introduces no serialized command schema, JSON or YAML
-grammar, reflection binder, generated parser, second help or completion
-grammar, generic command catalog, or public command-family interface.
+`VbaDevCommandGrammar` is the composition root for help, version, the hidden
+cancellation transport, staged command-family registration, and completed-
+graph validation. It declares no leaf command, command-specific symbol
+relationship, leaf-command accepted-value set, or typed command binding. Each sealed
+internal command-family module adds its actual symbols to this one graph and
+owns those leaf declarations, relationships, value sets, bindings, actions,
+completion sources, and explicit capability registrations as applicable. The
+grammar stages those registrations only to preserve the established root order;
+families do not create independently invokable roots.
+
+The completed graph carries a narrow family-ownership ledger. Each entry stores
+only the owning sealed internal family `Type` and an actual leaf `Command`
+reference. Completed-graph validation enumerates the runtime root and proves
+that every one of its seventeen public leaves appears in exactly one ownership
+entry and that every entry reaches its actual leaf. This is an invariant witness,
+not a command catalog: it contains no path, aliases, descriptions, options,
+relationships, bindings, actions, or serialized form.
+
+The CLI introduces no serialized command schema, JSON or YAML grammar,
+reflection binder, generated parser, second help or completion grammar, generic
+command-description DSL or catalog, or public command-family interface.
 
 ## Capabilities and completion
 
@@ -102,9 +121,12 @@ parallel compatibility grammar:
 - Test procedure `Requires` module, while source snapshot `Conflicts` with
   no-build;
 - Reference available `Conflicts` with no-resolve;
-- Export from `Conflicts` with project and document; and
+- Export from `Conflicts` with project and document;
 - Doctor scope `environment` `Conflicts` with project, while scope `project`
-  and project remain valid together.
+  and project remain valid together; and
+- `new excel` retains optional name and output values whose omission is distinct
+  from an explicitly supplied empty string, and accepts only the closed `text`
+  or `json` output formats.
 
 Shared relationships are limited to the closed internal forms `Requires`,
 `Conflicts`, and `AllOrNone`. They attach actual symbols to the one graph and
@@ -217,6 +239,38 @@ than grammar failures. Both families project to the existing VbaDev Application
 commands and create no dependency on an extension, language server, debug
 adapter, or other product.
 
+Issue #360 completes family ownership. The sealed
+`VbaDevProjectCreationCommandFamily` owns the actual New group, Excel leaf,
+name, output, and format options, closed intent binding, action connection, and
+the existing `new excel` capability registration. Name and output each bind to
+a closed omitted-or-specified value;
+`Specified("")` therefore remains distinct from omission and continues through
+the established Application validation rather than activating a default. The
+format binds to a closed Text or Json case, with omission alone selecting Text.
+The action projects that intent to the established `NewProjectCommandRequest`,
+while Application retains project-name derivation, path and target validation,
+Excel-backed creation, rollback, output, artifacts, and result schemas. The
+request's nullable API-compatibility presence fallback is removed: its required
+Boolean presence fields now receive the family's explicit projection and do
+not independently infer CLI omission.
+
+The sealed `VbaDevContractCommandFamily` owns the actual Capabilities and
+`completions script pwsh` terminal leaves. Grammar construction registers the
+family in stages solely to retain their existing root positions. It owns the
+terminal symbols and side-effect-free actions, including Capabilities' JSON-
+only accepted-format set and the existing static completion protocol, without
+becoming an operational Application family. The fourteen previously advertised
+leaves keep exactly one explicit capability registration; `check`, `capabilities`, and
+`completions script pwsh` remain the same three unadvertised leaves. Command
+spelling, aliases, defaults, help, completion, outputs, artifacts, result
+schemas, and terminal behavior remain unchanged.
+
+Together, these families remove the superseded bootstrap leaf declarations and
+complete the exact-once ownership invariant for all seventeen leaves.
+`VbaDevCommandGrammar` remains their composition root, and the ownership ledger
+remains only completed-graph proof. No parallel grammar compatibility path,
+second authority, or dependency on another product remains.
+
 ## Grammar-failure contract
 
 A grammar failure exits `1`, writes nothing to standard output, and writes
@@ -263,10 +317,10 @@ results with their established output schemas and exit rules; the grammar
 router does not reinterpret them.
 
 The central router and its closed cardinality, value, relationship, and intent-
-binding primitives are established in issue #353. Import and Export migrate in
-issue #354, and Build and Publish migrate in issue #355. The declarations in
-issue #360 migrate onto the same primitives without creating another router or
-compatibility grammar.
+binding primitives were established in issue #353. Issues #354 through #359
+moved the operational families onto those primitives, and issue #360 completed
+Project Creation and terminal-contract ownership without creating another
+router or compatibility grammar.
 
 ## Consequences
 
@@ -277,8 +331,8 @@ compatibility grammar.
   implicitly.
 - The CLI gains the additive `-f` aliases and Build `-o` alias without changing
   machine output or existing long spellings.
-- Later command-family slices can move declarations behind small internal
-  modules while preserving one root and one invocation boundary.
+- Every public leaf is owned exactly once by a sealed internal family while one
+  root and one invocation boundary remain authoritative.
 - Deterministic grammar diagnostics can replace library-dependent mixed output
   without changing grammar-valid command results or introducing a serialized
   failure schema.

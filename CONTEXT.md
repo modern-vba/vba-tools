@@ -70,19 +70,47 @@ _Avoid_: script, helper, task
 
 **VbaDevCommandGrammar**:
 The internal executable-facing Deep Module that constructs the one
-`System.CommandLine` root for a `VbaDevCommandLine`. It owns actual command
-symbols, help and version actions, completion attachment, typed binding, and
-explicit capability registration. It does not read a serialized command
+`System.CommandLine` root for a `VbaDevCommandLine`. It owns the composition
+root, help and version actions, the hidden cancellation transport, staged
+family registration in established root order, and completed-graph validation.
+It declares no leaf command, command-specific symbol relationship, leaf-command
+accepted-value set, or typed command binding. It does not read a serialized command
 catalog or expose command-family interfaces to another product.
 _Avoid_: command DSL, reflection binder, generated parser, public command catalog
 
 **VbaDevCommandGraph**:
 The single constructed `RootCommand`, its exact hidden cancellation-transport
 symbol, its single grammar-failure router, and its completed-graph-validated
-capability registrations. Parsing, validation, help, version, completion, and
-action dispatch use that same root instance; each command-line composition
-receives its own graph rather than a global singleton.
+capability registrations. Its narrow family-ownership ledger stores only each
+sealed internal family `Type` and the actual `Command` references that family
+registered; completed-graph validation proves that all seventeen public leaves
+occur exactly once. The ledger is an invariant witness, not a command catalog.
+Parsing, validation, help, version, completion, and action dispatch use that
+same root instance; each command-line composition receives its own graph rather
+than a global singleton.
 _Avoid_: parallel help graph, reconstructed option symbol, process-wide graph cache
+
+**VbaDevProjectCreationCommandFamily**:
+The internal sealed command-family module that attaches the actual New group
+and Excel leaf to the single `VbaDevCommandGrammar` graph. It owns their
+descriptions, symbols, accepted text-or-JSON values, closed command-intent
+binding, action connection, and capability registration. Name and output bind
+as either omitted or specified, so an explicitly supplied empty string remains
+specified and reaches the existing Application validation. Only omission
+selects text. The family projects the closed intent to the established
+`NewProjectCommandRequest`; Application retains name derivation, path and
+target validation, project creation, rollback, result formatting, and artifact
+schemas.
+_Avoid_: nullable CLI presence inference, Application option parsing, project creation in the grammar, second command root
+
+**VbaDevContractCommandFamily**:
+The internal sealed command-family module that owns the actual Capabilities and
+`completions script pwsh` terminal leaves. It attaches them at their established
+staged positions so root help and completion order remain unchanged. The family
+owns their symbols and side-effect-free terminal actions; capabilities retains
+its accepted JSON-only format and completion retains the existing static
+protocol. Neither leaf is added to the advertised capabilities projection.
+_Avoid_: terminal leaves in VbaDevCommandGrammar, second protocol graph, implicit capability advertisement
 
 **VbaDevImportExportCommandFamily**:
 The internal sealed command-family module that adds the actual Import and
@@ -173,8 +201,8 @@ before any domain resolution or side effect. A failure exits `1`, leaves stdout
 empty, and writes exactly one diagnostic line plus one command-local hint line,
 including the final platform newline. Valid help, standalone version,
 completion, and capabilities remain side-effect-free terminal successes. The
-router supplies shared primitives; command-family declarations are migrated in
-their own slices rather than being implied by the router itself.
+router supplies shared primitives; each command family owns the declarations
+that use them rather than having behavior inferred by the router itself.
 _Avoid_: parse-error message matching, mutable runtime rule catalog, consumer-owned CLI validation
 
 **PublicToolProcessContract**:

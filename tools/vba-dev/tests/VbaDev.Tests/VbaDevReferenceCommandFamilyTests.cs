@@ -42,7 +42,8 @@ public sealed class VbaDevReferenceCommandFamilyTests
                 temp.Path,
                 vbaProjectReferenceResolver: resolver),
             rules,
-            capabilities);
+            capabilities,
+            new VbaDevCommandFamilyOwnership());
 
         Assert.Same(
             family.ReferenceCommand,
@@ -90,7 +91,8 @@ public sealed class VbaDevReferenceCommandFamilyTests
             root,
             ToolingCompositionRoot.CreateApplicationComposition(temp.Path),
             rules,
-            new List<VbaDevCommandCapabilityRegistration>());
+            new List<VbaDevCommandCapabilityRegistration>(),
+            new VbaDevCommandFamilyOwnership());
         var ruleSnapshot = rules.CreateSnapshot(
             [
                 root,
@@ -161,7 +163,8 @@ public sealed class VbaDevReferenceCommandFamilyTests
             root,
             ToolingCompositionRoot.CreateApplicationComposition(temp.Path),
             rules,
-            new List<VbaDevCommandCapabilityRegistration>());
+            new List<VbaDevCommandCapabilityRegistration>(),
+            new VbaDevCommandFamilyOwnership());
         var ruleSnapshot = rules.CreateSnapshot(
             [
                 root,

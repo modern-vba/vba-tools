@@ -19,9 +19,13 @@ and cardinality checks and to value, relationship, standalone, and closed-intent
 rules as their actual command declarations register them. The sealed Build and
 Publish family, the sealed Import and Export family, the sealed Test family,
 the sealed Reference family, the sealed CommonModules family, the sealed Host
-Event family, and the sealed Check and Doctor inspection family own those
-leaves, their closed command intents, and their action connections on the same
-graph; the remaining staged family migration is described by
+Event family, the sealed Check and Doctor inspection family, the sealed project-
+creation family, and the sealed terminal-contract family now own all seventeen
+public leaves, their closed command intents or terminal actions, and their
+actual symbols on the same graph. A narrow ownership ledger records only family
+types and actual command references so the completed graph can prove exact-once
+ownership without becoming another command catalog. The completed migration is
+described by
 [ADR 0038](docs/adr/0038-establish-the-vba-dev-command-grammar.md).
 Valid help, standalone version, completion, and capabilities requests remain
 side-effect-free terminal successes on stdout; failed Test runs and failed

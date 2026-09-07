@@ -28,7 +28,8 @@ public sealed class VbaDevBuildPublishCommandFamilyTests
         var family = VbaDevBuildPublishCommandFamily.Create(
             ToolingCompositionRoot.CreateApplicationComposition(temp.Path),
             rules,
-            capabilities);
+            capabilities,
+            new VbaDevCommandFamilyOwnership());
         family.RegisterBuild(root);
         family.RegisterPublish(root);
         var ruleSnapshot = rules.CreateSnapshot(root.Subcommands.Prepend(root));

@@ -16,7 +16,8 @@ internal sealed class VbaDevCommonModuleCommandFamily
         RootCommand rootCommand,
         ToolingApplicationComposition composition,
         VbaDevGrammarFailureRules grammarFailureRules,
-        ICollection<VbaDevCommandCapabilityRegistration> capabilityRegistrations)
+        ICollection<VbaDevCommandCapabilityRegistration> capabilityRegistrations,
+        VbaDevCommandFamilyOwnership commandFamilyOwnership)
     {
         this.composition = composition;
 
@@ -112,6 +113,9 @@ internal sealed class VbaDevCommonModuleCommandFamily
             VbaDevCommandGrammar.WriteCommandResult(
                 parseResult,
                 await RunUpdateAsync(parseResult, cancellationToken).ConfigureAwait(false)));
+        commandFamilyOwnership.Register(this, AddCommand);
+        commandFamilyOwnership.Register(this, ListCommand);
+        commandFamilyOwnership.Register(this, UpdateCommand);
     }
 
     internal Command CommonModuleCommand { get; }
@@ -155,17 +159,20 @@ internal sealed class VbaDevCommonModuleCommandFamily
         RootCommand rootCommand,
         ToolingApplicationComposition composition,
         VbaDevGrammarFailureRules grammarFailureRules,
-        ICollection<VbaDevCommandCapabilityRegistration> capabilityRegistrations)
+        ICollection<VbaDevCommandCapabilityRegistration> capabilityRegistrations,
+        VbaDevCommandFamilyOwnership commandFamilyOwnership)
     {
         ArgumentNullException.ThrowIfNull(rootCommand);
         ArgumentNullException.ThrowIfNull(composition);
         ArgumentNullException.ThrowIfNull(grammarFailureRules);
         ArgumentNullException.ThrowIfNull(capabilityRegistrations);
+        ArgumentNullException.ThrowIfNull(commandFamilyOwnership);
         return new VbaDevCommonModuleCommandFamily(
             rootCommand,
             composition,
             grammarFailureRules,
-            capabilityRegistrations);
+            capabilityRegistrations,
+            commandFamilyOwnership);
     }
 
     private VbaDevGrammarIntentBindResult<VbaDevCommonModuleAddCommandIntent> BindAddIntent(

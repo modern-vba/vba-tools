@@ -17,7 +17,8 @@ internal sealed class VbaDevInspectionCommandFamily
         RootCommand rootCommand,
         ToolingApplicationComposition composition,
         VbaDevGrammarFailureRules grammarFailureRules,
-        ICollection<VbaDevCommandCapabilityRegistration> capabilityRegistrations)
+        ICollection<VbaDevCommandCapabilityRegistration> capabilityRegistrations,
+        VbaDevCommandFamilyOwnership commandFamilyOwnership)
     {
         this.composition = composition;
 
@@ -68,6 +69,8 @@ internal sealed class VbaDevInspectionCommandFamily
             VbaDevCommandGrammar.WriteCommandResult(
                 parseResult,
                 await RunDoctorAsync(parseResult, cancellationToken).ConfigureAwait(false)));
+        commandFamilyOwnership.Register(this, CheckCommand);
+        commandFamilyOwnership.Register(this, DoctorCommand);
     }
 
     internal Command CheckCommand { get; }
@@ -91,17 +94,20 @@ internal sealed class VbaDevInspectionCommandFamily
         RootCommand rootCommand,
         ToolingApplicationComposition composition,
         VbaDevGrammarFailureRules grammarFailureRules,
-        ICollection<VbaDevCommandCapabilityRegistration> capabilityRegistrations)
+        ICollection<VbaDevCommandCapabilityRegistration> capabilityRegistrations,
+        VbaDevCommandFamilyOwnership commandFamilyOwnership)
     {
         ArgumentNullException.ThrowIfNull(rootCommand);
         ArgumentNullException.ThrowIfNull(composition);
         ArgumentNullException.ThrowIfNull(grammarFailureRules);
         ArgumentNullException.ThrowIfNull(capabilityRegistrations);
+        ArgumentNullException.ThrowIfNull(commandFamilyOwnership);
         return new VbaDevInspectionCommandFamily(
             rootCommand,
             composition,
             grammarFailureRules,
-            capabilityRegistrations);
+            capabilityRegistrations,
+            commandFamilyOwnership);
     }
 
     private VbaDevGrammarIntentBindResult<VbaDevDoctorCommandIntent> BindDoctorIntent(

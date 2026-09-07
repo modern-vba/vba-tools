@@ -32,7 +32,8 @@ public sealed class VbaDevCommonModuleCommandFamilyTests
             root,
             ToolingCompositionRoot.CreateApplicationComposition(temp.Path),
             rules,
-            capabilities);
+            capabilities,
+            new VbaDevCommandFamilyOwnership());
         var snapshot = rules.CreateSnapshot(
             [
                 root,
@@ -99,7 +100,8 @@ public sealed class VbaDevCommonModuleCommandFamilyTests
             root,
             ToolingCompositionRoot.CreateApplicationComposition(temp.Path),
             rules,
-            new List<VbaDevCommandCapabilityRegistration>());
+            new List<VbaDevCommandCapabilityRegistration>(),
+            new VbaDevCommandFamilyOwnership());
         var router = new VbaDevGrammarFailureRouter(root, rules);
 
         var listParse = ParseSuccessfully(

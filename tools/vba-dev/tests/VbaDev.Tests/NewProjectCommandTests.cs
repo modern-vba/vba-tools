@@ -17,6 +17,26 @@ namespace VbaDev.Tests;
 public sealed class NewProjectCommandTests
 {
     [Fact]
+    public void NewProjectRequestRequiresExplicitOptionPresenceFlags()
+    {
+        var parameters = Assert.Single(typeof(NewProjectCommandRequest).GetConstructors())
+            .GetParameters();
+        var projectNameSpecified = Assert.Single(
+            parameters,
+            parameter => parameter.Name == nameof(NewProjectCommandRequest.ProjectNameSpecified));
+        var outputDirectorySpecified = Assert.Single(
+            parameters,
+            parameter => parameter.Name == nameof(NewProjectCommandRequest.OutputDirectorySpecified));
+
+        Assert.Equal(typeof(bool), projectNameSpecified.ParameterType);
+        Assert.False(projectNameSpecified.IsOptional);
+        Assert.False(projectNameSpecified.HasDefaultValue);
+        Assert.Equal(typeof(bool), outputDirectorySpecified.ParameterType);
+        Assert.False(outputDirectorySpecified.IsOptional);
+        Assert.False(outputDirectorySpecified.HasDefaultValue);
+    }
+
+    [Fact]
     public void NewExcelRejectsAnExplicitEmptyNameWithoutCreatingArtifacts()
     {
         using var temp = TempDirectory.Create();
@@ -464,7 +484,9 @@ public sealed class NewProjectCommandTests
             "ChildProject",
             null,
             projectRoot,
-            temp.Path));
+            temp.Path,
+            ProjectNameSpecified: true,
+            OutputDirectorySpecified: true));
 
         Assert.Equal(1, result.ExitCode);
         Assert.Contains("safely resolvable filesystem identity", result.StandardError, StringComparison.Ordinal);
@@ -500,7 +522,9 @@ public sealed class NewProjectCommandTests
             "ChildProject",
             null,
             projectRoot,
-            temp.Path));
+            temp.Path,
+            ProjectNameSpecified: true,
+            OutputDirectorySpecified: true));
 
         Assert.Equal(1, result.ExitCode);
         Assert.Contains("newProjectTargetChanged", result.StandardError, StringComparison.Ordinal);
@@ -715,7 +739,9 @@ public sealed class NewProjectCommandTests
             "ChildProject",
             null,
             childRoot,
-            temp.Path));
+            temp.Path,
+            ProjectNameSpecified: true,
+            OutputDirectorySpecified: true));
 
         Assert.Equal(1, result.ExitCode);
         Assert.True(File.Exists(workbookPath));

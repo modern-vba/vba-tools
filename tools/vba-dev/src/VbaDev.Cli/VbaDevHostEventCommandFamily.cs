@@ -16,7 +16,8 @@ internal sealed class VbaDevHostEventCommandFamily
         RootCommand rootCommand,
         ToolingApplicationComposition composition,
         VbaDevGrammarFailureRules grammarFailureRules,
-        ICollection<VbaDevCommandCapabilityRegistration> capabilityRegistrations)
+        ICollection<VbaDevCommandCapabilityRegistration> capabilityRegistrations,
+        VbaDevCommandFamilyOwnership commandFamilyOwnership)
     {
         this.composition = composition;
 
@@ -47,6 +48,7 @@ internal sealed class VbaDevHostEventCommandFamily
             VbaDevCommandGrammar.WriteCommandResult(
                 parseResult,
                 await RunListAsync(parseResult, cancellationToken).ConfigureAwait(false)));
+        commandFamilyOwnership.Register(this, ListCommand);
     }
 
     internal Command HostEventCommand { get; }
@@ -62,17 +64,20 @@ internal sealed class VbaDevHostEventCommandFamily
         RootCommand rootCommand,
         ToolingApplicationComposition composition,
         VbaDevGrammarFailureRules grammarFailureRules,
-        ICollection<VbaDevCommandCapabilityRegistration> capabilityRegistrations)
+        ICollection<VbaDevCommandCapabilityRegistration> capabilityRegistrations,
+        VbaDevCommandFamilyOwnership commandFamilyOwnership)
     {
         ArgumentNullException.ThrowIfNull(rootCommand);
         ArgumentNullException.ThrowIfNull(composition);
         ArgumentNullException.ThrowIfNull(grammarFailureRules);
         ArgumentNullException.ThrowIfNull(capabilityRegistrations);
+        ArgumentNullException.ThrowIfNull(commandFamilyOwnership);
         return new VbaDevHostEventCommandFamily(
             rootCommand,
             composition,
             grammarFailureRules,
-            capabilityRegistrations);
+            capabilityRegistrations,
+            commandFamilyOwnership);
     }
 
     private VbaDevGrammarIntentBindResult<VbaDevHostEventListCommandIntent> BindListIntent(

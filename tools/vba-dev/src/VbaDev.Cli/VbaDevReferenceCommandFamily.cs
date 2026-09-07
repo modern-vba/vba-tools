@@ -19,7 +19,8 @@ internal sealed class VbaDevReferenceCommandFamily
         RootCommand rootCommand,
         ToolingApplicationComposition composition,
         VbaDevGrammarFailureRules grammarFailureRules,
-        ICollection<VbaDevCommandCapabilityRegistration> capabilityRegistrations)
+        ICollection<VbaDevCommandCapabilityRegistration> capabilityRegistrations,
+        VbaDevCommandFamilyOwnership commandFamilyOwnership)
     {
         this.rootCommand = rootCommand;
         this.composition = composition;
@@ -136,6 +137,9 @@ internal sealed class VbaDevReferenceCommandFamily
             VbaDevCommandGrammar.WriteCommandResult(
                 parseResult,
                 await RunRemoveAsync(parseResult, cancellationToken).ConfigureAwait(false)));
+        commandFamilyOwnership.Register(this, AddCommand);
+        commandFamilyOwnership.Register(this, ListCommand);
+        commandFamilyOwnership.Register(this, RemoveCommand);
     }
 
     internal Command ReferenceCommand { get; }
@@ -185,17 +189,20 @@ internal sealed class VbaDevReferenceCommandFamily
         RootCommand rootCommand,
         ToolingApplicationComposition composition,
         VbaDevGrammarFailureRules grammarFailureRules,
-        ICollection<VbaDevCommandCapabilityRegistration> capabilityRegistrations)
+        ICollection<VbaDevCommandCapabilityRegistration> capabilityRegistrations,
+        VbaDevCommandFamilyOwnership commandFamilyOwnership)
     {
         ArgumentNullException.ThrowIfNull(rootCommand);
         ArgumentNullException.ThrowIfNull(composition);
         ArgumentNullException.ThrowIfNull(grammarFailureRules);
         ArgumentNullException.ThrowIfNull(capabilityRegistrations);
+        ArgumentNullException.ThrowIfNull(commandFamilyOwnership);
         return new VbaDevReferenceCommandFamily(
             rootCommand,
             composition,
             grammarFailureRules,
-            capabilityRegistrations);
+            capabilityRegistrations,
+            commandFamilyOwnership);
     }
 
     private VbaDevGrammarIntentBindResult<VbaDevReferenceAddCommandIntent> BindAddIntent(
