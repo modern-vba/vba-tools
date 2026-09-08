@@ -7,7 +7,7 @@ namespace VbaLanguageServer.Tests;
 public sealed class WithEventsLanguageServerProcessTests
 {
     [Fact]
-    public async Task Empty_Sub_declaration_name_offers_only_the_WithEvents_prefix()
+    public async Task Empty_Sub_declaration_name_offers_WithEvents_and_lifecycle_prefixes()
     {
         await using var process = await LanguageServerProcessHarness.StartAsync();
         await process.InitializeAsync();
@@ -43,8 +43,7 @@ public sealed class WithEventsLanguageServerProcessTests
                 textDocument = new { uri = workerUri },
                 position = new { line = 3, character = "Private Sub ".Length }
             });
-        var item = Assert.Single(completion.GetProperty("result").EnumerateArray());
-        Assert.Equal("publisher_", item.GetProperty("label").GetString());
+        var item = AssertClassAndContractPrefixes(completion, "publisher_");
         Assert.Equal("WithEvents", item.GetProperty("detail").GetString());
         Assert.Equal(
             "publisher_",
@@ -327,9 +326,7 @@ public sealed class WithEventsLanguageServerProcessTests
                     textDocument = new { uri = workerUri },
                     position = new { line = 7, character = "Private Sub ".Length }
                 });
-            var item = Assert.Single(
-                completion.GetProperty("result").EnumerateArray());
-            Assert.Equal("Publisher_", item.GetProperty("label").GetString());
+            var item = AssertClassAndContractPrefixes(completion, "Publisher_");
             Assert.Equal(
                 "WithEvents [#If]",
                 item.GetProperty("detail").GetString());
@@ -402,8 +399,7 @@ public sealed class WithEventsLanguageServerProcessTests
                 textDocument = new { uri = workerUri },
                 position = new { line = 6, character = "Private Sub ".Length }
             });
-        var item = Assert.Single(completion.GetProperty("result").EnumerateArray());
-        Assert.Equal("IPublisher_", item.GetProperty("label").GetString());
+        var item = AssertClassAndContractPrefixes(completion, "IPublisher_");
         Assert.Equal("Multiple Contracts", item.GetProperty("detail").GetString());
 
         await process.ShutdownAsync(3);
@@ -463,8 +459,7 @@ public sealed class WithEventsLanguageServerProcessTests
                 textDocument = new { uri = workerUri },
                 position = new { line = 8, character = "Private Sub ".Length }
             });
-        var item = Assert.Single(completion.GetProperty("result").EnumerateArray());
-        Assert.Equal("IPublisher_", item.GetProperty("label").GetString());
+        var item = AssertClassAndContractPrefixes(completion, "IPublisher_");
         Assert.Equal("Interface [#If]", item.GetProperty("detail").GetString());
 
         await process.ShutdownAsync(3);
@@ -509,8 +504,7 @@ public sealed class WithEventsLanguageServerProcessTests
                 textDocument = new { uri = workerUri },
                 position = new { line = 3, character = "Private Sub ".Length }
             });
-        var prefixItem = Assert.Single(
-            prefixCompletion.GetProperty("result").EnumerateArray());
+        var prefixItem = AssertClassAndContractPrefixes(prefixCompletion, "publisher_");
         Assert.Equal("WithEvents", prefixItem.GetProperty("detail").GetString());
 
         const string declaration = "Private Sub publisher_";
@@ -848,9 +842,7 @@ public sealed class WithEventsLanguageServerProcessTests
                 position = new { line = 4, character = "Private Sub ".Length },
                 context = new { triggerKind = 2, triggerCharacter = " " }
             });
-        var prefixItem = Assert.Single(
-            prefixCompletion.GetProperty("result").EnumerateArray());
-        Assert.Equal("IPublisher_", prefixItem.GetProperty("label").GetString());
+        var prefixItem = AssertClassAndContractPrefixes(prefixCompletion, "IPublisher_");
         Assert.Equal(
             "Multiple Contracts",
             prefixItem.GetProperty("detail").GetString());
@@ -8017,6 +8009,19 @@ public sealed class WithEventsLanguageServerProcessTests
                 VbaProjectReferenceCatalogPersistentStore.CurrentGeneratorVersion,
                 "old-generator",
                 StringComparison.Ordinal));
+    }
+
+    private static JsonElement AssertClassAndContractPrefixes(
+        JsonElement completion,
+        string contractPrefix)
+    {
+        var items = completion.GetProperty("result").EnumerateArray().ToArray();
+        Assert.Equal(new[] { "Class_", contractPrefix }.Order(StringComparer.OrdinalIgnoreCase),
+            items.Select(item => item.GetProperty("label").GetString())
+                .Order(StringComparer.OrdinalIgnoreCase));
+        var lifecycle = Assert.Single(items, item => item.GetProperty("label").GetString() == "Class_");
+        Assert.Equal("Class Lifecycle", lifecycle.GetProperty("detail").GetString());
+        return Assert.Single(items, item => item.GetProperty("label").GetString() == contractPrefix);
     }
 
     private static Task<JsonElement> SendPositionRequestAsync(

@@ -4002,14 +4002,49 @@ presentation name, while an implementing parameter's spelling and written
 `ByVal`, `ByRef`, or omitted mechanism are not contract identity.
 _Avoid_: indexed Property parameter, named-argument identity, source variable
 
+**ClassLifecycle**:
+A language-defined completion origin for `Class_Initialize` and
+`Class_Terminate`, independent of `Implements`, `WithEvents`, and intrinsic
+Host Event catalogs. A syntax-confirmed `.cls` `ClassModule` `Sub`
+declaration-name slot admits the fixed `Class_` prefix. It requires no project,
+reference, host association, module-name convention, companion executable, or
+live Excel/COM/VBE state. It does not apply to `StandardModule`, `FormModule`,
+`Function`, Property accessors, or executable-code positions. Shared syntax
+admission remains authoritative for visibility and `Static`; lifecycle name
+completion adds no `Private`-only or non-`Static` restriction.
+
+The [MS-VBAL lifecycle-handler contract](https://learn.microsoft.com/en-us/openspecs/microsoft_general_purpose_programming_languages/ms-vbal/62bbe63e-379c-4dc0-8648-7d9050a2f396)
+defines class-contained fixed-name Subs with absent or empty parameter lists.
+Completion presents `Sub Class_Initialize()` and `Sub Class_Terminate()` as
+fixed signatures, but inserts only names and neither edits nor validates an
+existing procedure's parameters. Initialization runs when an instance is
+created, before its reference is returned; termination runs as an inaccessible
+instance is about to be destroyed. Termination is not guaranteed when the host
+ends abnormally, including an `End` statement, as described by the
+[VBA Terminate event documentation](https://learn.microsoft.com/en-us/office/vba/language/reference/user-interface-help/terminate-event-visual-basic-for-applications).
+
+Both stages use the shared prospective declaration collision policy: names
+are occupied case-insensitively, the physically edited declaration is excluded,
+and a prefix disappears if neither member remains. An applicable unconditional
+peer suppresses a collision; an all-guarded prospective family stays advisory
+without evaluating conditions. This fixed origin contributes no `[#If]`
+marker. Member labels retain the language's canonical `Class_` spelling while
+suffix-only edits preserve the prefix already written by the user. Fixed
+signature documentation is completion presentation, not a new source or
+catalog relationship for Definition or Signature Help. Full procedure creation
+remains future `MemberStubGeneration`; issue #305 does not include lifecycle
+stubs without an explicit later scope extension.
+_Avoid_: intrinsic Host Event catalog, Implements contract, member stub
+
 **ContractPrefixCompletion**:
 A first-stage, name-only `CompletionCandidate` admitted in an empty or
 partially typed callable declaration-name slot after `Sub`, `Function`,
 `Property Get`, `Property Let`, or `Property Set`. For an associated
 `IntrinsicEventSourceName`, a same-class
-`WithEvents` variable, or an interface named by an applicable `Implements`
-relationship, it inserts only the semantic contract prefix and one trailing
-underscore, such as `UserForm_`, `publisher_`, or `IFoo_`, and leaves the
+`WithEvents` variable, the fixed `ClassLifecycle` contract, or an interface named
+by an applicable `Implements` relationship, it inserts only the semantic
+contract prefix and one trailing
+underscore, such as `UserForm_`, `publisher_`, `Class_`, or `IFoo_`, and leaves the
 declaration in the same member-completion context as if that prefix had been
 typed manually. A partial name matches candidate prefixes case-insensitively by
 leading text, and selection replaces only that partial declaration-name
@@ -4050,8 +4085,8 @@ candidate retains an actual contributing spelling. When contributors differ
 only by casing, they group by `OrdinalIgnoreCase` and the ordinal-minimum exact
 spelling supplies both label and insertion text, independently of source or
 enumeration order. Its compact detail is `Host Events`, `WithEvents`, or
-`Interface` when every contributor belongs to one contract domain, and
-`Multiple Contracts` when domains are mixed. Prefix rows contain no signature
+`Interface` or `Class Lifecycle` when every contributor belongs to one contract
+domain, and `Multiple Contracts` when domains are mixed. Prefix rows contain no signature
 or individual-member detail.
 _Avoid_: complete member completion, member stub, expression completion
 
@@ -4061,22 +4096,24 @@ contract prefix and one underscore in a callable declaration-name slot. The
 prefix may have been typed manually or inserted by `ContractPrefixCompletion`;
 both paths use the same candidate discovery, filtering, and presentation. The
 contract is an associated `IntrinsicEventSourceName`, a same-class `WithEvents`
-variable, or an interface actually named by the class's `Implements`
-statements. Candidates show the complete canonical handler or implemented name
+variable, the fixed `ClassLifecycle` contract, or an interface actually named by
+the class's `Implements` statements. Candidates show the complete canonical handler or implemented name
 but replace only the member suffix. They must match the declared procedure kind:
-Events admit only `Sub`, while interface members admit their corresponding
-procedure or Property-accessor kind. Completion inserts neither parameters, a
+Events and lifecycle handlers admit only `Sub`, while interface members admit
+their corresponding procedure or Property-accessor kind. Completion inserts neither parameters, a
 body, nor a terminator; complete member creation remains
 `MemberStubGeneration`.
 Case-insensitively identical complete names under the same required procedure
 or Property-accessor kind form one member candidate even when several contract
 origins or signature variants contribute them. Accepting that candidate creates
 only the name and never selects an origin or signature. Every contributing
-origin and signature remains available to Signature Help, Definition, and
-validation after the declaration is completed.
+source or catalog origin and signature remains available to Signature Help,
+Definition, and validation after the declaration is completed. Fixed language
+origins retain their completion presentation without inventing such relationships.
 The coalesced row uses `Event` when every contributor is an Event contract,
-`Interface Member` when every contributor is an interface contract, and
-`Multiple Contracts` when both domains contribute. It appends `[#If]` when any
+`Interface Member` when every contributor is an interface contract,
+`Lifecycle Handler` when every contributor is a lifecycle contract, and
+`Multiple Contracts` when domains are mixed. It appends `[#If]` when any
 contributing contract has conditional provenance, even when another contributor
 is unconditional; the completion location alone adds no marker. Casing
 conflicts use the same contributor-spelling and ordinal-minimum rule as prefix

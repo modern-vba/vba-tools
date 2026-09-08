@@ -2018,6 +2018,13 @@ internal sealed class VbaSemanticResolution
         var origins = new List<VbaContractPrefixCompletionOrigin>();
         if (declarationKind == VbaCallableDeclarationNameKind.Sub)
         {
+            var syntaxTree = currentDocument.SyntaxTree
+                ?? VbaSyntaxTree.ParseModule(currentDocument.Uri, currentDocument.Text);
+            if (syntaxTree.Module.Kind == VbaModuleKind.ClassModule)
+            {
+                origins.Add(VbaClassLifecycleCompletion.Origin);
+            }
+
             if (intrinsicHostEvents.TryGetEffectiveSurface(
                     currentDocument,
                     out var surface))
