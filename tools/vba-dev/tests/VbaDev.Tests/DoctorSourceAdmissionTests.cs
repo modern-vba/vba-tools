@@ -51,7 +51,6 @@ public sealed class DoctorSourceAdmissionTests
         var observedText = new List<string>();
         var automation = new FakeWorkbookGenerationAutomation { ThrowOnImport = true, ThrowOnSave = true };
         var mirrors = new VbeImportSourceSetFactory(
-            () => throw new InvalidOperationException("Doctor mirrors must use the admitted ACP."),
             sourceSet =>
             {
                 Assert.Equal(1252, sourceSet.ActiveCodePage);
@@ -116,7 +115,7 @@ public sealed class DoctorSourceAdmissionTests
         });
         var automation = new FakeWorkbookGenerationAutomation { ThrowOnImport = true, ThrowOnSave = true };
         var command = CreateDoctor(root, admission, automation, new VbeImportSourceSetFactory(
-            () => throw new InvalidOperationException("Doctor must not reacquire ACP.")));
+));
 
         var result = await command.RunAsync(
             new DoctorCommandRequest(root, root, Format: DoctorOutputFormat.Json), CancellationToken.None);
@@ -173,7 +172,7 @@ public sealed class DoctorSourceAdmissionTests
         });
         var automation = new FakeWorkbookGenerationAutomation { ThrowOnImport = true, ThrowOnSave = true };
         var command = CreateDoctor(root, admission, automation,
-            new VbeImportSourceSetFactory(() => throw new InvalidOperationException("Unexpected ACP read.")));
+            new VbeImportSourceSetFactory());
 
         var result = await command.RunAsync(
             new DoctorCommandRequest(root, root, Format: DoctorOutputFormat.Json), CancellationToken.None);
@@ -350,7 +349,7 @@ public sealed class DoctorSourceAdmissionTests
         });
         var automation = new FakeWorkbookGenerationAutomation();
         var mirrors = new VbeImportSourceSetFactory(
-            () => throw new InvalidOperationException("Canceled capture must not create an import mirror."));
+);
         var command = CreateDoctor(root, admission, automation, mirrors);
 
         var result = await command.RunAsync(

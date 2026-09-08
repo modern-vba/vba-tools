@@ -996,6 +996,12 @@ exclusion bypasses import eligibility, ACP projection, and sidecar capture;
 included CommonModules ignore that marker. Included sources share the admitted
 facts and ordering; an empty effective Publish source set is valid. Later
 authoring changes belong to the next invocation, without new locks or retries.
+The legacy `WorkbookSourcePlanner.ResolveBuildSourceFiles` and
+`ResolvePublishSourceFiles` entry points have been removed, including their
+preflight variants and UTF-8-first decoding path. VBE mirror creation accepts
+only non-null admitted authority; raw source lists and `ExpectedUnicodeText`
+bridges cannot supply workbook-generation facts. Source ordering rearranges
+the existing immutable admitted objects without re-enumerating authoring files.
 Issue #335 introduced explicit import, #339 adds ordinary Build including the
 stage reused by ordinary Test, #340 adds Publish, and #344 adds snapshot
 Build/Test. Issue #350 pairs a successful ordinary or snapshot test

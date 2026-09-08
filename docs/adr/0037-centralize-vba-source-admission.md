@@ -18,6 +18,17 @@ verification, and owned Excel-process lifecycle contracts remain accepted.
 
 ## Explicit import admission
 
+Issue #372 completes removal of the legacy workbook source-authority paths.
+`WorkbookSourcePlanner.ResolveBuildSourceFiles`, `ResolvePublishSourceFiles`,
+and their preflight variants no longer exist. VBE mirror creation requires
+non-null `AdmittedVbaSourceSet`; it has no raw source-list overload, independent
+decoder, ACP acquisition, or `ExpectedUnicodeText` compatibility bridge.
+Ordering uses the same admitted source objects, including their identity,
+syntax, Unicode, and captured sidecars. The direct VbaDev.App C# surface is not
+a supported external contract, so no deprecation shim replaces the removed
+entry points. Public CLI grammar, output, result schemas, and exit behavior
+remain unchanged.
+
 `VbaDev` uses one internal sealed `VbaSourceAdmission` module with one production
 implementation. Its initial closed intent is
 `VbaSourceAdmissionIntent.ExplicitImport`; callers do not compose decoding,

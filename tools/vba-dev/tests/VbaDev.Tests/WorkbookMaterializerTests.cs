@@ -182,7 +182,6 @@ public sealed class WorkbookMaterializerTests
             new RecordingWorkbookGenerationAutomation(events),
             new ForbiddenTransactionFactory(),
             new VbeImportSourceSetFactory(
-                () => throw new InvalidOperationException("Inspection requested ACP again."),
                 sourceSet =>
                 {
                     sourceStagingPaths.Add(sourceSet.StagingPath);
@@ -260,7 +259,6 @@ public sealed class WorkbookMaterializerTests
             new RecordingWorkbookGenerationAutomation(events),
             new ForbiddenTransactionFactory(),
             new VbeImportSourceSetFactory(
-                () => throw new InvalidOperationException("Inspection requested ACP again."),
                 sourceSet => sourceStagingPaths.Add(sourceSet.StagingPath)),
             inspectionWorkbookStager: templatePath =>
                 WorkbookMaterializer.StageInspectionWorkbook(
@@ -306,7 +304,6 @@ public sealed class WorkbookMaterializerTests
             automation,
             new ForbiddenTransactionFactory(),
             new VbeImportSourceSetFactory(
-                () => throw new InvalidOperationException("Inspection requested ACP again."),
                 sourceSet => sourceStagingPaths.Add(sourceSet.StagingPath)));
 
         var result = await materializer.InspectAsync(
@@ -360,7 +357,6 @@ public sealed class WorkbookMaterializerTests
             automation,
             new ForbiddenTransactionFactory(),
             new VbeImportSourceSetFactory(
-                () => throw new InvalidOperationException("Inspection requested ACP again."),
                 sourceSet => sourceStagingPaths.Add(sourceSet.StagingPath)));
 
         var result = await materializer.InspectAsync(
@@ -502,7 +498,6 @@ public sealed class WorkbookMaterializerTests
                 events,
                 () => Assert.False(Directory.Exists(sourceCapture!.StagingPath))),
             new VbeImportSourceSetFactory(
-                () => throw new InvalidOperationException("Import mirror requested ACP again."),
                 _ =>
                 {
                     Assert.True(Directory.Exists(sourceCapture!.StagingPath));
@@ -1558,7 +1553,7 @@ public sealed class WorkbookMaterializerTests
                 new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),
             transactionFactory ?? new WorkbookOutputTransactionFactory(),
             importSourceSetFactory ?? new VbeImportSourceSetFactory(
-                () => throw new InvalidOperationException("Import mirror requested ACP again.")),
+),
             baseTimeouts,
             inspectionWorkbookStager,
             inspectionWorkbookDeleter);

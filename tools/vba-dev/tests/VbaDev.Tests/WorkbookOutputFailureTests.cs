@@ -293,7 +293,6 @@ public sealed class WorkbookOutputFailureTests
         });
         var stagedSourceObserved = false;
         var importSourceSetFactory = new VbeImportSourceSetFactory(
-            () => throw new InvalidOperationException("ACP must come from admission."),
             mirror =>
             {
                 stagedSourceObserved = true;

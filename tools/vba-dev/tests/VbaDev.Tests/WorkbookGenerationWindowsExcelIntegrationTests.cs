@@ -301,8 +301,9 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         var initialProcesses = CaptureExcelProcessIds();
         var activeCodePage = ActiveWindowsAnsiCodePage.Get();
         var nonAsciiText = SelectNonAsciiFixtureText(activeCodePage);
-        var formSourcePath = Path.Combine(temp.Path, "Dialog.frm");
-        var formSidecarPath = Path.Combine(temp.Path, "Dialog.frx");
+        var directSourceDirectory = temp.CreateDirectory("DirectSources");
+        var formSourcePath = Path.Combine(directSourceDirectory, "Dialog.frm");
+        var formSidecarPath = Path.Combine(directSourceDirectory, "Dialog.frx");
         var seedWorkbookPath = Path.Combine(temp.Path, "FormSeed.xlsm");
         CreateEmptyMacroEnabledWorkbook(seedWorkbookPath);
         var seedExcelVersion = ExportNestedUserFormFixture(
@@ -314,8 +315,8 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         var formSourceText = DecodeActiveCodePageFile(formSourcePath, activeCodePage);
         Assert.Contains("Dialog.frx", formSourceText, StringComparison.OrdinalIgnoreCase);
 
-        var standardSourcePath = Path.Combine(temp.Path, "UnicodeModule.bas");
-        var classSourcePath = Path.Combine(temp.Path, "ContractClass.cls");
+        var standardSourcePath = Path.Combine(directSourceDirectory, "UnicodeModule.bas");
+        var classSourcePath = Path.Combine(directSourceDirectory, "ContractClass.cls");
         var standardSourceText = string.Join("\r\n", [
             "Attribute VB_Name = \"UnicodeModule\"",
             "Option Explicit",
@@ -373,12 +374,9 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         CreateEmptyMacroEnabledWorkbook(productionTemplatePath);
 
         using (var importSourceSet = VbeImportSourceSet.Create(
-            [
-                new VbaSourceFile(standardSourcePath, VbaSourceKind.StandardModule, null),
-                new VbaSourceFile(classSourcePath, VbaSourceKind.ClassModule, null),
-                new VbaSourceFile(formSourcePath, VbaSourceKind.Form, formSidecarPath)
-            ],
-            activeCodePage))
+            new VbaSourceAdmission(() => activeCodePage)
+                .Admit(Path.GetDirectoryName(standardSourcePath)!,
+                    VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None)))
         {
             var directImportExcelVersion = ImportAndAssertImmediatelyAndAfterReopen(
                 targetWorkbookPath,
@@ -1218,12 +1216,12 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         CreateEmptyMacroEnabledWorkbook(workbookPath);
 
         string stagingDirectory;
-        using (var sourceSet = VbeImportSourceSet.Create(
-                   [
-                       new VbaSourceFile(firstClassSourcePath, VbaSourceKind.ClassModule, null),
-                       new VbaSourceFile(secondClassSourcePath, VbaSourceKind.ClassModule, null)
-                   ],
-                   activeCodePage))
+        var admission = new VbaSourceAdmission(() => activeCodePage)
+            .Admit(temp.Path, VbaSourceAdmissionIntent.ExplicitImport, cancellation.Token);
+        var orderedAdmission = new AdmittedVbaSourceSet(admission.Intent, admission.ActiveCodePage,
+            new[] { firstClassSourcePath, secondClassSourcePath }
+                .Select(path => admission.Sources.Single(source => source.SourcePath == path)));
+        using (var sourceSet = VbeImportSourceSet.Create(orderedAdmission))
         {
             stagingDirectory = Path.GetDirectoryName(sourceSet.SourceFiles[0].SourcePath)!;
             IReadOnlyList<VbeIdentifierRecasingPair>? immediatePairs = null;
@@ -1291,10 +1289,10 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         var targetPath = Path.Combine(temp.Path, "bin", "RecasingProduction.xlsm");
         var sourceSpecifications = new[]
         {
-            ("ZFileNameProvider", "FileName", "first"),
-            ("AOtherNameProvider", "OtherName", "second"),
-            ("YFilenameAuthority", "Filename", "third"),
-            ("BOthernameAuthority", "Othername", "fourth")
+            ("ZFilenameAuthority", "Filename", "fourth"),
+            ("AFileNameProvider", "FileName", "first"),
+            ("YOthernameAuthority", "Othername", "third"),
+            ("BOtherNameProvider", "OtherName", "second")
         };
         var sourceFiles = sourceSpecifications
             .Select(specification =>
@@ -1315,9 +1313,9 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         CreateEmptyMacroEnabledWorkbook(templatePath);
         string verificationStagingDirectory;
 
-        using (var verificationSourceSet = VbeImportSourceSet.Create(
-                   sourceFiles,
-                   activeCodePage))
+        var admission = new VbaSourceAdmission(() => activeCodePage)
+            .Admit(temp.Path, VbaSourceAdmissionIntent.ExplicitImport, cancellation.Token);
+        using (var verificationSourceSet = VbeImportSourceSet.Create(admission))
         {
             verificationStagingDirectory = Path.GetDirectoryName(
                 verificationSourceSet.SourceFiles[0].SourcePath)!;
@@ -1328,18 +1326,18 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
                 [],
                 sourceFiles,
                 WorkbookAutomationTimeouts.Default,
-                cancellation.Token);
+                cancellation.Token, activeCodePage: activeCodePage);
 
             Assert.Collection(
                 result.VerificationReport.Warnings,
                 warning => AssertRecasingWarning(
                     warning,
-                    "ZFileNameProvider",
+                    "AFileNameProvider",
                     "FileName",
                     "Filename"),
                 warning => AssertRecasingWarning(
                     warning,
-                    "AOtherNameProvider",
+                    "BOtherNameProvider",
                     "OtherName",
                     "Othername"));
             Assert.True(File.Exists(targetPath));
@@ -1357,7 +1355,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
                     VbeImportedComponentVerifier.Verify(
                         verificationSourceSet.SourceFiles[0].ImportVerification,
                         reopened.Components[0])),
-                "ZFileNameProvider",
+                "AFileNameProvider",
                 "FileName",
                 "Filename");
             AssertRecasingWarning(
@@ -1365,7 +1363,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
                     VbeImportedComponentVerifier.Verify(
                         verificationSourceSet.SourceFiles[1].ImportVerification,
                         reopened.Components[1])),
-                "AOtherNameProvider",
+                "BOtherNameProvider",
                 "OtherName",
                 "Othername");
             Assert.Null(VbeImportedComponentVerifier.Verify(
@@ -1673,7 +1671,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
                 automation ?? new ExcelComWorkbookGenerationAutomation(),
                 new WorkbookReferenceNormalizer(new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),
                 transactionFactory ?? new WorkbookOutputTransactionFactory(),
-                new VbeImportSourceSetFactory(ActiveWindowsAnsiCodePage.Get, sourceSetCreated)));
+                new VbeImportSourceSetFactory(sourceSetCreated)));
 
     private static async Task<OrdinaryWorkbookFixture> CreateOrdinaryWorkbookFixtureAsync(
         TempDirectory temp,

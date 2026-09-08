@@ -12,16 +12,6 @@ public sealed record VbaSourceFile(
     string? BinaryPath)
 {
     /// <summary>
-    /// Gets the exact caller snapshot text that strict import decoding must reproduce, when supplied.
-    /// </summary>
-    internal string? ExpectedUnicodeText { get; init; }
-
-    /// <summary>
-    /// Gets the caller-facing path used when reporting a snapshot text mismatch, when supplied.
-    /// </summary>
-    internal string? ExpectedUnicodeTextSourcePath { get; init; }
-
-    /// <summary>
     /// Gets caller-facing source provenance for diagnostics when the active bytes live in private staging.
     /// </summary>
     internal string? DiagnosticSourcePath { get; init; }

@@ -208,7 +208,6 @@ public sealed class PublishSourceAdmissionTests
         AdmittedVbaSourceSet? captured = null;
         string? mirrorPath = null;
         var mirrorFactory = new VbeImportSourceSetFactory(
-            () => throw new InvalidOperationException("Publish requested ACP again."),
             mirror =>
             {
                 Assert.Empty(automation.OpenedWorkbooks);
@@ -265,7 +264,6 @@ public sealed class PublishSourceAdmissionTests
         var automation = new FakeWorkbookGenerationAutomation();
         var mirrorObserved = false;
         var mirrorFactory = new VbeImportSourceSetFactory(
-            () => throw new InvalidOperationException("ACP must come from Publish admission."),
             mirror =>
             {
                 mirrorObserved = true;
@@ -348,7 +346,7 @@ public sealed class PublishSourceAdmissionTests
     }
 
     [Fact]
-    public void DoctorPublishPreflightRetainsUtf8FirstDecodingAndDoesNotRequireATemplate()
+    public void DoctorPublishPreflightUsesCapturedActiveCodePageTextWithoutATemplate()
     {
         using var temp = TempDirectory.Create();
         var context = CreateContext(temp.Path);
@@ -358,9 +356,11 @@ public sealed class PublishSourceAdmissionTests
         File.WriteAllBytes(sourcePath, bytes);
         File.Delete(context.TemplateDocumentPath);
 
-        var selected = new WorkbookSourcePlanner(() => 1252).ResolvePublishSourceFilesForPreflight(context);
+        var selected = new VbaSourceAdmission(() => 1252).BeginDoctorRun()
+            .CaptureDocument(context.DocumentSourceSetPath)
+            .AdmitPublish(context.Document.CommonModules);
 
-        Assert.Equal(text, Assert.Single(selected).ExpectedUnicodeText);
+        Assert.Equal(Encoding.GetEncoding(1252).GetString(bytes), Assert.Single(selected.Sources).Text);
         Assert.Equal(bytes, File.ReadAllBytes(sourcePath));
         Assert.False(File.Exists(context.TemplateDocumentPath));
     }
@@ -388,5 +388,5 @@ public sealed class PublishSourceAdmissionTests
                 automation,
                 new WorkbookReferenceNormalizer(new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),
                 new WorkbookOutputTransactionFactory(),
-                mirrorFactory ?? new VbeImportSourceSetFactory(() => activeCodePage))));
+                mirrorFactory ?? new VbeImportSourceSetFactory())));
 }

@@ -320,7 +320,8 @@ public sealed class PublishCommandTests
             null);
         var planner = new WorkbookSourcePlanner(() => 1252);
 
-        var selected = planner.ResolvePublishSourceFiles(context);
+        using var input = planner.CapturePublishSourceInput(context, CancellationToken.None);
+        var selected = input.Admission.Sources;
 
         Assert.Equal(["NonBreakingSpace.bas"], selected.Select(source => source.FileName));
     }
