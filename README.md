@@ -732,6 +732,13 @@ identical contracts coalesce; the detail and documentation preserve every
 applicable Event or interface signature, including conditional alternatives,
 without selecting a compilation branch.
 
+Hover and completion details show documentation before a horizontal separator
+and the declaration. Multiple documentation variants stay visible in order.
+Callable labels show known `ByRef` parameters, omit `ByVal`, and display
+optional parameters as `[format As String]` without default values. Signature
+Help retains VS Code's native layout and shows the active parameter's
+documentation when available.
+
 Names already occupied in the same VBA scope are suppressed under the ordinary
 declaration-collision rules. All-guarded alternatives remain available, and
 complementary Property Get, Let, and Set accessors do not block one another.

@@ -4192,11 +4192,27 @@ _Avoid_: comment, note, description
 The structured call shape for a callable `VbaDefinition` or `VbaProjectReferenceDefinition`. It includes the displayed signature label, ordered parameters, optional parameter metadata, parameter passing metadata, parameter type names, default values, return type names, callable kind, named-argument support, and parameter documentation when that documentation is available from source comments or reference catalog metadata. When shown by Signature Help or as a callable hover declaration, the primary label carries the callable kind (`Sub`, `Function`, `Property`, `Event`, or source `Declare` form), available return type, available parameter type metadata, and effective `ByRef` metadata, including implicit VBA `ByRef`, while `ByVal` is omitted even when explicit. Property accessors are collapsed to `Property`, `ParamArray` is shown when available, array parameters keep their `()` marker, optional parameters are represented with brackets rather than the `Optional` keyword, and visibility modifiers and default values are omitted. Reference catalog signatures follow the same rules but show only metadata supplied by the catalog; missing passing, type, callable-kind, or named-argument support metadata is not inferred. Current TypeLib catalogs establish named-argument support from their parameter metadata, while legacy persisted catalogs remain fail-closed and stale so they can be refreshed. TypeLib discovery maps COM invoke kinds, `[retval]` presence, and return-value semantics to explicit callable kinds. It projects a callable member as `Event` on a coclass only when that member belongs to the coclass's unique `FDEFAULT | FSOURCE` `TypeLibEventSurface`; it does not reclassify direct interface or dispinterface members or union non-default source interfaces. Hidden and restricted members retain that structural Event kind and their flags, while `TypeLibEventAuthoringSurface` independently decides whether ordinary completion may offer them.
 _Avoid_: parameter list, call text, method shape
 
+**CallablePresentation**:
+The inventory-owned display policy that assembles callable and parameter labels
+from structured evidence and composes documentation with a declaration. Its
+in-process shape is separate from persisted reference-catalog DTOs. Source,
+catalog, intrinsic host, and Implements adapters supply semantic evidence and
+meaningful display roles; consumers do not reconstruct signatures by editing
+completed labels. It adds no cache, discovery, or type authority. Known ByRef,
+bracketed Optional parameters without defaults, array shapes, and accessor roles
+follow the same rules across editor features. See ADR 0047.
+_Avoid_: label parser, signature cache, completion insertion template
+
 **Hover**:
 An editor feature that explains the `VbaDefinition` or `VbaProjectReferenceDefinition` under the cursor. It renders the attached `DocumentationComment`, followed by a horizontal separator and a fenced `vba` declaration block. Callable definitions use their rich `CallableSignature`; other definitions use their `DeclarationLabel`. Hover does not expand per-parameter documentation or track an active `CallableParameter`.
 When present, its protocol range identifies the identifier occurrence under the
 request in that request document; the resolved declaration range belongs to
 definition navigation instead.
+Ordinary and conditional Hover and completion documentation share
+`CallablePresentation`: documentation precedes one horizontal rule and the
+declaration. A missing part produces no rule. Coalesced completion documentation
+retains distinct nonempty variants in numbered order before that separator;
+physical alternatives and existing inter-group separators remain independent.
 _Avoid_: SignatureHelp, tooltip, parameter hover
 
 **SignatureHelp**:
@@ -4219,6 +4235,10 @@ cannot represent null, projection preserves Signature Help and its variants,
 omits the unrepresentable value, and accepts the protocol's parameter-zero
 display fallback without changing the semantic mapping to zero.
 _Avoid_: hover, tooltip, parameter hover
+
+VS Code renders the native Signature Help signature/documentation separator.
+The server adds no Markdown rule or callable-documentation copy to parameter
+documentation, including when an active parameter is absent or undocumented.
 
 **DeclarationLabel**:
 The editor-facing declaration summary for a non-callable `VbaDefinition` or `VbaProjectReferenceDefinition`, or the fallback when no richer `CallableSignature` is available. Constants, enums, and user-defined types include `Const`, `Enum`, or `Type`. Variables, parameters, enum members, root value properties such as `HostGlobalReferenceDefinition`s, and user-defined type members use declaration forms such as `Name As Type`; arrays keep `()` after the name. External enum members use the catalog-provided declared type rather than a contextual enum type inferred from the call or assignment site. Parameter labels include effective `ByRef` metadata while omitting `ByVal`. `Static` and `WithEvents` are included when they apply, while visibility modifiers and unavailable implicit types are omitted.

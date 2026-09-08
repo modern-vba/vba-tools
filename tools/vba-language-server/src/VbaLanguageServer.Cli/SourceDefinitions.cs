@@ -492,6 +492,9 @@ public sealed record VbaSourceDefinition(
     /// </summary>
     public bool IsFixedLengthString { get; init; }
 
+    // Source-only declaration evidence; callable catalog DTOs remain unchanged.
+    internal bool IsExternal { get; init; }
+
     /// <summary>
     /// Gets the editor-facing definition URI.
     /// </summary>
@@ -1203,6 +1206,7 @@ internal static class VbaSourceDocumentProjector
             && definition.WithEventsRecoveryReasons
                 == GetWithEventsRecoveryReasons(syntaxTree, declaration)
             && definition.IsFixedLengthString == declaration.IsFixedLengthString
+            && definition.IsExternal == declaration.IsExternal
             && Equals(
                 definition.TypeReferenceRange,
                 declaration.WithEventsTypeReferenceRange is null
@@ -1290,7 +1294,8 @@ internal static class VbaSourceDocumentProjector
                 ? null
                 : GetCallableKind(declaration))
         {
-            IsFixedLengthString = declaration.IsFixedLengthString
+            IsFixedLengthString = declaration.IsFixedLengthString,
+            IsExternal = declaration.IsExternal
         };
     }
 
@@ -1437,36 +1442,34 @@ internal static class VbaSourceDocumentProjector
     private static VbaCallableSignature MapSignature(VbaDeclarationSyntax declaration)
     {
         var signature = declaration.Signature!;
-        var parameterLabels = signature.Parameters.Select(CreateSignatureParameterLabel).ToArray();
         var callableKind = GetCallableKind(declaration);
-        var declarePrefix = declaration.IsExternal ? "Declare " : "";
-        var label = $"{declarePrefix}{callableKind} {declaration.Name}({string.Join(", ", parameterLabels)})";
-        if (declaration.TypeReference is not null)
-        {
-            label = $"{label} As {declaration.TypeReference.Name}";
-        }
-
-        return new VbaCallableSignature(
-            label,
-            signature.Parameters
-                .Select((parameter, index) => new VbaCallableParameter(
-                    Name: parameter.Name,
-                    Documentation: parameter.Documentation,
-                    IsOptional: parameter.IsOptional,
-                    DisplayLabel: parameterLabels[index],
-                    TypeReference: parameter.TypeReference is null
-                        ? null
-                        : MapTypeReference(parameter.TypeReference),
-                    IsByRef: parameter.IsByRef,
-                    IsParamArray: parameter.IsParamArray,
-                    IsArray: parameter.IsArray)
-                {
-                    DefaultExpression = parameter.DefaultExpression
-                })
-                .ToArray(),
-            signature.Documentation,
-            CallableKind: callableKind,
-            SupportsNamedArguments: true);
+        return VbaCallablePresentation.Assemble(
+            new VbaCallablePresentationShape(
+                declaration.Name,
+                callableKind,
+                declaration.TypeReference is null ? null : MapTypeReference(declaration.TypeReference),
+                IsExternal: declaration.IsExternal,
+                IsReturnArray: declaration.IsArray),
+            new VbaCallableSignature(
+                "",
+                signature.Parameters
+                    .Select(parameter => new VbaCallableParameter(
+                        Name: parameter.Name,
+                        Documentation: parameter.Documentation,
+                        IsOptional: parameter.IsOptional,
+                        TypeReference: parameter.TypeReference is null
+                            ? null
+                            : MapTypeReference(parameter.TypeReference),
+                        IsByRef: parameter.IsByRef,
+                        IsParamArray: parameter.IsParamArray,
+                        IsArray: parameter.IsArray)
+                    {
+                        DefaultExpression = parameter.DefaultExpression
+                    })
+                    .ToArray(),
+                signature.Documentation,
+                CallableKind: callableKind,
+                SupportsNamedArguments: true));
     }
 
     private static bool HasValidSourceCallableSignature(
@@ -1547,28 +1550,6 @@ internal static class VbaSourceDocumentProjector
             VbaPropertyAccessorKind.Let or VbaPropertyAccessorKind.Set => VbaPropertyAccess.Writable,
             _ => VbaPropertyAccess.Unknown
         };
-
-    private static string CreateSignatureParameterLabel(VbaCallableParameterInfoSyntax parameter)
-    {
-        var parts = new List<string>();
-        if (parameter.IsParamArray)
-        {
-            parts.Add("ParamArray");
-        }
-        else if (parameter.IsByRef)
-        {
-            parts.Add("ByRef");
-        }
-
-        parts.Add(parameter.IsArray ? $"{parameter.Name}()" : parameter.Name);
-        if (parameter.TypeReference is not null)
-        {
-            parts.Add($"As {parameter.TypeReference.Name}");
-        }
-
-        var label = string.Join(" ", parts);
-        return parameter.IsOptional ? $"[{label}]" : label;
-    }
 
     private static VbaTypeReference MapTypeReference(VbaTypeReferenceSyntax typeReference)
         => new(typeReference.Name, typeReference.Qualifier);

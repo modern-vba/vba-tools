@@ -94,6 +94,7 @@ internal sealed class VbaCallSiteResolution
             if (definition.PropertyAccessorKind
                     is VbaPropertyAccessorKind.Let or VbaPropertyAccessorKind.Set
                 && !TryCreateSetterInvocationSignature(
+                    definition,
                     physicalSignature,
                     out invocationSignature))
             {
@@ -257,7 +258,7 @@ internal sealed class VbaCallSiteResolution
             var invocationSignature = signature;
             if (definition.PropertyAccessorKind
                     is VbaPropertyAccessorKind.Let or VbaPropertyAccessorKind.Set
-                && !TryCreateSetterInvocationSignature(signature, out invocationSignature))
+                && !TryCreateSetterInvocationSignature(definition, signature, out invocationSignature))
             {
                 variants.Add(new VbaCallVariantCompatibility(
                     definition,
@@ -1796,7 +1797,7 @@ internal sealed class VbaCallSiteResolution
         {
             if (callContext != VbaCallContext.Indeterminate
                     && !IsPropertyAssignmentTargetCall(currentDocument, callSite)
-                || !TryCreateSetterInvocationSignature(signature, out signature))
+                || !TryCreateSetterInvocationSignature(definition, signature, out signature))
             {
                 return new VbaCallArgumentAvailability(definition, signature, false, []);
             }
@@ -1832,7 +1833,7 @@ internal sealed class VbaCallSiteResolution
             {
                 if (callContext != VbaCallContext.Indeterminate
                         && !IsPropertyAssignmentTargetCall(currentDocument, callSite)
-                    || !TryCreateSetterInvocationSignature(signature, out signature))
+                    || !TryCreateSetterInvocationSignature(definition, signature, out signature))
                 {
                     continue;
                 }
@@ -1916,6 +1917,7 @@ internal sealed class VbaCallSiteResolution
             && !definition.PropertyAccess.HasFlag(VbaPropertyAccess.Readable);
 
     private static bool TryCreateSetterInvocationSignature(
+        VbaSourceDefinition definition,
         VbaCallableSignature signature,
         out VbaCallableSignature invocationSignature)
     {
@@ -1925,24 +1927,21 @@ internal sealed class VbaCallSiteResolution
             return false;
         }
 
-        var openParenthesis = signature.Label.IndexOf('(');
-        var closeParenthesis = signature.Label.LastIndexOf(')');
-        if (openParenthesis < 0 || closeParenthesis <= openParenthesis)
-        {
-            return false;
-        }
-
+        // The assigned-value slot belongs to the assignment, not its index arguments.
         var invocationParameters = signature.Parameters
             .Take(signature.Parameters.Count - 1)
             .ToArray();
-        var invocationLabel = signature.Label[..(openParenthesis + 1)]
-            + string.Join(", ", invocationParameters.Select(parameter => parameter.Label))
-            + signature.Label[closeParenthesis..];
-        invocationSignature = signature with
-        {
-            Label = invocationLabel,
-            Parameters = invocationParameters
-        };
+        invocationSignature = VbaCallablePresentation.Assemble(
+            new VbaCallablePresentationShape(
+                definition.Name,
+                definition.Kind == VbaSourceDefinitionKind.Property
+                    ? VbaCallableKind.Property
+                    : definition.CallableKind ?? signature.CallableKind,
+                definition.TypeReference,
+                IsExternal: definition.IsExternal,
+                IsReturnArray: definition.Identity.Origin == VbaDefinitionOrigin.Source
+                    ? definition.IsArray : definition.IsReturnArray),
+            signature with { Parameters = invocationParameters });
         return true;
     }
 

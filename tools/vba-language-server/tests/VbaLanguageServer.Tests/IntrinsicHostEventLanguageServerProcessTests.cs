@@ -583,7 +583,7 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
             var signature = Assert.Single(
                 result.GetProperty("signatures").EnumerateArray());
             Assert.Equal(
-                "UserForm_Change(ByVal Value As Long)",
+                "UserForm_Change(Value As Long)",
                 signature.GetProperty("label").GetString());
             Assert.Equal(0, result.GetProperty("activeParameter").GetInt32());
 
@@ -749,7 +749,7 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
             var diagnostic = Assert.Single(diagnostics);
             Assert.Equal(
                 "Event handler signature does not match any available Event signature.\n"
-                    + "Expected signature: Event Change(ByVal Value As Long).\n"
+                    + "Expected signature: Event Change(Value As Long).\n"
                     + "Mismatches: parameter 1 type: expected Long, found Boolean.",
                 diagnostic.GetProperty("message").GetString());
             Assert.False(diagnostic.TryGetProperty(
@@ -1087,7 +1087,7 @@ public sealed class IntrinsicHostEventLanguageServerProcessTests
             Assert.Contains("Event Changed(Value As Long) [#If]", value, StringComparison.Ordinal);
             Assert.Contains("Event Changed(Value As String) [#If]", value, StringComparison.Ordinal);
             Assert.Contains(
-                "Event Changed(ByVal Enabled As Boolean) [#If]",
+                "Event Changed(Enabled As Boolean) [#If]",
                 value,
                 StringComparison.Ordinal);
             Assert.Contains("Built-in Changed Event.", value, StringComparison.Ordinal);

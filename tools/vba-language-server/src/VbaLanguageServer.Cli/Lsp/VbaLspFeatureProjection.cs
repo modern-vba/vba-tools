@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Text;
 using VbaLanguageServer.Diagnostics;
 using VbaLanguageServer.SourceModel;
 
@@ -203,13 +202,9 @@ internal static class VbaLspFeatureProjection
 
     private static string CreateProjectedEventHoverValue(
         VbaResolvedEventContract contract)
-    {
-        var declaration = CreateHoverDeclarationBlock(
-            contract.Signature?.Label ?? contract.Name);
-        return string.IsNullOrWhiteSpace(contract.Documentation)
-            ? declaration
-            : $"{contract.Documentation}\n\n---\n\n{declaration}";
-    }
+        => VbaCallablePresentation.ComposeDocumentation(
+            contract.Signature?.Label ?? contract.Name,
+            [contract.Documentation]);
 
     private static string CreateProjectedEventHoverVariant(
         VbaResolvedEventContract contract)
@@ -217,21 +212,15 @@ internal static class VbaLspFeatureProjection
         var conditionalMarker = contract.IsConditionalContract
             ? " [#If]"
             : string.Empty;
-        var block = CreateHoverDeclarationBlock(
-            $"{contract.Signature?.Label ?? contract.Name}{conditionalMarker}");
-        return string.IsNullOrWhiteSpace(contract.Documentation)
-            ? block
-            : $"{block}\n\n{contract.Documentation}";
+        return VbaCallablePresentation.ComposeDocumentation(
+            $"{contract.Signature?.Label ?? contract.Name}{conditionalMarker}",
+            [contract.Documentation]);
     }
 
     private static string CreateOrdinaryHoverValue(VbaSourceDefinition definition)
-    {
-        var declaration = CreateHoverDeclarationBlock(
-            definition.Signature?.Label ?? definition.DeclarationLabel ?? definition.Name);
-        return string.IsNullOrWhiteSpace(definition.Documentation)
-            ? declaration
-            : $"{definition.Documentation}\n\n---\n\n{declaration}";
-    }
+        => VbaCallablePresentation.ComposeDocumentation(
+            definition.Signature?.Label ?? definition.DeclarationLabel ?? definition.Name,
+            [definition.Documentation]);
 
     private static string CreateConditionalHoverVariant(VbaSourceDefinition definition)
     {
@@ -241,14 +230,10 @@ internal static class VbaLspFeatureProjection
         var conditionalMarker = definition.ConditionalCompilationPath is { IsEmpty: false }
             ? " [#If]"
             : string.Empty;
-        var block = CreateHoverDeclarationBlock($"{declaration}{conditionalMarker}");
-        return string.IsNullOrWhiteSpace(definition.Documentation)
-            ? block
-            : $"{block}\n\n{definition.Documentation}";
+        return VbaCallablePresentation.ComposeDocumentation(
+            $"{declaration}{conditionalMarker}",
+            [definition.Documentation]);
     }
-
-    private static string CreateHoverDeclarationBlock(string declaration)
-        => $"```vba\n{declaration}\n```";
 
     public static object? CreateSignatureHelp(
         VbaSignatureHelp? signatureHelp,
@@ -476,32 +461,9 @@ internal static class VbaLspFeatureProjection
 
     private static string CreateCompletionSignatureSection(
         VbaCompletionSignaturePresentation presentation)
-    {
-        var result = new StringBuilder()
-            .Append("```vba\n")
-            .Append(presentation.DisplayLabel)
-            .Append("\n```");
-        if (presentation.DocumentationVariants.Count == 1)
-        {
-            result.Append("\n\n")
-                .Append(presentation.DocumentationVariants[0]);
-        }
-        else if (presentation.DocumentationVariants.Count > 1)
-        {
-            result.Append("\n\n**Documentation variants**");
-            for (var index = 0;
-                 index < presentation.DocumentationVariants.Count;
-                 index++)
-            {
-                result.Append("\n\n")
-                    .Append(index + 1)
-                    .Append(". ")
-                    .Append(presentation.DocumentationVariants[index]);
-            }
-        }
-
-        return result.ToString();
-    }
+        => VbaCallablePresentation.ComposeDocumentation(
+            presentation.DisplayLabel,
+            presentation.DocumentationVariants);
 
     private static string? CreateCompletionDetail(VbaCompletionCandidate candidate)
     {
