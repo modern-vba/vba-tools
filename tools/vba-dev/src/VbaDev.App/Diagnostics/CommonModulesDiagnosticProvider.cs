@@ -71,10 +71,9 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
             return;
         }
 
-        var entriesByFile = entries.ToDictionary(entry => entry.ModuleFile, StringComparer.OrdinalIgnoreCase);
         foreach (var (documentName, document) in project.Manifest.Documents.OrderBy(item => item.Key, StringComparer.OrdinalIgnoreCase))
         {
-            AddDocumentRepositoryDiagnostics(results, project, documentName, document, entries, entriesByFile,
+            AddDocumentRepositoryDiagnostics(results, project, documentName, document, entries,
                 sources?.GetDocument(documentName));
         }
     }
@@ -113,70 +112,43 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
         string documentName,
         ProjectDocument document,
         IReadOnlyList<CommonModuleManifestEntry> entries,
-        IReadOnlyDictionary<string, CommonModuleManifestEntry> entriesByFile,
         CapturedDoctorSourceSet? sources)
     {
-        var installedByName = document.CommonModules.ToDictionary(
-            module => module.Name,
-            StringComparer.OrdinalIgnoreCase);
-        var resolvedByName = new Dictionary<string, CommonModuleManifestEntry>(StringComparer.OrdinalIgnoreCase);
-        foreach (var module in document.CommonModules)
+        var reconciliation = CommonModulesReconciliation.Create(entries, document.CommonModules);
+        foreach (var fact in reconciliation.Installed.Where(fact => fact.RepositoryEntry is null))
         {
-            try
-            {
-                resolvedByName[module.Name] = CommonModulesDependencyResolver.ResolveEntry(entries, module.Name);
-            }
-            catch (CommonModulesManifestException)
-            {
-                results.Add(module.Orphaned
-                    ? DiagnosticResult.Warn(
-                        CommonModulesCheckId(documentName, module.Name, "orphaned"),
-                        $"CommonModules ({documentName}/{module.Name})",
-                        $"Installed CommonModule '{module.Name}' is a retained orphan; "
-                        + "its identity is absent from the current CommonModulesRepository.")
-                    : DiagnosticResult.Warn(
-                        CommonModulesCheckId(documentName, module.Name, "orphanState"),
-                        $"CommonModules ({documentName}/{module.Name})",
-                        $"Installed CommonModule '{module.Name}' is absent from the current CommonModulesRepository "
-                        + "but is not marked orphaned; run common-module update."));
-            }
+            var module = fact.Installed;
+            results.Add(fact.State == CommonModuleRepositoryState.RetainedOrphan
+                ? DiagnosticResult.Warn(
+                    CommonModulesCheckId(documentName, module.Name, "orphaned"),
+                    $"CommonModules ({documentName}/{module.Name})",
+                    $"Installed CommonModule '{module.Name}' is a retained orphan; "
+                    + "its identity is absent from the current CommonModulesRepository.")
+                : DiagnosticResult.Warn(
+                    CommonModulesCheckId(documentName, module.Name, "orphanState"),
+                    $"CommonModules ({documentName}/{module.Name})",
+                    $"Installed CommonModule '{module.Name}' is absent from the current CommonModulesRepository "
+                    + "but is not marked orphaned; run common-module update."));
         }
 
-        var allRequestedRootsResolve = document.CommonModules
-            .Where(module => module.Requested)
-            .All(module => !module.Orphaned && resolvedByName.ContainsKey(module.Name));
-
-        var reachableDependencyNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var module in document.CommonModules.Where(module =>
-                     module.Requested && !module.Orphaned))
+        foreach (var missing in reconciliation.MissingDependencies)
         {
-            if (!resolvedByName.TryGetValue(module.Name, out var entry))
-            {
-                continue;
-            }
-
-            reachableDependencyNames.Add(module.Name);
-            AddDependencyDiagnostics(
-                results,
-                documentName,
-                module.Name,
-                entry,
-                entriesByFile,
-                installedByName,
-                reachableDependencyNames,
-                [],
-                []);
+            results.Add(DiagnosticResult.Fail(
+                CommonModulesCheckId(documentName, missing.RootName,
+                    $"dependency.{Uri.EscapeDataString(missing.DependencyName)}"),
+                $"CommonModules ({documentName}/{missing.RootName})",
+                $"Requested CommonModule '{missing.RootName}' requires missing dependency '{missing.DependencyName}'."));
         }
 
         var sourceSetPath = project.ResolvePath(document.SourcePath);
-        foreach (var module in document.CommonModules)
+        foreach (var fact in reconciliation.Installed)
         {
-            if (!resolvedByName.TryGetValue(module.Name, out var entry))
+            if (fact.RepositoryEntry is not { } entry)
             {
                 continue;
             }
-
-            if (module.Orphaned)
+            var module = fact.Installed;
+            if (fact.State == CommonModuleRepositoryState.StaleOrphanMarker)
             {
                 results.Add(DiagnosticResult.Warn(
                     CommonModulesCheckId(documentName, module.Name, "orphanState"),
@@ -184,71 +156,15 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
                     $"Installed CommonModule '{module.Name}' is marked orphaned, but the same identity is present "
                     + "in the current CommonModulesRepository; run common-module update."));
             }
-
-            if (allRequestedRootsResolve
-                && !module.Requested
-                && !reachableDependencyNames.Contains(module.Name))
+            if (fact.IsUnreachableDependency)
             {
                 results.Add(DiagnosticResult.Warn(
                     CommonModulesCheckId(documentName, module.Name, "reachability"),
                     $"CommonModules ({documentName}/{module.Name})",
                     "Installed dependency entry is unreachable from requested CommonModules roots."));
             }
-
             AddSourceDriftDiagnostic(results, documentName, module, sourceSetPath, project.CommonModulesRepositoryPath!, entry, sources);
         }
-    }
-
-    private static void AddDependencyDiagnostics(
-        List<DiagnosticResult> results,
-        string documentName,
-        string rootName,
-        CommonModuleManifestEntry entry,
-        IReadOnlyDictionary<string, CommonModuleManifestEntry> entriesByFile,
-        IReadOnlyDictionary<string, InstalledCommonModule> installedByName,
-        HashSet<string> reachableDependencyNames,
-        HashSet<string> visiting,
-        HashSet<string> reportedMissingDependencyNames)
-    {
-        if (!visiting.Add(entry.ModuleFile))
-        {
-            return;
-        }
-
-        foreach (var dependency in entry.Dependencies)
-        {
-            if (!entriesByFile.TryGetValue(dependency, out var dependencyEntry))
-            {
-                continue;
-            }
-
-            var dependencyName = Path.GetFileNameWithoutExtension(dependencyEntry.ModuleFile);
-            reachableDependencyNames.Add(dependencyName);
-            if (!installedByName.ContainsKey(dependencyName) &&
-                reportedMissingDependencyNames.Add(dependencyName))
-            {
-                results.Add(DiagnosticResult.Fail(
-                    CommonModulesCheckId(
-                        documentName,
-                        rootName,
-                        $"dependency.{Uri.EscapeDataString(dependencyName)}"),
-                    $"CommonModules ({documentName}/{rootName})",
-                    $"Requested CommonModule '{rootName}' requires missing dependency '{dependencyName}'."));
-            }
-
-            AddDependencyDiagnostics(
-                results,
-                documentName,
-                rootName,
-                dependencyEntry,
-                entriesByFile,
-                installedByName,
-                reachableDependencyNames,
-                visiting,
-                reportedMissingDependencyNames);
-        }
-
-        visiting.Remove(entry.ModuleFile);
     }
 
     private static void AddSourceDriftDiagnostic(
