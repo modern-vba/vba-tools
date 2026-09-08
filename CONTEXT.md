@@ -1220,8 +1220,10 @@ The Windows-only `VbaDev` mechanism that issues an invocation-local,
 unforgeable receipt after create-only or trusted stable capture and binds it to
 both one normalized route and the exact ordinary object identity; a file receipt
 also binds length and SHA-256 content evidence. It permits only no-follow
-re-observation and same-handle deletion of that unchanged object, while the
-owning workflow retains deletion order, retry, rollback, and outcome policy.
+re-observation and same-handle deletion of that unchanged object. It does not
+own deletion ordering, retries, rollback, or outcome policy. `InvocationScratch`
+supplies shared scratch scheduling; workflows retain cleanup timing and outcome
+policy, including any separate rollback protocol.
 Sharing this mechanism does not strengthen every consumer's mutation contract:
 CommonModules retains its existing atomic source replacement and documented
 comparison-to-mutation gap, without a backup handoff or automatic rollback.
@@ -1238,6 +1240,33 @@ Infrastructure. Existing language-server consumers reference that same
 resolver in the allowed `VbaLanguageServer`-to-`VbaDev` direction rather than
 copying it. This does not invoke the CLI or initialize Excel.
 _Avoid_: path-based ownership, recursive cleanup, generic transaction journal
+
+**InvocationScratch**:
+An invocation-local registration of opaque file and directory receipts from one
+`ExactFileSystemObjectOwnership` session. Registration accepts receipts, never
+arbitrary paths; routes are used only to schedule work and describe evidence.
+The shared cleanup module deletes registered files before directories, deepest
+directories before parents, and continues independent sibling cleanup when one
+child is retained. It performs at most three passes with a fixed 50 ms delay
+only while proof remains inconclusive, and finishes independently of command
+cancellation once started. Missing owned objects count as removed. Changed,
+replaced, linked, reparse, foreign, or unproved objects remain protected by the
+exact-object mechanism; no recursive deletion or ownership adoption is exposed.
+The workflow decides what to create and register, releases creation fences,
+starts cleanup, disposes its ownership session, and interprets the result. The
+module owns no commitment, rollback, recovery, warning, or command-result policy.
+CommonModules snapshots are the first consumer and retain their capture,
+mutation, cancellation, retained-workspace, and warning-order contracts.
+_Avoid_: path-based cleanup, generic transaction, recursive workspace deletion
+
+**InvocationScratchCleanupEvidence**:
+The immutable terminal observation from `InvocationScratch`: `Removed` when all
+registered objects are conclusively absent, `Retained` when remaining objects
+are conclusively protected, or `Inconclusive` when some proof remains unavailable
+after bounded retries. Retained absolute paths and inconclusive paths are sorted
+case-insensitively with an ordinal tie-breaker. Repeated cleanup returns the same
+evidence and cannot acquire new deletion authority.
+_Avoid_: command success, rollback receipt, recoverable transaction state
 
 **InitialProjectTarget**:
 The **ProjectRootIdentity** selected for **InitialProjectCreation**, reached

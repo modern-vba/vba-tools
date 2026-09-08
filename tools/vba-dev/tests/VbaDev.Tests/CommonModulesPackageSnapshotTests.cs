@@ -11,6 +11,58 @@ namespace VbaDev.Tests;
 public sealed class CommonModulesPackageSnapshotTests
 {
     [Fact]
+    public void CleanupRetriesOwnedFilesAndFinishesAfterCommandCancellation()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        using var cancellation = new CancellationTokenSource();
+        var repository = temp.CreateDirectory("common_modules_repo");
+        WriteManifest(repository, ("Feature.bas", "optional", string.Empty));
+        WriteSource(repository, "Feature.bas", "captured bytes");
+        FileStream? fileLock = null;
+        var proofs = new List<string>();
+        var observer = new CallbackSnapshotCleanupObserver(path =>
+        {
+            proofs.Add(path);
+            if (Path.GetFileName(path) == CommonModulesManifestReader.ManifestFileName)
+            {
+                cancellation.Cancel();
+                fileLock?.Dispose();
+                fileLock = null;
+            }
+        });
+        using var snapshot = new CommonModulesPackageSnapshotFactory(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
+            new CommonModulesPackageReader(new CommonModulesManifestReader()),
+            temp.CreateDirectory("scratch"), beforeLiveStabilityProof: null, observer)
+            .Capture(repository, cancellation.Token);
+        var feature = Path.Combine(snapshot.StagingPath, "Feature.bas");
+        fileLock = File.Open(feature, FileMode.Open, FileAccess.Read, FileShare.Read);
+
+        try
+        {
+            var result = snapshot.Cleanup();
+
+            Assert.True(cancellation.IsCancellationRequested);
+            Assert.True(result.Deleted);
+            Assert.True(result.IsConclusive);
+            Assert.Empty(result.RetainedEntryPaths);
+            Assert.Equal(new[] { Path.Combine(snapshot.StagingPath, CommonModulesManifestReader.ManifestFileName),
+                feature, snapshot.StagingPath }, proofs);
+            Assert.Same(result, snapshot.Cleanup());
+            Assert.False(Directory.Exists(snapshot.StagingPath));
+        }
+        finally
+        {
+            fileLock?.Dispose();
+        }
+    }
+
+    [Fact]
     public void SnapshotCleanupFailureClassificationNeverTreatsOwnershipRollbackAsRetention()
     {
         Assert.False(CommonModulesInstallationTransaction.IsRetainableSnapshotCleanupFailure(
@@ -802,6 +854,12 @@ public sealed class CommonModulesPackageSnapshotTests
                 RenameWasBlocked = true;
             }
         }
+    }
+
+    private sealed class CallbackSnapshotCleanupObserver(Action<string> callback)
+        : ICommonModulesPackageSnapshotCleanupObserver
+    {
+        public void OnProofComplete(string path) => callback(path);
     }
 
     private sealed class NoOpSnapshotCleanupObserver
