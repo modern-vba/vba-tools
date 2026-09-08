@@ -11,6 +11,8 @@ public sealed class VbaNameResolutionService
     private readonly VbaNameCandidateInventory candidates;
     private readonly VbaResolutionPolicy resolutionPolicy;
 
+    internal VbaEffectiveDeclaredTypes EffectiveDeclaredTypes { get; }
+
     /// <summary>
     /// Creates a name resolution service over indexed source documents and active references.
     /// </summary>
@@ -32,6 +34,7 @@ public sealed class VbaNameResolutionService
                 ?? referenceCatalogs.GetActiveDefinitions(referenceSelection));
         resolutionPolicy = new VbaResolutionPolicy(
             candidates.ConditionalFamilies);
+        EffectiveDeclaredTypes = new VbaEffectiveDeclaredTypes(this);
     }
 
     internal VbaNameResolutionService(
@@ -57,6 +60,7 @@ public sealed class VbaNameResolutionService
     {
         this.resolutionPolicy = resolutionPolicy;
         this.candidates = candidates;
+        EffectiveDeclaredTypes = new VbaEffectiveDeclaredTypes(this);
     }
 
     /// <summary>

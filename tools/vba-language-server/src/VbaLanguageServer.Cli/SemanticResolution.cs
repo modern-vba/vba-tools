@@ -98,9 +98,10 @@ internal sealed class VbaSemanticResolution
             currentDocument,
             declaration);
 
-    internal VbaSourceDefinition ProjectSourceInterfaceDocumentation(
+    internal VbaSourceDefinition ProjectDefinitionPresentation(
         VbaSourceDefinition definition)
-        => interfaceSemantics.ProjectSourceInterfaceDocumentation(definition);
+        => nameResolution.EffectiveDeclaredTypes.Project(
+            interfaceSemantics.ProjectSourceInterfaceDocumentation(definition));
 
     internal VbaEventHandlerCompatibility AnalyzeWithEventsHandlerCompatibility(
         VbaSourceDocument currentDocument,
@@ -1004,7 +1005,7 @@ internal sealed class VbaSemanticResolution
             character,
             positionSyntax,
             retriggerIdentity,
-            interfaceSemantics.ProjectSourceInterfaceDocumentation);
+            ProjectDefinitionPresentation);
     }
 
     private VbaSignatureHelp? TryGetContractDeclarationSignatureHelp(
@@ -2916,7 +2917,7 @@ internal sealed class VbaSemanticResolution
                 .Select(definition => new VbaResolvedEventContract(
                     new VbaDefinitionEventContractIdentity(definition.Identity),
                     definition.Name,
-                    definition.Signature,
+                    nameResolution.EffectiveDeclaredTypes.Project(definition).Signature,
                     definition.Documentation,
                     GetEventHandlerValidationAuthority(definition),
                     isConditionalBinding

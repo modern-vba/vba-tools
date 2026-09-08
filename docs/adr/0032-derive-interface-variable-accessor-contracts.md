@@ -18,10 +18,14 @@ conditional provenance from the Public variable or applicable `Implements`
 relationship. Invalid Public arrays and fixed-length Strings contribute no
 contract.
 
-The matrix uses each Public variable declarator's effective declared type. An
+The matrix consumes the inventory-owned `EffectiveDeclaredType` described in
+ADR 0045, also used by ordinary calls, Event contracts, and editor signatures;
+the interface consumer does not maintain its own type-defaulting policy. An
 explicit `As` type or type-declaration character applies to that declarator;
 otherwise its interface module's applicable `DefType` supplies the type, and
-Variant is the fallback only when none applies. The implementing class's
+Variant is the fallback only when the absence of an applicable directive is
+known. Unknown conditional effects and unfinished type clauses remain
+insufficient evidence. The implementing class's
 `DefType` never changes the interface contract, and an `As` clause on one item
 in a comma-separated declaration does not type its siblings.
 

@@ -56,7 +56,9 @@ public sealed class VbaSemanticInventory
 
     /// <summary>
     /// Estimates the complete retained analysis footprint, including capacity
-    /// for occurrence and token caches that have not been requested yet.
+    /// for occurrence, token, and effective declared type caches that have not
+    /// been requested yet. Definition and parameter allowances reserve each
+    /// declared type result, lazy publication, identity, and display strings.
     /// Shared objects are deliberately charged to every retained scope. This
     /// is a conservative admission estimate, not a CLR heap measurement.
     /// </summary>
@@ -193,7 +195,7 @@ public sealed class VbaSemanticInventory
             : 512 + EstimateRetainedTextBytes(signature.Label)
                 + EstimateRetainedTextBytes(signature.Documentation)
                 + signature.Parameters.Sum(parameter =>
-                    512 + EstimateRetainedTextBytes(parameter.Name)
+                    1024 + EstimateRetainedTextBytes(parameter.Name)
                         + EstimateRetainedTextBytes(parameter.Documentation)
                         + EstimateRetainedTextBytes(parameter.DisplayLabel)
                         + EstimateRetainedTextBytes(parameter.DefaultExpression)
@@ -914,7 +916,7 @@ public sealed class VbaSemanticInventory
             : target.IsConditionalFamily
                 ? target.PhysicalDefinitions
                 : [target.SelectedDefinition])
-            .Select(semanticResolution.ProjectSourceInterfaceDocumentation)
+            .Select(semanticResolution.ProjectDefinitionPresentation)
             .ToArray();
         var isMultiDefinitionPresentation = isCallablePropertyTarget
             || target.IsConditionalFamily;

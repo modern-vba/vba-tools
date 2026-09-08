@@ -125,7 +125,7 @@ internal sealed class VbaTypeResolution
         else
         {
             var firstDefinition = firstTarget?.SelectedDefinition;
-            if (firstDefinition?.TypeReference is not null)
+            if (firstDefinition is not null && nameResolution.EffectiveDeclaredTypes.Get(firstDefinition).Reference is not null)
             {
                 if (!TryResolveDefinitionTypeReference(
                     currentDocument,
@@ -258,7 +258,6 @@ internal sealed class VbaTypeResolution
                             signature,
                             VbaCallContext.ValueRead)).State
                     != VbaCallCompatibilityState.Applicable
-                || definition.TypeReference is null
                 || !TryResolveDefinitionTypeReference(
                     currentDocument,
                     definition,
@@ -335,7 +334,6 @@ internal sealed class VbaTypeResolution
                     && !(signature.CallableKind == VbaCallableKind.Property
                         && variant.Definition.PropertyAccess.HasFlag(
                             VbaPropertyAccess.Readable)))
-                || variant.Definition.TypeReference is null
                 || !TryResolveDefinitionTypeReference(
                     currentDocument,
                     variant.Definition,
@@ -399,34 +397,13 @@ internal sealed class VbaTypeResolution
         VbaSourceDefinition definition,
         out VbaResolvedType resolvedType)
     {
-        resolvedType = default!;
-        if (definition.TypeReference is null)
+        var type = nameResolution.EffectiveDeclaredTypes.Get(definition);
+        if (type.State != VbaEffectiveDeclaredTypeState.Known || type.Target is null)
         {
+            resolvedType = default!;
             return false;
         }
-
-        VbaSourceDefinition? typeDefinition;
-        if (definition.Identity.Origin == VbaDefinitionOrigin.ProjectReference)
-        {
-            typeDefinition = nameResolution.ResolveProjectReferenceTypeDefinition(
-                definition.Identity.ReferenceName ?? definition.ModuleName,
-                definition.TypeReference);
-        }
-        else if (nameResolution.FindDocument(definition.Uri) is not { } ownerDocument
-            || !TryResolveTypeReferenceDefinition(
-                ownerDocument,
-                definition.TypeReference,
-                out typeDefinition))
-        {
-            return false;
-        }
-
-        if (typeDefinition is null)
-        {
-            return false;
-        }
-
-        resolvedType = ToResolvedType(typeDefinition);
+        resolvedType = ToResolvedType(type.Target.SelectedDefinition);
         return true;
     }
 

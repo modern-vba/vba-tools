@@ -36,6 +36,13 @@ Editor-query handlers never request that diagnostic index as a condition of
 completion, hover, signature help, symbols, definition, references, rename,
 formatting, or semantic-token execution.
 
+The inventory's name-resolution service owns the immutable, lazily published
+`EffectiveDeclaredType` results described in ADR 0045. One result per physical
+declaration and parameter ordinal supplies all semantic and presentation
+consumers without forcing project validation or building another candidate
+inventory. Retained-analysis admission reserves the capacity for these results
+alongside occurrence and token caches, including before they are requested.
+
 The project-validation lifecycle may later build the diagnostic index from the
 inventory's existing definitions and semantic resolution. Completing that
 index cannot mutate the inventory maps, occurrence shards, semantic-token
