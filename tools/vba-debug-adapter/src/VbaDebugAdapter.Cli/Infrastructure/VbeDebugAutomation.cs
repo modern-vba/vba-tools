@@ -345,9 +345,19 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly object generationOwnershipGate = new();
         private readonly Task<DebugProcessExit> completion;
+        private readonly int processId;
+        private readonly TaskCompletionSource<SessionEnd> terminalEnd =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly CancellationTokenSource observationStopping = new();
+        private readonly List<Exception> lifetimeFailures = [];
+        private Task processObservation = Task.CompletedTask;
+        private Task workbookObservation = Task.CompletedTask;
         private object? workbookObject;
         private IVbaDebugGenerationWorkspace? generationWorkspace;
         private Task targetPromptObservation = Task.CompletedTask;
+        private IDebugModalPromptPhase? targetPromptPhase;
+        private Task workbookPromptObservation = Task.CompletedTask;
+        private IDebugModalPromptPhase? workbookPromptPhase;
         private int? foregroundPermissionHResult;
         private int workbookOpened;
         private int disposed;
@@ -368,10 +378,13 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             this.workbookOpener = workbookOpener;
             this.promptMonitor = promptMonitor;
             this.workbookLifetimeMonitor = workbookLifetimeMonitor;
-            completion = ObserveOwnedLifetimeAsync();
+            processId = processOwner.ProcessId;
+            processObservation = SuperviseLifetimeAsync(processOwner.Completion, "process exit", terminateOnSuccess: true);
+            workbookObservation = SuperviseLifetimeAsync(ObserveWorkbookCloseAsync(), "workbook close", terminateOnSuccess: true);
+            completion = CompleteLifetimeAsync();
         }
 
-        public int ProcessId => processOwner.ProcessId;
+        public int ProcessId => processId;
 
         public bool StrongProcessOwnershipEstablished =>
             processOwner.KillOnCloseJobAssigned;
@@ -442,6 +455,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             lock (generationOwnershipGate)
             {
                 ObjectDisposedException.ThrowIf(disposed != 0, this);
+                ObjectDisposedException.ThrowIf(terminalEnd.Task.IsCompleted, this);
                 if (this.generationWorkspace is not null)
                 {
                     throw new InvalidOperationException(
@@ -495,22 +509,15 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                 DebugInputWaitKind.ExcelOrVbe,
                 DebugInputWaitPhase.WorkbookOpen,
                 ProcessId);
-            var observation = inputWaitSink is null
-                ? null
-                : promptMonitor.Capture(inputWait);
-            var operation = InvokeSetupAsync(
+            await using var phase = StartPromptPhase(inputWait, inputWaitSink);
+            Task<object> OpenAsync() => InvokeSetupAsync(
                 () => verifyVbideAccess
                     ? workbookOpener.OpenVerified(excelObject, expectedWorkbookPath)
                     : workbookOpener.OpenPathVerified(excelObject, expectedWorkbookPath),
                 cancellationToken);
-            workbookObject = inputWaitSink is null
-                ? await operation.ConfigureAwait(false)
-                : await promptMonitor.ObserveAsync(
-                    observation!,
-                    operation,
-                    processOwner.Completion,
-                    inputWaitSink,
-                    cancellationToken).ConfigureAwait(false);
+            workbookObject = phase is null
+                ? await OpenAsync().ConfigureAwait(false)
+                : await phase.ObserveOperationAsync(OpenAsync, cancellationToken).ConfigureAwait(false);
             workbookOpenedSignal.TrySetResult(workbookObject);
         }
 
@@ -657,32 +664,17 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                 DebugInputWaitKind.ExcelOrVbe,
                 DebugInputWaitPhase.TargetStart,
                 ProcessId);
-            var observation = inputWaitSink is null
-                ? null
-                : promptMonitor.Capture(inputWait);
-            var operation = InvokeSetupAsync(
+            var phase = StartPromptPhase(inputWait, inputWaitSink);
+            Task<bool> RunAsync() => InvokeSetupAsync(
                 () =>
                 {
                     RunTarget(target);
                     return true;
                 },
                 cancellationToken);
-            _ = inputWaitSink is null
-                ? await operation.ConfigureAwait(false)
-                : await promptMonitor.ObserveAsync(
-                    observation!,
-                    operation,
-                    processOwner.Completion,
-                    inputWaitSink,
-                    cancellationToken).ConfigureAwait(false);
-            if (inputWaitSink is not null)
-            {
-                targetPromptObservation = promptMonitor.ObserveUntilProcessExitAsync(
-                    observation!,
-                    processOwner.Completion,
-                    inputWaitSink,
-                    CancellationToken.None);
-            }
+            _ = phase is null
+                ? await RunAsync().ConfigureAwait(false)
+                : await phase.ObserveOperationAsync(RunAsync, cancellationToken).ConfigureAwait(false);
         }
 
         public Task WaitForBreakModeAsync(
@@ -744,119 +736,150 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                         StringComparison.Ordinal),
                 cancellationToken);
 
-        public ValueTask TerminateAsync() => processOwner.TerminateAsync();
-
-        private async Task<DebugProcessExit> ObserveOwnedLifetimeAsync()
+        public ValueTask TerminateAsync()
         {
-            var processCompletion = processOwner.Completion;
-            var firstCompletion = await Task.WhenAny(
-                processCompletion,
-                workbookOpenedSignal.Task).ConfigureAwait(false);
-            if (ReferenceEquals(firstCompletion, processCompletion))
-            {
-                return await processCompletion.ConfigureAwait(false);
-            }
-
-            var openedWorkbook = await workbookOpenedSignal.Task.ConfigureAwait(false);
-            await workbookLifetimeMonitor.WaitForCloseAsync(
-                openedWorkbook,
-                dispatcher,
-                processCompletion).ConfigureAwait(false);
-            if (!processCompletion.IsCompleted)
-            {
-                await processOwner.TerminateAsync().ConfigureAwait(false);
-            }
-            return await processCompletion.ConfigureAwait(false);
+            EstablishEnd("Stop", null);
+            return new ValueTask(completion);
         }
 
-        public async ValueTask DisposeAsync()
+        public ValueTask DisposeAsync() => TerminateAsync();
+
+        private IDebugModalPromptPhase? StartPromptPhase(DebugInputWait inputWait, IDebugInputWaitSink? sink)
         {
+            lock (generationOwnershipGate)
+            {
+                ObjectDisposedException.ThrowIf(disposed != 0 || terminalEnd.Task.IsCompleted, this);
+                if (sink is null) { return null; }
+                try
+                {
+                    var phase = promptMonitor.BeginPhase(inputWait, processOwner.Completion, sink);
+                    var observation = SuperviseLifetimeAsync(phase.Completion, "modal observation", terminateOnSuccess: false);
+                    if (inputWait.Phase == DebugInputWaitPhase.WorkbookOpen)
+                    {
+                        workbookPromptPhase = phase;
+                        workbookPromptObservation = observation;
+                    }
+                    else
+                    {
+                        targetPromptPhase = phase;
+                        targetPromptObservation = observation;
+                    }
+                    return phase;
+                }
+                catch (Exception failure)
+                {
+                    EstablishEnd("modal observation", failure);
+                    throw;
+                }
+            }
+        }
+
+        private void EstablishEnd(string cause, Exception? failure)
+        {
+            lock (generationOwnershipGate)
+            {
+                if (failure is not null) { lifetimeFailures.Add(failure); }
+                terminalEnd.TrySetResult(new SessionEnd(cause, failure));
+            }
+        }
+
+        private async Task SuperviseLifetimeAsync(Task observation, string cause, bool terminateOnSuccess)
+        {
+            _ = observation.ContinueWith(static task => _ = task.Exception,
+                CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously | TaskContinuationOptions.OnlyOnFaulted,
+                TaskScheduler.Default);
+            try
+            {
+                await observation.WaitAsync(observationStopping.Token).ConfigureAwait(false);
+                if (terminateOnSuccess) { EstablishEnd(cause, null); }
+            }
+            catch (OperationCanceledException) when (observationStopping.IsCancellationRequested)
+            {
+            }
+            catch (Exception failure)
+            {
+                EstablishEnd(cause, failure);
+            }
+        }
+
+        private async Task ObserveWorkbookCloseAsync()
+        {
+            var rawProcessCompletion = processOwner.Completion;
+            var first = await Task.WhenAny(rawProcessCompletion, workbookOpenedSignal.Task).ConfigureAwait(false);
+            if (ReferenceEquals(first, rawProcessCompletion))
+            {
+                await rawProcessCompletion.ConfigureAwait(false);
+                return;
+            }
+            var workbook = await workbookOpenedSignal.Task.ConfigureAwait(false);
+            await workbookLifetimeMonitor.WaitForCloseAsync(workbook, dispatcher, rawProcessCompletion).ConfigureAwait(false);
+        }
+
+        private async Task<DebugProcessExit> CompleteLifetimeAsync()
+        {
+            var established = await terminalEnd.Task.ConfigureAwait(false);
             IVbaDebugGenerationWorkspace? ownedGenerationWorkspace;
             lock (generationOwnershipGate)
             {
-                if (disposed != 0)
-                {
-                    return;
-                }
                 disposed = 1;
                 ownedGenerationWorkspace = generationWorkspace;
                 generationWorkspace = null;
             }
 
-            Exception? cleanupError = null;
-            try
+            var cleanupFailures = new List<Exception>();
+            async Task AttemptAsync(Func<ValueTask> cleanup)
             {
-                await processOwner.TerminateAsync().ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                cleanupError = ex;
+                try { await cleanup().ConfigureAwait(false); }
+                catch (Exception failure) { cleanupFailures.Add(failure); }
             }
 
-            try
+            // Advance process and Job cleanup before waiting for either observation loop.
+            await AttemptAsync(processOwner.TerminateAsync).ConfigureAwait(false);
+            await AttemptAsync(processOwner.DisposeAsync).ConfigureAwait(false);
+            observationStopping.Cancel();
+            if (targetPromptPhase is not null)
             {
-                await processOwner.DisposeAsync().ConfigureAwait(false);
+                await AttemptAsync(targetPromptPhase.DisposeAsync).ConfigureAwait(false);
             }
-            catch (Exception ex)
+            if (workbookPromptPhase is not null)
             {
-                cleanupError ??= ex;
+                await AttemptAsync(workbookPromptPhase.DisposeAsync).ConfigureAwait(false);
             }
-
-            try
+            await Task.WhenAll(processObservation, workbookObservation, targetPromptObservation, workbookPromptObservation).ConfigureAwait(false);
+            await AttemptAsync(async () =>
             {
-                await targetPromptObservation.ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                cleanupError ??= ex;
-            }
-
-            try
-            {
-                await dispatcher.InvokeAsync(
-                    () =>
-                    {
-                        ComObjectReleaser.Release(workbookObject);
-                        ComObjectReleaser.Release(excelObject);
-                        return true;
-                    },
-                    CancellationToken.None).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                cleanupError ??= ex;
-            }
-            finally
-            {
-                try
+                await dispatcher.InvokeAsync(() =>
                 {
-                    await dispatcher.DisposeAsync().ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    cleanupError ??= ex;
-                }
-            }
-
+                    ComObjectReleaser.Release(workbookObject);
+                    ComObjectReleaser.Release(excelObject);
+                    return true;
+                }, CancellationToken.None).ConfigureAwait(false);
+            }).ConfigureAwait(false);
+            await AttemptAsync(dispatcher.DisposeAsync).ConfigureAwait(false);
             if (ownedGenerationWorkspace is not null)
             {
-                try
-                {
-                    await ownedGenerationWorkspace.DisposeAsync().ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    cleanupError ??= ex;
-                }
+                await AttemptAsync(ownedGenerationWorkspace.DisposeAsync).ConfigureAwait(false);
             }
+            observationStopping.Dispose();
 
-            if (cleanupError is not null)
+            Exception[] additional;
+            lock (generationOwnershipGate)
             {
-                throw new DebugSetupException(
-                    "Native Excel/VBE session cleanup did not complete normally after process termination.",
-                    cleanupError);
+                additional = lifetimeFailures.Concat(cleanupFailures)
+                    .Where(failure => !ReferenceEquals(failure, established.Failure)).Distinct().ToArray();
             }
+            if (additional.Length != 0)
+            {
+                throw new VbeDebugSessionLifetimeException(established.Cause, established.Failure, additional);
+            }
+            if (established.Failure is not null)
+            {
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(established.Failure).Throw();
+            }
+            return await processOwner.Completion.ConfigureAwait(false);
         }
+
+        private sealed record SessionEnd(string Cause, Exception? Failure);
 
         private async Task<T> InvokeSetupAsync<T>(
             Func<T> operation,

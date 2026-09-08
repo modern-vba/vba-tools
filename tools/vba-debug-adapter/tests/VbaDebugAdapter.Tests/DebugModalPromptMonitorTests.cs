@@ -16,7 +16,6 @@ public sealed class DebugModalPromptMonitorTests
             DebugInputWaitKind.Excel,
             DebugInputWaitPhase.WorkbookOpen,
             31415);
-        var observation = monitor.Capture(inputWait);
         var operation = new TaskCompletionSource<int>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var processCompletion = new TaskCompletionSource<DebugProcessExit>(
@@ -30,12 +29,8 @@ public sealed class DebugModalPromptMonitorTests
             inputReported.TrySetResult();
         });
 
-        var observed = monitor.ObserveAsync(
-            observation,
-            operation.Task,
-            processCompletion.Task,
-            sink,
-            CancellationToken.None);
+        await using var phase = monitor.BeginPhase(inputWait, processCompletion.Task, sink);
+        var observed = phase.ObserveOperationAsync(() => operation.Task, CancellationToken.None);
 
         await inputReported.Task.WaitAsync(TimeSpan.FromSeconds(1));
         Assert.Equal([inputWait], inputWaits);
@@ -59,15 +54,10 @@ public sealed class DebugModalPromptMonitorTests
             DebugInputWaitKind.Vbe,
             DebugInputWaitPhase.TargetStart,
             27182);
-        var observation = monitor.Capture(inputWait);
         var sink = new RecordingDebugInputWaitSink();
 
-        var result = await monitor.ObserveAsync(
-            observation,
-            operation.Task,
-            new TaskCompletionSource<DebugProcessExit>().Task,
-            sink,
-            CancellationToken.None);
+        await using var phase = monitor.BeginPhase(inputWait, new TaskCompletionSource<DebugProcessExit>().Task, sink);
+        var result = await phase.ObserveOperationAsync(() => operation.Task, CancellationToken.None);
 
         Assert.Equal(7, result);
         Assert.Empty(sink.InputWaits);
@@ -89,7 +79,6 @@ public sealed class DebugModalPromptMonitorTests
             DebugInputWaitKind.ExcelOrVbe,
             DebugInputWaitPhase.TargetStart,
             27183);
-        var observation = monitor.Capture(inputWait);
         var processCompletion = new TaskCompletionSource<DebugProcessExit>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var inputWaits = new List<DebugInputWait>();
@@ -99,11 +88,8 @@ public sealed class DebugModalPromptMonitorTests
             processCompletion.TrySetResult(new DebugProcessExit(0));
         });
 
-        await monitor.ObserveUntilProcessExitAsync(
-            observation,
-            processCompletion.Task,
-            sink,
-            CancellationToken.None);
+        await using var phase = monitor.BeginPhase(inputWait, processCompletion.Task, sink);
+        await phase.Completion;
 
         Assert.Equal([inputWait], inputWaits);
         Assert.True(windowApi.ProcessIds.Count > 5);
@@ -118,19 +104,15 @@ public sealed class DebugModalPromptMonitorTests
             DebugInputWaitKind.Excel,
             DebugInputWaitPhase.WorkbookOpen,
             16180);
-        var observation = monitor.Capture(inputWait);
         var operation = new TaskCompletionSource<int>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
 
+        await using var phase = monitor.BeginPhase(inputWait,
+            Task.FromResult(new DebugProcessExit(-1)), new RecordingDebugInputWaitSink());
         var exception = await Assert.ThrowsAsync<OperationCanceledException>(() =>
-            monitor.ObserveAsync(
-                    observation,
-                    operation.Task,
-                    Task.FromResult(new DebugProcessExit(-1)),
-                    new RecordingDebugInputWaitSink(),
-                    cancellation.Token)
+            phase.ObserveOperationAsync(() => operation.Task, cancellation.Token)
                 .WaitAsync(TimeSpan.FromSeconds(1)));
 
         Assert.Equal(cancellation.Token, exception.CancellationToken);
@@ -145,17 +127,13 @@ public sealed class DebugModalPromptMonitorTests
             DebugInputWaitKind.Vbe,
             DebugInputWaitPhase.TargetStart,
             27182);
-        var observation = monitor.Capture(inputWait);
         var operation = new TaskCompletionSource<int>(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
+        await using var phase = monitor.BeginPhase(inputWait,
+            Task.FromResult(new DebugProcessExit(9)), new RecordingDebugInputWaitSink());
         var exception = await Assert.ThrowsAsync<DebugSetupException>(() =>
-            monitor.ObserveAsync(
-                    observation,
-                    operation.Task,
-                    Task.FromResult(new DebugProcessExit(9)),
-                    new RecordingDebugInputWaitSink(),
-                    CancellationToken.None)
+            phase.ObserveOperationAsync(() => operation.Task, CancellationToken.None)
                 .WaitAsync(TimeSpan.FromSeconds(1)));
 
         Assert.Contains("27182", exception.Message, StringComparison.Ordinal);
@@ -173,7 +151,6 @@ public sealed class DebugModalPromptMonitorTests
             DebugInputWaitKind.Vbe,
             DebugInputWaitPhase.TargetStart,
             31415);
-        var observation = monitor.Capture(inputWait);
         var operation = new TaskCompletionSource<int>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var processCompletion = new TaskCompletionSource<DebugProcessExit>(
@@ -181,12 +158,8 @@ public sealed class DebugModalPromptMonitorTests
         var sink = new RecordingDebugInputWaitSink();
         using var cancellation = new CancellationTokenSource();
 
-        var observed = monitor.ObserveAsync(
-            observation,
-            operation.Task,
-            processCompletion.Task,
-            sink,
-            cancellation.Token);
+        await using var phase = monitor.BeginPhase(inputWait, processCompletion.Task, sink);
+        var observed = phase.ObserveOperationAsync(() => operation.Task, cancellation.Token);
         Assert.Equal([inputWait], sink.InputWaits);
 
         cancellation.Cancel();
@@ -195,6 +168,70 @@ public sealed class DebugModalPromptMonitorTests
         var exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             observed.WaitAsync(TimeSpan.FromSeconds(1)));
         Assert.Equal(cancellation.Token, exception.CancellationToken);
+    }
+
+    [Fact]
+    public async Task ReturningFromRunRetainsNotificationsAndTheNextPhaseTakesAFreshBaseline()
+    {
+        var windows = new ControlledDebugModalWindowApi();
+        var monitor = new DebugModalPromptMonitor(windows);
+        var notifications = System.Threading.Channels.Channel.CreateUnbounded<DebugInputWait>();
+        var sink = new CallbackDebugInputWaitSink(wait => notifications.Writer.TryWrite(wait));
+        var process = new TaskCompletionSource<DebugProcessExit>();
+        var openWait = new DebugInputWait(DebugInputWaitKind.ExcelOrVbe, DebugInputWaitPhase.WorkbookOpen, 42);
+        await using (var open = monitor.BeginPhase(openWait, process.Task, sink))
+        {
+            await open.ObserveOperationAsync(() => Task.FromResult(0), CancellationToken.None);
+        }
+        _ = windows.Show(100);
+        var runWait = openWait with { Phase = DebugInputWaitPhase.TargetStart };
+        await using var run = monitor.BeginPhase(runWait, process.Task, sink);
+        var operation = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var observedRun = run.ObserveOperationAsync(() => operation.Task, CancellationToken.None);
+        await windows.Show(100, 200).WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal(runWait, await notifications.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(1)));
+
+        operation.SetResult(7);
+        Assert.Equal(7, await observedRun);
+        await windows.Show(100, 200).WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.False(notifications.Reader.TryRead(out _));
+        await windows.Show(100, 200, 300).WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal(runWait, await notifications.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(1)));
+        Assert.False(notifications.Reader.TryRead(out _));
+        Assert.False(run.Completion.IsCompleted);
+    }
+
+    private sealed class ControlledDebugModalWindowApi : IDebugModalWindowApi
+    {
+        private readonly System.Threading.Channels.Channel<bool> ticks =
+            System.Threading.Channels.Channel.CreateUnbounded<bool>();
+        private WindowSnapshot windows = new(new HashSet<nint>());
+        private WindowSnapshot? observed;
+
+        public Task Show(params nint[] handles)
+        {
+            var snapshot = new WindowSnapshot(new HashSet<nint>(handles));
+            Volatile.Write(ref windows, snapshot);
+            ticks.Writer.TryWrite(true);
+            return snapshot.Seen.Task;
+        }
+
+        public IReadOnlySet<nint> CaptureVisibleModalWindows(int processId)
+        {
+            observed = Volatile.Read(ref windows);
+            return observed.Handles;
+        }
+
+        public async Task WaitForNextObservationAsync(CancellationToken cancellationToken)
+        {
+            observed?.Seen.TrySetResult();
+            _ = await ticks.Reader.ReadAsync(cancellationToken);
+        }
+
+        private sealed record WindowSnapshot(IReadOnlySet<nint> Handles)
+        {
+            public TaskCompletionSource Seen { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
     }
 
     private sealed class SequenceDebugModalWindowApi(

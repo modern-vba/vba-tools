@@ -310,6 +310,12 @@ session termination force-terminates that process. One VS Code window owns at
 most one active session. Closing its `DebugWorkbook` also terminates the owned
 process and session. Restart captures a fresh `DebugSourceSnapshot` and replaces
 the process through a complete new temporary build and launch.
+One supervised modal-observation phase spans target start and the later
+interactive session. Window-observation and notification failures end the
+session immediately, even with stdin open. Stop, workbook close, process exit,
+and observation failure share terminal cleanup, retaining the first cause and
+additional cleanup evidence. Completion includes process, observation, COM,
+and generation release; planned Restart cutover only ends the old session.
 _Avoid_: language-server session, VBE debugging session, headless macro run
 
 **DebugExcelProcess**:
@@ -665,6 +671,14 @@ _Avoid_: VBA runtime error, break mode, failed assertion
 A VBA runtime error raised after the `DebugTargetProcedure` begins and presented
 through Excel or the VBE without ending the `VbeDebugSession`.
 _Avoid_: debug setup error, launch failure, test failure
+
+**DebugSessionError**:
+An adapter infrastructure failure after launch, including modal-window
+observation or lifecycle-notification failure. It ends the owned session and
+reports one terminal event over a healthy DAP transport. Failed output is
+latched and never retried; cleanup still proceeds. It does not reinterpret a
+VBA runtime error or an ordinary interactive prompt as an adapter failure.
+_Avoid_: debug setup error, VBA runtime error, prompt timeout
 
 **DebugLifecycleOutput**:
 The build, prompt-wait, breakpoint-verification, procedure-run, setup-error, and
