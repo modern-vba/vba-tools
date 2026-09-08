@@ -1879,6 +1879,10 @@ public sealed class SourceInterfaceCallableContractLanguageServerProcessTests
         const string signature =
             "Function ICalculator_Calculate(value As Long) As Long [#If]";
         Assert.Equal(
+            "**Documentation variants**\n\n1. First contract documentation.\n\n"
+            + $"2. {longDocumentation}\n\n---\n\n```vba\n{signature}\n```",
+            documentation);
+        Assert.Equal(
             1,
             documentation!.Split(signature, StringSplitOptions.None).Length - 1);
         Assert.Contains("**Documentation variants**", documentation);

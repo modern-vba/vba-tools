@@ -46,16 +46,25 @@ internal sealed record VbaInterfaceVariableAccessorContract(
     string? EffectiveTypeReferenceQualifiedName,
     bool IsConditional)
 {
-    public string Signature => Kind switch
-    {
-        VbaInterfaceAccessorContractKind.Get =>
-            $"Property Get {ImplementedName}() As {EffectiveTypeName}",
-        VbaInterfaceAccessorContractKind.Let =>
-            $"Property Let {ImplementedName}(ByVal AssignedValue As {EffectiveTypeName})",
-        VbaInterfaceAccessorContractKind.Set =>
-            $"Property Set {ImplementedName}(ByVal AssignedValue As {EffectiveTypeName})",
-        _ => throw new InvalidOperationException("Unknown interface accessor kind.")
-    };
+    public string Signature => VbaCallablePresentation.Assemble(
+        new VbaCallablePresentationShape(
+            ImplementedName,
+            VbaCallableKind.Property,
+            Kind == VbaInterfaceAccessorContractKind.Get
+                ? new VbaTypeReference(EffectiveTypeName) : null,
+            Accessor: Kind switch
+            {
+                VbaInterfaceAccessorContractKind.Get => VbaPropertyAccessorKind.Get,
+                VbaInterfaceAccessorContractKind.Let => VbaPropertyAccessorKind.Let,
+                VbaInterfaceAccessorContractKind.Set => VbaPropertyAccessorKind.Set,
+                _ => throw new InvalidOperationException("Unknown interface accessor kind.")
+            },
+            Role: VbaCallablePresentationRole.RequiredContract),
+        new VbaCallableSignature("", Kind == VbaInterfaceAccessorContractKind.Get
+            ? []
+            : [new VbaCallableParameter("AssignedValue",
+                TypeReference: new VbaTypeReference(EffectiveTypeName), IsByRef: false)]))
+        .Label;
 
     public string RequiredKind => Kind switch
     {
@@ -249,26 +258,11 @@ internal sealed class VbaInterfaceSemanticModel
         var sourceParameters = contract.OriginDefinition.Signature?.Parameters
             ?? [];
         var parameters = contractParameters
-            .Select((parameter, index) => new VbaCallableParameter(
-                parameter.Name,
-                Documentation: index < sourceParameters.Count
-                    ? sourceParameters[index].Documentation
-                    : null,
-                IsOptional: parameter.Role
-                    == VbaCallableContractParameterRole.Optional,
-                DisplayLabel: contract.IsDerivedVariableAccessor
-                        && ReferenceEquals(
-                            parameter,
-                            contract.PropertyValueParameter)
-                    ? $"ByVal {parameter.Name} As {parameter.Type!.Name}"
-                    : CreateParameterLabel(parameter),
-                TypeReference: parameter.Type is null
-                    ? null
-                    : new VbaTypeReference(parameter.Type.Name),
-                IsByRef: parameter.IsByRef,
-                IsParamArray: parameter.Role
-                    == VbaCallableContractParameterRole.ParamArray,
-                IsArray: parameter.IsArray))
+            .Select((parameter, index) => CreatePresentationParameter(parameter) with
+            {
+                Documentation = index < sourceParameters.Count
+                    ? sourceParameters[index].Documentation : null
+            })
             .ToArray();
         var callableKind = contract.Kind switch
         {
@@ -1227,23 +1221,7 @@ internal sealed class VbaInterfaceSemanticModel
                     ? contract.Parameters
                     : [.. contract.Parameters, contract.PropertyValueParameter];
                 var parameters = contractParameters
-                    .Select(parameter => new VbaCallableParameter(
-                        parameter.Name,
-                        IsOptional: parameter.Role
-                            == VbaCallableContractParameterRole.Optional,
-                        DisplayLabel: contract.IsDerivedVariableAccessor
-                                && ReferenceEquals(
-                                    parameter,
-                                    contract.PropertyValueParameter)
-                            ? $"ByVal {parameter.Name} As {parameter.Type!.Name}"
-                            : CreateParameterLabel(parameter),
-                        TypeReference: parameter.Type is null
-                            ? null
-                            : new VbaTypeReference(parameter.Type.Name),
-                        IsByRef: parameter.IsByRef,
-                        IsParamArray: parameter.Role
-                            == VbaCallableContractParameterRole.ParamArray,
-                        IsArray: parameter.IsArray))
+                    .Select(CreatePresentationParameter)
                     .ToArray();
                 var signature = new VbaCallableSignature(
                     contract.Signature,
@@ -1817,15 +1795,29 @@ internal sealed class VbaInterfaceSemanticModel
         var allParameters = valueParameter is null
             ? parameters
             : [.. parameters, valueParameter];
-        var kindPresentation = GetContractKindPresentation(kind);
-        var signature = $"{kindPresentation} {implementedName}("
-            + string.Join(", ", allParameters.Select(CreateParameterLabel))
-            + ")";
-        return result is null
-            ? signature
-            : result.Type is null
-                ? signature
-                : $"{signature} As {result.Type.Name}{(result.IsArray == true ? "()" : "")}";
+        var callableKind = kind switch
+        {
+            VbaInterfaceAccessorContractKind.Sub => VbaCallableKind.Sub,
+            VbaInterfaceAccessorContractKind.Function => VbaCallableKind.Function,
+            _ => VbaCallableKind.Property
+        };
+        var accessor = kind switch
+        {
+            VbaInterfaceAccessorContractKind.Get => VbaPropertyAccessorKind.Get,
+            VbaInterfaceAccessorContractKind.Let => VbaPropertyAccessorKind.Let,
+            VbaInterfaceAccessorContractKind.Set => VbaPropertyAccessorKind.Set,
+            _ => (VbaPropertyAccessorKind?)null
+        };
+        return VbaCallablePresentation.Assemble(
+            new VbaCallablePresentationShape(
+                implementedName,
+                callableKind,
+                result?.Type is null ? null : new VbaTypeReference(result.Type.Name),
+                Accessor: accessor,
+                IsReturnArray: result?.IsArray,
+                Role: VbaCallablePresentationRole.RequiredContract),
+            new VbaCallableSignature("", allParameters.Select(CreatePresentationParameter).ToArray()))
+            .Label;
     }
 
     private static string CreateContractNamePresentation(
@@ -1845,31 +1837,15 @@ internal sealed class VbaInterfaceSemanticModel
             _ => throw new InvalidOperationException("Unknown interface contract kind.")
         };
 
-    private static string CreateParameterLabel(
+    private static VbaCallableParameter CreatePresentationParameter(
         VbaInterfaceContractParameter parameter)
-    {
-        var parts = new List<string>();
-        if (parameter.Role == VbaCallableContractParameterRole.ParamArray)
-        {
-            parts.Add("ParamArray");
-        }
-        else if (parameter.IsByRef == true)
-        {
-            parts.Add("ByRef");
-        }
-
-        parts.Add(parameter.IsArray
-            ? $"{parameter.Name}()"
-            : parameter.Name);
-        if (parameter.Type is not null)
-        {
-            parts.Add($"As {parameter.Type.Name}");
-        }
-        var label = string.Join(" ", parts);
-        return parameter.Role == VbaCallableContractParameterRole.Optional
-            ? $"[{label}]"
-            : label;
-    }
+        => VbaCallablePresentation.PresentParameter(new VbaCallableParameter(
+            parameter.Name,
+            IsOptional: parameter.Role == VbaCallableContractParameterRole.Optional,
+            TypeReference: parameter.Type is null ? null : new VbaTypeReference(parameter.Type.Name),
+            IsByRef: parameter.IsByRef,
+            IsParamArray: parameter.Role == VbaCallableContractParameterRole.ParamArray,
+            IsArray: parameter.IsArray));
 
     private (string Name, EffectiveTypeCategory Category, object? Identity, string? ReferenceQualifiedName)?
         GetEffectiveType(VbaSourceDefinition definition, int ordinal = -1)

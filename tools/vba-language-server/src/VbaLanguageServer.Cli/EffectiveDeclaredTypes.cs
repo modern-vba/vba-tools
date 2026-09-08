@@ -44,23 +44,16 @@ internal sealed class VbaEffectiveDeclaredTypes(VbaNameResolutionService names)
             var parameters = signature.Parameters.Select((parameter, ordinal) =>
             {
                 var effective = Get(definition, ordinal);
-                var label = parameter.Label;
-                if (parameter.TypeReference is null && effective.Reference is { } reference)
-                {
-                    label = AppendType(label, reference.Name);
-                }
-                return parameter with { TypeReference = effective.Reference, DisplayLabel = label };
+                return parameter with { TypeReference = effective.Reference };
             }).ToArray();
-            var opening = signature.Label.IndexOf('(');
-            var closing = signature.Label.LastIndexOf(')');
-            var label = opening < 0 || closing < opening ? signature.Label
-                : signature.Label[..(opening + 1)] + string.Join(", ", parameters.Select(parameter => parameter.Label))
-                    + signature.Label[closing..];
-            if (definition.TypeReference is null && type.Reference is { } result)
-            {
-                label += $" As {result.Name}";
-            }
-            signature = signature with { Label = label, Parameters = parameters };
+            signature = VbaCallablePresentation.Assemble(
+                new VbaCallablePresentationShape(
+                    definition.Name,
+                    definition.CallableKind ?? signature.CallableKind,
+                    type.Reference,
+                    IsExternal: definition.IsExternal,
+                    IsReturnArray: definition.IsArray),
+                signature with { Parameters = parameters });
         }
         var declarationLabel = definition.DeclarationLabel;
         if (signature is null && definition.TypeReference is null && type.Reference is { } declaredType

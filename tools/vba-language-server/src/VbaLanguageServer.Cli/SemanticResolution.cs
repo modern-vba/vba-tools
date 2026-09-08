@@ -2248,47 +2248,14 @@ internal sealed class VbaSemanticResolution
             return null;
         }
 
-        var parameters = signature.Parameters
-            .Select(parameter => parameter with
+        return VbaCallablePresentation.Assemble(
+            new VbaCallablePresentationShape(member.Name, VbaCallableKind.Event),
+            signature with
             {
-                DisplayLabel = CreateTypeLibEventParameterLabel(parameter)
-            })
-            .ToArray();
-        return signature with
-        {
-            Label = $"Event {member.Name}({string.Join(", ", parameters.Select(
-                parameter => parameter.Label))})",
-            Parameters = parameters,
-            Documentation = signature.Documentation ?? member.Documentation,
-            CallableKind = VbaCallableKind.Event
-        };
+                Documentation = signature.Documentation ?? member.Documentation,
+                CallableKind = VbaCallableKind.Event
+            });
     }
-
-    private static string CreateTypeLibEventParameterLabel(
-        VbaCallableParameter parameter)
-    {
-        var parts = new List<string>();
-        if (parameter.IsParamArray)
-        {
-            parts.Add("ParamArray");
-        }
-        else if (parameter.IsByRef == true)
-        {
-            parts.Add("ByRef");
-        }
-
-        parts.Add(parameter.IsArray
-            ? $"{parameter.Name}()"
-            : parameter.Name);
-        if (parameter.TypeReference is { } typeReference)
-        {
-            parts.Add($"As {typeReference.Name}");
-        }
-
-        var label = string.Join(" ", parts);
-        return parameter.IsOptional ? $"[{label}]" : label;
-    }
-
     private static IEnumerable<VbaCompletionCandidate> CreateLabelCandidates(
         VbaSyntaxTree syntaxTree,
         VbaPositionSyntax positionSyntax)

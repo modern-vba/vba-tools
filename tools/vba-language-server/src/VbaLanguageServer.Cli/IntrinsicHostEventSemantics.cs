@@ -1,4 +1,3 @@
-using System.Text;
 using VbaTools.Syntax;
 
 namespace VbaLanguageServer.SourceModel;
@@ -182,21 +181,16 @@ internal sealed class VbaIntrinsicHostEventSemanticModel
         string eventSourceName,
         VbaIntrinsicHostEvent hostEvent)
     {
-        var eventSignature = CreateSignature(hostEvent);
-        return eventSignature with
-        {
-            Label = eventSourceName
-                + "_"
-                + hostEvent.Name
-                + "("
-                + string.Join(
-                    ", ",
-                    eventSignature.Parameters.Select(parameter =>
-                        parameter.DisplayLabel ?? parameter.Label))
-                + ")",
-            Documentation = hostEvent.Documentation,
-            CallableKind = VbaCallableKind.Sub
-        };
+        return VbaCallablePresentation.Assemble(
+            new VbaCallablePresentationShape(
+                eventSourceName + "_" + hostEvent.Name,
+                VbaCallableKind.Sub,
+                Role: VbaCallablePresentationRole.Handler),
+            CreateSignature(hostEvent) with
+            {
+                Documentation = hostEvent.Documentation,
+                CallableKind = VbaCallableKind.Sub
+            });
     }
 
     internal static VbaCallableSignature CreateEventSignature(
@@ -400,11 +394,9 @@ internal sealed class VbaIntrinsicHostEventSemanticModel
         var parameters = hostEvent.Parameters
             .Select(CreateParameter)
             .ToArray();
-        return new VbaCallableSignature(
-            $"Event {hostEvent.Name}({string.Join(", ", parameters.Select(
-                parameter => parameter.DisplayLabel))})",
-            parameters,
-            CallableKind: VbaCallableKind.Event);
+        return VbaCallablePresentation.Assemble(
+            new VbaCallablePresentationShape(hostEvent.Name, VbaCallableKind.Event),
+            new VbaCallableSignature("", parameters, CallableKind: VbaCallableKind.Event));
     }
 
     private static VbaCallableParameter CreateParameter(
@@ -415,37 +407,19 @@ internal sealed class VbaIntrinsicHostEventSemanticModel
             VbaIntrinsicHostEventParameterType intrinsic => intrinsic.Name,
             VbaTypeLibraryHostEventParameterType typeLibrary => typeLibrary.Name,
             VbaUnresolvedHostEventParameterType unresolved => unresolved.DisplayName,
-            _ => "Variant"
+            _ => null
         };
-        var label = new StringBuilder();
-        if (parameter.Optional)
-        {
-            label.Append("Optional ");
-        }
-
-        if (parameter.ParamArray)
-        {
-            label.Append("ParamArray ");
-        }
-
-        label.Append(parameter.Passing == VbaHostEventParameterPassing.ByRef
-            ? "ByRef "
-            : "ByVal ");
-        label.Append(parameter.Name);
-        if (parameter.ArrayShape == VbaHostEventParameterArrayShape.Array)
-        {
-            label.Append("()");
-        }
-
-        label.Append(" As ");
-        label.Append(typeName);
-        return new VbaCallableParameter(
+        return VbaCallablePresentation.PresentParameter(new VbaCallableParameter(
             parameter.Name,
             IsOptional: parameter.Optional,
-            DisplayLabel: label.ToString(),
-            TypeReference: new VbaTypeReference(typeName),
-            IsByRef: parameter.Passing == VbaHostEventParameterPassing.ByRef,
+            TypeReference: typeName is null ? null : new VbaTypeReference(typeName),
+            IsByRef: parameter.Passing switch
+            {
+                VbaHostEventParameterPassing.ByRef => true,
+                VbaHostEventParameterPassing.ByVal => false,
+                _ => null
+            },
             IsParamArray: parameter.ParamArray,
-            IsArray: parameter.ArrayShape == VbaHostEventParameterArrayShape.Array);
+            IsArray: parameter.ArrayShape == VbaHostEventParameterArrayShape.Array));
     }
 }

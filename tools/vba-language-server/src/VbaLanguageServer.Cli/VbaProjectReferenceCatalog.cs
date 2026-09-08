@@ -892,7 +892,7 @@ public sealed class VbaProjectReferenceCatalogSet
             Signature: signature,
             ParentTypeName: definition.ParentTypeName,
             TypeReference: definition.TypeReference,
-            DeclarationLabel: CreateDeclarationLabel(definition, signature),
+            DeclarationLabel: signature?.Label ?? CreateDeclarationLabel(definition),
             PropertyAccess: definition.PropertyAccess,
             PropertyAccessorKind: definition.PropertyAccessorKind,
             IsCreatable: definition.IsCreatable,
@@ -912,22 +912,16 @@ public sealed class VbaProjectReferenceCatalogSet
             return null;
         }
 
-        var parameterLabels = definition.Signature.Parameters.Select(CreateRichParameterLabel).ToArray();
-        var callableKind = GetCallableKindLabel(definition);
-        var callablePrefix = callableKind is null ? "" : $"{callableKind} ";
-        var label = $"{callablePrefix}{definition.Name}({string.Join(", ", parameterLabels)})";
-        if (definition.TypeReference is not null)
+        var kind = definition.Kind switch
         {
-            label = $"{label} As {definition.TypeReference.Name}";
-        }
-
-        return definition.Signature with
-        {
-            Label = label,
-            Parameters = definition.Signature.Parameters
-                .Select((parameter, index) => parameter with { DisplayLabel = parameterLabels[index] })
-                .ToArray()
+            VbaSourceDefinitionKind.Property => VbaCallableKind.Property,
+            VbaSourceDefinitionKind.Event => VbaCallableKind.Event,
+            _ => definition.CallableKind ?? definition.Signature.CallableKind
         };
+        return VbaCallablePresentation.Assemble(
+            new VbaCallablePresentationShape(definition.Name, kind, definition.TypeReference,
+                IsReturnArray: definition.IsReturnArray),
+            definition.Signature);
     }
 
     private static string? GetCallableKindLabel(VbaProjectReferenceDefinition definition)
@@ -939,42 +933,15 @@ public sealed class VbaProjectReferenceCatalogSet
             _ => null
         };
 
-    private static string CreateRichParameterLabel(VbaCallableParameter parameter)
-    {
-        var parts = new List<string>();
-        if (parameter.IsParamArray)
-        {
-            parts.Add("ParamArray");
-        }
-        else if (parameter.IsByRef == true)
-        {
-            parts.Add("ByRef");
-        }
-
-        parts.Add(parameter.IsArray ? $"{parameter.Name}()" : parameter.Name);
-        if (parameter.TypeReference is not null)
-        {
-            parts.Add($"As {parameter.TypeReference.Name}");
-        }
-
-        var label = string.Join(" ", parts);
-        return parameter.IsOptional ? $"[{label}]" : label;
-    }
-
-    private static string CreateCompactParameterLabel(VbaCallableParameter parameter)
-        => parameter.IsOptional ? $"[{parameter.Name}]" : parameter.Name;
-
     private static string? CreateDeclarationLabel(
-        VbaProjectReferenceDefinition definition,
-        VbaCallableSignature? signature)
+        VbaProjectReferenceDefinition definition)
         => definition.Kind switch
         {
-            VbaSourceDefinitionKind.Procedure => CreateCallableDeclarationLabel(definition, signature),
-            VbaSourceDefinitionKind.Property when signature is not null => $"Property {CreateCompactCallableLabel(definition, signature)}",
+            VbaSourceDefinitionKind.Procedure => CreateCallableDeclarationLabel(definition),
             VbaSourceDefinitionKind.Property when definition.GlobalExposure == ReferenceDefinitionGlobalExposure.MainHostGlobal =>
                 CreateValueLabel(definition),
             VbaSourceDefinitionKind.Property => $"Property {CreateValueLabel(definition)}",
-            VbaSourceDefinitionKind.Event => $"Event {CreateCompactCallableLabel(definition, signature)}",
+            VbaSourceDefinitionKind.Event => $"Event {definition.Name}()",
             VbaSourceDefinitionKind.Variable => CreateValueLabel(definition),
             VbaSourceDefinitionKind.Constant => $"Const {CreateValueLabel(definition)}",
             VbaSourceDefinitionKind.Enum => $"Enum {definition.Name}",
@@ -984,29 +951,11 @@ public sealed class VbaProjectReferenceCatalogSet
         };
 
     private static string CreateCallableDeclarationLabel(
-        VbaProjectReferenceDefinition definition,
-        VbaCallableSignature? signature)
+        VbaProjectReferenceDefinition definition)
     {
         var callableKind = GetCallableKindLabel(definition);
-        var callableLabel = CreateCompactCallableLabel(definition, signature);
+        var callableLabel = CreateValueLabel(definition);
         return callableKind is null ? callableLabel : $"{callableKind} {callableLabel}";
-    }
-
-    private static string CreateCompactCallableLabel(
-        VbaProjectReferenceDefinition definition,
-        VbaCallableSignature? signature)
-    {
-        if (signature is null)
-        {
-            return definition.Kind == VbaSourceDefinitionKind.Event
-                ? $"{definition.Name}()"
-                : CreateValueLabel(definition);
-        }
-
-        var label = $"{definition.Name}({string.Join(", ", signature.Parameters.Select(CreateCompactParameterLabel))})";
-        return definition.TypeReference is null
-            ? label
-            : $"{label} As {definition.TypeReference.Name}";
     }
 
     private static string CreateValueLabel(VbaProjectReferenceDefinition definition)

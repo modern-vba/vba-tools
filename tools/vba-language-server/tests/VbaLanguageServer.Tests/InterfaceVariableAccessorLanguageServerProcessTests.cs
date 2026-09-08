@@ -9,12 +9,12 @@ public sealed class InterfaceVariableAccessorLanguageServerProcessTests
     [InlineData(
         "Let",
         false,
-        "Property Let ISettings_Value(ByVal AssignedValue As Variant)",
+        "Property Let ISettings_Value(AssignedValue As Variant)",
         "Property Set ISettings_Value")]
     [InlineData(
         "Set",
         true,
-        "Property Set ISettings_Value(ByVal AssignedValue As Variant)",
+        "Property Set ISettings_Value(AssignedValue As Variant)",
         "Property Let ISettings_Value")]
     public async Task Complementary_Property_accessors_leave_the_derived_variable_candidate_available(
         string accessor,
@@ -192,7 +192,7 @@ public sealed class InterfaceVariableAccessorLanguageServerProcessTests
             diagnostic.GetProperty("relatedInformation").EnumerateArray());
         Assert.Equal(interfaceUri, related.GetProperty("location").GetProperty("uri").GetString());
         Assert.Equal(
-            "Required contract: Property Let ISettings_Value(ByVal AssignedValue As Long).",
+            "Required contract: Property Let ISettings_Value(AssignedValue As Long).",
             related.GetProperty("message").GetString());
 
         await process.ShutdownAsync(2);
@@ -323,8 +323,8 @@ public sealed class InterfaceVariableAccessorLanguageServerProcessTests
         Assert.Equal(
             [
                 "Interface member 'ISettings_Value' requires a Property Get implementation.\nRequired contract: Property Get ISettings_Value() As Variant.",
-                "Interface member 'ISettings_Value' requires a Property Let implementation.\nRequired contract: Property Let ISettings_Value(ByVal AssignedValue As Variant).",
-                "Interface member 'ISettings_Value' requires a Property Set implementation.\nRequired contract: Property Set ISettings_Value(ByVal AssignedValue As Variant)."
+                "Interface member 'ISettings_Value' requires a Property Let implementation.\nRequired contract: Property Let ISettings_Value(AssignedValue As Variant).",
+                "Interface member 'ISettings_Value' requires a Property Set implementation.\nRequired contract: Property Set ISettings_Value(AssignedValue As Variant)."
             ],
             notification
                 .GetProperty("params")
@@ -370,8 +370,8 @@ public sealed class InterfaceVariableAccessorLanguageServerProcessTests
         Assert.Equal(
             [
                 "Interface member 'ISettings_Value' requires a Property Get implementation.\nRequired contract: Property Get ISettings_Value() As Variant.",
-                "Interface member 'ISettings_Value' requires a Property Let implementation.\nRequired contract: Property Let ISettings_Value(ByVal AssignedValue As Variant).",
-                "Interface member 'ISettings_Value' requires a Property Set implementation.\nRequired contract: Property Set ISettings_Value(ByVal AssignedValue As Variant)."
+                "Interface member 'ISettings_Value' requires a Property Let implementation.\nRequired contract: Property Let ISettings_Value(AssignedValue As Variant).",
+                "Interface member 'ISettings_Value' requires a Property Set implementation.\nRequired contract: Property Set ISettings_Value(AssignedValue As Variant)."
             ],
             notification
                 .GetProperty("params")
@@ -769,10 +769,10 @@ public sealed class InterfaceVariableAccessorLanguageServerProcessTests
         var signature = Assert.Single(
             result.GetProperty("signatures").EnumerateArray());
         Assert.Equal(
-            "Property Let ISettings_Value(ByVal AssignedValue As Long)",
+            "Property Let ISettings_Value(AssignedValue As Long)",
             signature.GetProperty("label").GetString());
         Assert.Equal(
-            "ByVal AssignedValue As Long",
+            "AssignedValue As Long",
             Assert.Single(signature.GetProperty("parameters").EnumerateArray())
                 .GetProperty("label")
                 .GetString());
@@ -825,8 +825,8 @@ public sealed class InterfaceVariableAccessorLanguageServerProcessTests
         var result = response.GetProperty("result");
         Assert.Equal(
             [
-                "Property Let ISettings_Value(ByVal AssignedValue As Long) [#If]",
-                "Property Let ISettings_value(ByVal AssignedValue As String) [#If]"
+                "Property Let ISettings_Value(AssignedValue As Long) [#If]",
+                "Property Let ISettings_value(AssignedValue As String) [#If]"
             ],
             result
                 .GetProperty("signatures")
@@ -882,8 +882,8 @@ public sealed class InterfaceVariableAccessorLanguageServerProcessTests
             "rhs");
         Assert.Equal(
             [
-                "Property Let ISettings_Value(ByVal AssignedValue As Integer) [#If]",
-                "Property Let ISettings_Value(ByVal AssignedValue As String) [#If]"
+                "Property Let ISettings_Value(AssignedValue As Integer) [#If]",
+                "Property Let ISettings_Value(AssignedValue As String) [#If]"
             ],
             response
                 .GetProperty("result")
@@ -938,7 +938,7 @@ public sealed class InterfaceVariableAccessorLanguageServerProcessTests
         var result = response.GetProperty("result");
         Assert.Equal(
             [
-                "Property Let ISettings_Value(ByVal AssignedValue As Long) [#If]"
+                "Property Let ISettings_Value(AssignedValue As Long) [#If]"
             ],
             result
                 .GetProperty("signatures")
@@ -1078,8 +1078,8 @@ public sealed class InterfaceVariableAccessorLanguageServerProcessTests
         Assert.Equal(
             [
                 "Required contract: Property Get ISettings_Value() As Variant.",
-                "Required contract: Property Let ISettings_Value(ByVal AssignedValue As Variant).",
-                "Required contract: Property Set ISettings_Value(ByVal AssignedValue As Variant)."
+                "Required contract: Property Let ISettings_Value(AssignedValue As Variant).",
+                "Required contract: Property Set ISettings_Value(AssignedValue As Variant)."
             ],
             related);
 
@@ -1209,7 +1209,7 @@ public sealed class InterfaceVariableAccessorLanguageServerProcessTests
         Assert.Equal(
             [
                 "Required contract: Property Get ISettings_Value() As Long.",
-                "Required contract: Property Let ISettings_Value(ByVal AssignedValue As Long)."
+                "Required contract: Property Let ISettings_Value(AssignedValue As Long)."
             ],
             related);
 
@@ -1394,7 +1394,7 @@ public sealed class InterfaceVariableAccessorLanguageServerProcessTests
         var related = Assert.Single(
             diagnostic.GetProperty("relatedInformation").EnumerateArray());
         Assert.Equal(
-            "Required contract: Property Let ISettings_Value(ByVal AssignedValue As Long). Mismatches: parameter count: expected 1, found 2.",
+            "Required contract: Property Let ISettings_Value(AssignedValue As Long). Mismatches: parameter count: expected 1, found 2.",
             related.GetProperty("message").GetString());
 
         await process.ShutdownAsync(2);
@@ -1449,7 +1449,7 @@ public sealed class InterfaceVariableAccessorLanguageServerProcessTests
         var related = Assert.Single(
             diagnostic.GetProperty("relatedInformation").EnumerateArray());
         Assert.Equal(
-            "Required contract: Property Let ISettings_Value(ByVal AssignedValue As Long). Mismatches: parameter count: expected 1, found 2; value parameter type: expected Long, found String.",
+            "Required contract: Property Let ISettings_Value(AssignedValue As Long). Mismatches: parameter count: expected 1, found 2; value parameter type: expected Long, found String.",
             related.GetProperty("message").GetString());
 
         await process.ShutdownAsync(2);
@@ -1504,7 +1504,7 @@ public sealed class InterfaceVariableAccessorLanguageServerProcessTests
         var related = Assert.Single(
             diagnostic.GetProperty("relatedInformation").EnumerateArray());
         Assert.Equal(
-            "Required contract: Property Let ISettings_Value(ByVal AssignedValue As Variant). Mismatches: value parameter role: expected required, found Optional.",
+            "Required contract: Property Let ISettings_Value(AssignedValue As Variant). Mismatches: value parameter role: expected required, found Optional.",
             related.GetProperty("message").GetString());
 
         await process.ShutdownAsync(2);
@@ -1559,7 +1559,7 @@ public sealed class InterfaceVariableAccessorLanguageServerProcessTests
         var related = Assert.Single(
             diagnostic.GetProperty("relatedInformation").EnumerateArray());
         Assert.Equal(
-            "Required contract: Property Let ISettings_Value(ByVal AssignedValue As Long). Mismatches: value parameter type: expected Long, found String; value parameter array shape: expected scalar, found array; value parameter role: expected required, found ParamArray.",
+            "Required contract: Property Let ISettings_Value(AssignedValue As Long). Mismatches: value parameter type: expected Long, found String; value parameter array shape: expected scalar, found array; value parameter role: expected required, found ParamArray.",
             related.GetProperty("message").GetString());
 
         await process.ShutdownAsync(2);
@@ -2139,10 +2139,10 @@ public sealed class InterfaceVariableAccessorLanguageServerProcessTests
         Assert.Equal(
             [
                 "Interface member 'ISettings_first' requires a Property Get implementation.\nRequired contract: Property Get ISettings_first() As Variant.",
-                "Interface member 'ISettings_first' requires a Property Let implementation.\nRequired contract: Property Let ISettings_first(ByVal AssignedValue As Variant).",
-                "Interface member 'ISettings_first' requires a Property Set implementation.\nRequired contract: Property Set ISettings_first(ByVal AssignedValue As Variant).",
+                "Interface member 'ISettings_first' requires a Property Let implementation.\nRequired contract: Property Let ISettings_first(AssignedValue As Variant).",
+                "Interface member 'ISettings_first' requires a Property Set implementation.\nRequired contract: Property Set ISettings_first(AssignedValue As Variant).",
                 "Interface member 'ISettings_second' requires a Property Get implementation.\nRequired contract: Property Get ISettings_second() As String.",
-                "Interface member 'ISettings_second' requires a Property Let implementation.\nRequired contract: Property Let ISettings_second(ByVal AssignedValue As String)."
+                "Interface member 'ISettings_second' requires a Property Let implementation.\nRequired contract: Property Let ISettings_second(AssignedValue As String)."
             ],
             messages);
 
@@ -2187,7 +2187,7 @@ public sealed class InterfaceVariableAccessorLanguageServerProcessTests
         Assert.Equal(
             [
                 "Interface member 'ISettings_Count' requires a Property Get implementation.\nRequired contract: Property Get ISettings_Count() As Integer.",
-                "Interface member 'ISettings_Count' requires a Property Let implementation.\nRequired contract: Property Let ISettings_Count(ByVal AssignedValue As Integer)."
+                "Interface member 'ISettings_Count' requires a Property Let implementation.\nRequired contract: Property Let ISettings_Count(AssignedValue As Integer)."
             ],
             messages);
 
@@ -2233,8 +2233,8 @@ public sealed class InterfaceVariableAccessorLanguageServerProcessTests
         Assert.Equal(
             [
                 "Interface member 'ISettings_Value' requires a Property Get implementation.\nRequired contract: Property Get ISettings_Value() As Variant.",
-                "Interface member 'ISettings_Value' requires a Property Let implementation.\nRequired contract: Property Let ISettings_Value(ByVal AssignedValue As Variant).",
-                "Interface member 'ISettings_Value' requires a Property Set implementation.\nRequired contract: Property Set ISettings_Value(ByVal AssignedValue As Variant)."
+                "Interface member 'ISettings_Value' requires a Property Let implementation.\nRequired contract: Property Let ISettings_Value(AssignedValue As Variant).",
+                "Interface member 'ISettings_Value' requires a Property Set implementation.\nRequired contract: Property Set ISettings_Value(AssignedValue As Variant)."
             ],
             messages);
 
@@ -2412,7 +2412,7 @@ public sealed class InterfaceVariableAccessorLanguageServerProcessTests
         Assert.Equal(
             [
                 "Interface member 'ISettings_Target' requires a Property Get implementation.\nRequired contract: Property Get ISettings_Target() As Object.",
-                "Interface member 'ISettings_Target' requires a Property Set implementation.\nRequired contract: Property Set ISettings_Target(ByVal AssignedValue As Object)."
+                "Interface member 'ISettings_Target' requires a Property Set implementation.\nRequired contract: Property Set ISettings_Target(AssignedValue As Object)."
             ],
             messages);
 
@@ -2467,7 +2467,7 @@ public sealed class InterfaceVariableAccessorLanguageServerProcessTests
         Assert.Equal(
             [
                 "Interface member 'ISettings_Target' requires a Property Get implementation.\nRequired contract: Property Get ISettings_Target() As Widget.",
-                "Interface member 'ISettings_Target' requires a Property Set implementation.\nRequired contract: Property Set ISettings_Target(ByVal AssignedValue As Widget)."
+                "Interface member 'ISettings_Target' requires a Property Set implementation.\nRequired contract: Property Set ISettings_Target(AssignedValue As Widget)."
             ],
             messages);
 
@@ -2524,7 +2524,7 @@ public sealed class InterfaceVariableAccessorLanguageServerProcessTests
         Assert.Equal(
             [
                 "Interface member 'ISettings_Current' requires a Property Get implementation.\nRequired contract: Property Get ISettings_Current() As Mode.",
-                "Interface member 'ISettings_Current' requires a Property Let implementation.\nRequired contract: Property Let ISettings_Current(ByVal AssignedValue As Mode)."
+                "Interface member 'ISettings_Current' requires a Property Let implementation.\nRequired contract: Property Let ISettings_Current(AssignedValue As Mode)."
             ],
             messages);
 
