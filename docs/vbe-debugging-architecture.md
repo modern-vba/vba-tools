@@ -558,7 +558,16 @@ Stop is valid in every launch phase:
   unchanged; and
 - after visible Excel starts, that process is force-terminated.
 
-Cancellation is reported as cancelled rather than as a setup failure. Restart
+Cancellation retains its original cause. Ordinary cancellation is reported as
+cancelled when cleanup is proved; additional cleanup faults and unproved
+process, COM, or handle release report both cancellation and cleanup evidence.
+The internal `DebugFailureCompletion` Module retains the first exception and
+its stack, every distinct subsequent cleanup failure, and stage/resource/PID/path
+observations supplied by the existing owners. It does not own resources or
+replace their cleanup order. Repeated completion or disposal observes the same
+retained outcome. See ADR 0048.
+
+Restart
 Debugging completes fresh-snapshot preparation, downstream snapshot
 revalidation, and the complete temporary build while retaining the current
 session. The isolated hidden build Excel process may coexist with the current
@@ -573,7 +582,13 @@ This build-before-swap ordering intentionally replaces the former
 validation-before-swap behavior. Validation alone never authorizes teardown of
 a usable current session. Preparation, snapshot revalidation, build, target
 removal, restart cancellation, or a stale binding before the swap cleans any
-new generation and leaves an active current session unchanged. If the current
+new generation and leaves an active current session unchanged only when release
+is proved or the remaining cleanup failure is solely isolated temporary-file
+deletion. File-only retention requires positive process, COM, and handle evidence,
+unconsumed replacement authority, and a still-current live session at return.
+Retained paths are reported and old-session completion remains monitored.
+Unproved release takes the existing terminal path; Stop, disconnect, and root
+cancellation terminate even after file-only cleanup failure. If the current
 session exits during the build, its completion cleans the new generation and
 starts no replacement. If replacement startup fails after the swap, restart
 fails and the new generation is cleaned without reviving or reusing the
@@ -698,7 +713,8 @@ exactly correlated notification consumes its request once; a reported failure,
 invalid payload, missing or malformed launch marker, wrong launch binding,
 wrong document or target, target removal, downstream snapshot revalidation failure,
 build failure, or restart-only cancellation before the swap fails that restart,
-cleans any new generation, and retains the old session. If the old session exits
+cleans any new generation, and retains the still-current old session only under
+the owner-evidence rules above. If the old session exits
 during the build, its completion cleans the new generation and starts no
 replacement. The unreleased protocol has no marker-less compatibility path
 because it could not capture a fresh editor snapshot. If replacement startup

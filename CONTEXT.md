@@ -331,6 +331,21 @@ It enables macros only while programmatically opening its `DebugWorkbook`;
 every workbook opened in the process belongs to the same session lifetime.
 _Avoid_: build process, active Excel session, shared Excel instance
 
+**DebugFailureCompletion**:
+The internal DAP-owned Module that retains the original failure or cancellation
+with its stack, subsequent distinct cleanup failures, and resource-release
+evidence reported by existing owners. Process completion, COM release, handle
+release, and filesystem deletion are separate observations identified by stage
+and resource. Completion and disposal retain one outcome for repeated and
+concurrent observers. Neither a Dispose call nor a released/swap-start flag
+proves cleanup; absent owner evidence remains unproved.
+A Restart-only failure before swap may retain its current live session when
+cleanup is proved or only isolated temporary-file deletion failed. Unproved
+process, COM, or handle release revokes replacement authority and terminates
+through the existing session path. Stop, disconnect, and root cancellation
+terminate regardless of retained files. See ADR 0048.
+_Avoid_: resource owner, retry coordinator, generic cleanup callback registry
+
 **AutomationExcelProcess**:
 A dedicated hidden Excel process exclusively owned by one Excel-automating
 `ToolingCommand` invocation, never a user's existing or shared Excel session.

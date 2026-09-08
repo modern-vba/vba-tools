@@ -188,8 +188,8 @@ public sealed class VbeDebugAutomationTests
             new FakeDebugWindowActivator(events),
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
-        await using var session = await automation.StartVisibleAsync(
-            CancellationToken.None);
+        var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await using var failedDisposal = new ExpectedSetupFailureDisposal(session, cancelled: true);
         await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         var control = Assert.IsAssignableFrom<IVbeDebugDoctorControl>(session);
         using var cancellation = new CancellationTokenSource();
@@ -241,7 +241,8 @@ public sealed class VbeDebugAutomationTests
                 "    Debug.Print \"break here\"",
                 "End Sub"));
 
-        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await using var failedDisposal = new ExpectedSetupFailureDisposal(session);
         await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
             session.SetNativeBreakpointsAsync(
@@ -295,7 +296,8 @@ public sealed class VbeDebugAutomationTests
                 "    Debug.Print \"break here too\"",
                 "End Sub"));
 
-        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await using var failedDisposal = new ExpectedSetupFailureDisposal(session);
         await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
             session.SetNativeBreakpointsAsync(
@@ -421,7 +423,8 @@ public sealed class VbeDebugAutomationTests
             new FakeDebugWindowActivator(events),
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
-        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await using var failedDisposal = new ExpectedSetupFailureDisposal(session);
         await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
             session.SetNativeBreakpointsAsync(
@@ -457,7 +460,8 @@ public sealed class VbeDebugAutomationTests
             new FakeDebugWindowActivator(events),
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
-        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await using var failedDisposal = new ExpectedSetupFailureDisposal(session);
         await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
             session.SetNativeBreakpointsAsync(
@@ -493,7 +497,8 @@ public sealed class VbeDebugAutomationTests
             new FakeDebugWindowActivator(events),
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
-        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await using var failedDisposal = new ExpectedSetupFailureDisposal(session);
         await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
             session.SetNativeBreakpointsAsync(
@@ -530,7 +535,8 @@ public sealed class VbeDebugAutomationTests
             CreateSourceMap(),
             10);
 
-        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await using var failedDisposal = new ExpectedSetupFailureDisposal(session);
         await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
             session.SetNativeBreakpointsAsync([breakpoint], CancellationToken.None));
@@ -956,12 +962,75 @@ public sealed class VbeDebugAutomationTests
 
         Assert.Same(startError, error.StartException);
         Assert.IsAssignableFrom<DebugSetupException>(error);
-        Assert.Same(processCleanupError, error.CleanupException);
+        Assert.Contains(processCleanupError, FlattenFailures(error.CleanupException!));
         Assert.False(error.CleanupVerified);
         Assert.True(process.Disposed);
         Assert.True(job.Disposed);
         Assert.Contains("dispatcher-dispose", events);
         Assert.Equal(2, dispatcher.InvokeCalls);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FailedVisibleStartupRetainsItsOriginalStackAndEveryCleanupFailure(bool cancelled)
+    {
+        var events = new List<string>();
+        Exception startupFailure = cancelled
+            ? new OperationCanceledException("Original startup cancellation.", new CancellationToken(true))
+            : new DebugSetupException("Original startup failure.");
+        var processFailure = new IOException("Process handle release failed.");
+        var comFailure = new IOException("Excel COM release failed.");
+        var dispatcherFailure = new IOException("STA dispatcher release failed.");
+        var process = new FakeDebugOwnedProcess(31419, DateTime.Now, events: events);
+        var job = new FakeDebugProcessJob(process, events, disposeAction: () => throw processFailure);
+        var dispatcher = new MultipleFailureStaComDispatcher(
+            events, startupFailure, comFailure, dispatcherFailure);
+        var automation = new VbeDebugAutomation(
+            new FakeExcelDebugApplicationFactory(new FakeExcelApplication { Hwnd = 2471 }),
+            new FakeDebugExcelProcessApi(process.Id, process, job),
+            new FakeDebugWindowActivator(), new FakeStaComDispatcherFactory(dispatcher));
+
+        var failure = await Assert.ThrowsAsync<VbeDebugSessionStartException>(() =>
+            automation.StartVisibleAsync(CancellationToken.None));
+
+        Assert.Same(startupFailure, failure.StartException);
+        Assert.Equal(cancelled, failure.FailureOutcome.PrimaryFailure is OperationCanceledException);
+        Assert.Contains(nameof(MultipleFailureStaComDispatcher.ThrowStartupFailure), startupFailure.StackTrace);
+        var cleanup = FlattenFailures(failure.CleanupException!).ToArray();
+        Assert.Contains(processFailure, cleanup);
+        Assert.Contains(comFailure, cleanup);
+        Assert.Contains(dispatcherFailure, cleanup);
+        Assert.False(failure.CleanupVerified);
+        Assert.Single(events, entry => entry == "process-dispose");
+        Assert.Single(events, entry => entry == "job-dispose");
+        Assert.Single(events, entry => entry == "dispatcher-dispose");
+
+    }
+
+    private static IEnumerable<Exception> FlattenFailures(Exception exception)
+    {
+        yield return exception;
+        foreach (var inner in exception is AggregateException aggregate
+                     ? aggregate.InnerExceptions : exception.InnerException is { } cause ? [cause] : [])
+        {
+            foreach (var nested in FlattenFailures(inner)) { yield return nested; }
+        }
+    }
+
+    private sealed class ExpectedSetupFailureDisposal(IVbeDebugSession session, bool cancelled = false) : IAsyncDisposable
+    {
+        public async ValueTask DisposeAsync()
+        {
+            var failure = await Record.ExceptionAsync(() => session.DisposeAsync().AsTask());
+            var outcome = Assert.IsType<DebugFailureOutcome>(
+                Assert.IsAssignableFrom<IDebugResourceOwnerEvidence>(session).CleanupOutcome);
+            if (cancelled) { Assert.IsAssignableFrom<OperationCanceledException>(failure); }
+            else { Assert.IsType<DebugSetupException>(failure); }
+            Assert.Same(outcome.PrimaryFailure, failure);
+            Assert.False(outcome.HasCleanupFailure);
+            Assert.Same(failure, await Record.ExceptionAsync(() => session.Completion));
+        }
     }
 
     [Fact]
@@ -1200,11 +1269,44 @@ public sealed class VbeDebugAutomationTests
             session.Completion.WaitAsync(TimeSpan.FromSeconds(2)));
         Assert.Equal(observationWins ? "modal observation" : "Stop", failure.TerminalCause);
         Assert.Same(observationWins ? monitorFailure : null, failure.PrimaryFailure);
-        Assert.Contains(failure.CleanupFailures, error => ReferenceEquals(cleanupFailure, error.InnerException));
+        Assert.Contains(cleanupFailure, failure.CleanupFailures.SelectMany(FlattenFailures));
         if (!observationWins) { Assert.Contains(monitorFailure, failure.CleanupFailures); }
         Assert.Same(failure, await Assert.ThrowsAsync<VbeDebugSessionLifetimeException>(() => session.DisposeAsync().AsTask()));
         Assert.Single(events, entry => entry == "process-dispose");
         Assert.Single(events, entry => entry == "job-dispose");
+        Assert.False(Directory.Exists(fixture.GenerationWorkspace.GenerationWorkspacePath));
+    }
+
+    [Fact]
+    public async Task SessionCompletionAttemptsBothComReleasesAndRetainsEveryCleanupFailure()
+    {
+        using var temp = TempDirectory.Create();
+        await using var fixture = await LeaseIssuedVbeGenerationFixture.CreateAsync(temp.Path, "GeneratedBook.xlsm");
+        var events = new List<string>();
+        var model = FakeVbeModel.Create(fixture.GenerationWorkspace.WorkbookPath, events);
+        var process = new FakeDebugOwnedProcess(27192, DateTime.Now, events: events);
+        var dispatcher = new FaultableCleanupStaComDispatcher();
+        var automation = new VbeDebugAutomation(
+            new FakeExcelDebugApplicationFactory(model.Excel),
+            new FakeDebugExcelProcessApi(process.Id, process),
+            new FakeDebugWindowActivator(), new FakeStaComDispatcherFactory(dispatcher));
+        var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await session.OpenTestGenerationAsync(fixture.GenerationWorkspace, CancellationToken.None);
+        var workbookFailure = new IOException("Workbook RCW release failed.");
+        var excelFailure = new IOException("Excel RCW release failed.");
+        var dispatcherFailure = new IOException("STA worker release failed.");
+        dispatcher.ReleaseFailures.Enqueue(workbookFailure);
+        dispatcher.ReleaseFailures.Enqueue(excelFailure);
+        dispatcher.DisposeFailure = dispatcherFailure;
+
+        var failure = await Assert.ThrowsAsync<VbeDebugSessionLifetimeException>(() => session.TerminateAsync().AsTask());
+
+        Assert.Contains(workbookFailure, failure.CleanupFailures);
+        Assert.Contains(excelFailure, failure.CleanupFailures);
+        Assert.Contains(dispatcherFailure, failure.CleanupFailures);
+        Assert.Same(failure, await Assert.ThrowsAsync<VbeDebugSessionLifetimeException>(() => session.Completion));
+        Assert.Same(failure, await Assert.ThrowsAsync<VbeDebugSessionLifetimeException>(() => session.DisposeAsync().AsTask()));
+        Assert.Single(events, entry => entry == "process-dispose");
         Assert.False(Directory.Exists(fixture.GenerationWorkspace.GenerationWorkspacePath));
     }
 
@@ -1329,7 +1431,7 @@ public sealed class VbeDebugAutomationTests
             session.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2)));
 
         Assert.Equal("Stop", error.TerminalCause);
-        Assert.Contains(killError, error.CleanupFailures);
+        Assert.Contains(killError, error.CleanupFailures.SelectMany(FlattenFailures));
         Assert.True(job.Disposed);
         Assert.True(process.HasExited);
         Assert.True(events.IndexOf("job-dispose") < events.IndexOf("prompt-watch-complete"));
@@ -1360,7 +1462,8 @@ public sealed class VbeDebugAutomationTests
             new FakeDebugWindowActivator(events),
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
-        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await using var failedDisposal = new ExpectedSetupFailureDisposal(session);
         await Assert.ThrowsAsync<DebugSetupException>(() =>
             session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None));
 
@@ -1401,7 +1504,8 @@ public sealed class VbeDebugAutomationTests
             new FakeDebugWindowActivator(),
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
-        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await using var failedDisposal = new ExpectedSetupFailureDisposal(session);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
             session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None));
 
@@ -1438,7 +1542,8 @@ public sealed class VbeDebugAutomationTests
             new FakeDebugWindowActivator(events),
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
-        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await using var failedDisposal = new ExpectedSetupFailureDisposal(session);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
             session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None));
 
@@ -1479,7 +1584,8 @@ public sealed class VbeDebugAutomationTests
             new FakeDebugWindowActivator(),
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
-        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await using var failedDisposal = new ExpectedSetupFailureDisposal(session);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
             session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None));
 
@@ -1550,7 +1656,8 @@ public sealed class VbeDebugAutomationTests
             new FakeDebugWindowActivator(events),
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
-        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await using var failedDisposal = new ExpectedSetupFailureDisposal(session);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
             session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None));
 
@@ -1587,7 +1694,8 @@ public sealed class VbeDebugAutomationTests
             new FakeDebugWindowActivator(events),
             new StaComDispatcherFactory());
 
-        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await using var failedDisposal = new ExpectedSetupFailureDisposal(session, cancelled: true);
         using var cancellation = new CancellationTokenSource();
         var open = session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, cancellation.Token);
         Assert.True(openStarted.Wait(TimeSpan.FromSeconds(5)));
@@ -1630,7 +1738,8 @@ public sealed class VbeDebugAutomationTests
                 unchecked((int)0x80070005)),
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
-        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await using var failedDisposal = new ExpectedSetupFailureDisposal(session);
         await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
             session.SetNativeBreakpointsAsync(
@@ -1669,7 +1778,8 @@ public sealed class VbeDebugAutomationTests
             new FakeDebugWindowActivator(events),
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
-        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await using var failedDisposal = new ExpectedSetupFailureDisposal(session);
         await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
             session.SetNativeBreakpointsAsync(
@@ -1713,7 +1823,8 @@ public sealed class VbeDebugAutomationTests
             new FakeDebugWindowActivator(events),
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
-        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await using var failedDisposal = new ExpectedSetupFailureDisposal(session);
         await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
             session.SetNativeBreakpointsAsync(
@@ -1749,7 +1860,8 @@ public sealed class VbeDebugAutomationTests
             new FakeDebugWindowActivator(events),
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
-        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await using var failedDisposal = new ExpectedSetupFailureDisposal(session);
         await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
             session.SetNativeBreakpointsAsync(
@@ -1785,7 +1897,8 @@ public sealed class VbeDebugAutomationTests
             new FakeDebugWindowActivator(events),
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
-        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await using var failedDisposal = new ExpectedSetupFailureDisposal(session);
         await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
             session.SetNativeBreakpointsAsync(
@@ -1821,7 +1934,8 @@ public sealed class VbeDebugAutomationTests
             new FakeDebugWindowActivator(events),
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
-        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await using var failedDisposal = new ExpectedSetupFailureDisposal(session);
         await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
             session.SetNativeBreakpointsAsync(
@@ -1911,7 +2025,8 @@ public sealed class VbeDebugAutomationTests
                 unchecked((int)0x80070005)),
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
-        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await using var failedDisposal = new ExpectedSetupFailureDisposal(session);
 
         await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
@@ -1949,7 +2064,8 @@ public sealed class VbeDebugAutomationTests
             new FakeDebugWindowActivator(events),
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
-        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await using var failedDisposal = new ExpectedSetupFailureDisposal(session);
 
         await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
@@ -1988,7 +2104,8 @@ public sealed class VbeDebugAutomationTests
             new FakeDebugWindowActivator(events),
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
-        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await using var failedDisposal = new ExpectedSetupFailureDisposal(session);
 
         await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
@@ -2003,6 +2120,168 @@ public sealed class VbeDebugAutomationTests
         Assert.DoesNotContain("disabled", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(1, process.KillCalls);
         Assert.Equal(1, events.Count(entry => entry == "execute:186"));
+    }
+
+    [Fact]
+    public async Task FailedTargetSetupRetainsTheCommandCauseAndEveryLocalComReleaseFailure()
+    {
+        using var temp = TempDirectory.Create();
+        await using var fixture = await LeaseIssuedVbeGenerationFixture.CreateAsync(temp.Path, "GeneratedBook.xlsm");
+        var events = new List<string>();
+        var commandFailure = new COMException("Original native command failure.");
+        var codeFailure = new IOException("Code module release failed.");
+        var componentFailure = new IOException("Component release failed.");
+        var model = FakeVbeModel.Create(fixture.GenerationWorkspace.WorkbookPath, events,
+            runCommandException: commandFailure);
+        var process = new FakeDebugOwnedProcess(17321, DateTime.Now, events: events);
+        var automation = new VbeDebugAutomation(new FakeExcelDebugApplicationFactory(model.Excel),
+            new FakeDebugExcelProcessApi(process.Id, process), new FakeDebugWindowActivator(),
+            new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()),
+            releaseComObject: value => value switch
+            {
+                FakeCodeModule => throw codeFailure,
+                FakeVbComponent => throw componentFailure,
+                _ => true
+            });
+        var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await session.OpenTestGenerationAsync(fixture.GenerationWorkspace, CancellationToken.None);
+        try
+        {
+            var failure = await Record.ExceptionAsync(() => session.RunTargetAsync(
+                new DebugTargetProcedure("DebugModule", "RunTarget"), CancellationToken.None));
+            Assert.NotNull(failure);
+            var observed = FlattenFailures(failure).ToArray();
+            Assert.Contains(commandFailure, observed);
+            Assert.Contains(nameof(FakeCommandBarControl.Execute), commandFailure.StackTrace);
+            Assert.Contains(codeFailure, observed);
+            Assert.Contains(componentFailure, observed);
+        }
+        finally
+        {
+            _ = await Record.ExceptionAsync(() => session.DisposeAsync().AsTask());
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FailedSetupRetainsItsCauseThroughSessionCompletionAndRepeatedDisposal(bool observeInputWait)
+    {
+        using var temp = TempDirectory.Create();
+        await using var fixture = await LeaseIssuedVbeGenerationFixture.CreateAsync(temp.Path, "GeneratedBook.xlsm");
+        var commandFailure = new COMException("Original terminal setup failure.");
+        var model = FakeVbeModel.Create(fixture.GenerationWorkspace.WorkbookPath, [], runCommandException: commandFailure);
+        var process = new FakeDebugOwnedProcess(17324, DateTime.Now);
+        var automation = new VbeDebugAutomation(new FakeExcelDebugApplicationFactory(model.Excel),
+            new FakeDebugExcelProcessApi(process.Id, process), new FakeDebugWindowActivator(),
+            new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
+        var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await session.OpenTestGenerationAsync(fixture.GenerationWorkspace, CancellationToken.None);
+        try
+        {
+            var setupFailure = await Assert.ThrowsAsync<DebugSetupException>(() => session.RunTargetAsync(
+                new DebugTargetProcedure("DebugModule", "RunTarget"),
+                observeInputWait ? new RecordingDebugInputWaitSink() : null, CancellationToken.None));
+            var terminalFailure = await Record.ExceptionAsync(() => session.Completion.WaitAsync(TimeSpan.FromSeconds(2)));
+
+            Assert.Same(setupFailure, terminalFailure);
+            var outcome = Assert.IsType<DebugFailureOutcome>(
+                Assert.IsAssignableFrom<IDebugResourceOwnerEvidence>(session).CleanupOutcome);
+            Assert.Same(setupFailure, outcome.PrimaryFailure);
+            Assert.Same(commandFailure, setupFailure.InnerException);
+            Assert.Contains(nameof(FakeCommandBarControl.Execute), commandFailure.StackTrace!);
+            Assert.False(outcome.HasCleanupFailure);
+            Assert.Same(terminalFailure, await Record.ExceptionAsync(() => session.DisposeAsync().AsTask()));
+        }
+        finally { _ = await Record.ExceptionAsync(() => session.DisposeAsync().AsTask()); }
+    }
+
+    [Fact]
+    public async Task CancelledSetupWithLocalComFailurePreservesTheOriginalCancellationIdentityAndStack()
+    {
+        using var temp = TempDirectory.Create();
+        await using var fixture = await LeaseIssuedVbeGenerationFixture.CreateAsync(temp.Path, "GeneratedBook.xlsm");
+        using var cancellation = new CancellationTokenSource();
+        var original = new OperationCanceledException("Original native command cancellation.", cancellation.Token);
+        var releaseFailure = new IOException("Cancelled code module release failed.");
+        var model = FakeVbeModel.Create(fixture.GenerationWorkspace.WorkbookPath, [], runCommandException: original);
+        var process = new FakeDebugOwnedProcess(17323, DateTime.Now,
+            killAction: () => throw new IOException("Cancellation process termination failed."));
+        var job = new FakeDebugProcessJob(process, terminateError: new IOException("Cancellation Job termination failed."),
+            disposeAction: () => process.Exit(-2));
+        var automation = new VbeDebugAutomation(new FakeExcelDebugApplicationFactory(model.Excel),
+            new FakeDebugExcelProcessApi(process.Id, process, job), new FakeDebugWindowActivator(),
+            new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()), releaseComObject: value =>
+            {
+                if (value is FakeCodeModule)
+                {
+                    cancellation.Cancel();
+                    throw releaseFailure;
+                }
+                return true;
+            });
+        var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await session.OpenTestGenerationAsync(fixture.GenerationWorkspace, CancellationToken.None);
+        try
+        {
+            var failure = await Record.ExceptionAsync(() => session.RunTargetAsync(
+                new DebugTargetProcedure("DebugModule", "RunTarget"), cancellation.Token));
+
+            var outcome = Assert.IsAssignableFrom<IDebugFailureEvidence>(failure).FailureOutcome;
+            Assert.Same(original, outcome.PrimaryFailure);
+            Assert.Contains(nameof(FakeCommandBarControl.Execute), outcome.PrimaryFailure!.StackTrace!);
+            Assert.Contains(outcome.CleanupFailures, item => ReferenceEquals(item.Exception, releaseFailure));
+            Assert.DoesNotContain(outcome.CleanupFailures, item => ReferenceEquals(item.Exception, original));
+        }
+        finally { _ = await Record.ExceptionAsync(() => session.DisposeAsync().AsTask()); }
+    }
+
+    [Fact]
+    public async Task FailedSetupCancellationRetainsItsCauseAndBothTerminationFailures()
+    {
+        var events = new List<string>();
+        var model = FakeVbeModel.Create("GeneratedBook.xlsm", events);
+        var jobFailure = new IOException("Cancellation Job termination failed.");
+        var killFailure = new IOException("Cancellation exact process termination failed.");
+        var process = new FakeDebugOwnedProcess(17322, DateTime.Now,
+            killAction: () => throw killFailure);
+        var job = new FakeDebugProcessJob(process, terminateError: jobFailure,
+            disposeAction: () => process.Exit(-2));
+        var dispatcher = new RecordingStaComDispatcher();
+        var automation = new VbeDebugAutomation(new FakeExcelDebugApplicationFactory(model.Excel),
+            new FakeDebugExcelProcessApi(process.Id, process, job), new FakeDebugWindowActivator(),
+            new FakeStaComDispatcherFactory(dispatcher));
+        var session = await automation.StartVisibleAsync(CancellationToken.None);
+        using var cancellation = new CancellationTokenSource();
+        dispatcher.BeforeInvoke = () =>
+        {
+            dispatcher.BeforeInvoke = null;
+            cancellation.Cancel();
+        };
+
+        try
+        {
+            var failure = await Record.ExceptionAsync(() =>
+                session.GetCompilationHostFactsAsync(cancellation.Token));
+
+            Assert.NotNull(failure);
+            Assert.False(failure is OperationCanceledException);
+            var outcome = Assert.IsAssignableFrom<IDebugFailureEvidence>(failure).FailureOutcome;
+            var primary = Assert.IsAssignableFrom<OperationCanceledException>(outcome.PrimaryFailure);
+            Assert.Equal(cancellation.Token, primary.CancellationToken);
+            Assert.Contains(jobFailure, FlattenFailures(failure));
+            Assert.Contains(killFailure, FlattenFailures(failure));
+            Assert.True(outcome.HasUnprovedRelease);
+            var terminalFailure = await Record.ExceptionAsync(() =>
+                session.Completion.WaitAsync(TimeSpan.FromSeconds(2)));
+            var terminalOutcome = Assert.IsAssignableFrom<IDebugFailureEvidence>(terminalFailure).FailureOutcome;
+            Assert.Same(primary, terminalOutcome.PrimaryFailure);
+            Assert.Equal(1, process.KillCalls);
+        }
+        finally
+        {
+            _ = await Record.ExceptionAsync(() => session.DisposeAsync().AsTask());
+        }
     }
 
     [Fact]
@@ -2102,7 +2381,8 @@ public sealed class VbeDebugAutomationTests
             new FakeDebugWindowActivator(events),
             new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()));
 
-        await using var session = await automation.StartVisibleAsync(CancellationToken.None);
+        var session = await automation.StartVisibleAsync(CancellationToken.None);
+        await using var failedDisposal = new ExpectedSetupFailureDisposal(session);
         await session.OpenTestGenerationAsync(generationFixture.GenerationWorkspace, CancellationToken.None);
         model.Project.Mode = 1;
         var control = Assert.IsAssignableFrom<IVbeDebugProbeControl>(session);
@@ -2265,10 +2545,15 @@ internal sealed class RecordingStaComDispatcher : IStaComDispatcher
 {
     public int InvokeCalls { get; private set; }
 
+    public Action? BeforeInvoke { get; set; }
+
+    public bool ReleaseVerified => true;
+
     public Task<T> InvokeAsync<T>(Func<T> operation, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         InvokeCalls++;
+        BeforeInvoke?.Invoke();
         return Task.FromResult(operation());
     }
 
@@ -2280,6 +2565,8 @@ internal sealed class FailingFirstInvocationStaComDispatcher(
     Exception firstInvocationError) : IStaComDispatcher
 {
     public int InvokeCalls { get; private set; }
+
+    public bool ReleaseVerified => true;
 
     public Task<T> InvokeAsync<T>(Func<T> operation, CancellationToken cancellationToken)
     {
@@ -2295,6 +2582,42 @@ internal sealed class FailingFirstInvocationStaComDispatcher(
     {
         events.Add("dispatcher-dispose");
         return ValueTask.CompletedTask;
+    }
+}
+
+internal sealed class FaultableCleanupStaComDispatcher : IStaComDispatcher
+{
+    public Queue<Exception> ReleaseFailures { get; } = new();
+    public Exception? DisposeFailure { get; set; }
+    public bool ReleaseVerified => DisposeFailure is null;
+    public Task<T> InvokeAsync<T>(Func<T> operation, CancellationToken cancellationToken)
+        => ReleaseFailures.TryDequeue(out var failure) ? Task.FromException<T>(failure) : Task.FromResult(operation());
+    public ValueTask DisposeAsync() => DisposeFailure is { } failure
+        ? ValueTask.FromException(failure) : ValueTask.CompletedTask;
+}
+
+internal sealed class MultipleFailureStaComDispatcher(
+    List<string> events, Exception startupFailure, Exception comFailure, Exception dispatcherFailure)
+    : IStaComDispatcher
+{
+    private int invocations;
+
+    public Task<T> InvokeAsync<T>(Func<T> operation, CancellationToken cancellationToken)
+    {
+        if (++invocations == 1)
+        {
+            _ = operation();
+            ThrowStartupFailure(startupFailure);
+        }
+        return Task.FromException<T>(comFailure);
+    }
+
+    public static void ThrowStartupFailure(Exception failure) => throw failure;
+
+    public ValueTask DisposeAsync()
+    {
+        events.Add("dispatcher-dispose");
+        return ValueTask.FromException(dispatcherFailure);
     }
 }
 

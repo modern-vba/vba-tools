@@ -82,6 +82,7 @@ internal sealed class FakeDebugExcelProcessApi : IDebugExcelProcessApi
 
 internal sealed class FakeDebugProcessJob : IDebugProcessJob
 {
+    public bool HandleReleaseVerified { get; private set; }
     private readonly IDebugOwnedProcess process;
     private readonly List<string>? events;
     private readonly Exception? assignmentError;
@@ -137,6 +138,7 @@ internal sealed class FakeDebugProcessJob : IDebugProcessJob
         events?.Add("job-dispose");
         Disposed = true;
         disposeAction?.Invoke();
+        HandleReleaseVerified = true;
     }
 }
 
@@ -150,6 +152,7 @@ internal sealed class FakeDebugOwnedProcess(
     Exception? hasExitedAfterDisposeError = null)
     : IDebugOwnedProcess
 {
+    public bool HandleReleaseVerified { get; private set; }
     private readonly TaskCompletionSource completion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private bool hasExited;
@@ -205,5 +208,6 @@ internal sealed class FakeDebugOwnedProcess(
     {
         events?.Add("process-dispose");
         Disposed = true;
+        HandleReleaseVerified = true;
     }
 }

@@ -50,6 +50,8 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
         StandaloneVbaDebugLaunchRequest? activeLaunch = null;
         using var restartPreparation = new DebugRestartPreparation(sessionId);
         IStandaloneVbaDebugRunningSession? runningSession = null;
+        IStandaloneVbaDebugRunningSession? endedSession = null;
+        DebugFailureOutcome? terminalLaunchFailure = null;
         Task<StandaloneVbaDebugLaunchExecutionResult>? launchTask = null;
         CancellationTokenSource? launchCancellation = null;
         var breakpointRegistry = new DapSourceBreakpointRegistry();
@@ -57,6 +59,7 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
         using var requestReadCancellation = CancellationTokenSource
             .CreateLinkedTokenSource(cancellationToken);
         Task<DapRequest?>? requestReadTask = null;
+        Exception? runFailure = null;
         try
         {
             while (true)
@@ -69,6 +72,10 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                     completedTask = await Task.WhenAny(
                         launchTask,
                         requestReadTask).ConfigureAwait(false);
+                }
+                else if (endedSession is not null)
+                {
+                    completedTask = endedSession.Completion;
                 }
                 else if (runningSession is not null)
                 {
@@ -89,7 +96,16 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                     {
                         var launchResult = await completedLaunchTask.ConfigureAwait(false);
                         runningSession = launchResult.RunningSession;
+                        endedSession = launchResult.EndedSession;
+                        terminalLaunchFailure = launchResult.TerminalFailure;
                         activeLaunch = launchResult.ActiveLaunch;
+                        if (terminalLaunchFailure is not null && endedSession is null)
+                        {
+                            requestReadCancellation.Cancel();
+                            ObserveDetachedRequestRead(requestReadTask);
+                            requestReadTask = null;
+                            return 1;
+                        }
                     }
                     catch (OperationCanceledException)
                         when (launchCancellation?.IsCancellationRequested == true)
@@ -104,11 +120,12 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                     continue;
                 }
 
-                if (runningSession is not null &&
+                if (endedSession is not null || (runningSession is not null &&
                     (ReferenceEquals(completedTask, runningSession.Completion) ||
-                     runningSession.Completion.IsCompleted))
+                     runningSession.Completion.IsCompleted)))
                 {
-                    var completedSession = runningSession;
+                    var completedSession = endedSession ?? runningSession!;
+                    endedSession = null;
                     runningSession = null;
                     var processId = completedSession.ProcessId;
                     int? exitCode = null;
@@ -121,28 +138,32 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                     {
                         failure = exception;
                     }
-                    try
+                    var terminalCompletion = new DebugFailureCompletion(terminalLaunchFailure is null
+                        ? failure : new DebugFailureException(terminalLaunchFailure));
+                    if (terminalLaunchFailure is not null && failure is not null)
                     {
-                        if (failure is null)
-                        {
-                            await completedSession.DisposeAsync().ConfigureAwait(false);
-                        }
-                        else
-                        {
-                            await StopOwnedSessionAsync(completedSession).ConfigureAwait(false);
-                        }
+                        terminalCompletion.AddFailure("session completion", "owned Excel session",
+                            DebugResourceKind.Observation, failure, processId);
                     }
-                    catch (Exception exception)
+                    terminalLaunchFailure = null;
+                    if (failure is not null)
                     {
-                        if (failure is null)
-                        {
-                            failure = exception;
-                        }
-                        else if (!ReferenceEquals(failure, exception))
-                        {
-                            failure.Data["VbaDebugAdapter.SessionCleanup"] = exception;
-                        }
+                        await CompleteSessionCleanupAsync(terminalCompletion, completedSession, "owned Excel session")
+                            .ConfigureAwait(false);
                     }
+                    else
+                    {
+                        try { await completedSession.DisposeAsync().ConfigureAwait(false); }
+                        catch (Exception exception)
+                        {
+                            terminalCompletion.AddFailure("session disposal", "owned Excel session", DebugResourceKind.Handle,
+                                exception, processId);
+                        }
+                        MergeOwnerEvidence(terminalCompletion, completedSession, "session disposal", "owned Excel session");
+                    }
+                    var terminalOutcome = terminalCompletion.Complete();
+                    failure = terminalOutcome.PrimaryFailure is not null || terminalOutcome.HasCleanupFailure
+                        ? new DebugFailureException(terminalOutcome) : null;
                     requestReadCancellation.Cancel();
                     ObserveDetachedRequestRead(requestReadTask);
                     requestReadTask = null;
@@ -150,39 +171,42 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                     {
                         return 1;
                     }
-                    if (restartPreparation.TakePending() is { } pendingRestart)
+                    try
                     {
-                        await connection.WriteResponseAsync(
-                            pendingRestart.Request,
-                            success: false,
-                            body: null,
-                            message: failure is null
-                                ? "The owned VBA debug session exited before restart preparation completed."
-                                : "The owned VBA debug session failed before restart preparation completed.",
-                            cancellationToken).ConfigureAwait(false);
-                    }
-                    await connection.WriteEventAsync(
-                        "output",
-                        new
+                        if (restartPreparation.TakePending() is { } pendingRestart)
+                        {
+                            await connection.WriteResponseAsync(pendingRestart.Request, false, null,
+                                failure is null
+                                    ? "The owned VBA debug session exited before restart preparation completed."
+                                    : "The owned VBA debug session failed before restart preparation completed.",
+                                cancellationToken).ConfigureAwait(false);
+                        }
+                        await connection.WriteEventAsync("output", new
                         {
                             category = failure is null ? "console" : "important",
                             output = failure is null
                                 ? $"Owned Excel process {processId} exited with code {exitCode}.{Environment.NewLine}"
                                 : $"DebugSessionError: {failure.Message}{Environment.NewLine}"
-                        },
-                        cancellationToken).ConfigureAwait(false);
-                    if (exitCode is not null)
-                    {
-                        await connection.WriteEventAsync(
-                            "exited",
-                            new { exitCode },
-                            cancellationToken).ConfigureAwait(false);
+                        }, cancellationToken).ConfigureAwait(false);
+                        if (exitCode is not null)
+                        {
+                            await connection.WriteEventAsync("exited", new { exitCode }, cancellationToken)
+                                .ConfigureAwait(false);
+                        }
+                        await connection.WriteEventAsync("terminated", null, cancellationToken).ConfigureAwait(false);
+                        return failure is null ? 0 : 1;
                     }
-                    await connection.WriteEventAsync(
-                        "terminated",
-                        body: null,
-                        cancellationToken).ConfigureAwait(false);
-                    return failure is null ? 0 : 1;
+                    catch (Exception exception)
+                    {
+                        var notificationCompletion = new DebugFailureCompletion(failure ?? exception);
+                        if (failure is not null)
+                        {
+                            notificationCompletion.AddFailure("DAP output", "session terminal notification",
+                                DebugResourceKind.Observation, exception, processId);
+                        }
+                        notificationCompletion.Complete().ThrowWithEvidence();
+                        throw;
+                    }
                 }
 
                 var request = await requestReadTask.ConfigureAwait(false);
@@ -549,13 +573,24 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                     {
                         restartPreparation.Cancel();
                         launchCancellation!.Cancel();
+                        var stoppingLaunch = launchTask;
+                        launchTask = null;
                         try
                         {
-                            var launchResult = await launchTask.ConfigureAwait(false);
-                            if (launchResult.RunningSession is not null)
+                            var launchResult = await stoppingLaunch.ConfigureAwait(false);
+                            if (launchResult.TerminalFailure is { } terminalFailure)
                             {
-                                await StopOwnedSessionAsync(
-                                    launchResult.RunningSession).ConfigureAwait(false);
+                                var stopCompletion = new DebugFailureCompletion(new DebugFailureException(terminalFailure));
+                                if (launchResult.EndedSession is { } terminalSession)
+                                {
+                                    await CompleteSessionCleanupAsync(stopCompletion, terminalSession, "ended Excel session")
+                                        .ConfigureAwait(false);
+                                }
+                                stopCompletion.Complete().ThrowWithEvidence();
+                            }
+                            else if ((launchResult.RunningSession ?? launchResult.EndedSession) is { } stoppingSession)
+                            {
+                                await StopOwnedSessionAsync(stoppingSession).ConfigureAwait(false);
                             }
                         }
                         catch (OperationCanceledException)
@@ -569,8 +604,9 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                     }
                     if (runningSession is not null)
                     {
-                        await StopOwnedSessionAsync(runningSession).ConfigureAwait(false);
+                        var stoppingSession = runningSession;
                         runningSession = null;
+                        await StopOwnedSessionAsync(stoppingSession).ConfigureAwait(false);
                     }
                     await connection.WriteResponseAsync(
                         request,
@@ -589,18 +625,28 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                     cancellationToken).ConfigureAwait(false);
             }
         }
+        catch (Exception exception)
+        {
+            runFailure = exception;
+        }
         finally
         {
+            var completion = new DebugFailureCompletion(runFailure);
             requestReadCancellation.Cancel();
             if (requestReadTask is not null)
             {
-                try
+                if (requestReadTask.IsCompleted)
                 {
-                    _ = await requestReadTask.ConfigureAwait(false);
+                    try { _ = await requestReadTask.ConfigureAwait(false); }
+                    catch (OperationCanceledException) when (requestReadCancellation.IsCancellationRequested) { }
+                    catch (Exception exception)
+                    {
+                        completion.AddFailure("DAP input", "pending request", DebugResourceKind.Observation, exception);
+                    }
                 }
-                catch (OperationCanceledException)
-                    when (requestReadCancellation.IsCancellationRequested)
+                else
                 {
+                    ObserveDetachedRequestRead(requestReadTask);
                 }
             }
             if (launchTask is not null)
@@ -610,23 +656,42 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                 try
                 {
                     var launchResult = await launchTask.ConfigureAwait(false);
-                    if (launchResult.RunningSession is not null)
+                    if (launchResult.TerminalFailure is { } terminalFailure) { completion.Merge(terminalFailure); }
+                    if ((launchResult.RunningSession ?? launchResult.EndedSession) is { } ownedSession)
                     {
-                        await StopOwnedSessionAsync(
-                            launchResult.RunningSession).ConfigureAwait(false);
+                        await CompleteSessionCleanupAsync(completion, ownedSession, "pending launch session")
+                            .ConfigureAwait(false);
                     }
                 }
-                catch (OperationCanceledException)
-                    when (launchCancellation.IsCancellationRequested)
+                catch (OperationCanceledException exception) when (launchCancellation.IsCancellationRequested)
                 {
+                    if (exception is IDebugFailureEvidence retained)
+                    {
+                        foreach (var evidence in retained.FailureOutcome.Evidence) { completion.AddEvidence(evidence); }
+                    }
+                    else
+                    {
+                        completion.AddFailure("launch cancellation", "pending launch", DebugResourceKind.Handle, exception);
+                        completion.AddEvidence(new("launch cancellation", "pending launch", DebugResourceKind.Handle,
+                            false, "The cancelled launch did not supply a terminal owner outcome."));
+                    }
+                }
+                catch (Exception exception)
+                {
+                    completion.AddFailure("launch completion", "pending launch", DebugResourceKind.Handle, exception);
                 }
             }
             restartPreparation.CompleteLaunch();
             launchCancellation?.Dispose();
             if (runningSession is not null)
             {
-                await StopOwnedSessionAsync(runningSession).ConfigureAwait(false);
+                await CompleteSessionCleanupAsync(completion, runningSession, "owned Excel session").ConfigureAwait(false);
             }
+            if (endedSession is not null)
+            {
+                await CompleteSessionCleanupAsync(completion, endedSession, "ended Excel session").ConfigureAwait(false);
+            }
+            completion.Complete().ThrowWithEvidence();
         }
 
         return 0;
@@ -679,171 +744,206 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
             effectiveLaunchCancellation?.Token ?? launchCancellationToken;
         IPreparedDebugLaunchPlan? preparedPlan = null;
         IStandaloneVbaDebugRunningSession? runningSession = null;
-        IStandaloneVbaDebugRunningSession? resultSession = null;
+        Exception? cause = null;
         try
         {
-            try
-            {
-                preparedPlan = await launchService
-                    .PrepareAsync(
-                        vbaDevPath,
-                        workspaceLease,
-                        launchRequest,
-                        restartBinding,
-                        effectiveLaunchCancellationToken,
-                        new DapDebugLifecycleSink(connection, transportCancellationToken))
-                    .ConfigureAwait(false);
-                var currentRestartBinding = restartSwapAuthority?.ClaimForSwap(
-                    preparedPlan.Snapshot.RestartBinding,
-                    effectiveLaunchCancellationToken);
-                runningSession = await preparedPlan
-                    .CommitAsync(
-                        currentRestartBinding,
-                        effectiveLaunchCancellationToken)
-                    .ConfigureAwait(false);
-                foreach (var breakpoint in runningSession.VerifiedBreakpoints)
-                {
-                    await connection.WriteEventAsync(
-                        "breakpoint",
-                        new
-                        {
-                            reason = "changed",
-                            breakpoint = new
-                            {
-                                id = breakpointRegistry.GetOrAdd(
-                                    new Uri(breakpoint.Source.SourceUri).LocalPath,
-                                    breakpoint.Source.EditorLine + 1),
-                                verified = true,
-                                line = breakpoint.Source.EditorLine + 1,
-                                source = new
-                                {
-                                    path = new Uri(breakpoint.Source.SourceUri).LocalPath
-                                }
-                            }
-                        },
-                        transportCancellationToken).ConfigureAwait(false);
-                }
-                await connection.WriteResponseAsync(
-                    dapRequest,
-                    success: true,
-                    body: null,
-                    message: null,
-                    transportCancellationToken).ConfigureAwait(false);
-                resultSession = runningSession;
-                runningSession = null;
-                return new StandaloneVbaDebugLaunchExecutionResult(
-                    resultSession,
-                    launchRequest with
-                    {
-                        ProjectRoot = preparedPlan.Snapshot.LaunchSettings.CanonicalProjectRoot,
-                        DocumentName = preparedPlan.Snapshot.LaunchSettings.DocumentName,
-                        WorkbookFileName = preparedPlan.Snapshot.LaunchSettings.WorkbookFileName,
-                        ModuleName = resultSession.TargetModuleName,
-                        ProcedureName = resultSession.TargetProcedureName,
-                        RestartPreparation = preparedPlan.Snapshot.LaunchSettings.RestartPreparation
-                    });
-            }
-            catch (OperationCanceledException)
-                when (effectiveLaunchCancellationToken.IsCancellationRequested)
-            {
-                if (runningSession is not null)
-                {
-                    await StopOwnedSessionAsync(runningSession).ConfigureAwait(false);
-                }
-                resultSession = RetainedRestartSession(preparedPlan, restartBinding);
-                var cancellationMessage = restartSwapAuthority?.SessionEnded == true
-                    ? "The owned VBA debug session exited during restart build before replacement committed."
-                    : "VBA debug launch was cancelled.";
-                await connection.WriteEventAsync(
-                    "output",
-                    new
-                    {
-                        category = "console",
-                        output = cancellationMessage + Environment.NewLine
-                    },
-                    transportCancellationToken).ConfigureAwait(false);
-                await connection.WriteResponseAsync(
-                    dapRequest,
-                    success: false,
-                    body: null,
-                    message: cancellationMessage,
-                    transportCancellationToken).ConfigureAwait(false);
-                return new StandaloneVbaDebugLaunchExecutionResult(
-                    resultSession,
-                    resultSession is null ? null : retainedLaunch);
-            }
-            catch (Exception exception)
-            {
-                if (runningSession is not null)
-                {
-                    try
-                    {
-                        await StopOwnedSessionAsync(runningSession).ConfigureAwait(false);
-                    }
-                    catch (Exception cleanupException)
-                    {
-                        exception.Data["VbaDebugAdapter.SessionCleanup"] = cleanupException;
-                    }
-                }
-                resultSession = RetainedRestartSession(preparedPlan, restartBinding);
-                var failureMessage = $"DebugSetupError: {exception.Message}";
-                await connection.WriteEventAsync(
-                    "output",
-                    new
-                    {
-                        category = "important",
-                        output = failureMessage + Environment.NewLine
-                    },
-                    transportCancellationToken).ConfigureAwait(false);
-                await connection.WriteResponseAsync(
-                    dapRequest,
-                    success: false,
-                    body: null,
-                    message: failureMessage,
-                    transportCancellationToken).ConfigureAwait(false);
-                if (resultSession is null)
-                {
-                    await connection.WriteEventAsync(
-                        "terminated",
-                        body: null,
-                        transportCancellationToken).ConfigureAwait(false);
-                }
-                return new StandaloneVbaDebugLaunchExecutionResult(
-                    resultSession,
-                    resultSession is null ? null : retainedLaunch);
-            }
-            finally
-            {
-                if (preparedPlan is not null)
-                {
-                    await preparedPlan.DisposeAsync().ConfigureAwait(false);
-                }
-            }
+            preparedPlan = await launchService.PrepareAsync(
+                vbaDevPath, workspaceLease, launchRequest, restartBinding,
+                effectiveLaunchCancellationToken,
+                new DapDebugLifecycleSink(connection, transportCancellationToken)).ConfigureAwait(false);
+            var currentBinding = restartSwapAuthority?.ClaimForSwap(
+                preparedPlan.Snapshot.RestartBinding, effectiveLaunchCancellationToken);
+            runningSession = await preparedPlan.CommitAsync(
+                currentBinding, effectiveLaunchCancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception)
         {
-            if (resultSession is not null)
+            cause = exception;
+        }
+
+        var completion = new DebugFailureCompletion(cause);
+        if (preparedPlan is not null)
+        {
+            try { await preparedPlan.DisposeAsync().ConfigureAwait(false); }
+            catch (Exception exception)
             {
-                try
+                completion.AddFailure("prepared plan disposal", "prepared launch", DebugResourceKind.Handle, exception);
+            }
+            MergeOwnerEvidence(completion, preparedPlan, "prepared plan disposal", "prepared launch");
+        }
+        else if (cause is not IDebugFailureEvidence)
+        {
+            completion.AddEvidence(new("launch failure", "prepared launch resources", DebugResourceKind.Handle,
+                false, "The failing launch boundary did not supply owner release evidence."));
+        }
+        var outcome = completion.Complete();
+        if (cause is null && !outcome.HasCleanupFailure)
+        {
+            try
+            {
+                foreach (var breakpoint in runningSession!.VerifiedBreakpoints)
                 {
-                    await StopOwnedSessionAsync(resultSession).ConfigureAwait(false);
+                    await connection.WriteEventAsync("breakpoint", new
+                    {
+                        reason = "changed",
+                        breakpoint = new
+                        {
+                            id = breakpointRegistry.GetOrAdd(new Uri(breakpoint.Source.SourceUri).LocalPath,
+                                breakpoint.Source.EditorLine + 1),
+                            verified = true,
+                            line = breakpoint.Source.EditorLine + 1,
+                            source = new { path = new Uri(breakpoint.Source.SourceUri).LocalPath }
+                        }
+                    }, transportCancellationToken).ConfigureAwait(false);
                 }
-                catch (Exception cleanupException)
+                await connection.WriteResponseAsync(dapRequest, true, null, null,
+                    transportCancellationToken).ConfigureAwait(false);
+                return new(runningSession, launchRequest with
                 {
-                    exception.Data["VbaDebugAdapter.ResultSessionCleanup"] = cleanupException;
+                    ProjectRoot = preparedPlan!.Snapshot.LaunchSettings.CanonicalProjectRoot,
+                    DocumentName = preparedPlan.Snapshot.LaunchSettings.DocumentName,
+                    WorkbookFileName = preparedPlan.Snapshot.LaunchSettings.WorkbookFileName,
+                    ModuleName = runningSession.TargetModuleName,
+                    ProcedureName = runningSession.TargetProcedureName,
+                    RestartPreparation = preparedPlan.Snapshot.LaunchSettings.RestartPreparation
+                });
+            }
+            catch (Exception exception)
+            {
+                completion = new DebugFailureCompletion(exception);
+                await CompleteSessionCleanupAsync(completion, runningSession!, "new Excel session").ConfigureAwait(false);
+                completion.Complete().ThrowWithEvidence();
+                throw;
+            }
+        }
+
+        completion = new DebugFailureCompletion(new DebugFailureException(outcome));
+        if (runningSession is not null)
+        {
+            await CompleteSessionCleanupAsync(completion, runningSession, "new Excel session").ConfigureAwait(false);
+        }
+        outcome = completion.Complete();
+        IStandaloneVbaDebugRunningSession? retainedSession =
+            restartSwapAuthority?.CanRetainCurrentSession(launchCancellationToken) == true
+            && (!outcome.HasCleanupFailure || outcome.OnlyFileDeletionFailed)
+                ? restartBinding!.BoundSession : null;
+        IStandaloneVbaDebugRunningSession? endedSession = null;
+        if (retainedSession is null && restartBinding is not null)
+        {
+            restartSwapAuthority!.InvalidateForCleanupFailure();
+            if (restartBinding.BoundSession.Completion.IsCompleted)
+            {
+                endedSession = restartBinding.BoundSession;
+            }
+            else if (!SessionReleaseIsProved(restartBinding.BoundSession))
+            {
+                completion = new DebugFailureCompletion(new DebugFailureException(outcome));
+                await CompleteSessionCleanupAsync(completion, restartBinding.BoundSession, "retained Excel session")
+                    .ConfigureAwait(false);
+                outcome = completion.Complete();
+            }
+        }
+        var ordinaryCancellation = outcome.PrimaryFailure is OperationCanceledException && !outcome.HasCleanupFailure;
+        var message = restartSwapAuthority?.SessionEnded == true
+            ? "The owned VBA debug session exited during restart build before replacement committed."
+                + (outcome.HasCleanupFailure ? Environment.NewLine + outcome.Describe() : string.Empty)
+            : ordinaryCancellation ? "VBA debug launch was cancelled." : $"DebugSetupError: {outcome.Describe()}";
+        try
+        {
+            await connection.WriteEventAsync("output", new
+            {
+                category = ordinaryCancellation ? "console" : "important",
+                output = message + Environment.NewLine
+            }, transportCancellationToken).ConfigureAwait(false);
+            await connection.WriteResponseAsync(dapRequest, false, null, message,
+                transportCancellationToken).ConfigureAwait(false);
+            // Output can await user/client activity. Recheck the same authority at the return boundary.
+            if (retainedSession is not null &&
+                !restartSwapAuthority!.CanRetainCurrentSession(launchCancellationToken))
+            {
+                var invalidatedSession = retainedSession;
+                retainedSession = null;
+                if (invalidatedSession.Completion.IsCompleted)
+                {
+                    endedSession = invalidatedSession;
+                }
+                else
+                {
+                    completion = new DebugFailureCompletion(new DebugFailureException(outcome));
+                    await CompleteSessionCleanupAsync(completion, invalidatedSession, "retained Excel session")
+                        .ConfigureAwait(false);
+                    completion.Complete().ThrowWithEvidence();
                 }
             }
+            if (retainedSession is null && endedSession is null && !ordinaryCancellation)
+            {
+                await connection.WriteEventAsync("terminated", null, transportCancellationToken).ConfigureAwait(false);
+            }
+            return new(retainedSession, retainedSession is null ? null : retainedLaunch, endedSession,
+                outcome.HasUnprovedRelease ? outcome : null);
+        }
+        catch (Exception exception)
+        {
+            completion = new DebugFailureCompletion(new DebugFailureException(outcome));
+            if (!(ordinaryCancellation && exception is OperationCanceledException && transportCancellationToken.IsCancellationRequested))
+            {
+                completion.AddFailure("DAP output", "launch result", DebugResourceKind.Observation, exception);
+            }
+            if (retainedSession is not null)
+            {
+                restartSwapAuthority!.InvalidateForCleanupFailure();
+                await CompleteSessionCleanupAsync(completion, retainedSession, "retained Excel session")
+                    .ConfigureAwait(false);
+            }
+            if (endedSession is not null)
+            {
+                await CompleteSessionCleanupAsync(completion, endedSession, "ended Excel session")
+                    .ConfigureAwait(false);
+            }
+            completion.Complete().ThrowWithEvidence();
             throw;
         }
     }
 
-    private static IStandaloneVbaDebugRunningSession? RetainedRestartSession(
-        IPreparedDebugLaunchPlan? preparedPlan,
-        DebugRestartLaunchBinding? restartBinding)
-        => restartBinding is not null &&
-           (preparedPlan is null || !preparedPlan.RestartSessionReleased)
-            ? restartBinding.BoundSession
-            : null;
+    private static bool SessionReleaseIsProved(IStandaloneVbaDebugRunningSession session)
+    {
+        if (session is not IDebugResourceOwnerEvidence { CleanupOutcome: { } outcome } || outcome.HasUnprovedRelease)
+        {
+            return false;
+        }
+        return new[] { DebugResourceKind.Process, DebugResourceKind.Com, DebugResourceKind.Handle }
+            .All(kind => outcome.Evidence.Any(item => item.Kind == kind && item.Released));
+    }
+
+    private static void MergeOwnerEvidence(DebugFailureCompletion completion, object owner,
+        string stage, string resource)
+    {
+        if (owner is IDebugResourceOwnerEvidence { CleanupOutcome: { } outcome })
+        {
+            completion.Merge(outcome);
+        }
+        else
+        {
+            completion.AddEvidence(new(stage, resource, DebugResourceKind.Handle, false,
+                "The responsible owner did not supply a terminal release outcome."));
+        }
+    }
+
+    private static async Task CompleteSessionCleanupAsync(DebugFailureCompletion completion,
+        IStandaloneVbaDebugRunningSession session, string resource)
+    {
+        try { await session.TerminateAsync().ConfigureAwait(false); }
+        catch (Exception exception)
+        {
+            completion.AddFailure("session termination", resource, DebugResourceKind.Process, exception, session.ProcessId);
+        }
+        try { await session.DisposeAsync().ConfigureAwait(false); }
+        catch (Exception exception)
+        {
+            completion.AddFailure("session disposal", resource, DebugResourceKind.Handle, exception, session.ProcessId);
+        }
+        MergeOwnerEvidence(completion, session, "session disposal", resource);
+    }
 
     private static void ObserveDetachedRequestRead(Task<DapRequest?> requestReadTask)
     {
@@ -857,14 +957,18 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
     private static async Task StopOwnedSessionAsync(
         IStandaloneVbaDebugRunningSession runningSession)
     {
-        try
+        Exception? cause = null;
+        try { await runningSession.TerminateAsync().ConfigureAwait(false); }
+        catch (Exception exception) { cause = exception; }
+        var completion = new DebugFailureCompletion(cause);
+        try { await runningSession.DisposeAsync().ConfigureAwait(false); }
+        catch (Exception exception)
         {
-            await runningSession.TerminateAsync().ConfigureAwait(false);
+            completion.AddFailure("session disposal", "owned Excel session", DebugResourceKind.Handle,
+                exception, runningSession.ProcessId);
         }
-        finally
-        {
-            await runningSession.DisposeAsync().ConfigureAwait(false);
-        }
+        MergeOwnerEvidence(completion, runningSession, "session disposal", "owned Excel session");
+        completion.Complete().ThrowWithEvidence();
     }
 
     private static StandaloneVbaDebugLaunchRequest ParseLaunchRequest(JsonElement arguments)
@@ -1510,7 +1614,9 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
 
 internal sealed record StandaloneVbaDebugLaunchExecutionResult(
     IStandaloneVbaDebugRunningSession? RunningSession,
-    StandaloneVbaDebugLaunchRequest? ActiveLaunch);
+    StandaloneVbaDebugLaunchRequest? ActiveLaunch,
+    IStandaloneVbaDebugRunningSession? EndedSession = null,
+    DebugFailureOutcome? TerminalFailure = null);
 
 public sealed record StandaloneVbaDebugLaunchRequest(
     string ProjectRoot,

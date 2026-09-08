@@ -8,7 +8,11 @@ internal sealed class StaComDispatcher : IStaComDispatcher
     private readonly TaskCompletionSource workerCompletion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Thread workerThread;
+    private readonly object disposalGate = new();
+    private Task? disposal;
     private int disposed;
+
+    public bool ReleaseVerified => workerCompletion.Task.IsCompleted && !workerThread.IsAlive;
 
     public StaComDispatcher()
     {
@@ -44,15 +48,20 @@ internal sealed class StaComDispatcher : IStaComDispatcher
         return workItem.Completion;
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref disposed, 1) != 0)
+        lock (disposalGate)
         {
-            return;
+            return new ValueTask(disposal ??= DisposeOnceAsync());
         }
+    }
 
+    private async Task DisposeOnceAsync()
+    {
+        Volatile.Write(ref disposed, 1);
         workItems.CompleteAdding();
         await workerCompletion.Task.ConfigureAwait(false);
+        workerThread.Join();
         workItems.Dispose();
     }
 
@@ -83,7 +92,10 @@ internal sealed class StaComDispatcher : IStaComDispatcher
         private readonly TaskCompletionSource<T> completion =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public Task<T> Completion => completion.Task;
+        public Task<T> Completion => AwaitCompletionAsync();
+
+        private async Task<T> AwaitCompletionAsync()
+            => await completion.Task.ConfigureAwait(false);
 
         public void Run()
         {
@@ -92,12 +104,10 @@ internal sealed class StaComDispatcher : IStaComDispatcher
                 cancellationToken.ThrowIfCancellationRequested();
                 completion.TrySetResult(operation());
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                completion.TrySetCanceled(cancellationToken);
-            }
             catch (Exception ex)
             {
+                // The async projection retains a thrown cancellation and its stack
+                // while exposing a cancelled task to callers.
                 completion.TrySetException(ex);
             }
         }

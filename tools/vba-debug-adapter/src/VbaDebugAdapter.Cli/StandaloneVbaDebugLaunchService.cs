@@ -40,33 +40,35 @@ internal sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunc
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(workspaceLease);
-        cancellationToken.ThrowIfCancellationRequested();
-        var generationId = DebugGenerationId.FromValue(
-            request.RestartPreparation?.Generation.Value ?? 0);
-        var admittedSource = sourceAdmission.Admit(
-            request.SourceSnapshot,
-            request.ModuleName,
-            request.ProcedureName,
-            generationId);
-        var requiresConditionalCompilationVerification =
-            admittedSource.RequiresConditionalCompilationVerification;
-        if (requiresConditionalCompilationVerification &&
-            (compilationSettingsReader is null ||
-             compilationEnvironmentFactory is null))
-        {
-            throw new DebugSetupException(
-                "Conditional-compilation debug participants require generated-workbook and " +
-                "visible Excel/VBE compiler context services.");
-        }
-        var canonicalProjectRoot = CanonicalizeProjectRoot(request.ProjectRoot);
-        restartBinding?.ValidateLaunch(
-            request,
-            canonicalProjectRoot,
-            admittedSource.Target,
-            workspaceLease.SessionId);
         VbaDevSnapshotBuildResult? buildResult = null;
+        var buildStarted = false;
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            var generationId = DebugGenerationId.FromValue(
+                request.RestartPreparation?.Generation.Value ?? 0);
+            var admittedSource = sourceAdmission.Admit(
+                request.SourceSnapshot,
+                request.ModuleName,
+                request.ProcedureName,
+                generationId);
+            var requiresConditionalCompilationVerification =
+                admittedSource.RequiresConditionalCompilationVerification;
+            if (requiresConditionalCompilationVerification &&
+                (compilationSettingsReader is null ||
+                 compilationEnvironmentFactory is null))
+            {
+                throw new DebugSetupException(
+                    "Conditional-compilation debug participants require generated-workbook and " +
+                    "visible Excel/VBE compiler context services.");
+            }
+            var canonicalProjectRoot = CanonicalizeProjectRoot(request.ProjectRoot);
+            restartBinding?.ValidateLaunch(
+                request,
+                canonicalProjectRoot,
+                admittedSource.Target,
+                workspaceLease.SessionId);
+            buildStarted = true;
             buildResult = await workbookBuilder.BuildAsync(
                 vbaDevPath,
                 workspaceLease,
@@ -117,12 +119,30 @@ internal sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunc
             buildResult = null;
             return plan;
         }
-        catch
+        catch (Exception exception)
         {
+            var completion = new DebugFailureCompletion(exception);
             if (buildResult is not null)
             {
-                await TryDisposeBuildResultAsync(buildResult).ConfigureAwait(false);
+                await CompleteBuildFailureAsync(buildResult, completion).ConfigureAwait(false);
             }
+            else if (!buildStarted)
+            {
+                foreach (var kind in new[] { DebugResourceKind.Process, DebugResourceKind.Com, DebugResourceKind.Handle })
+                {
+                    completion.AddEvidence(new("preparation-admission", "debug preparation", kind, true,
+                        "Admission failed before any build or visible-session resources were acquired."));
+                }
+            }
+            else if (exception is not IDebugFailureEvidence)
+            {
+                foreach (var kind in new[] { DebugResourceKind.Process, DebugResourceKind.Handle })
+                {
+                    completion.AddEvidence(new("preparation-build", "snapshot build", kind, false,
+                        "The failed build supplied no owner release evidence."));
+                }
+            }
+            completion.Complete().ThrowWithEvidence();
             throw;
         }
     }
@@ -146,37 +166,63 @@ internal sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunc
         }
     }
 
-    private static async Task TryTerminateAndDisposeAsync(IVbeDebugSession session)
+    private static async Task CompleteSessionFailureAsync(
+        IVbeDebugSession session,
+        DebugFailureCompletion completion)
     {
         try
         {
             await session.TerminateAsync().ConfigureAwait(false);
         }
-        catch
+        catch (Exception exception)
         {
+            completion.AddFailure("session-termination", "visible Excel", DebugResourceKind.Process,
+                exception, session.ProcessId);
         }
         try
         {
             await session.DisposeAsync().ConfigureAwait(false);
         }
-        catch
+        catch (Exception exception)
         {
+            completion.AddFailure("session-disposal", "visible Excel", DebugResourceKind.Handle,
+                exception, session.ProcessId);
+        }
+        var ownerOutcome = (session as IDebugResourceOwnerEvidence)?.CleanupOutcome;
+        if (ownerOutcome is not null)
+        {
+            completion.Merge(ownerOutcome);
+        }
+        foreach (var kind in new[] { DebugResourceKind.Process, DebugResourceKind.Com, DebugResourceKind.Handle })
+        {
+            if (ownerOutcome?.Evidence.Any(item => item.Kind == kind) != true)
+            {
+                completion.AddEvidence(new("session-cleanup", "visible Excel", kind, false,
+                    "The session owner did not supply terminal release evidence.", session.ProcessId));
+            }
         }
     }
 
-    private static async Task TryDisposeBuildResultAsync(
-        VbaDevSnapshotBuildResult buildResult)
+    private static async Task CompleteBuildFailureAsync(
+        VbaDevSnapshotBuildResult buildResult,
+        DebugFailureCompletion completion)
     {
         try
         {
             await buildResult.DisposeAsync().ConfigureAwait(false);
         }
-        catch
+        catch (Exception exception)
         {
+            completion.AddFailure("prepared-generation-cleanup", buildResult.GenerationWorkspacePath,
+                DebugResourceKind.FileSystem, exception, retainedPath: buildResult.GenerationWorkspacePath);
+        }
+        if (((IDebugResourceOwnerEvidence)buildResult).CleanupOutcome is { } outcome)
+        {
+            completion.Merge(outcome);
         }
     }
 
-    private sealed class PreparedDebugLaunchPlan : IPreparedDebugLaunchPlan
+    private sealed class PreparedDebugLaunchPlan : IPreparedDebugLaunchPlan, IDebugResourceOwnerEvidence
     {
         private const int Prepared = 0;
         private const int Committing = 1;
@@ -189,12 +235,19 @@ internal sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunc
         private readonly IDebugCompilationSettingsReader? compilationSettingsReader;
         private readonly DebugCompilationEnvironmentFactory? compilationEnvironmentFactory;
         private readonly IDebugLifecycleSink? lifecycleSink;
+        private readonly object disposalGate = new();
+        private readonly TaskCompletionSource commitCleanup = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private Task? disposal;
+        private DebugFailureOutcome? cleanupOutcome;
         private int state;
         private int restartSessionReleased;
 
         public PreparedDebugLaunchPlanSnapshot Snapshot { get; }
 
         public bool RestartSessionReleased => Volatile.Read(ref restartSessionReleased) != 0;
+
+        public DebugFailureOutcome? CleanupOutcome =>
+            cleanupOutcome ?? ((IDebugResourceOwnerEvidence)buildResult).CleanupOutcome;
 
         internal PreparedDebugLaunchPlan(
             PreparedDebugLaunchPlanSnapshot snapshot,
@@ -243,19 +296,30 @@ internal sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunc
                 visibleSession = await vbeDebugSessionFactory
                     .StartVisibleAsync(cancellationToken)
                     .ConfigureAwait(false);
-                IVbaDebugGenerationWorkspace? generationWorkspace =
-                    buildResult.TransferGenerationOwnership();
+                var generationWorkspace = buildResult.TransferGenerationOwnership();
                 try
                 {
                     visibleSession.AdoptGenerationWorkspace(generationWorkspace);
-                    generationWorkspace = null;
                 }
-                finally
+                catch (Exception adoptionFailure)
                 {
-                    if (generationWorkspace is not null)
+                    var completion = new DebugFailureCompletion(adoptionFailure);
+                    try
                     {
                         await generationWorkspace.DisposeAsync().ConfigureAwait(false);
                     }
+                    catch (Exception cleanupFailure)
+                    {
+                        completion.AddFailure("generation-adoption-cleanup", generationWorkspace.GenerationWorkspacePath,
+                            DebugResourceKind.FileSystem, cleanupFailure,
+                            retainedPath: generationWorkspace.GenerationWorkspacePath);
+                    }
+                    if (generationWorkspace is IDebugResourceOwnerEvidence { CleanupOutcome: { } outcome })
+                    {
+                        completion.Merge(outcome);
+                    }
+                    completion.Complete().ThrowWithEvidence();
+                    throw;
                 }
                 await visibleSession
                     .OpenGeneratedWorkbookAsync(lifecycleSink, cancellationToken)
@@ -294,6 +358,7 @@ internal sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunc
                         lifecycleSink,
                         cancellationToken)
                     .ConfigureAwait(false);
+                await buildResult.DisposeAsync().ConfigureAwait(false);
                 var runningSession = new StandaloneVbaDebugRunningSession(
                     visibleSession,
                     Snapshot.MappedBreakpoints,
@@ -302,26 +367,47 @@ internal sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunc
                 visibleSession = null;
                 return runningSession;
             }
-            catch
+            catch (Exception exception)
             {
+                var completion = new DebugFailureCompletion(exception);
                 if (visibleSession is not null)
                 {
-                    await TryTerminateAndDisposeAsync(visibleSession).ConfigureAwait(false);
+                    await CompleteSessionFailureAsync(visibleSession, completion).ConfigureAwait(false);
                 }
-                await TryDisposeBuildResultAsync(buildResult).ConfigureAwait(false);
+                await CompleteBuildFailureAsync(buildResult, completion).ConfigureAwait(false);
+                var outcome = completion.Complete();
+                cleanupOutcome = outcome;
+                if (outcome.HasCleanupFailure)
+                {
+                    var retainedFailure = new DebugFailureException(outcome);
+                    lock (disposalGate)
+                    {
+                        disposal = Task.FromException(retainedFailure);
+                        _ = disposal.Exception;
+                        commitCleanup.TrySetException(retainedFailure);
+                        _ = commitCleanup.Task.Exception;
+                    }
+                    throw retainedFailure;
+                }
+                outcome.Throw();
                 throw;
             }
             finally
             {
                 Volatile.Write(ref state, Consumed);
+                commitCleanup.TrySetResult();
             }
         }
 
-        public async ValueTask DisposeAsync()
+        public ValueTask DisposeAsync()
         {
-            if (Interlocked.CompareExchange(ref state, Disposed, Prepared) == Prepared)
+            lock (disposalGate)
             {
-                await buildResult.DisposeAsync().ConfigureAwait(false);
+                if (disposal is null && Interlocked.CompareExchange(ref state, Disposed, Prepared) == Prepared)
+                {
+                    disposal = buildResult.DisposeAsync().AsTask();
+                }
+                return new ValueTask(disposal ?? commitCleanup.Task);
             }
         }
 
@@ -345,14 +431,36 @@ internal sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunc
         private static async Task StopBoundSessionAsync(
             IStandaloneVbaDebugRunningSession runningSession)
         {
+            Exception? primary = null;
             try
             {
                 await runningSession.TerminateAsync().ConfigureAwait(false);
             }
-            finally
+            catch (Exception exception)
+            {
+                primary = exception;
+            }
+            var completion = new DebugFailureCompletion(primary);
+            try
             {
                 await runningSession.DisposeAsync().ConfigureAwait(false);
             }
+            catch (Exception exception)
+            {
+                completion.AddFailure("restart-session-disposal", "bound Excel session",
+                    DebugResourceKind.Handle, exception, runningSession.ProcessId);
+            }
+            var ownerOutcome = (runningSession as IDebugResourceOwnerEvidence)?.CleanupOutcome;
+            if (ownerOutcome is not null) { completion.Merge(ownerOutcome); }
+            foreach (var kind in new[] { DebugResourceKind.Process, DebugResourceKind.Com, DebugResourceKind.Handle })
+            {
+                if (ownerOutcome?.Evidence.Any(item => item.Kind == kind) != true)
+                {
+                    completion.AddEvidence(new("restart-session-cleanup", "bound Excel session", kind,
+                        false, "The bound session owner did not supply terminal release evidence.", runningSession.ProcessId));
+                }
+            }
+            completion.Complete().ThrowWithEvidence();
         }
     }
 
@@ -396,11 +504,12 @@ internal interface IPreparedDebugLaunchPlan : IAsyncDisposable
         CancellationToken cancellationToken);
 }
 
-internal sealed class StandaloneVbaDebugRunningSession : IStandaloneVbaDebugRunningSession
+internal sealed class StandaloneVbaDebugRunningSession : IStandaloneVbaDebugRunningSession, IDebugResourceOwnerEvidence
 {
     private readonly IVbeDebugSession session;
     private readonly IReadOnlyList<VbeBreakpoint> verifiedBreakpoints;
-    private int disposed;
+    private readonly object disposalGate = new();
+    private Task? disposal;
 
     public StandaloneVbaDebugRunningSession(
         IVbeDebugSession session,
@@ -419,6 +528,9 @@ internal sealed class StandaloneVbaDebugRunningSession : IStandaloneVbaDebugRunn
 
     public int ProcessId => session.ProcessId;
 
+    public DebugFailureOutcome? CleanupOutcome =>
+        (session as IDebugResourceOwnerEvidence)?.CleanupOutcome;
+
     public string TargetModuleName { get; }
 
     public string TargetProcedureName { get; }
@@ -427,14 +539,16 @@ internal sealed class StandaloneVbaDebugRunningSession : IStandaloneVbaDebugRunn
 
     public ValueTask TerminateAsync() => session.TerminateAsync();
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref disposed, 1) != 0)
+        lock (disposalGate)
         {
-            return;
+            return new ValueTask(disposal ??= DisposeSessionAsync());
         }
-        await session.DisposeAsync().ConfigureAwait(false);
     }
+
+    private async Task DisposeSessionAsync()
+        => await session.DisposeAsync().ConfigureAwait(false);
 
     private static async Task<int> AwaitExitCodeAsync(Task<DebugProcessExit> completion)
         => (await completion.ConfigureAwait(false)).ExitCode;

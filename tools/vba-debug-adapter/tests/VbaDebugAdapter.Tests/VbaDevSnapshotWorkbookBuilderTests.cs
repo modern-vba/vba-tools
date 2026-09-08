@@ -7,6 +7,182 @@ namespace VbaDebugAdapter.Tests;
 
 public sealed class VbaDevSnapshotWorkbookBuilderTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PreInvocationBuildFailureRetainsExplicitNoAcquisitionEvidence(bool generationAlreadyExists)
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = Path.Combine(temp.Path, "project");
+        Directory.CreateDirectory(projectRoot);
+        var executable = Path.Combine(temp.Path, "vba-dev.exe");
+        await using var lease = await new VbaDebugSessionWorkspaceManager(Path.Combine(temp.Path, "workspace"))
+            .ClaimAsync(DebugSessionId.Parse("0123456789abcdef0123456789abcdef"), CancellationToken.None);
+        if (generationAlreadyExists)
+        {
+            await File.WriteAllBytesAsync(executable, []);
+            await using var existing = lease.CreateGenerationWorkspace(DebugGenerationId.Initial, "Book1.xlsm");
+            await AssertFailureAsync();
+        }
+        else { await AssertFailureAsync(); }
+
+        async Task AssertFailureAsync()
+        {
+            var process = new RecordingBuildProcess();
+            var sourceSet = AdmitBuildSources(new TransportedDebugSourceSnapshot(2,
+                [new TransportedDebugSource("Module1.bas", "file:///C:/source/Module1.bas", "utf8bom",
+                    Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes("Attribute VB_Name = \"Module1\"\n")))]));
+            var failure = await Record.ExceptionAsync(() => new VbaDevSnapshotWorkbookBuilder(process).BuildAsync(
+                executable, lease, new VbaDevSnapshotBuildRequest(projectRoot, "Book1", "Book1.xlsm", sourceSet),
+                CancellationToken.None));
+
+            var outcome = Assert.IsAssignableFrom<IDebugFailureEvidence>(failure).FailureOutcome;
+            Assert.NotNull(outcome.PrimaryFailure);
+            Assert.False(outcome.HasCleanupFailure);
+            Assert.Contains(outcome.Evidence, item => item.Kind == DebugResourceKind.Process && item.Released);
+            Assert.Contains(outcome.Evidence, item => item.Kind == DebugResourceKind.Handle && item.Released);
+            Assert.Empty(process.Invocations);
+        }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task SuccessfulBuildRequiresAndRetainsProcessReleaseEvidence(bool provesProcessCleanup)
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = Path.Combine(temp.Path, "project");
+        Directory.CreateDirectory(projectRoot);
+        var executable = Path.Combine(temp.Path, "vba-dev.exe");
+        await File.WriteAllBytesAsync(executable, []);
+        await using var lease = await new VbaDebugSessionWorkspaceManager(Path.Combine(temp.Path, "workspace"))
+            .ClaimAsync(DebugSessionId.Parse("0123456789abcdef0123456789abcdef"), CancellationToken.None);
+        var processCompletion = new DebugFailureCompletion();
+        processCompletion.AddEvidence(new("build-process-exit", "vba-dev", DebugResourceKind.Process,
+            true, "The fake child reached terminal exit.", 42));
+        processCompletion.AddEvidence(new("build-process-handles", "vba-dev", DebugResourceKind.Handle,
+            true, "The fake owner released its handles.", 42));
+        var builder = new VbaDevSnapshotWorkbookBuilder(new RecordingBuildProcess
+        {
+            CleanupOutcome = provesProcessCleanup ? processCompletion.Complete() : null
+        });
+        var sourceSet = AdmitBuildSources(new TransportedDebugSourceSnapshot(2,
+            [new TransportedDebugSource("Module1.bas", "file:///C:/source/Module1.bas", "utf8bom",
+                Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
+                    "Attribute VB_Name = \"Module1\"\nPublic Sub Run()\nEnd Sub\n")))]));
+        var build = builder.BuildAsync(executable, lease,
+            new VbaDevSnapshotBuildRequest(projectRoot, "Book1", "Book1.xlsm", sourceSet),
+            CancellationToken.None);
+        if (!provesProcessCleanup)
+        {
+            var failure = await Record.ExceptionAsync(() => build);
+            if (build.IsCompletedSuccessfully)
+            {
+                await Record.ExceptionAsync(() => build.Result.DisposeAsync().AsTask());
+            }
+            var failedOutcome = Assert.IsAssignableFrom<IDebugFailureEvidence>(failure).FailureOutcome;
+            Assert.True(failedOutcome.HasUnprovedRelease);
+            Assert.Contains(failedOutcome.Evidence, item => item.Kind == DebugResourceKind.Process && !item.Released);
+            Assert.False(Directory.Exists(Path.Combine(lease.SessionWorkspacePath, "generations", "generation-0000000000")));
+            return;
+        }
+        var result = await build;
+
+        await result.DisposeAsync();
+
+        var outcome = Assert.IsAssignableFrom<IDebugResourceOwnerEvidence>(result).CleanupOutcome;
+        Assert.NotNull(outcome);
+        Assert.Contains(outcome.Evidence, item => item.Kind == DebugResourceKind.Process && item.ProcessId == 42 && item.Released);
+        Assert.Contains(outcome.Evidence, item => item.Kind == DebugResourceKind.FileSystem && item.Released);
+        Assert.False(outcome.HasCleanupFailure);
+        await result.DisposeAsync();
+        Assert.Same(outcome, Assert.IsAssignableFrom<IDebugResourceOwnerEvidence>(result).CleanupOutcome);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task FailedBuildClassifiesCleanupFromItsProcessAndWorkspaceOwners(bool provesProcessCleanup)
+    {
+        using var temp = TempDirectory.Create();
+        var projectRoot = Path.Combine(temp.Path, "project");
+        Directory.CreateDirectory(projectRoot);
+        var executable = Path.Combine(temp.Path, "vba-dev.exe");
+        await File.WriteAllBytesAsync(executable, []);
+        var deletionFailure = new IOException("The failed build generation is retained.");
+        var manager = new VbaDebugSessionWorkspaceManager(
+            Path.Combine(temp.Path, "workspace"), cleanupOperations: null,
+            beforeDeleteOwnedTree: path =>
+            {
+                if (Path.GetFileName(Path.GetDirectoryName(path)) == "generations")
+                {
+                    throw deletionFailure;
+                }
+            });
+        await using var lease = await manager.ClaimAsync(
+            DebugSessionId.Parse("0123456789abcdef0123456789abcdef"), CancellationToken.None);
+        var processCompletion = new DebugFailureCompletion();
+        processCompletion.AddEvidence(new("build-process-exit", "vba-dev", DebugResourceKind.Process,
+            true, "The fake child reached terminal exit.", 42));
+        processCompletion.AddEvidence(new("build-process-handles", "vba-dev", DebugResourceKind.Handle,
+            true, "The fake owner released its handles.", 42));
+        var builder = new VbaDevSnapshotWorkbookBuilder(new RecordingBuildProcess
+        {
+            ExitCode = 23,
+            CleanupOutcome = provesProcessCleanup ? processCompletion.Complete() : null
+        });
+        var sourceSet = AdmitBuildSources(new TransportedDebugSourceSnapshot(2,
+            [new TransportedDebugSource("Module1.bas", "file:///C:/source/Module1.bas", "utf8bom",
+                Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
+                    "Attribute VB_Name = \"Module1\"\nPublic Sub Run()\nEnd Sub\n")))]));
+
+        var failure = await Record.ExceptionAsync(() => builder.BuildAsync(
+            executable, lease,
+            new VbaDevSnapshotBuildRequest(projectRoot, "Book1", "Book1.xlsm", sourceSet),
+            CancellationToken.None));
+
+        var outcome = Assert.IsAssignableFrom<IDebugFailureEvidence>(failure).FailureOutcome;
+        Assert.Contains("snapshot build exited with code 23", outcome.PrimaryFailure!.Message);
+        Assert.Contains(outcome.CleanupFailures, item => ReferenceEquals(item.Exception, deletionFailure));
+        if (provesProcessCleanup)
+        {
+            Assert.Contains(outcome.Evidence, item => item.ProcessId == 42 && item.Released);
+        }
+        Assert.Equal(provesProcessCleanup, outcome.OnlyFileDeletionFailed);
+        Assert.Equal(!provesProcessCleanup, outcome.HasUnprovedRelease);
+    }
+
+    [Fact]
+    public async Task FailedBuildResultDisposalRetainsOneOutcomeForEveryCaller()
+    {
+        using var temp = TempDirectory.Create();
+        var deletionAttempts = 0;
+        var manager = new VbaDebugSessionWorkspaceManager(
+            Path.Combine(temp.Path, "workspace"), cleanupOperations: null,
+            beforeDeleteOwnedTree: path =>
+            {
+                if (Path.GetFileName(Path.GetDirectoryName(path)) == "generations")
+                {
+                    Interlocked.Increment(ref deletionAttempts);
+                    throw new IOException("The completed build generation could not be deleted.");
+                }
+            });
+        await using var lease = await manager.ClaimAsync(
+            DebugSessionId.Parse("0123456789abcdef0123456789abcdef"), CancellationToken.None);
+        var generation = lease.CreateGenerationWorkspace(DebugGenerationId.Initial, "debug.xlsm");
+        var result = new VbaDevSnapshotBuildResult(generation);
+
+        var first = await Record.ExceptionAsync(() => result.DisposeAsync().AsTask());
+        var repeated = await Task.WhenAll(Enumerable.Range(0, 3).Select(_ => Task.Run(
+            () => Record.ExceptionAsync(() => result.DisposeAsync().AsTask()))));
+
+        Assert.NotNull(first);
+        Assert.All(repeated, exception => Assert.Same(first, exception));
+        Assert.Equal(1, deletionAttempts);
+        Assert.True(Directory.Exists(result.GenerationWorkspacePath));
+        Assert.Throws<InvalidOperationException>(() => result.TransferGenerationOwnership());
+    }
+
     [Fact]
     public async Task BuildMaterializesTransportedBytesAndInvokesThePinnedCliProcess()
     {
@@ -423,7 +599,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
             "retained.tmp");
         await File.WriteAllTextAsync(sentinelPath, "retained");
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => builder.BuildAsync(
+        await DebugFailureAssertions.ThrowsWithProvedCleanupAsync<InvalidOperationException>(() => builder.BuildAsync(
             vbaDevPath,
             lease,
             new VbaDevSnapshotBuildRequest(
@@ -472,7 +648,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
         {
             await using var lease = await new VbaDebugSessionWorkspaceManager(workspaceRoot)
                 .ClaimAsync(DebugSessionId.Parse(sessionId), CancellationToken.None);
-            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            var exception = await Record.ExceptionAsync(() =>
                 builder.BuildAsync(
                     vbaDevPath,
                     lease,
@@ -492,6 +668,10 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                             ]))),
                     CancellationToken.None));
 
+            var outcome = Assert.IsAssignableFrom<IDebugFailureEvidence>(exception).FailureOutcome;
+            Assert.False(outcome.HasCleanupFailure);
+            Assert.Contains(outcome.Evidence, item => item.Kind == DebugResourceKind.Process && item.Released);
+            Assert.IsType<InvalidOperationException>(outcome.PrimaryFailure);
             Assert.Contains("code 7", exception.Message, StringComparison.Ordinal);
             Assert.Contains("Preparing snapshot.", exception.Message, StringComparison.Ordinal);
             Assert.Contains("Importing sources.", exception.Message, StringComparison.Ordinal);
@@ -533,7 +713,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
         {
             await using var lease = await new VbaDebugSessionWorkspaceManager(workspaceRoot)
                 .ClaimAsync(DebugSessionId.Parse(sessionId), CancellationToken.None);
-            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            var exception = await DebugFailureAssertions.ThrowsWithProvedCleanupAsync<InvalidOperationException>(() =>
                 builder.BuildAsync(
                     vbaDevPath,
                     lease,
@@ -649,7 +829,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
 
         await using var lease = await new VbaDebugSessionWorkspaceManager(workspaceRoot)
             .ClaimAsync(DebugSessionId.Parse(sessionId), CancellationToken.None);
-        var exception = await Assert.ThrowsAsync<IOException>(() => builder.BuildAsync(
+        var exception = await DebugFailureAssertions.ThrowsWithProvedCleanupAsync<IOException>(() => builder.BuildAsync(
             vbaDevPath,
             lease,
             new VbaDevSnapshotBuildRequest(
@@ -728,7 +908,7 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
             await unexpectedResult.DisposeAsync();
         }
 
-        Assert.IsType<IOException>(exception);
+        DebugFailureAssertions.HasProvedCleanup<IOException>(exception);
         Assert.True(File.Exists(outsideWorkbookPath));
         Assert.Equal(
             outsideWorkbookBytes,
@@ -826,6 +1006,8 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
 
         public string StandardError { get; init; } = string.Empty;
 
+        public DebugFailureOutcome? CleanupOutcome { get; init; } = ProvedFakeProcessCompletion();
+
         public List<(string FileName, IReadOnlyList<string> Arguments)> Invocations { get; } = [];
 
         public async Task<VbaDevBuildProcessResult> RunAsync(
@@ -841,7 +1023,10 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
                 Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
                 await File.WriteAllBytesAsync(outputPath, [0x50, 0x4b], cancellationToken);
             }
-            return new VbaDevBuildProcessResult(ExitCode, StandardOutput, StandardError);
+            return new VbaDevBuildProcessResult(ExitCode, StandardOutput, StandardError)
+            {
+                CleanupOutcome = CleanupOutcome
+            };
         }
     }
 
@@ -866,11 +1051,11 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
             {
                 await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException exception)
             {
                 CancellationObserved.TrySetResult();
                 await AllowExit.Task;
-                throw;
+                throw new DebugFailureException(ProvedFakeProcessCompletion(exception));
             }
 
             throw new InvalidOperationException("The controlled child unexpectedly completed.");
@@ -883,6 +1068,20 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
 
         public async Task<VbaDevBuildProcessResult> RunAsync(
             string fileName,
+            IReadOnlyList<string> arguments,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                return await MutateAsync(arguments, cancellationToken);
+            }
+            catch (Exception exception)
+            {
+                throw new DebugFailureException(ProvedFakeProcessCompletion(exception));
+            }
+        }
+
+        private async Task<VbaDevBuildProcessResult> MutateAsync(
             IReadOnlyList<string> arguments,
             CancellationToken cancellationToken)
         {
@@ -903,7 +1102,10 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
 
             var outputPath = GetArgumentValue(arguments, "--output");
             await File.WriteAllBytesAsync(outputPath, [0x50, 0x4b], cancellationToken);
-            return new VbaDevBuildProcessResult(0, string.Empty, string.Empty);
+            return new VbaDevBuildProcessResult(0, string.Empty, string.Empty)
+            {
+                CleanupOutcome = ProvedFakeProcessCompletion()
+            };
         }
     }
 
@@ -920,8 +1122,22 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
             return Task.FromResult(new VbaDevBuildProcessResult(
                 0,
                 string.Empty,
-                string.Empty));
+                string.Empty)
+            {
+                CleanupOutcome = ProvedFakeProcessCompletion()
+            });
         }
+    }
+
+    private static DebugFailureOutcome ProvedFakeProcessCompletion(Exception? primary = null)
+    {
+        var completion = new DebugFailureCompletion(primary);
+        foreach (var kind in new[] { DebugResourceKind.Process, DebugResourceKind.Handle })
+        {
+            completion.AddEvidence(new("fake-build-completion", "controlled build", kind, true,
+                "The controlled invocation has completed and owns no native process or handles."));
+        }
+        return completion.Complete();
     }
 
     private static AdmittedDebugBuildSourceSet AdmitBuildSources(

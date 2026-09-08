@@ -396,6 +396,29 @@ public sealed class VbeDebugEnvironmentProbeTests
     }
 
     [Fact]
+    public async Task DoctorCleanupUsesOwnerReleaseEvidenceAfterARetainedSetupFailure()
+    {
+        using var temp = TempDirectory.Create();
+        var original = new DebugSetupException("Original Doctor setup failure.");
+        var manager = new RecordingWorkspaceManager(temp.Path);
+        var session = new RecordingDebugSession(processId: 4321);
+        var probe = new VbeDebugEnvironmentProbeFactory(manager, new RecordingDebugSessionFactory(session)).Create();
+        _ = await probe.RunStageAsync("workspace.session", CancellationToken.None);
+        _ = await probe.RunStageAsync("excel.startup", CancellationToken.None);
+        session.RetainSetupFailure(original);
+
+        var close = await probe.RunStageAsync("excel.processClose", CancellationToken.None);
+        var deletion = await probe.RunStageAsync("workspace.deletion", CancellationToken.None);
+
+        Assert.Equal(DebugEnvironmentDiagnosticStatus.Pass, close.Status);
+        Assert.Equal(DebugEnvironmentDiagnosticStatus.Pass, deletion.Status);
+        Assert.True(manager.Lease.Disposed);
+        Assert.Same(original, session.CleanupOutcome!.PrimaryFailure);
+        Assert.False(session.CleanupOutcome.HasCleanupFailure);
+        Assert.DoesNotContain("cooperative-close", session.CleanupEvents);
+    }
+
+    [Fact]
     public async Task ProcessCloseUsesCooperativeNoSaveCloseBeforeDisposingOwnership()
     {
         using var temp = TempDirectory.Create();
@@ -674,10 +697,32 @@ public sealed class VbeDebugEnvironmentProbeTests
         int processId,
         bool strongProcessOwnershipEstablished = true,
         Exception? commandContextException = null)
-        : IVbeDebugSession, IVbeDebugDoctorControl
+        : IVbeDebugSession, IVbeDebugDoctorControl, IDebugResourceOwnerEvidence
     {
         private readonly TaskCompletionSource<DebugProcessExit> completion = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        private Exception? retainedFailure;
+
+        public DebugFailureOutcome? CleanupOutcome { get; private set; }
+
+        public void RetainSetupFailure(Exception failure)
+        {
+            RecordReleasedResources(failure);
+            retainedFailure = failure;
+            completion.TrySetException(failure);
+            _ = completion.Task.Exception;
+        }
+
+        private void RecordReleasedResources(Exception? failure = null)
+        {
+            var owner = new DebugFailureCompletion(failure);
+            foreach (var kind in new[] { DebugResourceKind.Process, DebugResourceKind.Com, DebugResourceKind.Handle })
+            {
+                owner.AddEvidence(new("session release", $"owned {kind}", kind, true,
+                    "The session owner proved resource release.", ProcessId));
+            }
+            CleanupOutcome = owner.Complete();
+        }
 
         public int ProcessId { get; } = processId;
 
@@ -741,6 +786,7 @@ public sealed class VbeDebugEnvironmentProbeTests
         public ValueTask TerminateAsync()
         {
             CleanupEvents.Add("terminate-session");
+            if (retainedFailure is not null) { return ValueTask.FromException(retainedFailure); }
             completion.TrySetResult(new DebugProcessExit(-1));
             return ValueTask.CompletedTask;
         }
@@ -748,6 +794,8 @@ public sealed class VbeDebugEnvironmentProbeTests
         public ValueTask DisposeAsync()
         {
             CleanupEvents.Add("dispose-session");
+            if (retainedFailure is not null) { return ValueTask.FromException(retainedFailure); }
+            RecordReleasedResources();
             return ValueTask.CompletedTask;
         }
 
@@ -809,6 +857,7 @@ public sealed class VbeDebugEnvironmentProbeTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             CleanupEvents.Add("cooperative-close");
+            if (retainedFailure is not null) { return Task.FromException(retainedFailure); }
             completion.TrySetResult(new DebugProcessExit(0));
             return Task.CompletedTask;
         }

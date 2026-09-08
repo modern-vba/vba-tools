@@ -1,4 +1,7 @@
+using Microsoft.Win32.SafeHandles;
 using System.Diagnostics;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -26,7 +29,8 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
         Action<string>? afterCreateDirectoryBeforeOpen = null,
         Action<string>? beforeDeleteOwnedTree = null,
         Action<string>? beforeCreateSourceFile = null,
-        Action<string>? afterCreateSourceFileBeforeOwnershipTransfer = null)
+        Action<string>? afterCreateSourceFileBeforeOwnershipTransfer = null,
+        Action<SafeFileHandle, string>? releaseOwnedHandle = null)
         : this(
             new VbaDebugWorkspaceRootBinding(workspaceRoot),
             cleanupOperations,
@@ -34,7 +38,8 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
             afterCreateDirectoryBeforeOpen,
             beforeDeleteOwnedTree,
             beforeCreateSourceFile,
-            afterCreateSourceFileBeforeOwnershipTransfer)
+            afterCreateSourceFileBeforeOwnershipTransfer,
+            releaseOwnedHandle)
     {
     }
 
@@ -45,7 +50,8 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
         Action<string>? afterCreateDirectoryBeforeOpen = null,
         Action<string>? beforeDeleteOwnedTree = null,
         Action<string>? beforeCreateSourceFile = null,
-        Action<string>? afterCreateSourceFileBeforeOwnershipTransfer = null)
+        Action<string>? afterCreateSourceFileBeforeOwnershipTransfer = null,
+        Action<SafeFileHandle, string>? releaseOwnedHandle = null)
     {
         ArgumentNullException.ThrowIfNull(workspaceRootBinding);
         workspaceContext = new Lazy<WorkspaceContext>(
@@ -58,7 +64,8 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
                     beforeCreateLeaseFile: beforeCreateLeaseFile,
                     beforeCreateSourceFile: beforeCreateSourceFile,
                     afterCreateSourceFileBeforeOwnershipTransfer:
-                        afterCreateSourceFileBeforeOwnershipTransfer);
+                        afterCreateSourceFileBeforeOwnershipTransfer,
+                    releaseOwnedHandle: releaseOwnedHandle);
                 return new WorkspaceContext(
                     creator.WorkspaceRoot,
                     creator,
@@ -81,18 +88,19 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
             sessionId.Value);
         IVbaDebugSessionWorkspaceCreationScope? creationScope = null;
         FileStream? leaseStream = null;
+        var acquisition = new DebugFailureCompletion();
         try
         {
             creationScope = WorkspaceCreator.ClaimSession(sessionId);
             sessionWorkspacePath = creationScope.SessionWorkspacePath;
             leaseStream = creationScope.CreateLeaseStream();
-            using var process = Process.GetCurrentProcess();
+            var processStartTimeUtc = ReadCurrentProcessStartTimeUtc(acquisition);
             var metadata = new VbaDebugSessionWorkspaceLeaseMetadata(
                 1,
                 sessionId.Value,
                 Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant(),
-                process.Id,
-                process.StartTime.ToUniversalTime().ToString("O"));
+                Environment.ProcessId,
+                processStartTimeUtc.ToString("O"));
             await JsonSerializer.SerializeAsync(
                 leaseStream,
                 metadata,
@@ -105,36 +113,57 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
                 sessionId,
                 sessionWorkspacePath,
                 leaseStream,
-                creationScope);
+                creationScope,
+                acquisition.Complete());
         }
-        catch
+        catch (Exception primary)
         {
+            var completion = new DebugFailureCompletion(primary);
+            completion.Merge(acquisition.Complete());
             if (leaseStream is not null)
             {
-                try
+                WindowsVbaDebugWorkspaceTreeDeleter.ReleaseOwnedHandles(
+                    [leaseStream.SafeFileHandle], completion, "session-lease-handle", sessionWorkspacePath);
+                try { await leaseStream.DisposeAsync().ConfigureAwait(false); }
+                catch (Exception cleanup)
                 {
-                    await leaseStream.DisposeAsync().ConfigureAwait(false);
-                }
-                catch
-                {
-                    // The claim failure remains authoritative.
+                    completion.AddFailure("session-lease-stream", sessionWorkspacePath,
+                        DebugResourceKind.Handle, cleanup, retainedPath: sessionWorkspacePath);
                 }
             }
             if (creationScope is not null)
             {
+                var deletionRequested = false;
                 try
                 {
                     creationScope.DeleteOwnedTree();
+                    deletionRequested = true;
                 }
-                catch
+                catch (Exception cleanup)
                 {
-                    // The claim failure remains authoritative.
+                    completion.AddFailure("session-delete", sessionWorkspacePath,
+                        DebugResourceKind.FileSystem, cleanup, retainedPath: sessionWorkspacePath);
                 }
-                finally
+                try { creationScope.Dispose(); }
+                catch (Exception cleanup)
                 {
-                    creationScope.Dispose();
+                    completion.AddFailure("session-remaining-handles", sessionWorkspacePath,
+                        DebugResourceKind.Handle, cleanup, retainedPath: sessionWorkspacePath);
                 }
+                if (creationScope is IDebugResourceOwnerEvidence { CleanupOutcome: { } ownedOutcome })
+                {
+                    completion.Merge(ownedOutcome);
+                }
+                else
+                {
+                    completion.AddEvidence(new("session-remaining-handles", sessionWorkspacePath,
+                        DebugResourceKind.Handle, false, "The workspace owner supplied no handle-release evidence.",
+                        RetainedPath: sessionWorkspacePath));
+                }
+                WindowsVbaDebugWorkspaceTreeDeleter.RecordOwnedTreeDeletion(
+                    completion, "session-delete", sessionWorkspacePath, deletionRequested);
             }
+            completion.Complete().Throw();
             throw;
         }
     }
@@ -174,15 +203,17 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
                 "The VBA debug session workspace boundary could not be verified as safe.");
         }
 
+        var completion = new DebugFailureCompletion();
         var preliminaryLeaseState = InspectLease(
             () => CleanupOperations.OpenSessionLeaseStream(sessionId),
-            sessionId);
+            sessionId, completion, "reaper-preliminary-lease", sessionWorkspacePath);
         if (preliminaryLeaseState == VbaDebugSessionLeaseState.Active)
         {
-            return new VbaDebugSessionCleanupResult(
-                false,
-                Path.GetFullPath(sessionWorkspacePath),
-                "The VBA debug session workspace lease is still active.");
+            var activeOutcome = completion.Complete();
+            var message = "The VBA debug session workspace lease is still active.";
+            if (activeOutcome.HasCleanupFailure) { message += Environment.NewLine + activeOutcome.Describe(); }
+            return new VbaDebugSessionCleanupResult(false, Path.GetFullPath(sessionWorkspacePath), message)
+                { CleanupOutcome = activeOutcome };
         }
 
         IVbaDebugWorkspaceCleanupScope cleanupScope;
@@ -190,41 +221,87 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
         {
             cleanupScope = CleanupOperations.OpenSessionCleanupScope(sessionId);
         }
-        catch
+        catch (Exception failure)
         {
-            return new VbaDebugSessionCleanupResult(
-                false,
-                Path.GetFullPath(sessionWorkspacePath),
-                "The VBA debug session workspace boundary could not be verified as safe.");
+            var retained = completion.Complete();
+            completion = new DebugFailureCompletion(failure);
+            completion.Merge(retained);
+            if (failure is not IDebugFailureEvidence carrier
+                || !carrier.FailureOutcome.Evidence.Any(item => item.Kind == DebugResourceKind.Handle))
+            {
+                completion.AddEvidence(new("reaper-scope-acquisition", sessionWorkspacePath,
+                    DebugResourceKind.Handle, false, "The failed scope owner supplied no partial handle evidence.",
+                    RetainedPath: sessionWorkspacePath));
+            }
+            var failedOutcome = completion.Complete();
+            return new VbaDebugSessionCleanupResult(false, Path.GetFullPath(sessionWorkspacePath),
+                "The VBA debug session workspace boundary could not be verified as safe."
+                + Environment.NewLine + failedOutcome.Describe()) { CleanupOutcome = failedOutcome };
         }
 
-        using (cleanupScope)
+        VbaDebugSessionCleanupResult? result = null;
+        Exception? primary = null;
+        var deletionAttempted = false;
+        var deletionRequested = false;
+        try
         {
-            var leaseState = InspectLease(
-                cleanupScope.OpenLeaseStream,
-                sessionId);
+            var leaseState = InspectLease(cleanupScope.OpenLeaseStream, sessionId,
+                completion, "reaper-pinned-lease", sessionWorkspacePath);
             if (leaseState != VbaDebugSessionLeaseState.Stale)
             {
                 var stateDescription = leaseState == VbaDebugSessionLeaseState.Active
-                    ? "is still active"
-                    : "could not be verified as stale";
-                return new VbaDebugSessionCleanupResult(
-                    false,
-                    Path.GetFullPath(sessionWorkspacePath),
+                    ? "is still active" : "could not be verified as stale";
+                result = new VbaDebugSessionCleanupResult(false, Path.GetFullPath(sessionWorkspacePath),
                     $"The VBA debug session workspace lease {stateDescription}.");
             }
-
-            if (!await TryDeleteWithRetryAsync(
-                    cleanupScope.DeleteDirectory,
-                    cancellationToken).ConfigureAwait(false))
+            else
             {
-                return new VbaDebugSessionCleanupResult(
-                    false,
-                    Path.GetFullPath(sessionWorkspacePath),
-                    "The stale VBA debug session workspace could not be deleted within five seconds.");
+                deletionAttempted = true;
+                deletionRequested = await TryDeleteWithRetryAsync(cleanupScope.DeleteDirectory,
+                    cancellationToken, completion, sessionWorkspacePath).ConfigureAwait(false);
+                result = deletionRequested
+                    ? new VbaDebugSessionCleanupResult(true, null, null)
+                    : new VbaDebugSessionCleanupResult(false, Path.GetFullPath(sessionWorkspacePath),
+                        "The stale VBA debug session workspace could not be deleted within five seconds.");
             }
         }
-        return new VbaDebugSessionCleanupResult(true, null, null);
+        catch (Exception failure)
+        {
+            primary = failure;
+            var retained = completion.Complete();
+            completion = new DebugFailureCompletion(primary);
+            completion.Merge(retained);
+        }
+        try { cleanupScope.Dispose(); }
+        catch (Exception failure)
+        {
+            completion.AddFailure("reaper-scope-release", sessionWorkspacePath,
+                DebugResourceKind.Handle, failure, retainedPath: sessionWorkspacePath);
+        }
+        if (cleanupScope is IDebugResourceOwnerEvidence { CleanupOutcome: { } ownerOutcome })
+        {
+            completion.Merge(ownerOutcome);
+        }
+        else
+        {
+            completion.AddEvidence(new("reaper-scope-release", sessionWorkspacePath,
+                DebugResourceKind.Handle, false, "The reaper scope supplied no handle-release evidence.",
+                RetainedPath: sessionWorkspacePath));
+        }
+        if (deletionAttempted)
+        {
+            WindowsVbaDebugWorkspaceTreeDeleter.RecordOwnedTreeDeletion(
+                completion, "session-delete", sessionWorkspacePath, deletionRequested);
+        }
+        var outcome = completion.Complete();
+        if (primary is not null) { outcome.ThrowWithEvidence(); }
+        if (outcome.HasCleanupFailure)
+        {
+            return new VbaDebugSessionCleanupResult(false, Path.GetFullPath(sessionWorkspacePath),
+                string.Join(Environment.NewLine, new[] { result?.Message, outcome.Describe() }
+                    .Where(message => !string.IsNullOrEmpty(message)))) { CleanupOutcome = outcome };
+        }
+        return result! with { CleanupOutcome = outcome };
     }
 
     public async ValueTask<IReadOnlyList<VbaDebugSessionCleanupResult>> ReapStaleAsync(
@@ -269,31 +346,50 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
 
     private async ValueTask<bool> TryDeleteWithRetryAsync(
         Action deleteDirectory,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        DebugFailureCompletion? failureCompletion = null,
+        string? ownedPath = null)
     {
+        var observedFailures = new List<Exception>();
         var started = CleanupOperations.GetTimestamp();
         var retryDelay = TimeSpan.FromMilliseconds(100);
         var timeout = TimeSpan.FromSeconds(5);
-        while (true)
+        var succeeded = false;
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            try
+            while (true)
             {
-                deleteDirectory();
-                return true;
-            }
-            catch (Exception exception)
-                when (exception is IOException or UnauthorizedAccessException)
-            {
-                var elapsed = CleanupOperations.GetElapsedTime(started);
-                if (elapsed >= timeout)
+                cancellationToken.ThrowIfCancellationRequested();
+                try
                 {
-                    return false;
+                    deleteDirectory();
+                    succeeded = true;
+                    return true;
                 }
-                var remaining = timeout - elapsed;
-                await CleanupOperations.DelayAsync(
-                    remaining < retryDelay ? remaining : retryDelay,
-                    cancellationToken).ConfigureAwait(false);
+                catch (Exception exception)
+                    when (exception is IOException or UnauthorizedAccessException)
+                {
+                    observedFailures.Add(exception);
+                    var elapsed = CleanupOperations.GetElapsedTime(started);
+                    if (elapsed >= timeout) { return false; }
+                    var remaining = timeout - elapsed;
+                    await CleanupOperations.DelayAsync(
+                        remaining < retryDelay ? remaining : retryDelay,
+                        cancellationToken).ConfigureAwait(false);
+                }
+            }
+        }
+        finally
+        {
+            // Successful bounded retries stay successful. Cancellation or any other
+            // terminal failure retains the failures already observed before it.
+            if (!succeeded && failureCompletion is not null && ownedPath is not null)
+            {
+                foreach (var failure in observedFailures)
+                {
+                    failureCompletion.AddFailure("session-delete", ownedPath,
+                        DebugResourceKind.FileSystem, failure, retainedPath: ownedPath);
+                }
             }
         }
     }
@@ -319,11 +415,12 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
 
     private static VbaDebugSessionLeaseState InspectLease(
         Func<Stream> openLeaseStream,
-        DebugSessionId expectedSessionId)
+        DebugSessionId expectedSessionId, DebugFailureCompletion completion, string stage, string ownedPath)
     {
+        Stream? leaseStream = null;
         try
         {
-            using var leaseStream = openLeaseStream();
+            leaseStream = openLeaseStream();
             using var leaseDocument = JsonDocument.Parse(leaseStream);
             var root = leaseDocument.RootElement;
             if (root.ValueKind != JsonValueKind.Object)
@@ -372,31 +469,106 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
                 return VbaDebugSessionLeaseState.Unverified;
             }
 
-            try
-            {
-                using var process = Process.GetProcessById(pid);
-                if (process.HasExited)
-                {
-                    return VbaDebugSessionLeaseState.Stale;
-                }
-                return process.StartTime.ToUniversalTime().Ticks == leasedStartTime.UtcTicks
-                    ? VbaDebugSessionLeaseState.Active
-                    : VbaDebugSessionLeaseState.Stale;
-            }
-            catch (ArgumentException)
-            {
-                return VbaDebugSessionLeaseState.Stale;
-            }
-            catch
-            {
-                return VbaDebugSessionLeaseState.Unverified;
-            }
+            return InspectProcessIdentity(pid, leasedStartTime, completion, stage, ownedPath);
         }
-        catch
+        catch (Exception failure)
         {
+            completion.AddFailure(stage, "lease inspection", DebugResourceKind.Observation, failure,
+                retainedPath: ownedPath);
+            if (leaseStream is null && (failure is not IDebugFailureEvidence carrier
+                || !carrier.FailureOutcome.Evidence.Any(item => item.Kind == DebugResourceKind.Handle)))
+            {
+                completion.AddEvidence(new(stage, "lease stream", DebugResourceKind.Handle, false,
+                    "The failed lease reader supplied no partial handle evidence.", RetainedPath: ownedPath));
+            }
             return VbaDebugSessionLeaseState.Unverified;
         }
+        finally
+        {
+            if (leaseStream is not null)
+            {
+                if (leaseStream is FileStream file)
+                {
+                    ReleaseInspectionHandle(file.SafeFileHandle, completion, stage, "lease stream", ownedPath);
+                }
+                try { leaseStream.Dispose(); }
+                catch (Exception failure)
+                {
+                    completion.AddFailure(stage, "lease stream", DebugResourceKind.Handle, failure,
+                        retainedPath: ownedPath);
+                }
+                if (leaseStream is not FileStream)
+                {
+                    var released = leaseStream.GetType() == typeof(MemoryStream);
+                    if (leaseStream is IDebugResourceOwnerEvidence { CleanupOutcome: { } readerOutcome })
+                    {
+                        completion.Merge(readerOutcome);
+                        released = !readerOutcome.HasUnprovedRelease
+                            && readerOutcome.Evidence.Any(item => item.Kind == DebugResourceKind.Handle && item.Released);
+                    }
+                    completion.AddEvidence(new(stage, "lease stream", DebugResourceKind.Handle, released,
+                        "An in-memory reader acquires no native handle; other readers must supply owner evidence.",
+                        RetainedPath: ownedPath));
+                }
+            }
+        }
     }
+
+    private static VbaDebugSessionLeaseState InspectProcessIdentity(int pid, DateTimeOffset leasedStartTime,
+        DebugFailureCompletion completion, string stage, string ownedPath)
+    {
+        const uint queryLimitedInformationAndSynchronize = 0x00101000;
+        using var handle = OpenProcess(queryLimitedInformationAndSynchronize, false, (uint)pid);
+        if (handle.IsInvalid)
+        {
+            var error = Marshal.GetLastWin32Error();
+            completion.AddEvidence(new(stage, "lease process identity", DebugResourceKind.Handle, true,
+                "The native process query did not acquire a handle.", pid, ownedPath));
+            if (error == 87) { return VbaDebugSessionLeaseState.Stale; }
+            throw new Win32Exception(error);
+        }
+        try
+        {
+            var waitResult = WaitForSingleObject(handle, 0);
+            if (waitResult == 0) { return VbaDebugSessionLeaseState.Stale; }
+            if (waitResult != 258) { throw new Win32Exception(Marshal.GetLastWin32Error()); }
+            if (!GetOwnedProcessTimes(handle, out var creationTime, out _, out _, out _))
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+            return DateTime.FromFileTimeUtc(creationTime).Ticks == leasedStartTime.UtcTicks
+                ? VbaDebugSessionLeaseState.Active : VbaDebugSessionLeaseState.Stale;
+        }
+        finally
+        {
+            ReleaseInspectionHandle(handle, completion, stage, "lease process identity", ownedPath, pid);
+        }
+    }
+
+    private static void ReleaseInspectionHandle(SafeHandle handle, DebugFailureCompletion completion,
+        string stage, string resource, string ownedPath, int? pid = null)
+    {
+        var release = new DebugNativeHandleRelease(handle);
+        try { release.Release(); }
+        catch (Exception failure)
+        {
+            completion.AddFailure(stage, resource, DebugResourceKind.Handle, failure, pid, ownedPath);
+        }
+        completion.AddEvidence(new(stage, resource, DebugResourceKind.Handle, release.IsVerified,
+            "The synchronous identity inspection retained the native CloseHandle result.", pid, ownedPath));
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern SafeFileHandle OpenProcess(uint desiredAccess,
+        [MarshalAs(UnmanagedType.Bool)] bool inheritHandle, uint processId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(SafeFileHandle handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", EntryPoint = "GetProcessTimes", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetOwnedProcessTimes(SafeFileHandle process, out long creationTime,
+        out long exitTime, out long kernelTime, out long userTime);
 
     private static bool IsCanonicalHex32(string value)
         => value.Length == 32 && value.All(character =>
@@ -407,12 +579,16 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
         DebugSessionId sessionId,
         string sessionWorkspacePath,
         FileStream leaseStream,
-        IVbaDebugSessionWorkspaceCreationScope creationScope)
-        : IVbaDebugSessionWorkspaceLease
+        IVbaDebugSessionWorkspaceCreationScope creationScope,
+        DebugFailureOutcome acquisitionOutcome)
+        : IVbaDebugSessionWorkspaceLease, IDebugResourceOwnerEvidence
     {
         private readonly HashSet<DebugGenerationId> claimedGenerations = [];
         private readonly object gate = new();
         private int disposed;
+        private Task? disposal;
+
+        public DebugFailureOutcome? CleanupOutcome { get; private set; }
 
         public DebugSessionId SessionId { get; } = sessionId;
 
@@ -438,40 +614,98 @@ public sealed class VbaDebugSessionWorkspaceManager : IVbaDebugSessionWorkspaceM
             }
         }
 
-        public async ValueTask DisposeAsync()
+        public ValueTask DisposeAsync()
         {
             lock (gate)
             {
-                if (disposed != 0)
-                {
-                    return;
-                }
                 disposed = 1;
+                return new ValueTask(disposal ??= DisposeCoreAsync());
             }
+        }
 
+        private async Task DisposeCoreAsync()
+        {
+            var completion = new DebugFailureCompletion();
+            completion.Merge(acquisitionOutcome);
+            WindowsVbaDebugWorkspaceTreeDeleter.ReleaseOwnedHandles(
+                [leaseStream.SafeFileHandle], completion, "session-lease-handle", SessionWorkspacePath);
             try
             {
                 await leaseStream.DisposeAsync().ConfigureAwait(false);
             }
-            finally
+            catch (Exception exception)
             {
-                try
-                {
-                    if (!await owner.TryDeleteWithRetryAsync(
-                            creationScope.DeleteOwnedTree,
-                            CancellationToken.None).ConfigureAwait(false))
-                    {
-                        throw new IOException(
-                            $"The VBA debug session workspace could not be deleted within five seconds: {SessionWorkspacePath}");
-                    }
-                }
-                finally
-                {
-                    creationScope.Dispose();
-                }
+                completion.AddFailure("session-lease-stream", SessionWorkspacePath,
+                    DebugResourceKind.Handle, exception, retainedPath: SessionWorkspacePath);
             }
+            var deletionRequested = false;
+            try
+            {
+                if (!await owner.TryDeleteWithRetryAsync(
+                        creationScope.DeleteOwnedTree,
+                        CancellationToken.None,
+                        completion,
+                        SessionWorkspacePath).ConfigureAwait(false))
+                {
+                    throw new IOException(
+                        $"The VBA debug session workspace could not be deleted within five seconds: {SessionWorkspacePath}");
+                }
+                deletionRequested = true;
+            }
+            catch (Exception exception)
+            {
+                completion.AddFailure("session-delete", SessionWorkspacePath,
+                    DebugResourceKind.FileSystem, exception, retainedPath: SessionWorkspacePath);
+            }
+            try { creationScope.Dispose(); }
+            catch (Exception exception)
+            {
+                completion.AddFailure("session-remaining-handles", SessionWorkspacePath,
+                    DebugResourceKind.Handle, exception, retainedPath: SessionWorkspacePath);
+            }
+            if (creationScope is IDebugResourceOwnerEvidence { CleanupOutcome: { } handleOutcome })
+            {
+                completion.Merge(handleOutcome);
+            }
+            else
+            {
+                completion.AddEvidence(new("session-remaining-handles", SessionWorkspacePath,
+                    DebugResourceKind.Handle, false, "The workspace owner supplied no handle-release evidence.",
+                    RetainedPath: SessionWorkspacePath));
+            }
+            WindowsVbaDebugWorkspaceTreeDeleter.RecordOwnedTreeDeletion(
+                completion, "session-delete", SessionWorkspacePath, deletionRequested);
+            CleanupOutcome = completion.Complete();
+            CleanupOutcome.Throw();
         }
     }
+
+    private static DateTime ReadCurrentProcessStartTimeUtc(DebugFailureCompletion completion)
+    {
+        try
+        {
+            if (!GetProcessTimes(GetCurrentProcess(), out var creationTime, out _, out _, out _))
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+            return DateTime.FromFileTimeUtc(creationTime);
+        }
+        finally
+        {
+            completion.AddEvidence(new("session-metadata-query", "current process metadata",
+                DebugResourceKind.Handle, true,
+                "The identity query used the current-process pseudo handle and acquired no releasable handle.",
+                Environment.ProcessId));
+        }
+    }
+
+    [DllImport("kernel32.dll")]
+    private static extern nint GetCurrentProcess();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetProcessTimes(nint process, out long creationTime,
+        out long exitTime, out long kernelTime, out long userTime);
 
     private sealed record VbaDebugSessionWorkspaceLeaseMetadata(
         int SchemaVersion,
@@ -530,7 +764,11 @@ public interface IVbaDebugSessionWorkspaceLease : IAsyncDisposable
 public sealed record VbaDebugSessionCleanupResult(
     bool Succeeded,
     string? RetainedPath,
-    string? Message);
+    string? Message) : IDebugResourceOwnerEvidence
+{
+    internal DebugFailureOutcome? CleanupOutcome { get; init; }
+    DebugFailureOutcome? IDebugResourceOwnerEvidence.CleanupOutcome => CleanupOutcome;
+}
 
 internal interface IVbaDebugWorkspaceCleanupOperations
 {
