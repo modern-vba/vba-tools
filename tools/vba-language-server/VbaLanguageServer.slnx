@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="../vba-process-invocation/src/VbaTools.ProcessInvocation/VbaTools.ProcessInvocation.csproj" />
     <Project Path="../vba-project-metadata/src/VbaTools.ProjectMetadata/VbaTools.ProjectMetadata.csproj" />
     <Project Path="../vba-protocol-framing/src/VbaTools.ContentLengthFraming/VbaTools.ContentLengthFraming.csproj" />
     <Project Path="src/VbaLanguageServer.Cli/VbaLanguageServer.Cli.csproj" />

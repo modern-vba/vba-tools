@@ -125,9 +125,7 @@ internal static class WindowsJobProcessLauncher
 
             process = Process.GetProcessById(checked((int)processInformation.ProcessId));
             var ownedProcess = new SystemDebugOwnedProcess(process);
-            process = null;
             var primaryThread = new WindowsSuspendedPrimaryThread(createdThreadHandle);
-            createdThreadHandle = null;
             if (redirectOutput)
             {
                 standardOutput = CreateReader(standardOutputRead!);
@@ -142,6 +140,10 @@ internal static class WindowsJobProcessLauncher
                 primaryThread,
                 standardOutput,
                 standardError);
+            // Transfer only after every pipe and the complete launch result exist.
+            // A pipe construction failure must still release the process/thread handles.
+            process = null;
+            createdThreadHandle = null;
             standardOutput = null;
             standardError = null;
             return result;

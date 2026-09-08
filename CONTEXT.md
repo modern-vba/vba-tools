@@ -222,22 +222,27 @@ test may compose already-built products through their public process contracts
 without becoming a foundation dependency of those products.
 _Avoid_: shared product test harness, executable fixture library, linked test source
 
-**VbaDevProcessInvocation**:
-A language-server-local one-shot invocation of one session-pinned absolute
-`vba-dev` executable through its public process contract. It preserves argument
-order, starts stdout and stderr drain together, and returns exit status and both
-complete streams without interpreting a command's JSON. Cancellation observed
-while terminal exit or either stream drain is pending requests one process-tree
-termination, waits without the cancelled token for terminal exit and both
-drains within a bounded cleanup deadline, then preserves cancellation as the
-authoritative outcome. Reference-catalog shutdown keeps observing cooperative
-work for longer than this process-cleanup deadline. A missed deadline is a
-lifecycle failure because termination cannot be proved.
-Capability inspection and CLI-backed reference discovery share this process
-lifecycle while retaining separate command contracts. This lifecycle adds only
-a consumer-side dependency from the language server to the
-`PublicToolProcessContract`. It adds no reverse dependency to `VbaDev`; both
-products consume the independent `ReusableVbaParserCore` for syntax.
+**ProcessInvocation**:
+A neutral one-shot process lifecycle in `VbaTools.ProcessInvocation`, shared by
+language-server capability/reference discovery and debug-adapter capability
+probes/snapshot builds. It pins an absolute executable, snapshots argument order,
+starts both output drains before awaiting exit, supervises reader failures, and
+returns exit status/stdout/stderr only after terminal exit and complete capture.
+Cancellation is observed through output draining and immediately before return.
+The ordinary Process Adapter retains inherited working-directory/default stream
+encoding; the DAP Adapter retains executable-directory/UTF-8 semantics and atomic
+Windows Job ownership, resuming its suspended primary thread exactly once after
+both drains start. Neither Adapter interprets command output or owns a snapshot.
+Cancellation or execution failure requests termination once and gives uncancelled
+asynchronous cleanup five seconds to prove terminal exit and settle both readers.
+Successful cleanup preserves the original failure; an already-failed reader is
+still the original invocation failure. Unproven cleanup produces a distinct
+`ProcessLifecycleException` with original, termination, and cleanup evidence.
+Handle release never re-enters an exit wait, and late Task faults remain observed.
+This budget limits asynchronous cleanup, not normal execution, interaction, or
+synchronous OS calls. Reference-catalog shutdown includes the same shared budget.
+The neutral foundation cannot depend on its product consumers; the visible Excel
+session's separate lifetime and the `PublicToolProcessContract` remain unchanged.
 _Avoid_: process lease, command-specific process runner, shared JSON contract
 
 **VbaDevTerminal**:

@@ -1,5 +1,5 @@
 using System.Text.Json;
-using VbaLanguageServer.Processes;
+using VbaTools.Processes;
 
 namespace VbaLanguageServer.Lsp;
 
@@ -23,7 +23,7 @@ internal sealed record VbaDevReferenceListStartupState(
             return InvalidStartupArguments();
         }
 
-        var process = new VbaDevProcessInvocation(executablePath);
+        var process = new ProcessInvocation(executablePath);
         return await ResolveValidatedExecutableAsync(
                 executablePath,
                 process.RunAsync,
@@ -33,7 +33,7 @@ internal sealed record VbaDevReferenceListStartupState(
 
     public static async Task<VbaDevReferenceListStartupState> ResolveAsync(
         IReadOnlyList<string> arguments,
-        VbaDevProcessInvocationRunner runProcess,
+        ProcessInvocationRunner runProcess,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(arguments);
@@ -53,7 +53,7 @@ internal sealed record VbaDevReferenceListStartupState(
 
     private static async Task<VbaDevReferenceListStartupState> ResolveValidatedExecutableAsync(
         string executablePath,
-        VbaDevProcessInvocationRunner runProcess,
+        ProcessInvocationRunner runProcess,
         CancellationToken cancellationToken)
     {
         try

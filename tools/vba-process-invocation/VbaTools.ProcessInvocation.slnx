@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/VbaTools.ProcessInvocation/VbaTools.ProcessInvocation.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/VbaTools.ProcessInvocation.Tests/VbaTools.ProcessInvocation.Tests.csproj" />
+  </Folder>
+</Solution>

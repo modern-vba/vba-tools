@@ -1,7 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
 using System.Text.Json;
-using VbaLanguageServer.Processes;
+using VbaTools.Processes;
 using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.SourceModel;
 using VbaTools.TypeLibRegistry;
@@ -197,7 +197,7 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
             (arguments, _) =>
             {
                 processCalls.Add(arguments);
-                return Task.FromResult(new VbaDevProcessInvocationResult(
+                return Task.FromResult(new ProcessInvocationResult(
                     0,
                     JsonSerializer.Serialize(new
                     {
@@ -262,7 +262,7 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
         const string referenceName = "Ambiguous Library";
         var projectPath = Path.GetFullPath(Path.Combine("projects", "Cancellation"));
         var invocationCompletion =
-            new TaskCompletionSource<VbaDevProcessInvocationResult>(
+            new TaskCompletionSource<ProcessInvocationResult>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
         var cancellationObserved = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -370,7 +370,7 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
             (_, _) =>
             {
                 Interlocked.Increment(ref processCallCount);
-                return Task.FromResult(new VbaDevProcessInvocationResult(
+                return Task.FromResult(new ProcessInvocationResult(
                     7,
                     JsonSerializer.Serialize(new
                     {
@@ -629,7 +629,7 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
                 new FakeTypeLibRegistryCatalogReader(registryCatalog),
                 new FakeTypeLibCatalogMetadataReader(new TypeLibCatalogMetadata("Unavailable", []))),
             Path.GetFullPath(@"C:\tools\vba-dev.exe"),
-            (_, _) => Task.FromResult(new VbaDevProcessInvocationResult(
+            (_, _) => Task.FromResult(new ProcessInvocationResult(
                 3,
                 JsonSerializer.Serialize(new
                 {

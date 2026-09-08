@@ -102,11 +102,15 @@
         "type": "Project",
         "dependencies": {
           "VbaTools.ContentLengthFraming": "[1.0.0, )",
+          "VbaTools.ProcessInvocation": "[1.0.0, )",
           "VbaTools.ProjectMetadata": "[1.0.0, )",
           "VbaTools.Syntax": "[1.0.0, )"
         }
       },
       "vbatools.contentlengthframing": {
+        "type": "Project"
+      },
+      "vbatools.processinvocation": {
         "type": "Project"
       },
       "vbatools.projectmetadata": {

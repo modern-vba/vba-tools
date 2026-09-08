@@ -1,5 +1,5 @@
 using System.Text.Json;
-using VbaLanguageServer.Processes;
+using VbaTools.Processes;
 
 namespace VbaLanguageServer.SourceModel;
 
@@ -10,10 +10,10 @@ internal sealed class VbaDevReferenceListCatalogDiscoveryFactory
       IVbaProjectReferenceCatalogCancellationCleanup
 {
     private readonly IVbaProjectReferenceCatalogDiscovery registryDiscovery;
-    private readonly VbaDevProcessInvocationRunner processRunner;
+    private readonly ProcessInvocationRunner processRunner;
 
     TimeSpan IVbaProjectReferenceCatalogCancellationCleanup.CancellationCleanupTimeout =>
-        VbaDevProcessInvocation.DefaultCancellationCleanupTimeout;
+        ProcessInvocation.DefaultCleanupTimeout;
 
     public VbaDevReferenceListCatalogDiscoveryFactory(
         IVbaProjectReferenceCatalogDiscovery registryDiscovery,
@@ -21,14 +21,14 @@ internal sealed class VbaDevReferenceListCatalogDiscoveryFactory
         : this(
             registryDiscovery,
             executablePath,
-            new VbaDevProcessInvocation(executablePath).RunAsync)
+            new ProcessInvocation(executablePath).RunAsync)
     {
     }
 
     internal VbaDevReferenceListCatalogDiscoveryFactory(
         IVbaProjectReferenceCatalogDiscovery registryDiscovery,
         string executablePath,
-        VbaDevProcessInvocationRunner processRunner)
+        ProcessInvocationRunner processRunner)
     {
         ArgumentNullException.ThrowIfNull(registryDiscovery);
         ArgumentException.ThrowIfNullOrWhiteSpace(executablePath);
@@ -72,14 +72,14 @@ internal sealed class VbaDevReferenceListCatalogDiscovery
 {
     private readonly IVbaProjectReferenceCatalogDiscovery registryDiscovery;
     private readonly VbaProjectReferenceCatalogRefreshContext context;
-    private readonly VbaDevProcessInvocationRunner processRunner;
+    private readonly ProcessInvocationRunner processRunner;
     private readonly object invocationGate = new();
     private Task<VbaDevReferenceListInvocationResult>? invocation;
 
     public VbaDevReferenceListCatalogDiscovery(
         IVbaProjectReferenceCatalogDiscovery registryDiscovery,
         VbaProjectReferenceCatalogRefreshContext context,
-        VbaDevProcessInvocationRunner processRunner)
+        ProcessInvocationRunner processRunner)
     {
         this.registryDiscovery = registryDiscovery;
         this.context = context;
@@ -258,7 +258,7 @@ internal static class VbaDevReferenceListContract
         StringComparer.Ordinal);
 
     public static VbaDevReferenceListInvocationResult Parse(
-        VbaDevProcessInvocationResult processResult,
+        ProcessInvocationResult processResult,
         string expectedProjectPath,
         string expectedDocumentName,
         IReadOnlyList<VbaProjectReference> expectedReferences)
