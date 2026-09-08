@@ -137,6 +137,15 @@ two behaviors are separate facts, and both flags must be known.
 
 ## Safety and cleanup boundary
 
+The command consumes shared `WorkbookAutomationTerminalFacts` before projecting
+unknown failures. Unproved owned-process release or STA retirement always exits
+`1`, including when cancellation was observed; pure cancellation with both
+release proofs exits `130`. Timeout, process-loss, COM, and secondary cleanup
+causes retain their stage and diagnostic evidence even inside nested failures.
+No failure publishes a catalog. The shared classifier supplies evidence only;
+security configuration, catalog construction, validation, and publication remain
+owned by Host Event discovery.
+
 One invocation delegates its process, private-desktop, STA, deadline, cleanup,
 and release lifecycle to the same sealed `AutomationExcelProcessRuntime` used by
 workbook generation, initial workbook creation, and reference probing. That

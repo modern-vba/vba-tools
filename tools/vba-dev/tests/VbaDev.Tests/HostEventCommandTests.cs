@@ -1,4 +1,5 @@
 using System.Text.Json;
+using VbaDev.App.Cli;
 using VbaDev.App.HostEvents;
 using VbaDev.App.Workbooks;
 using Xunit;
@@ -249,6 +250,89 @@ public sealed class HostEventCommandTests
             "Host Event inspection",
             result.StandardError,
             StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("json")]
+    [InlineData("text")]
+    public async Task CancellationCannotHideUnprovedOwnedProcessRelease(string format)
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var command = new HostEventListCommand(new FailingHostEventCatalogAutomation(
+            new WorkbookAutomationCanceledException(
+                new(WorkbookAutomationStageKind.HostEventInspection), cancellation.Token,
+                new WorkbookAutomationCleanupException("Owned process release could not be proved."))));
+
+        var result = await command.RunAsync(format, cancellation.Token);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Contains("Host Event inspection", result.StandardError);
+        Assert.Equal(OwnedProcessReleaseProof.Unproven, result.OwnedProcessReleaseProof);
+    }
+
+    public static IEnumerable<object[]> TerminalFailures()
+    {
+        foreach (var format in new[] { "json", "text" })
+        foreach (var category in new[] { "cancel", "timeout", "process-loss", "com", "process-release", "dispatcher", "secondary-cleanup" })
+        foreach (var cancelled in new[] { false, true })
+        foreach (var nested in new[] { false, true })
+            yield return [format, category, cancelled, nested];
+    }
+
+    [Theory]
+    [MemberData(nameof(TerminalFailures))]
+    public async Task TerminalEvidenceWithholdsCatalogAndRetainsDiagnostics(string format, string category, bool cancelled, bool nested)
+    {
+        using var cancellation = new CancellationTokenSource();
+        if (cancelled) cancellation.Cancel();
+        var stage = new WorkbookAutomationStage(WorkbookAutomationStageKind.HostEventInspection);
+        Exception error = category switch
+        {
+            "cancel" => new WorkbookAutomationCanceledException(stage, cancellation.Token),
+            "timeout" => new WorkbookAutomationTimeoutException(stage, TimeSpan.FromSeconds(1)),
+            "process-loss" => new WorkbookAutomationProcessLostException(stage),
+            "com" => new System.Runtime.InteropServices.COMException("COM detail"),
+            "process-release" or "dispatcher" => new WorkbookAutomationCleanupException(category + " detail"),
+            _ => new WorkbookAutomationReleasedProcessCleanupException("Secondary cleanup detail")
+        };
+        if (error is IWorkbookAutomationLifecycleFailure lifecycle)
+            lifecycle.LifecycleEvidence = new(stage, category != "process-release", category != "dispatcher", cancelled);
+        var primaryMessage = error.Message;
+        if (nested)
+            error = new AggregateException(new InvalidOperationException("Nested evidence", error),
+                new WorkbookAutomationCanceledException(stage, cancellation.Token));
+        error = new WorkbookAutomationStageFailureException(stage, error);
+        var command = new HostEventListCommand(new FailingHostEventCatalogAutomation(error));
+
+        var result = await command.RunAsync(format, cancellation.Token);
+
+        Assert.Equal(category == "cancel" ? 130 : 1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Contains("Host Event inspection", result.StandardError);
+        Assert.Contains(primaryMessage, result.StandardError);
+        Assert.Equal(category == "process-release" ? OwnedProcessReleaseProof.Unproven : OwnedProcessReleaseProof.ProvenOrNotStarted,
+            result.OwnedProcessReleaseProof);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UnknownDefectCannotBecomeCancellationOrEraseReleaseUncertainty(bool unproved)
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var errors = new List<Exception> { new OperationCanceledException(cancellation.Token), new NullReferenceException("Catalog defect") };
+        if (unproved) errors.Add(new WorkbookAutomationCleanupException("Unproved release"));
+        var command = new HostEventListCommand(new FailingHostEventCatalogAutomation(new AggregateException(errors)));
+
+        var result = await command.RunAsync("json", cancellation.Token);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Contains("Catalog defect", result.StandardError);
+        Assert.Equal(unproved ? OwnedProcessReleaseProof.Unproven : OwnedProcessReleaseProof.ProvenOrNotStarted, result.OwnedProcessReleaseProof);
     }
 
     private static IntrinsicHostEventCatalog CreateEmptyCatalog()
