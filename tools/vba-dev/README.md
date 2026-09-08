@@ -454,6 +454,15 @@ Supplying `--source-snapshot` builds and tests a same-filename workbook inside a
 
 The snapshot supplies only the complete VBA source inventory. The selected project and document, template, references, test selector, and output format still come from the project manifest and the ordinary `test` options. For ordinary and snapshot build-before-test runs, locations come only from an immutable index copied from the exact admitted source that produced the committed workbook; later source changes cannot alter that run's locations, and lookup does not reread, decode, or parse source. Missing or ambiguous mappings omit only the optional location and emit a non-failing warning without changing test identity or outcome. `--no-build` has no proved source capture, never inspects project source for navigation, always omits locations, and emits exactly one fixed non-failing warning after each completed run. The optional location shape and NDJSON schema `1.2` are unchanged.
 
+Preparation and execution failures use the shared Excel lifecycle evidence.
+Before a completed result, pure cancellation exits `130` only after process
+release and STA retirement are proved. Unproved release exits `1` even during
+cancellation and retains the dependent snapshot workspace; unproved STA
+retirement also exits `1`. Infrastructure failures emit no NDJSON batch.
+Completed test outcomes and their complete event sequence survive later
+cancellation. A preparation failure and a separate workspace-cleanup warning
+are both reported without replacing the primary failure.
+
 `--timeout-seconds` changes only the test macro execution deadline. When omitted, `test` uses `commandDefaults.test.executionTimeoutSeconds`, then a built-in 600-second default. Every value must be positive whole seconds; workbook open/save and cleanup retain their independent deadlines.
 
 ### publish

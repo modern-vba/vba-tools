@@ -404,7 +404,13 @@ staging is not committed output; after target replacement, later cancellation
 does not undo Import success. Ordinary Build, Publish, and source-snapshot Build
 also consume these facts through their shared output-command owner, retaining
 existing validation, warnings, output text, recovery, and atomic commitment.
-Remaining command surfaces migrate while retaining their own result policies.
+Ordinary and snapshot Test use the same facts for preparation and execution.
+Without a completed result, cancellation is `130` only after both release proofs;
+unproved process release is `1` and retains the dependent snapshot workspace.
+Completed test outcomes, NDJSON order, and source-location warnings remain Test's
+authority and survive later cancellation. Preparation errors and independent
+workspace-cleanup warnings remain separate evidence. Remaining command surfaces
+migrate while retaining their own result policies.
 _Avoid_: command result, generic exception handler, process cleanup authority
 
 **AutomationDesktopIsolation**:
@@ -645,7 +651,10 @@ that artifact with the exact admission from which `TestCommand` creates its
 releasing owned Excel processes on success, failed assertions, command failure,
 and cancellation; it never owns the caller's snapshot directory or mutates
 persistent bin output. Failure to prove
-owned-process release is a command-level infrastructure error. After release is
+owned-process release is a command-level infrastructure error even when
+cancellation was observed, and retains the dependent workspace. Test consumes
+shared terminal facts for preparation and execution; neither those facts nor
+scratch cleanup determines workbook-owned assertion outcomes. After release is
 proved, workspace deletion receives bounded retries; a remaining deletion
 failure retains and reports the absolute path as a warning without changing
 individual test outcomes or the test-result exit status.

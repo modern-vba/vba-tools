@@ -20,9 +20,16 @@ record shape but does not guarantee real-time stdout flushing. True in-progress
 streaming should reuse the same event kinds and is tracked separately from this
 contract clarification.
 
-The initial snapshot-test implementation holds that batch until it has proved
-release of every owned Excel process. Failure to prove process release is a
-command-level infrastructure error and emits no batch or terminal event. After
+Ordinary and snapshot Test consume shared Excel automation terminal facts for
+preparation and execution. They hold the batch until the runtime has proved
+release of every owned Excel process and retirement of its STA dispatcher.
+Failure to prove either is a command-level infrastructure error (`1`), even
+when cancellation was observed, and emits no batch or terminal event. Unproved
+process release also retains the dependent snapshot workspace. Without an
+authoritative completed result, pure cancellation is `130` only after both
+proofs. Unknown defects cannot be reclassified as cancellation. Preparation
+failure remains primary, with independent workspace cleanup evidence appended.
+After
 process release, internal workspace deletion receives bounded retries. A
 remaining file-deletion failure does not suppress the batch: the CLI emits the
 complete event sequence, reports the retained absolute path as a warning on
@@ -44,6 +51,8 @@ field without changing the schema version. `runFinished` includes `outcome`
 (`passed` when every test passed, otherwise `failed`) and `total`, `passed`,
 `failed`, and `errors` counts.
 
+A completed run is not discarded by later cancellation: workbook-owned assertion
+outcomes, event order, and source-location warnings retain their authority.
 A complete `runFinished` is the authoritative distinction between
 workbook-owned test failure and command infrastructure failure. A `passed` run
 exits zero; a run with failed or error outcomes exits nonzero while retaining

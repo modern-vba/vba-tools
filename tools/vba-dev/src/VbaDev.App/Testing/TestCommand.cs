@@ -86,9 +86,10 @@ public sealed class TestCommand
         }
         catch (SnapshotTestWorkspacePreparationException ex)
         {
-            var preparationResult = CreatePreparationFailureResult(
+            var preparationResult = CreateTerminalFailureResult(
                 ex.PreparationError,
-                cancellationToken);
+                cancellationToken,
+                preparation: true);
             var sanitizedResult = SanitizeSnapshotOperationResult(
                 preparationResult,
                 ex.WorkspacePath,
@@ -98,51 +99,9 @@ public sealed class TestCommand
                 StandardError = sanitizedResult.StandardError + ex.CleanupWarning
             };
         }
-        catch (WorkbookAutomationCanceledException ex)
-        {
-            result = PreserveReleaseProof(ex, CommandResult.Cancelled(ex.Message));
-        }
-        catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
-        {
-            result = PreserveReleaseProof(
-                ex,
-                CommandResult.Cancelled(
-                    "Workbook automation was cancelled during the active test stage."));
-        }
-        catch (WorkbookAutomationTimeoutException ex)
-        {
-            result = PreserveReleaseProof(ex, CommandResult.UsageError(ex.Message));
-        }
-        catch (WorkbookAutomationProcessLostException ex)
-        {
-            result = PreserveReleaseProof(ex, CommandResult.UsageError(ex.Message));
-        }
-        catch (WorkbookAutomationCleanupException ex)
-        {
-            result = PreserveReleaseProof(ex, CommandResult.UsageError(ex.Message));
-        }
-        catch (InvalidOperationException ex)
-        {
-            result = PreserveReleaseProof(ex, CommandResult.UsageError(ex.Message));
-        }
-        catch (IOException ex)
-        {
-            result = PreserveReleaseProof(ex, CommandResult.UsageError(ex.Message));
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            result = PreserveReleaseProof(ex, CommandResult.UsageError(ex.Message));
-        }
-        catch (COMException ex)
-        {
-            result = PreserveReleaseProof(
-                ex,
-                CommandResult.UsageError(
-                    CommandErrorMessages.ExcelComAutomationFailed("test", ex)));
-        }
         catch (Exception ex)
         {
-            result = PreserveReleaseProof(ex, CommandResult.UsageError(ex.Message));
+            result = CreateTerminalFailureResult(ex, cancellationToken);
         }
 
         if (successfulBuildStandardError.Length > 0)
@@ -276,50 +235,34 @@ public sealed class TestCommand
         }
     }
 
-    private static CommandResult PreserveReleaseProof(Exception error, CommandResult result)
-        => WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error)
-            ? result.MarkOwnedProcessReleaseUnproven()
-            : result;
-
-    private static CommandResult CreatePreparationFailureResult(
+    private static CommandResult CreateTerminalFailureResult(
         Exception error,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool preparation = false)
     {
+        WorkbookAutomationFailureClassifier.TryClassify(
+            error, out var facts, cancellationToken.IsCancellationRequested);
+        var typedCancellation = facts.Failures.FirstOrDefault(failure =>
+            failure.Error is WorkbookAutomationCanceledException);
         CommandResult result;
-        if (cancellationToken.IsCancellationRequested
-            && ContainsCancellation(error))
+        if (facts.IsRecognized
+            && facts.PrimaryFailure!.Category == WorkbookAutomationFailureCategory.Cancellation
+            && (typedCancellation is not null || cancellationToken.IsCancellationRequested))
         {
-            result = CommandResult.Cancelled(
-                "Workbook automation was cancelled during snapshot test preparation.");
+            var message = preparation
+                ? "Workbook automation was cancelled during snapshot test preparation."
+                : typedCancellation is not null ? error.Message
+                : "Workbook automation was cancelled during the active test stage.";
+            result = CommandResult.Cancelled(message);
         }
         else
         {
-            result = error switch
-            {
-                COMException comError => CommandResult.UsageError(
-                    CommandErrorMessages.ExcelComAutomationFailed("test", comError)),
-                _ => CommandResult.UsageError(error.Message)
-            };
+            result = CommandResult.UsageError(error is COMException
+                ? CommandErrorMessages.ExcelComAutomationFailed("test", error)
+                : error.Message);
         }
 
-        return PreserveReleaseProof(error, result);
-    }
-
-    private static bool ContainsCancellation(Exception error)
-    {
-        if (error is OperationCanceledException)
-        {
-            return true;
-        }
-
-        if (error is AggregateException aggregate
-            && aggregate.InnerExceptions.Any(ContainsCancellation))
-        {
-            return true;
-        }
-
-        return error.InnerException is not null
-            && ContainsCancellation(error.InnerException);
+        return facts.ProcessReleaseProven ? result : result.MarkOwnedProcessReleaseUnproven();
     }
 
     private static string RenderSourceLocationWarnings(
