@@ -200,8 +200,8 @@ filesystem repair, and a fresh Rename request rather than server rollback.
 ### Contract declaration-name completion
 
 The server owns one kind-first, two-stage completion path for intrinsic Host
-Event handlers, external `WithEvents` handlers, and members required by
-`Implements`, including derived Public-variable Property accessors. A valid
+Event handlers, external `WithEvents` handlers, fixed `ClassLifecycle` handlers,
+and members required by `Implements`, including derived Public-variable Property accessors. A valid
 empty or partial `Sub`, `Function`, `Property Get`, `Property Let`, or
 `Property Set` name slot first returns a semantic prefix ending in one ASCII
 underscore. An exact viable prefix returns canonical member names and edits
@@ -211,7 +211,7 @@ Every request re-resolves admitted origins from its captured immutable
 inventory. Prefixes and members coalesce case-insensitively after the shared
 MS-VBAL declaration-collision policy runs, while distinct signatures,
 documentation, and conditional provenance remain available for presentation
-and Signature Help. Completion chooses no origin, signature, parameter, or
+and, for source/catalog contracts, Signature Help. Completion chooses no origin, signature, parameter, or
 conditional-compilation branch.
 
 For continuation, prefix items carry `data.retriggerCompletion: true`; the
@@ -224,9 +224,28 @@ name slot and preserves ordinary completion elsewhere. An `_` trigger produces
 contract results only in a proven contract declaration-name context; outside
 one it produces none.
 
+`ClassLifecycle` is a language-defined origin for `.cls` `ClassModule` `Sub`
+name slots. It offers `Class_` (`Class Lifecycle` detail), followed by canonical
+`Class_Initialize` / `Class_Terminate` labels (`Lifecycle Handler` detail).
+Member edits replace only the suffix, preserving the written prefix's casing.
+Fixed signature documentation describes creation and destruction and the lack
+of guaranteed termination on abnormal host exit. It needs no project,
+`Implements`, reference/host catalog, companion executable, or Excel/COM/VBE
+state. `.bas`, `.frm`, Functions, Properties, and executable positions do not
+admit this origin. Shared syntax admission applies without lifecycle-specific
+visibility or `Static` restrictions. These name suggestions do not rewrite or
+validate existing parameter lists.
+
+Lifecycle names use the same case-insensitive collision and editing-self
+exclusion as other contracts. Both occupied names remove the prefix. Guarded
+prospective families remain advisory, applicable unconditional collisions are
+suppressed, and the fixed origin itself contributes no conditional marker.
+
 This feature returns name-only edits. Parameter lists, bodies, terminators,
 snippets, and multi-line stubs are outside its boundary and remain future
-`MemberStubGeneration` work.
+`MemberStubGeneration` work. Lifecycle stubs are not included in issue #305;
+they require an explicit future scope extension. `BlockSkeletonInsertion`
+remains independent and unchanged.
 
 ## Development
 

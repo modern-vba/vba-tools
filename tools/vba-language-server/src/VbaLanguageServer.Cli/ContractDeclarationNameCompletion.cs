@@ -7,7 +7,8 @@ internal enum VbaContractCompletionDomain
 {
     HostEvents,
     WithEvents,
-    Interface
+    Interface,
+    ClassLifecycle
 }
 
 internal sealed record VbaContractMemberCompletionOrigin(
@@ -16,7 +17,8 @@ internal sealed record VbaContractMemberCompletionOrigin(
     bool IsConditionalContract,
     VbaCallableSignature? Signature = null,
     string? Documentation = null,
-    object? Identity = null);
+    object? Identity = null,
+    string? CanonicalLabel = null);
 
 internal sealed record VbaContractPrefixCompletionOrigin(
     string Prefix,
@@ -98,6 +100,7 @@ internal static class VbaContractDeclarationNameCompletion
                 VbaContractCompletionDomain.HostEvents => "Host Events",
                 VbaContractCompletionDomain.WithEvents => "WithEvents",
                 VbaContractCompletionDomain.Interface => "Interface",
+                VbaContractCompletionDomain.ClassLifecycle => "Class Lifecycle",
                 _ => throw new InvalidOperationException("Unsupported contract domain.")
             }
             : "Multiple Contracts";
@@ -141,25 +144,31 @@ internal static class VbaContractDeclarationNameCompletion
                 var memberOrigins = members.ToArray();
                 var memberName = SelectCanonicalSpelling(
                     memberOrigins.Select(member => member.Name));
-                var domains = memberOrigins
-                    .Select(member => member.Domain)
+                var details = memberOrigins
+                    .Select(member => member.Domain switch
+                    {
+                        VbaContractCompletionDomain.HostEvents
+                            or VbaContractCompletionDomain.WithEvents => "Event",
+                        VbaContractCompletionDomain.Interface => "Interface Member",
+                        VbaContractCompletionDomain.ClassLifecycle => "Lifecycle Handler",
+                        _ => throw new InvalidOperationException("Unsupported contract domain.")
+                    })
                     .Distinct()
                     .ToArray();
-                var detail = domains.All(domain => domain is
-                        VbaContractCompletionDomain.HostEvents
-                            or VbaContractCompletionDomain.WithEvents)
-                    ? "Event"
-                    : domains.All(domain => domain
-                        == VbaContractCompletionDomain.Interface)
-                        ? "Interface Member"
-                        : "Multiple Contracts";
+                var detail = details.Length == 1 ? details[0] : "Multiple Contracts";
                 if (memberOrigins.Any(member => member.IsConditionalContract))
                 {
                     detail += " [#If]";
                 }
 
+                var canonicalLabels = memberOrigins
+                    .Select(origin => origin.CanonicalLabel)
+                    .OfType<string>()
+                    .ToArray();
                 return new VbaCompletionCandidate(
-                    writtenPrefix + memberName,
+                    canonicalLabels.Length > 0
+                        ? SelectCanonicalSpelling(canonicalLabels)
+                        : writtenPrefix + memberName,
                     VbaCompletionCandidateKind.ContractMemberName,
                     FilterText: memberName,
                     TextEdit: new VbaTextEdit(suffixRange, memberName))
