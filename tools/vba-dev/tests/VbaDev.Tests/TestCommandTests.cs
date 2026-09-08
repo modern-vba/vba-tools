@@ -1390,7 +1390,7 @@ public sealed class TestCommandTests
             root,
             workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
             workbookTestRunner: runner);
-        var fileSystem = new AlwaysFailingSnapshotWorkspaceFileSystem();
+        var fileSystem = new RetainingSnapshotWorkspaceObserver();
         var testCommand = new TestCommand(
             composition.BuildCommand,
             runner,
@@ -1399,9 +1399,7 @@ public sealed class TestCommandTests
             new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new FileSystemPathIdentityResolver(),
                 temp.CreateDirectory("snapshot-test-scratch"),
-                fileSystem,
-                cleanupAttempts: 3,
-                retryDelay: TimeSpan.Zero));
+                afterWorkspaceCreated: fileSystem.AddForeignContent));
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -1415,8 +1413,8 @@ public sealed class TestCommandTests
 
         Assert.Equal(expectedExitCode, result.ExitCode);
         Assert.Contains("\"type\":\"runFinished\"", result.StandardOutput, StringComparison.Ordinal);
-        var retainedPath = Assert.Single(fileSystem.DeletePaths.Distinct(StringComparer.OrdinalIgnoreCase));
-        Assert.Equal(3, fileSystem.DeletePaths.Count);
+        var retainedPath = Assert.Single(fileSystem.WorkspacePaths.Distinct(StringComparer.OrdinalIgnoreCase));
+        Assert.Single(fileSystem.WorkspacePaths);
         Assert.True(Path.IsPathFullyQualified(retainedPath));
         Assert.Contains("retained", result.StandardError, StringComparison.OrdinalIgnoreCase);
         Assert.Contains(retainedPath, result.StandardError, StringComparison.OrdinalIgnoreCase);
@@ -1444,7 +1442,7 @@ public sealed class TestCommandTests
             root,
             workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
             workbookTestRunner: runner);
-        var fileSystem = new AlwaysFailingSnapshotWorkspaceFileSystem();
+        var fileSystem = new RetainingSnapshotWorkspaceObserver();
         var testCommand = new TestCommand(
             composition.BuildCommand,
             runner,
@@ -1453,9 +1451,7 @@ public sealed class TestCommandTests
             new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new FileSystemPathIdentityResolver(),
                 scratchRoot,
-                fileSystem,
-                cleanupAttempts: 3,
-                retryDelay: TimeSpan.Zero));
+                afterWorkspaceCreated: fileSystem.AddForeignContent));
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
@@ -1471,8 +1467,8 @@ public sealed class TestCommandTests
 
         Assert.Equal(130, result.ExitCode);
         Assert.Empty(result.StandardOutput);
-        var retainedPath = Assert.Single(fileSystem.DeletePaths.Distinct(StringComparer.OrdinalIgnoreCase));
-        Assert.Equal(3, fileSystem.DeletePaths.Count);
+        var retainedPath = Assert.Single(fileSystem.WorkspacePaths.Distinct(StringComparer.OrdinalIgnoreCase));
+        Assert.Single(fileSystem.WorkspacePaths);
         Assert.Contains("retained", result.StandardError, StringComparison.OrdinalIgnoreCase);
         Assert.Contains(retainedPath, result.StandardError, StringComparison.OrdinalIgnoreCase);
         Assert.True(Directory.Exists(retainedPath));
@@ -1515,9 +1511,6 @@ public sealed class TestCommandTests
             new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new FileSystemPathIdentityResolver(),
                 scratchRoot,
-                new SnapshotTestWorkspaceFileSystem(),
-                cleanupAttempts: 3,
-                retryDelay: TimeSpan.Zero,
                 sourceCaptureFactory: captureFactory));
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
@@ -1568,9 +1561,6 @@ public sealed class TestCommandTests
             new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new FileSystemPathIdentityResolver(),
                 scratchRoot,
-                new SnapshotTestWorkspaceFileSystem(),
-                cleanupAttempts: 3,
-                retryDelay: TimeSpan.Zero,
                 sourceCaptureFactory: new NestedCancellationSnapshotSourceCaptureFactory()));
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
         using var cancellation = new CancellationTokenSource();
@@ -1623,9 +1613,6 @@ public sealed class TestCommandTests
             new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new FileSystemPathIdentityResolver(),
                 scratchRoot,
-                new SnapshotTestWorkspaceFileSystem(),
-                cleanupAttempts: 3,
-                retryDelay: TimeSpan.Zero,
                 sourceCaptureFactory: captureFactory));
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
@@ -2378,19 +2365,14 @@ internal sealed class PathMessageWorkbookTestRunner : IWorkbookTestRunner
     }
 }
 
-internal sealed class AlwaysFailingSnapshotWorkspaceFileSystem
-    : ISnapshotTestWorkspaceFileSystem
+internal sealed class RetainingSnapshotWorkspaceObserver
 {
-    public List<string> DeletePaths { get; } = [];
+    public List<string> WorkspacePaths { get; } = [];
 
-    public void DeleteDirectory(string path)
+    public void AddForeignContent(string path)
     {
-        DeletePaths.Add(path);
-        throw new IOException("synthetic retained workspace");
-    }
-
-    public void Delay(TimeSpan delay)
-    {
+        WorkspacePaths.Add(path);
+        File.WriteAllText(Path.Combine(path, "foreign.txt"), "foreign workspace content");
     }
 }
 

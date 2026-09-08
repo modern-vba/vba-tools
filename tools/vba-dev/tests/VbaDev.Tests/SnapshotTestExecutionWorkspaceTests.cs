@@ -1,8 +1,11 @@
-using VbaDev.Infrastructure.FileSystem;
-using System.Text;
 using VbaDev.App.Build;
+using VbaDev.App.FileSystem;
+using VbaDev.App.Projects;
 using VbaDev.App.Testing;
 using VbaDev.App.Workbooks;
+using VbaDev.Domain;
+using VbaDev.Infrastructure.FileSystem;
+using VbaDev.Infrastructure.Projects;
 using Xunit;
 
 namespace VbaDev.Tests;
@@ -10,265 +13,188 @@ namespace VbaDev.Tests;
 public sealed class SnapshotTestExecutionWorkspaceTests
 {
     [Fact]
-    public void CleanupRetriesOnlyTheOwnedWorkspaceLeafAndPreservesSiblings()
+    public void CleanupPreservesForeignWorkspaceContents()
     {
         using var temp = TempDirectory.Create();
-        var snapshotPath = temp.CreateDirectory("caller-snapshot");
-        File.WriteAllText(
-            Path.Combine(snapshotPath, "Test_Module.bas"),
-            "Attribute VB_Name = \"Test_Module\"",
-            Encoding.UTF8);
-        var scratchRoot = temp.CreateDirectory("scratch");
-        var siblingPath = Path.Combine(scratchRoot, "sibling");
-        Directory.CreateDirectory(siblingPath);
-        var siblingSentinel = Path.Combine(siblingPath, "sentinel.txt");
-        File.WriteAllText(siblingSentinel, "keep", Encoding.UTF8);
-        var fileSystem = new RetryingSnapshotWorkspaceFileSystem(failuresBeforeDelete: 2);
-        var factory = new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
-            new FileSystemPathIdentityResolver(),
-            scratchRoot,
-            fileSystem,
-            cleanupAttempts: 3,
-            retryDelay: TimeSpan.Zero);
-        var projectRoot = temp.CreateDirectory("Project");
-        new VbaDev.Infrastructure.Projects.JsonProjectManifestStore().Save(
-            projectRoot,
-            VbaDev.Domain.ProjectManifest.CreateDefault(
-                "Project",
-                "Book1",
-                projectRoot,
-                null));
-        var context = new VbaDev.App.Projects.ProjectContextResolver(
-                new VbaDev.Infrastructure.Projects.JsonProjectManifestStore())
-            .Resolve(new VbaDev.App.Projects.ProjectResolutionRequest(
-                projectRoot,
-                null,
-                projectRoot));
-        var workspace = factory.Create(
-            context,
-            snapshotPath,
-            "Book1.xlsm",
-            CancellationToken.None);
+        var fixture = CreateFixture(temp);
+        using var workspace = fixture.Create();
+        var foreign = Path.Combine(workspace.WorkspacePath, "foreign.txt");
+        File.WriteAllText(foreign, "foreign content");
+
+        var result = workspace.Cleanup();
+
+        Assert.False(result.Deleted);
+        Assert.Equal("foreign content", File.ReadAllText(foreign));
+        Assert.Contains(workspace.WorkspacePath, result.Warning);
+        Assert.False(Directory.Exists(Path.Combine(workspace.WorkspacePath, "source")));
+    }
+
+    [Fact]
+    public void CleanupRemovesOwnedWorkbookAndUnconsumedCaptureButPreservesCallerAndSiblings()
+    {
+        using var temp = TempDirectory.Create();
+        var fixture = CreateFixture(temp);
+        using var workspace = fixture.Create();
+        var sibling = Path.Combine(fixture.ScratchRoot, "sibling.txt");
+        File.WriteAllText(sibling, "keep");
+        File.WriteAllText(workspace.WorkbookPath, "completed build");
+        workspace.RegisterCommittedWorkbook(workspace.WorkbookPath);
 
         var result = workspace.Cleanup();
 
         Assert.True(result.Deleted);
         Assert.Null(result.Warning);
-        Assert.Equal(3, fileSystem.DeletePaths.Count);
-        Assert.All(
-            fileSystem.DeletePaths,
-            path => Assert.Equal(workspace.WorkspacePath, path));
+        Assert.Equal(InvocationScratchCleanupStatus.Removed, result.Evidence.Status);
         Assert.False(Directory.Exists(workspace.WorkspacePath));
-        Assert.Equal("keep", File.ReadAllText(siblingSentinel, Encoding.UTF8));
+        Assert.Equal("keep", File.ReadAllText(sibling));
+        Assert.True(File.Exists(Path.Combine(fixture.Snapshot, "Module1.bas")));
+        Assert.Same(result, workspace.Cleanup());
     }
 
-    [Fact]
-    public void CleanupDoesNotTreatAnInaccessibleWorkspaceAsDeleted()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CleanupPreservesChangedOrReplacedRegisteredWorkbook(bool replaced)
     {
         using var temp = TempDirectory.Create();
-        var snapshotPath = temp.CreateDirectory("caller-snapshot");
-        File.WriteAllText(
-            Path.Combine(snapshotPath, "Test_Module.bas"),
-            "Attribute VB_Name = \"Test_Module\"",
-            Encoding.UTF8);
-        var scratchRoot = temp.CreateDirectory("scratch");
-        var fileSystem = new InaccessibleSnapshotWorkspaceFileSystem();
-        var factory = new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
-            new FileSystemPathIdentityResolver(),
-            scratchRoot,
-            fileSystem,
-            cleanupAttempts: 3,
-            retryDelay: TimeSpan.Zero);
-        var projectRoot = temp.CreateDirectory("Project");
-        new VbaDev.Infrastructure.Projects.JsonProjectManifestStore().Save(
-            projectRoot,
-            VbaDev.Domain.ProjectManifest.CreateDefault(
-                "Project",
-                "Book1",
-                projectRoot,
-                null));
-        var context = new VbaDev.App.Projects.ProjectContextResolver(
-                new VbaDev.Infrastructure.Projects.JsonProjectManifestStore())
-            .Resolve(new VbaDev.App.Projects.ProjectResolutionRequest(
-                projectRoot,
-                null,
-                projectRoot));
-        var workspace = factory.Create(
-            context,
-            snapshotPath,
-            "Book1.xlsm",
-            CancellationToken.None);
+        using var workspace = CreateFixture(temp).Create();
+        File.WriteAllText(workspace.WorkbookPath, "completed build");
+        workspace.RegisterCommittedWorkbook(workspace.WorkbookPath);
+        if (replaced) File.Move(workspace.WorkbookPath, Path.Combine(temp.Path, "original.xlsm"));
+        File.WriteAllText(workspace.WorkbookPath, "external workbook");
 
         var result = workspace.Cleanup();
 
         Assert.False(result.Deleted);
-        Assert.NotNull(result.Warning);
-        Assert.Equal(3, fileSystem.DeletePaths.Count);
-        Assert.All(
-            fileSystem.DeletePaths,
-            path => Assert.Equal(workspace.WorkspacePath, path));
-        Assert.Contains(workspace.WorkspacePath, result.Warning, StringComparison.OrdinalIgnoreCase);
-        Assert.True(Directory.Exists(workspace.WorkspacePath));
+        Assert.Contains(workspace.WorkbookPath, result.Evidence.RetainedPaths);
+        Assert.Equal("external workbook", File.ReadAllText(workspace.WorkbookPath));
     }
 
     [Fact]
-    public void WorkspaceRejectsWorkbookOutsideItsOwnedGuidLeaf()
+    public void CleanupCannotAdoptAnUnregisteredWorkbook()
     {
         using var temp = TempDirectory.Create();
-        var scratchRoot = temp.CreateDirectory("scratch");
-        var workspacePath = Path.Combine(scratchRoot, Guid.NewGuid().ToString("N"));
-        var sourcePath = Path.Combine(workspacePath, "source");
-        Directory.CreateDirectory(sourcePath);
-        var callerSource = temp.CreateDirectory("caller-source");
-        File.WriteAllText(Path.Combine(callerSource, "Module1.bas"), "Attribute VB_Name = \"Module1\"\n");
-        using var sourceCapture = new BuildSourceSnapshotCaptureFactory(
-            new WindowsExactFileSystemObjectOwnershipFactory(), sourcePath)
-            .Create(callerSource, CancellationToken.None);
-        var outsideWorkbookPath = Path.Combine(temp.Path, "Book1.xlsm");
-
-        var error = Assert.Throws<InvalidOperationException>(() =>
-            new SnapshotTestExecutionWorkspace(
-                scratchRoot,
-                workspacePath,
-                sourceCapture,
-                outsideWorkbookPath,
-                new SnapshotTestWorkspaceFileSystem(),
-                cleanupAttempts: 3,
-                retryDelay: TimeSpan.Zero));
-
-        Assert.Contains("workbook", error.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains(workspacePath, error.Message, StringComparison.OrdinalIgnoreCase);
+        using var workspace = CreateFixture(temp).Create();
+        File.WriteAllText(workspace.WorkbookPath, "unobserved content");
+        var result = workspace.Cleanup();
+        Assert.False(result.Deleted);
+        Assert.Equal("unobserved content", File.ReadAllText(workspace.WorkbookPath));
     }
 
     [Fact]
-    public void WorkspaceRejectsSourceCaptureOutsideItsOwnedGuidLeaf()
+    public void CleanupCombinesNestedSourceEvidenceWithoutDeletingItsChangedContent()
     {
         using var temp = TempDirectory.Create();
-        var scratchRoot = temp.CreateDirectory("scratch");
-        var workspacePath = Path.Combine(scratchRoot, Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(workspacePath);
-        var outsideSourcePath = temp.CreateDirectory("outside-source");
-        var outsideSentinel = Path.Combine(outsideSourcePath, "sentinel.txt");
-        File.WriteAllText(outsideSentinel, "keep", Encoding.UTF8);
-        File.WriteAllText(Path.Combine(outsideSourcePath, "Module1.bas"), "Attribute VB_Name = \"Module1\"\n");
-        using var sourceCapture = new BuildSourceSnapshotCaptureFactory(
-            new WindowsExactFileSystemObjectOwnershipFactory(), temp.CreateDirectory("outside-capture"))
-            .Create(outsideSourcePath, CancellationToken.None);
-        var workbookPath = Path.Combine(workspacePath, "Book1.xlsm");
+        using var workspace = CreateFixture(temp).Create();
+        var capture = workspace.TakeSourceCapture();
+        var source = Assert.Single(capture.SourceFiles).SourcePath;
+        File.WriteAllText(source, "external source");
+        Assert.Throws<InvalidOperationException>(capture.Dispose);
 
-        var error = Assert.Throws<InvalidOperationException>(() =>
-            new SnapshotTestExecutionWorkspace(
-                scratchRoot,
-                workspacePath,
-                sourceCapture,
-                workbookPath,
-                new SnapshotTestWorkspaceFileSystem(),
-                cleanupAttempts: 3,
-                retryDelay: TimeSpan.Zero));
+        var result = workspace.Cleanup();
 
-        Assert.Contains("source capture", error.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains(workspacePath, error.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal("keep", File.ReadAllText(outsideSentinel, Encoding.UTF8));
+        Assert.False(result.Deleted);
+        Assert.Contains(source, result.Evidence.RetainedPaths);
+        Assert.Contains(workspace.WorkspacePath, result.Evidence.RetainedPaths);
+        Assert.Equal("external source", File.ReadAllText(source));
+    }
+
+    [Fact]
+    public async Task LockedWorkbookProducesBoundedStableInconclusiveEvidence()
+    {
+        using var temp = TempDirectory.Create();
+        using var workspace = CreateFixture(temp).Create();
+        File.WriteAllText(workspace.WorkbookPath, "completed build");
+        workspace.RegisterCommittedWorkbook(workspace.WorkbookPath);
+        SnapshotTestWorkspaceCleanupResult result;
+        using (File.Open(workspace.WorkbookPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+            result = await Task.Run(workspace.Cleanup).WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal(InvocationScratchCleanupStatus.Inconclusive, result.Evidence.Status);
+        Assert.Contains(workspace.WorkbookPath, result.Evidence.InconclusivePaths);
+        Assert.Same(result, workspace.Cleanup());
+        Assert.True(File.Exists(workspace.WorkbookPath));
+    }
+
+    [Fact]
+    public void MissingRegisteredWorkbookCountsAsRemoved()
+    {
+        using var temp = TempDirectory.Create();
+        using var workspace = CreateFixture(temp).Create();
+        File.WriteAllText(workspace.WorkbookPath, "completed build");
+        workspace.RegisterCommittedWorkbook(workspace.WorkbookPath);
+        File.Delete(workspace.WorkbookPath);
+        Assert.True(workspace.Cleanup().Deleted);
+    }
+
+    [Fact]
+    public void ForeignDirectoryLinkDoesNotGrantAuthorityOverItsTarget()
+    {
+        using var temp = TempDirectory.Create();
+        using var workspace = CreateFixture(temp).Create();
+        var outside = temp.CreateDirectory("outside");
+        var foreign = Path.Combine(outside, "foreign.txt");
+        File.WriteAllText(foreign, "foreign target");
+        var alias = Path.Combine(workspace.WorkspacePath, "foreign-link");
+        Directory.CreateSymbolicLink(alias, outside);
+        Assert.False(workspace.Cleanup().Deleted);
+        Assert.Equal("foreign target", File.ReadAllText(foreign));
+        Assert.NotNull(new DirectoryInfo(alias).LinkTarget);
+    }
+
+    [Fact]
+    public void WorkspaceRejectsWorkbookOutsideItsOwnedLeaf()
+    {
+        using var temp = TempDirectory.Create();
+        using var workspace = CreateFixture(temp).Create();
+        var capture = workspace.TakeSourceCapture();
+        Assert.Throws<InvalidOperationException>(() => SnapshotTestExecutionWorkspace.ValidateLayout(
+            workspace.WorkspacePath, capture, Path.Combine(temp.Path, "outside.xlsm")));
     }
 
     [Fact]
     public void FactoryRollbackNeverDisposesAnUntrustedExternalSourceCapture()
     {
         using var temp = TempDirectory.Create();
-        var snapshotPath = temp.CreateDirectory("caller-snapshot");
-        File.WriteAllText(
-            Path.Combine(snapshotPath, "Test_Module.bas"),
-            "Attribute VB_Name = \"Test_Module\"",
-            Encoding.UTF8);
-        var scratchRoot = temp.CreateDirectory("scratch");
-        var outsideSourcePath = temp.CreateDirectory("outside-source");
-        var outsideSentinel = Path.Combine(outsideSourcePath, "sentinel.txt");
-        File.WriteAllText(outsideSentinel, "keep", Encoding.UTF8);
-        using var externalCaptureFactory = new ExternalSnapshotSourceCaptureFactory(outsideSourcePath);
+        var fixture = CreateFixture(temp);
+        var outside = temp.CreateDirectory("outside");
+        using var external = new ExternalSnapshotSourceCaptureFactory(outside);
         var factory = new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
-            new FileSystemPathIdentityResolver(),
-            scratchRoot,
-            new SnapshotTestWorkspaceFileSystem(),
-            cleanupAttempts: 3,
-            retryDelay: TimeSpan.Zero,
-            sourceCaptureFactory: externalCaptureFactory);
-        var projectRoot = temp.CreateDirectory("Project");
-        new VbaDev.Infrastructure.Projects.JsonProjectManifestStore().Save(
-            projectRoot,
-            VbaDev.Domain.ProjectManifest.CreateDefault(
-                "Project",
-                "Book1",
-                projectRoot,
-                null));
-        var context = new VbaDev.App.Projects.ProjectContextResolver(
-                new VbaDev.Infrastructure.Projects.JsonProjectManifestStore())
-            .Resolve(new VbaDev.App.Projects.ProjectResolutionRequest(
-                projectRoot,
-                null,
-                projectRoot));
+            new FileSystemPathIdentityResolver(), fixture.ScratchRoot, sourceCaptureFactory: external);
 
         var error = Assert.Throws<SnapshotTestWorkspacePreparationException>(() =>
-            factory.Create(
-                context,
-                snapshotPath,
-                "Book1.xlsm",
-                CancellationToken.None));
+            factory.Create(fixture.Context, fixture.Snapshot, "Book1.xlsm", CancellationToken.None));
 
-        Assert.Contains("source capture", error.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal("keep", File.ReadAllText(outsideSentinel, Encoding.UTF8));
-        Assert.Empty(Directory.EnumerateDirectories(scratchRoot));
-        Assert.True(Directory.Exists(externalCaptureFactory.Capture!.StagingPath));
+        Assert.Contains("source capture", error.Message);
+        Assert.Empty(Directory.EnumerateDirectories(fixture.ScratchRoot));
+        Assert.True(Directory.Exists(external.Capture!.StagingPath));
     }
 
-    private sealed class RetryingSnapshotWorkspaceFileSystem(int failuresBeforeDelete)
-        : ISnapshotTestWorkspaceFileSystem
+    private sealed record Fixture(ResolvedProjectContext Context, string Snapshot, string ScratchRoot)
     {
-        public List<string> DeletePaths { get; } = [];
-
-        public void DeleteDirectory(string path)
-        {
-            DeletePaths.Add(path);
-            if (DeletePaths.Count <= failuresBeforeDelete)
-            {
-                throw new IOException("synthetic deletion failure");
-            }
-
-            Directory.Delete(path, recursive: true);
-        }
-
-        public void Delay(TimeSpan delay)
-        {
-        }
+        internal SnapshotTestExecutionWorkspace Create()
+            => new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
+                new FileSystemPathIdentityResolver(), ScratchRoot)
+                .Create(Context, Snapshot, "Book1.xlsm", CancellationToken.None);
     }
 
-    private sealed class InaccessibleSnapshotWorkspaceFileSystem
-        : ISnapshotTestWorkspaceFileSystem
+    private static Fixture CreateFixture(TempDirectory temp)
     {
-        public List<string> DeletePaths { get; } = [];
-
-        public void DeleteDirectory(string path)
-        {
-            DeletePaths.Add(path);
-            throw new UnauthorizedAccessException("synthetic inaccessible workspace");
-        }
-
-        public void Delay(TimeSpan delay)
-        {
-        }
+        var snapshot = temp.CreateDirectory("snapshot");
+        File.WriteAllText(Path.Combine(snapshot, "Module1.bas"), "Attribute VB_Name = \"Module1\"\n");
+        var project = temp.CreateDirectory("Project");
+        var store = new JsonProjectManifestStore();
+        store.Save(project, ProjectManifest.CreateDefault("Project", "Book1", project, null));
+        var context = new ProjectContextResolver(store).Resolve(new ProjectResolutionRequest(project, null, project));
+        return new(context, snapshot, temp.CreateDirectory("scratch"));
     }
 
-    private sealed class ExternalSnapshotSourceCaptureFactory(string outsideSourcePath)
-        : ISnapshotSourceCaptureFactory, IDisposable
+    private sealed class ExternalSnapshotSourceCaptureFactory(string outside) : ISnapshotSourceCaptureFactory, IDisposable
     {
         internal BuildSourceSnapshotCapture? Capture { get; private set; }
-
-        public BuildSourceSnapshotCapture Create(
-            string scratchRoot,
-            string sourceSnapshotPath,
-            CancellationToken cancellationToken)
-            => Capture = new BuildSourceSnapshotCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(), outsideSourcePath)
+        public BuildSourceSnapshotCapture Create(string scratchRoot, string sourceSnapshotPath, CancellationToken cancellationToken)
+            => Capture = new BuildSourceSnapshotCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(), outside)
                 .Create(sourceSnapshotPath, cancellationToken);
-
         public void Dispose() => Capture?.Dispose();
     }
 }

@@ -127,6 +127,7 @@ public sealed class TestCommand
             redactKnownTemporaryRoots: !hasCompletedTestRunOutput);
         if (result.OwnedProcessReleaseProof == OwnedProcessReleaseProof.Unproven)
         {
+            snapshotWorkspace.RetainWithoutCleanup();
             return result with
             {
                 StandardError = result.StandardError +
@@ -165,6 +166,7 @@ public sealed class TestCommand
                 workbookPath = buildResult.CommittedArtifactPath
                     ?? throw new InvalidOperationException(
                         "Snapshot materialization succeeded without a committed workbook path.");
+                snapshotWorkspace.RegisterCommittedWorkbook(workbookPath);
                 executedSourceIndex = sourceLocator.CreateIndex(
                     buildResult.SourceAdmission
                         ?? throw new InvalidOperationException(

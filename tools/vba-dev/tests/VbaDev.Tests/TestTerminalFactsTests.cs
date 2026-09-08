@@ -116,7 +116,7 @@ public sealed class TestTerminalFactsTests
     {
         using var temp = TempDirectory.Create();
         using var cancellation = new CancellationTokenSource();
-        var cleanup = new AlwaysFailingSnapshotWorkspaceFileSystem();
+        var cleanup = new RetainingSnapshotWorkspaceObserver();
         var runner = new FakeWorkbookTestRunner();
         var fixture = CreateFixture(temp, runner, sourceCapture: new FailingTestSourceCapture(token =>
         {
@@ -139,7 +139,7 @@ public sealed class TestTerminalFactsTests
         Assert.Contains(failure == "cancel" ? "snapshot test preparation" : "Primary capture",
             result.StandardError, StringComparison.Ordinal);
         Assert.Contains("workspace could not be removed", result.StandardError, StringComparison.Ordinal);
-        Assert.Equal(3, cleanup.DeletePaths.Count);
+        Assert.Single(cleanup.WorkspacePaths);
     }
 
     [Theory]
@@ -243,7 +243,7 @@ public sealed class TestTerminalFactsTests
     private static Fixture CreateFixture(TempDirectory temp, FakeWorkbookTestRunner runner,
         IWorkbookGenerationAutomation? generation = null,
         ISnapshotSourceCaptureFactory? sourceCapture = null,
-        ISnapshotTestWorkspaceFileSystem? cleanupFileSystem = null)
+        RetainingSnapshotWorkspaceObserver? cleanupFileSystem = null)
     {
         var root = temp.CreateDirectory("Project");
         new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
@@ -264,8 +264,7 @@ public sealed class TestTerminalFactsTests
         var command = new TestCommand(composition.BuildCommand, runner,
             new TestResultOutputFormatter(), new TestProcedureSourceLocator(),
             new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratch,
-                cleanupFileSystem ?? new SnapshotTestWorkspaceFileSystem(), 3, TimeSpan.Zero,
-                sourceCaptureFactory: sourceCapture));
+                sourceCaptureFactory: sourceCapture, afterWorkspaceCreated: cleanupFileSystem is null ? null : cleanupFileSystem.AddForeignContent));
         return new(VbaDevCommandLine.Create(composition with { TestCommand = command }), snapshot, scratch);
     }
 }

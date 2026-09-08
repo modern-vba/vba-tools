@@ -1574,8 +1574,11 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
             CreateEmptyMacroEnabledWorkbook(fixture.Context.BinDocumentPath);
             var originalBin = File.ReadAllBytes(fixture.Context.BinDocumentPath);
             var build = CreateOrdinaryBuildCommand(sourceSet => Assert.NotNull(sourceSet.Admission));
+            var scratchRoot = temp.CreateDirectory("snapshot-test-scratch");
             var command = new TestCommand(build, new ExcelComWorkbookTestRunner(),
-                new TestResultOutputFormatter(), new TestProcedureSourceLocator(), new FileSystemPathIdentityResolver(), new WindowsExactFileSystemObjectOwnershipFactory());
+                new TestResultOutputFormatter(), new TestProcedureSourceLocator(),
+                new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
+                    new FileSystemPathIdentityResolver(), scratchRoot));
 
             var result = await command.RunAsync(fixture.Context,
                 new TestCommandRequest("ndjson", true, new(), TimeSpan.FromMinutes(1), snapshotPath), cancellation.Token);
@@ -1590,6 +1593,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
                 finished.RootElement.GetProperty("location").GetProperty("uri").GetString());
             Assert.False(File.Exists(persistentPath));
             Assert.Equal(originalBin, File.ReadAllBytes(fixture.Context.BinDocumentPath));
+            Assert.Empty(Directory.EnumerateFileSystemEntries(scratchRoot));
             foreach (var source in fixture.CallerBytes.Concat(capturedBytes))
             {
                 Assert.Equal(source.Value, File.ReadAllBytes(source.Key));
