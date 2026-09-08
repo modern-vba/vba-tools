@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using System.Text;
 using VbaDev.App.Workbooks;
 using Xunit;
@@ -9,6 +10,29 @@ public sealed class VbeImportSourceSetTests
     static VbeImportSourceSetTests()
     {
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+    }
+
+    [Fact]
+    public void DisposalPreservesChangedMirrorBytes()
+    {
+        using var temp = TempDirectory.Create();
+        var source = Path.Combine(temp.Path, "Module1.bas");
+        File.WriteAllText(source, "Attribute VB_Name = \"Module1\"\n");
+        var mirror = VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(), new VbaSourceAdmission(() => 65001)
+            .Admit(temp.Path, VbaSourceAdmissionIntent.Build, CancellationToken.None));
+        var path = Assert.Single(mirror.SourceFiles).SourcePath;
+        File.WriteAllText(path, "external change");
+        try
+        {
+            var error = Assert.Throws<InvalidOperationException>(mirror.Dispose);
+            Assert.Contains(path, error.Message);
+            Assert.Equal("external change", File.ReadAllText(path));
+            Assert.Contains("Attribute VB_Name", File.ReadAllText(source));
+        }
+        finally
+        {
+            if (Directory.Exists(mirror.StagingPath)) Directory.Delete(mirror.StagingPath, recursive: true);
+        }
     }
 
     [Fact]
@@ -33,7 +57,7 @@ public sealed class VbeImportSourceSetTests
             var sourcePath = Path.Combine(temp.Path, "Greeting.bas");
             File.WriteAllBytes(sourcePath, testCase.Bytes);
 
-            using var sourceSet = VbeImportSourceSet.Create(
+            using var sourceSet = VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new VbaSourceAdmission(() => 932)
                     .Admit(Path.GetDirectoryName(sourcePath)!,
                         VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
@@ -55,7 +79,7 @@ public sealed class VbeImportSourceSetTests
         var sourcePath = Path.Combine(temp.Path, "CopyrightModule.bas");
         File.WriteAllBytes(sourcePath, new UTF8Encoding(false, true).GetBytes(sourceText));
 
-        using var sourceSet = VbeImportSourceSet.Create(
+        using var sourceSet = VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(),
             new VbaSourceAdmission(() => 1252)
                 .Admit(Path.GetDirectoryName(sourcePath)!,
                     VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
@@ -75,7 +99,7 @@ public sealed class VbeImportSourceSetTests
         var utf8Bom = new UTF8Encoding(true, true);
         File.WriteAllBytes(sourcePath, WithPreamble(utf8Bom, sourceText));
 
-        using var sourceSet = VbeImportSourceSet.Create(
+        using var sourceSet = VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(),
             new VbaSourceAdmission(() => 65001)
                 .Admit(Path.GetDirectoryName(sourcePath)!,
                     VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
@@ -96,7 +120,7 @@ public sealed class VbeImportSourceSetTests
             new UTF8Encoding(false));
 
         var error = Assert.Throws<InvalidOperationException>(() =>
-            VbeImportSourceSet.Create(
+            VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new VbaSourceAdmission(() => int.MaxValue)
                     .Admit(Path.GetDirectoryName(sourcePath)!,
                         VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None)));
@@ -112,7 +136,7 @@ public sealed class VbeImportSourceSetTests
         File.WriteAllBytes(invalidPath, [0x81]);
 
         var invalid = Assert.Throws<InvalidOperationException>(() =>
-            VbeImportSourceSet.Create(
+            VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new VbaSourceAdmission(() => 932)
                     .Admit(Path.GetDirectoryName(invalidPath)!,
                         VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None)));
@@ -126,7 +150,7 @@ public sealed class VbeImportSourceSetTests
         File.WriteAllBytes(lossyPath, lossyBytes);
 
         var lossy = Assert.Throws<InvalidOperationException>(() =>
-            VbeImportSourceSet.Create(
+            VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new VbaSourceAdmission(() => 1252)
                     .Admit(Path.GetDirectoryName(lossyPath)!,
                         VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None)));
@@ -152,7 +176,7 @@ public sealed class VbeImportSourceSetTests
             File.WriteAllBytes(sourcePath, bytes);
 
             var error = Assert.Throws<InvalidOperationException>(() =>
-                VbeImportSourceSet.Create(
+                VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(),
                     new VbaSourceAdmission(() => 1252)
                         .Admit(Path.GetDirectoryName(sourcePath)!,
                             VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None)));
@@ -174,7 +198,7 @@ public sealed class VbeImportSourceSetTests
         File.WriteAllBytes(sourcePath, sourceBytes);
 
         var error = Assert.Throws<InvalidOperationException>(() =>
-            VbeImportSourceSet.Create(
+            VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new VbaSourceAdmission(() => 1252)
                     .Admit(Path.GetDirectoryName(sourcePath)!,
                         VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None)));
@@ -195,7 +219,7 @@ public sealed class VbeImportSourceSetTests
         File.WriteAllBytes(sourcePath, sourceBytes);
 
         var error = Assert.Throws<InvalidOperationException>(() =>
-            VbeImportSourceSet.Create(
+            VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new VbaSourceAdmission(() => 932)
                     .Admit(Path.GetDirectoryName(sourcePath)!,
                         VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None)));
@@ -214,7 +238,7 @@ public sealed class VbeImportSourceSetTests
         var sourceBytes = cp1252.GetBytes(sourceText);
         File.WriteAllBytes(sourcePath, sourceBytes);
 
-        using var sourceSet = VbeImportSourceSet.Create(
+        using var sourceSet = VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(),
             new VbaSourceAdmission(() => 1252)
                 .Admit(Path.GetDirectoryName(sourcePath)!,
                     VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
@@ -235,7 +259,7 @@ public sealed class VbeImportSourceSetTests
         File.WriteAllBytes(sourcePath, sourceBytes);
 
         var error = Assert.Throws<InvalidOperationException>(() =>
-            VbeImportSourceSet.Create(
+            VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new VbaSourceAdmission(() => 1252)
                     .Admit(Path.GetDirectoryName(sourcePath)!,
                         VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None)));
@@ -283,7 +307,7 @@ public sealed class VbeImportSourceSetTests
             ]),
             new UTF8Encoding(false));
 
-        using var sourceSet = VbeImportSourceSet.Create(
+        using var sourceSet = VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(),
             new VbaSourceAdmission(() => 1252)
                 .Admit(Path.GetDirectoryName(classPath)!,
                     VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
@@ -319,7 +343,7 @@ public sealed class VbeImportSourceSetTests
             ]),
             new UTF8Encoding(false));
 
-        using var sourceSet = VbeImportSourceSet.Create(
+        using var sourceSet = VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(),
             new VbaSourceAdmission(() => 1252)
                 .Admit(Path.GetDirectoryName(formPath)!,
                     VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
@@ -342,7 +366,7 @@ public sealed class VbeImportSourceSetTests
             $"VERSION 5.00\r\n{designerBlock}\r\nAttribute VB_Name = \"Dialog\"\r\n",
             new UTF8Encoding(false));
 
-        using var sourceSet = VbeImportSourceSet.Create(
+        using var sourceSet = VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(),
             new VbaSourceAdmission(() => 1252)
                 .Admit(Path.GetDirectoryName(formPath)!,
                     VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
@@ -365,7 +389,7 @@ public sealed class VbeImportSourceSetTests
             "Attribute VB_Name = \"A\u00a0\"\r\n",
             StrictEncoding(1252));
 
-        using var sourceSet = VbeImportSourceSet.Create(
+        using var sourceSet = VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(),
             new VbaSourceAdmission(() => 1252)
                 .Admit(Path.GetDirectoryName(sourcePath)!,
                     VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
@@ -387,7 +411,7 @@ public sealed class VbeImportSourceSetTests
             "Attribute VB_Name = \"A・\"\r\n",
             new UTF8Encoding(false));
 
-        using var sourceSet = VbeImportSourceSet.Create(
+        using var sourceSet = VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(),
             new VbaSourceAdmission(() => 65001)
                 .Admit(Path.GetDirectoryName(sourcePath)!,
                     VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
@@ -408,7 +432,7 @@ public sealed class VbeImportSourceSetTests
             sourcePath,
             "Attribute VB_Name = \"If\"\r\n",
             new UTF8Encoding(false));
-        using var sourceSet = VbeImportSourceSet.Create(
+        using var sourceSet = VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(),
             new VbaSourceAdmission(() => 1252)
                 .Admit(Path.GetDirectoryName(sourcePath)!,
                     VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
@@ -434,7 +458,7 @@ public sealed class VbeImportSourceSetTests
                 string.Empty
             ]),
             new UTF8Encoding(false));
-        using var sourceSet = VbeImportSourceSet.Create(
+        using var sourceSet = VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(),
             new VbaSourceAdmission(() => 1252)
                 .Admit(Path.GetDirectoryName(sourcePath)!,
                     VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
@@ -460,7 +484,7 @@ public sealed class VbeImportSourceSetTests
                 string.Empty
             ]),
             new UTF8Encoding(false));
-        using var sourceSet = VbeImportSourceSet.Create(
+        using var sourceSet = VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(),
             new VbaSourceAdmission(() => 1252)
                 .Admit(Path.GetDirectoryName(sourcePath)!,
                     VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
@@ -487,7 +511,7 @@ public sealed class VbeImportSourceSetTests
                 string.Empty
             ]),
             new UTF8Encoding(false));
-        using var sourceSet = VbeImportSourceSet.Create(
+        using var sourceSet = VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(),
             new VbaSourceAdmission(() => 65001)
                 .Admit(Path.GetDirectoryName(sourcePath)!,
                     VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
@@ -509,7 +533,7 @@ public sealed class VbeImportSourceSetTests
             sourcePath,
             "Attribute VB_Name = \"日\u00a0\"\r\n",
             new UTF8Encoding(false));
-        using var sourceSet = VbeImportSourceSet.Create(
+        using var sourceSet = VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(),
             new VbaSourceAdmission(() => 65001)
                 .Admit(Path.GetDirectoryName(sourcePath)!,
                     VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
@@ -542,7 +566,7 @@ public sealed class VbeImportSourceSetTests
             ]),
             new UTF8Encoding(false));
 
-        using var sourceSet = VbeImportSourceSet.Create(
+        using var sourceSet = VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(),
             new VbaSourceAdmission(() => 1252)
                 .Admit(Path.GetDirectoryName(classPath)!,
                     VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
@@ -585,7 +609,7 @@ public sealed class VbeImportSourceSetTests
             calls++;
             return 1252;
         }).Admit(temp.Path, VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None);
-        var factory = new VbeImportSourceSetFactory();
+        var factory = new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory());
         string stagingPath;
 
         using (var sourceSet = factory.Create(admission))
@@ -623,7 +647,7 @@ public sealed class VbeImportSourceSetTests
             sourcePath,
             "Attribute VB_Name = \"Module1\"\r\n",
             new UTF8Encoding(false));
-        var sourceSet = VbeImportSourceSet.Create(
+        var sourceSet = VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(),
             new VbaSourceAdmission(() => 1252)
                 .Admit(Path.GetDirectoryName(sourcePath)!,
                     VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
@@ -636,8 +660,11 @@ public sealed class VbeImportSourceSetTests
             Assert.True(Directory.Exists(sourceSet.StagingPath));
         }
 
+        var evidence = sourceSet.CleanupEvidence;
         sourceSet.Dispose();
-        Assert.False(Directory.Exists(sourceSet.StagingPath));
+        Assert.Same(evidence, sourceSet.CleanupEvidence);
+        Assert.True(Directory.Exists(sourceSet.StagingPath));
+        Directory.Delete(sourceSet.StagingPath, recursive: true);
     }
 
     [Fact]

@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using System.Text;
 using System.Text.Json;
 using VbaDev.App.Workbooks;
@@ -24,7 +25,7 @@ public sealed class VbaSourceAdmissionTests
         Assert.Equal(encodingToken, source.OriginalEncoding);
         Assert.Equal(bytes, source.OriginalBytes.ToArray());
         Assert.False(source.ModuleIdentityAuthority.IsAuthoritative);
-        using var mirror = VbeImportSourceSet.Create(admitted);
+        using var mirror = VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(), admitted);
         var report = new WorkbookMaterializationNamePreflight().InspectSourcePhase(mirror.SourceFiles);
         Assert.True(report.LiveInspectionBlocked);
         Assert.Single(report.Findings);
@@ -47,7 +48,7 @@ public sealed class VbaSourceAdmissionTests
         VbeImportSourceSet? observed = null;
         Func<int> getActiveCodePage = () => { codePageReads++; return 1252; };
         var admission = new VbaSourceAdmission(getActiveCodePage);
-        var factory = new VbeImportSourceSetFactory(
+        var factory = new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
             sourceSet => { createdCalls++; observed = sourceSet; });
 
         var admitted = admission.Admit(
@@ -115,7 +116,7 @@ public sealed class VbaSourceAdmissionTests
         File.WriteAllText(Path.Combine(temp.Path, "Module1.bas"), "Attribute VB_Name = \"Module1\"\r\n");
         FileStream? mirrorLock = null;
         string? mirrorPath = null;
-        var factory = new VbeImportSourceSetFactory(
+        var factory = new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
             mirror =>
             {
                 mirrorPath = mirror.StagingPath;
@@ -190,13 +191,13 @@ public sealed class VbaSourceAdmissionTests
         Assert.Equal("Module1", source.ModuleIdentityAuthority.Name);
         if (item.TryGetProperty("expectedProjectionFailure", out var projectionFailure) && projectionFailure.GetBoolean())
         {
-            var error = Assert.Throws<InvalidOperationException>(() => VbeImportSourceSet.Create(admitted));
+            var error = Assert.Throws<InvalidOperationException>(() => VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(), admitted));
             Assert.Contains(sourcePath, error.Message, StringComparison.Ordinal);
             Assert.Contains($"Windows code page {activeCodePage}", error.Message, StringComparison.Ordinal);
         }
         else
         {
-            using var mirror = VbeImportSourceSet.Create(admitted);
+            using var mirror = VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(), admitted);
             var staged = Assert.Single(mirror.SourceFiles);
             Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
             var encoding = activeCodePage == 65001
@@ -255,7 +256,7 @@ public sealed class VbaSourceAdmissionTests
         }
         File.WriteAllText(Path.Combine(root, "Late.bas"), "Attribute VB_Name = \"Late\"\r\n");
 
-        using var mirror = VbeImportSourceSet.Create(admitted);
+        using var mirror = VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(), admitted);
 
         Assert.Equal("acp", events[0]);
         Assert.Equal("inventory", events[1]);

@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using System.Text;
 using VbaDev.App.Build;
 using VbaDev.App.Cli;
@@ -95,7 +96,11 @@ public sealed class ImportCommandTests
             : OwnedProcessReleaseProof.ProvenOrNotStarted, result.OwnedProcessReleaseProof);
         Assert.Empty(result.StandardOutput);
         Assert.Equal(original, File.ReadAllBytes(target));
-        Assert.Single(Directory.GetFiles(temp.Path, "*.xlsm"));
+        var staging = Directory.GetFiles(temp.Path, "*.tmp.xlsm");
+        if (kind == "process-release")
+            Assert.Contains(Assert.Single(staging), result.StandardError, StringComparison.Ordinal);
+        else
+            Assert.Empty(staging);
     }
 
     [Fact]
@@ -370,7 +375,8 @@ public sealed class ImportCommandTests
         Assert.Equal(1, result.ExitCode);
         Assert.Contains("release could not be verified", result.StandardError, StringComparison.Ordinal);
         Assert.Equal(targetBytes, File.ReadAllBytes(targetWorkbook));
-        Assert.Single(Directory.GetFiles(temp.Path, "*.xlsm"));
+        Assert.Contains(Assert.Single(Directory.GetFiles(temp.Path, "*.tmp.xlsm")),
+            result.StandardError, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1167,14 +1173,14 @@ public sealed class ImportCommandTests
         IWorkbookGenerationAutomation automation,
         VbaSourceAdmission sourceAdmission)
     {
-        var materializer = new WorkbookMaterializer(
+        var materializer = new WorkbookMaterializer(new WindowsExactFileSystemObjectOwnershipFactory(),
             new WorkbookSourcePlanner(),
             automation,
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(
                     new FakeVbaProjectReferenceResolver())),
-            new WorkbookOutputTransactionFactory(),
-            new VbeImportSourceSetFactory());
+            new WorkbookOutputTransactionFactory(new WindowsExactFileSystemObjectOwnershipFactory()),
+            new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory()));
         return new ImportCommand(
             materializer,
             sourceAdmission);
@@ -1224,12 +1230,17 @@ public sealed class ImportCommandTests
                 throw ReleaseFailure;
             }
 
-            var workbook = new FakeWorkbookGenerationAutomation();
+            var workbook = new FakeWorkbookGenerationAutomation
+            {
+                OnSave = () =>
+                {
+                    File.WriteAllBytes(workbookPath, SavedBytes);
+                    AfterSave?.Invoke(workbookPath);
+                }
+            };
             var result = await workbook.RunAsync(
                 workbookPath, timeouts, operation, cancellationToken);
             Assert.Equal(1, workbook.SaveCalls);
-            File.WriteAllBytes(workbookPath, SavedBytes);
-            AfterSave?.Invoke(workbookPath);
             if (ReleaseFailure is not null)
             {
                 BeforeFailure?.Invoke();

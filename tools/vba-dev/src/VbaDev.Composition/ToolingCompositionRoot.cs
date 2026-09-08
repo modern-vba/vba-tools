@@ -100,11 +100,11 @@ public static class ToolingCompositionRoot
             referencePlanner);
         var generationAutomation = workbookGenerationAutomation ?? new ExcelComWorkbookGenerationAutomation();
         var sourcePlanner = new WorkbookSourcePlanner();
-        var materializer = new WorkbookMaterializer(
+        var materializer = new WorkbookMaterializer(ownershipFactory,
             sourcePlanner,
             generationAutomation,
             new WorkbookReferenceNormalizer(referencePlanner),
-            new WorkbookOutputTransactionFactory());
+            new WorkbookOutputTransactionFactory(ownershipFactory));
         IReadOnlyList<IDoctorProjectDiagnosticProvider> staticProjectDiagnosticProviders =
         [
             new ProjectConfigurationDiagnosticProvider(),

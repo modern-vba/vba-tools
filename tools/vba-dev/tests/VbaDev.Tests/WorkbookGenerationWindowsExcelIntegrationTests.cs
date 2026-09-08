@@ -373,7 +373,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         var productionTargetPath = Path.Combine(temp.Path, "bin", "ProductionImported.xlsm");
         CreateEmptyMacroEnabledWorkbook(productionTemplatePath);
 
-        using (var importSourceSet = VbeImportSourceSet.Create(
+        using (var importSourceSet = VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(),
             new VbaSourceAdmission(() => activeCodePage)
                 .Admit(Path.GetDirectoryName(standardSourcePath)!,
                     VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None)))
@@ -1221,7 +1221,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         var orderedAdmission = new AdmittedVbaSourceSet(admission.Intent, admission.ActiveCodePage,
             new[] { firstClassSourcePath, secondClassSourcePath }
                 .Select(path => admission.Sources.Single(source => source.SourcePath == path)));
-        using (var sourceSet = VbeImportSourceSet.Create(orderedAdmission))
+        using (var sourceSet = VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(), orderedAdmission))
         {
             stagingDirectory = Path.GetDirectoryName(sourceSet.SourceFiles[0].SourcePath)!;
             IReadOnlyList<VbeIdentifierRecasingPair>? immediatePairs = null;
@@ -1315,7 +1315,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
 
         var admission = new VbaSourceAdmission(() => activeCodePage)
             .Admit(temp.Path, VbaSourceAdmissionIntent.ExplicitImport, cancellation.Token);
-        using (var verificationSourceSet = VbeImportSourceSet.Create(admission))
+        using (var verificationSourceSet = VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(), admission))
         {
             verificationStagingDirectory = Path.GetDirectoryName(
                 verificationSourceSet.SourceFiles[0].SourcePath)!;
@@ -1666,12 +1666,12 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         IWorkbookGenerationAutomation? automation,
         IWorkbookOutputTransactionFactory? transactionFactory)
         => new(
-            new WorkbookMaterializer(
+            new WorkbookMaterializer(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new WorkbookSourcePlanner(),
                 automation ?? new ExcelComWorkbookGenerationAutomation(),
                 new WorkbookReferenceNormalizer(new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),
-                transactionFactory ?? new WorkbookOutputTransactionFactory(),
-                new VbeImportSourceSetFactory(sourceSetCreated)));
+                transactionFactory ?? new WorkbookOutputTransactionFactory(new WindowsExactFileSystemObjectOwnershipFactory()),
+                new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory(), sourceSetCreated)));
 
     private static async Task<OrdinaryWorkbookFixture> CreateOrdinaryWorkbookFixtureAsync(
         TempDirectory temp,
@@ -1852,7 +1852,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
     private sealed class CancelAfterCommitTransactionFactory(
         CancellationTokenSource cancellation) : IWorkbookOutputTransactionFactory
     {
-        private readonly IWorkbookOutputTransactionFactory inner = new WorkbookOutputTransactionFactory();
+        private readonly IWorkbookOutputTransactionFactory inner = new WorkbookOutputTransactionFactory(new WindowsExactFileSystemObjectOwnershipFactory());
 
         public IWorkbookOutputTransaction Create(string templateWorkbookPath, string targetWorkbookPath)
             => new CancelAfterCommitTransaction(inner.Create(templateWorkbookPath, targetWorkbookPath), cancellation);
@@ -1863,6 +1863,12 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         CancellationTokenSource cancellation) : IWorkbookOutputTransaction
     {
         public string StagingWorkbookPath => inner.StagingWorkbookPath;
+
+        public void RetainWithoutCleanup() => inner.RetainWithoutCleanup();
+
+        public void CaptureSavedWorkbook() => inner.CaptureSavedWorkbook();
+
+        public void CompleteSavedCapture() => inner.CompleteSavedCapture();
 
         public void Commit()
         {
@@ -1876,12 +1882,13 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
     private static WorkbookMaterializer CreateGenerationPipeline(
         WorkbookAutomationTimeouts? baseTimeouts = null)
         => new(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             new WorkbookSourcePlanner(),
             (IWorkbookGenerationAutomation)new ExcelComWorkbookGenerationAutomation(),
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),
-            new WorkbookOutputTransactionFactory(),
-            new VbeImportSourceSetFactory(),
+            new WorkbookOutputTransactionFactory(new WindowsExactFileSystemObjectOwnershipFactory()),
+            new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory()),
             baseTimeouts);
 
     private static ImportCommand CreateImportCommand()
