@@ -98,6 +98,10 @@ internal sealed class VbaSemanticResolution
             currentDocument,
             declaration);
 
+    internal VbaEffectiveDeclaredType GetEffectiveDeclaredType(
+        VbaSourceDefinition definition, int parameterOrdinal = -1)
+        => nameResolution.EffectiveDeclaredTypes.Get(definition, parameterOrdinal);
+
     internal VbaSourceDefinition ProjectDefinitionPresentation(
         VbaSourceDefinition definition)
         => nameResolution.EffectiveDeclaredTypes.Project(
@@ -2101,7 +2105,14 @@ internal sealed class VbaSemanticResolution
             kind,
             accessorKind,
             conditionalPath,
-            editedDefinition?.Identity);
+            editedDefinition?.Identity,
+            fragmentRange,
+            declarationName.Kind switch
+            {
+                VbaCallableDeclarationNameKind.Function => VbaCallableKind.Function,
+                VbaCallableDeclarationNameKind.Sub => VbaCallableKind.Sub,
+                _ => VbaCallableKind.Property
+            });
     }
 
     private IEnumerable<VbaContractPrefixCompletionOrigin>

@@ -7621,7 +7621,7 @@ public sealed class WithEventsLanguageServerProcessTests
     }
 
     [Fact]
-    public async Task Recovered_WithEvents_variable_Rename_creates_no_dependent_handler_edits()
+    public async Task Recovered_WithEvents_variable_Rename_requires_effective_type_evidence()
     {
         await using var process = await LanguageServerProcessHarness.StartAsync();
         await process.InitializeAsync();
@@ -7656,16 +7656,10 @@ public sealed class WithEventsLanguageServerProcessTests
                 newName = "publisher"
             });
 
-        Assert.False(
-            rename.TryGetProperty("error", out var renameError),
-            renameError.ToString());
-        Assert.Equal(
-            [(Line: 2, NewText: "publisher"), (Line: 6, NewText: "publisher")],
-            rename.GetProperty("result").GetProperty("changes")
-                .GetProperty(workerUri).EnumerateArray().Select(edit => (
-                    Line: edit.GetProperty("range").GetProperty("start")
-                        .GetProperty("line").GetInt32(),
-                    NewText: edit.GetProperty("newText").GetString())));
+        Assert.True(rename.TryGetProperty("error", out var renameError));
+        Assert.Equal("analysisIncomplete", renameError.GetProperty("data").GetProperty("reason").GetString());
+        Assert.Contains("effective type", renameError.GetProperty("message").GetString());
+        Assert.False(rename.TryGetProperty("result", out _));
 
         await process.ShutdownAsync(3);
     }

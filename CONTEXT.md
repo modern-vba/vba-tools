@@ -2518,6 +2518,19 @@ partition, releases its retained revision state, and does not prevent a later
 revision from running.
 _Avoid_: document version, publish sequence, permanent project identity
 
+**DeclarationRelationshipPolicy**:
+The shared scope, namespace, member, Property-accessor, and procedure-result-name
+relationships used by conditional family formation, duplicate diagnostics,
+prospective declaration-name completion, and Rename. Consumers separately decide
+whether conditional variants coexist, which edited declaration to exclude,
+whether a family may form, and whether a complete hypothetical edit preserves
+meaning. Function result-name and Property Get local-result relationships use
+the physical containing procedure; Sub names do not reserve a local result name.
+Members of the same Enum conflict, while members of different Enums can coexist
+and still require qualification to preserve reference bindings. Enum members
+and module variables/constants remain declaration peers.
+_Avoid_: Rename-only scope matrix, no diagnostic means a safe Rename
+
 **DeclarationCollision**:
 A case-insensitive pair or set of simultaneously active source declarations
 that the MS-VBAL declaration-kind and namespace rules prohibit from sharing a
@@ -4149,6 +4162,15 @@ particular, after ruling out `conclusiveMixed` coverage, if any
 is still an `indeterminateCandidate`, the plan fails with
 `analysisIncomplete`; it neither leaves a potentially latent Event relationship
 unchanged nor guesses a dependent Rename.
+Every affected typed declaration also preserves its `EffectiveDeclaredType`.
+Changing omitted `rhs` to `value` under `DefLng R` fails with `resolutionChanged`
+because Long would become Variant. Variables, parameters, Function/Get returns,
+and dependent declarations use the same proof. Source type identities are
+compared through physical before/after declaration correspondence, so renaming
+the type itself does not look like a change to another type. Required unresolved
+or insufficient evidence fails with `analysisIncomplete`, including an affected
+unfinished `As` declaration; unrelated unchanged errors remain neutral. Rename
+never inserts qualifiers or `As` clauses to compensate for a meaning change.
 _Avoid_: text replacement, project-wide name reservation, compile-after-edit
 
 **RenameFailure**:

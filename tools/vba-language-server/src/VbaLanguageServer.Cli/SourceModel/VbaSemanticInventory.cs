@@ -3261,14 +3261,17 @@ public sealed class VbaSemanticInventory
         string newName,
         VbaProjectIdentityReadResult? projectIdentityRead = null)
     {
+        var physicalTargets = GetLogicalRenameTargetDefinitions(target);
         var candidates = sourceDocuments
             .SelectMany(document => document.Definitions)
             .Where(candidate => string.Equals(
                 candidate.Name,
                 newName,
                 StringComparison.OrdinalIgnoreCase))
-            .Where(candidate => IsSameDeclarationScope(target, candidate))
-            .Where(candidate => !AreMembersOfSameRenameTarget(target, candidate))
+            .Where(candidate => physicalTargets.Any(physical =>
+                IsSameDeclarationScope(physical, candidate)))
+            .Where(candidate => physicalTargets.All(physical =>
+                physical.Identity != candidate.Identity))
             .ToArray();
         var conflicts = VbaPropertyAccessorCoalescing.Coalesce(candidates)
             .OrderBy(candidate => candidate.Uri, StringComparer.OrdinalIgnoreCase)
@@ -3498,162 +3501,22 @@ public sealed class VbaSemanticInventory
     private bool IsSameDeclarationScope(
         VbaSourceDefinition target,
         VbaSourceDefinition candidate)
-    {
-        if (IsProjectNamespaceCollision(target, candidate))
-        {
-            return true;
-        }
-
-        if (definitionCandidates.ConditionalFamilies.HaveSameLogicalMemberScope(
-            target,
-            candidate))
-        {
-            return true;
-        }
-
-        if (!VbaProjectIdentityModel.SameDocument(
-            target.Uri,
-            candidate.Uri))
-        {
-            return false;
-        }
-
-        if (target.Visibility == VbaSourceDefinitionVisibility.Local
-            || candidate.Visibility == VbaSourceDefinitionVisibility.Local)
-        {
-            return IsProcedureLocalCollision(target, candidate);
-        }
-
-        if (target.Kind == VbaSourceDefinitionKind.TypeMember
-            || candidate.Kind == VbaSourceDefinitionKind.TypeMember)
-        {
-            return target.Kind == VbaSourceDefinitionKind.TypeMember
-                && candidate.Kind == VbaSourceDefinitionKind.TypeMember
-                && string.Equals(
-                    target.ParentTypeName,
-                    candidate.ParentTypeName,
-                    StringComparison.OrdinalIgnoreCase);
-        }
-
-        if (target.Kind == VbaSourceDefinitionKind.Event
-            || candidate.Kind == VbaSourceDefinitionKind.Event)
-        {
-            return target.Kind == VbaSourceDefinitionKind.Event
-                && candidate.Kind == VbaSourceDefinitionKind.Event;
-        }
-
-        if (IsModuleValueDeclaration(target)
-            && IsModuleValueDeclaration(candidate))
-        {
-            return true;
-        }
-
-        return IsDeclaredType(target) && IsDeclaredType(candidate);
-    }
-
-    private bool IsProcedureLocalCollision(
-        VbaSourceDefinition target,
-        VbaSourceDefinition candidate)
-    {
-        if (target.Visibility == VbaSourceDefinitionVisibility.Local
-            && candidate.Visibility == VbaSourceDefinitionVisibility.Local)
-        {
-            return target.ParentProcedureRange
-                == candidate.ParentProcedureRange;
-        }
-
-        var local = target.Visibility == VbaSourceDefinitionVisibility.Local
-            ? target
-            : candidate;
-        var moduleDeclaration = ReferenceEquals(local, target)
-            ? candidate
-            : target;
-        var possibleResultDeclarations =
-            moduleDeclaration.Kind == VbaSourceDefinitionKind.Property
-                ? sourceDocuments
-                    .SelectMany(document => document.Definitions)
-                    .Where(definition => AreMembersOfSameRenameTarget(
-                        moduleDeclaration,
-                        definition))
-                : [moduleDeclaration];
-        return possibleResultDeclarations.Any(declaration =>
-            IsResultBindingDeclaration(declaration, local)
-            && IsPhysicalContainingProcedure(declaration, local));
-    }
-
-    private static bool IsResultBindingDeclaration(
-        VbaSourceDefinition declaration,
-        VbaSourceDefinition local)
-        => local.Kind == VbaSourceDefinitionKind.Parameter
-            ? declaration.Kind == VbaSourceDefinitionKind.Procedure
-                && declaration.Signature?.CallableKind
-                    == VbaCallableKind.Function
-            : declaration.Kind == VbaSourceDefinitionKind.Procedure
-                    && declaration.Signature?.CallableKind
-                        == VbaCallableKind.Function
-                || declaration.Kind == VbaSourceDefinitionKind.Property
-                    && declaration.PropertyAccessorKind
-                        == VbaPropertyAccessorKind.Get;
-
-    private static bool IsPhysicalContainingProcedure(
-        VbaSourceDefinition declaration,
-        VbaSourceDefinition local)
-        => local.ParentProcedureRange is { } parentRange
-            && Contains(parentRange, declaration.Range.Start);
-
-    private static bool Contains(VbaRange range, VbaPosition position)
-        => IsAtOrAfter(position, range.Start)
-            && IsAtOrAfter(range.End, position);
-
-    private static bool IsAtOrAfter(VbaPosition left, VbaPosition right)
-        => left.Line > right.Line
-            || left.Line == right.Line
-                && left.Character >= right.Character;
-
-    private static bool IsProjectNamespaceCollision(
-        VbaSourceDefinition target,
-        VbaSourceDefinition candidate)
-    {
-        var targetIsModule = IsModuleIdentity(target);
-        var candidateIsModule = IsModuleIdentity(candidate);
-        var targetIsProjectVisibleType = IsProjectVisibleType(target);
-        var candidateIsProjectVisibleType = IsProjectVisibleType(candidate);
-        return targetIsModule && (candidateIsModule || candidateIsProjectVisibleType)
-            || candidateIsModule && targetIsProjectVisibleType
-            || targetIsProjectVisibleType && candidateIsProjectVisibleType;
-    }
+        => VbaDeclarationRelationshipPolicy.ShareDeclarationSpace(target, candidate)
+            || definitionCandidates.ConditionalFamilies.HaveSameLogicalMemberScope(target, candidate);
 
     private static bool IsModuleIdentity(VbaSourceDefinition definition)
         => definition.Kind is VbaSourceDefinitionKind.Module
             or VbaSourceDefinitionKind.Class
             or VbaSourceDefinitionKind.Form;
 
-    private static bool IsProjectVisibleType(VbaSourceDefinition definition)
-        => definition.Visibility.IsProjectVisible()
-            && IsDeclaredType(definition);
+    private static bool IsAtOrAfter(VbaPosition left, VbaPosition right)
+        => left.Line > right.Line
+            || left.Line == right.Line
+                && left.Character >= right.Character;
 
-    private static bool IsDeclaredType(VbaSourceDefinition definition)
-        => definition.Kind is VbaSourceDefinitionKind.Enum
-            or VbaSourceDefinitionKind.Type;
-
-    private static bool IsModuleValueDeclaration(
-        VbaSourceDefinition definition)
-        => definition.Kind is VbaSourceDefinitionKind.Procedure
-            or VbaSourceDefinitionKind.Property
-            or VbaSourceDefinitionKind.Constant
-            or VbaSourceDefinitionKind.Variable
-            or VbaSourceDefinitionKind.EnumMember;
-
-    private static bool IsContainingProcedure(
-        VbaSourceDefinition procedure,
-        VbaSourceDefinition local)
-        => procedure.Kind is VbaSourceDefinitionKind.Procedure
-                or VbaSourceDefinitionKind.Property
-            && local.ParentProcedureName is not null
-            && string.Equals(
-                procedure.Name,
-                local.ParentProcedureName,
-                StringComparison.OrdinalIgnoreCase);
+    private static bool Contains(VbaRange range, VbaPosition position)
+        => IsAtOrAfter(position, range.Start)
+            && IsAtOrAfter(range.End, position);
 
     private bool AreMembersOfSameRenameTarget(
         VbaSourceDefinition target,
@@ -3915,6 +3778,13 @@ public sealed class VbaSemanticInventory
             }
         }
 
+        var declaredTypeFailure = ProveEffectiveDeclaredTypesArePreserved(
+            hypothetical, changes, cancellationToken);
+        if (declaredTypeFailure is not null)
+        {
+            return declaredTypeFailure;
+        }
+
         var callCompatibilityFailure =
             ProveConditionalCallCompatibilitiesArePreserved(
                 hypothetical,
@@ -3935,6 +3805,67 @@ public sealed class VbaSemanticInventory
                 occurrenceTargetCorrespondences.ToArray())
         };
 
+        return null;
+    }
+
+    private VbaRenameFailure? ProveEffectiveDeclaredTypesArePreserved(
+        VbaSemanticInventory hypothetical,
+        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        CancellationToken cancellationToken)
+    {
+        foreach (var before in sourceDocuments.SelectMany(document => document.Definitions)
+                     .Where(definition => definition.Kind is VbaSourceDefinitionKind.Variable
+                         or VbaSourceDefinitionKind.Parameter or VbaSourceDefinitionKind.Procedure
+                         or VbaSourceDefinitionKind.Property or VbaSourceDefinitionKind.TypeMember))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var after = FindHypotheticalDefinition(hypothetical, before, changes);
+            if (after is null)
+            {
+                return AnalysisIncomplete("Rename could not match an affected typed declaration.");
+            }
+            if (before.Name.Equals(after.Name, StringComparison.OrdinalIgnoreCase)
+                && before.TypeReference == after.TypeReference)
+            {
+                continue;
+            }
+
+            var beforeType = semanticResolution.GetEffectiveDeclaredType(before);
+            var afterType = hypothetical.semanticResolution.GetEffectiveDeclaredType(after);
+            if (beforeType.State == VbaEffectiveDeclaredTypeState.NoReturnType
+                && afterType.State == VbaEffectiveDeclaredTypeState.NoReturnType)
+            {
+                continue;
+            }
+            if (beforeType.State != VbaEffectiveDeclaredTypeState.Known
+                || afterType.State != VbaEffectiveDeclaredTypeState.Known)
+            {
+                return AnalysisIncomplete($"Rename could not prove the effective type of '{before.Name}' is preserved.");
+            }
+
+            var sameType = Equals(beforeType.Identity, afterType.Identity);
+            if (beforeType.Target is { } beforeTarget && afterType.Target is { } afterTarget)
+            {
+                var expected = beforeTarget.PhysicalDefinitions
+                    .Select(definition => FindHypotheticalDefinition(hypothetical, definition, changes))
+                    .ToArray();
+                if (expected.Any(definition => definition is null))
+                {
+                    return AnalysisIncomplete($"Rename could not match the type declaration of '{before.Name}'.");
+                }
+                var expectedIdentities = expected.Select(definition => definition!.Identity).ToHashSet();
+                var actualIdentities = afterTarget.PhysicalDefinitions.Select(definition => definition.Identity).ToHashSet();
+                sameType = beforeTarget.IsConditionalFamily == afterTarget.IsConditionalFamily
+                    && expectedIdentities.Count == expected.Length
+                    && actualIdentities.Count == afterTarget.PhysicalDefinitions.Count
+                    && expectedIdentities.SetEquals(actualIdentities);
+            }
+            if (!sameType)
+            {
+                return ResolutionChanged($"Rename would change the effective type of '{before.Name}' "
+                    + $"from {beforeType.DisplayName} to {afterType.DisplayName}. Choose a name that preserves its declared type.");
+            }
+        }
         return null;
     }
 
