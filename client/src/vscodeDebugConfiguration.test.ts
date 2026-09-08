@@ -1834,6 +1834,293 @@ test('dynamic debug configurations expose one transient active-procedure launch 
   assert.deepEqual(inactiveIntegration.provideDynamicDebugConfigurations(), []);
 });
 
+test('debug document selection uses ordinal identity and preserves the manifest name and source URI', async () => {
+  const projectRoot = path.resolve('C:/work/OrdinalProject');
+  const sourceText = 'Public Sub Example()\nEnd Sub\n';
+  for (const [storedName, selector] of [['Σ', 'ς'], ['µ', 'Μ'], ['𐐀', '𐐨']]) {
+    const sourcePath = path.join(projectRoot, 'src', storedName, 'DebugModule.bas');
+    const integration = createIntegration({
+      manifests: new Map([
+        [path.join(projectRoot, 'vba-project.json'), manifestJson('OrdinalProject', [storedName])]
+      ]),
+      sources: new Map([[sourcePath, sourceText]])
+    });
+
+    const configuration = await integration.resolveDebugConfiguration({
+      project: projectRoot,
+      document: selector,
+      module: 'DebugModule',
+      procedure: 'Example'
+    });
+
+    assert.equal(configuration.document, storedName);
+    assert.equal(configuration.__vbaDebugWorkbookFileName, `${storedName}.xlsm`);
+    const snapshot = configuration.sourceSnapshot as {
+      sources: Array<{ sourceUri: string }>;
+    };
+    assert.equal(snapshot.sources[0].sourceUri, pathToFileURL(sourcePath).href);
+  }
+});
+
+test('debug document selection keeps ordinal-distinct Unicode names separate', async () => {
+  const projectRoot = path.resolve('C:/work/OrdinalProject');
+  for (const [storedName, selector] of [['K', 'K'], ['é', 'e\u0301']]) {
+    let captureCount = 0;
+    const integration = createIntegration({
+      manifests: new Map([
+        [path.join(projectRoot, 'vba-project.json'), manifestJson('OrdinalProject', [storedName])]
+      ]),
+      sources: new Map(),
+      captureSourceInventory: async sourceSetPath => {
+        captureCount += 1;
+        return { sourceSetPath, activeWindowsCodePage: 65001, entries: [] };
+      }
+    });
+
+    await assert.rejects(
+      () => integration.resolveDebugConfiguration({
+        project: projectRoot, document: selector, module: 'DebugModule', procedure: 'Example'
+      }),
+      VbaDebugSelectionError
+    );
+    assert.equal(captureCount, 0);
+  }
+});
+
+test('debug launch rejects ordinal duplicate transported relative paths with both spellings', async () => {
+  const projectRoot = path.resolve('C:/work/OrdinalProject');
+  const integration = createIntegration({
+    manifests: new Map([
+      [path.join(projectRoot, 'vba-project.json'), manifestJson('OrdinalProject', ['Book1'])]
+    ]),
+    sources: new Map(),
+    captureSourceInventory: async sourceSetPath => ({
+      sourceSetPath,
+      activeWindowsCodePage: 65001,
+      entries: ['Σ.bas', 'ς.bas'].map(relativePath => ({
+        relativePath,
+        sourceUri: pathToFileURL(path.join(sourceSetPath, relativePath)).href,
+        encoding: 'utf8',
+        bytes: new TextEncoder().encode('Public Sub Example()\nEnd Sub\n')
+      }))
+    })
+  });
+
+  await assert.rejects(
+    () => integration.resolveDebugConfiguration({
+      project: projectRoot, document: 'Book1', module: 'DebugModule', procedure: 'Example'
+    }),
+    error => error instanceof VbaDebugSelectionError
+      && /duplicate relative path/i.test(error.message)
+      && error.message.includes('Σ.bas')
+      && error.message.includes('ς.bas')
+  );
+});
+
+test('debug targeting matches ordinal Windows source ownership and preserves captured URI spelling', async () => {
+  const projectRoot = path.resolve('C:/work/Σ');
+  const activePath = path.resolve('C:/work/ς/src/Book1/ς.bas');
+  const capturedSourceUri = 'file:///C:/work/Σ/src/Book1/Σ.bas';
+  const integration = createIntegration({
+    activeEditor: { uriPath: activePath, line: 2, character: 1 },
+    manifests: new Map([
+      [path.join(projectRoot, 'vba-project.json'), manifestJson('OrdinalProject', ['Book1'])]
+    ]),
+    sources: new Map(),
+    getSourceBreakpoints: () => [{ uriPath: activePath, line: 3, enabled: true }],
+    captureSourceInventory: async () => ({
+      sourceSetPath: path.resolve('C:/work/ς/src/Book1'),
+      activeWindowsCodePage: 65001,
+      entries: [{
+        relativePath: 'Σ.bas',
+        sourceUri: capturedSourceUri,
+        encoding: 'utf8',
+        bytes: new TextEncoder().encode('Public Sub Example()\nEnd Sub\n')
+      }]
+    })
+  });
+
+  const configuration = await integration.resolveDebugConfiguration({});
+
+  assert.equal(configuration.project, projectRoot);
+  assert.equal(configuration.document, 'Book1');
+  assert.deepEqual(configuration.sourceSnapshot, {
+    schemaVersion: 2,
+    sources: [{
+      relativePath: 'Σ.bas',
+      sourceUri: capturedSourceUri,
+      encoding: 'utf8',
+      contentBase64: Buffer.from('Public Sub Example()\nEnd Sub\n').toString('base64')
+    }],
+    activeSource: { sourceUri: capturedSourceUri, line: 2, character: 1 },
+    breakpoints: [{ sourceUri: capturedSourceUri, line: 3 }]
+  });
+});
+
+test('debug launch rejects duplicate persistent source paths with both URI spellings', async () => {
+  const projectRoot = path.resolve('C:/work/OrdinalProject');
+  const sourceUris = [
+    'file:///C:/work/OrdinalProject/src/Book1/%CE%A3.bas',
+    'file:///C:/work/OrdinalProject/src/Book1/ς.bas'
+  ];
+  const integration = createIntegration({
+    manifests: new Map([
+      [path.join(projectRoot, 'vba-project.json'), manifestJson('OrdinalProject', ['Book1'])]
+    ]),
+    sources: new Map(),
+    captureSourceInventory: async sourceSetPath => ({
+      sourceSetPath,
+      activeWindowsCodePage: 65001,
+      entries: sourceUris.map((sourceUri, index) => ({
+        relativePath: `${index}.bas`,
+        sourceUri,
+        encoding: 'utf8',
+        bytes: new TextEncoder().encode('Public Sub Example()\nEnd Sub\n')
+      }))
+    })
+  });
+
+  await assert.rejects(
+    () => integration.resolveDebugConfiguration({
+      project: projectRoot, document: 'Book1', module: 'DebugModule', procedure: 'Example'
+    }),
+    error => error instanceof VbaDebugSelectionError
+      && /duplicate source path/i.test(error.message)
+      && sourceUris.every(sourceUri => error.message.includes(sourceUri))
+  );
+});
+
+test('debug launch identifies both transported entries sharing one persistent source URI', async () => {
+  const projectRoot = path.resolve('C:/work/OrdinalProject');
+  const sourceUri = 'file:///C:/work/OrdinalProject/src/Book1/Shared.bas';
+  const integration = createIntegration({
+    manifests: new Map([
+      [path.join(projectRoot, 'vba-project.json'), manifestJson('OrdinalProject', ['Book1'])]
+    ]),
+    sources: new Map(),
+    captureSourceInventory: async sourceSetPath => ({
+      sourceSetPath,
+      activeWindowsCodePage: 65001,
+      entries: ['First.bas', 'Second.bas'].map(relativePath => ({
+        relativePath,
+        sourceUri,
+        encoding: 'utf8',
+        bytes: new TextEncoder().encode('Public Sub Example()\nEnd Sub\n')
+      }))
+    })
+  });
+
+  await assert.rejects(
+    () => integration.resolveDebugConfiguration({
+      project: projectRoot, document: 'Book1', module: 'DebugModule', procedure: 'Example'
+    }),
+    error => error instanceof VbaDebugSelectionError
+      && /duplicate source URI/i.test(error.message)
+      && error.message.includes('First.bas')
+      && error.message.includes('Second.bas')
+      && error.message.includes(sourceUri)
+  );
+});
+
+test('debug breakpoints preserve their existing order and reject nonadjacent ordinal duplicates', async () => {
+  const projectRoot = path.resolve('C:/work/OrdinalProject');
+  const sourceUris = [
+    'file:///C:/work/OrdinalProject/src/Book1/K.bas',
+    'file:///C:/work/OrdinalProject/src/Book1/K.bas'
+  ];
+  const breakpoints: VbaDebugSourceBreakpoint[] = ['K.bas', 'K.bas'].map(name => ({
+    uriPath: path.join(projectRoot, 'src', 'Book1', name), line: 1, enabled: true
+  }));
+  const integration = createIntegration({
+    manifests: new Map([
+      [path.join(projectRoot, 'vba-project.json'), manifestJson('OrdinalProject', ['Book1'])]
+    ]),
+    sources: new Map(),
+    getSourceBreakpoints: () => breakpoints,
+    captureSourceInventory: async sourceSetPath => ({
+      sourceSetPath,
+      activeWindowsCodePage: 65001,
+      entries: ['K.bas', 'K.bas'].map((relativePath, index) => ({
+        relativePath,
+        sourceUri: sourceUris[index],
+        encoding: 'utf8',
+        bytes: new TextEncoder().encode('Public Sub Example()\nEnd Sub\n')
+      }))
+    })
+  });
+  const launch = {
+    project: projectRoot, document: 'Book1', module: 'DebugModule', procedure: 'Example'
+  };
+
+  const configuration = await integration.resolveDebugConfiguration(launch);
+
+  assert.deepEqual(
+    (configuration.sourceSnapshot as { breakpoints: unknown }).breakpoints,
+    sourceUris.map(sourceUri => ({ sourceUri, line: 1 }))
+  );
+
+  breakpoints.push({ ...breakpoints[0] });
+  await assert.rejects(
+    () => integration.resolveDebugConfiguration(launch),
+    error => error instanceof VbaDebugSelectionError
+      && /duplicate enabled VBA breakpoint/i.test(error.message)
+      && error.message.includes(`${sourceUris[0]}:2`)
+  );
+});
+
+test('debug restart accepts an ordinal project alias and retains its bound project spelling', async () => {
+  const projectRoot = path.resolve('C:/work/Σ');
+  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'DebugModule.bas');
+  const integration = createIntegration({
+    manifests: new Map([
+      [path.join(projectRoot, 'vba-project.json'), manifestJson('OrdinalProject', ['Book1'])]
+    ]),
+    sources: new Map([[sourcePath, 'Public Sub Example()\nEnd Sub\n']])
+  });
+  const configuration = integration.prepareDebugConfigurationForRestart({
+    type: 'vba', request: 'launch', name: 'Ordinal restart',
+    project: projectRoot, document: 'Book1', module: 'DebugModule', procedure: 'Example',
+    sourceSnapshot: { schemaVersion: 2, sources: [] }
+  });
+
+  const captured = await integration.captureBoundRestartConfiguration({
+    ...configuration,
+    project: path.resolve('C:/work/ς')
+  });
+
+  assert.equal(captured.project, projectRoot);
+  assert.equal(captured.document, 'Book1');
+  assert.equal(
+    (captured.sourceSnapshot as { sources: Array<{ sourceUri: string }> }).sources[0].sourceUri,
+    pathToFileURL(sourcePath).href
+  );
+});
+
+test('debug launch reports manifest identity conflicts before source capture', async () => {
+  const projectRoot = path.resolve('C:/work/OrdinalProject');
+  const manifestPath = path.join(projectRoot, 'vba-project.json');
+  let captureCount = 0;
+  const integration = createIntegration({
+    manifests: new Map([[manifestPath, manifestJson('OrdinalProject', ['Σ', 'ς'])]]),
+    sources: new Map(),
+    captureSourceInventory: async sourceSetPath => {
+      captureCount += 1;
+      return { sourceSetPath, activeWindowsCodePage: 65001, entries: [] };
+    }
+  });
+
+  await assert.rejects(
+    () => integration.resolveDebugConfiguration({
+      project: projectRoot, document: 'Σ', module: 'DebugModule', procedure: 'Example'
+    }),
+    error => error instanceof VbaDebugSelectionError
+      && error.message.includes(manifestPath)
+      && error.message.includes('Σ')
+      && error.message.includes('ς')
+  );
+  assert.equal(captureCount, 0);
+});
+
 function createIntegration(options: {
   adapterSessionId?: string | undefined;
   activeEditor?: { uriPath: string; line: number; character: number } | undefined;

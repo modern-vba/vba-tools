@@ -1,8 +1,10 @@
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { ordinalIgnoreCaseKey } from './ordinalIgnoreCase';
 import { parseProjectManifest } from './projectManifest';
 import { SnapshotSourceInventory } from './snapshotSourceInventory';
+import { relativeWindowsDescendantPath, windowsPathKey } from './windowsPathIdentity';
 
 export interface VbaDebugActiveEditor {
   readonly uriPath: string;
@@ -221,16 +223,19 @@ function createTransportedSnapshotConfiguration(
   }
 
   const sourceUrisByPath = new Map<string, string>();
-  const seenRelativePaths = new Set<string>();
+  const seenSourceUris = new Map<string, { relativePath: string; sourceUri: string }>();
+  const seenRelativePaths = new Map<string, string>();
   const sources = inventory.entries.map((entry) => {
     const relativePath = safeTransportRelativePath(entry.relativePath);
-    const relativeKey = relativePath.toLowerCase();
-    if (seenRelativePaths.has(relativeKey)) {
+    const relativeKey = ordinalIgnoreCaseKey(relativePath);
+    const previousRelativePath = seenRelativePaths.get(relativeKey);
+    if (previousRelativePath !== undefined) {
       throw new VbaDebugSelectionError(
-        `The captured VBA source inventory contains a duplicate relative path: ${relativePath}`
+        `The captured VBA source inventory contains a duplicate relative path: ` +
+        `'${previousRelativePath}' and '${relativePath}'.`
       );
     }
-    seenRelativePaths.add(relativeKey);
+    seenRelativePaths.set(relativeKey, relativePath);
 
     const extension = path.posix.extname(relativePath).toLowerCase();
     const contentBase64 = Buffer.from(entry.bytes).toString('base64');
@@ -262,7 +267,26 @@ function createTransportedSnapshotConfiguration(
         `Text VBA source '${relativePath}' requires a persistent file URI.`
       );
     }
-    sourceUrisByPath.set(canonicalPath(persistentPath), entry.sourceUri);
+    const sourceUriKey = ordinalIgnoreCaseKey(entry.sourceUri);
+    const previousSource = seenSourceUris.get(sourceUriKey);
+    if (previousSource !== undefined) {
+      throw new VbaDebugSelectionError(
+        `The captured VBA source inventory contains a duplicate source URI: ` +
+        `'${previousSource.relativePath}' (${previousSource.sourceUri}) and ` +
+        `'${relativePath}' (${entry.sourceUri}).`
+      );
+    }
+    seenSourceUris.set(sourceUriKey, { relativePath, sourceUri: entry.sourceUri });
+
+    const sourcePathKey = canonicalPath(persistentPath);
+    const previousSourceUri = sourceUrisByPath.get(sourcePathKey);
+    if (previousSourceUri !== undefined) {
+      throw new VbaDebugSelectionError(
+        `The captured VBA source inventory contains a duplicate source path: ` +
+        `'${previousSourceUri}' and '${entry.sourceUri}'.`
+      );
+    }
+    sourceUrisByPath.set(sourcePathKey, entry.sourceUri);
     return {
       relativePath,
       sourceUri: entry.sourceUri,
@@ -339,17 +363,15 @@ function captureTransportedSourceBreakpoints(
     compareOrdinal(left.sourceUri.toLowerCase(), right.sourceUri.toLowerCase()) ||
     left.line - right.line
   ));
-  for (let index = 1; index < breakpoints.length; index += 1) {
-    const previous = breakpoints[index - 1];
-    const current = breakpoints[index];
-    if (
-      previous.sourceUri.toLowerCase() === current.sourceUri.toLowerCase() &&
-      previous.line === current.line
-    ) {
+  const seenBreakpoints = new Set<string>();
+  for (const current of breakpoints) {
+    const identity = `${ordinalIgnoreCaseKey(current.sourceUri)}\n${current.line}`;
+    if (seenBreakpoints.has(identity)) {
       throw new VbaDebugSelectionError(
         `Duplicate enabled VBA breakpoint at ${current.sourceUri}:${current.line + 1}.`
       );
     }
+    seenBreakpoints.add(identity);
   }
   return breakpoints;
 }
@@ -445,7 +467,13 @@ interface ProjectDocumentSelection {
 async function loadProjects(host: VbaDebugConfigurationHost): Promise<LoadedProject[]> {
   const projects: LoadedProject[] = [];
   for (const manifestPath of await host.findProjectManifests(host.workspaceRoots)) {
-    const manifest = parseProjectManifest(await host.readTextFile(manifestPath));
+    let identityConflict: string | undefined;
+    const manifest = parseProjectManifest(await host.readTextFile(manifestPath), message => {
+      identityConflict = message;
+    });
+    if (identityConflict !== undefined) {
+      throw new VbaDebugSelectionError(`${manifestPath}: ${identityConflict}`);
+    }
     if (manifest) {
       projects.push({
         projectRoot: path.dirname(manifestPath),
@@ -555,15 +583,11 @@ function isExportedVbaSource(filePath: string): boolean {
 }
 
 function isPathWithin(filePath: string, directoryPath: string): boolean {
-  const relativePath = path.relative(path.resolve(directoryPath), path.resolve(filePath));
-  return relativePath.length > 0
-    && !relativePath.startsWith(`..${path.sep}`)
-    && relativePath !== '..'
-    && !path.isAbsolute(relativePath);
+  return relativeWindowsDescendantPath(path.resolve(directoryPath), path.resolve(filePath)) !== undefined;
 }
 
 function sameName(left: string, right: string): boolean {
-  return left.toLowerCase() === right.toLowerCase();
+  return ordinalIgnoreCaseKey(left) === ordinalIgnoreCaseKey(right);
 }
 
 function samePath(left: string, right: string): boolean {
@@ -571,7 +595,7 @@ function samePath(left: string, right: string): boolean {
 }
 
 function canonicalPath(filePath: string): string {
-  return path.normalize(path.resolve(filePath)).toLowerCase();
+  return windowsPathKey(path.resolve(filePath));
 }
 
 function compareOrdinal(left: string, right: string): number {

@@ -1,6 +1,7 @@
 import * as path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { SnapshotProviderCancellationError, SnapshotProviders, resolveSnapshotProviders, snapshotActiveWindowsCodePage } from './snapshotProviders';
+import { windowsPathKey } from './windowsPathIdentity';
 
 import {
   CompanionExecutableResolver,
@@ -866,7 +867,7 @@ interface OwnedVbaDebugAdapterSession {
 }
 
 function canonicalVbaDebugProjectRoot(projectRoot: string): string {
-  return path.normalize(path.resolve(projectRoot)).toLowerCase();
+  return windowsPathKey(path.resolve(projectRoot));
 }
 
 class VbaDebugCancellationController {

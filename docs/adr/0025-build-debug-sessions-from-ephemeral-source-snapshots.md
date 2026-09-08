@@ -28,6 +28,13 @@ inventoried path that is deleted or renamed before its one read fails capture;
 a path already read remains part of the snapshot. Ordinary `vba-dev build`
 remains disk-only.
 
+ADR 0049 aligns extension name and lexical Windows source-path identity with
+the existing .NET OrdinalIgnoreCase rule. Strict descendant proof also derives
+the original-spelled relative path. Duplicate source identities fail capture,
+including two matching dirty editors with identical content; one dirty editor
+may still overlay one matching disk source. Equality keys do not change source
+ordering, URI admission, byte interpretation, or existing cleanup ownership.
+
 Clean source and `.frx` sidecars retain their exact disk bytes. Dirty editor
 source is limited to BOM-marked UTF-8, BOM-marked UTF-16 LE
 or BE, and the operation-fixed active Windows ANSI code page without BOM. The

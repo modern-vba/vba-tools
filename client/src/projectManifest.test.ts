@@ -22,6 +22,57 @@ test('ProjectManifest adapter reads canonical manifest fixture for Test Explorer
   });
 });
 
+test('ProjectManifest adapter selects an ordinal-equivalent primary document and preserves its spelling', () => {
+  const fixture = JSON.parse(readProjectManifestFixture('document-source-set.json'));
+  fixture.documents = { '\u03a3': fixture.documents.Book1 };
+  fixture.primaryDocument = '\u03c2';
+
+  const manifest = parseProjectManifest(JSON.stringify(fixture));
+
+  assert.equal(manifest?.primaryDocument, '\u03c2');
+  assert.deepEqual(manifest?.documents.map((document) => document.name), ['\u03a3']);
+});
+
+test('ProjectManifest primary selection follows ordinal Unicode equality without normalizing names', () => {
+  for (const [storedName, primaryName, equivalent] of [
+    ['\u03a3', '\u03c2', true],
+    ['\u00b5', '\u039c', true],
+    ['\u{10400}', '\u{10428}', true],
+    ['K', '\u212a', false],
+    ['\u00c5', 'A\u030a', false]
+  ] as const) {
+    const fixture = JSON.parse(readProjectManifestFixture('document-source-set.json'));
+    fixture.documents = { [storedName]: fixture.documents.Book1 };
+    fixture.primaryDocument = primaryName;
+
+    const manifest = parseProjectManifest(JSON.stringify(fixture));
+
+    assert.equal(manifest !== undefined, equivalent, `${storedName} / ${primaryName}`);
+    if (equivalent) {
+      assert.equal(manifest?.primaryDocument, primaryName);
+      assert.equal(manifest?.documents[0].name, storedName);
+    }
+  }
+});
+
+test('ProjectManifest adapter identifies both conflicting document names without selecting one', () => {
+  const fixture = JSON.parse(readProjectManifestFixture('document-source-set.json'));
+  fixture.documents = {
+    '\u03a3': fixture.documents.Book1,
+    '\u03c2': { ...fixture.documents.Book1, sourcePath: 'src/Other' }
+  };
+  fixture.primaryDocument = '\u03a3';
+  const conflicts: string[] = [];
+
+  const manifest = parseProjectManifest(JSON.stringify(fixture), (message) => conflicts.push(message));
+
+  assert.equal(manifest, undefined);
+  assert.equal(conflicts.length, 1);
+  assert.match(conflicts[0], /document/i);
+  assert.ok(conflicts[0].includes('\u03a3'));
+  assert.ok(conflicts[0].includes('\u03c2'));
+});
+
 test('ProjectManifest adapter accepts direct-intent state on reference selections', () => {
   const manifest = parseProjectManifest(
     readProjectManifestFixture('references.json'));
@@ -140,6 +191,67 @@ test('ProjectManifest adapter rejects case-insensitive duplicate reference names
   assert.equal(
     parseProjectManifest(readProjectManifestFixture('invalid-duplicate-reference-name.json')),
     undefined);
+});
+
+test('ProjectManifest adapter identifies ordinal-equivalent reference entries in their document', () => {
+  const fixture = JSON.parse(readProjectManifestFixture('document-source-set.json'));
+  fixture.documents.Book1.references = [
+    { name: '\u03a3', requested: true },
+    { name: '\u03c2', requested: false }
+  ];
+  const conflicts: string[] = [];
+
+  const manifest = parseProjectManifest(JSON.stringify(fixture), (message) => conflicts.push(message));
+
+  assert.equal(manifest, undefined);
+  assert.equal(conflicts.length, 1);
+  assert.match(conflicts[0], /reference/i);
+  assert.ok(conflicts[0].includes('Book1'));
+  assert.ok(conflicts[0].includes('\u03a3'));
+  assert.ok(conflicts[0].includes('\u03c2'));
+});
+
+test('ProjectManifest reference uniqueness keeps distinct Unicode names separate', () => {
+  for (const names of [['K', '\u212a'], ['\u00c5', 'A\u030a']]) {
+    const fixture = JSON.parse(readProjectManifestFixture('document-source-set.json'));
+    fixture.documents.Book1.references = names.map((name) => ({ name, requested: true }));
+
+    assert.notEqual(parseProjectManifest(JSON.stringify(fixture)), undefined, names.join(' / '));
+  }
+});
+
+test('ProjectManifest CommonModule matching follows ordinal Unicode identity', () => {
+  for (const [name, fileName, equivalent] of [
+    ['\u03a3', '\u03c2', true],
+    ['\u00b5', '\u039c', true],
+    ['\u{10400}', '\u{10428}', true],
+    ['K', '\u212a', false],
+    ['\u00c5', 'A\u030a', false]
+  ] as const) {
+    const fixture = JSON.parse(readProjectManifestFixture('document-source-set.json'));
+    fixture.documents.Book1.commonModules = [{
+      name, moduleFile: `${fileName}.bas`, requested: true, testOnly: false, orphaned: false
+    }];
+
+    assert.equal(parseProjectManifest(JSON.stringify(fixture)) !== undefined, equivalent, `${name} / ${fileName}`);
+  }
+});
+
+test('ProjectManifest adapter identifies conflicting CommonModule selections in their document', () => {
+  const fixture = JSON.parse(readProjectManifestFixture('document-source-set.json'));
+  fixture.documents.Book1.commonModules = ['\u03a3', '\u03c2'].map((name) => ({
+    name, moduleFile: `${name}.bas`, requested: true, testOnly: false, orphaned: false
+  }));
+  const conflicts: string[] = [];
+
+  const manifest = parseProjectManifest(JSON.stringify(fixture), (message) => conflicts.push(message));
+
+  assert.equal(manifest, undefined);
+  assert.equal(conflicts.length, 1);
+  assert.match(conflicts[0], /CommonModule/);
+  assert.ok(conflicts[0].includes('Book1'));
+  assert.ok(conflicts[0].includes('\u03a3'));
+  assert.ok(conflicts[0].includes('\u03c2'));
 });
 
 test('ProjectManifest adapter rejects an invalid CommonModules entry', () => {

@@ -96,6 +96,167 @@ test('dirty produced bytes reject unsupported and truncated signatures before de
   }
 });
 
+test('snapshot capture rejects equivalent dirty editor paths even when text and encoding match', async () => {
+  const sourceSetPath = path.resolve('snapshot');
+  const editorPaths = ['Σ.bas', 'ς.bas'].map(fileName => path.join(sourceSetPath, fileName));
+  const text = 'Public Sub Main()\r\nEnd Sub\r\n';
+
+  await assert.rejects(captureSnapshotSourceInventory(sourceSetPath, {
+    getActiveWindowsCodePage: () => 65001,
+    getOpenTextDocuments: () => editorPaths.map(filePath => ({
+      uriScheme: 'file',
+      uriPath: filePath,
+      fileName: filePath,
+      isDirty: true,
+      encoding: 'utf8',
+      getText: () => text
+    })),
+    findSourceFiles: async () => [],
+    readFile: async () => { throw new Error('Dirty sources must not read disk.'); },
+    encodeText: async value => new TextEncoder().encode(value),
+    decodeText: async bytes => new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  }), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /duplicate.*dirty|dirty.*duplicate/i);
+    for (const editorPath of editorPaths) {
+      assert.ok(error.message.includes(editorPath), error.message);
+    }
+    return true;
+  });
+});
+
+test('snapshot capture overlays Unicode-equivalent paths and preserves disk layout and editor URI spelling', async () => {
+  const sourceSetPath = path.resolve('snapshot', 'Σ', 'Book1');
+  const diskPath = path.resolve('snapshot', 'ς', 'Book1', 'MiXeD', 'Σ.bas');
+  const editorPath = path.resolve('snapshot', 'σ', 'book1', 'mixed', 'ς.BAS');
+  const text = 'Public Sub Captured()\r\nEnd Sub\r\n';
+  let textReads = 0;
+  const inventory = await captureSnapshotSourceInventory(sourceSetPath, {
+    getActiveWindowsCodePage: () => 65001,
+    getOpenTextDocuments: () => [{
+      uriScheme: 'file',
+      uriPath: editorPath,
+      fileName: editorPath,
+      isDirty: true,
+      encoding: 'utf8',
+      getText: () => { textReads += 1; return text; }
+    }],
+    findSourceFiles: async () => [diskPath],
+    readFile: async () => { throw new Error('The captured dirty editor must replace its equivalent disk source.'); },
+    encodeText: async value => new TextEncoder().encode(value),
+    decodeText: async bytes => new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  });
+
+  assert.equal(inventory.sourceSetPath, sourceSetPath);
+  assert.deepEqual(inventory.entries, [{
+    relativePath: path.join('MiXeD', 'Σ.bas'),
+    sourceUri: pathToFileURL(editorPath).href,
+    encoding: 'utf8',
+    bytes: new TextEncoder().encode(text)
+  }]);
+  assert.equal(textReads, 1);
+});
+
+test('snapshot capture identifies both equivalent disk paths when rejecting a duplicate inventory', async () => {
+  const sourceSetPath = path.resolve('snapshot');
+  const diskPaths = ['µ.bas', 'μ.BAS'].map(fileName => path.join(sourceSetPath, fileName));
+
+  await assert.rejects(captureSnapshotSourceInventory(sourceSetPath, {
+    getActiveWindowsCodePage: () => 65001,
+    getOpenTextDocuments: () => [],
+    findSourceFiles: async () => diskPaths,
+    readFile: async () => new TextEncoder().encode('Public Sub Main()\r\nEnd Sub\r\n'),
+    encodeText: async value => new TextEncoder().encode(value),
+    decodeText: async bytes => new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  }), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /duplicate/i);
+    for (const diskPath of diskPaths) {
+      assert.ok(error.message.includes(diskPath), error.message);
+    }
+    return true;
+  });
+});
+
+test('snapshot capture overlays micro-sign and supplementary case aliases after normalizing path segments', async () => {
+  const sourceSetPath = path.resolve('snapshot', 'µ');
+  const diskPath = [path.resolve('snapshot', 'μ'), 'Unused', '..', 'Kept', '𐐨.bas'].join(path.sep);
+  const editorPath = path.resolve('snapshot', 'Μ', 'kept', '𐐀.BAS');
+  const text = 'Public Sub Captured()\r\nEnd Sub\r\n';
+  const inventory = await captureSnapshotSourceInventory(sourceSetPath, {
+    getActiveWindowsCodePage: () => 65001,
+    getOpenTextDocuments: () => [{
+      uriScheme: 'file', uriPath: editorPath, fileName: editorPath,
+      isDirty: true, encoding: 'utf8', getText: () => text
+    }],
+    findSourceFiles: async () => [diskPath],
+    readFile: async () => { throw new Error('An equivalent dirty editor must replace the disk source.'); },
+    encodeText: async value => new TextEncoder().encode(value),
+    decodeText: async bytes => new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  });
+
+  assert.deepEqual(inventory.entries, [{
+    relativePath: path.join('Kept', '𐐨.bas'),
+    sourceUri: pathToFileURL(editorPath).href,
+    encoding: 'utf8',
+    bytes: new TextEncoder().encode(text)
+  }]);
+});
+
+test('snapshot capture keeps Kelvin-sign and canonically distinct Unicode paths separate', async () => {
+  const sourceSetPath = path.resolve('snapshot');
+  const fileNames = ['K.bas', 'K.bas', 'é.cls', 'e\u0301.cls'];
+  const inventory = await captureSnapshotSourceInventory(sourceSetPath, {
+    getActiveWindowsCodePage: () => 65001,
+    getOpenTextDocuments: () => fileNames.map(fileName => ({
+      uriScheme: 'file', uriPath: path.join(sourceSetPath, fileName),
+      fileName: path.join(sourceSetPath, fileName), isDirty: true,
+      encoding: 'utf8', getText: () => `Source: ${fileName}`
+    })),
+    findSourceFiles: async () => [],
+    readFile: async () => { throw new Error('Dirty sources must not read disk.'); },
+    encodeText: async value => new TextEncoder().encode(value),
+    decodeText: async bytes => new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  });
+
+  assert.equal(inventory.entries.length, fileNames.length);
+  for (const fileName of fileNames) {
+    assert.deepEqual(inventory.entries.find(entry => entry.relativePath === fileName), {
+      relativePath: fileName,
+      sourceUri: pathToFileURL(path.join(sourceSetPath, fileName)).href,
+      encoding: 'utf8',
+      bytes: new TextEncoder().encode(`Source: ${fileName}`)
+    });
+  }
+});
+
+test('snapshot inventory admits only strict descendants under ordinal source-root identity', async () => {
+  const sourceSetPath = path.resolve('snapshot', 'K');
+  const outsidePaths = [
+    sourceSetPath,
+    path.resolve('snapshot', 'KSibling', 'Outside.bas'),
+    path.resolve(sourceSetPath, '..', 'Outside.bas'),
+    path.resolve('snapshot', 'K', 'Outside.bas')
+  ];
+  for (const filePath of outsidePaths) {
+    const reads: string[] = [];
+    await assert.rejects(captureSnapshotSourceInventory(sourceSetPath, {
+      getActiveWindowsCodePage: () => 65001,
+      getOpenTextDocuments: () => [],
+      findSourceFiles: async () => [filePath],
+      readFile: async requestedPath => { reads.push(requestedPath); return new Uint8Array(); },
+      encodeText: async value => new TextEncoder().encode(value),
+      decodeText: async bytes => new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    }), (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /outside the selected source set/i);
+      assert.ok(error.message.includes(filePath), error.message);
+      return true;
+    });
+    assert.deepEqual(reads, []);
+  }
+});
+
 test('snapshot inventory overlays capture-start dirty source including a file absent from disk', async () => {
   const sourceSetPath = path.join('C:', 'work', 'BookProject', 'src', 'Book1');
   const cleanPath = path.join(sourceSetPath, 'Clean.bas');
@@ -686,6 +847,79 @@ test('the snapshot capture port returns a materialized caller-owned lease', asyn
   assert.equal(lease.directoryPath, snapshotPath);
   assert.deepEqual(capturedSourceSets, [sourceSetPath]);
   assert.deepEqual([...writes.get(path.join(snapshotPath, 'Module.bas'))!], [0x41]);
+});
+
+test('duplicate snapshot materialization fails with both paths and preserves retained-directory cleanup', async () => {
+  const snapshotPath = path.resolve('temporary-snapshot');
+  const relativePaths = [path.join('Nested', 'Σ.bas'), path.join('nested', 'ς.BAS')];
+  const writes: string[] = [];
+  const removals: string[] = [];
+  const waits: number[] = [];
+
+  await assert.rejects(materializeSnapshotSourceInventory({
+    sourceSetPath: path.resolve('snapshot'),
+    activeWindowsCodePage: 65001,
+    entries: relativePaths.map(relativePath => ({
+      relativePath,
+      bytes: new TextEncoder().encode('Public Sub Main()\r\nEnd Sub\r\n')
+    }))
+  }, {
+    createTemporaryDirectory: async () => snapshotPath,
+    createDirectory: async () => undefined,
+    writeFile: async filePath => { writes.push(filePath); },
+    removeDirectory: async directoryPath => {
+      removals.push(directoryPath);
+      throw new Error('The owned snapshot directory is still locked.');
+    },
+    wait: async milliseconds => { waits.push(milliseconds); }
+  }), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /duplicate/i);
+    for (const relativePath of relativePaths) {
+      assert.ok(error.message.includes(relativePath), error.message);
+    }
+    assert.ok(error.message.includes(`Retained snapshot directory: ${snapshotPath}`), error.message);
+    return true;
+  });
+  assert.deepEqual(writes, [path.join(snapshotPath, relativePaths[0])]);
+  assert.deepEqual(removals, [snapshotPath, snapshotPath, snapshotPath]);
+  assert.deepEqual(waits, [25, 100]);
+});
+
+test('failed or cancelled snapshot admission removes its caller-owned directory', async () => {
+  const snapshotPath = path.resolve('temporary-snapshot');
+  for (const scenario of [
+    { relativePath: '.', cancel: false },
+    { relativePath: path.join('..', 'Outside.bas'), cancel: false },
+    { relativePath: 'Later.bas', cancel: true }
+  ]) {
+    let cancellationRequested = false;
+    const writtenFiles = new Set<string>();
+    const removals: string[] = [];
+    await assert.rejects(materializeSnapshotSourceInventory({
+      sourceSetPath: path.resolve('snapshot'),
+      activeWindowsCodePage: 65001,
+      entries: ['First.bas', scenario.relativePath].map(relativePath => ({
+        relativePath, bytes: Uint8Array.from([0x41])
+      }))
+    }, {
+      createTemporaryDirectory: async () => snapshotPath,
+      createDirectory: async () => undefined,
+      writeFile: async filePath => {
+        writtenFiles.add(filePath);
+        cancellationRequested = scenario.cancel;
+      },
+      removeDirectory: async directoryPath => {
+        removals.push(directoryPath);
+        writtenFiles.clear();
+      },
+      wait: async () => undefined
+    }, {
+      get isCancellationRequested() { return cancellationRequested; }
+    }), scenario.cancel ? /snapshot capture was cancelled/i : /escapes its caller-owned directory/i);
+    assert.deepEqual(removals, [snapshotPath]);
+    assert.equal(writtenFiles.size, 0);
+  }
 });
 
 test('caller-owned snapshot cleanup retries are bounded and report a retained directory', async () => {

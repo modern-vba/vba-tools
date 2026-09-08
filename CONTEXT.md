@@ -567,7 +567,20 @@ belong to that set, including an in-scope path not yet present on disk. Each
 selected value is captured once without an end-of-capture stability check;
 pathless documents cannot participate, and an inventoried disk path that cannot
 be read fails capture.
+Two dirty editors with the same ordinal Windows source identity fail capture,
+even with equal text and encoding. One dirty editor overlays its one matching
+disk source while preserving disk-relative layout and the editor's URI spelling.
 _Avoid_: dirty-file overlay, active-editor-only snapshot, untitled source identity
+
+**WindowsSourcePathIdentity**:
+The extension's lexical Windows path comparison using the existing .NET
+10-generated OrdinalIgnoreCase keys. Callers retain their resolution basis;
+normalized drive/UNC roots and whole segments establish strict descent and
+produce the original-spelled relative suffix through the same proof. Root
+equality, prefixed siblings, other roots, and normalized escapes are excluded.
+Manifest and selected-document names use the same generated equality rule.
+Equality keys are internal and do not change ordering or emitted names and URIs.
+_Avoid_: JavaScript lowercase identity, physical alias equivalence, Unicode normalization, path.relative containment proof
 
 **SnapshotSourceEncoding**:
 The v2 strict text-byte contract independently implemented by debug and test

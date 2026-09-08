@@ -1,3 +1,5 @@
+import { findOrdinalIgnoreCaseDuplicate, ordinalIgnoreCaseKey } from './ordinalIgnoreCase';
+
 export interface ProjectManifestProjection {
   projectName: string;
   primaryDocument: string;
@@ -11,7 +13,10 @@ export interface WorkbookBackedProjectDocument {
   binPath: string;
 }
 
-export function parseProjectManifestProjection(json: string): ProjectManifestProjection | undefined {
+export function parseProjectManifestProjection(
+  json: string,
+  onIdentityConflict?: (message: string) => void
+): ProjectManifestProjection | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(json);
@@ -113,10 +118,16 @@ export function parseProjectManifestProjection(json: string): ProjectManifestPro
         !isNonemptyString(document.publishPath) ||
         !Array.isArray(document.commonModules) ||
         !document.commonModules.every(isInstalledCommonModule) ||
-        !isVbaProjectReferenceSelection(document.references)) {
+        !isVbaProjectReferenceSelection(document.references, name, onIdentityConflict)) {
       return undefined;
     }
 
+    const commonModuleConflict = findOrdinalIgnoreCaseDuplicate(document.commonModules.map((module) => module.name));
+    if (commonModuleConflict !== undefined) {
+      onIdentityConflict?.(
+        `Document '${name}' contains conflicting CommonModule names '${commonModuleConflict[0]}' and '${commonModuleConflict[1]}'.`);
+      return undefined;
+    }
     documents.push({
       name,
       sourcePath: document.sourcePath,
@@ -125,7 +136,13 @@ export function parseProjectManifestProjection(json: string): ProjectManifestPro
     });
   }
 
-  if (!documents.some((document) => document.name.toLowerCase() === primaryDocument.toLowerCase())) {
+  const documentConflict = findOrdinalIgnoreCaseDuplicate(documents.map((document) => document.name));
+  if (documentConflict !== undefined) {
+    onIdentityConflict?.(`Conflicting document names '${documentConflict[0]}' and '${documentConflict[1]}'.`);
+    return undefined;
+  }
+
+  if (!documents.some((document) => ordinalIgnoreCaseKey(document.name) === ordinalIgnoreCaseKey(primaryDocument))) {
     return undefined;
   }
 
@@ -164,23 +181,24 @@ function isVbaProjectReference(value: unknown): boolean {
     typeof value.name === 'string' &&
     value.name.trim().length > 0 &&
     value.name === value.name.trim() &&
-    value.name.toLowerCase() !== 'visual basic for applications' &&
+    ordinalIgnoreCaseKey(value.name) !== ordinalIgnoreCaseKey('Visual Basic For Applications') &&
     typeof value.requested === 'boolean';
 }
 
-function isVbaProjectReferenceSelection(value: unknown): boolean {
+function isVbaProjectReferenceSelection(
+  value: unknown,
+  documentName: string,
+  onIdentityConflict?: (message: string) => void
+): boolean {
   if (!Array.isArray(value) || !value.every(isVbaProjectReference)) {
     return false;
   }
 
-  const names = new Set<string>();
-  for (const reference of value) {
-    const normalizedName = reference.name.toLowerCase();
-    if (names.has(normalizedName)) {
-      return false;
-    }
-
-    names.add(normalizedName);
+  const conflict = findOrdinalIgnoreCaseDuplicate(value.map((reference) => reference.name));
+  if (conflict !== undefined) {
+    onIdentityConflict?.(
+      `Document '${documentName}' contains conflicting reference names '${conflict[0]}' and '${conflict[1]}'.`);
+    return false;
   }
 
   return true;
@@ -199,5 +217,6 @@ function isInstalledCommonModule(value: unknown): boolean {
   }
 
   const match = /^([^/\\]+)\.(bas|cls|frm)$/iu.exec(value.moduleFile);
-  return match !== null && match[1]?.toLowerCase() === value.name.toLowerCase();
+  return match !== null && match[1] !== undefined &&
+    ordinalIgnoreCaseKey(match[1]) === ordinalIgnoreCaseKey(value.name);
 }

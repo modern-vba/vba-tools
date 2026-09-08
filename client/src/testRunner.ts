@@ -23,6 +23,7 @@ import './lazyOutputChannel.test';
 import './vbaDevTerminalCommand.test';
 import './vbaSourceFileText.test';
 import './snapshotSourceInventory.test';
+import './windowsPathIdentity.test';
 import './snapshotSourceInventoryCorpus.test';
 import './snapshotSourceInventoryVscodeAdapter.test';
 import './vscodeDebugConfiguration.test';

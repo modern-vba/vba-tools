@@ -1,6 +1,7 @@
 import * as path from 'node:path';
 
-import { ordinalIgnoreCaseKey } from './ordinalIgnoreCase';
+import { findOrdinalIgnoreCaseDuplicate, ordinalIgnoreCaseKey } from './ordinalIgnoreCase';
+import { relativeWindowsDescendantPath, windowsPathKey } from './windowsPathIdentity';
 import {
   WorkbookBackedProjectCandidate,
   findNearestProjectManifest
@@ -86,10 +87,12 @@ export interface CommandPaletteTargetResolutionOptions {
 export interface CommandPaletteProjectTargetLoadOptions {
   readTextFile: (filePath: string) => Promise<string>;
   resolvePathIdentity: (filePath: string) => Promise<CommandPalettePathIdentity>;
+  onIdentityConflict?: (message: string) => void;
 }
 
 export function parseCommandPaletteManifestSelectionProjection(
-  json: string
+  json: string,
+  onIdentityConflict?: (message: string) => void
 ): CommandPaletteManifestSelectionProjection | undefined {
   let parsed: unknown;
   try {
@@ -107,7 +110,6 @@ export function parseCommandPaletteManifestSelectionProjection(
   }
 
   const documents: CommandPaletteManifestSelectionDocument[] = [];
-  const documentNames = new Set<string>();
   for (const [name, document] of Object.entries(parsed.documents)) {
     if (!isNonemptyString(name) ||
         !isRecord(document) ||
@@ -115,15 +117,16 @@ export function parseCommandPaletteManifestSelectionProjection(
       return undefined;
     }
 
-    const key = ordinalIgnoreCaseKey(name);
-    if (documentNames.has(key)) {
-      return undefined;
-    }
-    documentNames.add(key);
     documents.push({ name, sourcePath: document.sourcePath });
   }
 
   if (documents.length === 0) {
+    return undefined;
+  }
+
+  const documentConflict = findOrdinalIgnoreCaseDuplicate(documents.map((document) => document.name));
+  if (documentConflict !== undefined) {
+    onIdentityConflict?.(`Conflicting document names '${documentConflict[0]}' and '${documentConflict[1]}'.`);
     return undefined;
   }
 
@@ -170,6 +173,11 @@ export function decideCommandPaletteProjectTarget(
 export async function resolveCommandPaletteTarget(
   options: CommandPaletteTargetResolutionOptions
 ): Promise<CommandPaletteTarget | undefined> {
+  const identityConflicts: string[] = [];
+  const loadOptions: CommandPaletteProjectTargetLoadOptions = {
+    ...options,
+    onIdentityConflict: (message) => identityConflicts.push(message)
+  };
   const nearestManifest = options.snapshot.activeFilePath === undefined
     ? undefined
     : await findNearestProjectManifest(
@@ -181,11 +189,12 @@ export async function resolveCommandPaletteTarget(
   if (nearestManifest !== undefined) {
     const decision = decideCommandPaletteProjectTarget({
       manifestPath: nearestManifest,
-      project: await loadCommandPaletteProjectTarget(nearestManifest, options)
+      project: await loadCommandPaletteProjectTarget(nearestManifest, loadOptions)
     }, []);
     if (decision.kind !== 'selected') {
       await options.showErrorMessage(
-        `VBA Tools cannot continue because ${nearestManifest} cannot be used for Command Palette targeting.`
+        `VBA Tools cannot continue because ${nearestManifest} cannot be used for Command Palette targeting.` +
+          (identityConflicts.length === 0 ? '' : ` ${identityConflicts.join(' ')}`)
       );
       return undefined;
     }
@@ -196,14 +205,15 @@ export async function resolveCommandPaletteTarget(
     );
     const candidates = (
       await Promise.all(manifestPaths.map((manifestPath) =>
-        loadCommandPaletteProjectTarget(manifestPath, options)))
+        loadCommandPaletteProjectTarget(manifestPath, loadOptions)))
     ).filter((candidate): candidate is CommandPaletteProjectTarget =>
       candidate !== undefined);
 
     const decision = decideCommandPaletteProjectTarget(undefined, candidates);
-    if (decision.kind === 'failed') {
+    if (decision.kind === 'failed' || identityConflicts.length > 0) {
       await options.showErrorMessage(
-        'VBA Tools could not select a workbook-backed project from an on-disk vba-project.json.'
+        'VBA Tools could not select a workbook-backed project from an on-disk vba-project.json.' +
+          (identityConflicts.length === 0 ? '' : ` ${identityConflicts.join(' ')}`)
       );
       return undefined;
     }
@@ -246,16 +256,18 @@ export async function loadCommandPaletteProjectTarget(
   return resolveCommandPaletteProjectTargetFromManifestText(
     manifestPath,
     manifestText,
-    options.resolvePathIdentity
+    options.resolvePathIdentity,
+    (message) => options.onIdentityConflict?.(`${manifestPath}: ${message}`)
   );
 }
 
 export async function resolveCommandPaletteProjectTargetFromManifestText(
   manifestPath: string,
   manifestText: string,
-  resolvePathIdentity: (filePath: string) => Promise<CommandPalettePathIdentity>
+  resolvePathIdentity: (filePath: string) => Promise<CommandPalettePathIdentity>,
+  onIdentityConflict?: (message: string) => void
 ): Promise<CommandPaletteProjectTarget | undefined> {
-  const projection = parseCommandPaletteManifestSelectionProjection(manifestText);
+  const projection = parseCommandPaletteManifestSelectionProjection(manifestText, onIdentityConflict);
   if (projection === undefined) {
     return undefined;
   }
@@ -283,6 +295,9 @@ export async function resolveCommandPaletteProjectTargetFromManifestText(
         documents[leftIndex]!.sourceRootIdentity,
         documents[rightIndex]!.sourceRootIdentity
       )) {
+        onIdentityConflict?.(
+          `Document source roots overlap: '${documents[leftIndex]!.name}' (${documents[leftIndex]!.sourceRoot})` +
+          ` and '${documents[rightIndex]!.name}' (${documents[rightIndex]!.sourceRoot}).`);
         return undefined;
       }
     }
@@ -495,7 +510,9 @@ async function sourceOwners(
   }
 
   return documents.filter((document) =>
-    sameOrDescendant(identity, document.sourceRootIdentity));
+    relativeWindowsDescendantPath(
+      document.sourceRootIdentity.canonicalPath,
+      identity.canonicalPath) !== undefined);
 }
 
 function isExportedVbaSource(filePath: string): boolean {
@@ -518,20 +535,14 @@ function sameOrDescendant(
     return true;
   }
 
-  const candidateKey = ordinalIgnoreCaseKey(trimEndingSeparator(candidate.canonicalPath));
-  const directoryPath = trimEndingSeparator(directory.canonicalPath);
-  const directoryPrefix = directoryPath.endsWith(path.sep)
-    ? directoryPath
-    : `${directoryPath}${path.sep}`;
-  return candidateKey.startsWith(ordinalIgnoreCaseKey(directoryPrefix));
+  return relativeWindowsDescendantPath(directory.canonicalPath, candidate.canonicalPath) !== undefined;
 }
 
 export function sameCommandPalettePathIdentity(
   left: CommandPalettePathIdentity,
   right: CommandPalettePathIdentity
 ): boolean {
-  return ordinalIgnoreCaseKey(trimEndingSeparator(left.canonicalPath)) ===
-      ordinalIgnoreCaseKey(trimEndingSeparator(right.canonicalPath)) ||
+  return windowsPathKey(left.canonicalPath) === windowsPathKey(right.canonicalPath) ||
     left.objectIdentity !== undefined &&
       right.objectIdentity !== undefined &&
       left.objectIdentity === right.objectIdentity;
@@ -545,20 +556,11 @@ function normalizeIdentity(identity: CommandPalettePathIdentity): CommandPalette
   };
 }
 
-function trimEndingSeparator(value: string): string {
-  const normalized = path.normalize(value);
-  const root = path.parse(normalized).root;
-  if (normalized === root) {
-    return normalized;
-  }
-  return normalized.replace(/[\\/]+$/u, '');
-}
-
 function uniqueManifestPaths(manifestPaths: readonly string[]): readonly string[] {
   const unique = new Map<string, string>();
   for (const manifestPath of manifestPaths) {
     const normalized = path.normalize(manifestPath);
-    const key = ordinalIgnoreCaseKey(normalized);
+    const key = windowsPathKey(normalized);
     if (!unique.has(key)) {
       unique.set(key, normalized);
     }
@@ -570,8 +572,8 @@ function sameManifest(
   left: WorkbookBackedProjectCandidate,
   right: WorkbookBackedProjectCandidate
 ): boolean {
-  return ordinalIgnoreCaseKey(path.normalize(left.manifestPath)) ===
-    ordinalIgnoreCaseKey(path.normalize(right.manifestPath));
+  return windowsPathKey(path.normalize(left.manifestPath)) ===
+    windowsPathKey(path.normalize(right.manifestPath));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
