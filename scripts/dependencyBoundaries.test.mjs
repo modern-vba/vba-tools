@@ -54,7 +54,9 @@ test('production and test owners cannot restore reverse or foundation-to-consume
     [devProject, 'tools/vba-integration-tests/Integration.csproj'],
     ['tools/vba-syntax/src/VbaTools.Syntax/Syntax.csproj', devProject],
     ['tools/vba-syntax/tests/VbaTools.Syntax.Tests/Tests.csproj', serverProject],
-    ['tools/vba-protocol-framing/src/Framing.csproj', 'tools/vba-debug-adapter/src/Adapter.csproj']
+    ['tools/vba-protocol-framing/src/Framing.csproj', 'tools/vba-debug-adapter/src/Adapter.csproj'],
+    ['tools/vba-process-invocation/src/Process.csproj', serverProject],
+    ['tools/vba-process-invocation/tests/Process.Tests.csproj', devProject]
   ]) {
     await t.test(`${from} -> ${to}`, async (t) => {
       const root = await repository(t, {

@@ -1127,6 +1127,8 @@ test('release verification scripts expose every suite and keep Excel integration
 
   assert.match(scripts['test:syntax-core'], /vba-syntax\/tests\/VbaTools\.Syntax\.Tests/);
   assert.match(scripts['test:project-metadata'], /vba-project-metadata\/tests\/VbaTools\.ProjectMetadata\.Tests/);
+  assert.match(scripts['test:process-invocation'], /vba-process-invocation\/tests\/VbaTools\.ProcessInvocation\.Tests/);
+  assert.match(scripts.test, /npm run test:process-invocation/);
   assert.match(scripts.test, /npm run test:project-metadata/);
   assert.match(scripts['verify:architecture'], /dependencyBoundaries\.mjs/);
   assert.match(scripts.test, /npm run verify:architecture/);
@@ -1153,6 +1155,7 @@ test('release verification scripts expose every suite and keep Excel integration
     'test:language-server',
     'test:syntax-core',
     'test:project-metadata',
+    'test:process-invocation',
     'test:cross-product-integration',
     'test:packaging',
     'test:compatibility',

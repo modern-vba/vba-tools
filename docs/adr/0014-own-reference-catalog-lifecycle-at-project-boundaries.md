@@ -147,7 +147,8 @@ language assistance. Neither startup form searches `PATH`, reads VS Code
 settings, infers a sibling executable, or substitutes another candidate.
 
 Capability inspection and CLI-backed `reference list` discovery share one
-language-server-local `VbaDevProcessInvocation` Deep Module. The Module pins the
+neutral `ProcessInvocation` Module (ADR 0043 supersedes its original
+language-server-local ownership). The Module pins the
 resolved absolute executable, accepts an immutable ordered argument list, uses
 no shell, and begins concurrent stdout and stderr drain immediately after
 process start. A nonzero exit remains an ordinary complete process result for
@@ -165,8 +166,8 @@ process cleanup therefore remains observed instead of escaping the
 coordinator's shorter registry-only grace. A benign
 already-exited race is absorbed; a missed deadline or other inability to prove
 termination is a lifecycle failure.
-This local-substitutable Seam does not absorb the debug
-adapter's Windows Job ownership or an interactive stdin cancellation protocol.
+The common lifecycle retains a separate debug-adapter Windows Job Adapter and
+does not absorb an interactive stdin cancellation protocol.
 It adds a language-server dependency on the public `vba-dev` process contract
 without adding a reverse dependency to `VbaDev`. The pre-existing parser
 reference from `VbaDev` to a language-server-owned project remains a separate

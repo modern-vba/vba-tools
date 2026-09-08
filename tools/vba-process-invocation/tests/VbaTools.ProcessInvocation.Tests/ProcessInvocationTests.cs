@@ -1,10 +1,168 @@
-using VbaLanguageServer.Processes;
+using VbaTools.Processes;
 using Xunit;
 
-namespace VbaLanguageServer.Tests;
+namespace VbaTools.Processes.Tests;
 
-public sealed class VbaDevProcessInvocationTests
+public sealed class ProcessInvocationTests
 {
+    [Fact]
+    public async Task Handle_release_failure_does_not_replace_the_original_reader_failure()
+    {
+        var primary = new IOException("original reader failure");
+        var release = new IOException("handle release failure");
+        var handle = new LateFailureHandle(primary, Task.FromResult(""), releaseFailure: release);
+        var failure = await Assert.ThrowsAsync<ProcessLifecycleException>(() =>
+            new ProcessInvocation(Path.GetFullPath("tool.exe"), new RecordingProcessPlatform(handle)).RunAsync([]));
+        Assert.Same(primary, failure.PrimaryFailure);
+        Assert.Same(release, failure.CleanupFailure);
+    }
+
+    [Fact]
+    public async Task Lifecycle_failure_retains_each_terminal_wait_and_reader_failure()
+    {
+        var primary = new IOException("primary output failure");
+        var peer = new IOException("secondary error failure");
+        var exit = new IOException("terminal wait failure");
+        var handle = new LateFailureHandle(primary, Task.FromException<string>(peer), exit);
+        var failure = await Assert.ThrowsAsync<ProcessLifecycleException>(() =>
+            new ProcessInvocation(Path.GetFullPath("tool.exe"), new RecordingProcessPlatform(handle))
+                .RunAsync([]));
+        Assert.Same(primary, failure.PrimaryFailure);
+        Assert.Contains(peer.Message, failure.ToString());
+        Assert.Contains(exit.Message, failure.ToString());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_reader_failure_with_a_stalled_peer_has_bounded_cleanup_and_releases_the_handle(bool exitAlsoFails)
+    {
+        var primary = new IOException("stdout failed");
+        var peer = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handle = new LateFailureHandle(primary, peer.Task,
+            exitAlsoFails ? new IOException("exit proof failed before timeout") : null);
+        var invocation = new ProcessInvocation(Path.GetFullPath("tool.exe"),
+            new RecordingProcessPlatform(handle), cancellationCleanupTimeout: TimeSpan.Zero);
+
+        var failure = await Assert.ThrowsAsync<ProcessLifecycleException>(
+            () => invocation.RunAsync([]).WaitAsync(TimeSpan.FromSeconds(1)));
+
+        Assert.Same(primary, failure.PrimaryFailure);
+        Assert.Contains("TimeoutException", failure.ToString());
+        if (exitAlsoFails) { Assert.Contains("exit proof failed before timeout", failure.ToString()); }
+        Assert.Equal(1, handle.KillCount);
+        Assert.True(handle.Disposed);
+        var waitsAtRelease = handle.WaitCount;
+        peer.SetException(new IOException("stderr failed after handle release"));
+        await Assert.ThrowsAsync<IOException>(() => peer.Task);
+        Assert.Equal(waitsAtRelease, handle.WaitCount);
+    }
+
+    [Fact]
+    public async Task The_system_adapter_captures_both_streams_and_a_nonzero_exit_code()
+    {
+        var result = await new ProcessInvocation(Path.Combine(Environment.SystemDirectory, "cmd.exe"))
+            .RunAsync(["/d", "/c", "echo stdout & echo stderr 1>&2 & exit /b 17"]);
+        Assert.Equal(17, result.ExitCode);
+        Assert.Contains("stdout", result.StandardOutput);
+        Assert.Contains("stderr", result.StandardError);
+    }
+
+    private sealed class LateFailureHandle(Exception failure, Task<string> peer,
+        Exception? exitFailure = null, Exception? releaseFailure = null) : IProcessHandle
+    {
+        public int KillCount { get; private set; }
+        public int WaitCount { get; private set; }
+        public bool Disposed { get; private set; }
+        public int ExitCode => 0;
+        public Task<string> ReadStandardOutputToEndAsync() => Task.FromException<string>(failure);
+        public Task<string> ReadStandardErrorToEndAsync() => peer;
+        public Task WaitForExitAsync(CancellationToken token)
+        {
+            WaitCount++;
+            return exitFailure is null ? Task.CompletedTask : Task.FromException(exitFailure);
+        }
+        public void KillEntireProcessTree() => KillCount++;
+        public void Dispose()
+        {
+            Disposed = true;
+            if (releaseFailure is not null) { throw releaseFailure; }
+        }
+    }
+
+    [Fact]
+    public async Task Cancellation_immediately_before_result_publication_remains_cancellation()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var handle = new ExitCodeCancellationHandle(cancellation);
+        var invocation = new ProcessInvocation(Path.GetFullPath("tool.exe"), new RecordingProcessPlatform(handle));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => invocation.RunAsync([], cancellation.Token));
+        Assert.Equal(1, handle.KillCount);
+    }
+
+    private sealed class ExitCodeCancellationHandle(CancellationTokenSource cancellation) : IProcessHandle
+    {
+        public int KillCount { get; private set; }
+        public int ExitCode { get { cancellation.Cancel(); return 0; } }
+        public Task<string> ReadStandardOutputToEndAsync() => Task.FromResult("output");
+        public Task<string> ReadStandardErrorToEndAsync() => Task.FromResult("error");
+        public Task WaitForExitAsync(CancellationToken token) => Task.CompletedTask;
+        public void KillEntireProcessTree() => KillCount++;
+        public void Dispose() { }
+    }
+
+    [Theory]
+    [InlineData("async-output")]
+    [InlineData("sync-output")]
+    [InlineData("resume")]
+    public async Task Reader_failure_terminates_a_running_process_and_preserves_the_failure(string stage)
+    {
+        var failure = new IOException("The output pipe failed.");
+        var handle = new FailingReaderProcessHandle(failure, stage);
+        var invocation = new ProcessInvocation(
+            Path.GetFullPath("vba-dev.exe"),
+            new RecordingProcessPlatform(handle));
+
+        var running = invocation.RunAsync(["capabilities"]);
+        try
+        {
+            var actual = await Assert.ThrowsAsync<IOException>(
+                () => running.WaitAsync(TimeSpan.FromSeconds(1)));
+            Assert.Same(failure, actual);
+            Assert.Equal(1, handle.KillCount);
+            Assert.True(handle.Disposed);
+        }
+        finally
+        {
+            handle.Exit.TrySetResult();
+        }
+    }
+
+    private sealed class FailingReaderProcessHandle(Exception failure, string stage) : IProcessHandle
+    {
+        public TaskCompletionSource Exit { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int KillCount { get; private set; }
+        public bool Disposed { get; private set; }
+        public int ExitCode => 0;
+        public Task<string> ReadStandardOutputToEndAsync() => stage switch
+        {
+            "sync-output" => throw failure,
+            "async-output" => Task.FromException<string>(failure),
+            _ => Task.FromResult("")
+        };
+        public void Resume() { if (stage == "resume") { throw failure; } }
+        public Task<string> ReadStandardErrorToEndAsync() => Task.FromResult("");
+        public Task WaitForExitAsync(CancellationToken cancellationToken) => Exit.Task.WaitAsync(cancellationToken);
+        public void KillEntireProcessTree()
+        {
+            KillCount++;
+            Exit.TrySetResult();
+        }
+        public void Dispose() => Disposed = true;
+    }
+
     [Fact]
     public async Task Invocation_preserves_the_pinned_executable_arguments_and_complete_result()
     {
@@ -14,7 +172,7 @@ public sealed class VbaDevProcessInvocationTests
             standardOutput: "output",
             standardError: "error");
         var platform = new RecordingProcessPlatform(handle);
-        var invocation = new VbaDevProcessInvocation(executablePath, platform);
+        var invocation = new ProcessInvocation(executablePath, platform);
 
         var result = await invocation.RunAsync(
             ["reference", "list", "--format", "json"]);
@@ -33,7 +191,7 @@ public sealed class VbaDevProcessInvocationTests
     {
         var executablePath = Path.GetFullPath(Path.Combine("tools", "vba-dev.exe"));
         var platform = new RecordingProcessPlatform(new StubProcessHandle(0, "", ""));
-        var invocation = new VbaDevProcessInvocation(executablePath, platform);
+        var invocation = new ProcessInvocation(executablePath, platform);
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
 
@@ -48,13 +206,15 @@ public sealed class VbaDevProcessInvocationTests
     {
         var executablePath = Path.GetFullPath(Path.Combine("tools", "vba-dev.exe"));
         var handle = new DrainOrderingProcessHandle();
-        var invocation = new VbaDevProcessInvocation(
+        var invocation = new ProcessInvocation(
             executablePath,
             new RecordingProcessPlatform(handle));
 
         await invocation.RunAsync(["capabilities"]);
 
         Assert.True(handle.BothDrainsStartedBeforeExitWait);
+        Assert.Equal(1, handle.ResumeCount);
+        Assert.True(handle.BothDrainsStartedBeforeResume);
     }
 
     [Fact]
@@ -62,7 +222,7 @@ public sealed class VbaDevProcessInvocationTests
     {
         var executablePath = Path.GetFullPath(Path.Combine("tools", "vba-dev.exe"));
         var handle = new CancellationProcessHandle();
-        var invocation = new VbaDevProcessInvocation(
+        var invocation = new ProcessInvocation(
             executablePath,
             new RecordingProcessPlatform(handle));
         using var cancellation = new CancellationTokenSource();
@@ -86,7 +246,7 @@ public sealed class VbaDevProcessInvocationTests
     {
         var executablePath = Path.GetFullPath(Path.Combine("tools", "vba-dev.exe"));
         var handle = new DelayedDrainCancellationProcessHandle();
-        var invocation = new VbaDevProcessInvocation(
+        var invocation = new ProcessInvocation(
             executablePath,
             new RecordingProcessPlatform(handle));
         using var cancellation = new CancellationTokenSource();
@@ -116,7 +276,7 @@ public sealed class VbaDevProcessInvocationTests
     {
         var executablePath = Path.GetFullPath(Path.Combine("tools", "vba-dev.exe"));
         var handle = new ExitedBeforeDrainCancellationProcessHandle();
-        var invocation = new VbaDevProcessInvocation(
+        var invocation = new ProcessInvocation(
             executablePath,
             new RecordingProcessPlatform(handle));
         using var cancellation = new CancellationTokenSource();
@@ -153,7 +313,7 @@ public sealed class VbaDevProcessInvocationTests
     {
         var executablePath = Path.GetFullPath(Path.Combine("tools", "vba-dev.exe"));
         var handle = new ExitedBeforeDrainCancellationProcessHandle();
-        var invocation = new VbaDevProcessInvocation(
+        var invocation = new ProcessInvocation(
             executablePath,
             new RecordingProcessPlatform(handle),
             cancellationCleanupTimeout: TimeSpan.Zero);
@@ -167,11 +327,11 @@ public sealed class VbaDevProcessInvocationTests
 
         try
         {
-            var exception = await Assert.ThrowsAsync<VbaDevProcessLifecycleException>(
+            var exception = await Assert.ThrowsAsync<ProcessLifecycleException>(
                 () => running.WaitAsync(TimeSpan.FromSeconds(1)));
 
             Assert.Contains("complete stream drain", exception.Message);
-            Assert.IsType<TimeoutException>(exception.InnerException);
+            Assert.IsType<TimeoutException>(exception.CleanupFailure);
             Assert.Equal(1, handle.KillCount);
             Assert.Equal(2, handle.WaitTokens.Count);
             Assert.Equal(cancellation.Token, handle.WaitTokens[0]);
@@ -192,7 +352,7 @@ public sealed class VbaDevProcessInvocationTests
             stallTerminalWait: true,
             stallStandardOutput: false,
             stallStandardError: false);
-        var invocation = new VbaDevProcessInvocation(
+        var invocation = new ProcessInvocation(
             executablePath,
             new RecordingProcessPlatform(handle),
             cancellationCleanupTimeout: TimeSpan.Zero);
@@ -202,11 +362,13 @@ public sealed class VbaDevProcessInvocationTests
         await handle.CancellableWaitStarted.Task;
         cancellation.Cancel();
 
-        var exception = await Assert.ThrowsAsync<VbaDevProcessLifecycleException>(
+        var exception = await Assert.ThrowsAsync<ProcessLifecycleException>(
             () => running);
 
         Assert.Contains("terminal process exit", exception.Message);
-        Assert.IsType<TimeoutException>(exception.InnerException);
+        Assert.Equal(cancellation.Token,
+            Assert.IsAssignableFrom<OperationCanceledException>(exception.PrimaryFailure).CancellationToken);
+        Assert.IsType<TimeoutException>(exception.CleanupFailure);
         Assert.Equal(1, handle.KillCount);
         Assert.Equal(2, handle.WaitTokens.Count);
         Assert.Equal(cancellation.Token, handle.WaitTokens[0]);
@@ -221,7 +383,7 @@ public sealed class VbaDevProcessInvocationTests
             stallTerminalWait: false,
             stallStandardOutput: true,
             stallStandardError: false);
-        var invocation = new VbaDevProcessInvocation(
+        var invocation = new ProcessInvocation(
             executablePath,
             new RecordingProcessPlatform(handle),
             cancellationCleanupTimeout: TimeSpan.Zero);
@@ -231,11 +393,11 @@ public sealed class VbaDevProcessInvocationTests
         await handle.CancellableWaitStarted.Task;
         cancellation.Cancel();
 
-        var exception = await Assert.ThrowsAsync<VbaDevProcessLifecycleException>(
+        var exception = await Assert.ThrowsAsync<ProcessLifecycleException>(
             () => running);
 
         Assert.Contains("complete stream drain", exception.Message);
-        Assert.IsType<TimeoutException>(exception.InnerException);
+        Assert.IsType<TimeoutException>(exception.CleanupFailure);
         Assert.Equal(1, handle.KillCount);
         Assert.Equal(2, handle.WaitTokens.Count);
         Assert.Equal(cancellation.Token, handle.WaitTokens[0]);
@@ -252,7 +414,7 @@ public sealed class VbaDevProcessInvocationTests
             stallStandardOutput: false,
             stallStandardError: false,
             killFailure);
-        var invocation = new VbaDevProcessInvocation(
+        var invocation = new ProcessInvocation(
             executablePath,
             new RecordingProcessPlatform(handle),
             cancellationCleanupTimeout: TimeSpan.Zero);
@@ -262,12 +424,12 @@ public sealed class VbaDevProcessInvocationTests
         await handle.CancellableWaitStarted.Task;
         cancellation.Cancel();
 
-        var exception = await Assert.ThrowsAsync<VbaDevProcessLifecycleException>(
+        var exception = await Assert.ThrowsAsync<ProcessLifecycleException>(
             () => running);
 
-        var cleanupFailures = Assert.IsType<AggregateException>(exception.InnerException);
-        Assert.Contains(killFailure, cleanupFailures.InnerExceptions);
-        Assert.Contains(cleanupFailures.InnerExceptions, failure => failure is TimeoutException);
+        Assert.Same(killFailure, exception.TerminationFailure);
+        Assert.IsType<TimeoutException>(exception.CleanupFailure);
+        Assert.IsAssignableFrom<OperationCanceledException>(exception.PrimaryFailure);
         Assert.Equal(1, handle.KillCount);
         Assert.Equal(2, handle.WaitTokens.Count);
         Assert.False(handle.WaitTokens[1].CanBeCanceled);
@@ -278,7 +440,7 @@ public sealed class VbaDevProcessInvocationTests
     {
         var executablePath = Path.GetFullPath(Path.Combine("tools", "vba-dev.exe"));
         var handle = new AlreadyExitedCancellationProcessHandle();
-        var invocation = new VbaDevProcessInvocation(
+        var invocation = new ProcessInvocation(
             executablePath,
             new RecordingProcessPlatform(handle));
         using var cancellation = new CancellationTokenSource();
@@ -301,7 +463,7 @@ public sealed class VbaDevProcessInvocationTests
     {
         var executablePath = Path.GetFullPath(Path.Combine("tools", "vba-dev.exe"));
         var handle = new UnprovableTerminationProcessHandle();
-        var invocation = new VbaDevProcessInvocation(
+        var invocation = new ProcessInvocation(
             executablePath,
             new RecordingProcessPlatform(handle));
         using var cancellation = new CancellationTokenSource();
@@ -310,18 +472,18 @@ public sealed class VbaDevProcessInvocationTests
         await handle.CancellableWaitStarted.Task;
         cancellation.Cancel();
 
-        var exception = await Assert.ThrowsAsync<VbaDevProcessLifecycleException>(
+        var exception = await Assert.ThrowsAsync<ProcessLifecycleException>(
             () => running);
 
         Assert.Contains("terminal process exit", exception.Message);
-        Assert.IsType<IOException>(exception.InnerException);
+        Assert.IsType<IOException>(exception.CleanupFailure);
         Assert.Equal(1, handle.KillCount);
         Assert.Equal(2, handle.WaitTokens.Count);
         Assert.False(handle.WaitTokens[1].CanBeCanceled);
     }
 
-    private sealed class RecordingProcessPlatform(IVbaDevProcessHandle platformProcess)
-        : IVbaDevProcessPlatform
+    private sealed class RecordingProcessPlatform(IProcessHandle platformProcess)
+        : IProcessPlatform
     {
         public string? ExecutablePath { get; private set; }
 
@@ -329,7 +491,7 @@ public sealed class VbaDevProcessInvocationTests
 
         public int StartCount { get; private set; }
 
-        public IVbaDevProcessHandle Start(
+        public IProcessHandle Start(
             string executablePath,
             IReadOnlyList<string> arguments)
         {
@@ -343,7 +505,7 @@ public sealed class VbaDevProcessInvocationTests
     private sealed class StubProcessHandle(
         int exitCode,
         string standardOutput,
-        string standardError) : IVbaDevProcessHandle
+        string standardError) : IProcessHandle
     {
         public int ExitCode => exitCode;
 
@@ -365,7 +527,7 @@ public sealed class VbaDevProcessInvocationTests
         }
     }
 
-    private sealed class DrainOrderingProcessHandle : IVbaDevProcessHandle
+    private sealed class DrainOrderingProcessHandle : IProcessHandle
     {
         private bool standardOutputDrainStarted;
         private bool standardErrorDrainStarted;
@@ -373,6 +535,14 @@ public sealed class VbaDevProcessInvocationTests
         public int ExitCode => 0;
 
         public bool BothDrainsStartedBeforeExitWait { get; private set; }
+        public bool BothDrainsStartedBeforeResume { get; private set; }
+        public int ResumeCount { get; private set; }
+
+        public void Resume()
+        {
+            ResumeCount++;
+            BothDrainsStartedBeforeResume = standardOutputDrainStarted && standardErrorDrainStarted;
+        }
 
         public Task<string> ReadStandardOutputToEndAsync()
         {
@@ -402,7 +572,7 @@ public sealed class VbaDevProcessInvocationTests
         }
     }
 
-    private sealed class CancellationProcessHandle : IVbaDevProcessHandle
+    private sealed class CancellationProcessHandle : IProcessHandle
     {
         public TaskCompletionSource CancellableWaitStarted { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -443,7 +613,7 @@ public sealed class VbaDevProcessInvocationTests
             => await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
     }
 
-    private sealed class DelayedDrainCancellationProcessHandle : IVbaDevProcessHandle
+    private sealed class DelayedDrainCancellationProcessHandle : IProcessHandle
     {
         private readonly TaskCompletionSource<string> standardOutput = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -497,7 +667,7 @@ public sealed class VbaDevProcessInvocationTests
             => await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
     }
 
-    private sealed class AlreadyExitedCancellationProcessHandle : IVbaDevProcessHandle
+    private sealed class AlreadyExitedCancellationProcessHandle : IProcessHandle
     {
         public TaskCompletionSource CancellableWaitStarted { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -542,7 +712,7 @@ public sealed class VbaDevProcessInvocationTests
     }
 
     private sealed class ExitedBeforeDrainCancellationProcessHandle
-        : IVbaDevProcessHandle
+        : IProcessHandle
     {
         private readonly TaskCompletionSource terminalExit = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -601,7 +771,7 @@ public sealed class VbaDevProcessInvocationTests
         bool stallTerminalWait,
         bool stallStandardOutput,
         bool stallStandardError,
-        Exception? killFailure = null) : IVbaDevProcessHandle
+        Exception? killFailure = null) : IProcessHandle
     {
         private readonly TaskCompletionSource<string> standardOutput = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -659,7 +829,7 @@ public sealed class VbaDevProcessInvocationTests
             => await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
     }
 
-    private sealed class UnprovableTerminationProcessHandle : IVbaDevProcessHandle
+    private sealed class UnprovableTerminationProcessHandle : IProcessHandle
     {
         public TaskCompletionSource CancellableWaitStarted { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);

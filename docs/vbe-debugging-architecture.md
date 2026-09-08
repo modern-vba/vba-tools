@@ -511,10 +511,24 @@ shutdown, Extension Host restart, adapter failure, and Restart Debugging
 force-terminate it without a save prompt. Every workbook opened in that process
 is session-owned and loses unsaved changes on termination.
 
-The same kill-on-close Job owns any active `vba-dev` child process. `VbaDev`
+A separate kill-on-close Job owns each active `vba-dev` child process. `VbaDev`
 retains its own strong ownership of hidden build Excel, so adapter Job closure
 terminates the CLI and causes the CLI's Excel ownership to close. The adapter
 establishes Job membership before it accepts process-dependent session state.
+
+CLI capabilities and snapshot builds share the neutral `ProcessInvocation`
+lifecycle with language-server discovery (ADR 0043). Both stdout/stderr drains
+start before the atomically owned suspended CLI resumes. Normal completion
+requires terminal exit and both complete captures; nonzero exit remains caller
+data. Cancellation stays effective after exit while pipes drain and before
+result publication; a reader fault is supervised without waiting for exit first.
+Cancellation or execution failure requests termination once, then uses the shared
+five-second asynchronous cleanup budget without the cancelled token. Proven
+cleanup preserves the original outcome; unproven cleanup is a distinct lifecycle
+failure carrying original, termination, and cleanup evidence. Handles are released
+without re-entering an exit wait, and late failures remain observed. This does
+not constrain normal builds or synchronous OS calls, and does not reuse the
+visible Excel session owner's asynchronous disposal for CLI cleanup.
 
 Session files exist only under
 `Path.GetTempPath()/vba-debug-adapter/workspaces/<session-id>`. The extension

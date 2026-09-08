@@ -1,5 +1,5 @@
 using System.Text.Json.Nodes;
-using VbaLanguageServer.Processes;
+using VbaTools.Processes;
 using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.SourceModel;
 using Xunit;
@@ -147,7 +147,7 @@ public sealed class VbaDevReferenceListContractTests
         }
 
         var result = VbaDevReferenceListContract.Parse(
-            new VbaDevProcessInvocationResult(0, json, ""),
+            new ProcessInvocationResult(0, json, ""),
             ProjectPath,
             "Book1",
             [new VbaProjectReference("Library A")]);
@@ -252,7 +252,7 @@ public sealed class VbaDevReferenceListContractTests
         IReadOnlyList<string> referenceNames,
         int exitCode = 0)
         => VbaDevReferenceListContract.Parse(
-            new VbaDevProcessInvocationResult(exitCode, root.ToJsonString(), ""),
+            new ProcessInvocationResult(exitCode, root.ToJsonString(), ""),
             ProjectPath,
             "Book1",
             referenceNames.Select(name => new VbaProjectReference(name)).ToArray());

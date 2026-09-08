@@ -39,6 +39,9 @@
       "vbatools.contentlengthframing": {
         "type": "Project"
       },
+      "vbatools.processinvocation": {
+        "type": "Project"
+      },
       "vbatools.projectmetadata": {
         "type": "Project",
         "dependencies": {

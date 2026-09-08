@@ -51,6 +51,11 @@ the executable product trees, owns the private decompressor and shared strict
 package metadata reader. It is an explicitly designated neutral foundation,
 not a language-server or debug-adapter implementation dependency in disguise.
 
+ADR 0043 likewise designates `VbaTools.ProcessInvocation` at
+`tools/vba-process-invocation` as a neutral foundation for asynchronous process
+lifecycle coordination. Its ordinary Process Adapter has no product dependency;
+the DAP-owned Windows Job Adapter implements its interface from the consumer side.
+
 A **CrossProductConformanceFixture** is a repository-neutral, data-only input:
 byte payloads, declarative metadata, and expected classifications or failures.
 Each product owns its loader, assertions, and lifecycle tests. `VbaDev` test

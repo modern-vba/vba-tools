@@ -1,5 +1,5 @@
 using VbaLanguageServer.Lsp;
-using VbaLanguageServer.Processes;
+using VbaTools.Processes;
 using VbaLanguageServer.SourceModel;
 using Xunit;
 
@@ -18,7 +18,7 @@ public sealed class VbaDevReferenceListStartupStateTests
             (arguments, _) =>
             {
                 calls.Add(arguments);
-                return Task.FromResult(new VbaDevProcessInvocationResult(
+                return Task.FromResult(new ProcessInvocationResult(
                     0,
                     """
                     {
@@ -53,7 +53,7 @@ public sealed class VbaDevReferenceListStartupStateTests
         {
             var state = await VbaDevReferenceListStartupState.ResolveAsync(
                 arguments,
-                (_, _) => Task.FromResult(new VbaDevProcessInvocationResult(
+                (_, _) => Task.FromResult(new ProcessInvocationResult(
                     0,
                     """
                     {"commands":{"reference list":{"outputSchemaVersion":"1.0"}}}
@@ -124,7 +124,7 @@ public sealed class VbaDevReferenceListStartupStateTests
             (_, _) =>
             {
                 processCalls++;
-                return Task.FromResult(new VbaDevProcessInvocationResult(
+                return Task.FromResult(new ProcessInvocationResult(
                     exitCode,
                     standardOutput,
                     "probe error"));
