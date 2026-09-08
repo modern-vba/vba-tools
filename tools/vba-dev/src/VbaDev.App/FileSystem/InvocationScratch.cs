@@ -12,7 +12,24 @@ internal enum InvocationScratchCleanupStatus
 internal sealed record InvocationScratchCleanupEvidence(
     InvocationScratchCleanupStatus Status,
     ImmutableArray<string> RetainedPaths,
-    ImmutableArray<string> InconclusivePaths);
+    ImmutableArray<string> InconclusivePaths)
+{
+    internal static InvocationScratchCleanupEvidence Combine(params InvocationScratchCleanupEvidence?[] observations)
+    {
+        var evidence = observations.OfType<InvocationScratchCleanupEvidence>().ToArray();
+        return new(evidence.Any(item => item.Status == InvocationScratchCleanupStatus.Inconclusive)
+                ? InvocationScratchCleanupStatus.Inconclusive
+                : evidence.Any(item => item.Status == InvocationScratchCleanupStatus.Retained)
+                    ? InvocationScratchCleanupStatus.Retained : InvocationScratchCleanupStatus.Removed,
+            Sort(evidence.SelectMany(item => item.RetainedPaths)),
+            Sort(evidence.SelectMany(item => item.InconclusivePaths)));
+
+        static ImmutableArray<string> Sort(IEnumerable<string> paths)
+            => paths.Distinct(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal)
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(path => path, StringComparer.Ordinal).ToImmutableArray();
+    }
+}
 
 /// <summary>
 /// Registers exact ownership receipts and completes bounded cleanup independently

@@ -264,7 +264,6 @@ public sealed class BuildSourceAdmissionTests
         var runner = new FakeWorkbookTestRunner();
         var test = new TestCommand(build, runner, new TestResultOutputFormatter(), new TestProcedureSourceLocator(),
             new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), temp.CreateDirectory("scratch"),
-                new SnapshotTestWorkspaceFileSystem(), 3, TimeSpan.Zero,
                 sourceCaptureFactory: new SnapshotSourceCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new VbaSourceAdmission(() => 1252))));
 
         var result = await test.RunAsync(context,
@@ -334,7 +333,6 @@ public sealed class BuildSourceAdmissionTests
         var runner = new FakeWorkbookTestRunner();
         var test = new TestCommand(build, runner, new TestResultOutputFormatter(), new TestProcedureSourceLocator(),
             new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot,
-                new SnapshotTestWorkspaceFileSystem(), 3, TimeSpan.Zero,
                 sourceCaptureFactory: new SnapshotSourceCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(), admission)));
 
         var result = command == "build"
@@ -517,7 +515,6 @@ public sealed class BuildSourceAdmissionTests
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
             new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot,
-                new SnapshotTestWorkspaceFileSystem(), 3, TimeSpan.Zero,
                 sourceCaptureFactory: new SnapshotSourceCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(), admission)));
 
         var result = await test.RunAsync(context,

@@ -65,8 +65,17 @@ The command removes its workspace after success, failed assertions, build or
 automation failure, and cancellation. Cleanup occurs only after owned Excel
 processes have ended. Failure to prove process release is a command-level
 infrastructure error and never becomes an individual test failure. After release
-is proved, workspace deletion receives bounded retries. If only deletion still
-fails, the command reports the retained absolute workspace path as a warning,
+is proved, workspace cleanup uses the shared bounded `InvocationScratch` policy.
+The workspace registers create-only GUID and source-container receipts, retains
+the nested source capture's cleanup evidence after transferring its input to
+materialization, and registers an exact workbook receipt at the successful
+materialization handoff before test execution. It never recaptures that route
+during cleanup. Nested and workspace observations are combined without losing
+inconclusive proof or the original operation failure. No recursive path deletion
+or private retry loop remains. Missing owned content counts as removed; changed,
+replaced, linked, reparse, foreign, or unproved content is preserved. Unproved
+process release closes ownership resources without dependent deletion.
+If only cleanup still fails, the command reports stable retained absolute paths as a warning,
 preserves every workbook-owned test outcome, and leaves the exit status
 determined by those outcomes. Persistent source, manifest state, and the
 manifest-defined bin workbook are never read as source input, created, replaced,

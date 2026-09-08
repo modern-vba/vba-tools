@@ -6,27 +6,8 @@ using VbaDev.App.Workbooks;
 
 namespace VbaDev.App.Testing;
 
-internal interface ISnapshotTestWorkspaceFileSystem
-{
-    void DeleteDirectory(string path);
-
-    void Delay(TimeSpan delay);
-}
-
-internal sealed class SnapshotTestWorkspaceFileSystem : ISnapshotTestWorkspaceFileSystem
-{
-    public void DeleteDirectory(string path) => Directory.Delete(path, recursive: true);
-
-    public void Delay(TimeSpan delay)
-    {
-        if (delay > TimeSpan.Zero)
-        {
-            Thread.Sleep(delay);
-        }
-    }
-}
-
-internal sealed record SnapshotTestWorkspaceCleanupResult(bool Deleted, string? Warning);
+internal sealed record SnapshotTestWorkspaceCleanupResult(
+    bool Deleted, string? Warning, InvocationScratchCleanupEvidence Evidence);
 
 internal interface ISnapshotSourceCaptureFactory
 {
@@ -80,102 +61,19 @@ internal sealed class SnapshotTestWorkspacePreparationException : Exception
     public string CleanupWarning { get; }
 }
 
-internal static class SnapshotTestWorkspaceCleanup
-{
-    public static string ValidateOwnedWorkspacePath(
-        string scratchRoot,
-        string workspacePath)
-    {
-        var absoluteScratchRoot = Path.GetFullPath(scratchRoot);
-        var absoluteWorkspacePath = Path.GetFullPath(workspacePath);
-        if (!string.Equals(
-                Path.GetDirectoryName(absoluteWorkspacePath),
-                absoluteScratchRoot,
-                OperatingSystem.IsWindows()
-                    ? StringComparison.OrdinalIgnoreCase
-                    : StringComparison.Ordinal)
-            || !Guid.TryParseExact(Path.GetFileName(absoluteWorkspacePath), "N", out _))
-        {
-            throw new InvalidOperationException(
-                $"Snapshot test workspace is not a direct GUID child of its scratch root: {absoluteWorkspacePath}");
-        }
-
-        return absoluteWorkspacePath;
-    }
-
-    public static SnapshotTestWorkspaceCleanupResult Run(
-        string workspacePath,
-        ISnapshotTestWorkspaceFileSystem fileSystem,
-        int cleanupAttempts,
-        TimeSpan retryDelay)
-    {
-        for (var attempt = 1; attempt <= cleanupAttempts; attempt++)
-        {
-            try
-            {
-                fileSystem.DeleteDirectory(workspacePath);
-                return new SnapshotTestWorkspaceCleanupResult(
-                    Deleted: true,
-                    Warning: null);
-            }
-            catch (DirectoryNotFoundException)
-            {
-                return new SnapshotTestWorkspaceCleanupResult(
-                    Deleted: true,
-                    Warning: null);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                // A transient file-system owner can release between bounded attempts.
-            }
-
-            if (attempt < cleanupAttempts)
-            {
-                fileSystem.Delay(retryDelay);
-            }
-        }
-
-        return new SnapshotTestWorkspaceCleanupResult(
-            Deleted: false,
-            Warning: $"Warning: Snapshot test workspace could not be removed and was retained at: {workspacePath}{Environment.NewLine}");
-    }
-}
-
 internal sealed class SnapshotTestExecutionWorkspaceFactory
 {
+    private readonly IExactFileSystemObjectOwnershipFactory ownershipFactory;
     private readonly string scratchRoot;
-    private readonly ISnapshotTestWorkspaceFileSystem fileSystem;
-    private readonly int cleanupAttempts;
-    private readonly TimeSpan retryDelay;
     private readonly BuildSourceSnapshotOutputSafetyValidator outputSafetyValidator;
     private readonly ISnapshotSourceCaptureFactory sourceCaptureFactory;
+    private readonly Action<string>? afterWorkspaceCreated;
 
-    public SnapshotTestExecutionWorkspaceFactory(IExactFileSystemObjectOwnershipFactory ownershipFactory, IFileSystemPathIdentityResolver pathIdentityResolver)
-        : this(
-            ownershipFactory,
-            pathIdentityResolver,
-            Path.Combine(Path.GetTempPath(), "vba-dev-snapshot-test"),
-            new SnapshotTestWorkspaceFileSystem(),
-            cleanupAttempts: 3,
-            retryDelay: TimeSpan.FromMilliseconds(50),
-            new BuildSourceSnapshotOutputSafetyValidator(pathIdentityResolver),
-            new SnapshotSourceCaptureFactory(ownershipFactory))
-    {
-    }
-
-    internal SnapshotTestExecutionWorkspaceFactory(
+    public SnapshotTestExecutionWorkspaceFactory(
         IExactFileSystemObjectOwnershipFactory ownershipFactory,
-        IFileSystemPathIdentityResolver pathIdentityResolver,
-        string scratchRoot)
-        : this(
-            ownershipFactory,
-            pathIdentityResolver,
-            scratchRoot,
-            new SnapshotTestWorkspaceFileSystem(),
-            cleanupAttempts: 3,
-            retryDelay: TimeSpan.FromMilliseconds(50),
-            new BuildSourceSnapshotOutputSafetyValidator(pathIdentityResolver),
-            new SnapshotSourceCaptureFactory(ownershipFactory))
+        IFileSystemPathIdentityResolver pathIdentityResolver)
+        : this(ownershipFactory, pathIdentityResolver,
+            Path.Combine(Path.GetTempPath(), "vba-dev-snapshot-test"))
     {
     }
 
@@ -183,200 +81,178 @@ internal sealed class SnapshotTestExecutionWorkspaceFactory
         IExactFileSystemObjectOwnershipFactory ownershipFactory,
         IFileSystemPathIdentityResolver pathIdentityResolver,
         string scratchRoot,
-        ISnapshotTestWorkspaceFileSystem fileSystem,
-        int cleanupAttempts,
-        TimeSpan retryDelay,
         BuildSourceSnapshotOutputSafetyValidator? outputSafetyValidator = null,
-        ISnapshotSourceCaptureFactory? sourceCaptureFactory = null)
+        ISnapshotSourceCaptureFactory? sourceCaptureFactory = null,
+        Action<string>? afterWorkspaceCreated = null)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(scratchRoot);
-        ArgumentNullException.ThrowIfNull(fileSystem);
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(cleanupAttempts);
-        ArgumentOutOfRangeException.ThrowIfLessThan(retryDelay, TimeSpan.Zero);
+        this.ownershipFactory = ownershipFactory;
         this.scratchRoot = Path.GetFullPath(scratchRoot);
-        this.fileSystem = fileSystem;
-        this.cleanupAttempts = cleanupAttempts;
-        this.retryDelay = retryDelay;
         this.outputSafetyValidator = outputSafetyValidator
             ?? new BuildSourceSnapshotOutputSafetyValidator(pathIdentityResolver);
-        this.sourceCaptureFactory = sourceCaptureFactory
-            ?? new SnapshotSourceCaptureFactory(ownershipFactory);
+        this.sourceCaptureFactory = sourceCaptureFactory ?? new SnapshotSourceCaptureFactory(ownershipFactory);
+        this.afterWorkspaceCreated = afterWorkspaceCreated;
     }
 
     public SnapshotTestExecutionWorkspace Create(
-        ResolvedProjectContext context,
-        string sourceSnapshotPath,
-        string workbookFileName,
-        CancellationToken cancellationToken)
+        ResolvedProjectContext context, string sourceSnapshotPath,
+        string workbookFileName, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentException.ThrowIfNullOrWhiteSpace(sourceSnapshotPath);
         ArgumentException.ThrowIfNullOrWhiteSpace(workbookFileName);
-        if (!string.Equals(
-            workbookFileName,
-            Path.GetFileName(workbookFileName),
-            StringComparison.Ordinal))
-        {
-            throw new InvalidOperationException(
-                $"Snapshot test workbook filename must be a basename: {workbookFileName}");
-        }
+        if (!string.Equals(workbookFileName, Path.GetFileName(workbookFileName), StringComparison.Ordinal))
+            throw new InvalidOperationException($"Snapshot test workbook filename must be a basename: {workbookFileName}");
 
-        var candidateWorkspacePath = Path.Combine(
-            scratchRoot,
-            Guid.NewGuid().ToString("N"));
-        var candidateWorkbookPath = Path.Combine(
-            candidateWorkspacePath,
-            workbookFileName);
-        BuildSourceSnapshotValidatedPaths validatedPaths;
+        var candidate = Path.Combine(scratchRoot, Guid.NewGuid().ToString("N"));
+        BuildSourceSnapshotValidatedPaths validated;
         string workspacePath;
-        string operationScratchRoot;
-        var privateWorkspacePath = candidateWorkspacePath;
         try
         {
-            validatedPaths = outputSafetyValidator.Validate(
-                context,
-                sourceSnapshotPath,
-                candidateWorkbookPath);
-            workspacePath = Path.GetDirectoryName(validatedPaths.OutputPath)
-                ?? throw new InvalidOperationException(
-                    $"Snapshot test workspace could not be resolved: {candidateWorkspacePath}");
-            privateWorkspacePath = workspacePath;
-            operationScratchRoot = Path.GetDirectoryName(workspacePath)
-                ?? throw new InvalidOperationException(
-                    $"Snapshot test scratch root could not be resolved: {workspacePath}");
-            workspacePath = SnapshotTestWorkspaceCleanup.ValidateOwnedWorkspacePath(
-                operationScratchRoot,
-                workspacePath);
+            validated = outputSafetyValidator.Validate(context, sourceSnapshotPath, Path.Combine(candidate, workbookFileName));
+            workspacePath = Path.GetDirectoryName(validated.OutputPath)!;
+            if (!Guid.TryParseExact(Path.GetFileName(workspacePath), "N", out _))
+                throw new InvalidOperationException($"Snapshot test workspace must be a GUID child: {workspacePath}");
         }
-        catch (Exception preparationError)
+        catch (Exception error)
         {
-            throw new SnapshotTestWorkspacePreparationException(
-                preparationError,
-                privateWorkspacePath,
-                cleanupWarning: string.Empty);
+            throw new SnapshotTestWorkspacePreparationException(error, candidate, string.Empty);
         }
 
-        BuildSourceSnapshotCapture? sourceCapture = null;
+        // The shared scratch container is not adopted into this invocation's ledger.
+        Directory.CreateDirectory(Path.GetDirectoryName(workspacePath)!);
+        var ownership = ownershipFactory.Open();
+        var scratch = new InvocationScratch(ownership);
+        ExactFileSystemObjectOwnership.DirectoryReceipt? root = null;
+        ExactFileSystemObjectOwnership.DirectoryReceipt? sourceRoot = null;
+        BuildSourceSnapshotCapture? capture = null;
+        var captureAccepted = false;
+        var transferred = false;
         try
         {
-            Directory.CreateDirectory(workspacePath);
-            sourceCapture = sourceCaptureFactory.Create(
-                Path.Combine(workspacePath, "source"),
-                validatedPaths.SourceSnapshotPath,
-                cancellationToken);
-            return new SnapshotTestExecutionWorkspace(
-                operationScratchRoot,
-                workspacePath,
-                sourceCapture,
-                validatedPaths.OutputPath,
-                fileSystem,
-                cleanupAttempts,
-                retryDelay);
+            root = ownership.TryCreateOnlyDirectory(Path.GetDirectoryName(workspacePath)!, Path.GetFileName(workspacePath))
+                ?? throw new IOException($"Snapshot test workspace already exists: {workspacePath}");
+            scratch.Register(root);
+            sourceRoot = ownership.TryCreateOnlyDirectory(root.Route, "source")
+                ?? throw new IOException($"Snapshot test source container already exists: {workspacePath}");
+            scratch.Register(sourceRoot);
+            ReleaseFences();
+            afterWorkspaceCreated?.Invoke(workspacePath);
+            capture = sourceCaptureFactory.Create(sourceRoot.Route, validated.SourceSnapshotPath, cancellationToken);
+            SnapshotTestExecutionWorkspace.ValidateLayout(root.Route, capture, validated.OutputPath);
+            captureAccepted = true;
+            var workspace = new SnapshotTestExecutionWorkspace(ownership, scratch, root.Route, capture, validated.OutputPath);
+            transferred = true;
+            return workspace;
         }
-        catch (Exception preparationError)
+        catch (Exception error)
         {
-            var cleanup = SnapshotTestWorkspaceCleanup.Run(
-                workspacePath,
-                fileSystem,
-                cleanupAttempts,
-                retryDelay);
-            throw new SnapshotTestWorkspacePreparationException(
-                preparationError,
-                workspacePath,
-                cleanup.Warning ?? string.Empty);
+            ReleaseFences();
+            WorkbookAutomationFailureClassifier.TryClassify(error, out var facts);
+            if (!facts.ProcessReleaseProven)
+                throw new SnapshotTestWorkspacePreparationException(error, workspacePath,
+                    $"Snapshot test workspace was retained because owned Excel process release could not be proved: {workspacePath}{Environment.NewLine}");
+            var nested = captureAccepted ? capture!.Cleanup()
+                : (error as BuildSourceSnapshotCaptureRetainedException)?.CleanupEvidence;
+            var evidence = InvocationScratchCleanupEvidence.Combine(nested, scratch.Cleanup());
+            var cleanup = SnapshotTestExecutionWorkspace.DescribeCleanup(evidence);
+            throw new SnapshotTestWorkspacePreparationException(error, workspacePath, cleanup.Warning ?? string.Empty);
+        }
+        finally
+        {
+            if (!transferred) ownership.Dispose();
+        }
+
+        void ReleaseFences()
+        {
+            if (sourceRoot is not null) ownership.ReleaseCreationFence(sourceRoot);
+            if (root is not null) ownership.ReleaseCreationFence(root);
         }
     }
 }
 
 internal sealed class SnapshotTestExecutionWorkspace : IDisposable
 {
-    private BuildSourceSnapshotCapture? sourceCapture;
-    private readonly string sourceRootPath;
-    private readonly ISnapshotTestWorkspaceFileSystem fileSystem;
-    private readonly int cleanupAttempts;
-    private readonly TimeSpan retryDelay;
+    private readonly ExactFileSystemObjectOwnership ownership;
+    private readonly InvocationScratch scratch;
+    private readonly BuildSourceSnapshotCapture sourceCapture;
+    private bool sourceTransferred;
+    private bool released;
+    private bool workbookRegistered;
     private SnapshotTestWorkspaceCleanupResult? cleanupResult;
 
     internal SnapshotTestExecutionWorkspace(
-        string scratchRoot,
-        string workspacePath,
-        BuildSourceSnapshotCapture sourceCapture,
-        string workbookPath,
-        ISnapshotTestWorkspaceFileSystem fileSystem,
-        int cleanupAttempts,
-        TimeSpan retryDelay)
+        ExactFileSystemObjectOwnership ownership, InvocationScratch scratch,
+        string workspacePath, BuildSourceSnapshotCapture sourceCapture, string workbookPath)
     {
-        WorkspacePath = SnapshotTestWorkspaceCleanup.ValidateOwnedWorkspacePath(
-            scratchRoot,
-            workspacePath);
-
-        var absoluteWorkbookPath = Path.GetFullPath(workbookPath);
-        if (!string.Equals(
-                Path.GetDirectoryName(absoluteWorkbookPath),
-                WorkspacePath,
-                OperatingSystem.IsWindows()
-                    ? StringComparison.OrdinalIgnoreCase
-                    : StringComparison.Ordinal))
-        {
-            throw new InvalidOperationException(
-                $"Snapshot test workbook must be contained directly in its owned workspace '{WorkspacePath}': {absoluteWorkbookPath}");
-        }
-
-        var absoluteSourceCapturePath = Path.GetFullPath(sourceCapture.StagingPath);
-        var sourceCaptureRoot = Path.GetDirectoryName(absoluteSourceCapturePath);
-        var sourceCaptureWorkspace = sourceCaptureRoot is null
-            ? null
-            : Path.GetDirectoryName(sourceCaptureRoot);
-        var pathComparison = OperatingSystem.IsWindows()
-            ? StringComparison.OrdinalIgnoreCase
-            : StringComparison.Ordinal;
-        if (!string.Equals(sourceCaptureWorkspace, WorkspacePath, pathComparison)
-            || !string.Equals(
-                Path.GetFileName(sourceCaptureRoot),
-                "source",
-                pathComparison)
-            || !Guid.TryParseExact(
-                Path.GetFileName(absoluteSourceCapturePath),
-                "N",
-                out _))
-        {
-            throw new InvalidOperationException(
-                $"Snapshot test source capture must use the owned workspace layout '{Path.Combine(WorkspacePath, "source", "<guid>")}': {absoluteSourceCapturePath}");
-        }
-
+        ValidateLayout(workspacePath, sourceCapture, workbookPath);
+        this.ownership = ownership;
+        this.scratch = scratch;
         this.sourceCapture = sourceCapture;
-        sourceRootPath = sourceCapture.SourceRootPath;
-        WorkbookPath = absoluteWorkbookPath;
-        this.fileSystem = fileSystem;
-        this.cleanupAttempts = cleanupAttempts;
-        this.retryDelay = retryDelay;
+        WorkspacePath = Path.GetFullPath(workspacePath);
+        WorkbookPath = Path.GetFullPath(workbookPath);
+    }
+
+    internal static void ValidateLayout(string workspacePath, BuildSourceSnapshotCapture capture, string workbookPath)
+    {
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        var workspace = Path.GetFullPath(workspacePath);
+        if (!string.Equals(Path.GetDirectoryName(Path.GetFullPath(workbookPath)), workspace, comparison))
+            throw new InvalidOperationException($"Snapshot test workbook must be contained directly in its owned workspace '{workspace}': {workbookPath}");
+        var capturePath = Path.GetFullPath(capture.StagingPath);
+        if (!string.Equals(Path.GetDirectoryName(capturePath), Path.Combine(workspace, "source"), comparison)
+            || !Guid.TryParseExact(Path.GetFileName(capturePath), "N", out _))
+            throw new InvalidOperationException($"Snapshot test source capture must use the owned workspace layout '{Path.Combine(workspace, "source", "<guid>")}': {capturePath}");
     }
 
     public string WorkspacePath { get; }
-
-    internal string SourceRootPath => sourceRootPath;
-
     public string WorkbookPath { get; }
+    internal string SourceRootPath => sourceCapture.SourceRootPath;
 
     internal BuildSourceSnapshotCapture TakeSourceCapture()
-        => Interlocked.Exchange(ref sourceCapture, null)
-            ?? throw new InvalidOperationException(
-                "The snapshot test source capture has already been transferred for materialization.");
+    {
+        if (sourceTransferred) throw new InvalidOperationException("The snapshot test source capture has already been transferred for materialization.");
+        sourceTransferred = true;
+        return sourceCapture;
+    }
+
+    // Called once at the successful materialization handoff, before test execution.
+    // Cleanup later consumes this fixed receipt; it never captures the path again.
+    internal void RegisterCommittedWorkbook(string committedPath)
+    {
+        ObjectDisposedException.ThrowIf(released, this);
+        if (workbookRegistered || !string.Equals(Path.GetFullPath(committedPath), WorkbookPath, StringComparison.Ordinal))
+            throw new InvalidOperationException("Snapshot materialization did not return its selected workspace workbook exactly once.");
+        scratch.Register(ownership.CaptureTrustedStableFile(committedPath).Receipt);
+        workbookRegistered = true;
+    }
 
     public SnapshotTestWorkspaceCleanupResult Cleanup()
     {
-        if (cleanupResult is not null)
+        if (cleanupResult is not null) return cleanupResult;
+        ObjectDisposedException.ThrowIf(released, this);
+        try
         {
-            return cleanupResult;
+            var sourceEvidence = sourceCapture.Cleanup();
+            var evidence = InvocationScratchCleanupEvidence.Combine(sourceEvidence, scratch.Cleanup());
+            return cleanupResult = DescribeCleanup(evidence);
         }
-
-        cleanupResult = SnapshotTestWorkspaceCleanup.Run(
-            WorkspacePath,
-            fileSystem,
-            cleanupAttempts,
-            retryDelay);
-        return cleanupResult;
+        finally { RetainWithoutCleanup(); }
     }
 
-    public void Dispose() => Cleanup();
+    internal void RetainWithoutCleanup()
+    {
+        if (released) return;
+        released = true;
+        ownership.Dispose();
+    }
+
+    internal static SnapshotTestWorkspaceCleanupResult DescribeCleanup(InvocationScratchCleanupEvidence evidence)
+        => evidence.Status == InvocationScratchCleanupStatus.Removed
+            ? new(true, null, evidence)
+            : new(false, $"Warning: Snapshot test workspace could not be removed ({evidence.Status}); retained absolute paths: {string.Join(", ", evidence.RetainedPaths)}{Environment.NewLine}", evidence);
+
+    public void Dispose()
+    {
+        if (!released) Cleanup();
+    }
 }

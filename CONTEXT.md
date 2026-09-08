@@ -660,9 +660,19 @@ owned-process release is a command-level infrastructure error even when
 cancellation was observed, and retains the dependent workspace. Test consumes
 shared terminal facts for preparation and execution; neither those facts nor
 scratch cleanup determines workbook-owned assertion outcomes. After release is
-proved, workspace deletion receives bounded retries; a remaining deletion
-failure retains and reports the absolute path as a warning without changing
-individual test outcomes or the test-result exit status.
+proved, the workspace composes its create-only GUID/root source-container
+receipts, the nested source capture's immutable cleanup evidence, and the exact
+workbook receipt captured at the successful materialization handoff before
+execution. `InvocationScratch` performs bounded file-first, deepest-directory
+cleanup; the workspace never recursively deletes or adopts a later path occupant.
+The nested capture remains in the workspace ledger even after its source input
+is transferred to the materializer. Missing owned content counts as removed;
+changed, replaced, linked, reparse, foreign, or unproved content is preserved.
+Retained or inconclusive evidence is combined into stable absolute paths and
+reported as a warning without changing individual test outcomes, NDJSON ordering,
+or the test-result exit status. The command closes ownership resources without
+dependent deletion when process release is unproved. Shared scratch containers,
+caller source, and persistent bin output are never adopted into the ledger.
 _Avoid_: BuildSourceSnapshot, caller-selected build output, persistent bin directory
 
 **ExecutedSourceIndex**:
