@@ -48,7 +48,6 @@ public sealed class VbaSourceAdmissionTests
         Func<int> getActiveCodePage = () => { codePageReads++; return 1252; };
         var admission = new VbaSourceAdmission(getActiveCodePage);
         var factory = new VbeImportSourceSetFactory(
-            getActiveCodePage,
             sourceSet => { createdCalls++; observed = sourceSet; });
 
         var admitted = admission.Admit(
@@ -117,7 +116,6 @@ public sealed class VbaSourceAdmissionTests
         FileStream? mirrorLock = null;
         string? mirrorPath = null;
         var factory = new VbeImportSourceSetFactory(
-            () => 65001,
             mirror =>
             {
                 mirrorPath = mirror.StagingPath;

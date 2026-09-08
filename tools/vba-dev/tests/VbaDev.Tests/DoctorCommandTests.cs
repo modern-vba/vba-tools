@@ -1412,7 +1412,7 @@ public sealed class DoctorCommandTests
             deletedWorkbooks.Add,
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(resolver)),
-            new VbeImportSourceSetFactory(() => 65001),
+            new VbeImportSourceSetFactory(),
             new WorkbookMaterializationNamePreflight());
         var application = CommandLineTestFactory.Create(
             root,
@@ -1481,7 +1481,7 @@ public sealed class DoctorCommandTests
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(
                     new FakeVbaProjectReferenceResolver())),
-            new VbeImportSourceSetFactory(() => 65001),
+            new VbeImportSourceSetFactory(),
             new WorkbookMaterializationNamePreflight());
         var application = CommandLineTestFactory.Create(
             root,
@@ -1588,7 +1588,7 @@ public sealed class DoctorCommandTests
                 new VbaProjectReferencePlanner(
                     registryResolver,
                     externalMaterializationProbe)),
-            new VbeImportSourceSetFactory(() => 65001),
+            new VbeImportSourceSetFactory(),
             new WorkbookMaterializationNamePreflight());
         var application = CommandLineTestFactory.Create(
             root,
@@ -1682,7 +1682,7 @@ public sealed class DoctorCommandTests
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(
                     new FakeVbaProjectReferenceResolver(resolvedReference))),
-            new VbeImportSourceSetFactory(() => 65001),
+            new VbeImportSourceSetFactory(),
             new WorkbookMaterializationNamePreflight());
         var application = CommandLineTestFactory.Create(
             root,
@@ -1744,7 +1744,6 @@ public sealed class DoctorCommandTests
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),
             new VbeImportSourceSetFactory(
-                () => 65001,
                 sourceSet =>
                 {
                     observedProfiles.Add(File.ReadAllText(Assert.Single(sourceSet.SourceFiles).SourcePath));
@@ -1788,11 +1787,7 @@ public sealed class DoctorCommandTests
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(
                     new FakeVbaProjectReferenceResolver())),
-            new VbeImportSourceSetFactory(() =>
-            {
-                profileCaptures++;
-                return 65001;
-            }),
+            new VbeImportSourceSetFactory(),
             new WorkbookMaterializationNamePreflight());
         var application = CommandLineTestFactory.Create(
             root,
@@ -1837,7 +1832,6 @@ public sealed class DoctorCommandTests
                 new VbaProjectReferencePlanner(
                     new FakeVbaProjectReferenceResolver())),
             new VbeImportSourceSetFactory(
-                () => 65001,
                 sourceSet =>
                 {
                     stagingPaths.Add(sourceSet.StagingPath);
@@ -1879,7 +1873,6 @@ public sealed class DoctorCommandTests
                 new VbaProjectReferencePlanner(
                     new FakeVbaProjectReferenceResolver())),
             new VbeImportSourceSetFactory(
-                () => 65001,
                 sourceSet => stagingPaths.Add(sourceSet.StagingPath)),
             new WorkbookMaterializationNamePreflight());
         var application = CommandLineTestFactory.Create(
@@ -1917,7 +1910,7 @@ public sealed class DoctorCommandTests
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(
                     new FakeVbaProjectReferenceResolver())),
-            new VbeImportSourceSetFactory(() => 65001),
+            new VbeImportSourceSetFactory(),
             new WorkbookMaterializationNamePreflight());
         var application = CommandLineTestFactory.Create(
             root,
@@ -1954,7 +1947,6 @@ public sealed class DoctorCommandTests
                 new VbaProjectReferencePlanner(
                     new FakeVbaProjectReferenceResolver())),
             new VbeImportSourceSetFactory(
-                () => 65001,
                 sourceSet =>
                 {
                     stagingPaths.Add(sourceSet.StagingPath);

@@ -45,9 +45,7 @@ public sealed class AutomationDesktopIsolationWindowsExcelIntegrationTests
                 string.Empty
             ]),
             new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-        using var importSourceSet = VbeImportSourceSet.Create(
-            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
-            ActiveWindowsAnsiCodePage.Get());
+        using var importSourceSet = VbeImportSourceSet.Create(new VbaSourceAdmission(() => ActiveWindowsAnsiCodePage.Get()).Admit(Path.GetDirectoryName(sourcePath)!, VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
         var stagedSource = Assert.Single(importSourceSet.SourceFiles);
         var operationEntered = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -470,9 +468,7 @@ public sealed class AutomationDesktopIsolationWindowsExcelIntegrationTests
         string workbookPath,
         string sourcePath)
     {
-        using var importSourceSet = VbeImportSourceSet.Create(
-            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
-            ActiveWindowsAnsiCodePage.Get());
+        using var importSourceSet = VbeImportSourceSet.Create(new VbaSourceAdmission(() => ActiveWindowsAnsiCodePage.Get()).Admit(Path.GetDirectoryName(sourcePath)!, VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
         var stagedSource = Assert.Single(importSourceSet.SourceFiles);
         var automation = new ExcelComWorkbookGenerationAutomation();
         _ = await automation.RunAsync(

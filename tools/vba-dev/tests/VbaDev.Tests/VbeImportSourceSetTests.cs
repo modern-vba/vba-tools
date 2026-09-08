@@ -15,14 +15,12 @@ public sealed class VbeImportSourceSetTests
     public void StagesEverySupportedSourceEncodingInTheFixedActiveCodePage()
     {
         const string sourceText = "Attribute VB_Name = \"Greeting\"\r\nPublic Const Message As String = \"日本語\"\r\n";
-        var utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
         var utf8Bom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: true, throwOnInvalidBytes: true);
         var utf16Le = new UnicodeEncoding(bigEndian: false, byteOrderMark: true, throwOnInvalidBytes: true);
         var utf16Be = new UnicodeEncoding(bigEndian: true, byteOrderMark: true, throwOnInvalidBytes: true);
         var cp932 = StrictEncoding(932);
         var cases = new (string Token, byte[] Bytes)[]
         {
-            ("utf8", utf8.GetBytes(sourceText)),
             ("utf8bom", WithPreamble(utf8Bom, sourceText)),
             ("utf16le", WithPreamble(utf16Le, sourceText)),
             ("utf16be", WithPreamble(utf16Be, sourceText)),
@@ -36,8 +34,9 @@ public sealed class VbeImportSourceSetTests
             File.WriteAllBytes(sourcePath, testCase.Bytes);
 
             using var sourceSet = VbeImportSourceSet.Create(
-                [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
-                activeCodePage: 932);
+                new VbaSourceAdmission(() => 932)
+                    .Admit(Path.GetDirectoryName(sourcePath)!,
+                        VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
 
             var staged = Assert.Single(sourceSet.SourceFiles);
             Assert.Equal(cp932.GetBytes(sourceText), File.ReadAllBytes(staged.SourcePath));
@@ -49,7 +48,7 @@ public sealed class VbeImportSourceSetTests
     }
 
     [Fact]
-    public void PrefersStrictUtf8WhenBytesAreAlsoValidInTheActiveCodePage()
+    public void ProjectsBomlessBytesUsingOnlyTheAdmittedActiveCodePage()
     {
         const string sourceText = "Attribute VB_Name = \"CopyrightModule\"\r\nPublic Const Mark As String = \"©\"\r\n";
         using var temp = TempDirectory.Create();
@@ -57,12 +56,14 @@ public sealed class VbeImportSourceSetTests
         File.WriteAllBytes(sourcePath, new UTF8Encoding(false, true).GetBytes(sourceText));
 
         using var sourceSet = VbeImportSourceSet.Create(
-            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
-            activeCodePage: 1252);
+            new VbaSourceAdmission(() => 1252)
+                .Admit(Path.GetDirectoryName(sourcePath)!,
+                    VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
 
         var staged = Assert.Single(sourceSet.SourceFiles);
-        Assert.Equal("utf8", staged.ImportVerification.OriginalEncoding);
-        Assert.Equal(StrictEncoding(1252).GetBytes(sourceText), File.ReadAllBytes(staged.SourcePath));
+        Assert.Equal("windows-1252", staged.ImportVerification.OriginalEncoding);
+        Assert.Equal(new UTF8Encoding(false, true).GetBytes(sourceText), File.ReadAllBytes(staged.SourcePath));
+        Assert.Contains("Public Const Mark As String = \"Â©\"", staged.ImportVerification.CodeModuleLines);
     }
 
     [Fact]
@@ -75,8 +76,9 @@ public sealed class VbeImportSourceSetTests
         File.WriteAllBytes(sourcePath, WithPreamble(utf8Bom, sourceText));
 
         using var sourceSet = VbeImportSourceSet.Create(
-            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
-            activeCodePage: 65001);
+            new VbaSourceAdmission(() => 65001)
+                .Admit(Path.GetDirectoryName(sourcePath)!,
+                    VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
 
         var staged = Assert.Single(sourceSet.SourceFiles);
         Assert.Equal("utf8bom", staged.ImportVerification.OriginalEncoding);
@@ -95,8 +97,9 @@ public sealed class VbeImportSourceSetTests
 
         var error = Assert.Throws<InvalidOperationException>(() =>
             VbeImportSourceSet.Create(
-                [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
-                activeCodePage: int.MaxValue));
+                new VbaSourceAdmission(() => int.MaxValue)
+                    .Admit(Path.GetDirectoryName(sourcePath)!,
+                        VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None)));
 
         Assert.Contains("not available", error.Message, StringComparison.OrdinalIgnoreCase);
     }
@@ -110,22 +113,26 @@ public sealed class VbeImportSourceSetTests
 
         var invalid = Assert.Throws<InvalidOperationException>(() =>
             VbeImportSourceSet.Create(
-                [new VbaSourceFile(invalidPath, VbaSourceKind.StandardModule, null)],
-                activeCodePage: 932));
+                new VbaSourceAdmission(() => 932)
+                    .Admit(Path.GetDirectoryName(invalidPath)!,
+                        VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None)));
 
         Assert.Contains("strictly decoded", invalid.Message, StringComparison.OrdinalIgnoreCase);
+        File.Delete(invalidPath);
 
         var lossyPath = Path.Combine(temp.Path, "Lossy.bas");
         const string lossyText = "Attribute VB_Name = \"Lossy\"\r\nPublic Const Value As String = \"−🙂\"\r\n";
-        File.WriteAllBytes(lossyPath, new UTF8Encoding(false, true).GetBytes(lossyText));
+        var lossyBytes = WithPreamble(new UTF8Encoding(true, true), lossyText);
+        File.WriteAllBytes(lossyPath, lossyBytes);
 
         var lossy = Assert.Throws<InvalidOperationException>(() =>
             VbeImportSourceSet.Create(
-                [new VbaSourceFile(lossyPath, VbaSourceKind.StandardModule, null)],
-                activeCodePage: 1252));
+                new VbaSourceAdmission(() => 1252)
+                    .Admit(Path.GetDirectoryName(lossyPath)!,
+                        VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None)));
 
         Assert.Contains("Windows code page 1252", lossy.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal(new UTF8Encoding(false, true).GetBytes(lossyText), File.ReadAllBytes(lossyPath));
+        Assert.Equal(lossyBytes, File.ReadAllBytes(lossyPath));
     }
 
     [Fact]
@@ -146,8 +153,9 @@ public sealed class VbeImportSourceSetTests
 
             var error = Assert.Throws<InvalidOperationException>(() =>
                 VbeImportSourceSet.Create(
-                    [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
-                    activeCodePage: 1252));
+                    new VbaSourceAdmission(() => 1252)
+                        .Admit(Path.GetDirectoryName(sourcePath)!,
+                            VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None)));
 
             Assert.Contains("strictly decoded", error.Message, StringComparison.OrdinalIgnoreCase);
             Assert.Equal(bytes, File.ReadAllBytes(sourcePath));
@@ -167,8 +175,9 @@ public sealed class VbeImportSourceSetTests
 
         var error = Assert.Throws<InvalidOperationException>(() =>
             VbeImportSourceSet.Create(
-                [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
-                activeCodePage: 1252));
+                new VbaSourceAdmission(() => 1252)
+                    .Admit(Path.GetDirectoryName(sourcePath)!,
+                        VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None)));
 
         Assert.Contains("unsupported", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(sourceBytes, File.ReadAllBytes(sourcePath));
@@ -187,15 +196,16 @@ public sealed class VbeImportSourceSetTests
 
         var error = Assert.Throws<InvalidOperationException>(() =>
             VbeImportSourceSet.Create(
-                [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
-                activeCodePage: 932));
+                new VbaSourceAdmission(() => 932)
+                    .Admit(Path.GetDirectoryName(sourcePath)!,
+                        VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None)));
 
         Assert.Contains("without changing its bytes", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(sourceBytes, File.ReadAllBytes(sourcePath));
     }
 
     [Fact]
-    public void DetectsBomlessActiveCodePage1252AfterUtf8Fails()
+    public void DecodesBomlessSourcesWithTheFixedActiveCodePage1252()
     {
         const string sourceText = "Attribute VB_Name = \"Cafe\"\r\nPublic Const Name As String = \"Café\"\r\n";
         using var temp = TempDirectory.Create();
@@ -205,8 +215,9 @@ public sealed class VbeImportSourceSetTests
         File.WriteAllBytes(sourcePath, sourceBytes);
 
         using var sourceSet = VbeImportSourceSet.Create(
-            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
-            activeCodePage: 1252);
+            new VbaSourceAdmission(() => 1252)
+                .Admit(Path.GetDirectoryName(sourcePath)!,
+                    VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
 
         var staged = Assert.Single(sourceSet.SourceFiles);
         Assert.Equal("windows-1252", staged.ImportVerification.OriginalEncoding);
@@ -220,13 +231,14 @@ public sealed class VbeImportSourceSetTests
         using var temp = TempDirectory.Create();
         var sourcePath = Path.Combine(temp.Path, "BestFit.bas");
         const string sourceText = "Attribute VB_Name = \"BestFit\"\r\nPublic Const Minus As String = \"−\"\r\n";
-        var sourceBytes = new UTF8Encoding(false, true).GetBytes(sourceText);
+        var sourceBytes = WithPreamble(new UTF8Encoding(true, true), sourceText);
         File.WriteAllBytes(sourcePath, sourceBytes);
 
         var error = Assert.Throws<InvalidOperationException>(() =>
             VbeImportSourceSet.Create(
-                [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
-                activeCodePage: 1252));
+                new VbaSourceAdmission(() => 1252)
+                    .Admit(Path.GetDirectoryName(sourcePath)!,
+                        VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None)));
 
         Assert.Contains("losslessly", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(sourceBytes, File.ReadAllBytes(sourcePath));
@@ -272,11 +284,9 @@ public sealed class VbeImportSourceSetTests
             new UTF8Encoding(false));
 
         using var sourceSet = VbeImportSourceSet.Create(
-            [
-                new VbaSourceFile(classPath, VbaSourceKind.ClassModule, null),
-                new VbaSourceFile(formPath, VbaSourceKind.Form, null)
-            ],
-            activeCodePage: 1252);
+            new VbaSourceAdmission(() => 1252)
+                .Admit(Path.GetDirectoryName(classPath)!,
+                    VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
 
         var stagedClass = Assert.Single(sourceSet.SourceFiles, source => source.Kind == VbaSourceKind.ClassModule);
         Assert.Equal(
@@ -310,8 +320,9 @@ public sealed class VbeImportSourceSetTests
             new UTF8Encoding(false));
 
         using var sourceSet = VbeImportSourceSet.Create(
-            [new VbaSourceFile(formPath, VbaSourceKind.Form, null)],
-            activeCodePage: 1252);
+            new VbaSourceAdmission(() => 1252)
+                .Admit(Path.GetDirectoryName(formPath)!,
+                    VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
 
         new WorkbookMaterializationNamePreflight()
             .ValidateSourcePhase(sourceSet.SourceFiles);
@@ -332,8 +343,9 @@ public sealed class VbeImportSourceSetTests
             new UTF8Encoding(false));
 
         using var sourceSet = VbeImportSourceSet.Create(
-            [new VbaSourceFile(formPath, VbaSourceKind.Form, null)],
-            activeCodePage: 1252);
+            new VbaSourceAdmission(() => 1252)
+                .Admit(Path.GetDirectoryName(formPath)!,
+                    VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
 
         var error = Assert.Throws<InvalidOperationException>(() =>
             new WorkbookMaterializationNamePreflight()
@@ -351,11 +363,12 @@ public sealed class VbeImportSourceSetTests
         File.WriteAllText(
             sourcePath,
             "Attribute VB_Name = \"A\u00a0\"\r\n",
-            new UTF8Encoding(false));
+            StrictEncoding(1252));
 
         using var sourceSet = VbeImportSourceSet.Create(
-            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
-            activeCodePage: 1252);
+            new VbaSourceAdmission(() => 1252)
+                .Admit(Path.GetDirectoryName(sourcePath)!,
+                    VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
 
         new WorkbookMaterializationNamePreflight()
             .ValidateSourcePhase(sourceSet.SourceFiles);
@@ -375,8 +388,9 @@ public sealed class VbeImportSourceSetTests
             new UTF8Encoding(false));
 
         using var sourceSet = VbeImportSourceSet.Create(
-            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
-            activeCodePage: 65001);
+            new VbaSourceAdmission(() => 65001)
+                .Admit(Path.GetDirectoryName(sourcePath)!,
+                    VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
 
         new WorkbookMaterializationNamePreflight()
             .ValidateSourcePhase(sourceSet.SourceFiles);
@@ -395,8 +409,9 @@ public sealed class VbeImportSourceSetTests
             "Attribute VB_Name = \"If\"\r\n",
             new UTF8Encoding(false));
         using var sourceSet = VbeImportSourceSet.Create(
-            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
-            activeCodePage: 1252);
+            new VbaSourceAdmission(() => 1252)
+                .Admit(Path.GetDirectoryName(sourcePath)!,
+                    VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
 
         var error = Assert.Throws<InvalidOperationException>(() =>
             new WorkbookMaterializationNamePreflight()
@@ -420,8 +435,9 @@ public sealed class VbeImportSourceSetTests
             ]),
             new UTF8Encoding(false));
         using var sourceSet = VbeImportSourceSet.Create(
-            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
-            activeCodePage: 1252);
+            new VbaSourceAdmission(() => 1252)
+                .Admit(Path.GetDirectoryName(sourcePath)!,
+                    VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
 
         var error = Assert.Throws<InvalidOperationException>(() =>
             new WorkbookMaterializationNamePreflight()
@@ -445,8 +461,9 @@ public sealed class VbeImportSourceSetTests
             ]),
             new UTF8Encoding(false));
         using var sourceSet = VbeImportSourceSet.Create(
-            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
-            activeCodePage: 1252);
+            new VbaSourceAdmission(() => 1252)
+                .Admit(Path.GetDirectoryName(sourcePath)!,
+                    VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
 
         var error = Assert.Throws<InvalidOperationException>(() =>
             new WorkbookMaterializationNamePreflight()
@@ -471,8 +488,9 @@ public sealed class VbeImportSourceSetTests
             ]),
             new UTF8Encoding(false));
         using var sourceSet = VbeImportSourceSet.Create(
-            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
-            activeCodePage: 65001);
+            new VbaSourceAdmission(() => 65001)
+                .Admit(Path.GetDirectoryName(sourcePath)!,
+                    VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
 
         new WorkbookMaterializationNamePreflight()
             .ValidateSourcePhase(sourceSet.SourceFiles);
@@ -492,8 +510,9 @@ public sealed class VbeImportSourceSetTests
             "Attribute VB_Name = \"日\u00a0\"\r\n",
             new UTF8Encoding(false));
         using var sourceSet = VbeImportSourceSet.Create(
-            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
-            activeCodePage: 65001);
+            new VbaSourceAdmission(() => 65001)
+                .Admit(Path.GetDirectoryName(sourcePath)!,
+                    VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
 
         var error = Assert.Throws<InvalidOperationException>(() =>
             new WorkbookMaterializationNamePreflight()
@@ -524,8 +543,9 @@ public sealed class VbeImportSourceSetTests
             new UTF8Encoding(false));
 
         using var sourceSet = VbeImportSourceSet.Create(
-            [new VbaSourceFile(classPath, VbaSourceKind.ClassModule, null)],
-            activeCodePage: 1252);
+            new VbaSourceAdmission(() => 1252)
+                .Admit(Path.GetDirectoryName(classPath)!,
+                    VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
 
         var staged = Assert.Single(sourceSet.SourceFiles);
         Assert.Equal("FinalName", staged.ImportVerification.ComponentName);
@@ -560,24 +580,15 @@ public sealed class VbeImportSourceSetTests
         var formTimestamp = File.GetLastWriteTimeUtc(formPath);
         var frxTimestamp = File.GetLastWriteTimeUtc(frxPath);
         var calls = 0;
-        var factory = new VbeImportSourceSetFactory(() =>
+        var admission = new VbaSourceAdmission(() =>
         {
             calls++;
             return 1252;
-        });
+        }).Admit(temp.Path, VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None);
+        var factory = new VbeImportSourceSetFactory();
         string stagingPath;
 
-        using (var sourceSet = factory.Create(
-            [
-                new VbaSourceFile(modulePath, VbaSourceKind.StandardModule, null)
-                {
-                    ExpectedUnicodeText = moduleText
-                },
-                new VbaSourceFile(formPath, VbaSourceKind.Form, frxPath)
-                {
-                    ExpectedUnicodeText = formText
-                }
-            ]))
+        using (var sourceSet = factory.Create(admission))
         {
             stagingPath = sourceSet.StagingPath;
             Assert.Equal(1, calls);
@@ -613,8 +624,9 @@ public sealed class VbeImportSourceSetTests
             "Attribute VB_Name = \"Module1\"\r\n",
             new UTF8Encoding(false));
         var sourceSet = VbeImportSourceSet.Create(
-            [new VbaSourceFile(sourcePath, VbaSourceKind.StandardModule, null)],
-            activeCodePage: 1252);
+            new VbaSourceAdmission(() => 1252)
+                .Admit(Path.GetDirectoryName(sourcePath)!,
+                    VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None));
         var stagedPath = Assert.Single(sourceSet.SourceFiles).SourcePath;
 
         using (File.Open(stagedPath, FileMode.Open, FileAccess.Read, FileShare.None))
