@@ -1028,6 +1028,27 @@ A `VbaDev` export operation scoped by a caller-provided workbook path rather
 than by a `ProjectManifest` document definition.
 _Avoid_: path-only export, ad hoc export, project export
 
+**WorkbookExportStaging**:
+The shared invocation-owned source-unit producer boundary for both Export modes.
+Its directories are create-only receipts. Each declared source and optional form
+sidecar is observed immediately after its producer returns, while the Excel
+session is still active; receipt completion follows proved process release.
+No cleanup enumerates paths to adopt arbitrary occupants. Before destination
+mutation, registered objects must remain unchanged and unregistered source,
+sidecar, or directory entries cannot become export input. The existing destination
+transaction still owns layout, validation, recovery, and commitment.
+The internal exporter port has one asynchronous, timeout-aware staging contract;
+raw-directory synchronous and fallback adapters are removed. Public CLI grammar,
+normal success output, and synchronous command entry points remain unchanged.
+After destination commitment, retained or inconclusive `InvocationScratch`
+evidence is an actionable stderr warning with stable absolute paths and exit
+code zero. Before commitment it augments the primary failure or cancellation.
+Unproved process release forbids dependent deletion and returns exit one;
+proved release permits cleanup despite a secondary cleanup failure, which remains
+a command failure. Later cancellation cannot undo committed output. Destination
+recovery/protection data remain separate from this non-authoritative staging.
+_Avoid_: destination rollback, path-based ownership, recursive scratch deletion
+
 **ExplicitWorkbookImport**:
 A `VbaDev` import operation scoped by a caller-provided source directory and
 workbook path rather than by a `ProjectManifest` document definition. Its

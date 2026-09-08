@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using VbaDev.App.Build;
 using VbaDev.App.Diagnostics;
+using VbaDev.App.Export;
 using VbaDev.App.Import;
 using VbaDev.App.Projects;
 using VbaDev.App.References;
@@ -1605,6 +1606,60 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         {
             await WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20));
             Assert.Equal(initialBootstrapFiles.Order(), CaptureBootstrapWorkbookPaths().Order());
+        }
+    }
+
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
+    public async Task BothExportModesPreserveNativeSourceAndFormSidecarsAndRemoveOwnedStaging()
+    {
+        using var temp = TempDirectory.Create();
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        var initialProcesses = CaptureExcelProcessIds();
+        var initialBootstrapFiles = CaptureBootstrapWorkbookPaths();
+        var activeCodePage = ActiveWindowsAnsiCodePage.Get();
+        try
+        {
+            var fixture = await CreateOrdinaryWorkbookFixtureAsync(temp, activeCodePage, cancellation.Token);
+            var build = await CreateOrdinaryBuildCommand(_ => { }).RunAsync(fixture.Context, cancellation.Token);
+            Assert.True(build.ExitCode == 0, build.StandardError);
+            var workbookBytes = File.ReadAllBytes(fixture.Context.BinDocumentPath);
+            var exporter = new RecordingModuleExporter();
+            var command = new ExportCommand(new WindowsExactFileSystemObjectOwnershipFactory(), exporter);
+            foreach (var explicitWorkbook in new[] { false, true })
+            {
+                var destination = temp.CreateDirectory(explicitWorkbook ? "explicit-export" : "project-export");
+                var result = explicitWorkbook
+                    ? await command.RunExplicitAsync(new(fixture.Context.BinDocumentPath, destination, temp.Path), cancellation.Token)
+                    : await command.RunAsync(fixture.Context, new(destination, temp.Path), cancellation.Token);
+                Assert.True(result.ExitCode == 0, result.StandardError);
+                Assert.Empty(result.StandardError);
+                Assert.Equal(new[] { "ContractClass.cls", "Dialog.frm", "Dialog.frx", "UnicodeBomModule.bas", "UnicodeModule.bas" },
+                    Directory.GetFiles(destination).Select(Path.GetFileName).OrderBy(name => name, StringComparer.Ordinal));
+                Assert.Contains(fixture.NonAsciiText, DecodeActiveCodePageFile(Path.Combine(destination, "UnicodeModule.bas"), activeCodePage));
+                Assert.NotEmpty(File.ReadAllBytes(Path.Combine(destination, "Dialog.frx")));
+            }
+            Assert.Equal(2, exporter.Paths.Count);
+            Assert.All(exporter.Paths, path => Assert.False(Directory.Exists(path)));
+            Assert.Equal(workbookBytes, File.ReadAllBytes(fixture.Context.BinDocumentPath));
+            foreach (var source in fixture.CallerBytes) Assert.Equal(source.Value, File.ReadAllBytes(source.Key));
+        }
+        finally
+        {
+            await WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20));
+            Assert.Equal(initialBootstrapFiles.Order(), CaptureBootstrapWorkbookPaths().Order());
+        }
+    }
+
+    private sealed class RecordingModuleExporter : IWorkbookModuleExporter
+    {
+        internal List<string> Paths { get; } = [];
+        private readonly ExcelComWorkbookModuleExporter inner = new();
+        public Task ExportModulesAsync(string workbookPath, WorkbookExportStaging staging,
+            WorkbookAutomationTimeouts timeouts, CancellationToken cancellationToken)
+        {
+            Paths.Add(staging.Path);
+            return inner.ExportModulesAsync(workbookPath, staging, timeouts, cancellationToken);
         }
     }
 
