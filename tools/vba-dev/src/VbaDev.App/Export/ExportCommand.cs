@@ -57,7 +57,7 @@ public sealed class ExportCommand
         ProjectExportCommandRequest request,
         CancellationToken cancellationToken)
     {
-        try
+        return await RunWithTerminalFactsAsync(async () =>
         {
             var sourceWorkbookPath = context.BinDocumentPath;
             var destinationDirectory = request.DestinationDirectory is null
@@ -76,39 +76,7 @@ public sealed class ExportCommand
                     automationTimeouts,
                     cancellationToken)
                 .ConfigureAwait(false);
-        }
-        catch (InvalidOperationException ex)
-        {
-            return CommandResult.UsageError(ex.Message);
-        }
-        catch (WorkbookAutomationTimeoutException ex)
-        {
-            return CreateFailureResult(ex);
-        }
-        catch (WorkbookAutomationProcessLostException ex)
-        {
-            return CreateFailureResult(ex);
-        }
-        catch (WorkbookAutomationCleanupException ex)
-        {
-            return CreateFailureResult(ex);
-        }
-        catch (WorkbookAutomationReleasedProcessCleanupException ex)
-        {
-            return CreateFailureResult(ex);
-        }
-        catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
-        {
-            return CommandResult.Cancelled(ex.Message);
-        }
-        catch (IOException ex)
-        {
-            return CommandResult.UsageError(ex.Message);
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            return CommandResult.UsageError(ex.Message);
-        }
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -131,7 +99,7 @@ public sealed class ExportCommand
         ExplicitWorkbookExportCommandRequest request,
         CancellationToken cancellationToken)
     {
-        try
+        return await RunWithTerminalFactsAsync(async () =>
         {
             var sourceWorkbookPath = ResolvePath(request.WorkingDirectory, request.SourceWorkbook);
             var destinationDirectory = request.DestinationDirectory is null
@@ -146,39 +114,7 @@ public sealed class ExportCommand
                     WorkbookAutomationTimeouts.Default,
                     cancellationToken)
                 .ConfigureAwait(false);
-        }
-        catch (InvalidOperationException ex)
-        {
-            return CommandResult.UsageError(ex.Message);
-        }
-        catch (WorkbookAutomationTimeoutException ex)
-        {
-            return CreateFailureResult(ex);
-        }
-        catch (WorkbookAutomationProcessLostException ex)
-        {
-            return CreateFailureResult(ex);
-        }
-        catch (WorkbookAutomationCleanupException ex)
-        {
-            return CreateFailureResult(ex);
-        }
-        catch (WorkbookAutomationReleasedProcessCleanupException ex)
-        {
-            return CreateFailureResult(ex);
-        }
-        catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
-        {
-            return CommandResult.Cancelled(ex.Message);
-        }
-        catch (IOException ex)
-        {
-            return CommandResult.UsageError(ex.Message);
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            return CommandResult.UsageError(ex.Message);
-        }
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<CommandResult> RunCoreAsync(
@@ -258,11 +194,34 @@ public sealed class ExportCommand
     private static string ResolvePath(string workingDirectory, string path)
         => Path.GetFullPath(Path.IsPathRooted(path) ? path : Path.Combine(workingDirectory, path));
 
-    private static CommandResult CreateFailureResult(Exception error)
+    private static async Task<CommandResult> RunWithTerminalFactsAsync(
+        Func<Task<CommandResult>> operation,
+        CancellationToken cancellationToken)
     {
-        var result = CommandResult.UsageError(error.Message);
-        return WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error)
-            ? result.MarkOwnedProcessReleaseUnproven()
-            : result;
+        try
+        {
+            return await operation().ConfigureAwait(false);
+        }
+        catch (Exception ex) when (WorkbookAutomationFailureClassifier.TryClassify(
+            ex, out var facts, cancellationToken.IsCancellationRequested))
+        {
+            var cancellation = facts.Failures.FirstOrDefault(failure =>
+                failure.Error is WorkbookAutomationCanceledException);
+            if (facts.PrimaryFailure!.Category == WorkbookAutomationFailureCategory.Cancellation &&
+                cancellation is null && !cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            var result = facts.PrimaryFailure!.Category == WorkbookAutomationFailureCategory.Cancellation
+                ? CommandResult.Cancelled(ex.Message)
+                : CommandResult.UsageError(ex.Message);
+            return facts.ProcessReleaseProven ? result : result.MarkOwnedProcessReleaseUnproven();
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException)
+        {
+            WorkbookAutomationFailureClassifier.TryClassify(ex, out var facts);
+            var result = CommandResult.UsageError(ex.Message);
+            return facts.ProcessReleaseProven ? result : result.MarkOwnedProcessReleaseUnproven();
+        }
     }
 }
