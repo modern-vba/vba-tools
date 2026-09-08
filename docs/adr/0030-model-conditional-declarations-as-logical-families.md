@@ -19,6 +19,13 @@ one-variant family. The model does not create a synthetic absent variant for
 configurations in which that declaration is unavailable. An unconditional
 declaration is not absorbed into the family.
 
+Family formation consumes `VbaDeclarationRelationshipPolicy`, also used by
+duplicate diagnostics, declaration-name completion, and Rename. Family
+construction remains distinct from conditional coexistence and the complete
+hypothetical Rename proof in ADR 0029. Legal coexistence does not authorize a
+Rename that would merge physical variants into another existing target, change
+a reference binding, or change ADR 0045's effective declared type.
+
 Distinct conditional branch paths remain physical variants even when they come
 from separate `#If...#End If` blocks. Family formation does not require a proof
 that the predicates are mutually exclusive and does not assert that the

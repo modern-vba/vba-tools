@@ -449,7 +449,9 @@ internal sealed record VbaProspectiveDeclaration(
     VbaSourceDefinitionKind Kind,
     VbaPropertyAccessorKind? PropertyAccessorKind,
     VbaConditionalCompilationBranchPath? ConditionalCompilationPath,
-    VbaDefinitionIdentity? EditedDefinitionIdentity = null);
+    VbaDefinitionIdentity? EditedDefinitionIdentity = null,
+    VbaRange? Range = null,
+    VbaCallableKind? CallableKind = null);
 
 internal static class VbaDeclarationRelationshipPolicy
 {
@@ -485,8 +487,41 @@ internal static class VbaDeclarationRelationshipPolicy
         VbaSourceDefinition left,
         VbaSourceDefinition right)
         => HaveSameName(left, right)
-            && HaveSameDeclarationScopeAndNamespace(left, right, null)
+            && ShareDeclarationSpace(left, right)
             && HaveCompatiblePropertyAccessorKinds(left, right);
+
+    public static bool ShareDeclarationSpace(
+        VbaSourceDefinition left,
+        VbaSourceDefinition right)
+        => HaveSameDeclarationScopeAndNamespace(left, right, null)
+            || HaveProcedureResultRelationship(left, right);
+
+    private static bool HaveProcedureResultRelationship(
+        VbaSourceDefinition left,
+        VbaSourceDefinition right)
+    {
+        if (!VbaProjectIdentityModel.SameDocument(left.Uri, right.Uri)
+            || (left.Visibility == VbaSourceDefinitionVisibility.Local)
+                == (right.Visibility == VbaSourceDefinitionVisibility.Local))
+        {
+            return false;
+        }
+        var local = left.Visibility == VbaSourceDefinitionVisibility.Local ? left : right;
+        var callable = ReferenceEquals(local, left) ? right : left;
+        if (local.ParentProcedureRange is not { } range
+            || (callable.Range.Start.Line, callable.Range.Start.Character)
+                .CompareTo((range.Start.Line, range.Start.Character)) < 0
+            || (callable.Range.Start.Line, callable.Range.Start.Character)
+                .CompareTo((range.End.Line, range.End.Character)) > 0)
+        {
+            return false;
+        }
+        return callable.Kind == VbaSourceDefinitionKind.Procedure
+                && (callable.CallableKind ?? callable.Signature?.CallableKind) == VbaCallableKind.Function
+            || local.Kind != VbaSourceDefinitionKind.Parameter
+                && callable.Kind == VbaSourceDefinitionKind.Property
+                && callable.PropertyAccessorKind == VbaPropertyAccessorKind.Get;
+    }
 
     public static bool IsProspectiveDeclarationAvailable(
         VbaProspectiveDeclaration prospective,
@@ -753,29 +788,17 @@ internal static class VbaDeclarationRelationshipPolicy
         VbaProspectiveDeclaration prospective,
         VbaSourceDefinition definition)
     {
-        if (!VbaProjectIdentityModel.SameDocument(
-                prospective.Uri,
-                definition.Uri)
-            || definition.Visibility == VbaSourceDefinitionVisibility.Local
-            || definition.Kind is VbaSourceDefinitionKind.TypeMember
-                or VbaSourceDefinitionKind.Event
-                or VbaSourceDefinitionKind.Module
-                or VbaSourceDefinitionKind.Class
-                or VbaSourceDefinitionKind.Form
-                or VbaSourceDefinitionKind.Enum
-                or VbaSourceDefinitionKind.Type)
-        {
-            return false;
-        }
-
-        var isModuleValuePeer = IsModuleValueDeclaration(definition)
-            || definition.Kind == VbaSourceDefinitionKind.EnumMember;
-        return isModuleValuePeer
-            && HaveCompatiblePropertyAccessorKinds(
-                prospective.Kind,
-                prospective.PropertyAccessorKind,
-                definition.Kind,
-                definition.PropertyAccessorKind);
+        // This query-only shape never enters the definition inventory or forms
+        // a family. It lets completion use the same declaration relationships.
+        var range = prospective.Range ?? new VbaRange(new VbaPosition(0, 0), new VbaPosition(0, 0));
+        var candidate = new VbaSourceDefinition(
+            VbaDefinitionIdentity.ForSource(prospective.Uri, definition.Name, range),
+            new VbaDefinitionLocation(prospective.Uri, range),
+            definition.Name, prospective.Kind, VbaSourceDefinitionVisibility.Private,
+            ModuleName: string.Empty, PropertyAccessorKind: prospective.PropertyAccessorKind,
+            CallableKind: prospective.CallableKind);
+        return ShareDeclarationSpace(candidate, definition)
+            && HaveCompatiblePropertyAccessorKinds(candidate, definition);
     }
 
     private static bool IsProjectNamespacePeer(

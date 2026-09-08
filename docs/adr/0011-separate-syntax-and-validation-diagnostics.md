@@ -18,6 +18,14 @@ both diagnostic kinds together, but collectors remain separate so
 document-local validation rules can ship before project-aware diagnostics such
 as unresolved identifiers, duplicate declarations, and type mismatch.
 
+Duplicate declaration checks use `VbaDeclarationRelationshipPolicy`, shared with
+conditional families, prospective declaration-name completion, and Rename.
+Conditional coexistence remains a diagnostic decision separate from scope and
+namespace relationships. Physical Function/result-local relationships use this
+same policy; Sub names do not reserve a local result name. Absence of a duplicate
+diagnostic does not establish Rename safety: ADR 0029 additionally requires
+target identity, binding, and effective-type preservation.
+
 `InteractiveSemanticReadiness` is reached when one exact immutable
 `VbaProjectSnapshot` has completed source capture, projection, reference
 selection, and `VbaSemanticInventory` construction. Snapshot construction does

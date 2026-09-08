@@ -112,7 +112,23 @@ internal sealed class VbaTypeResolution
             qualifier: null,
             parts[0]);
         var firstTarget = firstOutcome.Target;
-        if (firstTarget?.IsConditionalFamily == true)
+        if (firstOutcome.Kind == VbaNameResolutionKind.Unresolved)
+        {
+            var enumQualifier = nameResolution.ResolveTypeDefinitionOutcome(
+                currentDocument, new VbaTypeReference(parts[0]));
+            if (enumQualifier.Kind == VbaNameResolutionKind.Resolved
+                && enumQualifier.Target is { } enumTarget
+                && enumTarget.PhysicalDefinitions.All(definition => definition.Kind == VbaSourceDefinitionKind.Enum))
+            {
+                firstTarget = enumTarget;
+            }
+        }
+        if (firstTarget is not null
+            && firstTarget.PhysicalDefinitions.All(definition => definition.Kind == VbaSourceDefinitionKind.Enum))
+        {
+            resolvedType = ToResolvedType(firstTarget.SelectedDefinition);
+        }
+        else if (firstTarget?.IsConditionalFamily == true)
         {
             if (!TryResolveConditionalZeroArgumentResultType(
                     currentDocument,

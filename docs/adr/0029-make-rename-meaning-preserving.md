@@ -11,6 +11,45 @@ the exact request-start `vbaProject.bin`; UserForms are source-owned
 `FormSourceUnit`s; worksheet and `ThisWorkbook` code-behind Rename are outside
 the supported model. The remaining semantic Rename contracts stay accepted.
 
+## Declaration relationships and effective type preservation
+
+Rename consumes `VbaDeclarationRelationshipPolicy`, shared with conditional
+families, duplicate diagnostics, and prospective declaration-name completion.
+There is no separate Rename scope matrix. Scope and namespace relationships,
+Enum/UDT members, module/project declarations, Property accessors, and physical
+Function/result-local relationships belong to that policy. Consumers keep
+conditional coexistence, family formation, and edited-declaration exclusion as
+separate decisions. Prospective Function-name completion checks its own result
+locals through the same policy rather than offering a conflicting name.
+
+The complete Rename proof distinguishes four questions:
+
+- Declaration legality: check every physical target and dependent name against
+  the shared relationships. Same-Enum members and Enum/module value names can
+  conflict; names in distinct Enums can be legal.
+- Target identity: legal coexistence does not permit merging another Property
+  target or conditional family into the renamed identity.
+- Reference binding: existing qualification may preserve a legal Rename;
+  capture or changed unresolved/ambiguous classification fails atomically with
+  `resolutionChanged`. Missing duplicate diagnostics are not proof of safety.
+  An Enum type can qualify its own members when no value receiver wins the name;
+  these qualified references are included in the complete edit.
+- Effective type: use ADR 0045's inventory-owned evidence for affected variables,
+  parameters, and Function/Get returns, including dependent declarations. Under
+  DefLng R, renaming omitted rhs to value changes Long to Variant and fails with
+  `resolutionChanged`. An explicit Long type or another R-initial name can pass.
+
+Known source type identities are compared through physical before/after
+declaration correspondence, not spelling or raw snapshot identity. Renaming a
+UDT, class, or Enum itself therefore preserves declarations referring to that
+same mapped type. An affected unknown type whose preservation cannot be proved
+fails with `analysisIncomplete`; this includes an unfinished As clause on a
+recovered WithEvents variable. Unrelated unchanged unknowns do not veto a plan.
+No qualifier or As clause is inserted to compensate for a meaning-changing
+Rename. Existing whole-edit binding and conditional-call proofs remain required.
+
+## Existing Rename contracts
+
 VbaLanguageServer treats Rename as a semantic refactoring rather than a
 project-wide text replacement. Prepare Rename returns the occurrence range
 under the request with the `RenameTarget` declaration's canonical name as its
@@ -406,6 +445,7 @@ derives each new complete procedure or Property name, and changes every ordinary
 occurrence bound to each dependent logical target. It does not rename any Event.
 A syntax-invalid `RecoveredWithEventsVariableDeclaration`, whether invalid by
 placement or declarator shape, retains ordinary variable Rename participation
+subject to the same effective-type-preservation proof
 but supplies no `WithEventsEventBindingSet` entry or dependent relationship of
 its own. A syntactically admitted declaration with conclusive-invalid
 `WithEventsTypeEligibility` follows the same Rename rule without becoming a
