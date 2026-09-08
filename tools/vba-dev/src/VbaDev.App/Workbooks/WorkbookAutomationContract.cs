@@ -91,8 +91,10 @@ public sealed record WorkbookAutomationStage(
 /// <summary>
 /// Reports an independently bounded Excel automation stage timeout.
 /// </summary>
-public sealed class WorkbookAutomationTimeoutException : TimeoutException
+public sealed class WorkbookAutomationTimeoutException : TimeoutException, IWorkbookAutomationLifecycleFailure
 {
+    WorkbookAutomationLifecycleEvidence? IWorkbookAutomationLifecycleFailure.LifecycleEvidence { get; set; }
+
     public WorkbookAutomationTimeoutException(
         WorkbookAutomationStage stage,
         TimeSpan timeout,
@@ -126,8 +128,10 @@ public sealed class WorkbookAutomationTimeoutException : TimeoutException
 /// <summary>
 /// Reports cancellation while one Excel automation stage was active.
 /// </summary>
-public sealed class WorkbookAutomationCanceledException : OperationCanceledException
+public sealed class WorkbookAutomationCanceledException : OperationCanceledException, IWorkbookAutomationLifecycleFailure
 {
+    WorkbookAutomationLifecycleEvidence? IWorkbookAutomationLifecycleFailure.LifecycleEvidence { get; set; }
+
     public WorkbookAutomationCanceledException(
         WorkbookAutomationStage stage,
         CancellationToken cancellationToken,
@@ -159,8 +163,10 @@ public sealed class WorkbookAutomationCanceledException : OperationCanceledExcep
 /// <summary>
 /// Reports unexpected loss of the exactly owned Excel process.
 /// </summary>
-public sealed class WorkbookAutomationProcessLostException : Exception
+public sealed class WorkbookAutomationProcessLostException : Exception, IWorkbookAutomationLifecycleFailure
 {
+    WorkbookAutomationLifecycleEvidence? IWorkbookAutomationLifecycleFailure.LifecycleEvidence { get; set; }
+
     public WorkbookAutomationProcessLostException(
         WorkbookAutomationStage stage,
         Exception? innerException = null,
@@ -190,8 +196,10 @@ public sealed class WorkbookAutomationProcessLostException : Exception
 /// <summary>
 /// Reports failure to prove release of an owned Excel process.
 /// </summary>
-public sealed class WorkbookAutomationCleanupException : Exception
+public sealed class WorkbookAutomationCleanupException : Exception, IWorkbookAutomationLifecycleFailure
 {
+    WorkbookAutomationLifecycleEvidence? IWorkbookAutomationLifecycleFailure.LifecycleEvidence { get; set; }
+
     public WorkbookAutomationCleanupException(string message, Exception? innerException = null)
         : base(message, innerException)
     {
@@ -202,8 +210,10 @@ public sealed class WorkbookAutomationCleanupException : Exception
 /// Reports an automation-isolation violation or secondary cleanup failure after
 /// exact owned-process release was proved.
 /// </summary>
-public sealed class WorkbookAutomationReleasedProcessCleanupException : Exception
+public sealed class WorkbookAutomationReleasedProcessCleanupException : Exception, IWorkbookAutomationLifecycleFailure
 {
+    WorkbookAutomationLifecycleEvidence? IWorkbookAutomationLifecycleFailure.LifecycleEvidence { get; set; }
+
     public WorkbookAutomationReleasedProcessCleanupException(
         string message,
         Exception? innerException = null)
@@ -212,28 +222,11 @@ public sealed class WorkbookAutomationReleasedProcessCleanupException : Exceptio
     }
 }
 
-internal static class WorkbookAutomationFailureClassifier
+internal static partial class WorkbookAutomationFailureClassifier
 {
     public static bool ContainsCleanupProofFailure(Exception error)
     {
-        ArgumentNullException.ThrowIfNull(error);
-        if (error is WorkbookAutomationReleasedProcessCleanupException)
-        {
-            return false;
-        }
-
-        if (error is WorkbookAutomationCleanupException)
-        {
-            return true;
-        }
-
-        if (error is AggregateException aggregate
-            && aggregate.InnerExceptions.Any(ContainsCleanupProofFailure))
-        {
-            return true;
-        }
-
-        return error.InnerException is not null
-            && ContainsCleanupProofFailure(error.InnerException);
+        TryClassify(error, out var facts);
+        return !facts.ProcessReleaseProven || !facts.DispatcherRetired;
     }
 }

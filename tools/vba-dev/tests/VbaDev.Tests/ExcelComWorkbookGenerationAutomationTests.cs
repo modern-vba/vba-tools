@@ -13,6 +13,25 @@ namespace VbaDev.Tests;
 public sealed class ExcelComWorkbookGenerationAutomationTests
 {
     [Fact]
+    public async Task RuntimePreservesComFailureStageForTerminalClassification()
+    {
+        var comFailure = new COMException("Arbitrary localized COM text", unchecked((int)0x80004005));
+        var lifecycle = new FakeWorkbookGenerationLifecycle([]) { OpenError = comFailure };
+        var runtime = new AutomationExcelProcessRuntime(
+            new RecordingGenerationDispatcherFactory(new RecordingGenerationDispatcher([])), lifecycle);
+        var outcome = await runtime.RunWorkbookAsync(
+            "staged.xlsm", WorkbookAutomationTimeouts.Default,
+            static (_, _) => Task.FromResult(true), CancellationToken.None);
+        var error = Assert.ThrowsAny<Exception>(() => outcome.GetReleasedResult());
+
+        Assert.True(WorkbookAutomationFailureClassifier.TryClassify(error, out var facts));
+        Assert.Contains(facts.Failures, failure => ReferenceEquals(failure.Error, comFailure)
+            && failure.Stage!.Kind == WorkbookAutomationStageKind.WorkbookOpen);
+        Assert.True(facts.ProcessReleaseProven);
+        Assert.True(facts.DispatcherRetired);
+    }
+
+    [Fact]
     public async Task CancellationAfterWorkbookOpenReleasesTheOpenedSessionResource()
     {
         using var temp = TempDirectory.Create();
@@ -483,7 +502,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
             new RecordingGenerationDispatcherFactory(dispatcher),
             lifecycle);
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => automation.RunAsync(
+        var error = await Assert.ThrowsAnyAsync<InvalidOperationException>(() => automation.RunAsync(
             "staged.xlsm",
             WorkbookAutomationTimeouts.Default,
             static (_, _) => Task.FromResult(true),
@@ -508,7 +527,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
             new RecordingGenerationDispatcherFactory(dispatcher),
             lifecycle);
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => automation.RunAsync(
+        var error = await Assert.ThrowsAnyAsync<InvalidOperationException>(() => automation.RunAsync(
             "staged.xlsm",
             WorkbookAutomationTimeouts.Default,
             static (_, _) => Task.FromResult(true),
@@ -683,7 +702,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
         Assert.Same(failure, outcome.Evidence.OperationFailure!.InnerException);
         Assert.True(outcome.Evidence.ProcessReleaseVerified);
         Assert.True(outcome.Evidence.DispatcherRetired);
-        Assert.Throws<InvalidOperationException>(() => outcome.GetReleasedResult());
+        Assert.ThrowsAny<InvalidOperationException>(() => outcome.GetReleasedResult());
     }
 
     [Fact]
@@ -731,7 +750,9 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
         Assert.False(outcome.Evidence.DispatcherRetired);
         Assert.Null(outcome.Evidence.OperationFailure);
         Assert.NotNull(outcome.Evidence.DispatcherFailure);
-        Assert.Throws<WorkbookAutomationCleanupException>(() => outcome.GetReleasedResult());
+        var failure = Assert.Throws<WorkbookAutomationCleanupException>(() => outcome.GetReleasedResult());
+        Assert.True(WorkbookAutomationFailureClassifier.TryClassify(failure, out var facts));
+        Assert.True(facts.ProcessReleaseProven);
     }
 
     [Fact]
@@ -847,7 +868,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
             ProcessCleanup = TimeSpan.Zero
         };
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => automation.RunAsync(
+        var error = await Assert.ThrowsAnyAsync<InvalidOperationException>(() => automation.RunAsync(
             "staged.xlsm",
             timeouts,
             static (_, _) => Task.FromResult(true),

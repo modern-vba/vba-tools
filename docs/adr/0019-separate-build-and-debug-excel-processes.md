@@ -40,6 +40,28 @@ or dispatcher retirement takes precedence over success, cancellation, and weaker
 errors. Dispatcher retirement has a bounded observation period even when the
 scenario itself succeeded; a stalled dispatcher is never silently accepted.
 
+`WorkbookAutomationTerminalFacts` projects the typed terminal failure tree for
+application consumers without interpreting exception prose. The runtime attaches
+its final immutable release and cleanup-time cancellation observation to lifecycle
+exceptions without replacing their types, causes, or stacks, and its ordinary
+workbook-operation wrapper retains the active stage as data. The classifier
+retains each known failure and unknown independent defect, walks aggregate
+children once in order, and selects process-release uncertainty, STA-retirement
+uncertainty, secondary cleanup failure, process loss, timeout, COM failure, then
+cancellation as its stable category precedence. Confirmed release overrides only
+earlier uncertainty in that subtree; it does not erase cancellation or process
+loss. The existing cleanup-proof predicate delegates to this classification.
+
+Import is the first complete command consumer. The classifier produces no exit
+codes, rendered text, commitment decisions, or `CommandResult`. Import returns
+`1` for either release uncertainty, preserves whether process release itself is
+unproved, and returns `130` for pre-commit cancellation only after process and
+dispatcher release. Failures after save but before target replacement preserve
+the previous workbook. Target replacement remains Import's success boundary;
+later cancellation cannot convert committed output to cancellation. Unknown
+independent defects do not qualify as recognized cancellation. Missing verification
+reports have a typed failure so Import wording also avoids message matching.
+
 The runtime does not decide whether cleanup-time cancellation overrides a
 scenario's commitment. The generation adapter preserves its existing
 pre-commit cancellation behavior only after mandatory cleanup verification;

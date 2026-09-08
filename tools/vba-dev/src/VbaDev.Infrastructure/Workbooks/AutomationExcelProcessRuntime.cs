@@ -625,9 +625,7 @@ internal sealed class AutomationExcelProcessRuntime
                 isolationDiagnostics);
         }
 
-        return scenario != ProcessScenario.Workbook ? error : new InvalidOperationException(
-            $"Workbook automation failed during {stage.Description}: {error.Message}",
-            error);
+        return scenario != ProcessScenario.Workbook ? error : new WorkbookAutomationStageFailureException(stage, error);
     }
 
     private static bool ContainsReleaseProofFailure(Exception error)

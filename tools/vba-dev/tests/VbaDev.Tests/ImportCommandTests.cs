@@ -12,6 +12,135 @@ namespace VbaDev.Tests;
 
 public sealed class ImportCommandTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ImportRecognizesTypedCancellationInEitherAggregateOrder(bool typedFirst)
+    {
+        using var temp = TempDirectory.Create();
+        var sourceDirectory = temp.CreateDirectory("src");
+        File.WriteAllText(Path.Combine(sourceDirectory, "Module1.bas"), "Attribute VB_Name = \"Module1\"", new UTF8Encoding(false));
+        var target = Path.Combine(temp.Path, "target.xlsm");
+        File.WriteAllBytes(target, [1, 2, 3, 4]);
+        var typed = new WorkbookAutomationCanceledException(
+            new WorkbookAutomationStage(WorkbookAutomationStageKind.WorkbookSave), new CancellationToken(true));
+        var raw = new OperationCanceledException();
+        var automation = new SavedWorkbookAutomation
+        {
+            ReleaseFailure = new AggregateException(typedFirst ? [typed, raw] : [raw, typed])
+        };
+
+        var result = CreateCommand(automation, () => 65001).Run(
+            new ImportCommandRequest(sourceDirectory, target, temp.Path));
+
+        Assert.Equal(130, result.ExitCode);
+        Assert.Equal(new byte[] { 1, 2, 3, 4 }, File.ReadAllBytes(target));
+    }
+
+    public static IEnumerable<object[]> TerminalFailureCases()
+    {
+        foreach (var kind in new[] { "cancel", "timeout", "process-loss", "com", "process-release", "dispatcher", "released-cleanup" })
+        {
+            foreach (var saved in new[] { false, true })
+            {
+                foreach (var cancelled in new[] { false, true })
+                {
+                    yield return [kind, saved, cancelled];
+                }
+            }
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(TerminalFailureCases))]
+    public async Task ImportKeepsEveryTerminalFailureBeforeCommitWithoutReplacingTarget(
+        string kind, bool saved, bool cancelled)
+    {
+        using var temp = TempDirectory.Create();
+        using var cancellation = new CancellationTokenSource();
+        var sourceDirectory = temp.CreateDirectory("src");
+        File.WriteAllText(Path.Combine(sourceDirectory, "Module1.bas"), "Attribute VB_Name = \"Module1\"", new UTF8Encoding(false));
+        var target = Path.Combine(temp.Path, "target.xlsm");
+        byte[] original = [1, 2, 3, 4];
+        File.WriteAllBytes(target, original);
+        var stage = new WorkbookAutomationStage(saved
+            ? WorkbookAutomationStageKind.WorkbookSave : WorkbookAutomationStageKind.ModuleImport);
+        Exception failure = kind switch
+        {
+            "cancel" => new WorkbookAutomationCanceledException(stage, new CancellationToken(true)),
+            "timeout" => new WorkbookAutomationTimeoutException(stage, TimeSpan.FromSeconds(1)),
+            "process-loss" => new WorkbookAutomationProcessLostException(stage),
+            "com" => new System.Runtime.InteropServices.COMException("COM detail"),
+            "process-release" => new WorkbookAutomationCleanupException("Release detail"),
+            "dispatcher" => new WorkbookAutomationCleanupException("Retirement detail"),
+            _ => new WorkbookAutomationReleasedProcessCleanupException("Secondary cleanup detail")
+        };
+        if (kind == "dispatcher")
+        {
+            ((IWorkbookAutomationLifecycleFailure)failure).LifecycleEvidence = new(stage, true, false, cancelled);
+        }
+
+        var automation = new SavedWorkbookAutomation
+        {
+            ReleaseFailure = failure,
+            FailBeforeSave = !saved,
+            BeforeFailure = () => { if (cancelled) cancellation.Cancel(); }
+        };
+
+        var result = await CreateCommand(automation, () => 65001).RunAsync(
+            new ImportCommandRequest(sourceDirectory, target, temp.Path), cancellation.Token);
+
+        Assert.Equal(kind == "cancel" ? 130 : 1, result.ExitCode);
+        Assert.Equal(kind == "process-release" ? OwnedProcessReleaseProof.Unproven
+            : OwnedProcessReleaseProof.ProvenOrNotStarted, result.OwnedProcessReleaseProof);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(original, File.ReadAllBytes(target));
+        Assert.Single(Directory.GetFiles(temp.Path, "*.xlsm"));
+    }
+
+    [Fact]
+    public void ImportDoesNotTurnAnUnknownAggregateDefectIntoCancellation()
+    {
+        using var temp = TempDirectory.Create();
+        var sourceDirectory = temp.CreateDirectory("src");
+        File.WriteAllText(Path.Combine(sourceDirectory, "Module1.bas"), "Attribute VB_Name = \"Module1\"", new UTF8Encoding(false));
+        var target = Path.Combine(temp.Path, "target.xlsm");
+        File.WriteAllBytes(target, [1, 2, 3, 4]);
+        var error = new AggregateException(new OperationCanceledException(), new NullReferenceException("Defect"));
+        var automation = new SavedWorkbookAutomation { ReleaseFailure = error };
+
+        Assert.Same(error, Assert.Throws<AggregateException>(() => CreateCommand(automation, () => 65001).Run(
+            new ImportCommandRequest(sourceDirectory, target, temp.Path))));
+        Assert.Equal(new byte[] { 1, 2, 3, 4 }, File.ReadAllBytes(target));
+    }
+
+    [Fact]
+    public void ImportKeepsReleaseFailureAuthoritativeInsideAggregateCancellation()
+    {
+        using var temp = TempDirectory.Create();
+        var sourceDirectory = temp.CreateDirectory("src");
+        File.WriteAllText(Path.Combine(sourceDirectory, "Module1.bas"), "Attribute VB_Name = \"Module1\"", new UTF8Encoding(false));
+        var targetWorkbook = Path.Combine(temp.Path, "target.xlsm");
+        byte[] original = [1, 2, 3, 4];
+        File.WriteAllBytes(targetWorkbook, original);
+        var automation = new SavedWorkbookAutomation
+        {
+            ReleaseFailure = new AggregateException(
+                new WorkbookAutomationCanceledException(
+                    new WorkbookAutomationStage(WorkbookAutomationStageKind.WorkbookSave),
+                    new CancellationToken(true)),
+                new WorkbookAutomationCleanupException("Release proof is unavailable."))
+        };
+
+        var result = CreateCommand(automation, () => 65001).Run(
+            new ImportCommandRequest(sourceDirectory, targetWorkbook, temp.Path));
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Equal(OwnedProcessReleaseProof.Unproven, result.OwnedProcessReleaseProof);
+        Assert.Equal(original, File.ReadAllBytes(targetWorkbook));
+        Assert.Contains("Release proof is unavailable", result.StandardError, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void ImportInterpretsBomlessUtf8BytesOnlyAsTheCapturedAcp()
     {
@@ -1075,6 +1204,10 @@ public sealed class ImportCommandTests
     {
         public Exception? ReleaseFailure { get; init; }
 
+        public bool FailBeforeSave { get; init; }
+
+        public Action? BeforeFailure { get; init; }
+
         public byte[] SavedBytes { get; init; } = [5, 6, 7, 8];
 
         public Action<string>? AfterSave { get; init; }
@@ -1085,6 +1218,12 @@ public sealed class ImportCommandTests
             Func<IWorkbookGenerationSession, CancellationToken, Task<TResult>> operation,
             CancellationToken cancellationToken)
         {
+            if (FailBeforeSave && ReleaseFailure is not null)
+            {
+                BeforeFailure?.Invoke();
+                throw ReleaseFailure;
+            }
+
             var workbook = new FakeWorkbookGenerationAutomation();
             var result = await workbook.RunAsync(
                 workbookPath, timeouts, operation, cancellationToken);
@@ -1093,6 +1232,7 @@ public sealed class ImportCommandTests
             AfterSave?.Invoke(workbookPath);
             if (ReleaseFailure is not null)
             {
+                BeforeFailure?.Invoke();
                 throw ReleaseFailure;
             }
 
