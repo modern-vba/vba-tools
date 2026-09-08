@@ -211,7 +211,8 @@ command behavior: capabilities, command spelling, standard streams, exit
 status, cancellation transport, and declared result schemas. It exposes no
 provider implementation assembly, application service, test harness, or private
 DTO. Explicitly public non-command library interfaces are separate reuse seams.
-For ordinary Build, Publish, and source-snapshot Build, pre-commit cancellation
+For ordinary Build, Publish, source-snapshot Build, and both Export entry points,
+pre-commit cancellation
 returns `130` only with proved process and STA release. Unproved release returns
 `1` even when cancellation was observed; cancellation after durable output
 commitment preserves success. These command-owned policies consume common
@@ -409,7 +410,10 @@ Without a completed result, cancellation is `130` only after both release proofs
 unproved process release is `1` and retains the dependent snapshot workspace.
 Completed test outcomes, NDJSON order, and source-location warnings remain Test's
 authority and survive later cancellation. Preparation errors and independent
-workspace-cleanup warnings remain separate evidence. Remaining command surfaces
+workspace-cleanup warnings remain separate evidence. Manifest-selected and
+explicit Export share one terminal-fact projection and preserve their destination
+replacement, recovery, and commitment policy. Cancellation after completed
+destination commitment cannot undo the export. Remaining command surfaces
 migrate while retaining their own result policies.
 _Avoid_: command result, generic exception handler, process cleanup authority
 

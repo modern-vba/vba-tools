@@ -72,6 +72,15 @@ diagnostics, output text, recovery, and atomic output commitment. A cancellation
 observed after replacement preserves success, including caller-owned snapshot
 output. No exception traversal or commitment policy moved into another product.
 
+Manifest-selected and explicit Export also share one terminal-fact boundary.
+Pre-commit cancellation is `130` only with both release proofs; process-release
+or STA uncertainty is `1`, including when cancellation was observed. The shared
+projection preserves stage diagnostics for timeout, process loss, COM, and
+secondary cleanup failures. Destination validation, replacement, recovery, and
+commitment remain Export's policy. Once the destination transaction completes,
+later cancellation does not turn committed output into cancellation. Neither
+entry point independently traverses nested automation exceptions.
+
 The runtime does not decide whether cleanup-time cancellation overrides a
 scenario's commitment. The generation adapter preserves its existing
 pre-commit cancellation behavior only after mandatory cleanup verification;

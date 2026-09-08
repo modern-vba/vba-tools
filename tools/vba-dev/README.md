@@ -38,6 +38,13 @@ after atomic output replacement preserves committed success. All three paths
 use the same terminal evidence; command-specific output and warnings remain
 unchanged.
 
+Manifest-selected and explicit `export` use this same terminal evidence and
+precedence: pre-commit cancellation with both release proofs is `130`; unproved
+process release or STA retirement is `1` even during cancellation. Stage
+diagnostics survive nested failures. Destination validation and recovery retain
+their existing behavior, and cancellation observed after destination commitment
+cannot undo the completed export.
+
 ## PowerShell completion
 
 Load completion into the current Windows PowerShell 5.1 or PowerShell 7
