@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using VbaDev.App.Build;
 using VbaDev.App.CommonModules;
 using VbaDev.App.Diagnostics;
@@ -19,6 +20,10 @@ namespace VbaDev.Tests;
 
 public sealed class DoctorCommandTests
 {
+    private static WorkbookStagingArtifact CreateDoctorStagingArtifact(string template, string path)
+        => WorkbookStagingArtifact.CreateCopy(new WindowsExactFileSystemObjectOwnershipFactory(), template,
+            Path.GetDirectoryName(path)!, Path.GetFileName(path));
+
     [Fact]
     public async Task CheckValidatesStaticProjectFactsWithoutActiveProbes()
     {
@@ -1180,12 +1185,10 @@ public sealed class DoctorCommandTests
         using var temp = TempDirectory.Create();
         var root = CreateDoctorProjectWithoutRepository(temp);
         var stagedWorkbook = Path.Combine(temp.Path, "staged-Book1.xlsm");
-        var deletedWorkbooks = new List<string>();
         var materializationPort = new ExcelProjectMaterializationDiagnosticPort(
             new ThrowingEnvironmentWorkbookAutomation(
                 new InvalidOperationException("Excel could not open the workbook.")),
-            _ => stagedWorkbook,
-            deletedWorkbooks.Add);
+            templatePath => CreateDoctorStagingArtifact(templatePath, stagedWorkbook));
         var application = CommandLineTestFactory.Create(
             root,
             new FakeEnvironmentDiagnosticPort(),
@@ -1213,7 +1216,7 @@ public sealed class DoctorCommandTests
                 .Select(check => check.GetProperty("id").GetString()!)
                 .TakeLast(5)
                 .ToArray());
-        Assert.Equal([stagedWorkbook], deletedWorkbooks);
+        Assert.False(File.Exists(stagedWorkbook));
     }
 
     [Fact]
@@ -1292,12 +1295,10 @@ public sealed class DoctorCommandTests
                 TestOnly: true));
         store.Save(root, manifest);
         var stagedWorkbook = Path.Combine(temp.Path, "staged-Book1.xlsm");
-        var deletedWorkbooks = new List<string>();
         var automation = new SuccessfulEnvironmentWorkbookAutomation();
         var materializationPort = new ExcelProjectMaterializationDiagnosticPort(
             automation,
-            _ => stagedWorkbook,
-            deletedWorkbooks.Add);
+            templatePath => CreateDoctorStagingArtifact(templatePath, stagedWorkbook));
         var application = CommandLineTestFactory.Create(
             root,
             new FakeEnvironmentDiagnosticPort(),
@@ -1322,7 +1323,7 @@ public sealed class DoctorCommandTests
                     "project.workbookMaterialization/Book1/publish" &&
                 check.GetProperty("status").GetString() == "pass");
         Assert.Equal(1, automation.RunCount);
-        Assert.Equal([stagedWorkbook], deletedWorkbooks);
+        Assert.False(File.Exists(stagedWorkbook));
     }
 
     [Fact]
@@ -1335,7 +1336,6 @@ public sealed class DoctorCommandTests
             "Attribute VB_Name = \"FinalProject\"\r\n",
             Encoding.UTF8);
         var stagedWorkbook = Path.Combine(temp.Path, "staged-Book1.xlsm");
-        var deletedWorkbooks = new List<string>();
         var automation = new ReinspectingEnvironmentWorkbookAutomation(
             initialProjectName: "InitialProject",
             finalProjectName: "FinalProject",
@@ -1348,8 +1348,7 @@ public sealed class DoctorCommandTests
             finalReferences: []);
         var materializationPort = new ExcelProjectMaterializationDiagnosticPort(
             automation,
-            _ => stagedWorkbook,
-            deletedWorkbooks.Add);
+            templatePath => CreateDoctorStagingArtifact(templatePath, stagedWorkbook));
         var application = CommandLineTestFactory.Create(
             root,
             new FakeEnvironmentDiagnosticPort(),
@@ -1379,7 +1378,7 @@ public sealed class DoctorCommandTests
         Assert.DoesNotContain("import", automation.Session.Events);
         Assert.DoesNotContain("verify", automation.Session.Events);
         Assert.DoesNotContain("save", automation.Session.Events);
-        Assert.Equal([stagedWorkbook], deletedWorkbooks);
+        Assert.False(File.Exists(stagedWorkbook));
     }
 
     [Fact]
@@ -1405,14 +1404,12 @@ public sealed class DoctorCommandTests
             initialReferences: [],
             finalReferences: []);
         var stagedWorkbook = Path.Combine(temp.Path, "staged-Book1.xlsm");
-        var deletedWorkbooks = new List<string>();
         var materializationPort = new ExcelProjectMaterializationDiagnosticPort(
             automation,
-            _ => stagedWorkbook,
-            deletedWorkbooks.Add,
+            templatePath => CreateDoctorStagingArtifact(templatePath, stagedWorkbook),
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(resolver)),
-            new VbeImportSourceSetFactory(),
+            new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory()),
             new WorkbookMaterializationNamePreflight());
         var application = CommandLineTestFactory.Create(
             root,
@@ -1447,7 +1444,7 @@ public sealed class DoctorCommandTests
         Assert.DoesNotContain("import", automation.Session.Events);
         Assert.DoesNotContain("verify", automation.Session.Events);
         Assert.DoesNotContain("save", automation.Session.Events);
-        Assert.Equal([stagedWorkbook], deletedWorkbooks);
+        Assert.False(File.Exists(stagedWorkbook));
     }
 
     [Fact]
@@ -1473,15 +1470,13 @@ public sealed class DoctorCommandTests
             ],
             finalReferences: []);
         var stagedWorkbook = Path.Combine(temp.Path, "staged-Book1.xlsm");
-        var deletedWorkbooks = new List<string>();
         var materializationPort = new ExcelProjectMaterializationDiagnosticPort(
             automation,
-            _ => stagedWorkbook,
-            deletedWorkbooks.Add,
+            templatePath => CreateDoctorStagingArtifact(templatePath, stagedWorkbook),
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(
                     new FakeVbaProjectReferenceResolver())),
-            new VbeImportSourceSetFactory(),
+            new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory()),
             new WorkbookMaterializationNamePreflight());
         var application = CommandLineTestFactory.Create(
             root,
@@ -1516,7 +1511,7 @@ public sealed class DoctorCommandTests
         Assert.DoesNotContain("import", automation.Session.Events);
         Assert.DoesNotContain("verify", automation.Session.Events);
         Assert.DoesNotContain("save", automation.Session.Events);
-        Assert.Equal([stagedWorkbook], deletedWorkbooks);
+        Assert.False(File.Exists(stagedWorkbook));
     }
 
     [Fact]
@@ -1575,20 +1570,18 @@ public sealed class DoctorCommandTests
                     : VbaProjectReferenceProbeAttemptResult.Rejected());
         var stagedWorkbook = Path.Combine(temp.Path, "staged-Book1.xlsm");
         var stageCount = 0;
-        var deletedWorkbooks = new List<string>();
         var materializationPort = new ExcelProjectMaterializationDiagnosticPort(
             automation,
-            _ =>
+            templatePath =>
             {
                 stageCount++;
-                return stagedWorkbook;
+                return CreateDoctorStagingArtifact(templatePath, stagedWorkbook);
             },
-            deletedWorkbooks.Add,
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(
                     registryResolver,
                     externalMaterializationProbe)),
-            new VbeImportSourceSetFactory(),
+            new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory()),
             new WorkbookMaterializationNamePreflight());
         var application = CommandLineTestFactory.Create(
             root,
@@ -1614,7 +1607,7 @@ public sealed class DoctorCommandTests
         }
 
         Assert.Equal(1, stageCount);
-        Assert.Equal([stagedWorkbook], deletedWorkbooks);
+        Assert.False(File.Exists(stagedWorkbook));
         Assert.Empty(externalMaterializationProbe.BaselineWorkbookPaths);
         Assert.Contains("remove:ReplaceableModule", automation.Session.Events);
         Assert.Contains("remove-reference:Old Library", automation.Session.Events);
@@ -1674,15 +1667,13 @@ public sealed class DoctorCommandTests
                     NamespaceName: "AdoptedNamespace")
             ]);
         var stagedWorkbook = Path.Combine(temp.Path, "staged-Book1.xlsm");
-        var deletedWorkbooks = new List<string>();
         var materializationPort = new ExcelProjectMaterializationDiagnosticPort(
             automation,
-            _ => stagedWorkbook,
-            deletedWorkbooks.Add,
+            templatePath => CreateDoctorStagingArtifact(templatePath, stagedWorkbook),
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(
                     new FakeVbaProjectReferenceResolver(resolvedReference))),
-            new VbeImportSourceSetFactory(),
+            new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory()),
             new WorkbookMaterializationNamePreflight());
         var application = CommandLineTestFactory.Create(
             root,
@@ -1724,7 +1715,7 @@ public sealed class DoctorCommandTests
         Assert.DoesNotContain("import", automation.Session.Events);
         Assert.DoesNotContain("verify", automation.Session.Events);
         Assert.DoesNotContain("save", automation.Session.Events);
-        Assert.Equal([stagedWorkbook], deletedWorkbooks);
+        Assert.False(File.Exists(stagedWorkbook));
     }
 
     [Fact]
@@ -1739,11 +1730,10 @@ public sealed class DoctorCommandTests
         var automation = new SuccessfulEnvironmentWorkbookAutomation();
         var materializationPort = new ExcelProjectMaterializationDiagnosticPort(
             automation,
-            _ => Path.Combine(temp.Path, "staged-Book1.xlsm"),
-            _ => { },
+            templatePath => CreateDoctorStagingArtifact(templatePath, Path.Combine(temp.Path, "staged-Book1.xlsm")),
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),
-            new VbeImportSourceSetFactory(
+            new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 sourceSet =>
                 {
                     observedProfiles.Add(File.ReadAllText(Assert.Single(sourceSet.SourceFiles).SourcePath));
@@ -1783,11 +1773,10 @@ public sealed class DoctorCommandTests
         var materializationPort = new ExcelProjectMaterializationDiagnosticPort(
             automation,
             _ => throw new InvalidOperationException("The missing template must not be staged."),
-            _ => throw new InvalidOperationException("No staged workbook should exist."),
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(
                     new FakeVbaProjectReferenceResolver())),
-            new VbeImportSourceSetFactory(),
+            new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory()),
             new WorkbookMaterializationNamePreflight());
         var application = CommandLineTestFactory.Create(
             root,
@@ -1827,11 +1816,10 @@ public sealed class DoctorCommandTests
         var materializationPort = new ExcelProjectMaterializationDiagnosticPort(
             automation,
             _ => throw new InvalidOperationException("Cancellation must prevent workbook staging."),
-            _ => throw new InvalidOperationException("No staged workbook should exist."),
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(
                     new FakeVbaProjectReferenceResolver())),
-            new VbeImportSourceSetFactory(
+            new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 sourceSet =>
                 {
                     stagingPaths.Add(sourceSet.StagingPath);
@@ -1860,19 +1848,18 @@ public sealed class DoctorCommandTests
         var root = CreateDoctorProjectWithoutRepository(temp);
         var stagedWorkbook = Path.Combine(temp.Path, "staged-Book1.xlsm");
         var stagingPaths = new List<string>();
-        var deleteAttempts = 0;
         var materializationPort = new ExcelProjectMaterializationDiagnosticPort(
             new SuccessfulEnvironmentWorkbookAutomation(),
-            _ => stagedWorkbook,
-            _ =>
+            templatePath =>
             {
-                deleteAttempts++;
-                throw new IOException("The staged workbook remained locked.");
+                var artifact = CreateDoctorStagingArtifact(templatePath, stagedWorkbook);
+                File.WriteAllText(stagedWorkbook, "External change prevents cleanup");
+                return artifact;
             },
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(
                     new FakeVbaProjectReferenceResolver())),
-            new VbeImportSourceSetFactory(
+            new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 sourceSet => stagingPaths.Add(sourceSet.StagingPath)),
             new WorkbookMaterializationNamePreflight());
         var application = CommandLineTestFactory.Create(
@@ -1884,7 +1871,8 @@ public sealed class DoctorCommandTests
             ["doctor", "--format", "json"]);
 
         Assert.Equal(1, result.ExitCode);
-        Assert.Equal(1, deleteAttempts);
+        Assert.True(File.Exists(stagedWorkbook));
+        Assert.Contains(stagedWorkbook.Replace("\\", "\\\\"), result.StandardOutput);
         Assert.Equal(2, stagingPaths.Count);
         Assert.All(stagingPaths, path => Assert.False(Directory.Exists(path)));
     }
@@ -1896,21 +1884,19 @@ public sealed class DoctorCommandTests
         var root = CreateDoctorProjectWithoutRepository(temp);
         var stagingDirectory = Path.Combine(temp.Path, "failed-doctor-stage");
         var automation = new RecordingEnvironmentWorkbookAutomation();
-        var deleteAttempts = 0;
         var materializationPort = new ExcelProjectMaterializationDiagnosticPort(
             automation,
             templatePath =>
             {
                 File.Delete(templatePath);
-                return WorkbookMaterializer.StageInspectionWorkbook(
+                return WorkbookMaterializer.StageInspectionWorkbook(new WindowsExactFileSystemObjectOwnershipFactory(),
                     templatePath,
                     stagingDirectory);
             },
-            _ => deleteAttempts++,
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(
                     new FakeVbaProjectReferenceResolver())),
-            new VbeImportSourceSetFactory(),
+            new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory()),
             new WorkbookMaterializationNamePreflight());
         var application = CommandLineTestFactory.Create(
             root,
@@ -1922,7 +1908,6 @@ public sealed class DoctorCommandTests
 
         Assert.Equal(1, result.ExitCode);
         Assert.False(Directory.Exists(stagingDirectory));
-        Assert.Equal(0, deleteAttempts);
         Assert.Equal(0, automation.RunCount);
     }
 
@@ -1942,11 +1927,10 @@ public sealed class DoctorCommandTests
         var materializationPort = new ExcelProjectMaterializationDiagnosticPort(
             new RecordingEnvironmentWorkbookAutomation(),
             _ => throw new InvalidOperationException("The missing template must not be staged."),
-            _ => throw new InvalidOperationException("No staged workbook should exist."),
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(
                     new FakeVbaProjectReferenceResolver())),
-            new VbeImportSourceSetFactory(
+            new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 sourceSet =>
                 {
                     stagingPaths.Add(sourceSet.StagingPath);
@@ -2694,7 +2678,7 @@ public sealed class DoctorCommandTests
             [new ProjectConfigurationDiagnosticProvider(), new CommonModulesDiagnosticProvider(new CommonModulesManifestReader())],
             [],
             new ExcelProjectMaterializationDiagnosticPort(
-                automation ?? new SuccessfulEnvironmentWorkbookAutomation(), path => path, _ => { }),
+                automation ?? new SuccessfulEnvironmentWorkbookAutomation(), path => WorkbookMaterializer.StageInspectionWorkbook(new WindowsExactFileSystemObjectOwnershipFactory(), path)),
             new FakeEnvironmentDiagnosticPort(), admission), new DoctorReportRenderer());
 
     [Fact]

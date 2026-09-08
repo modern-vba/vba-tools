@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using System.Text;
 using System.Text.Json;
 using VbaDev.App.Build;
@@ -50,7 +51,7 @@ public sealed class DoctorSourceAdmissionTests
         var expectedText = Encoding.GetEncoding(1252).GetString(bytes);
         var observedText = new List<string>();
         var automation = new FakeWorkbookGenerationAutomation { ThrowOnImport = true, ThrowOnSave = true };
-        var mirrors = new VbeImportSourceSetFactory(
+        var mirrors = new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
             sourceSet =>
             {
                 Assert.Equal(1252, sourceSet.ActiveCodePage);
@@ -114,8 +115,7 @@ public sealed class DoctorSourceAdmissionTests
             return File.ReadAllBytes(path);
         });
         var automation = new FakeWorkbookGenerationAutomation { ThrowOnImport = true, ThrowOnSave = true };
-        var command = CreateDoctor(root, admission, automation, new VbeImportSourceSetFactory(
-));
+        var command = CreateDoctor(root, admission, automation, new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory()));
 
         var result = await command.RunAsync(
             new DoctorCommandRequest(root, root, Format: DoctorOutputFormat.Json), CancellationToken.None);
@@ -172,7 +172,7 @@ public sealed class DoctorSourceAdmissionTests
         });
         var automation = new FakeWorkbookGenerationAutomation { ThrowOnImport = true, ThrowOnSave = true };
         var command = CreateDoctor(root, admission, automation,
-            new VbeImportSourceSetFactory());
+            new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory()));
 
         var result = await command.RunAsync(
             new DoctorCommandRequest(root, root, Format: DoctorOutputFormat.Json), CancellationToken.None);
@@ -206,7 +206,7 @@ public sealed class DoctorSourceAdmissionTests
             return File.ReadAllBytes(path);
         });
         var automation = new FakeWorkbookGenerationAutomation();
-        var command = CreateDoctor(root, admission, automation, new VbeImportSourceSetFactory());
+        var command = CreateDoctor(root, admission, automation, new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory()));
 
         var result = await command.RunAsync(
             new DoctorCommandRequest(root, root, Format: DoctorOutputFormat.Json), CancellationToken.None);
@@ -236,7 +236,7 @@ public sealed class DoctorSourceAdmissionTests
             "Attribute VB_Name = \"Common\"\r\n'#ExcludePublish\r\n' \U0001f600\r\n", new UTF8Encoding(true));
         var automation = new FakeWorkbookGenerationAutomation();
         var command = CreateDoctor(root, new VbaSourceAdmission(() => 1252), automation,
-            new VbeImportSourceSetFactory());
+            new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory()));
 
         var result = await command.RunAsync(
             new DoctorCommandRequest(root, root, Format: DoctorOutputFormat.Json), CancellationToken.None);
@@ -276,7 +276,7 @@ public sealed class DoctorSourceAdmissionTests
             return path == failedPath ? throw new IOException("captured source read failed") : File.ReadAllBytes(path);
         });
         var automation = new FakeWorkbookGenerationAutomation { ThrowOnImport = true, ThrowOnSave = true };
-        var command = CreateDoctor(root, admission, automation, new VbeImportSourceSetFactory());
+        var command = CreateDoctor(root, admission, automation, new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory()));
 
         var result = await command.RunAsync(
             new DoctorCommandRequest(root, root, Format: DoctorOutputFormat.Json), CancellationToken.None);
@@ -312,7 +312,7 @@ public sealed class DoctorSourceAdmissionTests
             throw new IOException("document inventory failed");
         }, path => { reads++; return File.ReadAllBytes(path); });
         var automation = new FakeWorkbookGenerationAutomation();
-        var command = CreateDoctor(root, admission, automation, new VbeImportSourceSetFactory());
+        var command = CreateDoctor(root, admission, automation, new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory()));
 
         var result = await command.RunAsync(
             new DoctorCommandRequest(root, root, Format: DoctorOutputFormat.Json), CancellationToken.None);
@@ -348,8 +348,7 @@ public sealed class DoctorSourceAdmissionTests
             return bytes;
         });
         var automation = new FakeWorkbookGenerationAutomation();
-        var mirrors = new VbeImportSourceSetFactory(
-);
+        var mirrors = new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory());
         var command = CreateDoctor(root, admission, automation, mirrors);
 
         var result = await command.RunAsync(
@@ -390,7 +389,7 @@ public sealed class DoctorSourceAdmissionTests
             throw new IOException("Environment diagnostics must not read source bytes.");
         });
         var automation = new FakeWorkbookGenerationAutomation();
-        var command = CreateDoctor(root, admission, automation, new VbeImportSourceSetFactory());
+        var command = CreateDoctor(root, admission, automation, new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory()));
 
         var result = await command.RunAsync(new DoctorCommandRequest(
             ProjectRoot: null,
@@ -450,10 +449,9 @@ public sealed class DoctorSourceAdmissionTests
             templatePath =>
             {
                 var staged = Path.Combine(root, "staged-" + Path.GetFileName(templatePath));
-                File.Copy(templatePath, staged);
-                return staged;
+                return WorkbookStagingArtifact.CreateCopy(new WindowsExactFileSystemObjectOwnershipFactory(), templatePath,
+                    Path.GetDirectoryName(staged)!, Path.GetFileName(staged));
             },
-            File.Delete,
             new WorkbookReferenceNormalizer(new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),
             mirrors,
             new WorkbookMaterializationNamePreflight());

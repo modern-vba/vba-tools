@@ -1,4 +1,5 @@
 using System.Runtime.ExceptionServices;
+using VbaDev.App.FileSystem;
 using VbaDev.App.Projects;
 using VbaDev.App.Workbooks;
 using VbaDev.Domain;
@@ -11,13 +12,13 @@ namespace VbaDev.App.Build;
 internal sealed class WorkbookMaterializer
 {
     private readonly WorkbookSourcePlanner sourcePlanner;
+    private readonly IExactFileSystemObjectOwnershipFactory ownershipFactory;
     private readonly IWorkbookGenerationAutomation workbookGenerationAutomation;
     private readonly WorkbookReferenceNormalizer referenceNormalizer;
     private readonly IWorkbookOutputTransactionFactory transactionFactory;
     private readonly VbeImportSourceSetFactory importSourceSetFactory;
     private readonly WorkbookAutomationTimeouts baseTimeouts;
-    private readonly Func<string, string> inspectionWorkbookStager;
-    private readonly Action<string> inspectionWorkbookDeleter;
+    private readonly Func<string, WorkbookStagingArtifact> inspectionWorkbookStager;
     private readonly WorkbookMaterializationNamePreflight namePreflight;
     private readonly WorkbookMaterializationOutputValidator outputValidator = new();
 
@@ -27,14 +28,16 @@ internal sealed class WorkbookMaterializer
     /// <param name="workbookGenerationAutomation">The workbook automation port used to edit VBA projects.</param>
     /// <param name="referenceNormalizer">The service that reconciles workbook references with manifest references.</param>
     internal WorkbookMaterializer(
+        IExactFileSystemObjectOwnershipFactory ownershipFactory,
         IWorkbookGenerationAutomation workbookGenerationAutomation,
         WorkbookReferenceNormalizer referenceNormalizer)
         : this(
+            ownershipFactory,
             new WorkbookSourcePlanner(),
             workbookGenerationAutomation,
             referenceNormalizer,
-            new WorkbookOutputTransactionFactory(),
-            new VbeImportSourceSetFactory())
+            new WorkbookOutputTransactionFactory(ownershipFactory),
+            new VbeImportSourceSetFactory(ownershipFactory))
     {
     }
 
@@ -42,25 +45,29 @@ internal sealed class WorkbookMaterializer
     /// Creates the materializer with explicit collaborators.
     /// </summary>
     internal WorkbookMaterializer(
+        IExactFileSystemObjectOwnershipFactory ownershipFactory,
         WorkbookSourcePlanner sourcePlanner,
         IWorkbookGenerationAutomation workbookGenerationAutomation,
         WorkbookReferenceNormalizer referenceNormalizer,
         IWorkbookOutputTransactionFactory transactionFactory)
         : this(
+            ownershipFactory,
             sourcePlanner,
             workbookGenerationAutomation,
             referenceNormalizer,
             transactionFactory,
-            new VbeImportSourceSetFactory())
+            new VbeImportSourceSetFactory(ownershipFactory))
     {
     }
 
     internal WorkbookMaterializer(
+        IExactFileSystemObjectOwnershipFactory ownershipFactory,
         IWorkbookGenerationAutomation workbookGenerationAutomation,
         WorkbookReferenceNormalizer referenceNormalizer,
         IWorkbookOutputTransactionFactory transactionFactory,
         VbeImportSourceSetFactory importSourceSetFactory)
         : this(
+            ownershipFactory,
             new WorkbookSourcePlanner(),
             workbookGenerationAutomation,
             referenceNormalizer,
@@ -70,24 +77,24 @@ internal sealed class WorkbookMaterializer
     }
 
     internal WorkbookMaterializer(
+        IExactFileSystemObjectOwnershipFactory ownershipFactory,
         WorkbookSourcePlanner sourcePlanner,
         IWorkbookGenerationAutomation workbookGenerationAutomation,
         WorkbookReferenceNormalizer referenceNormalizer,
         IWorkbookOutputTransactionFactory transactionFactory,
         VbeImportSourceSetFactory importSourceSetFactory,
         WorkbookAutomationTimeouts? baseTimeouts = null,
-        Func<string, string>? inspectionWorkbookStager = null,
-        Action<string>? inspectionWorkbookDeleter = null,
+        Func<string, WorkbookStagingArtifact>? inspectionWorkbookStager = null,
         WorkbookMaterializationNamePreflight? namePreflight = null)
     {
+        this.ownershipFactory = ownershipFactory;
         this.sourcePlanner = sourcePlanner;
         this.workbookGenerationAutomation = workbookGenerationAutomation;
         this.referenceNormalizer = referenceNormalizer;
         this.transactionFactory = transactionFactory;
         this.importSourceSetFactory = importSourceSetFactory;
         this.baseTimeouts = baseTimeouts ?? WorkbookAutomationTimeouts.Default;
-        this.inspectionWorkbookStager = inspectionWorkbookStager ?? StageInspectionWorkbook;
-        this.inspectionWorkbookDeleter = inspectionWorkbookDeleter ?? DeleteInspectionWorkbook;
+        this.inspectionWorkbookStager = inspectionWorkbookStager ?? (template => StageInspectionWorkbook(ownershipFactory, template));
         this.namePreflight = namePreflight ?? new WorkbookMaterializationNamePreflight();
     }
 
@@ -136,10 +143,10 @@ internal sealed class WorkbookMaterializer
             return CompleteInspection(
                 profiles,
                 new ProjectInspectionResult(profiles.Select(GetInspectionResult).ToArray()),
-                stagedWorkbookPath: null);
+                stagedWorkbook: null);
         }
 
-        string? stagedWorkbookPath = null;
+        WorkbookStagingArtifact? stagedWorkbook = null;
         try
         {
             if (!File.Exists(context.TemplateDocumentPath))
@@ -153,12 +160,12 @@ internal sealed class WorkbookMaterializer
                 return CompleteInspection(
                     profiles,
                     new ProjectInspectionResult(profiles.Select(GetInspectionResult).ToArray()),
-                    stagedWorkbookPath);
+                    stagedWorkbook);
             }
 
-            stagedWorkbookPath = inspectionWorkbookStager(context.TemplateDocumentPath);
+            stagedWorkbook = inspectionWorkbookStager(context.TemplateDocumentPath);
             await workbookGenerationAutomation.RunAsync(
-                stagedWorkbookPath,
+                stagedWorkbook.Path,
                 ResolveTimeouts(context),
                 async (session, operationCancellationToken) =>
                 {
@@ -264,7 +271,7 @@ internal sealed class WorkbookMaterializer
             return CompleteInspection(
                 profiles,
                 new ProjectInspectionResult(profiles.Select(GetInspectionResult).ToArray()),
-                stagedWorkbookPath);
+                stagedWorkbook);
         }
         catch (WorkbookAutomationTimeoutException exception)
         {
@@ -277,7 +284,7 @@ internal sealed class WorkbookMaterializer
             return CompleteInspection(
                 profiles,
                 new ProjectInspectionResult(profiles.Select(GetInspectionResult).ToArray()),
-                stagedWorkbookPath);
+                stagedWorkbook, exception);
         }
         catch (WorkbookAutomationCanceledException exception)
         {
@@ -293,7 +300,7 @@ internal sealed class WorkbookMaterializer
                     profiles.Select(GetInspectionResult).ToArray(),
                     Complete: false,
                     Canceled: true),
-                stagedWorkbookPath);
+                stagedWorkbook, exception);
         }
         catch (WorkbookAutomationCleanupException exception)
         {
@@ -308,9 +315,9 @@ internal sealed class WorkbookMaterializer
                 new ProjectInspectionResult(
                     profiles.Select(GetInspectionResult).ToArray(),
                     Complete: false),
-                stagedWorkbookPath);
+                stagedWorkbook, exception);
         }
-        catch (InspectionStagingCleanupException exception)
+        catch (WorkbookStagingPreparationException exception)
         {
             SetPendingInspectionResults(
                 profiles,
@@ -323,7 +330,7 @@ internal sealed class WorkbookMaterializer
                 new ProjectInspectionResult(
                     profiles.Select(GetInspectionResult).ToArray(),
                     Complete: false),
-                stagedWorkbookPath);
+                stagedWorkbook, exception);
         }
         catch (Exception exception)
         {
@@ -336,7 +343,7 @@ internal sealed class WorkbookMaterializer
             return CompleteInspection(
                 profiles,
                 new ProjectInspectionResult(profiles.Select(GetInspectionResult).ToArray()),
-                stagedWorkbookPath);
+                stagedWorkbook, exception);
         }
     }
 
@@ -465,21 +472,30 @@ internal sealed class WorkbookMaterializer
     private ProjectInspectionResult CompleteInspection(
         IReadOnlyList<InspectionProfile> profiles,
         ProjectInspectionResult result,
-        string? stagedWorkbookPath)
+        WorkbookStagingArtifact? stagedWorkbook,
+        Exception? operationError = null)
     {
-        var sharedCleanupEvidence = new List<string>();
-        if (stagedWorkbookPath is not null)
+        var processReleaseProven = true;
+        if (operationError is not null)
         {
-            try
+            WorkbookAutomationFailureClassifier.TryClassify(operationError, out var facts);
+            processReleaseProven = facts.ProcessReleaseProven;
+        }
+        var sharedCleanupEvidence = new List<string>();
+        if (stagedWorkbook is not null)
+        {
+            if (!processReleaseProven)
             {
-                inspectionWorkbookDeleter(stagedWorkbookPath);
-            }
-            catch (Exception cleanupError)
-            {
-                var absolutePath = Path.GetFullPath(stagedWorkbookPath);
+                stagedWorkbook.ReleaseWithoutCleanup();
                 sharedCleanupEvidence.Add(
-                    $"Disposable workbook cleanup could not be confirmed: {cleanupError.Message} " +
-                    $"The staging workbook may have been retained at the absolute path '{absolutePath}'.");
+                    $"Disposable workbook retained because owned Excel process release could not be proved: {stagedWorkbook.Path}");
+            }
+            else
+            {
+                var cleanup = stagedWorkbook.Cleanup();
+                if (cleanup.Status != InvocationScratchCleanupStatus.Removed)
+                    sharedCleanupEvidence.Add("Disposable workbook cleanup could not be confirmed: " +
+                        WorkbookStagingArtifact.DescribeCleanup(cleanup));
             }
         }
 
@@ -494,7 +510,15 @@ internal sealed class WorkbookMaterializer
 
             try
             {
-                profile.Dispose();
+                if (!processReleaseProven && profile.SourceSet is { } sourceSet)
+                {
+                    sourceSet.RetainWithoutCleanup();
+                    evidence.Add($"VBE source mirror retained because owned Excel process release could not be proved: {sourceSet.StagingPath}");
+                }
+                else
+                {
+                    profile.Dispose();
+                }
             }
             catch (Exception cleanupError)
             {
@@ -555,60 +579,13 @@ internal sealed class WorkbookMaterializer
         }
     }
 
-    internal static string StageInspectionWorkbook(string templateWorkbookPath)
-    {
-        var directory = Path.Combine(
-            Path.GetTempPath(),
-            $"vba-dev-doctor-{Guid.NewGuid():N}");
-        return StageInspectionWorkbook(templateWorkbookPath, directory);
-    }
-
-    internal static string StageInspectionWorkbook(
+    internal static WorkbookStagingArtifact StageInspectionWorkbook(
+        IExactFileSystemObjectOwnershipFactory ownershipFactory,
         string templateWorkbookPath,
-        string directory)
-    {
-        var stagedWorkbookPath = Path.Combine(
-            directory,
-            Path.GetFileName(templateWorkbookPath));
-        try
-        {
-            Directory.CreateDirectory(directory);
-            File.Copy(templateWorkbookPath, stagedWorkbookPath);
-            return stagedWorkbookPath;
-        }
-        catch (Exception stagingError)
-        {
-            try
-            {
-                if (Directory.Exists(directory))
-                {
-                    Directory.Delete(directory, recursive: true);
-                }
-            }
-            catch (Exception cleanupError)
-            {
-                throw new InspectionStagingCleanupException(
-                    $"{stagingError.Message} The failed Doctor staging directory could not be removed: '{directory}'.",
-                    new AggregateException(stagingError, cleanupError));
-            }
-
-            throw;
-        }
-    }
-
-    private static void DeleteInspectionWorkbook(string stagedWorkbookPath)
-    {
-        if (File.Exists(stagedWorkbookPath))
-        {
-            File.Delete(stagedWorkbookPath);
-        }
-
-        var directory = Path.GetDirectoryName(stagedWorkbookPath);
-        if (directory is not null && Directory.Exists(directory))
-        {
-            Directory.Delete(directory);
-        }
-    }
+        string? directory = null)
+        => WorkbookStagingArtifact.CreateCopy(ownershipFactory, templateWorkbookPath,
+            directory ?? Path.Combine(Path.GetTempPath(), $"vba-dev-doctor-{Guid.NewGuid():N}"),
+            Path.GetFileName(templateWorkbookPath), createDirectory: true);
 
     private async Task<WorkbookMaterializationResult> MaterializeCoreAsync(
         string documentName,
@@ -743,6 +720,7 @@ internal sealed class WorkbookMaterializer
                         committedReferences);
                     namePreflight.ThrowIfFailed(sourcePreflight, committedLivePreflight);
                     await session.SaveAsync(operationCancellationToken).ConfigureAwait(false);
+                    transaction.CaptureSavedWorkbook();
                     return new WorkbookGenerationSessionResult(
                         result,
                         verificationReport,
@@ -750,6 +728,7 @@ internal sealed class WorkbookMaterializer
                 },
                 cancellationToken).ConfigureAwait(false);
 
+            transaction.CompleteSavedCapture();
             outputValidator.Validate(transaction.StagingWorkbookPath);
 
             var completedImportSourceSet = importSourceSet;
@@ -791,8 +770,27 @@ internal sealed class WorkbookMaterializer
         catch (Exception operationError)
         {
             var failure = operationError;
-            failure = DisposeAfterFailure(importSourceSet, failure);
-            failure = DisposeTransactionAfterFailure(transaction, failure);
+            WorkbookAutomationFailureClassifier.TryClassify(operationError, out var terminalFacts);
+            if (terminalFacts.ProcessReleaseProven)
+            {
+                if (transaction is not null)
+                {
+                    try { transaction.CompleteSavedCapture(); }
+                    catch (Exception captureError) { failure = CombineFailures(failure, captureError); }
+                }
+                failure = DisposeAfterFailure(importSourceSet, failure);
+                failure = DisposeTransactionAfterFailure(transaction, failure);
+            }
+            else
+            {
+                var retainedPaths = new[] { importSourceSet?.StagingPath, transaction?.StagingWorkbookPath }
+                    .Where(path => path is not null).OrderBy(path => path, StringComparer.OrdinalIgnoreCase);
+                importSourceSet?.RetainWithoutCleanup();
+                transaction?.RetainWithoutCleanup();
+                failure = new BuildCommandException(
+                    $"{failure.Message} Excel-dependent scratch was retained because owned process release could not be proved: {string.Join(", ", retainedPaths)}",
+                    failure);
+            }
             failure = DisposeAfterFailure(targetGuard, failure);
             ExceptionDispatchInfo.Capture(failure).Throw();
             throw;
@@ -930,10 +928,6 @@ internal sealed class WorkbookMaterializer
             sourceSet?.Dispose();
         }
     }
-
-    private sealed class InspectionStagingCleanupException(
-        string message,
-        Exception innerException) : Exception(message, innerException);
 
     private sealed record WorkbookMaterializationPlan(
         string DocumentName,

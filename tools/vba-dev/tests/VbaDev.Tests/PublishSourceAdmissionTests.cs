@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using System.Text;
 using System.Text.Json;
 using VbaDev.App.Build;
@@ -207,7 +208,7 @@ public sealed class PublishSourceAdmissionTests
         var automation = new FakeWorkbookGenerationAutomation();
         AdmittedVbaSourceSet? captured = null;
         string? mirrorPath = null;
-        var mirrorFactory = new VbeImportSourceSetFactory(
+        var mirrorFactory = new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
             mirror =>
             {
                 Assert.Empty(automation.OpenedWorkbooks);
@@ -263,7 +264,7 @@ public sealed class PublishSourceAdmissionTests
         File.WriteAllText(context.PublishDocumentPath, "previous-output");
         var automation = new FakeWorkbookGenerationAutomation();
         var mirrorObserved = false;
-        var mirrorFactory = new VbeImportSourceSetFactory(
+        var mirrorFactory = new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
             mirror =>
             {
                 mirrorObserved = true;
@@ -383,10 +384,10 @@ public sealed class PublishSourceAdmissionTests
         VbaSourceAdmission? admission = null,
         VbeImportSourceSetFactory? mirrorFactory = null)
         => new(new WorkbookOutputCommand(
-            new WorkbookMaterializer(
+            new WorkbookMaterializer(new WindowsExactFileSystemObjectOwnershipFactory(),
                 admission is null ? new WorkbookSourcePlanner(() => activeCodePage) : new WorkbookSourcePlanner(admission),
                 automation,
                 new WorkbookReferenceNormalizer(new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),
-                new WorkbookOutputTransactionFactory(),
-                mirrorFactory ?? new VbeImportSourceSetFactory())));
+                new WorkbookOutputTransactionFactory(new WindowsExactFileSystemObjectOwnershipFactory()),
+                mirrorFactory ?? new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory()))));
 }

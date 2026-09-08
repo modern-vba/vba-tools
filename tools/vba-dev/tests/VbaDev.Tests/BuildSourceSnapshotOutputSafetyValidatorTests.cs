@@ -55,7 +55,7 @@ public sealed class BuildSourceSnapshotOutputSafetyValidatorTests
         using var capture = new BuildSourceSnapshotCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 temp.CreateDirectory("scratch"))
             .Create(validatedPaths.SourceSnapshotPath, CancellationToken.None);
-        using var transaction = WorkbookOutputTransaction.Create(
+        using var transaction = WorkbookOutputTransaction.Create(new WindowsExactFileSystemObjectOwnershipFactory(),
             context.TemplateDocumentPath,
             validatedPaths.OutputPath);
         transaction.Commit();

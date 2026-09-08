@@ -124,7 +124,7 @@ public sealed class BuildSourceAdmissionTests
             });
         var automation = new FakeWorkbookGenerationAutomation();
         AdmittedVbaSourceSet? captured = null;
-        var mirrorFactory = new VbeImportSourceSetFactory(
+        var mirrorFactory = new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
             mirror =>
             {
                 Assert.Empty(automation.OpenedWorkbooks);
@@ -209,7 +209,7 @@ public sealed class BuildSourceAdmissionTests
         File.WriteAllText(context.BinDocumentPath, "previous-output");
         var automation = new FakeWorkbookGenerationAutomation();
         var mirrorObserved = false;
-        var mirrorFactory = new VbeImportSourceSetFactory(mirror =>
+        var mirrorFactory = new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory(), mirror =>
         {
             mirrorObserved = true;
             Assert.Empty(automation.OpenedWorkbooks);
@@ -258,7 +258,7 @@ public sealed class BuildSourceAdmissionTests
         var bytes = new UTF8Encoding(false, true).GetBytes(text);
         File.WriteAllBytes(sourcePath, bytes);
         var automation = new FakeWorkbookGenerationAutomation();
-        var mirrorFactory = new VbeImportSourceSetFactory();
+        var mirrorFactory = new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory());
         var outputCommand = CreateOutputCommand(automation, 1252, mirrorFactory: mirrorFactory);
         var build = new BuildCommand(outputCommand, new FileSystemPathIdentityResolver(), new WindowsExactFileSystemObjectOwnershipFactory());
         var runner = new FakeWorkbookTestRunner();
@@ -312,7 +312,7 @@ public sealed class BuildSourceAdmissionTests
             readAllBytes: path => { readCalls++; Assert.Equal(sourcePath, path); return File.ReadAllBytes(path); });
         var automation = new FakeWorkbookGenerationAutomation();
         var mirrorObserved = false;
-        var mirrorFactory = new VbeImportSourceSetFactory(
+        var mirrorFactory = new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
             mirror =>
             {
                 mirrorObserved = true;
@@ -512,8 +512,7 @@ public sealed class BuildSourceAdmissionTests
             OnRun = () => File.Delete(sourcePath)
         };
         var test = new TestCommand(
-            CreateCommand(automation, 1252, mirrorFactory: new VbeImportSourceSetFactory(
-)),
+            CreateCommand(automation, 1252, mirrorFactory: new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory())),
             runner,
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
@@ -576,10 +575,10 @@ public sealed class BuildSourceAdmissionTests
         WorkbookSourcePlanner? planner = null,
         VbeImportSourceSetFactory? mirrorFactory = null)
         => new(
-            new WorkbookMaterializer(
+            new WorkbookMaterializer(new WindowsExactFileSystemObjectOwnershipFactory(),
                 planner ?? new WorkbookSourcePlanner(() => activeCodePage),
                 automation,
                 new WorkbookReferenceNormalizer(new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),
-                new WorkbookOutputTransactionFactory(),
-                mirrorFactory ?? new VbeImportSourceSetFactory()));
+                new WorkbookOutputTransactionFactory(new WindowsExactFileSystemObjectOwnershipFactory()),
+                mirrorFactory ?? new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory())));
 }

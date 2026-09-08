@@ -73,9 +73,13 @@ public sealed class WorkbookOutputFailureTests
         Assert.Equal("previous-publish", File.ReadAllText(project.Context.PublishDocumentPath, Encoding.UTF8));
         Assert.Equal("previous-caller", File.ReadAllText(snapshot.OutputPath, Encoding.UTF8));
         Assert.Equal("Attribute VB_Name = \"Local\"", File.ReadAllText(Path.Combine(snapshot.SourcePath, "Local.bas")));
-        Assert.Empty(EnumerateOwnedStaging(Path.GetDirectoryName(snapshot.OutputPath)!));
-        Assert.Empty(EnumerateOwnedStaging(project.SelectedOutputDirectory("build")));
-        Assert.Empty(EnumerateOwnedStaging(project.SelectedOutputDirectory("publish")));
+        var staging = EnumerateOwnedStaging(Path.GetDirectoryName(snapshot.OutputPath)!)
+            .Concat(EnumerateOwnedStaging(project.SelectedOutputDirectory("build")))
+            .Concat(EnumerateOwnedStaging(project.SelectedOutputDirectory("publish"))).ToArray();
+        if (category == "process-release")
+            Assert.Contains(Assert.Single(staging), result.StandardError, StringComparison.Ordinal);
+        else
+            Assert.Empty(staging);
     }
 
     [Fact]
@@ -150,7 +154,8 @@ public sealed class WorkbookOutputFailureTests
         Assert.Contains("workbook save", result.StandardError, StringComparison.Ordinal);
         Assert.Equal("previous-bin", File.ReadAllText(project.Context.BinDocumentPath, Encoding.UTF8));
         Assert.Equal("previous-publish", File.ReadAllText(project.Context.PublishDocumentPath, Encoding.UTF8));
-        Assert.Empty(EnumerateOwnedStaging(project.SelectedOutputDirectory(commandName)));
+        Assert.Contains(Assert.Single(EnumerateOwnedStaging(project.SelectedOutputDirectory(commandName))),
+            result.StandardError, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -431,7 +436,7 @@ public sealed class WorkbookOutputFailureTests
             return bytes;
         });
         var stagedSourceObserved = false;
-        var importSourceSetFactory = new VbeImportSourceSetFactory(
+        var importSourceSetFactory = new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
             mirror =>
             {
                 stagedSourceObserved = true;
@@ -534,6 +539,38 @@ public sealed class WorkbookOutputFailureTests
         Assert.Empty(EnumerateOwnedStaging(project.SelectedOutputDirectory(commandName)));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UnprovedExcelReleaseRetainsEveryDependentScratch(bool inspectMirror)
+    {
+        using var temp = TempDirectory.Create();
+        var project = CreateProject(temp);
+        string? workbook = null;
+        string? mirror = null;
+        var automation = new FailingWorkbookGenerationAutomation(_ =>
+        {
+            workbook = Assert.Single(EnumerateOwnedStaging(project.SelectedOutputDirectory("build")));
+            return new WorkbookAutomationCleanupException("Owned release was not proved");
+        });
+        var command = CreateCommand(project.Context, automation,
+            importSourceSetFactory: new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory(), sourceSet => mirror = sourceSet.StagingPath));
+        try
+        {
+            var result = await RunAsync("build", command, project.Context, CancellationToken.None);
+
+            Assert.Equal(1, result.ExitCode);
+            if (inspectMirror) Assert.True(Directory.Exists(mirror));
+            else Assert.True(File.Exists(workbook));
+            Assert.Contains(inspectMirror ? mirror! : workbook!, result.StandardError);
+            Assert.Equal("previous-bin", File.ReadAllText(project.Context.BinDocumentPath, Encoding.UTF8));
+        }
+        finally
+        {
+            if (mirror is not null && Directory.Exists(mirror)) Directory.Delete(mirror, recursive: true);
+        }
+    }
+
     private static WorkbookOutputCommand CreateCommand(
         ResolvedProjectContext context,
         IWorkbookGenerationAutomation automation,
@@ -541,13 +578,13 @@ public sealed class WorkbookOutputFailureTests
         VbeImportSourceSetFactory? importSourceSetFactory = null,
         WorkbookSourcePlanner? sourcePlanner = null)
     {
-        var pipeline = new WorkbookMaterializer(
+        var pipeline = new WorkbookMaterializer(new WindowsExactFileSystemObjectOwnershipFactory(),
             sourcePlanner ?? new WorkbookSourcePlanner(),
             automation,
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),
-            transactionFactory ?? new WorkbookOutputTransactionFactory(),
-            importSourceSetFactory ?? new VbeImportSourceSetFactory());
+            transactionFactory ?? new WorkbookOutputTransactionFactory(new WindowsExactFileSystemObjectOwnershipFactory()),
+            importSourceSetFactory ?? new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory()));
         return new WorkbookOutputCommand(pipeline);
     }
 
@@ -722,20 +759,15 @@ public sealed class WorkbookOutputFailureTests
             Func<IWorkbookGenerationSession, CancellationToken, Task<TResult>> operation,
             CancellationToken cancellationToken)
         {
-            var result = await operation(
-                    new EmptyWorkbookGenerationSession(),
-                    cancellationToken)
-                .ConfigureAwait(false);
-            if (invalidation == "missing")
+            var workbook = new FakeWorkbookGenerationAutomation
             {
-                File.Delete(workbookPath);
-            }
-            else
-            {
-                File.WriteAllBytes(workbookPath, []);
-            }
-
-            return result;
+                OnSave = () =>
+                {
+                    if (invalidation == "missing") File.Delete(workbookPath);
+                    else File.WriteAllBytes(workbookPath, []);
+                }
+            };
+            return await workbook.RunAsync(workbookPath, timeouts, operation, cancellationToken);
         }
     }
 
@@ -782,7 +814,7 @@ public sealed class WorkbookOutputFailureTests
     {
         public IWorkbookOutputTransaction Create(string templateWorkbookPath, string targetWorkbookPath)
             => new CancelAfterCommitTransaction(
-                WorkbookOutputTransaction.Create(templateWorkbookPath, targetWorkbookPath),
+                WorkbookOutputTransaction.Create(new WindowsExactFileSystemObjectOwnershipFactory(), templateWorkbookPath, targetWorkbookPath),
                 cancellation);
     }
 
@@ -791,6 +823,12 @@ public sealed class WorkbookOutputFailureTests
         CancellationTokenSource cancellation) : IWorkbookOutputTransaction
     {
         public string StagingWorkbookPath => inner.StagingWorkbookPath;
+
+        public void RetainWithoutCleanup() => inner.RetainWithoutCleanup();
+
+        public void CaptureSavedWorkbook() => inner.CaptureSavedWorkbook();
+
+        public void CompleteSavedCapture() => inner.CompleteSavedCapture();
 
         public void Commit()
         {

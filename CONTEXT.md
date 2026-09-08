@@ -612,7 +612,8 @@ The invocation-owned VBE-facing mirror derived from admitted ordinary Build, Pub
 round-trip through the operation-fixed active Windows ANSI code page while
 `.frx` sidecars retain their exact bytes and relative pairing. An
 unrepresentable or best-fit-only character fails before Excel starts, and the
-mirror never changes caller-owned bytes and is removed with command scratch.
+mirror never changes caller-owned bytes. Its exact owned copies are eligible for
+command scratch cleanup only after the consuming Excel process is proved released.
 For `VbaSourceAdmissionIntent.ExplicitImport`, ordinary Build, Publish, and snapshot Build/Test, it consumes the admission's Unicode,
 fixed ACP, and captured sidecar bytes without calling `GetACP`, choosing a source encoding,
 or rereading caller files.
@@ -1134,9 +1135,19 @@ workbook save, output transaction, or durable commit; after the session closes,
 the materializer removes its copy and reports any unconfirmed cleanup as
 incomplete inspection evidence.
 
-For write intents, failure or cancellation before commitment disposes
-invocation-owned staging and does not replace the previous output. Commitment
-is attempted once.
+For write intents, failure or cancellation before commitment preserves the
+previous output. `WorkbookStagingArtifact` owns the exact create-only workbook
+copy and, immediately after successful Save, captures a pending saved version.
+Only after owned-process release does the materializer complete that version's
+identity and byte proof. No failure cleanup adopts a later path occupant.
+`WorkbookOutputTransaction` validates this receipt before its one atomic commit.
+VBE mirrors, output staging, and Doctor's disposable workbook use
+`InvocationScratch` evidence. The materializer selects cleanup only when process
+release is proved, including a secondary cleanup failure or unproved STA
+retirement; the command still fails for that terminal error. Unproved process
+release closes receipt resources without deleting dependent scratch. Retained
+pre-commit paths augment the primary failure, and unconfirmed Doctor cleanup
+makes the affected inspection incomplete while preserving conclusive diagnostics.
 `ExplicitImport` alone retains its existing read-only `FileShare.Read` target
 guard from target staging through owned Excel-process release, saved-staging
 validation, and the final cancellation fence, then releases it only for the
@@ -1280,6 +1291,12 @@ mutation, cancellation, retained-workspace, and warning-order contracts.
 Build source-snapshot capture also registers its create-only GUID directory,
 every nested directory, and each exact admitted source/sidecar copy in one
 session. Its shared container and caller-owned inputs are not scratch receipts.
+VBE source mirrors register their create-only directory and admitted ACP source
+and sidecar copies. Materialization output and Doctor inspection delegate their
+workbook copies to `WorkbookStagingArtifact`; only successful scenario Save may
+nominate a new version for proof after Excel release. Persistent output containers
+and caller-owned sources are excluded. The materializer, not the scratch module,
+owns process-release gating and the failure or incomplete-inspection policy.
 _Avoid_: path-based cleanup, generic transaction, recursive workspace deletion
 
 **InvocationScratchCleanupEvidence**:

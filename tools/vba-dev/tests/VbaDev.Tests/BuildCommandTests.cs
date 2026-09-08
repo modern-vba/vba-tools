@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using System.Text;
 using System.Runtime.InteropServices;
 using VbaDev.App.Build;
@@ -939,7 +940,7 @@ public sealed class BuildCommandTests
         {
             OnImport = cancellation.Cancel
         };
-        var pipeline = new WorkbookMaterializer(
+        var pipeline = new WorkbookMaterializer(new WindowsExactFileSystemObjectOwnershipFactory(),
             automation,
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())));
@@ -1368,6 +1369,8 @@ internal sealed class FakeWorkbookGenerationAutomation : IWorkbookGenerationAuto
 
     public Action? OnImport { get; set; }
 
+    public Action? OnSave { get; init; }
+
     public COMException? ReferenceError { get; init; }
 
     public string ProjectName { get; init; } = "VbaProject";
@@ -1531,6 +1534,7 @@ internal sealed class FakeWorkbookGenerationAutomation : IWorkbookGenerationAuto
             }
 
             owner.Events.Add("save");
+            owner.OnSave?.Invoke();
             return Task.CompletedTask;
         }
 

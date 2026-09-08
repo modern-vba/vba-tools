@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using VbaDev.App.Build;
 using VbaDev.App.Diagnostics;
 using VbaDev.App.Projects;
@@ -25,33 +26,29 @@ public sealed class ExcelProjectMaterializationDiagnosticPort
 
     internal ExcelProjectMaterializationDiagnosticPort(
         IWorkbookGenerationAutomation workbookAutomation,
-        Func<string, string> stageTemplateWorkbook,
-        Action<string> deleteStagedWorkbook)
+        Func<string, WorkbookStagingArtifact> stageTemplateWorkbook)
         : this(
             workbookAutomation,
             stageTemplateWorkbook,
-            deleteStagedWorkbook,
             CreateProductionReferenceNormalizer(),
-            new VbeImportSourceSetFactory(),
+            new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory()),
             new WorkbookMaterializationNamePreflight())
     {
     }
 
     internal ExcelProjectMaterializationDiagnosticPort(
         IWorkbookGenerationAutomation workbookAutomation,
-        Func<string, string> stageTemplateWorkbook,
-        Action<string> deleteStagedWorkbook,
+        Func<string, WorkbookStagingArtifact> stageTemplateWorkbook,
         WorkbookReferenceNormalizer referenceNormalizer,
         VbeImportSourceSetFactory importSourceSetFactory,
         WorkbookMaterializationNamePreflight namePreflight)
-        : this(new WorkbookMaterializer(
+        : this(new WorkbookMaterializer(new WindowsExactFileSystemObjectOwnershipFactory(),
             new WorkbookSourcePlanner(),
             workbookAutomation,
             referenceNormalizer,
-            new WorkbookOutputTransactionFactory(),
+            new WorkbookOutputTransactionFactory(new WindowsExactFileSystemObjectOwnershipFactory()),
             importSourceSetFactory,
             inspectionWorkbookStager: stageTemplateWorkbook,
-            inspectionWorkbookDeleter: deleteStagedWorkbook,
             namePreflight: namePreflight))
     {
     }
@@ -149,10 +146,11 @@ public sealed class ExcelProjectMaterializationDiagnosticPort
 
     private static WorkbookMaterializer CreateProductionMaterializer()
         => new(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             new WorkbookSourcePlanner(),
             new ExcelComWorkbookGenerationAutomation(),
             CreateProductionReferenceNormalizer(),
-            new WorkbookOutputTransactionFactory());
+            new WorkbookOutputTransactionFactory(new WindowsExactFileSystemObjectOwnershipFactory()));
 
     private static WorkbookReferenceNormalizer CreateProductionReferenceNormalizer()
         => new(new VbaProjectReferencePlanner(

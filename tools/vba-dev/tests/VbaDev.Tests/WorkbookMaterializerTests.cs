@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using System.Text;
 using VbaDev.App.Build;
 using VbaDev.App.Projects;
@@ -118,12 +119,11 @@ public sealed class WorkbookMaterializerTests
             new ForbiddenTransactionFactory(),
             inspectionWorkbookStager: templatePath =>
             {
-                Directory.CreateDirectory(Path.GetDirectoryName(stagedWorkbookPath)!);
-                File.Copy(templatePath, stagedWorkbookPath);
-                return stagedWorkbookPath;
-            },
-            inspectionWorkbookDeleter: _ =>
-                throw new IOException("The staged workbook remained locked."));
+                var artifact = WorkbookStagingArtifact.CreateCopy(new WindowsExactFileSystemObjectOwnershipFactory(), templatePath,
+                    Path.GetDirectoryName(stagedWorkbookPath)!, Path.GetFileName(stagedWorkbookPath), createDirectory: true);
+                File.WriteAllText(stagedWorkbookPath, "External change prevents cleanup");
+                return artifact;
+            });
 
         try
         {
@@ -181,7 +181,7 @@ public sealed class WorkbookMaterializerTests
         var materializer = CreatePipeline(
             new RecordingWorkbookGenerationAutomation(events),
             new ForbiddenTransactionFactory(),
-            new VbeImportSourceSetFactory(
+            new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 sourceSet =>
                 {
                     sourceStagingPaths.Add(sourceSet.StagingPath);
@@ -245,26 +245,20 @@ public sealed class WorkbookMaterializerTests
         var stagedWorkbookPath = Path.Combine(
             stagingDirectory,
             Path.GetFileName(fixture.TemplatePath));
-        Directory.CreateDirectory(stagingDirectory);
-        File.WriteAllText(stagedWorkbookPath, "retained-stage", Encoding.UTF8);
         var sourceStagingPaths = new List<string>();
         var events = new List<string>();
-        var deleteAttempts = 0;
-        using var lockedWorkbook = File.Open(
-            stagedWorkbookPath,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.None);
         var materializer = CreatePipeline(
             new RecordingWorkbookGenerationAutomation(events),
             new ForbiddenTransactionFactory(),
-            new VbeImportSourceSetFactory(
+            new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 sourceSet => sourceStagingPaths.Add(sourceSet.StagingPath)),
             inspectionWorkbookStager: templatePath =>
-                WorkbookMaterializer.StageInspectionWorkbook(
-                    templatePath,
-                    stagingDirectory),
-            inspectionWorkbookDeleter: _ => deleteAttempts++);
+                WorkbookStagingArtifact.CreateCopy(new WindowsExactFileSystemObjectOwnershipFactory(), templatePath,
+                    stagingDirectory, Path.GetFileName(templatePath), createDirectory: true, afterCreated: path =>
+                    {
+                        File.WriteAllText(path, "External change during failed preparation");
+                        throw new IOException("Doctor staging preparation failed");
+                    }));
 
         var result = await materializer.InspectAsync(
             fixture.Intent,
@@ -279,7 +273,6 @@ public sealed class WorkbookMaterializerTests
             Assert.Contains(stagingDirectory, profile.Message, StringComparison.Ordinal);
         });
         Assert.Empty(events);
-        Assert.Equal(0, deleteAttempts);
         Assert.True(File.Exists(stagedWorkbookPath));
         Assert.Equal(2, sourceStagingPaths.Count);
         Assert.All(sourceStagingPaths, path => Assert.False(Directory.Exists(path)));
@@ -303,7 +296,7 @@ public sealed class WorkbookMaterializerTests
         var materializer = CreatePipeline(
             automation,
             new ForbiddenTransactionFactory(),
-            new VbeImportSourceSetFactory(
+            new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 sourceSet => sourceStagingPaths.Add(sourceSet.StagingPath)));
 
         var result = await materializer.InspectAsync(
@@ -318,13 +311,16 @@ public sealed class WorkbookMaterializerTests
             Assert.Contains("release could not be proved", profile.Message, StringComparison.Ordinal);
         });
         var stagedWorkbookPath = Assert.Single(automation.OpenedWorkbooks);
-        Assert.False(File.Exists(stagedWorkbookPath));
+        Assert.True(File.Exists(stagedWorkbookPath));
         Assert.Equal(2, sourceStagingPaths.Count);
-        Assert.All(sourceStagingPaths, path => Assert.False(Directory.Exists(path)));
+        Assert.All(sourceStagingPaths, path => Assert.True(Directory.Exists(path)));
+        Assert.All(result.Profiles, profile => Assert.Contains(stagedWorkbookPath, profile.Message));
         Assert.Equal("original-workbook", File.ReadAllText(fixture.TemplatePath, Encoding.UTF8));
         Assert.DoesNotContain("import", events);
         Assert.DoesNotContain("verify", events);
         Assert.DoesNotContain("save", events);
+        Directory.Delete(Path.GetDirectoryName(stagedWorkbookPath)!, recursive: true);
+        foreach (var path in sourceStagingPaths) Directory.Delete(path, recursive: true);
     }
 
     [Fact]
@@ -356,7 +352,7 @@ public sealed class WorkbookMaterializerTests
         var materializer = CreatePipeline(
             automation,
             new ForbiddenTransactionFactory(),
-            new VbeImportSourceSetFactory(
+            new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 sourceSet => sourceStagingPaths.Add(sourceSet.StagingPath)));
 
         var result = await materializer.InspectAsync(
@@ -497,7 +493,7 @@ public sealed class WorkbookMaterializerTests
             new RecordingTransactionFactory(
                 events,
                 () => Assert.False(Directory.Exists(sourceCapture!.StagingPath))),
-            new VbeImportSourceSetFactory(
+            new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 _ =>
                 {
                     Assert.True(Directory.Exists(sourceCapture!.StagingPath));
@@ -639,7 +635,7 @@ public sealed class WorkbookMaterializerTests
             }
         };
         var probe = new RecordingBuildAmbiguityProbe(resolvedIdentity);
-        var pipeline = new WorkbookMaterializer(
+        var pipeline = new WorkbookMaterializer(new WindowsExactFileSystemObjectOwnershipFactory(),
             automation,
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(
@@ -1418,7 +1414,7 @@ public sealed class WorkbookMaterializerTests
                     NamespaceName: "AdoptedNamespace")
             ]
         };
-        var pipeline = new WorkbookMaterializer(
+        var pipeline = new WorkbookMaterializer(new WindowsExactFileSystemObjectOwnershipFactory(),
             automation,
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(
@@ -1544,19 +1540,17 @@ public sealed class WorkbookMaterializerTests
         IWorkbookOutputTransactionFactory? transactionFactory = null,
         VbeImportSourceSetFactory? importSourceSetFactory = null,
         WorkbookAutomationTimeouts? baseTimeouts = null,
-        Func<string, string>? inspectionWorkbookStager = null,
-        Action<string>? inspectionWorkbookDeleter = null)
+        Func<string, WorkbookStagingArtifact>? inspectionWorkbookStager = null)
         => new(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
             new WorkbookSourcePlanner(() => 65001),
             automation,
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),
-            transactionFactory ?? new WorkbookOutputTransactionFactory(),
-            importSourceSetFactory ?? new VbeImportSourceSetFactory(
-),
+            transactionFactory ?? new WorkbookOutputTransactionFactory(new WindowsExactFileSystemObjectOwnershipFactory()),
+            importSourceSetFactory ?? new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory()),
             baseTimeouts,
-            inspectionWorkbookStager,
-            inspectionWorkbookDeleter);
+            inspectionWorkbookStager);
 
     private static ProjectInspectionFixture CreateProjectInspectionFixture(
         TempDirectory temp,
@@ -1812,7 +1806,7 @@ public sealed class WorkbookMaterializerTests
     {
         public IWorkbookOutputTransaction Create(string templateWorkbookPath, string targetWorkbookPath)
             => new CancelAfterCommitTransaction(
-                WorkbookOutputTransaction.Create(templateWorkbookPath, targetWorkbookPath),
+                WorkbookOutputTransaction.Create(new WindowsExactFileSystemObjectOwnershipFactory(), templateWorkbookPath, targetWorkbookPath),
                 cancellation);
     }
 
@@ -1821,6 +1815,12 @@ public sealed class WorkbookMaterializerTests
         CancellationTokenSource cancellation) : IWorkbookOutputTransaction
     {
         public string StagingWorkbookPath => inner.StagingWorkbookPath;
+
+        public void RetainWithoutCleanup() => inner.RetainWithoutCleanup();
+
+        public void CaptureSavedWorkbook() => inner.CaptureSavedWorkbook();
+
+        public void CompleteSavedCapture() => inner.CompleteSavedCapture();
 
         public void Commit()
         {
@@ -1841,7 +1841,7 @@ public sealed class WorkbookMaterializerTests
         {
             beforeCreate?.Invoke();
             events.Add("transaction-create");
-            return WorkbookOutputTransaction.Create(
+            return WorkbookOutputTransaction.Create(new WindowsExactFileSystemObjectOwnershipFactory(),
                 templateWorkbookPath,
                 targetWorkbookPath);
         }
@@ -1873,13 +1873,19 @@ public sealed class WorkbookMaterializerTests
             string templateWorkbookPath,
             string targetWorkbookPath)
             => new CleanupFailureTransaction(
-                WorkbookOutputTransaction.Create(templateWorkbookPath, targetWorkbookPath));
+                WorkbookOutputTransaction.Create(new WindowsExactFileSystemObjectOwnershipFactory(), templateWorkbookPath, targetWorkbookPath));
     }
 
     private sealed class CleanupFailureTransaction(
         WorkbookOutputTransaction inner) : IWorkbookOutputTransaction
     {
         public string StagingWorkbookPath => inner.StagingWorkbookPath;
+
+        public void RetainWithoutCleanup() => inner.RetainWithoutCleanup();
+
+        public void CaptureSavedWorkbook() => inner.CaptureSavedWorkbook();
+
+        public void CompleteSavedCapture() => inner.CompleteSavedCapture();
 
         public void Commit() => inner.Commit();
 

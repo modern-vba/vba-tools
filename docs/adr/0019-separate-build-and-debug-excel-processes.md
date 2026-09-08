@@ -136,6 +136,22 @@ Snapshot Test opens the exact committed workbook returned by its intent only
 after the hidden build process has been released, using a fresh test-execution
 process.
 
+The materializer also selects cleanup for VBE source mirrors, output staging,
+and Doctor's disposable inspection workbook. Their create-only file and
+directory receipts use `InvocationScratch` for bounded, cancellation-independent
+cleanup and stable absolute retained evidence. `WorkbookStagingArtifact`
+captures a pending candidate immediately after successful scenario Save, then
+completes exact identity and byte proof after owned-process release; neither
+cleanup nor commitment recaptures an unobserved path occupant. Missing owned
+objects count as removed, while changed, replaced, linked, reparse, foreign,
+or unproved objects remain protected. Persistent output containers are not scratch.
+Unproved Excel-process release permits no dependent deletion. Proved process
+release permits cleanup even if STA retirement or secondary release cleanup
+still makes the command fail. The original error remains primary, with retained
+scratch paths appended. Doctor retains conclusive profile diagnostics and marks
+unconfirmed cleanup incomplete. The shared cleanup module decides no scenario
+result, target commitment, recovery, or diagnostic policy.
+
 The #346 migration preserved the workbook-generation interfaces that existed
 at that point. Issue #347 subsequently removes the public test-shaped
 `IWorkbookBuildAutomation` and `SynchronousWorkbookGenerationAutomation`;
