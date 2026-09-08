@@ -52,7 +52,10 @@ internal static class WindowsJobProcessLauncher
         StreamReader? standardOutput = null;
         StreamReader? standardError = null;
         Process? process = null;
+        SafeProcessHandle? managedProcessHandle = null;
         var processCreated = false;
+        int? processId = null;
+        var completion = new DebugFailureCompletion();
         try
         {
             ObjectDisposedException.ThrowIf(jobHandle.IsClosed, jobHandle);
@@ -60,70 +63,44 @@ internal static class WindowsJobProcessLauncher
             {
                 throw new ArgumentException("The Job Object handle is invalid.", nameof(jobHandle));
             }
-
             if (redirectOutput)
             {
-                CreateRedirectedHandles(
-                    out standardInputRead,
-                    out standardInputWrite,
-                    out standardOutputRead,
-                    out standardOutputWrite,
-                    out standardErrorRead,
-                    out standardErrorWrite);
+                CreateRedirectedHandles(out standardInputRead, out standardInputWrite,
+                    out standardOutputRead, out standardOutputWrite, out standardErrorRead, out standardErrorWrite);
             }
             jobHandle.DangerousAddRef(ref jobHandleReferenceAdded);
-            var startupInfo = CreateStartupInfo(
-                jobHandle,
-                redirectOutput,
+            var startupInfo = CreateStartupInfo(jobHandle, redirectOutput,
                 standardInputRead?.DangerousGetHandle() ?? nint.Zero,
                 standardOutputWrite?.DangerousGetHandle() ?? nint.Zero,
                 standardErrorWrite?.DangerousGetHandle() ?? nint.Zero,
-                out attributeList,
-                out jobHandleValue,
-                out attributeListInitialized);
+                out attributeList, out jobHandleValue, out attributeListInitialized);
             var commandLine = new StringBuilder(BuildCommandLine(applicationPath, arguments));
-            if (!CreateProcessW(
-                applicationPath,
-                commandLine,
-                nint.Zero,
-                nint.Zero,
-                inheritHandles: redirectOutput,
-                CreateSuspended | ExtendedStartupInfoPresent,
-                nint.Zero,
-                Path.GetDirectoryName(applicationPath),
-                ref startupInfo,
-                out var processInformation))
+            if (!CreateProcessW(applicationPath, commandLine, nint.Zero, nint.Zero,
+                inheritHandles: redirectOutput, CreateSuspended | ExtendedStartupInfoPresent,
+                nint.Zero, Path.GetDirectoryName(applicationPath), ref startupInfo, out var processInformation))
             {
                 throw new Win32Exception(Marshal.GetLastWin32Error());
             }
-
             processCreated = true;
-            standardInputRead?.Dispose();
-            standardInputRead = null;
-            standardInputWrite?.Dispose();
-            standardInputWrite = null;
-            standardOutputWrite?.Dispose();
-            standardOutputWrite = null;
-            standardErrorWrite?.Dispose();
-            standardErrorWrite = null;
-            createdProcessHandle = new SafeFileHandle(
-                processInformation.ProcessHandle,
-                ownsHandle: true);
-            createdThreadHandle = new SafeFileHandle(
-                processInformation.ThreadHandle,
-                ownsHandle: true);
+            processId = checked((int)processInformation.ProcessId);
+            // Acquire both handles before any fallible local release or managed wrapper.
+            createdProcessHandle = new SafeFileHandle(processInformation.ProcessHandle, ownsHandle: true);
+            createdThreadHandle = new SafeFileHandle(processInformation.ThreadHandle, ownsHandle: true);
+            ReleaseHandle(ref standardInputRead, "stdin read");
+            ReleaseHandle(ref standardInputWrite, "stdin write");
+            ReleaseHandle(ref standardOutputWrite, "stdout write");
+            ReleaseHandle(ref standardErrorWrite, "stderr write");
             if (!IsProcessInJob(createdProcessHandle, jobHandle, out var belongsToJob))
             {
                 throw new Win32Exception(Marshal.GetLastWin32Error());
             }
-
             if (!belongsToJob)
             {
                 throw new InvalidOperationException(
                     "The suspended Excel process was not atomically assigned to its kill-on-close Job Object.");
             }
-
-            process = Process.GetProcessById(checked((int)processInformation.ProcessId));
+            process = Process.GetProcessById(processId.Value);
+            managedProcessHandle = process.SafeHandle;
             var ownedProcess = new SystemDebugOwnedProcess(process);
             var primaryThread = new WindowsSuspendedPrimaryThread(createdThreadHandle);
             if (redirectOutput)
@@ -133,102 +110,149 @@ internal static class WindowsJobProcessLauncher
                 standardError = CreateReader(standardErrorRead!);
                 standardErrorRead = null;
             }
-            createdProcessHandle.Dispose();
-            createdProcessHandle = null;
-            var result = new DebugSuspendedProcessLaunch(
-                ownedProcess,
-                primaryThread,
-                standardOutput,
-                standardError);
-            // Transfer only after every pipe and the complete launch result exist.
-            // A pipe construction failure must still release the process/thread handles.
+            ReleaseStartupResources();
+            ReleaseHandle(ref createdProcessHandle, "creation process handle");
+            var localOutcome = completion.Complete();
+            if (localOutcome.HasCleanupFailure) { throw new DebugFailureException(localOutcome); }
+            var result = new DebugSuspendedProcessLaunch(ownedProcess, primaryThread, standardOutput, standardError)
+            {
+                LaunchCleanupOutcome = localOutcome
+            };
+            // Transfer only after local cleanup and the complete launch result exist.
             process = null;
             createdThreadHandle = null;
             standardOutput = null;
             standardError = null;
             return result;
         }
-        catch (Exception launchException)
+        catch (Exception primary)
         {
-            Exception? cleanupException = null;
+            var prior = completion.Complete();
+            completion = new DebugFailureCompletion(primary);
+            completion.Merge(prior);
+            var exited = !processCreated;
             if (processCreated)
             {
-                try
+                try { terminateJob(); }
+                catch (Exception failure)
                 {
-                    terminateJob();
-                }
-                catch (Exception ex)
-                {
-                    cleanupException = ex;
-                    if (createdProcessHandle is not null &&
-                        !createdProcessHandle.IsInvalid &&
-                        !TerminateProcess(createdProcessHandle, FailedLaunchExitCode))
+                    completion.AddFailure("launcher-job-termination", applicationPath,
+                        DebugResourceKind.Process, failure, processId);
+                    if (createdProcessHandle is not null && !createdProcessHandle.IsInvalid
+                        && !TerminateProcess(createdProcessHandle, FailedLaunchExitCode))
                     {
-                        cleanupException = new AggregateException(
-                            cleanupException,
-                            new Win32Exception(Marshal.GetLastWin32Error()));
+                        completion.AddFailure("launcher-process-termination", applicationPath,
+                            DebugResourceKind.Process, new Win32Exception(Marshal.GetLastWin32Error()), processId);
                     }
                 }
-
-                if (createdProcessHandle is not null && !createdProcessHandle.IsInvalid)
+                // The fixed failed-launch budget remains separate from visible Excel ownership.
+                var waitHandle = (SafeHandle?)createdProcessHandle ?? managedProcessHandle;
+                if (waitHandle is not null && !waitHandle.IsInvalid)
                 {
-                    var waitResult = WaitForSingleObject(
-                        createdProcessHandle,
-                        FailedLaunchWaitMilliseconds);
-                    if (waitResult != WaitObject0)
+                    var waitResult = WaitForSingleObject(waitHandle, FailedLaunchWaitMilliseconds);
+                    exited = waitResult == WaitObject0;
+                    if (!exited)
                     {
-                        Exception waitError = waitResult == WaitTimeout
-                            ? new TimeoutException(
-                                "Timed out while verifying cleanup of the suspended Excel process.")
+                        Exception failure = waitResult == WaitTimeout
+                            ? new TimeoutException("Timed out while verifying cleanup of the suspended Excel process.")
                             : new Win32Exception(Marshal.GetLastWin32Error());
-                        cleanupException = cleanupException is null
-                            ? waitError
-                            : new AggregateException(cleanupException, waitError);
+                        completion.AddFailure("launcher-process-cleanup", applicationPath,
+                            DebugResourceKind.Process, failure, processId);
                     }
                 }
             }
-
-            process?.Dispose();
-            standardOutput?.Dispose();
-            standardError?.Dispose();
-            createdThreadHandle?.Dispose();
-            createdProcessHandle?.Dispose();
-            if (cleanupException is not null)
+            completion.AddEvidence(new("launcher-process-cleanup", applicationPath, DebugResourceKind.Process,
+                exited, processCreated ? "The launcher retained the native terminal wait result."
+                    : "CreateProcess did not acquire a process.", processId));
+            if (process is not null)
             {
-                throw new DebugProcessOwnershipCleanupException(
-                    launchException,
-                    cleanupException);
+                if (managedProcessHandle is not null)
+                {
+                    ReleaseNativeHandle(managedProcessHandle, "managed process handle");
+                }
+                try { process.Dispose(); }
+                catch (Exception failure) { AddHandleFailure("managed process state", failure); }
             }
-
+            ReleaseReader(standardOutput, "stdout read");
+            ReleaseReader(standardError, "stderr read");
+            ReleaseHandle(ref createdThreadHandle, "primary thread handle");
+            ReleaseHandle(ref createdProcessHandle, "creation process handle");
+            ReleaseHandle(ref standardInputRead, "stdin read");
+            ReleaseHandle(ref standardInputWrite, "stdin write");
+            ReleaseHandle(ref standardOutputRead, "stdout read");
+            ReleaseHandle(ref standardOutputWrite, "stdout write");
+            ReleaseHandle(ref standardErrorRead, "stderr read");
+            ReleaseHandle(ref standardErrorWrite, "stderr write");
+            ReleaseStartupResources();
+            completion.Complete().ThrowWithEvidence();
             throw;
         }
-        finally
+
+        void AddHandleFailure(string resource, Exception failure)
+            => completion.AddFailure("launcher-local-handles", resource, DebugResourceKind.Handle, failure, processId);
+
+        void ReleaseNativeHandle(SafeHandle handle, string resource)
+        {
+            var release = new DebugNativeHandleRelease(handle);
+            try { release.Release(); }
+            catch (Exception failure) { AddHandleFailure(resource, failure); }
+            completion.AddEvidence(new("launcher-local-handles", resource, DebugResourceKind.Handle,
+                release.IsVerified, "The local owner retained the native CloseHandle result.", processId));
+        }
+
+        void ReleaseHandle(ref SafeFileHandle? handle, string resource)
+        {
+            if (handle is null) { return; }
+            var owned = handle;
+            handle = null;
+            if (owned.IsInvalid && !owned.IsClosed)
+            {
+                // A failed native acquisition returned no valid resource.
+                owned.Dispose();
+                completion.AddEvidence(new("launcher-local-handles", resource, DebugResourceKind.Handle,
+                    true, "The native acquisition returned an invalid handle without acquiring a resource.", processId));
+                return;
+            }
+            ReleaseNativeHandle(owned, resource);
+        }
+
+        void ReleaseReader(StreamReader? reader, string resource)
+        {
+            if (reader is null) { return; }
+            // These readers have not escaped launch and no asynchronous read has started.
+            if (reader.BaseStream is FileStream file) { ReleaseNativeHandle(file.SafeFileHandle, resource); }
+            try { reader.Dispose(); }
+            catch (Exception failure) { AddHandleFailure(resource, failure); }
+        }
+
+        void ReleaseStartupResources()
         {
             if (attributeListInitialized)
             {
-                DeleteProcThreadAttributeList(attributeList);
+                attributeListInitialized = false;
+                try { DeleteProcThreadAttributeList(attributeList); }
+                catch (Exception failure) { AddHandleFailure("startup attribute list", failure); }
             }
-
             if (attributeList != nint.Zero)
             {
-                Marshal.FreeHGlobal(attributeList);
+                var owned = attributeList;
+                attributeList = nint.Zero;
+                try { Marshal.FreeHGlobal(owned); }
+                catch (Exception failure) { AddHandleFailure("startup attribute memory", failure); }
             }
-
             if (jobHandleValue != nint.Zero)
             {
-                Marshal.FreeHGlobal(jobHandleValue);
+                var owned = jobHandleValue;
+                jobHandleValue = nint.Zero;
+                try { Marshal.FreeHGlobal(owned); }
+                catch (Exception failure) { AddHandleFailure("startup Job list memory", failure); }
             }
-
             if (jobHandleReferenceAdded)
             {
-                jobHandle.DangerousRelease();
+                jobHandleReferenceAdded = false;
+                try { jobHandle.DangerousRelease(); }
+                catch (Exception failure) { AddHandleFailure("startup Job handle reference", failure); }
             }
-            standardInputRead?.Dispose();
-            standardInputWrite?.Dispose();
-            standardOutputRead?.Dispose();
-            standardOutputWrite?.Dispose();
-            standardErrorRead?.Dispose();
-            standardErrorWrite?.Dispose();
         }
     }
 
@@ -316,36 +340,10 @@ internal static class WindowsJobProcessLauncher
             parentReads: false,
             out standardInputRead,
             out standardInputWrite);
-        try
-        {
-            CreatePipePair(
-                ref securityAttributes,
-                parentReads: true,
-                out standardOutputRead,
-                out standardOutputWrite);
-        }
-        catch
-        {
-            standardInputRead.Dispose();
-            standardInputWrite.Dispose();
-            throw;
-        }
-        try
-        {
-            CreatePipePair(
-                ref securityAttributes,
-                parentReads: true,
-                out standardErrorRead,
-                out standardErrorWrite);
-        }
-        catch
-        {
-            standardInputRead.Dispose();
-            standardInputWrite.Dispose();
-            standardOutputRead.Dispose();
-            standardOutputWrite.Dispose();
-            throw;
-        }
+        CreatePipePair(ref securityAttributes, parentReads: true,
+            out standardOutputRead, out standardOutputWrite);
+        CreatePipePair(ref securityAttributes, parentReads: true,
+            out standardErrorRead, out standardErrorWrite);
     }
 
     private static void CreatePipePair(
@@ -366,8 +364,6 @@ internal static class WindowsJobProcessLauncher
         if (!SetHandleInformation(parentHandle, HandleFlagInherit, flags: 0))
         {
             var error = new Win32Exception(Marshal.GetLastWin32Error());
-            readHandle.Dispose();
-            writeHandle.Dispose();
             throw error;
         }
     }
@@ -433,7 +429,10 @@ internal static class WindowsJobProcessLauncher
     private sealed class WindowsSuspendedPrimaryThread(
         SafeFileHandle handle) : IDebugSuspendedPrimaryThread
     {
+        private readonly DebugNativeHandleRelease handleRelease = new(handle);
         private int resumed;
+
+        public bool HandleReleaseVerified => handleRelease.IsVerified;
 
         public void ResumeExactlyOnce()
         {
@@ -457,7 +456,7 @@ internal static class WindowsJobProcessLauncher
             }
         }
 
-        public void Dispose() => handle.Dispose();
+        public void Dispose() => handleRelease.Release();
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -564,7 +563,7 @@ internal static class WindowsJobProcessLauncher
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern uint WaitForSingleObject(
-        SafeFileHandle handle,
+        SafeHandle handle,
         int milliseconds);
 
     [DllImport("kernel32.dll", SetLastError = true)]

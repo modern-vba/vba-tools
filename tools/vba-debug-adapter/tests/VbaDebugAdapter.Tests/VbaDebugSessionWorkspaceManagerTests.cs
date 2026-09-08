@@ -1111,8 +1111,9 @@ public sealed class VbaDebugSessionWorkspaceManagerTests
         private sealed class ControlledWorkspaceCleanupScope(
             ControlledWorkspaceCleanupOperations owner,
             string sessionWorkspacePath)
-            : IVbaDebugWorkspaceCleanupScope
+            : IVbaDebugWorkspaceCleanupScope, IDebugResourceOwnerEvidence
         {
+            public DebugFailureOutcome? CleanupOutcome { get; private set; }
             public Stream OpenLeaseStream()
                 => new FileStream(
                     Path.Combine(sessionWorkspacePath, "lease.json"),
@@ -1125,6 +1126,10 @@ public sealed class VbaDebugSessionWorkspaceManagerTests
 
             public void Dispose()
             {
+                var completion = new DebugFailureCompletion();
+                completion.AddEvidence(new("controlled-scope-release", sessionWorkspacePath,
+                    DebugResourceKind.Handle, true, "This deterministic scope acquired no native handles."));
+                CleanupOutcome = completion.Complete();
             }
         }
     }

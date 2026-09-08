@@ -15,14 +15,20 @@ internal sealed class WindowsDebugProcessJob : IDebugProcessJob
     private const uint DebugTerminationExitCode = 1;
 
     private readonly SafeFileHandle handle;
+    private readonly DebugNativeHandleRelease handleRelease;
     private int disposed;
 
     private WindowsDebugProcessJob(SafeFileHandle handle)
     {
         this.handle = handle;
+        handleRelease = new(handle);
     }
 
-    public static WindowsDebugProcessJob Create()
+    public bool HandleReleaseVerified => handleRelease.IsVerified;
+
+    public static WindowsDebugProcessJob Create() => Create(ConfigureKillOnClose);
+
+    internal static WindowsDebugProcessJob Create(Action<SafeFileHandle> configure)
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -40,28 +46,41 @@ internal sealed class WindowsDebugProcessJob : IDebugProcessJob
 
         try
         {
-            var limits = new JobObjectExtendedLimitInformation
-            {
-                BasicLimitInformation = new JobObjectBasicLimitInformation
-                {
-                    LimitFlags = JobObjectLimitKillOnJobClose
-                }
-            };
-            if (!SetInformationJobObject(
-                jobHandle,
-                JobObjectExtendedLimitInformationClass,
-                ref limits,
-                (uint)Marshal.SizeOf<JobObjectExtendedLimitInformation>()))
-            {
-                throw new Win32Exception(Marshal.GetLastWin32Error());
-            }
-
+            configure(jobHandle);
             return new WindowsDebugProcessJob(jobHandle);
         }
-        catch
+        catch (Exception configurationFailure)
         {
-            jobHandle.Dispose();
-            throw;
+            var completion = new DebugFailureCompletion(configurationFailure);
+            var release = new DebugNativeHandleRelease(jobHandle);
+            try { release.Release(); }
+            catch (Exception exception)
+            {
+                completion.AddFailure("job-creation-release", "Excel Job handle", DebugResourceKind.Handle, exception);
+            }
+            completion.AddEvidence(new("job-creation-release", "Excel Job handle", DebugResourceKind.Handle,
+                release.IsVerified, "The failed Job configuration owner reports the native handle close result."));
+            completion.Complete().ThrowWithEvidence();
+            throw new InvalidOperationException("Failed Job configuration must retain its failure outcome.");
+        }
+    }
+
+    private static void ConfigureKillOnClose(SafeFileHandle jobHandle)
+    {
+        var limits = new JobObjectExtendedLimitInformation
+        {
+            BasicLimitInformation = new JobObjectBasicLimitInformation
+            {
+                LimitFlags = JobObjectLimitKillOnJobClose
+            }
+        };
+        if (!SetInformationJobObject(
+            jobHandle,
+            JobObjectExtendedLimitInformationClass,
+            ref limits,
+            (uint)Marshal.SizeOf<JobObjectExtendedLimitInformation>()))
+        {
+            throw new Win32Exception(Marshal.GetLastWin32Error());
         }
     }
 
@@ -107,10 +126,8 @@ internal sealed class WindowsDebugProcessJob : IDebugProcessJob
 
     public void Dispose()
     {
-        if (Interlocked.Exchange(ref disposed, 1) == 0)
-        {
-            handle.Dispose();
-        }
+        Volatile.Write(ref disposed, 1);
+        handleRelease.Release();
     }
 
     [StructLayout(LayoutKind.Sequential)]

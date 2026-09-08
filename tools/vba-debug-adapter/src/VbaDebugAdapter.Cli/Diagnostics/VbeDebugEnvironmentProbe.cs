@@ -166,10 +166,10 @@ internal sealed class VbeDebugEnvironmentProbe(
                     "Close any Excel process created by the failed Doctor startup before running scoped cleanup."
             };
         }
-        if (debugSession.Completion.IsCompletedSuccessfully)
+        if (debugSession.Completion.IsCompleted)
         {
             var completedSession = debugSession;
-            await completedSession.DisposeAsync().ConfigureAwait(false);
+            await CompleteSessionReleaseAsync(completedSession, terminate: false).ConfigureAwait(false);
             debugSession = null;
             ownedProcessCleanupVerified = true;
             return DebugEnvironmentProbeCheckResult.Pass(
@@ -184,7 +184,7 @@ internal sealed class VbeDebugEnvironmentProbe(
         var session = debugSession;
         await doctorControl.CloseOwnedProcessCooperativelyAsync(
             cancellationToken).ConfigureAwait(false);
-        await session.DisposeAsync().ConfigureAwait(false);
+        await CompleteSessionReleaseAsync(session, terminate: false).ConfigureAwait(false);
         debugSession = null;
         ownedProcessCleanupVerified = true;
         return DebugEnvironmentProbeCheckResult.Pass(
@@ -530,9 +530,8 @@ internal sealed class VbeDebugEnvironmentProbe(
             var session = debugSession;
             try
             {
-                await session.TerminateAsync().ConfigureAwait(false);
+                await CompleteSessionReleaseAsync(session, terminate: true).ConfigureAwait(false);
                 cancellationToken.ThrowIfCancellationRequested();
-                await session.DisposeAsync().ConfigureAwait(false);
                 debugSession = null;
                 ownedProcessCleanupVerified = true;
             }
@@ -584,5 +583,40 @@ internal sealed class VbeDebugEnvironmentProbe(
         await lease.DisposeAsync().ConfigureAwait(false);
         return DebugEnvironmentProbeCheckResult.Pass(
             "The Doctor session workspace and lease were deleted.");
+    }
+
+    private static async Task CompleteSessionReleaseAsync(IVbeDebugSession session, bool terminate)
+    {
+        var failures = new List<(string Stage, DebugResourceKind Kind, Exception Failure)>();
+        if (terminate)
+        {
+            try { await session.TerminateAsync().ConfigureAwait(false); }
+            catch (Exception failure) { failures.Add(("Doctor process termination", DebugResourceKind.Process, failure)); }
+        }
+        try { await session.DisposeAsync().ConfigureAwait(false); }
+        catch (Exception failure) { failures.Add(("Doctor session disposal", DebugResourceKind.Handle, failure)); }
+
+        DebugFailureOutcome? ownerOutcome = null;
+        try { ownerOutcome = (session as IDebugResourceOwnerEvidence)?.CleanupOutcome; }
+        catch (Exception failure) { failures.Add(("Doctor release evidence", DebugResourceKind.Handle, failure)); }
+        var completion = ownerOutcome is null
+            ? new DebugFailureCompletion(failures.FirstOrDefault().Failure)
+            : new DebugFailureCompletion(new DebugFailureException(ownerOutcome));
+        foreach (var (stage, kind, failure) in failures)
+        {
+            completion.AddFailure(stage, "Doctor Excel session", kind, failure, session.ProcessId);
+        }
+        foreach (var kind in new[] { DebugResourceKind.Process, DebugResourceKind.Com, DebugResourceKind.Handle })
+        {
+            if (ownerOutcome is null || !ownerOutcome.Evidence.Any(item => item.Kind == kind))
+            {
+                completion.AddEvidence(new("Doctor release evidence", $"owned {kind}", kind, false,
+                    "The session owner did not supply resource release evidence.", session.ProcessId));
+            }
+        }
+        var outcome = completion.Complete();
+        if (outcome.HasCleanupFailure) { outcome.Throw(); }
+        // A retained setup cause remains available on the session. It does not
+        // turn the owner's positively verified release into a cleanup failure.
     }
 }

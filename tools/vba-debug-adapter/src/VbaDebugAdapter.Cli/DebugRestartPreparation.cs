@@ -195,6 +195,19 @@ internal sealed class DebugRestartSwapAuthority : IDisposable
     public void InvalidateForCancellation() =>
         Invalidate(RestartSwapState.Cancelled);
 
+    public void InvalidateForCleanupFailure() =>
+        Invalidate(RestartSwapState.CleanupFailed);
+
+    public bool CanRetainCurrentSession(CancellationToken cancellationToken)
+    {
+        lock (gate)
+        {
+            return state == RestartSwapState.Pending
+                && !cancellationToken.IsCancellationRequested
+                && Binding.IsBoundSessionCurrent;
+        }
+    }
+
     public DebugRestartLaunchBinding ClaimForSwap(
         DebugRestartLaunchBinding? preparedBinding,
         CancellationToken cancellationToken)
@@ -216,6 +229,10 @@ internal sealed class DebugRestartSwapAuthority : IDisposable
             {
                 throw new DebugSetupException(
                     "The prepared VBA restart launch binding is stale.");
+            }
+            if (state == RestartSwapState.CleanupFailed)
+            {
+                throw new DebugSetupException("The VBA restart replacement was revoked because cleanup was not proved.");
             }
             if (cancellationToken.IsCancellationRequested)
             {
@@ -275,6 +292,7 @@ internal sealed class DebugRestartSwapAuthority : IDisposable
         Claimed,
         SessionEnded,
         Cancelled,
+        CleanupFailed,
         Disposed
     }
 }

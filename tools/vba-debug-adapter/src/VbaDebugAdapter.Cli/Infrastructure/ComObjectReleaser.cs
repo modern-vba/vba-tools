@@ -11,17 +11,52 @@ internal static class ComObjectReleaser
     /// Final-releases a COM object when running on Windows.
     /// </summary>
     /// <param name="value">The possible COM object to release.</param>
-    public static void Release(object? value)
+    public static bool Release(object? value)
     {
-        if (!OperatingSystem.IsWindows())
+        // Non-COM test and managed values do not acquire a runtime callable wrapper.
+        return value is null || !OperatingSystem.IsWindows() || !Marshal.IsComObject(value)
+            || Marshal.FinalReleaseComObject(value) == 0;
+    }
+
+    public static DebugFailureOutcome ReleaseScope(
+        Exception? primaryFailure,
+        int? processId,
+        string? retainedPath,
+        Func<object?, bool> release,
+        params (string Resource, object? Value)[] resources)
+    {
+        var completion = new DebugFailureCompletion(primaryFailure);
+        var observed = new HashSet<object>(ReferenceEqualityComparer.Instance);
+        foreach (var (resource, value) in resources)
         {
-            return;
+            if (value is null || !observed.Add(value))
+            {
+                continue;
+            }
+
+            var released = false;
+            try
+            {
+                released = release(value);
+            }
+            catch (Exception failure)
+            {
+                completion.AddFailure("local COM release", resource, DebugResourceKind.Com,
+                    failure, processId, retainedPath);
+            }
+
+            completion.AddEvidence(new("local COM release", resource, DebugResourceKind.Com,
+                released, released ? "The local COM reference was released."
+                    : "The local COM release was not proved.", processId, retainedPath));
         }
 
-        if (value is not null && Marshal.IsComObject(value))
+        var outcome = completion.Complete();
+        if (outcome.HasCleanupFailure)
         {
-            Marshal.FinalReleaseComObject(value);
+            outcome.Throw();
         }
+
+        return outcome;
     }
 
     /// <summary>

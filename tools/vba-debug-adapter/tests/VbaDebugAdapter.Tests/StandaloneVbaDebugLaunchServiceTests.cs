@@ -10,6 +10,149 @@ namespace VbaDebugAdapter.Tests;
 public sealed class StandaloneVbaDebugLaunchServiceTests
 {
     [Fact]
+    public async Task GenerationAdoptionFailureRetainsItsCauseAndUntransferredWorkspaceCleanupFailure()
+    {
+        using var temp = TempDirectory.Create();
+        var original = new InvalidOperationException("The visible session rejected generation adoption.");
+        var deletion = new IOException("The untransferred generation could not be deleted.");
+        var manager = new VbaDebugSessionWorkspaceManager(
+            Path.Combine(temp.Path, "workspace"), cleanupOperations: null,
+            beforeDeleteOwnedTree: path =>
+            {
+                if (Path.GetFileName(Path.GetDirectoryName(path)) == "generations") { throw deletion; }
+            });
+        await using var lease = await manager.ClaimAsync(
+            DebugSessionId.Parse("0123456789abcdef0123456789abcdef"), CancellationToken.None);
+        var generation = lease.CreateGenerationWorkspace(DebugGenerationId.Initial, "Book1.xlsm");
+        var events = new List<string>();
+        var visible = new RecordingVbeDebugSession(events, adoptException: original);
+        var service = new StandaloneVbaDebugLaunchService(new DebugSourceAdmission(932),
+            new RecordingWorkbookBuilder(events, new VbaDevSnapshotBuildResult(generation)),
+            new RecordingVbeDebugSessionFactory(events, visible));
+        var plan = await service.PrepareAsync(Path.GetFullPath("vba-dev.exe"), lease,
+            CreateLaunchRequest(), restartBinding: null, CancellationToken.None);
+
+        var failure = await Record.ExceptionAsync(() => plan.CommitAsync(null, CancellationToken.None));
+        var outcome = Assert.IsAssignableFrom<IDebugFailureEvidence>(failure).FailureOutcome;
+
+        Assert.Same(original, outcome.PrimaryFailure);
+        Assert.Contains(nameof(RecordingVbeDebugSession.AdoptGenerationWorkspace), original.StackTrace);
+        Assert.Contains(outcome.CleanupFailures, item => ReferenceEquals(item.Exception, deletion));
+        Assert.Contains(outcome.Evidence, item => item.RetainedPath == generation.GenerationWorkspacePath);
+        Assert.Same(failure, await Record.ExceptionAsync(() => plan.DisposeAsync().AsTask()));
+        Assert.Null(visible.AdoptedGenerationWorkspace);
+        Assert.Null(visible.OpenedWorkbookPath);
+        Assert.Equal(1, events.Count(item => item == "terminate"));
+        Assert.Equal(1, events.Count(item => item == "dispose"));
+    }
+
+    [Fact]
+    public async Task RestartCommitRetainsItsBoundSessionTerminationAndDisposalFailures()
+    {
+        await using var fixture = await LeaseIssuedGenerationFixture.CreateAsync(DebugGenerationId.FromValue(1));
+        var events = new List<string>();
+        var termination = new IOException("The bound process could not be terminated.");
+        var disposal = new IOException("The bound session handle could not be released.");
+        var oldSession = new RecordingRunningSession(events, "old", termination, disposal);
+        var id = DebugRestartPreparationId.Parse("fedcba9876543210fedcba9876543210");
+        var generation = DebugRestartGeneration.FromValue(1);
+        var binding = CreateRestartBinding(oldSession, id, generation);
+        var service = new StandaloneVbaDebugLaunchService(new DebugSourceAdmission(932),
+            new RecordingWorkbookBuilder(events, new VbaDevSnapshotBuildResult(fixture.GenerationWorkspace)),
+            new RecordingVbeDebugSessionFactory(events, new RecordingVbeDebugSession(events)));
+        var plan = await service.PrepareAsync(Path.GetFullPath("vba-dev.exe"), fixture.WorkspaceLease,
+            CreateLaunchRequest() with { RestartPreparation = new(id, generation) }, binding, CancellationToken.None);
+
+        var failure = await Record.ExceptionAsync(() => plan.CommitAsync(binding, CancellationToken.None));
+        var repeated = await Record.ExceptionAsync(() => plan.DisposeAsync().AsTask());
+
+        var outcome = Assert.IsAssignableFrom<IDebugFailureEvidence>(failure).FailureOutcome;
+        Assert.Same(termination, outcome.PrimaryFailure);
+        Assert.Contains(outcome.CleanupFailures, item => ReferenceEquals(item.Exception, disposal));
+        Assert.Same(failure, repeated);
+        Assert.Equal(1, oldSession.TerminateCalls);
+        Assert.Equal(1, oldSession.DisposeCalls);
+        Assert.DoesNotContain("start-visible", events);
+        Assert.False(Directory.Exists(fixture.GenerationWorkspace.GenerationWorkspacePath));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PreparationFailureDistinguishesNoAcquisitionFromMissingBuildOwnerEvidence(bool entersBuild)
+    {
+        await using var fixture = await LeaseIssuedGenerationFixture.CreateAsync();
+        var events = new List<string>();
+        var service = new StandaloneVbaDebugLaunchService(new DebugSourceAdmission(932),
+            new ThrowingWorkbookBuilder(events, provesRelease: false),
+            new RecordingVbeDebugSessionFactory(events, new RecordingVbeDebugSession(events)));
+        var request = CreateLaunchRequest();
+        if (!entersBuild) { request = request with { ProcedureName = "AbsentProcedure" }; }
+
+        var failure = await Record.ExceptionAsync(() => service.PrepareAsync(Path.GetFullPath("vba-dev.exe"),
+            fixture.WorkspaceLease, request, restartBinding: null, CancellationToken.None));
+
+        var outcome = Assert.IsAssignableFrom<IDebugFailureEvidence>(failure).FailureOutcome;
+        Assert.NotNull(outcome.PrimaryFailure);
+        Assert.Equal(entersBuild, outcome.HasUnprovedRelease);
+        Assert.Contains(outcome.Evidence, item => item.Kind == DebugResourceKind.Process
+            && item.Released == !entersBuild);
+        Assert.DoesNotContain("start-visible", events);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task CancelledCommitRequiresVisibleSessionOwnerReleaseEvidence(bool provesRelease)
+    {
+        await using var fixture = await LeaseIssuedGenerationFixture.CreateAsync();
+        var events = new List<string>();
+        var cancellation = new OperationCanceledException("Workbook setup was cancelled.");
+        var visible = new RecordingVbeDebugSession(events, cancellation, provesRelease: provesRelease);
+        var service = new StandaloneVbaDebugLaunchService(new DebugSourceAdmission(932),
+            new RecordingWorkbookBuilder(events, new VbaDevSnapshotBuildResult(fixture.GenerationWorkspace)),
+            new RecordingVbeDebugSessionFactory(events, visible));
+        var plan = await service.PrepareAsync(Path.GetFullPath("vba-dev.exe"), fixture.WorkspaceLease,
+            CreateLaunchRequest(), restartBinding: null, CancellationToken.None);
+
+        var failure = await Record.ExceptionAsync(() => plan.CommitAsync(null, CancellationToken.None));
+
+        if (provesRelease)
+        {
+            Assert.Same(cancellation, failure);
+            await plan.DisposeAsync();
+        }
+        else
+        {
+            var outcome = Assert.IsAssignableFrom<IDebugFailureEvidence>(failure).FailureOutcome;
+            Assert.Same(cancellation, outcome.PrimaryFailure);
+            Assert.True(outcome.HasUnprovedRelease);
+            Assert.False(outcome.OnlyFileDeletionFailed);
+            Assert.Same(failure, await Record.ExceptionAsync(() => plan.DisposeAsync().AsTask()));
+        }
+        Assert.Contains(nameof(RecordingVbeDebugSession.OpenGeneratedWorkbookAsync), cancellation.StackTrace);
+        Assert.Equal(1, events.Count(item => item == "terminate"));
+        Assert.Equal(1, events.Count(item => item == "dispose"));
+    }
+
+    [Fact]
+    public async Task RunningSessionRetainsItsOwnersFailedDisposalForEveryCaller()
+    {
+        var events = new List<string>();
+        var cleanupFailure = new IOException("The running session owner could not release a handle.");
+        var session = new RecordingVbeDebugSession(events, disposeException: cleanupFailure);
+        var running = new StandaloneVbaDebugRunningSession(session, [], "Module1", "Run");
+
+        var first = await Record.ExceptionAsync(() => running.DisposeAsync().AsTask());
+        var repeated = await Task.WhenAll(Enumerable.Range(0, 3).Select(_ => Task.Run(
+            () => Record.ExceptionAsync(() => running.DisposeAsync().AsTask()))));
+
+        Assert.Same(cleanupFailure, first);
+        Assert.All(repeated, exception => Assert.Same(first, exception));
+        Assert.Equal(["dispose"], events);
+    }
+
+    [Fact]
     public void LaunchServiceExposesPreparationWithoutRawLaunchBypasses()
     {
         var methodNames = typeof(IStandaloneVbaDebugLaunchService)
@@ -381,7 +524,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
                 generation);
         }
 
-        await Assert.ThrowsAsync<DebugSetupException>(() => service.PrepareAsync(
+        await DebugFailureAssertions.ThrowsWithProvedCleanupAsync<DebugSetupException>(() => service.PrepareAsync(
             Path.GetFullPath("vba-dev.exe"),
             fixture.WorkspaceLease,
             request,
@@ -416,7 +559,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
                 events,
                 new RecordingVbeDebugSession(events)));
 
-        var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
+        var error = await DebugFailureAssertions.ThrowsWithProvedCleanupAsync<DebugSetupException>(() =>
             service.PrepareAsync(
                 Path.GetFullPath("vba-dev.exe"),
                 fixture.WorkspaceLease,
@@ -558,6 +701,11 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         var runningSession = await plan.CommitAsync(
             restartBinding: null,
             CancellationToken.None);
+        await plan.DisposeAsync();
+        var cleanup = Assert.IsAssignableFrom<IDebugResourceOwnerEvidence>(plan).CleanupOutcome;
+        Assert.NotNull(cleanup);
+        Assert.False(cleanup.HasCleanupFailure);
+        Assert.True(Directory.Exists(fixture.GenerationWorkspace.GenerationWorkspacePath));
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             plan.CommitAsync(restartBinding: null, CancellationToken.None));
 
@@ -600,6 +748,36 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
     }
 
     [Fact]
+    public async Task DisposalDuringCommitWaitsForTheRetainedCleanupOutcome()
+    {
+        await using var fixture = await LeaseIssuedGenerationFixture.CreateAsync();
+        var events = new List<string>();
+        var visibleSession = new RecordingVbeDebugSession(events,
+            new IOException("Workbook setup failed after concurrent disposal."),
+            new IOException("Process release remains unproved."));
+        var factory = new GatedVbeDebugSessionFactory(events, visibleSession);
+        var service = new StandaloneVbaDebugLaunchService(new DebugSourceAdmission(932),
+            new RecordingWorkbookBuilder(events, new VbaDevSnapshotBuildResult(fixture.GenerationWorkspace)),
+            factory);
+        var plan = await service.PrepareAsync(Path.GetFullPath("vba-dev.exe"), fixture.WorkspaceLease,
+            CreateLaunchRequest(), restartBinding: null, CancellationToken.None);
+
+        var commit = plan.CommitAsync(null, CancellationToken.None);
+        await factory.Started.WaitAsync(TimeSpan.FromSeconds(2));
+        var disposal = plan.DisposeAsync().AsTask();
+        var waitedForCommit = !disposal.IsCompleted;
+        factory.Release();
+        var failure = await Record.ExceptionAsync(() => commit);
+        var disposalFailure = await Record.ExceptionAsync(() => disposal);
+
+        Assert.True(waitedForCommit);
+        Assert.NotNull(failure);
+        Assert.Same(failure, disposalFailure);
+        Assert.Equal(1, events.Count(item => item == "terminate"));
+        Assert.Equal(1, events.Count(item => item == "dispose"));
+    }
+
+    [Fact]
     public async Task BuildFailureProducesNoPlanAndStartsNoVisibleExcel()
     {
         await using var fixture = await LeaseIssuedGenerationFixture.CreateAsync();
@@ -611,7 +789,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
                 events,
                 new RecordingVbeDebugSession(events)));
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        var error = await DebugFailureAssertions.ThrowsWithProvedCleanupAsync<InvalidOperationException>(() =>
             service.PrepareAsync(
                 Path.GetFullPath("vba-dev.exe"),
                 fixture.WorkspaceLease,
@@ -621,6 +799,82 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
 
         Assert.Equal("Synthetic debug build failure.", error.Message);
         Assert.Equal(["build-failed"], events);
+    }
+
+    [Fact]
+    public async Task PreparationFailureRetainsItsCauseAndBuildResultCleanupFailure()
+    {
+        using var temp = TempDirectory.Create();
+        var cleanupFailure = new IOException("The prepared generation remains retained.");
+        var manager = new VbaDebugSessionWorkspaceManager(
+            Path.Combine(temp.Path, "workspace"), cleanupOperations: null,
+            beforeDeleteOwnedTree: path =>
+            {
+                if (Path.GetFileName(Path.GetDirectoryName(path)) == "generations")
+                {
+                    throw cleanupFailure;
+                }
+            });
+        await using var lease = await manager.ClaimAsync(
+            DebugSessionId.Parse("0123456789abcdef0123456789abcdef"), CancellationToken.None);
+        var generation = lease.CreateGenerationWorkspace(DebugGenerationId.Initial, "Book1.xlsm");
+        var events = new List<string>();
+        var originalFailure = new IOException("Build output could not be reported.");
+        var service = new StandaloneVbaDebugLaunchService(
+            new DebugSourceAdmission(932),
+            new RecordingWorkbookBuilder(events,
+                new VbaDevSnapshotBuildResult(generation) { Output = ["Build completed."] }),
+            new RecordingVbeDebugSessionFactory(events, new RecordingVbeDebugSession(events)));
+
+        var failure = await Record.ExceptionAsync(() => service.PrepareAsync(
+            Path.GetFullPath("vba-dev.exe"), lease, CreateLaunchRequest(), restartBinding: null,
+            CancellationToken.None, new RecordingDebugLifecycleSink(originalFailure)));
+
+        var outcome = Assert.IsAssignableFrom<IDebugFailureEvidence>(failure).FailureOutcome;
+        Assert.Same(originalFailure, outcome.PrimaryFailure);
+        Assert.Contains(nameof(RecordingDebugLifecycleSink.WriteAsync), originalFailure.StackTrace);
+        Assert.Contains(outcome.CleanupFailures, item => ReferenceEquals(item.Exception, cleanupFailure));
+        Assert.True(outcome.OnlyFileDeletionFailed);
+        Assert.Equal(["build:Book1.xlsm"], events);
+    }
+
+    [Fact]
+    public async Task FailedPreparedPlanDisposalRetainsOneOutcomeAndCannotCommit()
+    {
+        using var temp = TempDirectory.Create();
+        var deletionAttempts = 0;
+        var manager = new VbaDebugSessionWorkspaceManager(
+            Path.Combine(temp.Path, "workspace"), cleanupOperations: null,
+            beforeDeleteOwnedTree: path =>
+            {
+                if (Path.GetFileName(Path.GetDirectoryName(path)) == "generations")
+                {
+                    Interlocked.Increment(ref deletionAttempts);
+                    throw new IOException("The unused prepared generation remains retained.");
+                }
+            });
+        await using var lease = await manager.ClaimAsync(
+            DebugSessionId.Parse("0123456789abcdef0123456789abcdef"), CancellationToken.None);
+        var generation = lease.CreateGenerationWorkspace(DebugGenerationId.Initial, "Book1.xlsm");
+        var events = new List<string>();
+        var service = new StandaloneVbaDebugLaunchService(
+            new DebugSourceAdmission(932),
+            new RecordingWorkbookBuilder(events, new VbaDevSnapshotBuildResult(generation)),
+            new RecordingVbeDebugSessionFactory(events, new RecordingVbeDebugSession(events)));
+        var plan = await service.PrepareAsync(Path.GetFullPath("vba-dev.exe"), lease,
+            CreateLaunchRequest(), restartBinding: null, CancellationToken.None);
+
+        var first = await Record.ExceptionAsync(() => plan.DisposeAsync().AsTask());
+        var repeated = await Task.WhenAll(Enumerable.Range(0, 3).Select(_ => Task.Run(
+            () => Record.ExceptionAsync(() => plan.DisposeAsync().AsTask()))));
+
+        Assert.NotNull(first);
+        Assert.Same(Assert.IsAssignableFrom<IDebugFailureEvidence>(first).FailureOutcome,
+            Assert.IsAssignableFrom<IDebugResourceOwnerEvidence>(plan).CleanupOutcome);
+        Assert.All(repeated, exception => Assert.Same(first, exception));
+        Assert.Equal(1, deletionAttempts);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => plan.CommitAsync(null, CancellationToken.None));
+        Assert.Equal(["build:Book1.xlsm"], events);
     }
 
     [Fact]
@@ -667,7 +921,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
                 events,
                 new RecordingVbeDebugSession(events)));
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        var error = await DebugFailureAssertions.ThrowsWithProvedCleanupAsync<InvalidOperationException>(() =>
             service.PrepareAsync(
                 vbaDevPath,
                 workspaceLease,
@@ -721,6 +975,48 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             Assert.Contains("terminate", events);
             Assert.Contains("dispose", events);
         }
+    }
+
+    [Fact]
+    public async Task CommitFailureRetainsItsCauseAndEverySessionCleanupFailure()
+    {
+        await using var fixture = await LeaseIssuedGenerationFixture.CreateAsync();
+        var events = new List<string>();
+        var originalFailure = new InvalidOperationException("Original workbook-open failure.");
+        var visibleSession = new RecordingVbeDebugSession(
+            events,
+            originalFailure,
+            new IOException("Owned process termination failed."),
+            new IOException("Owned session handle release failed."));
+        var service = new StandaloneVbaDebugLaunchService(
+            new DebugSourceAdmission(932),
+            new RecordingWorkbookBuilder(
+                events,
+                new VbaDevSnapshotBuildResult(fixture.GenerationWorkspace)),
+            new RecordingVbeDebugSessionFactory(events, visibleSession));
+        var plan = await service.PrepareAsync(
+            Path.GetFullPath("vba-dev.exe"),
+            fixture.WorkspaceLease,
+            CreateLaunchRequest(),
+            restartBinding: null,
+            CancellationToken.None);
+
+        var failure = await Record.ExceptionAsync(() =>
+            plan.CommitAsync(restartBinding: null, CancellationToken.None));
+
+        Assert.NotNull(failure);
+        Assert.Contains(originalFailure.Message, failure.ToString(), StringComparison.Ordinal);
+        Assert.Contains("Owned process termination failed.", failure.ToString(), StringComparison.Ordinal);
+        Assert.Contains("Owned session handle release failed.", failure.ToString(), StringComparison.Ordinal);
+        Assert.Contains(nameof(RecordingVbeDebugSession.OpenGeneratedWorkbookAsync), originalFailure.StackTrace);
+        Assert.Equal(1, events.Count(item => item == "terminate"));
+        Assert.Equal(1, events.Count(item => item == "dispose"));
+        Assert.False(Directory.Exists(fixture.GenerationWorkspace.GenerationWorkspacePath));
+        var repeated = await Task.WhenAll(Enumerable.Range(0, 3).Select(_ => Task.Run(
+            () => Record.ExceptionAsync(() => plan.DisposeAsync().AsTask()))));
+        Assert.All(repeated, exception => Assert.Same(failure, exception));
+        Assert.Equal(1, events.Count(item => item == "terminate"));
+        Assert.Equal(1, events.Count(item => item == "dispose"));
     }
 
     [Fact]
@@ -889,10 +1185,16 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
 
             await runningSession.DisposeAsync();
 
+            Assert.NotNull(visibleSession.CleanupOutcome);
+            Assert.Same(visibleSession.CleanupOutcome,
+                Assert.IsAssignableFrom<IDebugResourceOwnerEvidence>(runningSession).CleanupOutcome);
             Assert.False(Directory.Exists(generationWorkspacePath));
 
             await runningSession.DisposeAsync();
 
+            Assert.NotNull(visibleSession.CleanupOutcome);
+            Assert.Same(visibleSession.CleanupOutcome,
+                Assert.IsAssignableFrom<IDebugResourceOwnerEvidence>(runningSession).CleanupOutcome);
             Assert.False(Directory.Exists(generationWorkspacePath));
 
             await buildResult.DisposeAsync();
@@ -992,7 +1294,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
                         "Public Sub Run()\r\nEnd Sub\r\n")))
             ]);
 
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        var exception = await DebugFailureAssertions.ThrowsWithProvedCleanupAsync<InvalidOperationException>(() =>
             PrepareAndCommitAsync(
                 service,
                 Path.GetFullPath("vba-dev.exe"),
@@ -1151,7 +1453,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
 
         try
         {
-            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            var exception = await DebugFailureAssertions.ThrowsWithProvedCleanupAsync<InvalidOperationException>(() =>
                 PrepareAndCommitAsync(
                     service,
                     Path.GetFullPath("vba-dev.exe"),
@@ -1427,7 +1729,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         }
     }
 
-    private sealed class ThrowingWorkbookBuilder(List<string> events)
+    private sealed class ThrowingWorkbookBuilder(List<string> events, bool provesRelease = true)
         : IVbaDebugWorkbookBuilder
     {
         public Task<VbaDevSnapshotBuildResult> BuildAsync(
@@ -1437,8 +1739,9 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             CancellationToken cancellationToken)
         {
             events.Add("build-failed");
-            return Task.FromException<VbaDevSnapshotBuildResult>(
-                new InvalidOperationException("Synthetic debug build failure."));
+            var failure = new InvalidOperationException("Synthetic debug build failure.");
+            return Task.FromException<VbaDevSnapshotBuildResult>(provesRelease
+                ? new DebugFailureException(ProvedControlledBuildCompletion(failure)) : failure);
         }
     }
 
@@ -1454,8 +1757,22 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             return Task.FromResult(new VbaDevBuildProcessResult(
                 ExitCode: 23,
                 StandardOutput: "Preparing restart generation.",
-                StandardError: "Synthetic debug build failure."));
+                StandardError: "Synthetic debug build failure.")
+            {
+                CleanupOutcome = ProvedControlledBuildCompletion()
+            });
         }
+    }
+
+    private static DebugFailureOutcome ProvedControlledBuildCompletion(Exception? primary = null)
+    {
+        var completion = new DebugFailureCompletion(primary);
+        foreach (var kind in new[] { DebugResourceKind.Process, DebugResourceKind.Handle })
+        {
+            completion.AddEvidence(new("controlled-build-cleanup", "snapshot build", kind, true,
+                "The controlled builder acquired no native process or handles."));
+        }
+        return completion.Complete();
     }
 
     private sealed class LeaseIssuedGenerationFixture : IAsyncDisposable
@@ -1602,7 +1919,9 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
 
     private sealed class RecordingRunningSession(
         List<string> events,
-        string label) : IStandaloneVbaDebugRunningSession
+        string label,
+        Exception? terminateException = null,
+        Exception? disposeException = null) : IStandaloneVbaDebugRunningSession, IDebugResourceOwnerEvidence
     {
         private readonly TaskCompletionSource<int> completion = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1621,10 +1940,13 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
 
         public int DisposeCalls { get; private set; }
 
+        public DebugFailureOutcome? CleanupOutcome { get; private set; }
+
         public ValueTask TerminateAsync()
         {
             TerminateCalls++;
             events.Add($"{label}:terminate");
+            if (terminateException is not null) { throw terminateException; }
             return ValueTask.CompletedTask;
         }
 
@@ -1632,13 +1954,15 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         {
             DisposeCalls++;
             events.Add($"{label}:dispose");
+            if (disposeException is not null) { throw disposeException; }
+            CleanupOutcome = ProvedControlledSessionCompletion();
             return ValueTask.CompletedTask;
         }
     }
 
     private sealed class GatedRunningSession(
         List<string> events,
-        string label) : IStandaloneVbaDebugRunningSession
+        string label) : IStandaloneVbaDebugRunningSession, IDebugResourceOwnerEvidence
     {
         private readonly TaskCompletionSource<int> completion = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1652,6 +1976,8 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             TaskCreationOptions.RunContinuationsAsynchronously);
 
         public Task<int> Completion => completion.Task;
+
+        public DebugFailureOutcome? CleanupOutcome { get; private set; }
 
         public Task TerminateStarted => terminateStarted.Task;
 
@@ -1683,14 +2009,32 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             disposeStarted.TrySetResult();
             await releaseDispose.Task;
             events.Add($"{label}:dispose-complete");
+            CleanupOutcome = ProvedControlledSessionCompletion();
         }
+    }
+
+    private static DebugFailureOutcome ProvedControlledSessionCompletion()
+    {
+        var completion = new DebugFailureCompletion();
+        foreach (var kind in new[] { DebugResourceKind.Process, DebugResourceKind.Com, DebugResourceKind.Handle })
+        {
+            completion.AddEvidence(new("controlled-session-cleanup", "bound Excel session", kind, true,
+                "The controlled session acquired no native process, COM objects, or handles.", 4321));
+        }
+        return completion.Complete();
     }
 
     private sealed class RecordingVbeDebugSession(
         List<string> events,
-        Exception? openException = null) : IVbeDebugSession
+        Exception? openException = null,
+        Exception? terminateException = null,
+        Exception? disposeException = null,
+        bool provesRelease = true,
+        Exception? adoptException = null) : IVbeDebugSession, IDebugResourceOwnerEvidence
     {
         private int disposed;
+
+        public DebugFailureOutcome? CleanupOutcome { get; private set; }
 
         public int ProcessId => 1234;
 
@@ -1722,6 +2066,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             IVbaDebugGenerationWorkspace generationWorkspace)
         {
             ArgumentNullException.ThrowIfNull(generationWorkspace);
+            if (adoptException is not null) { throw adoptException; }
             if (AdoptedGenerationWorkspace is not null)
             {
                 throw new InvalidOperationException(
@@ -1739,9 +2084,11 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
                     "A generation workspace must be adopted before opening its workbook.");
             WorkbookOpenInputWaitSink = inputWaitSink;
             events.Add($"open:{Path.GetFileName(OpenedWorkbookPath)}");
-            return openException is null
-                ? Task.CompletedTask
-                : Task.FromException(openException);
+            if (openException is not null)
+            {
+                throw openException;
+            }
+            return Task.CompletedTask;
         }
 
         public Task SetNativeBreakpointsAsync(
@@ -1766,6 +2113,10 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
         public ValueTask TerminateAsync()
         {
             events.Add("terminate");
+            if (terminateException is not null)
+            {
+                throw terminateException;
+            }
             return ValueTask.CompletedTask;
         }
 
@@ -1780,10 +2131,24 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             {
                 await AdoptedGenerationWorkspace.DisposeAsync();
             }
+            if (disposeException is not null)
+            {
+                throw disposeException;
+            }
+            if (provesRelease)
+            {
+                var completion = new DebugFailureCompletion();
+                foreach (var kind in new[] { DebugResourceKind.Process, DebugResourceKind.Com, DebugResourceKind.Handle })
+                {
+                    completion.AddEvidence(new("controlled-session-cleanup", "visible Excel", kind, true,
+                        "The controlled session owns no native process, COM objects, or handles.", ProcessId));
+                }
+                CleanupOutcome = completion.Complete();
+            }
         }
     }
 
-    private sealed class RecordingDebugLifecycleSink : IDebugLifecycleSink
+    private sealed class RecordingDebugLifecycleSink(Exception? writeFailure = null) : IDebugLifecycleSink
     {
         public List<DebugLifecycleMessage> Messages { get; } = [];
 
@@ -1792,6 +2157,10 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
             CancellationToken cancellationToken)
         {
             Messages.Add(message);
+            if (writeFailure is not null)
+            {
+                throw writeFailure;
+            }
             return ValueTask.CompletedTask;
         }
     }

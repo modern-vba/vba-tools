@@ -18,11 +18,13 @@ internal sealed class VbaDevSnapshotWorkbookBuilder : IVbaDebugWorkbookBuilder
         VbaDevSnapshotBuildRequest request,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(workspaceLease);
-        ValidateRequest(vbaDevPath, request);
         IVbaDebugGenerationWorkspace? generationWorkspace = null;
+        DebugFailureOutcome? processCleanupOutcome = null;
+        var processInvocationStarted = false;
         try
         {
+            ArgumentNullException.ThrowIfNull(workspaceLease);
+            ValidateRequest(vbaDevPath, request);
             generationWorkspace = workspaceLease.CreateGenerationWorkspace(
                 request.SourceSet.GenerationId,
                 request.WorkbookFileName);
@@ -38,9 +40,20 @@ internal sealed class VbaDevSnapshotWorkbookBuilder : IVbaDebugWorkbookBuilder
                 "--source-snapshot", sourceSnapshotPath,
                 "--output", workbookPath
             };
-            var processResult = await buildProcess
-                .RunAsync(Path.GetFullPath(vbaDevPath), arguments, cancellationToken)
-                .ConfigureAwait(false);
+            VbaDevBuildProcessResult processResult;
+            processInvocationStarted = true;
+            try
+            {
+                processResult = await buildProcess
+                    .RunAsync(Path.GetFullPath(vbaDevPath), arguments, cancellationToken)
+                    .ConfigureAwait(false);
+                processCleanupOutcome = processResult.CleanupOutcome;
+            }
+            catch (Exception invocationFailure)
+            {
+                processCleanupOutcome = (invocationFailure as IDebugFailureEvidence)?.FailureOutcome;
+                throw;
+            }
             if (processResult.ExitCode != 0)
             {
                 var diagnostics = new List<string>
@@ -58,6 +71,8 @@ internal sealed class VbaDevSnapshotWorkbookBuilder : IVbaDebugWorkbookBuilder
                 throw new InvalidOperationException(
                     string.Join(Environment.NewLine, diagnostics));
             }
+            processCleanupOutcome = CompleteProcessEvidence(processCleanupOutcome);
+            processCleanupOutcome.ThrowWithEvidence();
             generationWorkspace.VerifySourceSnapshot();
             if (!WindowsVbaDebugWorkspacePath.EntryExistsNoFollow(workbookPath))
             {
@@ -66,7 +81,8 @@ internal sealed class VbaDevSnapshotWorkbookBuilder : IVbaDebugWorkbookBuilder
             }
             generationWorkspace.PinGeneratedWorkbook();
 
-            var result = new VbaDevSnapshotBuildResult(generationWorkspace)
+            var result = new VbaDevSnapshotBuildResult(
+                generationWorkspace, CompleteProcessEvidence(processCleanupOutcome))
             {
                 Output = SplitOutput(processResult.StandardOutput)
                     .Concat(SplitOutput(processResult.StandardError))
@@ -75,21 +91,59 @@ internal sealed class VbaDevSnapshotWorkbookBuilder : IVbaDebugWorkbookBuilder
             generationWorkspace = null;
             return result;
         }
-        catch
+        catch (Exception exception)
         {
+            var completion = new DebugFailureCompletion(exception);
+            if (processInvocationStarted)
+            {
+                completion.Merge(CompleteProcessEvidence(processCleanupOutcome));
+            }
+            else
+            {
+                foreach (var kind in new[] { DebugResourceKind.Process, DebugResourceKind.Handle })
+                {
+                    completion.AddEvidence(new("build-process-admission", "vba-dev", kind, true,
+                        "Build failed before invoking the companion process; no companion resources were acquired."));
+                }
+            }
             if (generationWorkspace is not null)
             {
                 try
                 {
                     await generationWorkspace.DisposeAsync().ConfigureAwait(false);
                 }
-                catch
+                catch (Exception cleanupException)
                 {
-                    // The original build failure remains authoritative.
+                    completion.AddFailure("build-generation-cleanup", generationWorkspace.GenerationWorkspacePath,
+                        DebugResourceKind.FileSystem, cleanupException,
+                        retainedPath: generationWorkspace.GenerationWorkspacePath);
+                }
+                if (generationWorkspace is IDebugResourceOwnerEvidence { CleanupOutcome: { } outcome })
+                {
+                    completion.Merge(outcome);
                 }
             }
+            completion.Complete().ThrowWithEvidence();
             throw;
         }
+    }
+
+    private static DebugFailureOutcome CompleteProcessEvidence(DebugFailureOutcome? ownerOutcome)
+    {
+        var completion = new DebugFailureCompletion();
+        if (ownerOutcome is not null)
+        {
+            completion.Merge(ownerOutcome);
+        }
+        foreach (var kind in new[] { DebugResourceKind.Process, DebugResourceKind.Handle })
+        {
+            if (ownerOutcome?.Evidence.Any(item => item.Kind == kind) != true)
+            {
+                completion.AddEvidence(new("build-process-cleanup", "vba-dev", kind, false,
+                    "The invocation owner did not supply terminal release evidence."));
+            }
+        }
+        return completion.Complete();
     }
 
     private static string[] SplitOutput(string output)
@@ -187,13 +241,25 @@ public sealed record TransportedDebugSourceBreakpoint(
     string SourceUri,
     int Line);
 
-public sealed class VbaDevSnapshotBuildResult : IAsyncDisposable
+public sealed class VbaDevSnapshotBuildResult : IAsyncDisposable, IDebugResourceOwnerEvidence
 {
+    private readonly object disposalGate = new();
+    private readonly DebugFailureOutcome processCleanupOutcome;
     private IVbaDebugGenerationWorkspace? generationWorkspace;
+    private Task? disposal;
+    private DebugFailureOutcome? cleanupOutcome;
 
     public VbaDevSnapshotBuildResult(
         IVbaDebugGenerationWorkspace generationWorkspace)
+        : this(generationWorkspace, new DebugFailureCompletion().Complete())
     {
+    }
+
+    internal VbaDevSnapshotBuildResult(
+        IVbaDebugGenerationWorkspace generationWorkspace,
+        DebugFailureOutcome processCleanupOutcome)
+    {
+        this.processCleanupOutcome = processCleanupOutcome;
         this.generationWorkspace = generationWorkspace
             ?? throw new ArgumentNullException(nameof(generationWorkspace));
         GenerationId = generationWorkspace.GenerationId;
@@ -214,25 +280,69 @@ public sealed class VbaDevSnapshotBuildResult : IAsyncDisposable
 
     public IReadOnlyList<string> Output { get; init; } = [];
 
-    internal IVbaDebugGenerationWorkspace TransferGenerationOwnership()
-        => Interlocked.Exchange(ref generationWorkspace, null)
-            ?? throw new InvalidOperationException(
-                "The debug generation workspace ownership has already been transferred or disposed.");
+    DebugFailureOutcome? IDebugResourceOwnerEvidence.CleanupOutcome => cleanupOutcome;
 
-    public async ValueTask DisposeAsync()
+    internal IVbaDebugGenerationWorkspace TransferGenerationOwnership()
     {
-        var ownedWorkspace = Interlocked.Exchange(ref generationWorkspace, null);
-        if (ownedWorkspace is not null)
+        lock (disposalGate)
         {
-            await ownedWorkspace.DisposeAsync().ConfigureAwait(false);
+            return Interlocked.Exchange(ref generationWorkspace, null)
+                ?? throw new InvalidOperationException(
+                "The debug generation workspace ownership has already been transferred or disposed.");
         }
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        lock (disposalGate)
+        {
+            if (disposal is null)
+            {
+                var ownedWorkspace = Interlocked.Exchange(ref generationWorkspace, null);
+                disposal = DisposeWorkspaceAsync(ownedWorkspace);
+            }
+            return new ValueTask(disposal);
+        }
+    }
+
+    private async Task DisposeWorkspaceAsync(IVbaDebugGenerationWorkspace? workspace)
+    {
+        var completion = new DebugFailureCompletion();
+        completion.Merge(processCleanupOutcome);
+        if (workspace is not null)
+        {
+            try
+            {
+                await workspace.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                completion.AddFailure("build-result-cleanup", workspace.GenerationWorkspacePath,
+                    DebugResourceKind.FileSystem, exception, retainedPath: workspace.GenerationWorkspacePath);
+            }
+            if (workspace is IDebugResourceOwnerEvidence { CleanupOutcome: { } ownerOutcome })
+            {
+                completion.Merge(ownerOutcome);
+            }
+            else
+            {
+                completion.AddEvidence(new("build-result-cleanup", workspace.GenerationWorkspacePath,
+                    DebugResourceKind.Handle, false, "The generation owner did not supply release evidence.",
+                    RetainedPath: workspace.GenerationWorkspacePath));
+            }
+        }
+        cleanupOutcome = completion.Complete();
+        cleanupOutcome.Throw();
     }
 }
 
 public sealed record VbaDevBuildProcessResult(
     int ExitCode,
     string StandardOutput,
-    string StandardError);
+    string StandardError)
+{
+    internal DebugFailureOutcome? CleanupOutcome { get; init; }
+}
 
 public interface IVbaDevBuildProcess
 {

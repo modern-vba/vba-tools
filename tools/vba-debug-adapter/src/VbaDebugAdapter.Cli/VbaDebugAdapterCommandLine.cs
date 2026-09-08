@@ -304,7 +304,8 @@ public sealed class VbaDebugAdapterCommandLine
                 return 1;
             }
 
-            int runnerExitCode;
+            var runnerExitCode = 1;
+            Exception? runnerFailure = null;
             try
             {
                 runnerExitCode = await stdioRunner.RunAsync(
@@ -315,15 +316,35 @@ public sealed class VbaDebugAdapterCommandLine
                     standardError,
                     cancellationToken).ConfigureAwait(false);
             }
-            catch
+            catch (Exception exception)
             {
-                _ = await TryDisposeLeaseAsync(lease, standardError).ConfigureAwait(false);
-                throw;
+                runnerFailure = exception;
             }
 
-            return await TryDisposeLeaseAsync(lease, standardError).ConfigureAwait(false)
-                ? runnerExitCode
-                : 1;
+            var leaseOutcome = await CompleteLeaseAsync(lease).ConfigureAwait(false);
+            var failureCompletion = new DebugFailureCompletion(runnerFailure);
+            failureCompletion.Merge(leaseOutcome);
+            var outcome = failureCompletion.Complete();
+            if (leaseOutcome.HasCleanupFailure)
+            {
+                try
+                {
+                    await WriteLineAsync(standardError,
+                        $"The VBA debug session workspace cleanup failed.{Environment.NewLine}{outcome.Describe()}")
+                        .ConfigureAwait(false);
+                }
+                catch (Exception diagnosticFailure)
+                {
+                    var diagnosticCompletion = new DebugFailureCompletion(new DebugFailureException(outcome));
+                    diagnosticCompletion.AddFailure("lease-cleanup-diagnostic", "standard error", DebugResourceKind.Observation,
+                        diagnosticFailure);
+                    diagnosticCompletion.Complete().Throw();
+                }
+                if (runnerFailure is not null) { outcome.Throw(); }
+                return 1;
+            }
+            outcome.Throw();
+            return runnerExitCode;
         }
 
         await WriteLineAsync(
@@ -409,24 +430,38 @@ public sealed class VbaDebugAdapterCommandLine
         }
     }
 
-    private static async Task<bool> TryDisposeLeaseAsync(
-        IVbaDebugSessionWorkspaceLease lease,
-        Stream standardError)
+    private static async Task<DebugFailureOutcome> CompleteLeaseAsync(IVbaDebugSessionWorkspaceLease lease)
     {
+        var completion = new DebugFailureCompletion();
+        string? retainedPath = null;
+        try { retainedPath = lease.SessionWorkspacePath; }
+        catch (Exception exception)
+        {
+            completion.AddFailure("lease-identity", "session workspace", DebugResourceKind.Observation, exception);
+        }
         try
         {
             await lease.DisposeAsync().ConfigureAwait(false);
-            return true;
         }
-        catch
+        catch (Exception exception)
         {
-            await WriteLineAsync(
-                standardError,
-                "The VBA debug session workspace cleanup failed. " +
-                $"Retained path: {Path.GetFullPath(lease.SessionWorkspacePath)}")
-                .ConfigureAwait(false);
-            return false;
+            completion.AddFailure("session-lease-cleanup", "session workspace", DebugResourceKind.FileSystem,
+                exception, retainedPath: retainedPath);
         }
+        DebugFailureOutcome? ownerOutcome = null;
+        try { ownerOutcome = (lease as IDebugResourceOwnerEvidence)?.CleanupOutcome; }
+        catch (Exception exception)
+        {
+            completion.AddFailure("session-lease-evidence", "session workspace", DebugResourceKind.Handle,
+                exception, retainedPath: retainedPath);
+        }
+        if (ownerOutcome is not null) { completion.Merge(ownerOutcome); }
+        else
+        {
+            completion.AddEvidence(new("session-lease-evidence", "session workspace", DebugResourceKind.Handle,
+                false, "The session lease owner did not supply resource release evidence.", RetainedPath: retainedPath));
+        }
+        return completion.Complete();
     }
 
     private static bool AdvertisesRequiredSnapshotBuildFeature(

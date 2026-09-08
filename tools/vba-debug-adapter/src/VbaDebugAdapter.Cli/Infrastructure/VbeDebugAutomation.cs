@@ -40,6 +40,8 @@ internal interface IWindowsDebugWindowApi
 internal interface IStaComDispatcher : IAsyncDisposable
 {
     Task<T> InvokeAsync<T>(Func<T> operation, CancellationToken cancellationToken);
+
+    bool ReleaseVerified => false;
 }
 
 internal interface IStaComDispatcherFactory
@@ -56,35 +58,49 @@ internal interface IVbeDebugSessionStartFailure
     bool CleanupVerified { get; }
 }
 
-internal sealed class VbeDebugSessionStartException(
-    Exception startException,
-    Exception? cleanupException,
-    bool cleanupVerified) :
-    DebugSetupException(startException.Message, startException),
-    IVbeDebugSessionStartFailure
+internal sealed class VbeDebugSessionStartException : DebugSetupException,
+    IVbeDebugSessionStartFailure, IDebugFailureEvidence
 {
-    public Exception StartException { get; } = startException;
+    public VbeDebugSessionStartException(DebugFailureOutcome outcome)
+        : base(outcome.Describe(), outcome.PrimaryFailure ?? new AggregateException(outcome.CleanupFailures.Select(item => item.Exception)))
+    {
+        FailureOutcome = outcome;
+    }
 
-    public Exception? CleanupException { get; } = cleanupException;
+    public VbeDebugSessionStartException(Exception startException, Exception? cleanupException, bool cleanupVerified)
+        : this(CreateLegacyOutcome(startException, cleanupException, cleanupVerified)) { }
 
-    public bool CleanupVerified { get; } = cleanupVerified && cleanupException is null;
+    public DebugFailureOutcome FailureOutcome { get; }
+    public Exception StartException => FailureOutcome.PrimaryFailure!;
+    public Exception? CleanupException => FailureOutcome.CleanupFailures.Count switch
+    {
+        0 => null,
+        1 => FailureOutcome.CleanupFailures[0].Exception,
+        _ => new AggregateException(FailureOutcome.CleanupFailures.Select(item => item.Exception))
+    };
+    public bool CleanupVerified => !FailureOutcome.HasCleanupFailure;
+
+    private static DebugFailureOutcome CreateLegacyOutcome(Exception primary, Exception? cleanup, bool verified)
+    {
+        var completion = new DebugFailureCompletion(primary);
+        if (cleanup is not null) { completion.AddFailure("startup", "Excel owner", DebugResourceKind.Process, cleanup); }
+        completion.AddEvidence(new("startup", "Excel owner", DebugResourceKind.Process,
+            verified, "Explicit startup owner observation."));
+        return completion.Complete();
+    }
 }
 
 internal sealed class VbeDebugSessionStartCanceledException(
     OperationCanceledException startException,
-    Exception? cleanupException,
-    bool cleanupVerified) :
-    OperationCanceledException(
-        startException.Message,
-        startException,
-        startException.CancellationToken),
-    IVbeDebugSessionStartFailure
+    DebugFailureOutcome outcome) :
+    DebugFailureCanceledException(outcome), IVbeDebugSessionStartFailure
 {
     public Exception StartException { get; } = startException;
 
-    public Exception? CleanupException { get; } = cleanupException;
+    public Exception? CleanupException => null;
 
-    public bool CleanupVerified { get; } = cleanupVerified && cleanupException is null;
+    public bool CleanupVerified => !FailureOutcome.HasCleanupFailure;
+
 }
 
 /// <summary>
@@ -100,6 +116,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
     private readonly IExcelDebugWorkbookOpener workbookOpener;
     private readonly IDebugModalPromptMonitor promptMonitor;
     private readonly IDebugWorkbookLifetimeMonitor workbookLifetimeMonitor;
+    private readonly Func<object?, bool> releaseComObject;
 
     /// <summary>
     /// Creates the production Excel/VBIDE automation adapter.
@@ -126,7 +143,8 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
         IStaComDispatcherFactory dispatcherFactory,
         IExcelDebugWorkbookOpener? workbookOpener = null,
         IDebugModalPromptMonitor? promptMonitor = null,
-        IDebugWorkbookLifetimeMonitor? workbookLifetimeMonitor = null)
+        IDebugWorkbookLifetimeMonitor? workbookLifetimeMonitor = null,
+        Func<object?, bool>? releaseComObject = null)
         : this(
             applicationFactory,
             ownedApplicationStarter: null,
@@ -135,7 +153,8 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             dispatcherFactory,
             workbookOpener,
             promptMonitor,
-            workbookLifetimeMonitor)
+            workbookLifetimeMonitor,
+            releaseComObject)
     {
     }
 
@@ -146,7 +165,8 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
         IStaComDispatcherFactory dispatcherFactory,
         IExcelDebugWorkbookOpener? workbookOpener = null,
         IDebugModalPromptMonitor? promptMonitor = null,
-        IDebugWorkbookLifetimeMonitor? workbookLifetimeMonitor = null)
+        IDebugWorkbookLifetimeMonitor? workbookLifetimeMonitor = null,
+        Func<object?, bool>? releaseComObject = null)
         : this(
             applicationFactory: null,
             ownedApplicationStarter,
@@ -155,7 +175,8 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             dispatcherFactory,
             workbookOpener,
             promptMonitor,
-            workbookLifetimeMonitor)
+            workbookLifetimeMonitor,
+            releaseComObject)
     {
     }
 
@@ -167,8 +188,10 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
         IStaComDispatcherFactory dispatcherFactory,
         IExcelDebugWorkbookOpener? workbookOpener,
         IDebugModalPromptMonitor? promptMonitor,
-        IDebugWorkbookLifetimeMonitor? workbookLifetimeMonitor)
+        IDebugWorkbookLifetimeMonitor? workbookLifetimeMonitor,
+        Func<object?, bool>? releaseComObject = null)
     {
+        this.releaseComObject = releaseComObject ?? ComObjectReleaser.Release;
         this.applicationFactory = applicationFactory;
         this.ownedApplicationStarter = ownedApplicationStarter;
         this.processApi = processApi;
@@ -186,6 +209,8 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
         IStaComDispatcher? dispatcher = null;
         object? excelObject = null;
         DebugExcelProcessOwner? processOwner = null;
+        DebugFailureOutcome? startupCleanupOutcome = null;
+        var ownedStartupAttempted = false;
         CancellationTokenRegistration ownershipCancellation = default;
         try
         {
@@ -199,11 +224,13 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                 {
                     if (ownedApplicationStarter is not null)
                     {
+                        ownedStartupAttempted = true;
                         var ownedApplication = ownedApplicationStarter.Start(
                             processApi,
                             cancellationToken);
                         excelObject = ownedApplication.Application;
                         processOwner = ownedApplication.ProcessOwner;
+                        startupCleanupOutcome = ownedApplication.StartupCleanupOutcome;
                     }
                     else
                     {
@@ -238,82 +265,87 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                 windowActivator,
                 workbookOpener,
                 promptMonitor,
-                workbookLifetimeMonitor);
+                workbookLifetimeMonitor,
+                releaseComObject);
         }
         catch (Exception startException)
         {
-            var reportedStartException = startException;
-            var ownershipEstablished = processOwner is not null;
-            var noTemporaryProcessWasCreated = excelObject is null ||
-                startException is ExistingExcelProcessOwnershipRejectedException;
-            Exception? cleanupException = null;
-            if (startException is DebugProcessOwnershipCleanupException ownershipCleanup)
+            var reportedStartException = startException is not IDebugFailureEvidence
+                && startException is DebugProcessOwnershipCleanupException ownershipFailure
+                ? ownershipFailure.OwnershipException : startException;
+            var completion = new DebugFailureCompletion(reportedStartException);
+            if (startupCleanupOutcome is not null) { completion.Merge(startupCleanupOutcome); }
+            if (startException is not IDebugFailureEvidence
+                && startException is DebugProcessOwnershipCleanupException ownershipCleanup)
             {
-                reportedStartException = ownershipCleanup.OwnershipException;
-                cleanupException = ownershipCleanup.CleanupException;
+                completion.AddFailure("startup ownership", "Excel process", DebugResourceKind.Process,
+                    ownershipCleanup.CleanupException);
             }
-            try
+            try { ownershipCancellation.Dispose(); }
+            catch (Exception failure)
             {
-                ownershipCancellation.Dispose();
-            }
-            catch (Exception ex)
-            {
-                cleanupException = ex;
+                completion.AddFailure("cancellation registration", "Excel startup", DebugResourceKind.Handle, failure);
             }
 
             if (processOwner is not null)
             {
-                try
+                try { await processOwner.DisposeAsync().ConfigureAwait(false); }
+                catch (Exception failure)
                 {
-                    await processOwner.DisposeAsync().ConfigureAwait(false);
+                    completion.AddFailure("process cleanup", "Excel process", DebugResourceKind.Process,
+                        failure, processOwner.ProcessId);
                 }
-                catch (Exception ex)
+                if ((object)processOwner is IDebugResourceOwnerEvidence { CleanupOutcome: { } processOutcome })
                 {
-                    cleanupException ??= ex;
+                    completion.Merge(processOutcome);
                 }
+                else
+                {
+                    completion.AddEvidence(new("process cleanup", "Excel process", DebugResourceKind.Process,
+                        false, "The process owner did not supply release evidence.", processOwner.ProcessId));
+                }
+            }
+            else if ((excelObject is not null || ownedStartupAttempted)
+                && (startException is not IDebugFailureEvidence retained
+                    || !retained.FailureOutcome.Evidence.Any(item => item.Kind == DebugResourceKind.Process)))
+            {
+                completion.AddEvidence(new("startup ownership", "Excel process", DebugResourceKind.Process,
+                    false, "Excel was created without a proved process owner."));
             }
 
             if (excelObject is not null && dispatcher is not null)
             {
+                var released = false;
                 try
                 {
-                    await dispatcher.InvokeAsync(
-                        () =>
-                        {
-                            ComObjectReleaser.Release(excelObject);
-                            return true;
-                        },
-                        CancellationToken.None).ConfigureAwait(false);
+                    released = await dispatcher.InvokeAsync(
+                        () => releaseComObject(excelObject), CancellationToken.None).ConfigureAwait(false);
                 }
-                catch (Exception ex)
+                catch (Exception failure)
                 {
-                    cleanupException ??= ex;
+                    completion.AddFailure("COM release", "Excel application", DebugResourceKind.Com,
+                        failure, processOwner?.ProcessId);
                 }
+                completion.AddEvidence(new("COM release", "Excel application", DebugResourceKind.Com, released,
+                    released ? "The owned COM reference was released." : "The owned COM reference release was not proved.",
+                    processOwner?.ProcessId));
             }
-
-            try
+            if (dispatcher is not null)
             {
-                if (dispatcher is not null)
+                try { await dispatcher.DisposeAsync().ConfigureAwait(false); }
+                catch (Exception failure)
                 {
-                    await dispatcher.DisposeAsync().ConfigureAwait(false);
+                    completion.AddFailure("dispatcher release", "STA dispatcher", DebugResourceKind.Handle, failure);
                 }
+                completion.AddEvidence(new("dispatcher release", "STA dispatcher", DebugResourceKind.Handle,
+                    dispatcher.ReleaseVerified, "The dispatcher owner reports its terminal worker state."));
             }
-            catch (Exception ex)
+            var outcome = completion.Complete();
+            if (outcome.PrimaryFailure is OperationCanceledException cancellation && !outcome.HasCleanupFailure)
             {
-                cleanupException ??= ex;
+                throw new VbeDebugSessionStartCanceledException(cancellation, outcome);
             }
-
-            var cleanupVerified = cleanupException is null &&
-                (ownershipEstablished || noTemporaryProcessWasCreated);
-            throw reportedStartException is OperationCanceledException cancellation
-                ? new VbeDebugSessionStartCanceledException(
-                    cancellation,
-                    cleanupException,
-                    cleanupVerified)
-                : new VbeDebugSessionStartException(
-                    reportedStartException,
-                    cleanupException,
-                    cleanupVerified);
+            throw new VbeDebugSessionStartException(outcome);
         }
     }
 
@@ -329,7 +361,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
         }
     }
 
-    private sealed class VbeDebugSession : IVbeDebugSession, IVbeDebugDoctorControl
+    private sealed class VbeDebugSession : IVbeDebugSession, IVbeDebugDoctorControl, IDebugResourceOwnerEvidence
     {
         private const int VbeBreakMode = 1;
         private const int VbeDesignMode = 2;
@@ -341,6 +373,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
         private readonly IExcelDebugWorkbookOpener workbookOpener;
         private readonly IDebugModalPromptMonitor promptMonitor;
         private readonly IDebugWorkbookLifetimeMonitor workbookLifetimeMonitor;
+        private readonly Func<object?, bool> releaseComObject;
         private readonly TaskCompletionSource<object> workbookOpenedSignal =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly object generationOwnershipGate = new();
@@ -369,8 +402,10 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             IDebugWindowActivator windowActivator,
             IExcelDebugWorkbookOpener workbookOpener,
             IDebugModalPromptMonitor promptMonitor,
-            IDebugWorkbookLifetimeMonitor workbookLifetimeMonitor)
+            IDebugWorkbookLifetimeMonitor workbookLifetimeMonitor,
+            Func<object?, bool> releaseComObject)
         {
+            this.releaseComObject = releaseComObject;
             this.excelObject = excelObject;
             this.processOwner = processOwner;
             this.dispatcher = dispatcher;
@@ -385,6 +420,8 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
         }
 
         public int ProcessId => processId;
+
+        public DebugFailureOutcome? CleanupOutcome { get; private set; }
 
         public bool StrongProcessOwnershipEstablished =>
             processOwner.KillOnCloseJobAssigned;
@@ -410,6 +447,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                 {
                     object? workbooksObject = null;
                     object? fixtureWorkbookObject = null;
+                    Exception? primaryFailure = null;
                     try
                     {
                         dynamic excel = excelObject;
@@ -430,10 +468,16 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                         fixtureWorkbook.Close(false);
                         return true;
                     }
+                    catch (Exception failure)
+                    {
+                        primaryFailure = failure;
+                        throw;
+                    }
                     finally
                     {
-                        ComObjectReleaser.Release(fixtureWorkbookObject);
-                        ComObjectReleaser.Release(workbooksObject);
+                        ReleaseComScope(primaryFailure,
+                            ("Doctor fixture workbook", fixtureWorkbookObject),
+                            ("Excel workbooks", workbooksObject));
                     }
                 },
                 cancellationToken).ConfigureAwait(false);
@@ -515,9 +559,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                     ? workbookOpener.OpenVerified(excelObject, expectedWorkbookPath)
                     : workbookOpener.OpenPathVerified(excelObject, expectedWorkbookPath),
                 cancellationToken);
-            workbookObject = phase is null
-                ? await OpenAsync().ConfigureAwait(false)
-                : await phase.ObserveOperationAsync(OpenAsync, cancellationToken).ConfigureAwait(false);
+            workbookObject = await ObserveSetupOperationAsync(phase, OpenAsync, cancellationToken).ConfigureAwait(false);
             workbookOpenedSignal.TrySetResult(workbookObject);
         }
 
@@ -551,6 +593,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                     object? componentsObject = null;
                     object? importedComponentObject = null;
                     VerifiedCodeModule? verifiedModule = null;
+                    Exception? primaryFailure = null;
                     try
                     {
                         dynamic workbook = GetOpenedWorkbook();
@@ -563,16 +606,19 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                         verifiedModule = VerifyCodeModule(components, sourceMap);
                         return true;
                     }
+                    catch (Exception failure)
+                    {
+                        primaryFailure = failure;
+                        throw;
+                    }
                     finally
                     {
-                        if (verifiedModule is not null)
-                        {
-                            ComObjectReleaser.Release(verifiedModule.CodeModule);
-                            ComObjectReleaser.Release(verifiedModule.Component);
-                        }
-                        ComObjectReleaser.Release(importedComponentObject);
-                        ComObjectReleaser.Release(componentsObject);
-                        ComObjectReleaser.Release(projectObject);
+                        ReleaseComScope(primaryFailure,
+                            ($"code module {sourceMap.ModuleName}", verifiedModule?.CodeModule),
+                            ($"component {sourceMap.ModuleName}", verifiedModule?.Component),
+                            ("imported Doctor component", importedComponentObject),
+                            ("VBA components", componentsObject),
+                            ("VBA project", projectObject));
                     }
                 },
                 cancellationToken).ConfigureAwait(false);
@@ -649,7 +695,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             catch (OperationCanceledException) when (
                 cancellationToken.IsCancellationRequested)
             {
-                RequestCancellationTermination();
+                RequestCancellationTermination(cancellationToken);
                 throw;
             }
         }
@@ -672,9 +718,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                     return true;
                 },
                 cancellationToken);
-            _ = phase is null
-                ? await RunAsync().ConfigureAwait(false)
-                : await phase.ObserveOperationAsync(RunAsync, cancellationToken).ConfigureAwait(false);
+            _ = await ObserveSetupOperationAsync(phase, RunAsync, cancellationToken).ConfigureAwait(false);
         }
 
         public Task WaitForBreakModeAsync(
@@ -826,68 +870,141 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                 generationWorkspace = null;
             }
 
-            var cleanupFailures = new List<Exception>();
-            async Task AttemptAsync(Func<ValueTask> cleanup)
+            var failureCompletion = new DebugFailureCompletion(established.Failure);
+            async Task AttemptAsync(string stage, string resource, DebugResourceKind kind, Func<ValueTask> cleanup)
             {
                 try { await cleanup().ConfigureAwait(false); }
-                catch (Exception failure) { cleanupFailures.Add(failure); }
+                catch (Exception failure) { failureCompletion.AddFailure(stage, resource, kind, failure, processId); }
             }
 
             // Advance process and Job cleanup before waiting for either observation loop.
-            await AttemptAsync(processOwner.TerminateAsync).ConfigureAwait(false);
-            await AttemptAsync(processOwner.DisposeAsync).ConfigureAwait(false);
-            observationStopping.Cancel();
+            await AttemptAsync("process termination", "Excel process", DebugResourceKind.Process,
+                processOwner.TerminateAsync).ConfigureAwait(false);
+            await AttemptAsync("process cleanup", "Excel process", DebugResourceKind.Process,
+                processOwner.DisposeAsync).ConfigureAwait(false);
+            if ((object)processOwner is IDebugResourceOwnerEvidence { CleanupOutcome: { } processOutcome })
+            {
+                failureCompletion.Merge(processOutcome);
+            }
+            else
+            {
+                failureCompletion.AddEvidence(new("process cleanup", "Excel process", DebugResourceKind.Process,
+                    false, "The process owner did not supply release evidence.", processId));
+            }
+            try { observationStopping.Cancel(); }
+            catch (Exception failure)
+            {
+                failureCompletion.AddFailure("observation shutdown", "session observers", DebugResourceKind.Observation, failure, processId);
+            }
             if (targetPromptPhase is not null)
             {
-                await AttemptAsync(targetPromptPhase.DisposeAsync).ConfigureAwait(false);
+                await AttemptAsync("target observation", "modal phase", DebugResourceKind.Observation,
+                    targetPromptPhase.DisposeAsync).ConfigureAwait(false);
             }
             if (workbookPromptPhase is not null)
             {
-                await AttemptAsync(workbookPromptPhase.DisposeAsync).ConfigureAwait(false);
+                await AttemptAsync("workbook observation", "modal phase", DebugResourceKind.Observation,
+                    workbookPromptPhase.DisposeAsync).ConfigureAwait(false);
             }
-            await Task.WhenAll(processObservation, workbookObservation, targetPromptObservation, workbookPromptObservation).ConfigureAwait(false);
-            await AttemptAsync(async () =>
+            var observations = new[] { processObservation, workbookObservation, targetPromptObservation, workbookPromptObservation };
+            try { await Task.WhenAll(observations).ConfigureAwait(false); }
+            catch (Exception failure)
             {
-                await dispatcher.InvokeAsync(() =>
+                failureCompletion.AddFailure("observation shutdown", "session observers", DebugResourceKind.Observation, failure, processId);
+            }
+            failureCompletion.AddEvidence(new("observation shutdown", "session observers", DebugResourceKind.Observation,
+                observations.All(task => task.IsCompleted), "Every owned observation task settled.", processId));
+
+            async Task ReleaseComAsync(object? value, string resource)
+            {
+                var released = false;
+                try
                 {
-                    ComObjectReleaser.Release(workbookObject);
-                    ComObjectReleaser.Release(excelObject);
-                    return true;
-                }, CancellationToken.None).ConfigureAwait(false);
-            }).ConfigureAwait(false);
-            await AttemptAsync(dispatcher.DisposeAsync).ConfigureAwait(false);
+                    released = await dispatcher.InvokeAsync(() => releaseComObject(value),
+                        CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception failure)
+                {
+                    failureCompletion.AddFailure("COM release", resource, DebugResourceKind.Com, failure, processId);
+                }
+                failureCompletion.AddEvidence(new("COM release", resource, DebugResourceKind.Com, released,
+                    released ? "The owned COM reference was released." : "The owned COM reference release was not proved.", processId));
+            }
+            await ReleaseComAsync(workbookObject, "Excel workbook").ConfigureAwait(false);
+            await ReleaseComAsync(excelObject, "Excel application").ConfigureAwait(false);
+            await AttemptAsync("dispatcher release", "STA dispatcher", DebugResourceKind.Handle,
+                dispatcher.DisposeAsync).ConfigureAwait(false);
+            failureCompletion.AddEvidence(new("dispatcher release", "STA dispatcher", DebugResourceKind.Handle,
+                dispatcher.ReleaseVerified, "The dispatcher owner reports its terminal worker state.", processId));
             if (ownedGenerationWorkspace is not null)
             {
-                await AttemptAsync(ownedGenerationWorkspace.DisposeAsync).ConfigureAwait(false);
+                await AttemptAsync("generation cleanup", "debug generation", DebugResourceKind.Handle,
+                    ownedGenerationWorkspace.DisposeAsync).ConfigureAwait(false);
+                if (ownedGenerationWorkspace is IDebugResourceOwnerEvidence { CleanupOutcome: { } generationOutcome })
+                {
+                    failureCompletion.Merge(generationOutcome);
+                }
+                else
+                {
+                    failureCompletion.AddEvidence(new("generation cleanup", "debug generation", DebugResourceKind.Handle,
+                        false, "The generation owner did not supply release evidence.",
+                        RetainedPath: ownedGenerationWorkspace.GenerationWorkspacePath));
+                }
             }
-            observationStopping.Dispose();
-
-            Exception[] additional;
+            try { observationStopping.Dispose(); }
+            catch (Exception failure)
+            {
+                failureCompletion.AddFailure("observation cancellation", "session observers", DebugResourceKind.Handle, failure, processId);
+            }
             lock (generationOwnershipGate)
             {
-                additional = lifetimeFailures.Concat(cleanupFailures)
-                    .Where(failure => !ReferenceEquals(failure, established.Failure)).Distinct().ToArray();
+                foreach (var failure in lifetimeFailures)
+                {
+                    failureCompletion.AddFailure("session observation", "session observers", DebugResourceKind.Observation, failure, processId);
+                }
+                CleanupOutcome = failureCompletion.Complete();
             }
-            if (additional.Length != 0)
+            if (CleanupOutcome.HasCleanupFailure)
             {
-                throw new VbeDebugSessionLifetimeException(established.Cause, established.Failure, additional);
+                throw new VbeDebugSessionLifetimeException(established.Cause, CleanupOutcome);
             }
-            if (established.Failure is not null)
-            {
-                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(established.Failure).Throw();
-            }
+            CleanupOutcome.Throw();
             return await processOwner.Completion.ConfigureAwait(false);
         }
 
         private sealed record SessionEnd(string Cause, Exception? Failure);
+
+        private async Task<T> ObserveSetupOperationAsync<T>(
+            IDebugModalPromptPhase? phase,
+            Func<Task<T>> operation,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                return phase is null
+                    ? await operation().ConfigureAwait(false)
+                    : await phase.ObserveOperationAsync(operation, cancellationToken).ConfigureAwait(false);
+            }
+            catch when (terminalEnd.Task.IsCompletedSuccessfully && terminalEnd.Task.Result.Failure is not null)
+            {
+                // The raw process exit can win the phase race while the session is
+                // completing the setup failure that caused that same exit.
+                await completion.ConfigureAwait(false);
+                throw;
+            }
+        }
 
         private async Task<T> InvokeSetupAsync<T>(
             Func<T> operation,
             CancellationToken cancellationToken)
         {
             using var cancellationRegistration = cancellationToken.UnsafeRegister(
-                static state => ((VbeDebugSession)state!).RequestCancellationTermination(),
-                this);
+                static state =>
+                {
+                    var (session, token) = ((VbeDebugSession, CancellationToken))state!;
+                    session.RequestCancellationTermination(token);
+                },
+                (this, cancellationToken));
             try
             {
                 var result = await dispatcher.InvokeAsync(
@@ -902,33 +1019,71 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             }
             catch (Exception ex) when (cancellationToken.IsCancellationRequested)
             {
-                await processOwner.TerminateAsync().ConfigureAwait(false);
-                throw new OperationCanceledException(
-                    "VBE debug setup was cancelled and its owned Excel process was terminated.",
-                    ex,
-                    cancellationToken);
+                Exception cancellationFailure = ex is OperationCanceledException
+                    or IDebugFailureEvidence { FailureOutcome.PrimaryFailure: OperationCanceledException } ? ex
+                    : new OperationCanceledException("VBE debug setup was cancelled.", ex, cancellationToken);
+                if (terminalEnd.Task.IsCompletedSuccessfully
+                    && terminalEnd.Task.Result.Failure is OperationCanceledException retainedCancellation
+                    && retainedCancellation.CancellationToken == cancellationToken)
+                {
+                    cancellationFailure = retainedCancellation;
+                }
+                if (!ReferenceEquals(cancellationFailure, ex) && ex is IDebugFailureEvidence retained)
+                {
+                    var cancelled = new DebugFailureCompletion(cancellationFailure);
+                    cancelled.Merge(retained.FailureOutcome);
+                    cancellationFailure = new DebugFailureException(cancelled.Complete());
+                }
+                await ThrowSetupFailureAsync(cancellationFailure, "setup cancellation").ConfigureAwait(false);
+                throw;
+            }
+            catch (Exception ex) when (ex is IDebugFailureEvidence)
+            {
+                if (((IDebugFailureEvidence)ex).FailureOutcome.PrimaryFailure is DebugSetupException setupError)
+                {
+                    RecordForegroundPermission(setupError);
+                }
+                await ThrowSetupFailureAsync(ex, "debug setup").ConfigureAwait(false);
+                throw;
             }
             catch (DebugSetupException ex)
             {
                 RecordForegroundPermission(ex);
-                await processOwner.TerminateAsync().ConfigureAwait(false);
+                await ThrowSetupFailureAsync(ex, "debug setup").ConfigureAwait(false);
                 throw;
             }
             catch (Exception ex) when (
                 ex is COMException or RuntimeBinderException or InvalidCastException or
                     ArgumentException or TargetParameterCountException)
             {
-                await processOwner.TerminateAsync().ConfigureAwait(false);
                 var setupError = new DebugSetupException(
                     "Excel or the VBE rejected the generated workbook debug setup.",
                     ex);
                 RecordForegroundPermission(setupError);
+                await ThrowSetupFailureAsync(setupError, "debug setup").ConfigureAwait(false);
                 throw setupError;
             }
         }
 
-        private void RequestCancellationTermination()
-            => _ = TerminateAfterCancellationAsync();
+        private async Task ThrowSetupFailureAsync(Exception failure, string cause)
+        {
+            EstablishEnd(cause, failure);
+            await completion.ConfigureAwait(false);
+        }
+
+        private void RequestCancellationTermination(CancellationToken cancellationToken)
+        {
+            lock (generationOwnershipGate)
+            {
+                if (!terminalEnd.Task.IsCompleted)
+                {
+                    var failure = new OperationCanceledException("VBE debug setup was cancelled.", cancellationToken);
+                    lifetimeFailures.Add(failure);
+                    terminalEnd.TrySetResult(new SessionEnd("setup cancellation", failure));
+                }
+            }
+            _ = TerminateAfterCancellationAsync();
+        }
 
         private async Task TerminateAfterCancellationAsync()
         {
@@ -946,6 +1101,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
         private DebugCompilationHostFacts ReadCompilationHostFacts()
         {
             object? vbeObject = null;
+            Exception? primaryFailure = null;
             try
             {
                 dynamic excel = excelObject;
@@ -960,9 +1116,14 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                     operatingSystem,
                     processOwner.ProcessArchitecture);
             }
+            catch (Exception failure)
+            {
+                primaryFailure = failure;
+                throw;
+            }
             finally
             {
-                ComObjectReleaser.Release(vbeObject);
+                ReleaseComScope(primaryFailure, ("VBE", vbeObject));
             }
         }
 
@@ -1128,6 +1289,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             object? componentsObject = null;
             var verifiedModules = new Dictionary<string, VerifiedCodeModule>(
                 StringComparer.OrdinalIgnoreCase);
+            Exception? primaryFailure = null;
             try
             {
                 var sourceMaps = CollectDistinctSourceMaps(breakpoints);
@@ -1159,16 +1321,23 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                         execute: execute);
                 }
             }
+            catch (Exception failure)
+            {
+                primaryFailure = failure;
+                throw;
+            }
             finally
             {
-                foreach (var verifiedModule in verifiedModules.Values)
-                {
-                    ComObjectReleaser.Release(verifiedModule.CodeModule);
-                    ComObjectReleaser.Release(verifiedModule.Component);
-                }
-
-                ComObjectReleaser.Release(componentsObject);
-                ComObjectReleaser.Release(projectObject);
+                ReleaseComScope(primaryFailure,
+                    verifiedModules.SelectMany(pair => new (string Resource, object? Value)[]
+                    {
+                        ($"code module {pair.Key}", pair.Value.CodeModule),
+                        ($"component {pair.Key}", pair.Value.Component)
+                    }).Concat(new (string Resource, object? Value)[]
+                    {
+                        ("VBA components", componentsObject),
+                        ("VBA project", projectObject)
+                    }).ToArray());
             }
         }
 
@@ -1220,13 +1389,14 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             return sourceMaps;
         }
 
-        private static VerifiedCodeModule VerifyCodeModule(
+        private VerifiedCodeModule VerifyCodeModule(
             dynamic components,
             VbeCodeModuleSourceMap sourceMap)
         {
             object? componentObject = null;
             object? codeModuleObject = null;
             var succeeded = false;
+            Exception? primaryFailure = null;
             try
             {
                 componentObject = components.Item(sourceMap.ModuleName);
@@ -1273,12 +1443,18 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                 succeeded = true;
                 return new VerifiedCodeModule(componentObject, codeModuleObject);
             }
+            catch (Exception failure)
+            {
+                primaryFailure = failure;
+                throw;
+            }
             finally
             {
                 if (!succeeded)
                 {
-                    ComObjectReleaser.Release(codeModuleObject);
-                    ComObjectReleaser.Release(componentObject);
+                    ReleaseComScope(primaryFailure,
+                        ($"code module {sourceMap.ModuleName}", codeModuleObject),
+                        ($"component {sourceMap.ModuleName}", componentObject));
                 }
             }
         }
@@ -1321,6 +1497,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             object? componentsObject = null;
             object? componentObject = null;
             object? codeModuleObject = null;
+            Exception? primaryFailure = null;
             try
             {
                 dynamic workbook = GetOpenedWorkbook();
@@ -1357,12 +1534,17 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                     beforeExecute: beforeExecute,
                     execute: execute);
             }
+            catch (Exception failure)
+            {
+                primaryFailure = failure;
+                throw;
+            }
             finally
             {
-                ComObjectReleaser.Release(codeModuleObject);
-                ComObjectReleaser.Release(componentObject);
-                ComObjectReleaser.Release(componentsObject);
-                ComObjectReleaser.Release(projectObject);
+                ReleaseComScope(primaryFailure,
+                    ($"code module {target.ModuleName}", codeModuleObject),
+                    ($"component {target.ModuleName}", componentObject),
+                    ("VBA components", componentsObject), ("VBA project", projectObject));
             }
         }
 
@@ -1415,7 +1597,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             catch (OperationCanceledException) when (
                 cancellationToken.IsCancellationRequested)
             {
-                RequestCancellationTermination();
+                RequestCancellationTermination(cancellationToken);
                 throw;
             }
         }
@@ -1426,6 +1608,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             object? worksheetsObject = null;
             object? worksheetObject = null;
             object? rangeObject = null;
+            Exception? primaryFailure = null;
             try
             {
                 dynamic workbook = GetOpenedWorkbook();
@@ -1441,12 +1624,18 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                     (int)project.Mode,
                     Convert.ToString(range.Value2));
             }
+            catch (Exception failure)
+            {
+                primaryFailure = failure;
+                throw;
+            }
             finally
             {
-                ComObjectReleaser.Release(rangeObject);
-                ComObjectReleaser.Release(worksheetObject);
-                ComObjectReleaser.Release(worksheetsObject);
-                ComObjectReleaser.Release(projectObject);
+                ReleaseComScope(primaryFailure,
+                    ("Doctor probe range", rangeObject),
+                    ("Doctor probe worksheet", worksheetObject),
+                    ("Doctor probe worksheets", worksheetsObject),
+                    ("VBA project", projectObject));
             }
         }
 
@@ -1468,6 +1657,7 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
             object? codeWindowObject = null;
             object? commandBarsObject = null;
             object? commandControlObject = null;
+            Exception? primaryFailure = null;
             try
             {
                 dynamic component = componentObject;
@@ -1568,22 +1758,43 @@ public sealed class VbeDebugAutomation : IVbeDebugSessionFactory
                         ex);
                 }
             }
+            catch (Exception failure)
+            {
+                primaryFailure = failure;
+                throw;
+            }
             finally
             {
-                ComObjectReleaser.Release(commandControlObject);
-                ComObjectReleaser.Release(commandBarsObject);
-                ComObjectReleaser.Release(codeWindowObject);
-                ComObjectReleaser.Release(mainWindowObject);
-                ComObjectReleaser.Release(vbeObject);
-                if (!ReferenceEquals(activeCodePaneObject, codePaneObject))
-                {
-                    ComObjectReleaser.Release(activeCodePaneObject);
-                }
-
-                ComObjectReleaser.Release(codePaneObject);
+                ReleaseComScope(primaryFailure,
+                    ($"native {commandName} command", commandControlObject),
+                    ("VBE command bars", commandBarsObject),
+                    ("VBE code window", codeWindowObject),
+                    ("VBE main window", mainWindowObject),
+                    ("VBE", vbeObject),
+                    ("active VBE code pane", activeCodePaneObject),
+                    ("VBE code pane", codePaneObject));
             }
         }
 
+        private void ReleaseComScope(
+            Exception? primaryFailure,
+            params (string Resource, object? Value)[] resources)
+        {
+            if (primaryFailure is OperationCanceledException
+                or IDebugFailureEvidence { FailureOutcome.PrimaryFailure: OperationCanceledException })
+            {
+                EstablishEnd("setup cancellation", primaryFailure);
+            }
+            try
+            {
+                ComObjectReleaser.ReleaseScope(primaryFailure, processId, null, releaseComObject, resources);
+            }
+            catch (Exception failure)
+            {
+                EstablishEnd("debug setup", failure);
+                throw;
+            }
+        }
         private object GetOpenedWorkbook()
             => workbookObject ?? throw new DebugSetupException(
                 "The generated debug workbook has not been opened.");
@@ -1718,10 +1929,16 @@ internal sealed class WindowsDebugExcelProcessApi : IDebugExcelProcessApi
 internal sealed class SystemDebugOwnedProcess : IDebugOwnedProcess
 {
     private readonly Process process;
+    private readonly DebugNativeHandleRelease handleRelease;
+    private readonly object waitGate = new();
+    private readonly List<Task> exitWaits = [];
+    private bool releasing;
 
     public SystemDebugOwnedProcess(Process process)
     {
         this.process = process;
+        // Keep metadata queries on the process handle that this owner must release.
+        handleRelease = new DebugNativeHandleRelease(process.SafeHandle);
         Id = process.Id;
         StartTime = process.StartTime;
         Architecture = WindowsExcelProcessArchitecture.Read(process.Handle);
@@ -1741,10 +1958,21 @@ internal sealed class SystemDebugOwnedProcess : IDebugOwnedProcess
 
     public bool HasExited => process.HasExited;
 
+    public bool HandleReleaseVerified => handleRelease.IsVerified;
+
     public int ExitCode => process.ExitCode;
 
     public Task WaitForExitAsync(CancellationToken cancellationToken)
-        => process.WaitForExitAsync(cancellationToken);
+    {
+        lock (waitGate)
+        {
+            ObjectDisposedException.ThrowIf(releasing, this);
+            exitWaits.RemoveAll(wait => wait.IsCompleted);
+            var wait = process.WaitForExitAsync(cancellationToken);
+            exitWaits.Add(wait);
+            return wait;
+        }
+    }
 
     public void Kill()
     {
@@ -1757,7 +1985,32 @@ internal sealed class SystemDebugOwnedProcess : IDebugOwnedProcess
         process.Kill(entireProcessTree: false);
     }
 
-    public void Dispose() => process.Dispose();
+    public void Dispose()
+    {
+        var completion = new DebugFailureCompletion();
+        bool waitsSettled;
+        lock (waitGate)
+        {
+            releasing = true;
+            waitsSettled = exitWaits.All(wait => wait.IsCompleted);
+        }
+        // Never invalidate a numeric handle while an asynchronous OS wait may use it.
+        // Normal SafeHandle disposal can defer its release; that is not positive proof.
+        try { if (waitsSettled) { handleRelease.Release(); } }
+        catch (Exception failure)
+        {
+            completion.AddFailure("process handle", "Excel process", DebugResourceKind.Handle, failure, Id);
+        }
+        try { process.Dispose(); }
+        catch (Exception failure)
+        {
+            completion.AddFailure("process managed state", "Excel process", DebugResourceKind.Handle, failure, Id);
+        }
+        completion.AddEvidence(new("process handle", "Excel process", DebugResourceKind.Handle,
+            handleRelease.IsVerified, waitsSettled ? "The native handle owner reports CloseHandle completion."
+                : "An exit wait remains active; native handle release cannot be proved.", Id));
+        completion.Complete().Throw();
+    }
 }
 
 internal static class WindowsExcelProcessArchitecture

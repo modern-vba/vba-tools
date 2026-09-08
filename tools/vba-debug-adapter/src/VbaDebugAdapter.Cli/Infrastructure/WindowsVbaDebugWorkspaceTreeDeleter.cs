@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Runtime.ExceptionServices;
 using Microsoft.Win32.SafeHandles;
 
 namespace VbaDebugAdapter.Infrastructure;
@@ -56,13 +57,12 @@ internal sealed class WindowsVbaDebugWorkspaceTreeDeleter
                 beforeDelete,
                 beforeOpenEntry);
         }
-        catch
+        catch (Exception primary)
         {
-            targetHandle?.Dispose();
-            for (var index = ancestorHandles.Count - 1; index >= 0; index--)
-            {
-                ancestorHandles[index].Dispose();
-            }
+            var completion = new DebugFailureCompletion(primary);
+            ReleaseOwnedHandles(targetHandle is null ? ancestorHandles : [.. ancestorHandles, targetHandle],
+                completion, "workspace-cleanup-scope-handles", workspaceRoot);
+            completion.Complete().Throw();
             throw;
         }
     }
@@ -85,9 +85,11 @@ internal sealed class WindowsVbaDebugWorkspaceTreeDeleter
             }
             return handle;
         }
-        catch
+        catch (Exception primary)
         {
-            handle.Dispose();
+            var completion = new DebugFailureCompletion(primary);
+            ReleaseOwnedHandles([handle], completion, "workspace-boundary-handle", directoryPath);
+            completion.Complete().Throw();
             throw;
         }
     }
@@ -130,9 +132,11 @@ internal sealed class WindowsVbaDebugWorkspaceTreeDeleter
             }
             return new FileStream(leaseHandle, FileAccess.Read);
         }
-        catch
+        catch (Exception primary)
         {
-            leaseHandle.Dispose();
+            var completion = new DebugFailureCompletion(primary);
+            ReleaseOwnedHandles([leaseHandle], completion, "workspace-lease-handle", leasePath);
+            completion.Complete().Throw();
             throw;
         }
     }
@@ -207,6 +211,71 @@ internal sealed class WindowsVbaDebugWorkspaceTreeDeleter
     private static IOException CreateHandleIOException(string message)
         => new(message, new Win32Exception(Marshal.GetLastPInvokeError()));
 
+    internal static void ReleaseOwnedHandle(SafeFileHandle handle)
+    {
+        var release = new DebugNativeHandleRelease(handle);
+        release.Release();
+        if (!release.IsVerified)
+        {
+            throw new IOException("The owned workspace handle has no available native release evidence.");
+        }
+    }
+
+    internal static bool ReleaseOwnedHandles(
+        IReadOnlyList<SafeFileHandle> handles,
+        DebugFailureCompletion completion,
+        string stage,
+        string resource,
+        Action<SafeFileHandle, string>? releaseHandle = null)
+    {
+        var released = true;
+        for (var index = handles.Count - 1; index >= 0; index--)
+        {
+            var handleResource = $"{resource} (handle {index})";
+            try
+            {
+                if (releaseHandle is null) { ReleaseOwnedHandle(handles[index]); }
+                else { releaseHandle(handles[index], stage); }
+                completion.AddEvidence(new(stage, handleResource, DebugResourceKind.Handle,
+                    true, "The owner observed successful native handle release."));
+            }
+            catch (Exception exception)
+            {
+                released = false;
+                completion.AddFailure(stage, handleResource, DebugResourceKind.Handle,
+                    exception, retainedPath: resource);
+                completion.AddEvidence(new(stage, handleResource, DebugResourceKind.Handle,
+                    false, "Native handle release was not proved.", RetainedPath: resource));
+            }
+        }
+        completion.AddEvidence(new(stage, resource, DebugResourceKind.Handle, released,
+            handles.Count == 0 ? "The owner acquired no handles at this stage."
+                : released ? "Every owned handle at this stage was released."
+                : "At least one owned handle release remains unproved.",
+            RetainedPath: released ? null : resource));
+        return released;
+    }
+
+    internal static void RecordOwnedTreeDeletion(
+        DebugFailureCompletion completion, string stage, string ownedPath, bool deletionRequested)
+    {
+        var deleted = false;
+        try
+        {
+            deleted = deletionRequested
+                && !WindowsVbaDebugWorkspacePath.EntryExistsNoFollow(ownedPath);
+        }
+        catch (Exception exception)
+        {
+            completion.AddFailure(stage, ownedPath, DebugResourceKind.FileSystem,
+                exception, retainedPath: ownedPath);
+        }
+        completion.AddEvidence(new(stage, ownedPath, DebugResourceKind.FileSystem, deleted,
+            deleted ? "The owner observed deletion of its pinned tree."
+                : "The owner's pinned tree remains retained or deletion is unproved.",
+            RetainedPath: deleted ? null : ownedPath));
+    }
+
     internal static void DeletePinnedWorkspaceDirectory(
         string directoryPath,
         SafeFileHandle directoryHandle,
@@ -229,22 +298,37 @@ internal sealed class WindowsVbaDebugWorkspaceTreeDeleter
         string entryPath,
         Action<string>? beforeOpenEntry)
     {
-        using var entryHandle = OpenHandle(
+        var entryHandle = OpenHandle(
             entryPath,
             DeleteAccess | FileReadAttributes | FileWriteAttributes);
-        var attributes = GetAttributes(entryHandle, entryPath);
-        if ((attributes & FileAttributes.Directory) != 0 &&
-            (attributes & FileAttributes.ReparsePoint) == 0)
+        var completion = new DebugFailureCompletion();
+        try
         {
-            DeletePinnedWorkspaceDirectory(
-                entryPath,
-                entryHandle,
-                beforeOpenEntry);
-            return;
+            var attributes = GetAttributes(entryHandle, entryPath);
+            if ((attributes & FileAttributes.Directory) != 0 &&
+                (attributes & FileAttributes.ReparsePoint) == 0)
+            {
+                DeletePinnedWorkspaceDirectory(entryPath, entryHandle, beforeOpenEntry);
+            }
+            else
+            {
+                ClearReadOnlyAttribute(entryHandle, entryPath, attributes);
+                MarkDelete(entryHandle, entryPath);
+            }
         }
-
-        ClearReadOnlyAttribute(entryHandle, entryPath, attributes);
-        MarkDelete(entryHandle, entryPath);
+        catch (Exception exception)
+        {
+            completion.AddFailure("workspace-entry-delete", entryPath,
+                DebugResourceKind.FileSystem, exception, retainedPath: entryPath);
+        }
+        ReleaseOwnedHandles([entryHandle], completion, "workspace-entry-handle", entryPath);
+        var outcome = completion.Complete();
+        if (outcome.CleanupFailures.Count == 1 && !outcome.HasUnprovedRelease)
+        {
+            // Preserve the existing bounded retry contract for a file-only attempt failure.
+            ExceptionDispatchInfo.Capture(outcome.CleanupFailures[0].Exception).Throw();
+        }
+        outcome.Throw();
     }
 
     private sealed class PinnedWorkspaceCleanupScope(
@@ -254,10 +338,14 @@ internal sealed class WindowsVbaDebugWorkspaceTreeDeleter
         SafeFileHandle targetHandle,
         Action<string>? beforeDelete,
         Action<string>? beforeOpenEntry)
-        : IVbaDebugWorkspaceCleanupScope
+        : IVbaDebugWorkspaceCleanupScope, IDebugResourceOwnerEvidence
     {
+        private readonly object gate = new();
+        private ExceptionDispatchInfo? disposalFailure;
         private bool deleted;
         private bool disposed;
+
+        public DebugFailureOutcome? CleanupOutcome { get; private set; }
 
         public Stream OpenLeaseStream()
         {
@@ -283,15 +371,24 @@ internal sealed class WindowsVbaDebugWorkspaceTreeDeleter
 
         public void Dispose()
         {
-            if (disposed)
+            lock (gate)
             {
-                return;
-            }
-            disposed = true;
-            targetHandle.Dispose();
-            for (var index = ancestorHandles.Count - 1; index >= 0; index--)
-            {
-                ancestorHandles[index].Dispose();
+                if (disposed)
+                {
+                    disposalFailure?.Throw();
+                    return;
+                }
+                disposed = true;
+                var completion = new DebugFailureCompletion();
+                ReleaseOwnedHandles([.. ancestorHandles, targetHandle], completion,
+                    "workspace-cleanup-scope-handles", cleanupTargetPath);
+                CleanupOutcome = completion.Complete();
+                try { CleanupOutcome.Throw(); }
+                catch (Exception exception)
+                {
+                    disposalFailure = ExceptionDispatchInfo.Capture(exception);
+                    throw;
+                }
             }
         }
 

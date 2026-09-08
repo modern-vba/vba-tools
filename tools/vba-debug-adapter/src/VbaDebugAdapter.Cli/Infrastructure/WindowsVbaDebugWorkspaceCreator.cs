@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
 using Microsoft.Win32.SafeHandles;
 
@@ -69,6 +70,7 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
     private readonly Action<string>? beforeCreateLeaseFile;
     private readonly Action<string>? beforeCreateSourceFile;
     private readonly Action<string>? afterCreateSourceFileBeforeOwnershipTransfer;
+    private readonly Action<SafeFileHandle, string>? releaseOwnedHandle;
 
     public WindowsVbaDebugWorkspaceCreator(
         string workspaceRoot,
@@ -76,7 +78,8 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
         Action<string>? beforeDeleteOwnedTree = null,
         Action<string>? beforeCreateLeaseFile = null,
         Action<string>? beforeCreateSourceFile = null,
-        Action<string>? afterCreateSourceFileBeforeOwnershipTransfer = null)
+        Action<string>? afterCreateSourceFileBeforeOwnershipTransfer = null,
+        Action<SafeFileHandle, string>? releaseOwnedHandle = null)
     {
         this.workspaceRoot = WindowsVbaDebugWorkspacePath.CanonicalizeOrCreate(
             workspaceRoot);
@@ -85,6 +88,7 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
         this.beforeDeleteOwnedTree = beforeDeleteOwnedTree;
         this.beforeCreateLeaseFile = beforeCreateLeaseFile;
         this.beforeCreateSourceFile = beforeCreateSourceFile;
+        this.releaseOwnedHandle = releaseOwnedHandle;
         this.afterCreateSourceFileBeforeOwnershipTransfer =
             afterCreateSourceFileBeforeOwnershipTransfer;
     }
@@ -96,6 +100,8 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
     {
         ArgumentNullException.ThrowIfNull(sessionId);
 
+        SafeFileHandle? sessionHandle = null;
+        string? sessionPath = null;
         var handles = new List<SafeFileHandle>();
         try
         {
@@ -106,8 +112,8 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
                 "workspaces",
                 workspacesPath);
             handles.Add(workspacesHandle);
-            var sessionPath = Path.Combine(workspacesPath, sessionId.Value);
-            var sessionHandle = CreatePhysicalDirectoryExclusive(
+            sessionPath = Path.Combine(workspacesPath, sessionId.Value);
+            sessionHandle = CreatePhysicalDirectoryExclusive(
                 workspacesHandle,
                 sessionId.Value,
                 sessionPath,
@@ -122,11 +128,35 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
                 beforeCreateLeaseFile,
                 afterCreateDirectoryBeforeOpen,
                 beforeCreateSourceFile,
-                afterCreateSourceFileBeforeOwnershipTransfer);
+                afterCreateSourceFileBeforeOwnershipTransfer,
+                releaseOwnedHandle);
         }
-        catch
+        catch (Exception primary)
         {
-            DisposeHandles(handles);
+            var completion = new DebugFailureCompletion(primary);
+            var deletionRequested = false;
+            if (sessionHandle is not null && sessionPath is not null)
+            {
+                try
+                {
+                    beforeDeleteOwnedTree?.Invoke(sessionPath);
+                    WindowsVbaDebugWorkspaceTreeDeleter.DeletePinnedWorkspaceDirectory(sessionPath, sessionHandle);
+                    deletionRequested = true;
+                }
+                catch (Exception cleanup)
+                {
+                    completion.AddFailure("session-delete", sessionPath,
+                        DebugResourceKind.FileSystem, cleanup, retainedPath: sessionPath);
+                }
+            }
+            WindowsVbaDebugWorkspaceTreeDeleter.ReleaseOwnedHandles(handles, completion,
+                "session-claim-handles", sessionPath ?? workspaceRoot, releaseOwnedHandle);
+            if (sessionHandle is not null && sessionPath is not null)
+            {
+                WindowsVbaDebugWorkspaceTreeDeleter.RecordOwnedTreeDeletion(
+                    completion, "session-delete", sessionPath, deletionRequested);
+            }
+            completion.Complete().Throw();
             throw;
         }
     }
@@ -139,7 +169,8 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
         Action<string>? afterCreateDirectoryBeforeOpen,
         Action<string>? beforeDeleteOwnedTree,
         Action<string>? beforeCreateSourceFile,
-        Action<string>? afterCreateSourceFileBeforeOwnershipTransfer)
+        Action<string>? afterCreateSourceFileBeforeOwnershipTransfer,
+        Action<SafeFileHandle, string>? releaseOwnedHandle)
     {
         ArgumentNullException.ThrowIfNull(generationId);
         if (
@@ -203,42 +234,47 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
                 generationPath,
                 sourcePath,
                 Path.Combine(outputPath, workbookFileName),
-                handles,
+                handles.Take(2).ToArray(),
                 generationHandle,
                 sourceHandle,
                 outputHandle,
                 [sourceHandle, outputHandle],
                 beforeDeleteOwnedTree,
                 beforeCreateSourceFile,
-                afterCreateSourceFileBeforeOwnershipTransfer);
+                afterCreateSourceFileBeforeOwnershipTransfer,
+                releaseOwnedHandle);
         }
-        catch
+        catch (Exception primary)
         {
+            var completion = new DebugFailureCompletion(primary);
             if (generationHandle is null || generationPath is null)
             {
-                DisposeHandles(handles);
+                WindowsVbaDebugWorkspaceTreeDeleter.ReleaseOwnedHandles(
+                    handles, completion, "generation-claim-handles", sessionWorkspacePath, releaseOwnedHandle);
             }
             else
             {
-                for (var index = handles.Count - 1; index >= 0; index--)
-                {
-                    if (!ReferenceEquals(handles[index], generationHandle))
-                    {
-                        handles[index].Dispose();
-                    }
-                }
+                WindowsVbaDebugWorkspaceTreeDeleter.ReleaseOwnedHandles(
+                    handles.Skip(2).ToArray(), completion,
+                    "generation-descendant-handles", generationPath, releaseOwnedHandle);
+                var deletionRequested = false;
                 try
                 {
-                    DeletePinnedWorkspaceDirectoryIfPresent(
-                        generationPath,
-                        generationHandle);
+                    DeletePinnedWorkspaceDirectoryIfPresent(generationPath, generationHandle);
+                    deletionRequested = true;
                 }
-                catch
+                catch (Exception cleanup)
                 {
-                    // The generation-claim failure remains authoritative.
+                    completion.AddFailure("generation-delete", generationPath,
+                        DebugResourceKind.FileSystem, cleanup, retainedPath: generationPath);
                 }
-                generationHandle.Dispose();
+                WindowsVbaDebugWorkspaceTreeDeleter.ReleaseOwnedHandles(
+                    handles.Take(2).ToArray(), completion,
+                    "generation-remaining-handles", generationPath, releaseOwnedHandle);
+                WindowsVbaDebugWorkspaceTreeDeleter.RecordOwnedTreeDeletion(
+                    completion, "generation-delete", generationPath, deletionRequested);
             }
+            completion.Complete().Throw();
             throw;
         }
     }
@@ -277,9 +313,12 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
             ValidatePhysicalDirectory(handle, path);
             return handle;
         }
-        catch
+        catch (Exception primary)
         {
-            handle.Dispose();
+            var completion = new DebugFailureCompletion(primary);
+            WindowsVbaDebugWorkspaceTreeDeleter.ReleaseOwnedHandles(
+                [handle], completion, "workspace-entry-acquisition-handles", path);
+            completion.Complete().Throw();
             throw;
         }
     }
@@ -307,9 +346,12 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
             ValidatePhysicalDirectory(handle, path);
             return handle;
         }
-        catch
+        catch (Exception primary)
         {
-            handle.Dispose();
+            var completion = new DebugFailureCompletion(primary);
+            WindowsVbaDebugWorkspaceTreeDeleter.ReleaseOwnedHandles(
+                [handle], completion, "workspace-entry-acquisition-handles", path);
+            completion.Complete().Throw();
             throw;
         }
     }
@@ -337,9 +379,12 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
             ValidatePhysicalDirectory(handle, path);
             return handle;
         }
-        catch
+        catch (Exception primary)
         {
-            handle.Dispose();
+            var completion = new DebugFailureCompletion(primary);
+            WindowsVbaDebugWorkspaceTreeDeleter.ReleaseOwnedHandles(
+                [handle], completion, "workspace-entry-acquisition-handles", path);
+            completion.Complete().Throw();
             throw;
         }
     }
@@ -366,9 +411,12 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
             ValidatePhysicalDirectory(handle, path);
             return handle;
         }
-        catch
+        catch (Exception primary)
         {
-            handle.Dispose();
+            var completion = new DebugFailureCompletion(primary);
+            WindowsVbaDebugWorkspaceTreeDeleter.ReleaseOwnedHandles(
+                [handle], completion, "workspace-entry-acquisition-handles", path);
+            completion.Complete().Throw();
             throw;
         }
     }
@@ -397,9 +445,12 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
             ValidatePhysicalDirectory(handle, path);
             return handle;
         }
-        catch
+        catch (Exception primary)
         {
-            handle.Dispose();
+            var completion = new DebugFailureCompletion(primary);
+            WindowsVbaDebugWorkspaceTreeDeleter.ReleaseOwnedHandles(
+                [handle], completion, "workspace-entry-acquisition-handles", path);
+            completion.Complete().Throw();
             throw;
         }
     }
@@ -447,9 +498,12 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
                 bufferSize: 4096,
                 isAsync: asynchronous);
         }
-        catch
+        catch (Exception primary)
         {
-            handle.Dispose();
+            var completion = new DebugFailureCompletion(primary);
+            WindowsVbaDebugWorkspaceTreeDeleter.ReleaseOwnedHandles(
+                [handle], completion, "workspace-entry-acquisition-handles", path);
+            completion.Complete().Throw();
             throw;
         }
     }
@@ -475,9 +529,18 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
                     path,
                     requireSingleLink: true));
         }
-        catch
+        catch (Exception primary)
         {
-            stream.Dispose();
+            var completion = new DebugFailureCompletion(primary);
+            WindowsVbaDebugWorkspaceTreeDeleter.ReleaseOwnedHandles(
+                [stream.SafeFileHandle], completion, "workspace-file-creation-handle", path);
+            try { stream.Dispose(); }
+            catch (Exception cleanup)
+            {
+                completion.AddFailure("workspace-file-creation-stream", path,
+                    DebugResourceKind.Handle, cleanup, retainedPath: path);
+            }
+            completion.Complete().Throw();
             throw;
         }
     }
@@ -511,9 +574,12 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
             ValidatePhysicalFile(handle, path, requireSingleLink);
             return handle;
         }
-        catch
+        catch (Exception primary)
         {
-            handle.Dispose();
+            var completion = new DebugFailureCompletion(primary);
+            WindowsVbaDebugWorkspaceTreeDeleter.ReleaseOwnedHandles(
+                [handle], completion, "workspace-entry-acquisition-handles", path);
+            completion.Complete().Throw();
             throw;
         }
     }
@@ -705,14 +771,6 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
         }
     }
 
-    private static void DisposeHandles(IReadOnlyList<SafeFileHandle> handles)
-    {
-        for (var index = handles.Count - 1; index >= 0; index--)
-        {
-            handles[index].Dispose();
-        }
-    }
-
     private sealed class SessionCreationScope(
         string sessionWorkspacePath,
         IReadOnlyList<SafeFileHandle> handles,
@@ -721,11 +779,16 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
         Action<string>? beforeCreateLeaseFile,
         Action<string>? afterCreateDirectoryBeforeOpen,
         Action<string>? beforeCreateSourceFile,
-        Action<string>? afterCreateSourceFileBeforeOwnershipTransfer)
-        : IVbaDebugSessionWorkspaceCreationScope
+        Action<string>? afterCreateSourceFileBeforeOwnershipTransfer,
+        Action<SafeFileHandle, string>? releaseOwnedHandle)
+        : IVbaDebugSessionWorkspaceCreationScope, IDebugResourceOwnerEvidence
     {
+        private readonly object disposalGate = new();
+        private ExceptionDispatchInfo? disposalFailure;
         private int disposed;
         private bool deleted;
+
+        public DebugFailureOutcome? CleanupOutcome { get; private set; }
 
         public string SessionWorkspacePath { get; } = sessionWorkspacePath;
 
@@ -754,7 +817,8 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
                 afterCreateDirectoryBeforeOpen,
                 beforeDeleteOwnedTree,
                 beforeCreateSourceFile,
-                afterCreateSourceFileBeforeOwnershipTransfer);
+                afterCreateSourceFileBeforeOwnershipTransfer,
+                releaseOwnedHandle);
         }
 
         public void DeleteOwnedTree()
@@ -773,9 +837,24 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
 
         public void Dispose()
         {
-            if (Interlocked.Exchange(ref disposed, 1) == 0)
+            lock (disposalGate)
             {
-                DisposeHandles(handles);
+                if (disposed != 0)
+                {
+                    disposalFailure?.Throw();
+                    return;
+                }
+                disposed = 1;
+                var completion = new DebugFailureCompletion();
+                WindowsVbaDebugWorkspaceTreeDeleter.ReleaseOwnedHandles(
+                    handles, completion, "session-remaining-handles", SessionWorkspacePath, releaseOwnedHandle);
+                CleanupOutcome = completion.Complete();
+                try { CleanupOutcome.Throw(); }
+                catch (Exception exception)
+                {
+                    disposalFailure = ExceptionDispatchInfo.Capture(exception);
+                    throw;
+                }
             }
         }
     }
@@ -792,8 +871,9 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
         IReadOnlyList<SafeFileHandle> descendantHandles,
         Action<string>? beforeDeleteOwnedTree,
         Action<string>? beforeCreateSourceFile,
-        Action<string>? afterCreateSourceFileBeforeOwnershipTransfer)
-        : IVbaDebugGenerationWorkspace
+        Action<string>? afterCreateSourceFileBeforeOwnershipTransfer,
+        Action<SafeFileHandle, string>? releaseOwnedHandle)
+        : IVbaDebugGenerationWorkspace, IDebugResourceOwnerEvidence
     {
         private readonly object gate = new();
         private readonly List<SafeFileHandle> nestedHandles = [];
@@ -805,7 +885,9 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
         private WindowsPhysicalFileIdentity? workbookIdentity;
         private byte[]? workbookSha256;
         private int disposed;
-        private bool descendantsReleased;
+        private Task? disposal;
+
+        public DebugFailureOutcome? CleanupOutcome { get; private set; }
         private bool sourceSnapshotSealed;
 
         public DebugGenerationId GenerationId { get; } = generationId;
@@ -891,10 +973,19 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
                         identity));
                     return createdFile.Stream;
                 }
-                catch
+                catch (Exception primary)
                 {
-                    createdFile.Stream.Dispose();
-                    createdFile.IdentityPin.Dispose();
+                    var completion = new DebugFailureCompletion(primary);
+                    WindowsVbaDebugWorkspaceTreeDeleter.ReleaseOwnedHandles(
+                        [createdFile.IdentityPin, createdFile.Stream.SafeFileHandle], completion,
+                        "source-file-transfer-handles", filePath, releaseOwnedHandle);
+                    try { createdFile.Stream.Dispose(); }
+                    catch (Exception cleanup)
+                    {
+                        completion.AddFailure("source-file-transfer-stream", filePath,
+                            DebugResourceKind.Handle, cleanup, retainedPath: filePath);
+                    }
+                    completion.Complete().Throw();
                     throw;
                 }
             }
@@ -953,9 +1044,12 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
                                 sealedHandle,
                                 ComputeSha256(sealedHandle, sourceFile.Path)));
                         }
-                        catch
+                        catch (Exception primary)
                         {
-                            sealedHandle.Dispose();
+                            var completion = new DebugFailureCompletion(primary);
+                            WindowsVbaDebugWorkspaceTreeDeleter.ReleaseOwnedHandles(
+                                [sealedHandle], completion, "source-seal-handle", sourceFile.Path, releaseOwnedHandle);
+                            completion.Complete().Throw();
                             throw;
                         }
                     }
@@ -963,7 +1057,7 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
 
                     foreach (var sealedSource in pendingFileSeals)
                     {
-                        sealedSource.Source.IdentityPin.Dispose();
+                        WindowsVbaDebugWorkspaceTreeDeleter.ReleaseOwnedHandle(sealedSource.Source.IdentityPin);
                         sealedSource.Source.IdentityPin = sealedSource.Handle;
                         sealedSource.Source.SealedSha256 = sealedSource.Sha256;
                     }
@@ -971,15 +1065,20 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
                     sourceSnapshotSealed = true;
                     transferred = true;
                 }
-                finally
+                catch (Exception primary)
                 {
+                    var completion = new DebugFailureCompletion(primary);
                     if (!transferred)
                     {
-                        DisposeHandles(pendingFileSeals
-                            .Select(source => source.Handle)
-                            .ToArray());
-                        DisposeHandles(pendingDirectorySeals);
+                        WindowsVbaDebugWorkspaceTreeDeleter.ReleaseOwnedHandles(
+                            pendingFileSeals.Select(source => source.Handle).ToArray(), completion,
+                            "source-seal-file-handles", SourceSnapshotPath, releaseOwnedHandle);
+                        WindowsVbaDebugWorkspaceTreeDeleter.ReleaseOwnedHandles(
+                            pendingDirectorySeals, completion,
+                            "source-seal-directory-handles", SourceSnapshotPath, releaseOwnedHandle);
                     }
+                    completion.Complete().Throw();
+                    throw;
                 }
             }
         }
@@ -997,30 +1096,10 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
                 ValidateSourceInventory();
                 foreach (var sourceFile in sourceFileIdentityPins)
                 {
-                    using var currentHandle = OpenExistingPhysicalFile(
-                        sourceFile.ParentHandle,
-                        sourceFile.Name,
-                        sourceFile.Path,
-                        requireSingleLink: true,
-                        verificationOnly: true);
-                    var currentIdentity = ReadPhysicalFileIdentity(
-                        currentHandle,
-                        sourceFile.Path);
-                    if (currentIdentity != sourceFile.Identity)
-                    {
-                        throw new IOException(
-                            $"The materialized VBA debug source file identity changed during the build: {sourceFile.Path}");
-                    }
-                    var currentSha256 = ComputeSha256(
-                        sourceFile.IdentityPin,
-                        sourceFile.Path);
-                    if (!CryptographicOperations.FixedTimeEquals(
-                            currentSha256,
-                            sourceFile.SealedSha256!))
-                    {
-                        throw new IOException(
-                            $"The materialized VBA debug source file content changed during the build: {sourceFile.Path}");
-                    }
+                    VerifyPinnedFile(sourceFile.ParentHandle, sourceFile.Path,
+                        sourceFile.IdentityPin, sourceFile.Identity, sourceFile.SealedSha256!,
+                        $"The materialized VBA debug source file identity changed during the build: {sourceFile.Path}",
+                        $"The materialized VBA debug source file content changed during the build: {sourceFile.Path}");
                 }
                 ValidateSourceInventory();
             }
@@ -1116,76 +1195,90 @@ internal sealed class WindowsVbaDebugWorkspaceCreator
                     throw new InvalidOperationException(
                         "The generated VBA debug workbook identity has not been pinned.");
                 }
-                using var currentHandle = OpenExistingPhysicalFile(
-                    outputHandle,
-                    Path.GetFileName(WorkbookPath),
-                    WorkbookPath,
-                    requireSingleLink: true,
-                    verificationOnly: true);
-                var currentIdentity = ReadPhysicalFileIdentity(
-                    currentHandle,
-                    WorkbookPath);
-                if (currentIdentity != workbookIdentity.Value)
+                VerifyPinnedFile(outputHandle, WorkbookPath,
+                    workbookIdentityPin, workbookIdentity.Value, workbookSha256,
+                    "The generated VBA debug workbook identity changed after the build completed.",
+                    "The generated VBA debug workbook content changed after the build completed.");
+            }
+        }
+
+        private void VerifyPinnedFile(
+            SafeFileHandle parentHandle, string path, SafeFileHandle identityPin,
+            WindowsPhysicalFileIdentity expectedIdentity, byte[] expectedHash,
+            string identityFailureMessage, string contentFailureMessage)
+        {
+            var currentHandle = OpenExistingPhysicalFile(parentHandle, Path.GetFileName(path), path,
+                requireSingleLink: true, verificationOnly: true);
+            var completion = new DebugFailureCompletion();
+            try
+            {
+                if (ReadPhysicalFileIdentity(currentHandle, path) != expectedIdentity)
                 {
-                    throw new IOException(
-                        "The generated VBA debug workbook identity changed after the build completed.");
+                    throw new IOException(identityFailureMessage);
                 }
-                var currentSha256 = ComputeSha256(
-                    workbookIdentityPin,
-                    WorkbookPath);
-                if (!CryptographicOperations.FixedTimeEquals(
-                        currentSha256,
-                        workbookSha256))
+                if (!CryptographicOperations.FixedTimeEquals(ComputeSha256(identityPin, path), expectedHash))
                 {
-                    throw new IOException(
-                        "The generated VBA debug workbook content changed after the build completed.");
+                    throw new IOException(contentFailureMessage);
                 }
             }
+            catch (Exception primary)
+            {
+                completion = new DebugFailureCompletion(primary);
+            }
+            WindowsVbaDebugWorkspaceTreeDeleter.ReleaseOwnedHandles(
+                [currentHandle], completion, "workspace-verification-handle", path, releaseOwnedHandle);
+            completion.Complete().Throw();
         }
 
         public ValueTask DisposeAsync()
         {
             lock (gate)
             {
-                if (disposed != 0)
-                {
-                    return ValueTask.CompletedTask;
-                }
                 disposed = 1;
+                return new ValueTask(disposal ??= CompleteDisposal());
             }
-
-            try
-            {
-                ReleaseDescendantHandles();
-                beforeDeleteOwnedTree?.Invoke(GenerationWorkspacePath);
-                WindowsVbaDebugWorkspaceTreeDeleter.DeletePinnedWorkspaceDirectory(
-                    GenerationWorkspacePath,
-                    generationHandle);
-            }
-            finally
-            {
-                DisposeHandles(handles);
-            }
-            return ValueTask.CompletedTask;
         }
 
-        private void ReleaseDescendantHandles()
+        private Task CompleteDisposal()
         {
-            if (descendantsReleased)
+            var completion = new DebugFailureCompletion();
+            var descendantPins = new List<SafeFileHandle>();
+            if (workbookIdentityPin is not null) { descendantPins.Add(workbookIdentityPin); }
+            descendantPins.AddRange(sourceFileIdentityPins.Select(source => source.IdentityPin));
+            descendantPins.AddRange(sourceDirectorySeals);
+            descendantPins.AddRange(nestedHandles);
+            descendantPins.AddRange(descendantHandles);
+            WindowsVbaDebugWorkspaceTreeDeleter.ReleaseOwnedHandles(
+                descendantPins, completion, "generation-descendant-handles", GenerationWorkspacePath, releaseOwnedHandle);
+
+            var deletionRequested = false;
+            try
             {
-                return;
+                beforeDeleteOwnedTree?.Invoke(GenerationWorkspacePath);
+                WindowsVbaDebugWorkspaceTreeDeleter.DeletePinnedWorkspaceDirectory(
+                    GenerationWorkspacePath, generationHandle);
+                deletionRequested = true;
             }
-            descendantsReleased = true;
-            workbookIdentityPin?.Dispose();
-            workbookIdentityPin = null;
-            workbookIdentity = null;
-            workbookSha256 = null;
-            DisposeHandles(sourceFileIdentityPins
-                .Select(sourceFile => sourceFile.IdentityPin)
-                .ToArray());
-            DisposeHandles(sourceDirectorySeals);
-            DisposeHandles(nestedHandles);
-            DisposeHandles(descendantHandles);
+            catch (Exception exception)
+            {
+                completion.AddFailure("generation-delete", GenerationWorkspacePath,
+                    DebugResourceKind.FileSystem, exception, retainedPath: GenerationWorkspacePath);
+            }
+
+            WindowsVbaDebugWorkspaceTreeDeleter.ReleaseOwnedHandles(
+                handles, completion, "generation-remaining-handles", GenerationWorkspacePath, releaseOwnedHandle);
+            WindowsVbaDebugWorkspaceTreeDeleter.RecordOwnedTreeDeletion(
+                completion, "generation-delete", GenerationWorkspacePath, deletionRequested);
+            CleanupOutcome = completion.Complete();
+            try
+            {
+                CleanupOutcome.Throw();
+                return Task.CompletedTask;
+            }
+            catch (Exception exception)
+            {
+                return Task.FromException(exception);
+            }
         }
 
         private sealed class SourceFileIdentityPin(
