@@ -258,12 +258,12 @@ public sealed class ExportCommandTests
     }
 
     [Fact]
-    public void ExplicitWorkbookExportSupportsLegacySynchronousExporter()
+    public void ExplicitWorkbookExportSupportsAnExporterWithoutAnAsyncStateMachine()
     {
         using var temp = TempDirectory.Create();
         var explicitWorkbook = Path.Combine(temp.Path, "explicit.xlsm");
         File.WriteAllText(explicitWorkbook, "workbook", Encoding.UTF8);
-        var exporter = new LegacyWorkbookModuleExporter();
+        var exporter = new ImmediateWorkbookModuleExporter();
         var application = CommandLineTestFactory.Create(temp.Path, workbookModuleExporter: exporter);
 
         var result = application.Run(["export", "--from", explicitWorkbook]);
@@ -279,7 +279,7 @@ public sealed class ExportCommandTests
         using var temp = TempDirectory.Create();
         var explicitWorkbook = Path.Combine(temp.Path, "explicit.xlsm");
         File.WriteAllText(explicitWorkbook, "workbook", Encoding.UTF8);
-        var command = new ExportCommand(
+        var command = new ExportCommand(new VbaDev.Infrastructure.FileSystem.WindowsExactFileSystemObjectOwnershipFactory(),
             new FakeWorkbookModuleExporter(("Module1.bas", "new module")));
 
         var result = command.RunExplicit(new ExplicitWorkbookExportCommandRequest(
@@ -1075,80 +1075,57 @@ internal sealed class FakeWorkbookModuleExporter : IWorkbookModuleExporter
 
     public Action<CancellationToken>? OnExport { get; init; }
 
-    public void ExportModules(string workbookPath, string destinationDirectory)
-        => ExportModulesAsync(workbookPath, destinationDirectory, CancellationToken.None)
-            .GetAwaiter()
-            .GetResult();
-
-    public Task ExportModulesAsync(
-        string workbookPath,
-        string destinationDirectory,
-        CancellationToken cancellationToken)
+    public async Task ExportModulesAsync(string workbookPath, WorkbookExportStaging staging,
+        WorkbookAutomationTimeouts automationTimeouts, CancellationToken cancellationToken)
     {
-        Calls.Add((workbookPath, destinationDirectory));
+        Calls.Add((workbookPath, staging.Path));
+        AutomationTimeouts.Add(automationTimeouts);
         OnExport?.Invoke(cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
-        if (ExportError is not null)
-        {
-            throw ExportError;
-        }
-        if (ThrowOnExport)
-        {
-            throw new InvalidOperationException("export failed");
-        }
-
-        Directory.CreateDirectory(destinationDirectory);
+        if (ExportError is not null) throw ExportError;
+        if (ThrowOnExport) throw new InvalidOperationException("export failed");
         foreach (var export in exports)
         {
-            var exportPath = Path.Combine(destinationDirectory, export.FileName);
-            Directory.CreateDirectory(Path.GetDirectoryName(exportPath)!);
-            File.WriteAllText(exportPath, export.Content, Encoding.UTF8);
+            await staging.WriteModuleAsync(export.FileName, path =>
+            {
+                File.WriteAllText(path, export.Content, Encoding.UTF8);
+                return Task.CompletedTask;
+            });
         }
-
-        return Task.CompletedTask;
-    }
-
-    public Task ExportModulesAsync(
-        string workbookPath,
-        string destinationDirectory,
-        WorkbookAutomationTimeouts automationTimeouts,
-        CancellationToken cancellationToken)
-    {
-        AutomationTimeouts.Add(automationTimeouts);
-        return ExportModulesAsync(workbookPath, destinationDirectory, cancellationToken);
     }
 }
 
-internal sealed class LegacyWorkbookModuleExporter : IWorkbookModuleExporter
+internal sealed class ImmediateWorkbookModuleExporter : IWorkbookModuleExporter
 {
     public List<(string WorkbookPath, string DestinationDirectory)> Calls { get; } = [];
-
-    public void ExportModules(string workbookPath, string destinationDirectory)
+    public Task ExportModulesAsync(string workbookPath, WorkbookExportStaging staging,
+        WorkbookAutomationTimeouts timeouts, CancellationToken cancellationToken)
     {
-        Calls.Add((workbookPath, destinationDirectory));
-        Directory.CreateDirectory(destinationDirectory);
-        File.WriteAllText(Path.Combine(destinationDirectory, "Legacy.bas"), "legacy", Encoding.UTF8);
+        Calls.Add((workbookPath, staging.Path));
+        return staging.WriteModuleAsync("Legacy.bas", path =>
+        {
+            File.WriteAllText(path, "legacy", Encoding.UTF8);
+            return Task.CompletedTask;
+        });
     }
 }
 
-internal sealed class ExistingFileRejectingWorkbookModuleExporter(
-    params (string FileName, string Content)[] exports)
+internal sealed class ExistingFileRejectingWorkbookModuleExporter(params (string FileName, string Content)[] exports)
     : IWorkbookModuleExporter
 {
     public List<(string WorkbookPath, string DestinationDirectory)> Calls { get; } = [];
-
-    public void ExportModules(string workbookPath, string destinationDirectory)
+    public async Task ExportModulesAsync(string workbookPath, WorkbookExportStaging staging,
+        WorkbookAutomationTimeouts timeouts, CancellationToken cancellationToken)
     {
-        Calls.Add((workbookPath, destinationDirectory));
-        Directory.CreateDirectory(destinationDirectory);
+        Calls.Add((workbookPath, staging.Path));
         foreach (var export in exports)
-        {
-            var exportPath = Path.Combine(destinationDirectory, export.FileName);
-            Directory.CreateDirectory(Path.GetDirectoryName(exportPath)!);
-            using var stream = new FileStream(exportPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-            using var writer = new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-            writer.Write(export.Content);
-        }
+            await staging.WriteModuleAsync(export.FileName, path =>
+            {
+                using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                using var writer = new StreamWriter(stream, new UTF8Encoding(false));
+                writer.Write(export.Content);
+                return Task.CompletedTask;
+            });
     }
 }
 

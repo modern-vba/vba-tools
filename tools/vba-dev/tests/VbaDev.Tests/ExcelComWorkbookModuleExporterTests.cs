@@ -33,7 +33,8 @@ public sealed class ExcelComWorkbookModuleExporterTests
     {
         using var temp = TempDirectory.Create();
         var workbookPath = Path.Combine(temp.Path, "Book1.xlsm");
-        var destinationPath = temp.CreateDirectory("exported-source");
+        using var staging = VbaDev.App.Export.WorkbookExportStaging.Create(new VbaDev.Infrastructure.FileSystem.WindowsExactFileSystemObjectOwnershipFactory());
+        var destinationPath = staging.Path;
         File.WriteAllText(workbookPath, "workbook");
         var session = new ExportRecordingWorkbookGenerationSession([
             new WorkbookModule("ThisWorkbook", WorkbookModuleKind.Document),
@@ -46,13 +47,16 @@ public sealed class ExcelComWorkbookModuleExporterTests
 
         await exporter.ExportModulesAsync(
             workbookPath,
-            destinationPath,
+            staging,
+            WorkbookAutomationTimeouts.Default,
             CancellationToken.None);
+        staging.CompleteProduction();
 
         Assert.Equal("ClassA", File.ReadAllText(Path.Combine(destinationPath, "ClassA.cls")));
         Assert.Equal("Dialog", File.ReadAllText(Path.Combine(destinationPath, "Dialog.frm")));
         Assert.Equal("ModuleB", File.ReadAllText(Path.Combine(destinationPath, "ModuleB.bas")));
         Assert.False(File.Exists(Path.Combine(destinationPath, "ThisWorkbook.cls")));
+        Assert.Equal(VbaDev.App.FileSystem.InvocationScratchCleanupStatus.Removed, staging.Cleanup().Status);
     }
 
     private sealed class ExportRecordingWorkbookGenerationAutomation(

@@ -81,6 +81,21 @@ commitment remain Export's policy. Once the destination transaction completes,
 later cancellation does not turn committed output into cancellation. Neither
 entry point independently traverses nested automation exceptions.
 
+Both Export modes use `WorkbookExportStaging` and `InvocationScratch`. The
+exporter declares source units through one timeout-aware asynchronous producer
+port rather than raw-directory synchronous/fallback overloads. Each completed
+source and form sidecar gets a pending observation before the owned session is
+retired; only proved process release allows receipt completion and dependent
+cleanup. Directory creation is create-only, and cleanup uses stored exact
+receipts without recursive deletion or adopting foreign entries. Unregistered
+source/sidecar/directory entries are rejected before destination mutation.
+Retained or inconclusive staging after destination commitment preserves exit
+zero and adds actionable stderr paths; it never rolls back the destination.
+Pre-commit retention augments the original failure/cancellation, and unproved
+process release returns one without attempting dependent deletion. Proved
+release permits staging cleanup even when a secondary cleanup failure remains
+authoritative. Destination recovery/protection policy remains unchanged.
+
 The runtime does not decide whether cleanup-time cancellation overrides a
 scenario's commitment. The generation adapter preserves its existing
 pre-commit cancellation behavior only after mandatory cleanup verification;

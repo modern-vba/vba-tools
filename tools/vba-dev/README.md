@@ -533,6 +533,10 @@ Cleanup is enabled when the destination is manifest-owned or when `--to` is supp
 
 When cleanup is not enabled, export still stages the complete workbook export before applying a recoverable overlay. It overwrites file paths it writes, but it does not delete unrelated files or displaced `.frx` files elsewhere in the destination.
 
+Both modes remove only invocation-owned staging after Excel's process release is proved. If the destination has been committed but staging cannot be conclusively removed, export keeps exit code `0` and its normal success output, and writes a `Warning:` to stderr with stable absolute retained paths. The committed destination is not rolled back. Inspect those paths and remove only obsolete staging after confirming Excel has exited; rerunning export is not necessary to recover a completed destination. Successful staging cleanup emits no warning.
+
+Before destination commitment, retained staging is reported with the original failure or cancellation. Unproved Excel-process release is exit code `1`, retains all dependent staging, and never becomes success with a housekeeping warning. Existing destination recovery/protection failures retain their existing failure and recovery requirements.
+
 ### import
 
 ```text

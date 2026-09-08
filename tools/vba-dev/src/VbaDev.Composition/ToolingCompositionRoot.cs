@@ -142,7 +142,7 @@ public static class ToolingCompositionRoot
             new TestProcedureSourceLocator(),
             pathIdentityResolver,
             ownershipFactory);
-        var exportCommand = new ExportCommand(
+        var exportCommand = new ExportCommand(ownershipFactory,
             workbookModuleExporter ?? new ExcelComWorkbookModuleExporter(),
             exportDestinationFileOperations ?? new ExportDestinationFileOperations());
         var importCommand = new ImportCommand(
