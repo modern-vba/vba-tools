@@ -899,6 +899,27 @@ the desired shared-source set, and the state is advisory evidence for a future
 fully revalidated purge rather than proof of retirement, rename, or a successor.
 _Avoid_: retired module, renamed CommonModule, disabled module
 
+**CommonModulesReconciliation**:
+The pure, request-scoped immutable facts derived from a validated complete
+CommonModules repository inventory and the latest installed selection of one
+ProjectDocument. It fixes canonical identity matches, requested dependency
+closure in CommonModuleDependencyComponent order, repository-backed installed
+entries, retained/missing/stale orphan state, provable reachability, missing
+installed dependencies, and the first-seen case-insensitive required-reference
+union. Update projects these facts into its source/manifest plan; Doctor
+projects them into warnings and dependency diagnostics without traversing the
+graph or reclassifying orphan state independently.
+Reappeared requested orphans are included in Update's refresh closure, while
+their stored orphan markers withhold current dependency/reachability authority
+from Doctor until refresh commits. An unreachable-dependency warning requires
+every requested root to have complete current authority. Diagnostic missing
+dependencies retain root order and first dependency encounter order; newly
+installed entries retain canonical dependency-component order.
+The result owns copies of the declarations and selection, so later caller
+mutations cannot alter it. Repository I/O and stable capture, source drift,
+mutation, leases, cancellation, manifest-last commitment, recovery, and message
+rendering remain outside this authority.
+
 **CommonModulesMutationIntent**:
 The request to add named CommonModules to one document or update every currently
 installed entry, evaluated against the latest valid **ProjectManifest** and

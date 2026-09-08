@@ -533,12 +533,12 @@ public sealed class CommonModulesInstallationTransaction
                          item => item.Key,
                          StringComparer.OrdinalIgnoreCase))
             {
-                var updatePlan = CreateUpdatePlan(entries, document);
-                if (updatePlan is null)
+                if (document.CommonModules.Count == 0)
                 {
                     continue;
                 }
 
+                var updatePlan = CommonModulesReconciliation.Create(entries, document.CommonModules);
                 ValidateSelectedEntryIdentities(updatePlan.Entries);
                 referenceEvidenceByDocument.Add(
                     documentName,
@@ -802,7 +802,7 @@ public sealed class CommonModulesInstallationTransaction
             foreach (var (documentName, document) in targetDocuments)
             {
                 priorModulesByDocument.Add(documentName, document.CommonModules.ToArray());
-                var updatePlan = CreateUpdatePlan(entries, document)!;
+                var updatePlan = CommonModulesReconciliation.Create(entries, document.CommonModules);
                 ValidateSelectedEntryIdentities(updatePlan.Entries);
                 var referenceChanges = AppendRequiredReferencesFromEvidence(
                     snapshot.ProjectRoot,
@@ -885,49 +885,6 @@ public sealed class CommonModulesInstallationTransaction
             cleanup ??= CleanupSnapshot(packageSnapshot);
             throw AddSnapshotFailureContext(ex, cleanup);
         }
-    }
-
-    private static CommonModulesUpdatePlan? CreateUpdatePlan(
-        IReadOnlyList<CommonModuleManifestEntry> entries,
-        ProjectDocument document)
-    {
-        var installedModuleNames = document.CommonModules
-            .Select(module => module.Name)
-            .ToArray();
-        if (installedModuleNames.Length == 0)
-        {
-            return null;
-        }
-
-        var entriesByName = entries.ToDictionary(
-            entry => entry.Name,
-            StringComparer.OrdinalIgnoreCase);
-        var requestedModuleNames = document.CommonModules
-            .Where(module => module.Requested)
-            .Select(module => module.Name)
-            .ToArray();
-        var availableRequestedModuleNames = requestedModuleNames
-            .Where(entriesByName.ContainsKey)
-            .ToArray();
-        var dependencyClosureEntries = availableRequestedModuleNames.Length == 0
-            ? []
-            : CommonModulesDependencyResolver.ResolveRequestedEntries(
-                entries,
-                availableRequestedModuleNames);
-        var installedEntries = installedModuleNames
-            .Where(entriesByName.ContainsKey)
-            .Select(module => entriesByName[module])
-            .ToArray();
-        var orderedEntries = CommonModulesDependencyResolver.MergeEntries(
-            dependencyClosureEntries,
-            installedEntries);
-        var selectionPlan = CommonModulesDependencyResolver.CreateSelectionPlan(orderedEntries);
-        return new CommonModulesUpdatePlan(
-            selectionPlan.Entries,
-            selectionPlan.RequiredReferences,
-            installedModuleNames
-                .Where(module => !entriesByName.ContainsKey(module))
-                .ToHashSet(StringComparer.OrdinalIgnoreCase));
     }
 
     private static IReadOnlyList<CommonModuleCopyPlan> PlanCopyEntries(
@@ -1293,7 +1250,7 @@ public sealed class CommonModulesInstallationTransaction
 
     private static bool ApplyUpdateEntries(
         ProjectDocument document,
-        CommonModulesUpdatePlan updatePlan,
+        CommonModulesReconciliation updatePlan,
         IDictionary<string, InstalledCommonModule> installedByName)
     {
         var changed = false;
@@ -1459,11 +1416,6 @@ public sealed class CommonModulesInstallationTransaction
         FileSystemPathIdentity? TemplateIdentity,
         IReadOnlyList<string> MissingNames,
         IReadOnlyDictionary<string, ResolvedVbaProjectReference> ResolvedByRequiredName);
-
-    private sealed record CommonModulesUpdatePlan(
-        IReadOnlyList<CommonModuleManifestEntry> Entries,
-        IReadOnlyList<string> RequiredReferences,
-        IReadOnlySet<string> OrphanedNames);
 
     private sealed record CommonModulesRebaseResult(
         string Operation,

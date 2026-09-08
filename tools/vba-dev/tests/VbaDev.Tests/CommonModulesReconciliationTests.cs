@@ -1,8 +1,11 @@
 using VbaDev.Infrastructure.FileSystem;
 using System.Text;
+using System.Text.Json;
 using VbaDev.App.CommonModules;
+using VbaDev.App.Diagnostics;
 using VbaDev.App.FileSystem;
 using VbaDev.App.Projects;
+using VbaDev.App.Workbooks;
 using VbaDev.Domain;
 using VbaDev.Infrastructure.Projects;
 using Xunit;
@@ -11,6 +14,144 @@ namespace VbaDev.Tests;
 
 public sealed class CommonModulesReconciliationTests
 {
+    [Theory]
+    [InlineData("missing-cycle")]
+    [InlineData("reachable")]
+    [InlineData("unreachable")]
+    [InlineData("new-orphan")]
+    [InlineData("retained-orphan")]
+    [InlineData("reappeared-root")]
+    [InlineData("stale-dependency")]
+    [InlineData("shared-missing-dependency")]
+    public void UpdateAndDoctorAgreeAcrossTheReconciliationScenarioMatrix(string name)
+    {
+        using var temp = TempDirectory.Create();
+        var (root, repository) = CreateProject(temp);
+        var scenario = ReconciliationScenarioFor(name);
+        foreach (var row in scenario.Rows)
+        {
+            WritePackageModule(repository, row.Name + ".bas", "' canonical " + row.Name);
+        }
+        var rows = scenario.Rows.Select(row =>
+            $"{row.Name}.bas\toptional\t{row.Dependencies}\t{JsonSerializer.Serialize(row.References)}");
+        File.WriteAllText(Path.Combine(repository, "common-modules-manifest.tsv"),
+            "ModuleFile\tCategories\tDependencies\tRequiredReferences\r\n" + string.Join("\r\n", rows) + "\r\n",
+            new UnicodeEncoding(false, true, true));
+        foreach (var module in scenario.Installed)
+        {
+            WriteModule(Path.Combine(root, "src", "Book1", module.ModuleFile), module.Name, "' retained " + module.Name);
+        }
+        SetInstalled(root, scenario.Installed);
+        var retainedBytes = scenario.Installed
+            .Where(module => !scenario.Rows.Any(row => row.Name.Equals(module.Name, StringComparison.OrdinalIgnoreCase)))
+            .ToDictionary(module => Path.Combine(root, "src", "Book1", module.ModuleFile),
+                module => File.ReadAllBytes(Path.Combine(root, "src", "Book1", module.ModuleFile)));
+
+        Assert.Equal(scenario.Before, ReconciliationDiagnostics(root));
+        var resolver = new FakeVbaProjectReferenceResolver(scenario.References.Select((reference, index) =>
+            new ResolvedVbaProjectReference(reference, $"{{00000000-0000-0000-0000-{index + 1:000000000000}}}", 1, 0)).ToArray());
+        var result = CommandLineTestFactory.Create(root, vbaProjectReferenceResolver: resolver)
+            .Run(["common-module", "update", "--format", "json"]);
+
+        Assert.True(result.ExitCode == 0, result.StandardError);
+        var document = new JsonProjectManifestStore().Load(ProjectManifestPath(root)).Documents["Book1"];
+        Assert.Equal(scenario.FinalNames, document.CommonModules.Select(module => module.Name));
+        Assert.Equal(scenario.References, document.References.Select(reference => reference.Name));
+        Assert.Equal(scenario.After, ReconciliationDiagnostics(root));
+        foreach (var (path, bytes) in retainedBytes)
+        {
+            Assert.Equal(bytes, File.ReadAllBytes(path));
+        }
+        foreach (var module in document.CommonModules)
+        {
+            var available = scenario.Rows.Any(row => row.Name.Equals(module.Name, StringComparison.OrdinalIgnoreCase));
+            Assert.Equal(!available, module.Orphaned);
+            Assert.Equal(scenario.Installed.Any(prior => prior.Name == module.Name && prior.Requested), module.Requested);
+        }
+        using var output = JsonDocument.Parse(result.StandardOutput);
+        Assert.True(output.RootElement.GetProperty("complete").GetBoolean());
+        Assert.Equal(scenario.FinalNames, Assert.Single(output.RootElement.GetProperty("documents").EnumerateArray())
+            .GetProperty("modules").EnumerateArray().Select(module => module.GetProperty("name").GetString()));
+    }
+
+    private static string[] ReconciliationDiagnostics(string root)
+    {
+        var diagnostics = new List<DiagnosticResult>();
+        new CommonModulesDiagnosticProvider(new CommonModulesManifestReader())
+            .AddDiagnostics(diagnostics, ResolveProject(root));
+        return diagnostics.Where(diagnostic => !diagnostic.Id.EndsWith(".repositorySource", StringComparison.Ordinal))
+            .Select(diagnostic => diagnostic.Id.Replace("project.commonModules.Book1.", "", StringComparison.Ordinal)).ToArray();
+    }
+
+    private static ReconciliationScenario ReconciliationScenarioFor(string name)
+    {
+        var feature = new InstalledCommonModule("Feature", "Feature.bas", true, false);
+        var dependency = new InstalledCommonModule("Base", "Base.bas", false, false);
+        ReconciliationRow[] linked = [new("Feature", "Base.bas", []), new("Base", "", [])];
+        return name switch
+        {
+            "missing-cycle" => new(
+                [new("C", "A.bas", ["shared", "LibC"]), new("B", "A.bas", ["LibB", "Shared"]),
+                    new("A", "B.bas", ["libb", "LibA"])],
+                [new("C", "C.bas", true, false)], ["C.dependency.A", "C.dependency.B"], [],
+                ["C", "B", "A"], ["LibB", "Shared", "LibA", "LibC"]),
+            "reachable" => new(linked, [feature, dependency], [], [], ["Feature", "Base"], []),
+            "unreachable" => new([new("Feature", "", []), new("Base", "", [])], [feature, dependency],
+                ["Base.reachability"], ["Base.reachability"], ["Feature", "Base"], []),
+            "new-orphan" => new([new("Base", "", [])], [feature, dependency],
+                ["Feature.orphanState"], ["Feature.orphaned"], ["Feature", "Base"], []),
+            "retained-orphan" => new([new("Base", "", [])], [feature with { Orphaned = true }, dependency],
+                ["Feature.orphaned"], ["Feature.orphaned"], ["Feature", "Base"], []),
+            "reappeared-root" => new([.. linked, new("Extra", "", [])],
+                [feature with { Orphaned = true }, new("Extra", "Extra.bas", false, false)],
+                ["Feature.orphanState"], ["Extra.reachability"], ["Feature", "Extra", "Base"], []),
+            "stale-dependency" => new(linked, [feature, dependency with { Orphaned = true }],
+                ["Base.orphanState"], [], ["Feature", "Base"], []),
+            "shared-missing-dependency" => new([.. linked, new("Other", "Base.bas", [])],
+                [feature, new("Other", "Other.bas", true, false)],
+                ["Feature.dependency.Base", "Other.dependency.Base"], [], ["Feature", "Other", "Base"], []),
+            _ => throw new ArgumentOutOfRangeException(nameof(name))
+        };
+    }
+
+    private sealed record ReconciliationRow(string Name, string Dependencies, string[] References);
+    private sealed record ReconciliationScenario(ReconciliationRow[] Rows, InstalledCommonModule[] Installed,
+        string[] Before, string[] After, string[] FinalNames, string[] References);
+
+    [Fact]
+    public void ReconciliationFactsRetainTheirCapturedSelectionAndDirectDeclarations()
+    {
+        var categories = new List<string> { "optional" };
+        var dependencies = new List<string> { "Base.bas" };
+        var baseReferences = new List<string> { "Shared" };
+        var repository = new List<CommonModuleManifestEntry>
+        {
+            new("Root.bas", ["optional"], dependencies, ["shared", "Root Library"]),
+            new("Base.bas", categories, [], baseReferences)
+        };
+        var installed = new List<InstalledCommonModule> { new("root", "root.bas", true, false) };
+        var facts = CommonModulesReconciliation.Create(repository, installed);
+
+        categories.Clear();
+        categories.Add("test-foundation");
+        dependencies.Clear();
+        baseReferences.Clear();
+        baseReferences.Add("Replacement Library");
+        repository.Clear();
+        installed.Clear();
+
+        Assert.Equal(["Base", "Root"], facts.RequestedClosure.Select(entry => entry.Name));
+        Assert.Equal(["Base", "Root"], facts.Entries.Select(entry => entry.Name));
+        Assert.Equal(["Shared", "Root Library"], facts.RequiredReferences.AsEnumerable());
+        Assert.False(facts.Entries[0].TestOnly);
+        Assert.Equal(["Base.bas"], facts.Entries[1].Dependencies);
+        Assert.Equal("Root", Assert.Single(facts.Installed).RepositoryEntry!.Name);
+        Assert.Equal(new MissingInstalledCommonModuleDependency("root", "Base"), Assert.Single(facts.MissingDependencies));
+        Assert.True(facts.AllRequestedRootsCurrent);
+        Assert.Equal(["Base", "Root"], facts.ReachableNames.Order(StringComparer.OrdinalIgnoreCase));
+        Assert.Empty(CommonModulesReconciliation.Create(repository, installed).Entries);
+    }
+
     [Fact]
     public void UpdateRetainsAConclusiveMissingIdentityAsAnOrphan()
     {
