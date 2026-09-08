@@ -101,7 +101,8 @@ public static class VbaProjectResolver
                 continue;
             }
 
-            var manifest = ProjectManifestReader.Parse(File.ReadAllText(manifestPath), manifestPath);
+            var manifest = ProjectManifestReader.Parse(
+                ProjectManifestByteDecoding.Decode(File.ReadAllBytes(manifestPath), manifestPath), manifestPath);
             var sourceRoots = DocumentSourceSetIsolationValidator.ResolveAndValidate(
                 manifest,
                 manifestPath,

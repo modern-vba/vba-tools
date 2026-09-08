@@ -98,14 +98,14 @@ internal sealed class SystemVbaProjectFileSystem : IVbaProjectFileSystem
     }
 
     public string ReadManifestText(string path)
-        => File.ReadAllText(path);
+        => ProjectManifestByteDecoding.Decode(File.ReadAllBytes(path), path);
 
     public string ReadManifestText(
         string path,
         CancellationToken cancellationToken)
-        => File.ReadAllTextAsync(path, cancellationToken)
+        => ProjectManifestByteDecoding.Decode(File.ReadAllBytesAsync(path, cancellationToken)
             .GetAwaiter()
-            .GetResult();
+            .GetResult(), path);
 
     public byte[] ReadSourceBytes(string path)
         => File.ReadAllBytes(path);

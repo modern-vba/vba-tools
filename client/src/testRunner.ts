@@ -5,6 +5,7 @@ import './languageServer.test';
 import './documentFormatting.test';
 import './extensionContributions.test';
 import './projectManifest.test';
+import './projectManifestBytes.test';
 import './projectCreationPathValidation.test';
 import './projectDiscovery.test';
 import './commandPaletteTarget.test';

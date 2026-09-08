@@ -1,5 +1,4 @@
 using VbaDev.Infrastructure.FileSystem;
-using System.Text;
 using VbaDev.App.Projects;
 using VbaDev.Domain;
 
@@ -37,20 +36,9 @@ public sealed class JsonProjectManifestStore : IProjectManifestStore
     {
         try
         {
-            using var stream = File.OpenRead(manifestPath);
-            using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
-            var json = reader.ReadToEnd();
-            var manifest = ProjectManifestReader.Parse(json, manifestPath);
-            _ = DocumentSourceSetIsolationValidator.ResolveAndValidate(
-                manifest,
-                manifestPath,
-                manifestPath,
+            return ProjectManifestCodec.Decode(
+                File.ReadAllBytes(manifestPath), manifestPath,
                 new FileSystemPathIdentityResolver());
-            return manifest;
-        }
-        catch (VbaProjectManifestException ex)
-        {
-            throw new ProjectManifestException(ex.Message, ex);
         }
         catch (IOException ex)
         {

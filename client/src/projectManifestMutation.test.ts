@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as path from 'node:path';
+import { decodeProjectManifestBytes } from './projectManifestBytes';
 
 import {
   ProjectManifestDirtyPreflightChoice,
@@ -336,6 +337,31 @@ test('initial and post-save untrusted disk projections launch no process', async
       );
       assert.equal(launches, 0, `${phase}:${scenario}`);
     }
+  }
+});
+
+test('invalid manifest bytes at preflight or final launch check start no process', async () => {
+  for (const invalidRead of [1, 2]) {
+    const harness = new MutationHarness();
+    const target = createTarget(`C:\\work\\invalid-encoding-${invalidRead}\\vba-project.json`);
+    harness.setDisk(target, 'disk');
+    harness.beforeReadManifest = (call) => {
+      if (call === invalidRead) {
+        harness.setRawDisk(target, [0xff, 0xfe, 0, 0, 0x7b, 0, 0, 0]);
+      }
+    };
+    let launches = 0;
+    const result = await new ProjectManifestMutationCoordinator({
+      ...harness.ports, decodeManifestBytes: decodeProjectManifestBytes
+    }).run({
+      command: 'Reference Remove', target,
+      run: async () => {
+        launches += 1;
+        return { exitCode: 0, cancelled: false };
+      }
+    });
+    assert.deepEqual(result, { status: 'rejected', reason: 'preflight' });
+    assert.equal(launches, 0);
   }
 });
 
