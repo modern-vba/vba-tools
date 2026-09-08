@@ -1097,6 +1097,79 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
             Path.GetFileName(binPath));
     }
 
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
+    public async Task AnOwnedNativeModalRemainsInteractiveUntilStopCleansTheSession()
+    {
+        var assets = ResolvePackagedDebugAssets(ResolveRepositoryRoot());
+        using var temp = TempDirectory.Create();
+        var projectRoot = Path.Combine(temp.Path, "DebugProject");
+        CreatePackagedDebugProjectFixture(projectRoot);
+        var paths = ResolveProjectDocumentPaths(projectRoot, "DebugProject");
+        var sourcePath = Path.Combine(paths.SourceSetPath, "DebugModule.bas");
+        const string source = "Attribute VB_Name = \"DebugModule\"\r\nOption Explicit\r\n" +
+            "Public Sub RunTarget()\r\n    MsgBox \"Owned modal lifetime probe\"\r\nEnd Sub\r\n";
+        File.WriteAllText(sourcePath, source, new UTF8Encoding(true));
+        var baseline = CaptureExcelProcessIds();
+        var sessionId = Guid.NewGuid().ToString("N");
+        var workspace = Path.Combine(Path.GetTempPath(), "vba-debug-adapter", "workspaces", sessionId);
+        await using var adapter = PackagedDebugAdapterProcess.Start(
+            assets.DebugAdapterExecutablePath, assets.VbaDevExecutablePath, projectRoot, sessionId);
+        using var assistCancellation = new CancellationTokenSource();
+        var assist = AssistPackagedDebugForegroundAsync(baseline, assistCancellation.Token);
+        try
+        {
+            await adapter.SendRequestAsync(1, "initialize", new { adapterID = "vba" });
+            AssertSuccessfulResponse(await adapter.WaitForResponseAsync(1, TimeSpan.FromSeconds(15)), "initialize");
+            await adapter.SendRequestAsync(2, "launch", new
+            {
+                project = projectRoot,
+                document = "DebugProject",
+                module = "DebugModule",
+                procedure = "RunTarget",
+                __vbaDebugWorkbookFileName = paths.WorkbookFileName,
+                sourceSnapshot = new
+                {
+                    schemaVersion = 2,
+                    sources = new[] { new
+                    {
+                        relativePath = "DebugModule.bas",
+                        sourceUri = new Uri(sourcePath).AbsoluteUri,
+                        encoding = "utf8bom",
+                        contentBase64 = Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(source))
+                    } },
+                    breakpoints = Array.Empty<object>()
+                }
+            });
+            await adapter.SendRequestAsync(3, "configurationDone", new { });
+            var notification = await adapter.WaitForInputNotificationAsync(TimeSpan.FromSeconds(90));
+            var output = notification.GetProperty("body").GetProperty("output").GetString()!;
+            var processId = int.Parse(System.Text.RegularExpressions.Regex.Match(
+                output, @"Owned Excel process (\d+) is waiting").Groups[1].Value,
+                System.Globalization.CultureInfo.InvariantCulture);
+            Assert.DoesNotContain(processId, baseline);
+            var windows = new WindowsDebugModalWindowApi();
+            Assert.NotEmpty(windows.CaptureVisibleModalWindows(processId));
+            await Task.Delay(500);
+            Assert.True(IsProcessRunning(processId, "EXCEL"));
+            Assert.NotEmpty(windows.CaptureVisibleModalWindows(processId));
+            await adapter.SendRequestAsync(4, "terminate", new { });
+            AssertSuccessfulResponse(await adapter.WaitForResponseAsync(4, TimeSpan.FromSeconds(30)), "terminate");
+            await adapter.CompleteInputAndWaitForExitAsync(TimeSpan.FromSeconds(15));
+            Assert.False(IsProcessRunning(processId, "EXCEL"));
+            Assert.False(Directory.Exists(workspace));
+            Assert.Single(adapter.Messages, message => message.TryGetProperty("event", out var name) &&
+                name.GetString() == "output" && message.GetProperty("body").GetProperty("output")
+                    .GetString()!.Contains(" is waiting for ", StringComparison.Ordinal));
+        }
+        finally
+        {
+            assistCancellation.Cancel();
+            try { await assist; } catch (OperationCanceledException) { }
+        }
+        await WaitForNoNewExcelProcessesAsync(baseline, TimeSpan.FromSeconds(15));
+    }
+
     private static void CreatePackagedDebugProjectFixture(string projectRoot)
     {
         const string documentName = "DebugProject";
@@ -2030,6 +2103,12 @@ public sealed class PackagedVbaDebugAdapterWindowsExcelIntegrationTests
                     message.GetProperty("event").GetString() == eventName,
                 $"event '{eventName}'",
                 timeout);
+
+        public Task<JsonElement> WaitForInputNotificationAsync(TimeSpan timeout)
+            => WaitForMessageAsync(message => message.TryGetProperty("event", out var name) &&
+                name.GetString() == "output" && message.GetProperty("body").GetProperty("output")
+                    .GetString()!.Contains(" is waiting for ", StringComparison.Ordinal),
+                "an owned modal input notification", timeout);
 
         public async Task CompleteInputAndWaitForExitAsync(TimeSpan timeout)
         {

@@ -292,6 +292,35 @@ public sealed class DapConnectionTests
         Assert.Empty(output.ToArray());
     }
 
+    [Fact]
+    public async Task An_output_failure_prevents_all_later_transport_writes()
+    {
+        using var output = new FailingOutputStream();
+        var connection = new DapConnection(Stream.Null, output);
+
+        var first = await Assert.ThrowsAsync<IOException>(() => connection.WriteEventAsync(
+            "vba/inputRequired", null, CancellationToken.None));
+        var laterWrites = Enumerable.Range(0, 4).Select(_ =>
+            Assert.ThrowsAsync<IOException>(() => connection.WriteEventAsync(
+                "terminated", null, CancellationToken.None)));
+        var failures = await Task.WhenAll(laterWrites);
+
+        Assert.All(failures, failure => Assert.Same(first, failure));
+        Assert.Equal(1, output.WriteAttempts);
+    }
+
+    private sealed class FailingOutputStream : MemoryStream
+    {
+        public int WriteAttempts { get; private set; }
+
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            WriteAttempts++;
+            throw new IOException("The notification transport failed.");
+        }
+    }
+
     private static byte[] CreateRequestBody(
         int sequence = 1,
         string command = "initialize")

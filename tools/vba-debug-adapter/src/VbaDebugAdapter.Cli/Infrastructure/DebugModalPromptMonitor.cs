@@ -37,20 +37,17 @@ internal sealed class DebugModalPromptObservation(
 
 internal interface IDebugModalPromptMonitor
 {
-    DebugModalPromptObservation Capture(DebugInputWait inputWait);
-
-    Task<T> ObserveAsync<T>(
-        DebugModalPromptObservation observation,
-        Task<T> operation,
+    IDebugModalPromptPhase BeginPhase(
+        DebugInputWait inputWait,
         Task<DebugProcessExit> processCompletion,
-        IDebugInputWaitSink inputWaitSink,
-        CancellationToken cancellationToken);
+        IDebugInputWaitSink inputWaitSink);
+}
 
-    Task ObserveUntilProcessExitAsync(
-        DebugModalPromptObservation observation,
-        Task<DebugProcessExit> processCompletion,
-        IDebugInputWaitSink inputWaitSink,
-        CancellationToken cancellationToken);
+internal interface IDebugModalPromptPhase : IAsyncDisposable
+{
+    Task Completion { get; }
+
+    Task<T> ObserveOperationAsync<T>(Func<Task<T>> operation, CancellationToken cancellationToken);
 }
 
 internal interface IDebugModalWindowApi
@@ -61,114 +58,21 @@ internal interface IDebugModalWindowApi
 }
 
 /// <summary>
-/// Observes modal top-level windows belonging to one exact owned Excel process.
+/// Starts phase-owned modal observation for one exact owned Excel process.
 /// </summary>
 internal sealed class DebugModalPromptMonitor : IDebugModalPromptMonitor
 {
     private readonly IDebugModalWindowApi windowApi;
 
-    public DebugModalPromptMonitor()
-        : this(new WindowsDebugModalWindowApi())
-    {
-    }
+    public DebugModalPromptMonitor() : this(new WindowsDebugModalWindowApi()) { }
 
-    internal DebugModalPromptMonitor(IDebugModalWindowApi windowApi)
-    {
-        this.windowApi = windowApi;
-    }
+    internal DebugModalPromptMonitor(IDebugModalWindowApi windowApi) => this.windowApi = windowApi;
 
-    public DebugModalPromptObservation Capture(DebugInputWait inputWait)
-        => new(
-            inputWait,
-            windowApi.CaptureVisibleModalWindows(inputWait.ProcessId));
-
-    public async Task<T> ObserveAsync<T>(
-        DebugModalPromptObservation observation,
-        Task<T> operation,
+    public IDebugModalPromptPhase BeginPhase(
+        DebugInputWait inputWait,
         Task<DebugProcessExit> processCompletion,
-        IDebugInputWaitSink inputWaitSink,
-        CancellationToken cancellationToken)
-    {
-        async ValueTask<bool> ReportInputIfNewModalAsync()
-        {
-            var currentWindows = windowApi.CaptureVisibleModalWindows(
-                observation.InputWait.ProcessId);
-            if (!observation.TryMarkNewModalWindows(currentWindows))
-            {
-                return false;
-            }
-
-            await inputWaitSink
-                .InputRequiredAsync(observation.InputWait, cancellationToken)
-                .ConfigureAwait(false);
-            return true;
-        }
-
-        while (!operation.IsCompleted && !processCompletion.IsCompleted)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            _ = await ReportInputIfNewModalAsync().ConfigureAwait(false);
-
-            var nextObservation = windowApi.WaitForNextObservationAsync(cancellationToken);
-            _ = await Task.WhenAny(
-                    operation,
-                    processCompletion,
-                    nextObservation)
-                .ConfigureAwait(false);
-            if (nextObservation.IsCompleted)
-            {
-                await nextObservation.ConfigureAwait(false);
-            }
-        }
-
-        cancellationToken.ThrowIfCancellationRequested();
-        if (!operation.IsCompleted && processCompletion.IsCompleted)
-        {
-            var processExit = await processCompletion.ConfigureAwait(false);
-            cancellationToken.ThrowIfCancellationRequested();
-            var phase = observation.InputWait.Phase switch
-            {
-                DebugInputWaitPhase.WorkbookOpen => "workbook open",
-                DebugInputWaitPhase.TargetStart => "target start",
-                _ => observation.InputWait.Phase.ToString()
-            };
-            throw new DebugSetupException(
-                $"Owned Excel process {observation.InputWait.ProcessId} exited with code " +
-                $"{processExit.ExitCode} before the {phase} operation completed.");
-        }
-
-        return await operation.ConfigureAwait(false);
-    }
-
-    public async Task ObserveUntilProcessExitAsync(
-        DebugModalPromptObservation observation,
-        Task<DebugProcessExit> processCompletion,
-        IDebugInputWaitSink inputWaitSink,
-        CancellationToken cancellationToken)
-    {
-        while (!processCompletion.IsCompleted)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var currentWindows = windowApi.CaptureVisibleModalWindows(
-                observation.InputWait.ProcessId);
-            if (observation.TryMarkNewModalWindows(currentWindows))
-            {
-                await inputWaitSink
-                    .InputRequiredAsync(observation.InputWait, cancellationToken)
-                    .ConfigureAwait(false);
-            }
-
-            var nextObservation = windowApi.WaitForNextObservationAsync(cancellationToken);
-            var completed = await Task.WhenAny(processCompletion, nextObservation)
-                .ConfigureAwait(false);
-            if (ReferenceEquals(completed, nextObservation))
-            {
-                await nextObservation.ConfigureAwait(false);
-            }
-        }
-
-        _ = await processCompletion.ConfigureAwait(false);
-    }
+        IDebugInputWaitSink inputWaitSink)
+        => new DebugModalPromptPhase(windowApi, inputWait, processCompletion, inputWaitSink);
 }
 
 internal sealed class WindowsDebugModalWindowApi : IDebugModalWindowApi

@@ -2548,8 +2548,10 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         Assert.Equal(1, runningSession.TerminateCalls);
     }
 
-    [Fact]
-    public async Task OwnedSessionExitFailsAPendingRestartBeforeTermination()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OwnedSessionCompletionEndsPendingRestartWithoutMoreInput(bool faulted)
     {
         const string sessionId = "0123456789abcdef0123456789abcdef";
         const string preparationId = "fedcba9876543210fedcba9876543210";
@@ -2597,8 +2599,9 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                     "\"request_seq\":1",
                     StringComparison.Ordinal),
                 TimeSpan.FromSeconds(2)));
-            completion.TrySetResult(23);
-            Assert.Equal(0, await invocation.WaitAsync(TimeSpan.FromSeconds(2)));
+            if (faulted) { completion.TrySetException(new IOException("Delayed modal observation failure.")); }
+            else { completion.TrySetResult(23); }
+            Assert.Equal(faulted ? 1 : 0, await invocation.WaitAsync(TimeSpan.FromSeconds(2)));
 
             var messages = ReadDapMessages(standardOutput);
             var restartResponse = Assert.Single(
@@ -2607,16 +2610,16 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                            sequence.GetInt32() == 3);
             Assert.False(restartResponse.GetProperty("success").GetBoolean());
             Assert.Contains(
-                "exited",
+                faulted ? "failed" : "exited",
                 restartResponse.GetProperty("message").GetString(),
                 StringComparison.OrdinalIgnoreCase);
             Assert.Equal(
-                ["output", "exited", "terminated"],
+                faulted ? ["output", "terminated"] : ["output", "exited", "terminated"],
                 messages
                     .Where(message => message.TryGetProperty("event", out var eventName) &&
                                       eventName.GetString() is "output" or "exited" or "terminated")
                     .Select(message => message.GetProperty("event").GetString()));
-            Assert.Equal(0, runningSession.TerminateCalls);
+            Assert.Equal(faulted ? 1 : 0, runningSession.TerminateCalls);
             Assert.Equal(1, runningSession.DisposeCalls);
         }
         finally
@@ -2629,8 +2632,10 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         }
     }
 
-    [Fact]
-    public async Task OwnedSessionExitDuringFreshValidationCannotResurrectAWorkbook()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OwnedSessionEndDuringFreshValidationCannotResurrectAWorkbook(bool faulted)
     {
         const string sessionId = "0123456789abcdef0123456789abcdef";
         const string preparationId = "fedcba9876543210fedcba9876543210";
@@ -2645,7 +2650,8 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             {
                 if (request.RestartPreparation?.Generation.Value == 1)
                 {
-                    completion.TrySetResult(23);
+                    if (faulted) { completion.TrySetException(new IOException("Modal observer failed during restart.")); }
+                    else { completion.TrySetResult(23); }
                 }
             });
         var commandLine = CreateCommandLine(
@@ -2708,7 +2714,9 @@ public sealed class VbaDebugAdapterCliSurfaceTests
                     "\"request_seq\":3",
                     StringComparison.Ordinal),
                 TimeSpan.FromSeconds(2)));
+            Assert.Equal(faulted ? 1 : 0, await invocation.WaitAsync(TimeSpan.FromSeconds(2)));
             var messages = ReadDapMessages(standardOutput);
+            Assert.Single(messages, message => message.TryGetProperty("event", out var eventName) && eventName.GetString() == "terminated");
             Assert.True(Assert.Single(
                 messages,
                 message => message.TryGetProperty("request_seq", out var sequence) &&
@@ -3138,6 +3146,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
 
         Assert.Equal(1, runningSession.TerminateCalls);
         Assert.Equal(1, runningSession.DisposeCalls);
+        Assert.Equal(0, standardOutput.WritesAfterFailure);
     }
 
     [Theory]
@@ -5067,14 +5076,19 @@ public sealed class VbaDebugAdapterCliSurfaceTests
 
     private sealed class DapResponseFailingStream(string command) : MemoryStream
     {
+        public int WritesAfterFailure { get; private set; }
+        private bool failed;
+
         public override ValueTask WriteAsync(
             ReadOnlyMemory<byte> buffer,
             CancellationToken cancellationToken = default)
         {
+            if (failed) { WritesAfterFailure++; }
             if (Encoding.UTF8.GetString(buffer.Span).Contains(
                 $"\"command\":\"{command}\"",
                 StringComparison.Ordinal))
             {
+                failed = true;
                 throw new IOException($"Synthetic {command} response transport failure.");
             }
 

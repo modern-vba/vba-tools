@@ -16,7 +16,11 @@ internal sealed class DapConnection
     };
 
     private readonly ContentLengthFrameTransport framing;
+    private readonly SemaphoreSlim writeGate = new(1, 1);
+    private System.Runtime.ExceptionServices.ExceptionDispatchInfo? outputFailure;
     private int outgoingSequence;
+
+    public bool OutputFailed => Volatile.Read(ref outputFailure) is not null;
 
     public DapConnection(Stream input, Stream output)
         : this(input, output, MaximumContentLength)
@@ -94,14 +98,37 @@ internal sealed class DapConnection
             },
             cancellationToken);
 
-    private Task WriteMessageAsync(
+    private async Task WriteMessageAsync(
         Func<int, object> createMessage,
         CancellationToken cancellationToken)
-        => framing.WriteFrameAsync(
-            () => JsonSerializer.SerializeToUtf8Bytes(
-                createMessage(++outgoingSequence),
-                JsonOptions),
-            cancellationToken);
+    {
+        await writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            outputFailure?.Throw();
+            try
+            {
+                await framing.WriteFrameAsync(
+                    () => JsonSerializer.SerializeToUtf8Bytes(
+                        createMessage(++outgoingSequence), JsonOptions),
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                Volatile.Write(ref outputFailure,
+                    System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(exception));
+                throw;
+            }
+        }
+        finally
+        {
+            writeGate.Release();
+        }
+    }
 }
 
 internal sealed record DapRequest(

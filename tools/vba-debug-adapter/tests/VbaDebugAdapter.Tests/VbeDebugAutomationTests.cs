@@ -161,9 +161,10 @@ public sealed class VbeDebugAutomationTests
         events.Clear();
 
         await control.CloseOwnedProcessCooperativelyAsync(CancellationToken.None);
+        await session.Completion;
 
         Assert.True(model.Workbook.Saved);
-        Assert.Equal(["close:False", "excel-quit", "process-exit"], events);
+        Assert.Equal(["close:False", "excel-quit", "process-exit", "process-dispose"], events);
         Assert.Equal(0, process.KillCalls);
     }
 
@@ -1127,6 +1128,110 @@ public sealed class VbeDebugAutomationTests
         await session.Completion;
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task APostRunObservationFailureCompletesTheSessionWithoutDisposal(bool sinkFails)
+    {
+        using var temp = TempDirectory.Create();
+        await using var fixture = await LeaseIssuedVbeGenerationFixture.CreateAsync(temp.Path, "GeneratedBook.xlsm");
+        var events = new List<string>();
+        var model = FakeVbeModel.Create(fixture.GenerationWorkspace.WorkbookPath, events);
+        var process = new FakeDebugOwnedProcess(27190, DateTime.Now);
+        var failure = new IOException("Delayed modal observation failure.");
+        var windows = new DelayedFailureModalWindowApi(failure, sinkFails);
+        var automation = new VbeDebugAutomation(
+            new FakeExcelDebugApplicationFactory(model.Excel),
+            new FakeDebugExcelProcessApi(process.Id, process),
+            new FakeDebugWindowActivator(events),
+            new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()),
+            promptMonitor: new DebugModalPromptMonitor(windows));
+        var session = await automation.StartVisibleAsync(CancellationToken.None);
+        var sink = new FailingInputWaitSink(failure);
+        try
+        {
+            await session.OpenTestGenerationAsync(fixture.GenerationWorkspace, sink, CancellationToken.None);
+            await session.RunTargetAsync(new DebugTargetProcedure("DebugModule", "RunTarget"), sink, CancellationToken.None);
+            windows.FailAfterRun();
+
+            var actual = await Assert.ThrowsAsync<IOException>(() =>
+                session.Completion.WaitAsync(TimeSpan.FromSeconds(1)));
+            Assert.Same(failure, actual);
+            Assert.True(process.HasExited);
+            Assert.False(Directory.Exists(fixture.GenerationWorkspace.GenerationWorkspacePath));
+        }
+        finally
+        {
+            process.Exit(-1);
+            try { await session.DisposeAsync(); }
+            catch (Exception) { /* The assertion above owns the injected failure. */ }
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task TerminalRacesRetainTheFirstCauseAndCleanupEvidence(bool observationWins)
+    {
+        using var temp = TempDirectory.Create();
+        await using var fixture = await LeaseIssuedVbeGenerationFixture.CreateAsync(temp.Path, "GeneratedBook.xlsm");
+        var events = new List<string>();
+        var model = FakeVbeModel.Create(fixture.GenerationWorkspace.WorkbookPath, events);
+        var observation = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var monitorFailure = new IOException("Modal observer failed.");
+        var cleanupFailure = new IOException("Job handle cleanup failed.");
+        var process = new FakeDebugOwnedProcess(27191, DateTime.Now,
+            killAction: () => observation.TrySetException(monitorFailure), events: events);
+        var job = new FakeDebugProcessJob(process, events, disposeAction: () => throw cleanupFailure);
+        var automation = new VbeDebugAutomation(
+            new FakeExcelDebugApplicationFactory(model.Excel),
+            new FakeDebugExcelProcessApi(process.Id, process, job),
+            new FakeDebugWindowActivator(events),
+            new FakeStaComDispatcherFactory(new RecordingStaComDispatcher()),
+            promptMonitor: new FaultableDebugModalPromptMonitor(observation.Task));
+        var session = await automation.StartVisibleAsync(CancellationToken.None);
+        var sink = new RecordingDebugInputWaitSink();
+        await session.OpenTestGenerationAsync(fixture.GenerationWorkspace, sink, CancellationToken.None);
+        await session.RunTargetAsync(new DebugTargetProcedure("DebugModule", "RunTarget"), sink, CancellationToken.None);
+        if (observationWins) { observation.SetException(monitorFailure); }
+        else { _ = session.TerminateAsync(); }
+
+        var failure = await Assert.ThrowsAsync<VbeDebugSessionLifetimeException>(() =>
+            session.Completion.WaitAsync(TimeSpan.FromSeconds(2)));
+        Assert.Equal(observationWins ? "modal observation" : "Stop", failure.TerminalCause);
+        Assert.Same(observationWins ? monitorFailure : null, failure.PrimaryFailure);
+        Assert.Contains(failure.CleanupFailures, error => ReferenceEquals(cleanupFailure, error.InnerException));
+        if (!observationWins) { Assert.Contains(monitorFailure, failure.CleanupFailures); }
+        Assert.Same(failure, await Assert.ThrowsAsync<VbeDebugSessionLifetimeException>(() => session.DisposeAsync().AsTask()));
+        Assert.Single(events, entry => entry == "process-dispose");
+        Assert.Single(events, entry => entry == "job-dispose");
+        Assert.False(Directory.Exists(fixture.GenerationWorkspace.GenerationWorkspacePath));
+    }
+
+    private sealed class FaultableDebugModalPromptMonitor(Task failure) : IDebugModalPromptMonitor
+    {
+        public IDebugModalPromptPhase BeginPhase(DebugInputWait wait, Task<DebugProcessExit> process,
+            IDebugInputWaitSink sink)
+            => new RecordingDebugModalPhase(wait, sink,
+                wait.Phase == DebugInputWaitPhase.TargetStart ? failure : Task.CompletedTask, reportInput: false);
+    }
+
+    private sealed class FailingInputWaitSink(Exception failure) : IDebugInputWaitSink
+    {
+        public ValueTask InputRequiredAsync(DebugInputWait wait, CancellationToken token)
+            => ValueTask.FromException(failure);
+    }
+
+    private sealed class DelayedFailureModalWindowApi(Exception failure, bool sinkFails) : IDebugModalWindowApi
+    {
+        private readonly TaskCompletionSource changed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public void FailAfterRun() => changed.TrySetResult();
+        public IReadOnlySet<nint> CaptureVisibleModalWindows(int processId)
+            => !changed.Task.IsCompleted ? new HashSet<nint>()
+                : sinkFails ? new HashSet<nint> { 200 } : throw failure;
+        public Task WaitForNextObservationAsync(CancellationToken token) => changed.Task.WaitAsync(token);
+    }
+
     [Fact]
     public async Task OpenAndTargetStartReportOnlyModalPromptsObservedForTheOwnedProcess()
     {
@@ -1220,10 +1325,11 @@ public sealed class VbeDebugAutomationTests
             sink,
             CancellationToken.None);
 
-        var error = await Assert.ThrowsAsync<DebugSetupException>(() =>
+        var error = await Assert.ThrowsAsync<VbeDebugSessionLifetimeException>(() =>
             session.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2)));
 
-        Assert.Same(killError, error.InnerException);
+        Assert.Equal("Stop", error.TerminalCause);
+        Assert.Contains(killError, error.CleanupFailures);
         Assert.True(job.Disposed);
         Assert.True(process.HasExited);
         Assert.True(events.IndexOf("job-dispose") < events.IndexOf("prompt-watch-complete"));
@@ -2192,35 +2298,26 @@ internal sealed class FailingFirstInvocationStaComDispatcher(
     }
 }
 
-internal sealed class RecordingDebugModalPromptMonitor(List<string> events)
-    : IDebugModalPromptMonitor
+internal sealed class RecordingDebugModalPromptMonitor(List<string> events) : IDebugModalPromptMonitor
 {
-    public DebugModalPromptObservation Capture(DebugInputWait inputWait)
+    public IDebugModalPromptPhase BeginPhase(DebugInputWait wait, Task<DebugProcessExit> process, IDebugInputWaitSink sink)
     {
-        events.Add($"prompt-capture:{inputWait.Phase}");
-        return new DebugModalPromptObservation(inputWait, new HashSet<nint>());
+        events.Add($"prompt-capture:{wait.Phase}");
+        if (wait.Phase == DebugInputWaitPhase.TargetStart) { events.Add($"prompt-watch:{wait.Phase}"); }
+        return new RecordingDebugModalPhase(wait, sink, Task.CompletedTask, reportInput: true);
     }
+}
 
-    public async Task<T> ObserveAsync<T>(
-        DebugModalPromptObservation observation,
-        Task<T> operation,
-        Task<DebugProcessExit> processCompletion,
-        IDebugInputWaitSink inputWaitSink,
-        CancellationToken cancellationToken)
+internal sealed class RecordingDebugModalPhase(DebugInputWait wait, IDebugInputWaitSink sink,
+    Task completion, bool reportInput) : IDebugModalPromptPhase
+{
+    public Task Completion => completion;
+    public async Task<T> ObserveOperationAsync<T>(Func<Task<T>> operation, CancellationToken token)
     {
-        await inputWaitSink.InputRequiredAsync(observation.InputWait, cancellationToken);
-        return await operation;
+        if (reportInput) { await sink.InputRequiredAsync(wait, token); }
+        return await operation();
     }
-
-    public Task ObserveUntilProcessExitAsync(
-        DebugModalPromptObservation observation,
-        Task<DebugProcessExit> processCompletion,
-        IDebugInputWaitSink inputWaitSink,
-        CancellationToken cancellationToken)
-    {
-        events.Add($"prompt-watch:{observation.InputWait.Phase}");
-        return Task.CompletedTask;
-    }
+    public async ValueTask DisposeAsync() => await completion;
 }
 
 internal sealed class RecordingOwnedExcelDebugApplicationStarter(
@@ -2251,27 +2348,16 @@ internal sealed class RecordingDebugInputWaitSink : IDebugInputWaitSink
     }
 }
 
-internal sealed class ProcessExitDebugModalPromptMonitor(List<string> events)
-    : IDebugModalPromptMonitor
+internal sealed class ProcessExitDebugModalPromptMonitor(List<string> events) : IDebugModalPromptMonitor
 {
-    public DebugModalPromptObservation Capture(DebugInputWait inputWait)
-        => new(inputWait, new HashSet<nint>());
+    public IDebugModalPromptPhase BeginPhase(DebugInputWait wait, Task<DebugProcessExit> process, IDebugInputWaitSink sink)
+        => new RecordingDebugModalPhase(wait, sink,
+            wait.Phase == DebugInputWaitPhase.TargetStart ? ObserveProcessAsync(process) : Task.CompletedTask,
+            reportInput: false);
 
-    public async Task<T> ObserveAsync<T>(
-        DebugModalPromptObservation observation,
-        Task<T> operation,
-        Task<DebugProcessExit> processCompletion,
-        IDebugInputWaitSink inputWaitSink,
-        CancellationToken cancellationToken)
-        => await operation;
-
-    public async Task ObserveUntilProcessExitAsync(
-        DebugModalPromptObservation observation,
-        Task<DebugProcessExit> processCompletion,
-        IDebugInputWaitSink inputWaitSink,
-        CancellationToken cancellationToken)
+    private async Task ObserveProcessAsync(Task<DebugProcessExit> process)
     {
-        await processCompletion.WaitAsync(cancellationToken);
+        await process;
         events.Add("prompt-watch-complete");
     }
 }

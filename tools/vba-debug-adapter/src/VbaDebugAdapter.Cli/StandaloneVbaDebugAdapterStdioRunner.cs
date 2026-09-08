@@ -108,39 +108,81 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                     (ReferenceEquals(completedTask, runningSession.Completion) ||
                      runningSession.Completion.IsCompleted))
                 {
+                    var completedSession = runningSession;
+                    runningSession = null;
+                    var processId = completedSession.ProcessId;
+                    int? exitCode = null;
+                    Exception? failure = null;
+                    try
+                    {
+                        exitCode = await completedSession.Completion.ConfigureAwait(false);
+                    }
+                    catch (Exception exception)
+                    {
+                        failure = exception;
+                    }
+                    try
+                    {
+                        if (failure is null)
+                        {
+                            await completedSession.DisposeAsync().ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            await StopOwnedSessionAsync(completedSession).ConfigureAwait(false);
+                        }
+                    }
+                    catch (Exception exception)
+                    {
+                        if (failure is null)
+                        {
+                            failure = exception;
+                        }
+                        else if (!ReferenceEquals(failure, exception))
+                        {
+                            failure.Data["VbaDebugAdapter.SessionCleanup"] = exception;
+                        }
+                    }
+                    requestReadCancellation.Cancel();
+                    ObserveDetachedRequestRead(requestReadTask);
+                    requestReadTask = null;
+                    if (connection.OutputFailed)
+                    {
+                        return 1;
+                    }
                     if (restartPreparation.TakePending() is { } pendingRestart)
                     {
                         await connection.WriteResponseAsync(
                             pendingRestart.Request,
                             success: false,
                             body: null,
-                            message: "The owned VBA debug session exited before restart preparation completed.",
+                            message: failure is null
+                                ? "The owned VBA debug session exited before restart preparation completed."
+                                : "The owned VBA debug session failed before restart preparation completed.",
                             cancellationToken).ConfigureAwait(false);
                     }
-                    requestReadCancellation.Cancel();
-                    ObserveDetachedRequestRead(requestReadTask);
-                    requestReadTask = null;
-                    var exitCode = await runningSession.Completion.ConfigureAwait(false);
-                    var processId = runningSession.ProcessId;
-                    await runningSession.DisposeAsync().ConfigureAwait(false);
-                    runningSession = null;
                     await connection.WriteEventAsync(
                         "output",
                         new
                         {
-                            category = "console",
-                            output = $"Owned Excel process {processId} exited with code {exitCode}.{Environment.NewLine}"
+                            category = failure is null ? "console" : "important",
+                            output = failure is null
+                                ? $"Owned Excel process {processId} exited with code {exitCode}.{Environment.NewLine}"
+                                : $"DebugSessionError: {failure.Message}{Environment.NewLine}"
                         },
                         cancellationToken).ConfigureAwait(false);
-                    await connection.WriteEventAsync(
-                        "exited",
-                        new { exitCode },
-                        cancellationToken).ConfigureAwait(false);
+                    if (exitCode is not null)
+                    {
+                        await connection.WriteEventAsync(
+                            "exited",
+                            new { exitCode },
+                            cancellationToken).ConfigureAwait(false);
+                    }
                     await connection.WriteEventAsync(
                         "terminated",
                         body: null,
                         cancellationToken).ConfigureAwait(false);
-                    break;
+                    return failure is null ? 0 : 1;
                 }
 
                 var request = await requestReadTask.ConfigureAwait(false);

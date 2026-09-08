@@ -720,6 +720,31 @@ Normal target completion is output, not a terminal DAP event. The owned Excel
 process exit, explicit termination, or an unrecoverable adapter failure claims
 the single terminal transition.
 
+`DebugModalPromptMonitor.BeginPhase` captures a baseline before each phase's COM
+operation and creates one polling/notification lifecycle. WorkbookOpen disposes
+its phase after open. TargetStart keeps the same phase, baseline, and notified
+window identities after Run returns; an unchanged modal is not reported twice.
+Normal prompts have no elapsed-time deadline. Doctor retains its independent
+stage deadlines and timeout/cancellation classifications.
+
+`VbeDebugSession` supervises each phase and workbook/process observation.
+Stop, workbook close, process exit, and monitor/sink failure establish one
+terminal cause. Cleanup retains that cause and any later failures, detaches the
+generation once, advances the existing process owner's termination and Job
+disposal before awaiting observations, and releases COM and generation state.
+Observers use raw process completion, never session Completion, to avoid a
+cleanup cycle. Session Completion includes this cleanup and can fault without
+another DAP request, EOF, or a later Dispose call.
+
+The runner consumes both successful and faulted Completion. On a runtime
+infrastructure failure it reports `DebugSessionError` and one bodyless
+`terminated` event; it does not invent a process exit code. DAP output failures
+are latched before another writer can acquire the transport, so terminal
+handling never retries a failed stream. Resource cleanup proceeds regardless.
+Restart's planned old-session termination remains local to cutover; an
+unplanned lifecycle failure invalidates replacement authority, and a late
+build result cannot resurrect the session.
+
 ## Failure categories
 
 Failures are classified by the boundary that can act on them:
