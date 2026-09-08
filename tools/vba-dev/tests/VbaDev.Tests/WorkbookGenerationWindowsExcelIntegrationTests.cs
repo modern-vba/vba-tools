@@ -1575,7 +1575,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
             var originalBin = File.ReadAllBytes(fixture.Context.BinDocumentPath);
             var build = CreateOrdinaryBuildCommand(sourceSet => Assert.NotNull(sourceSet.Admission));
             var command = new TestCommand(build, new ExcelComWorkbookTestRunner(),
-                new TestResultOutputFormatter(), new TestProcedureSourceLocator(), new FileSystemPathIdentityResolver());
+                new TestResultOutputFormatter(), new TestProcedureSourceLocator(), new FileSystemPathIdentityResolver(), new WindowsExactFileSystemObjectOwnershipFactory());
 
             var result = await command.RunAsync(fixture.Context,
                 new TestCommandRequest("ndjson", true, new(), TimeSpan.FromMinutes(1), snapshotPath), cancellation.Token);
@@ -1653,7 +1653,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         Action<VbeImportSourceSet> sourceSetCreated,
         IWorkbookGenerationAutomation? automation = null,
         IWorkbookOutputTransactionFactory? transactionFactory = null)
-        => new(CreateOrdinaryOutputCommand(sourceSetCreated, automation, transactionFactory), new FileSystemPathIdentityResolver());
+        => new(CreateOrdinaryOutputCommand(sourceSetCreated, automation, transactionFactory), new FileSystemPathIdentityResolver(), new WindowsExactFileSystemObjectOwnershipFactory());
 
     private static PublishCommand CreateOrdinaryPublishCommand(
         Action<VbeImportSourceSet> sourceSetCreated,

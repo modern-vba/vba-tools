@@ -112,7 +112,7 @@ public sealed class WorkbookOutputFailureTests
     private static Task<CommandResult> RunCallerSnapshotAsync(WorkbookOutputCommand command,
         ResolvedProjectContext context, CallerSnapshot snapshot, CancellationToken cancellationToken)
         => command.RunSnapshotBuildAsync(context, snapshot.SourcePath, snapshot.OutputPath,
-            new BuildSourceSnapshotCaptureFactory(snapshot.CaptureRoot),
+            new BuildSourceSnapshotCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(), snapshot.CaptureRoot),
             new BuildSourceSnapshotOutputSafetyValidator(new FileSystemPathIdentityResolver()), cancellationToken);
 
     private sealed class TerminalWorkbookGenerationAutomation(bool saved, Func<CancellationToken, Exception> failure)
@@ -558,7 +558,7 @@ public sealed class WorkbookOutputFailureTests
         CancellationToken cancellationToken)
         => commandName switch
         {
-            "build" => new BuildCommand(outputCommand, new FileSystemPathIdentityResolver()).RunAsync(context, cancellationToken),
+            "build" => new BuildCommand(outputCommand, new FileSystemPathIdentityResolver(), new WindowsExactFileSystemObjectOwnershipFactory()).RunAsync(context, cancellationToken),
             "publish" => new PublishCommand(outputCommand).RunAsync(context, cancellationToken),
             _ => throw new ArgumentOutOfRangeException(nameof(commandName), commandName, null)
         };

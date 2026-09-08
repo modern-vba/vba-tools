@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using VbaDev.App.Build;
 using VbaDev.App.Cli;
+using VbaDev.App.FileSystem;
 using VbaDev.App.Projects;
 using VbaDev.App.Workbooks;
 using VbaDev.Domain;
@@ -29,18 +30,21 @@ public sealed class TestCommand
     /// <param name="workbookTestRunner">The workbook automation port used to execute tests.</param>
     /// <param name="outputFormatter">The formatter for text and machine-readable test output.</param>
     /// <param name="sourceLocator">The exported-source procedure locator.</param>
+    /// <param name="pathIdentityResolver">Resolves protected source and output routes.</param>
+    /// <param name="ownershipFactory">Opens ownership sessions for invocation-created source capture.</param>
     public TestCommand(
         BuildCommand buildCommand,
         IWorkbookTestRunner workbookTestRunner,
         TestResultOutputFormatter outputFormatter,
         TestProcedureSourceLocator sourceLocator,
-        IFileSystemPathIdentityResolver pathIdentityResolver)
+        IFileSystemPathIdentityResolver pathIdentityResolver,
+        IExactFileSystemObjectOwnershipFactory ownershipFactory)
         : this(
             buildCommand,
             workbookTestRunner,
             outputFormatter,
             sourceLocator,
-            new SnapshotTestExecutionWorkspaceFactory(pathIdentityResolver))
+            new SnapshotTestExecutionWorkspaceFactory(ownershipFactory, pathIdentityResolver))
     {
     }
 

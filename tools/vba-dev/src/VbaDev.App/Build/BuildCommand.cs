@@ -1,4 +1,5 @@
 using VbaDev.App.Cli;
+using VbaDev.App.FileSystem;
 using VbaDev.App.Projects;
 using VbaDev.App.Workbooks;
 using VbaDev.Domain;
@@ -20,10 +21,11 @@ public sealed class BuildCommand
     /// <param name="outputCommand">The shared workbook output command implementation.</param>
     internal BuildCommand(
         WorkbookOutputCommand outputCommand,
-        IFileSystemPathIdentityResolver pathIdentityResolver)
+        IFileSystemPathIdentityResolver pathIdentityResolver,
+        IExactFileSystemObjectOwnershipFactory ownershipFactory)
         : this(
             outputCommand,
-            new BuildSourceSnapshotCaptureFactory(),
+            new BuildSourceSnapshotCaptureFactory(ownershipFactory),
             new BuildSourceSnapshotOutputSafetyValidator(pathIdentityResolver))
     {
     }

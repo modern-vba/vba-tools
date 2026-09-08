@@ -26,7 +26,7 @@ public sealed class BuildSourceAdmissionTests
         var automation = new FakeWorkbookGenerationAutomation();
         var command = new BuildCommand(
             CreateOutputCommand(automation, 1252),
-            new BuildSourceSnapshotCaptureFactory(
+            new BuildSourceSnapshotCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 temp.CreateDirectory("scratch"), new VbaSourceAdmission(() => 1252)),
             new BuildSourceSnapshotOutputSafetyValidator(new FileSystemPathIdentityResolver()));
         var outputPath = Path.Combine(temp.Path, "output", "Book1.xlsm");
@@ -260,12 +260,12 @@ public sealed class BuildSourceAdmissionTests
         var automation = new FakeWorkbookGenerationAutomation();
         var mirrorFactory = new VbeImportSourceSetFactory();
         var outputCommand = CreateOutputCommand(automation, 1252, mirrorFactory: mirrorFactory);
-        var build = new BuildCommand(outputCommand, new FileSystemPathIdentityResolver());
+        var build = new BuildCommand(outputCommand, new FileSystemPathIdentityResolver(), new WindowsExactFileSystemObjectOwnershipFactory());
         var runner = new FakeWorkbookTestRunner();
         var test = new TestCommand(build, runner, new TestResultOutputFormatter(), new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(new FileSystemPathIdentityResolver(), temp.CreateDirectory("scratch"),
+            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), temp.CreateDirectory("scratch"),
                 new SnapshotTestWorkspaceFileSystem(), 3, TimeSpan.Zero,
-                sourceCaptureFactory: new SnapshotSourceCaptureFactory(new VbaSourceAdmission(() => 1252))));
+                sourceCaptureFactory: new SnapshotSourceCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new VbaSourceAdmission(() => 1252))));
 
         var result = await test.RunAsync(context,
             new TestCommandRequest("text", true, new(), TimeSpan.FromMinutes(1), context.DocumentSourceSetPath), CancellationToken.None);
@@ -329,13 +329,13 @@ public sealed class BuildSourceAdmissionTests
             });
         var scratchRoot = temp.CreateDirectory("scratch");
         var build = new BuildCommand(CreateOutputCommand(automation, activeCodePage, mirrorFactory: mirrorFactory),
-            new BuildSourceSnapshotCaptureFactory(scratchRoot, admission),
+            new BuildSourceSnapshotCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(), scratchRoot, admission),
             new BuildSourceSnapshotOutputSafetyValidator(new FileSystemPathIdentityResolver()));
         var runner = new FakeWorkbookTestRunner();
         var test = new TestCommand(build, runner, new TestResultOutputFormatter(), new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(new FileSystemPathIdentityResolver(), scratchRoot,
+            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot,
                 new SnapshotTestWorkspaceFileSystem(), 3, TimeSpan.Zero,
-                sourceCaptureFactory: new SnapshotSourceCaptureFactory(admission)));
+                sourceCaptureFactory: new SnapshotSourceCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(), admission)));
 
         var result = command == "build"
             ? await build.RunSnapshotAsync(
@@ -389,7 +389,7 @@ public sealed class BuildSourceAdmissionTests
             runner,
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
-            new FileSystemPathIdentityResolver());
+            new FileSystemPathIdentityResolver(), new WindowsExactFileSystemObjectOwnershipFactory());
 
         var result = await test.RunAsync(context, new TestCommandRequest("ndjson", true, new()), CancellationToken.None);
 
@@ -468,7 +468,7 @@ public sealed class BuildSourceAdmissionTests
             runner,
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
-            new FileSystemPathIdentityResolver());
+            new FileSystemPathIdentityResolver(), new WindowsExactFileSystemObjectOwnershipFactory());
 
         var result = await test.RunAsync(
             context,
@@ -517,9 +517,9 @@ public sealed class BuildSourceAdmissionTests
             runner,
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(new FileSystemPathIdentityResolver(), scratchRoot,
+            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot,
                 new SnapshotTestWorkspaceFileSystem(), 3, TimeSpan.Zero,
-                sourceCaptureFactory: new SnapshotSourceCaptureFactory(admission)));
+                sourceCaptureFactory: new SnapshotSourceCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(), admission)));
 
         var result = await test.RunAsync(context,
             new TestCommandRequest("ndjson", true, new(), TimeSpan.FromMinutes(1), snapshotPath), CancellationToken.None);
@@ -568,7 +568,7 @@ public sealed class BuildSourceAdmissionTests
         int activeCodePage,
         WorkbookSourcePlanner? planner = null,
         VbeImportSourceSetFactory? mirrorFactory = null)
-        => new(CreateOutputCommand(automation, activeCodePage, planner, mirrorFactory), new FileSystemPathIdentityResolver());
+        => new(CreateOutputCommand(automation, activeCodePage, planner, mirrorFactory), new FileSystemPathIdentityResolver(), new WindowsExactFileSystemObjectOwnershipFactory());
 
     private static WorkbookOutputCommand CreateOutputCommand(
         FakeWorkbookGenerationAutomation automation,

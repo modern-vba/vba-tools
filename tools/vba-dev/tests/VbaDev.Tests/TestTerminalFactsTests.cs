@@ -263,7 +263,7 @@ public sealed class TestTerminalFactsTests
             workbookTestRunner: runner);
         var command = new TestCommand(composition.BuildCommand, runner,
             new TestResultOutputFormatter(), new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(new FileSystemPathIdentityResolver(), scratch,
+            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratch,
                 cleanupFileSystem ?? new SnapshotTestWorkspaceFileSystem(), 3, TimeSpan.Zero,
                 sourceCaptureFactory: sourceCapture));
         return new(VbaDevCommandLine.Create(composition with { TestCommand = command }), snapshot, scratch);

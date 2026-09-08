@@ -1277,6 +1277,9 @@ starts cleanup, disposes its ownership session, and interprets the result. The
 module owns no commitment, rollback, recovery, warning, or command-result policy.
 CommonModules snapshots are the first consumer and retain their capture,
 mutation, cancellation, retained-workspace, and warning-order contracts.
+Build source-snapshot capture also registers its create-only GUID directory,
+every nested directory, and each exact admitted source/sidecar copy in one
+session. Its shared container and caller-owned inputs are not scratch receipts.
 _Avoid_: path-based cleanup, generic transaction, recursive workspace deletion
 
 **InvocationScratchCleanupEvidence**:
@@ -1287,6 +1290,22 @@ after bounded retries. Retained absolute paths and inconclusive paths are sorted
 case-insensitively with an ordinal tie-breaker. Repeated cleanup returns the same
 evidence and cannot acquire new deletion authority.
 _Avoid_: command success, rollback receipt, recoverable transaction state
+
+**BuildSourceSnapshotCapture**:
+The invocation-owned copy of an admitted caller source snapshot. It copies
+`AdmittedVbaSourceSet` source and sidecar bytes exactly without rereading caller
+paths, and retains the same immutable admission and diagnostic source identities
+for materialization. Its complete created subtree uses one exact ownership
+session and `InvocationScratch`; existing or foreign directories are never
+adopted. The factory releases creation fences before transferring the capture or
+cleaning up a failed preparation. Disposal completes bounded cleanup independent
+of cancellation and closes the session. Repeated cleanup returns the same
+`InvocationScratchCleanupEvidence`. An incomplete cleanup reports sorted absolute
+retained paths; a preparation failure retains its original exception separately
+from that evidence. Changed, replaced, linked, reparse, foreign, and inconclusive
+objects remain protected. This lifetime owns neither caller input nor workbook
+commitment, and leaves source-snapshot protocol and generation semantics intact.
+_Avoid_: caller snapshot, recursive source deletion, materialization commitment
 
 **InitialProjectTarget**:
 The **ProjectRootIdentity** selected for **InitialProjectCreation**, reached

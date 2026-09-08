@@ -1,3 +1,4 @@
+using VbaDev.Infrastructure.FileSystem;
 using System.Text;
 using VbaDev.App.Build;
 using VbaDev.App.Projects;
@@ -76,7 +77,7 @@ internal static class WorkbookMaterializerTestExtensions
             projectRoot,
             "source-snapshot-capture",
             Guid.NewGuid().ToString("N"));
-        using var sourceCapture = new BuildSourceSnapshotCaptureFactory(
+        using var sourceCapture = new BuildSourceSnapshotCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 captureRoot,
                 new VbaSourceAdmission(
                     () => activeCodePage,
