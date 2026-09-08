@@ -36,6 +36,26 @@ test('selection projection reads only disk selection-critical manifest fields', 
   });
 });
 
+test('selection projection uses ordinal Unicode identity and retains stored document spelling', () => {
+  for (const [storedName, primaryName, equivalent] of [
+    ['\u03a3', '\u03c2', true],
+    ['\u00b5', '\u039c', true],
+    ['\u{10400}', '\u{10428}', true],
+    ['K', '\u212a', false],
+    ['\u00c5', 'A\u030a', false]
+  ] as const) {
+    const projection = parseCommandPaletteManifestSelectionProjection(manifestText({
+      [storedName]: { sourcePath: 'src/Book1' }
+    }, primaryName));
+
+    assert.equal(projection !== undefined, equivalent, `${storedName} / ${primaryName}`);
+    if (equivalent) {
+      assert.equal(projection?.primaryDocument, storedName);
+      assert.deepEqual(projection?.documents, [{ name: storedName, sourcePath: 'src/Book1' }]);
+    }
+  }
+});
+
 test('selection projection rejects malformed selection fields without narrowing complete manifest validation', () => {
   assert.equal(parseCommandPaletteManifestSelectionProjection('{broken'), undefined);
   assert.equal(parseCommandPaletteManifestSelectionProjection(JSON.stringify({
@@ -169,6 +189,61 @@ test('an unusable nearest manifest fails closed without falling through', async 
   assert.equal(errors.length, 1);
   assert.match(errors[0]!, /Broken[\\/]vba-project\.json/);
   assert.match(errors[0]!, /cannot be used for Command Palette targeting/i);
+});
+
+test('Command Palette reports both conflicting document names and their manifest', async () => {
+  const errors: string[] = [];
+  const target = await resolveCommandPaletteTarget(createOptions({
+    readTextFile: async () => manifestText({
+      '\u03a3': { sourcePath: 'src/First' },
+      '\u03c2': { sourcePath: 'src/Second' }
+    }, '\u03a3'),
+    showErrorMessage: async (message) => { errors.push(message); }
+  }));
+
+  assert.equal(target, undefined);
+  assert.equal(errors.length, 1);
+  assert.ok(errors[0].includes('\u03a3'));
+  assert.ok(errors[0].includes('\u03c2'));
+  assert.ok(errors[0].includes('vba-project.json'));
+});
+
+test('Command Palette identifies both document source roots when their ordinal identities overlap', async () => {
+  const errors: string[] = [];
+  const target = await resolveCommandPaletteTarget(createOptions({
+    readTextFile: async () => manifestText({
+      First: { sourcePath: 'src/\u03a3' },
+      Second: { sourcePath: 'src/\u03c2' }
+    }, 'First'),
+    showErrorMessage: async (message) => { errors.push(message); }
+  }));
+
+  assert.equal(target, undefined);
+  assert.equal(errors.length, 1);
+  assert.ok(errors[0].includes('First'));
+  assert.ok(errors[0].includes('Second'));
+  assert.ok(errors[0].includes('src\\\u03a3'));
+  assert.ok(errors[0].includes('src\\\u03c2'));
+});
+
+test('Command Palette source ownership requires a strict descendant of the document source root', async () => {
+  let documentChoices = 0;
+  const sourceRoot = windowsPath.join('C:\\work', 'Project', 'src', 'Root.bas');
+  const target = await resolveCommandPaletteTarget(createOptions({
+    scope: 'document',
+    snapshot: { ...emptySnapshot(), activeEditorFilePath: sourceRoot },
+    readTextFile: async () => manifestText({
+      First: { sourcePath: 'src/Root.bas' },
+      Other: { sourcePath: 'src/Other' }
+    }, 'Other'),
+    chooseDocument: async (documents) => {
+      documentChoices += 1;
+      return documents.find((document) => document.name === 'Other');
+    }
+  }));
+
+  assert.equal(documentChoices, 1);
+  assert.equal(target?.document?.name, 'Other');
 });
 
 test('without a containing manifest one usable workspace project is automatic', async () => {

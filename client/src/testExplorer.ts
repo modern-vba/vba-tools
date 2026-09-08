@@ -17,6 +17,7 @@ import {
   runVbaDevProjectCommandInvocation
 } from './devtoolRuntime';
 import { parseProjectManifest } from './projectManifest';
+import { relativeWindowsDescendantPath, windowsPathKey } from './windowsPathIdentity';
 import {
   TestItemMetadata,
   TestExplorerNodeIndex,
@@ -191,7 +192,13 @@ async function loadWorkbookBackedProjects(
   const manifests = await options.findProjectManifests(options.workspaceRoots);
   const projects: WorkbookBackedTestProject[] = [];
   for (const manifestPath of manifests) {
-    const manifest = parseProjectManifest(await options.readTextFile(manifestPath));
+    let identityConflict: string | undefined;
+    const manifest = parseProjectManifest(
+      await options.readTextFile(manifestPath),
+      (message) => { identityConflict = message; });
+    if (identityConflict !== undefined) {
+      throw new Error(`${manifestPath}: ${identityConflict}`);
+    }
     if (!manifest) {
       continue;
     }
@@ -289,15 +296,11 @@ function isExportedVbaSource(filePath: string): boolean {
 }
 
 function isPathWithin(filePath: string, directoryPath: string): boolean {
-  const relativePath = path.relative(path.resolve(directoryPath), path.resolve(filePath));
-  return relativePath.length > 0
-    && !relativePath.startsWith(`..${path.sep}`)
-    && relativePath !== '..'
-    && !path.isAbsolute(relativePath);
+  return relativeWindowsDescendantPath(path.resolve(directoryPath), path.resolve(filePath)) !== undefined;
 }
 
 function samePath(left: string, right: string): boolean {
-  return path.normalize(left).toLowerCase() === path.normalize(right).toLowerCase();
+  return windowsPathKey(path.normalize(left)) === windowsPathKey(path.normalize(right));
 }
 
 async function runTestItem(

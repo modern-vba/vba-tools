@@ -122,6 +122,48 @@ test('a project run snapshots the manifest primary document even when it is not 
   ]);
 });
 
+test('Test Explorer runs the stored document selected by an ordinal-equivalent primary name', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const capturedSourceSets: string[] = [];
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([[
+      path.join(projectRoot, 'vba-project.json'),
+      manifestJson('BookProject', ['Book1', '\u03a3'], '\u03c2')
+    ]]),
+    captureSourceSnapshot: async (sourceSetPath) => {
+      capturedSourceSets.push(sourceSetPath);
+      return {
+        directoryPath: path.join('C:', 'temp', 'primary-snapshot'),
+        cleanup: async () => ({})
+      };
+    }
+  });
+
+  await explorer.refresh();
+  await explorer.run({ include: [controller.items[0]] }, uncancelledToken());
+
+  assert.deepEqual(controller.items[0].children.items.map((item) => item.label), ['Book1', '\u03a3']);
+  assert.deepEqual(capturedSourceSets, [path.join(projectRoot, 'src', '\u03a3')]);
+});
+
+test('Test Explorer reports conflicting manifest identities before exposing project nodes', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const manifestPath = path.join(projectRoot, 'vba-project.json');
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([[manifestPath, manifestJson('BookProject', ['\u03a3', '\u03c2'])]])
+  });
+
+  await assert.rejects(explorer.refresh(), (error: Error) => {
+    assert.ok(error.message.includes(manifestPath));
+    assert.ok(error.message.includes('\u03a3'));
+    assert.ok(error.message.includes('\u03c2'));
+    return true;
+  });
+  assert.deepEqual(controller.items, []);
+});
+
 test('Running a document node invokes vba-dev test ndjson with explicit project and document', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
   const calls: Array<{ file: string; args: readonly string[] }> = [];
@@ -1004,6 +1046,34 @@ test('a saved VBA source change invalidates only its document discovery snapshot
   assert.equal(projectItem.children.items[1], book2Item);
   assert.deepEqual(book1Item.children.items, []);
   assert.equal(book2Item.children.items[0], retainedBook2Module);
+});
+
+test('Test Explorer invalidates discovered tests through ordinal-equivalent source-root segments', async () => {
+  const projectRoot = path.join('C:', 'work', 'BookProject');
+  const fixture = JSON.parse(manifestJson('BookProject', ['Book1']));
+  fixture.documents.Book1.sourcePath = 'src/\u03a3';
+  const controller = new FakeTestController();
+  const openDocuments: Array<{ uriPath: string; isDirty: boolean }> = [];
+  const explorer = createExplorer(controller, {
+    manifests: new Map([[path.join(projectRoot, 'vba-project.json'), JSON.stringify(fixture)]]),
+    openTextDocuments: () => openDocuments,
+    stdout: ndjson(testFinishedWithLocation(projectRoot, 'Book1', 'Test_Module', 'Test_One'))
+  });
+  await explorer.refresh();
+  const documentItem = controller.items[0].children.items[0];
+  await explorer.run({ include: [documentItem] }, uncancelledToken());
+  assert.equal(documentItem.children.items.length, 1);
+
+  openDocuments.push({
+    uriPath: path.join(projectRoot, 'src', '\u03a3', 'Test_Module.bas'),
+    isDirty: false
+  });
+  explorer.invalidateFileSystemSourceChange(path.join(projectRoot, 'src', '\u03c2', 'Test_Module.bas'));
+  assert.equal(documentItem.children.items.length, 1);
+
+  explorer.invalidateSourcePath(path.join(projectRoot, 'src', '\u03c2', 'Test_Module.bas'));
+
+  assert.equal(documentItem.children.items.length, 0);
 });
 
 test('a project definition change invalidates every affected document and preserves unrelated snapshots', async () => {

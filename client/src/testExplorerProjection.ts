@@ -1,4 +1,6 @@
 import * as path from 'node:path';
+import { ordinalIgnoreCaseKey } from './ordinalIgnoreCase';
+import { relativeWindowsDescendantPath, windowsPathKey } from './windowsPathIdentity';
 
 import type {
   TestControllerAdapter,
@@ -131,7 +133,7 @@ export class TestExplorerNodeIndex {
         ?? controller.createTestItem(projectId, project.projectName, project.manifestPath);
       projectItem.label = project.projectName;
       const primaryDocument = project.documents.find((document) => (
-        document.name.toLowerCase() === project.primaryDocument.toLowerCase()
+        ordinalIgnoreCaseKey(document.name) === ordinalIgnoreCaseKey(project.primaryDocument)
       ))!;
       this.setItem(projectItem, {
         kind: 'project',
@@ -580,15 +582,11 @@ function procedureItemId(projectRoot: string, documentName: string, moduleName: 
 }
 
 function isPathWithin(filePath: string, directoryPath: string): boolean {
-  const relativePath = path.relative(path.resolve(directoryPath), path.resolve(filePath));
-  return relativePath.length > 0
-    && !relativePath.startsWith(`..${path.sep}`)
-    && relativePath !== '..'
-    && !path.isAbsolute(relativePath);
+  return relativeWindowsDescendantPath(path.resolve(directoryPath), path.resolve(filePath)) !== undefined;
 }
 
 function samePath(left: string | undefined, right: string | undefined): boolean {
   return left !== undefined
     && right !== undefined
-    && path.normalize(left).toLowerCase() === path.normalize(right).toLowerCase();
+    && windowsPathKey(path.normalize(left)) === windowsPathKey(path.normalize(right));
 }
