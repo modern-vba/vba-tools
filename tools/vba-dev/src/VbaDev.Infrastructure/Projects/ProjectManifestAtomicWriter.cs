@@ -129,20 +129,7 @@ public sealed class ProjectManifestAtomicWriter : IProjectManifestAtomicWriter
         string manifestPath,
         ProjectManifest manifest)
     {
-        try
-        {
-            ProjectManifestValidator.Validate(manifest, ProjectManifest.ManifestFileName);
-            _ = DocumentSourceSetIsolationValidator.ResolveAndValidate(
-                manifest,
-                manifestPath,
-                ProjectManifest.ManifestFileName,
-                new FileSystemPathIdentityResolver());
-            return ProjectManifestCanonicalSerializer.SerializeToUtf16LeBytes(manifest);
-        }
-        catch (VbaProjectManifestException ex)
-        {
-            throw new ProjectManifestException(ex.Message, ex);
-        }
+        return ProjectManifestCodec.Encode(manifest, manifestPath, new FileSystemPathIdentityResolver());
     }
 
     private string WriteTemporaryFile(

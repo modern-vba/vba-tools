@@ -13,7 +13,7 @@ internal static class NewProjectInitialManifestStager
         ArgumentNullException.ThrowIfNull(manifest);
         ArgumentNullException.ThrowIfNull(artifacts);
         var fullManifestPath = Path.GetFullPath(manifestPath);
-        var bytes = ValidateAndSerialize(fullManifestPath, manifest, pathIdentityResolver);
+        var bytes = ProjectManifestCodec.Encode(manifest, fullManifestPath, pathIdentityResolver);
         var directory = Path.GetDirectoryName(fullManifestPath)
             ?? throw new ArgumentException(
                 "The initial project manifest path must have a parent directory.",
@@ -46,26 +46,6 @@ internal static class NewProjectInitialManifestStager
             $"A unique initial project manifest staging file could not be created beside: {fullManifestPath}");
     }
 
-    private static byte[] ValidateAndSerialize(
-        string manifestPath,
-        ProjectManifest manifest,
-        IFileSystemPathIdentityResolver pathIdentityResolver)
-    {
-        try
-        {
-            ProjectManifestValidator.Validate(manifest, ProjectManifest.ManifestFileName);
-            _ = DocumentSourceSetIsolationValidator.ResolveAndValidate(
-                manifest,
-                manifestPath,
-                ProjectManifest.ManifestFileName,
-                pathIdentityResolver);
-            return ProjectManifestCanonicalSerializer.SerializeToUtf16LeBytes(manifest);
-        }
-        catch (VbaProjectManifestException ex)
-        {
-            throw new ProjectManifestException(ex.Message, ex);
-        }
-    }
 }
 
 internal sealed class NewProjectInitialManifestStage

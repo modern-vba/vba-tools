@@ -1,5 +1,4 @@
 using VbaDev.Infrastructure.FileSystem;
-using System.Text;
 using System.Runtime.ExceptionServices;
 using VbaDev.App.Projects;
 using VbaDev.Domain;
@@ -56,7 +55,8 @@ public sealed class ProjectManifestMutationCoordinator : IProjectManifestMutatio
         {
             lease.ProveOwnershipContinuity();
             var snapshotBytes = ReadManifestBytes(lease.ManifestPath);
-            var latestManifest = ParseManifest(snapshotBytes, lease.ManifestPath);
+            var latestManifest = ProjectManifestCodec.Decode(
+                snapshotBytes, lease.ManifestPath, new FileSystemPathIdentityResolver());
             plan = rebase(new ProjectManifestMutationSnapshot(
                 lease.ProjectIdentity.OperationPath,
                 lease.ManifestPath,
@@ -153,29 +153,6 @@ public sealed class ProjectManifestMutationCoordinator : IProjectManifestMutatio
             throw new ProjectManifestException(
                 $"Project manifest could not be read: {manifestPath}",
                 ex);
-        }
-    }
-
-    private static ProjectManifest ParseManifest(byte[] bytes, string manifestPath)
-    {
-        try
-        {
-            using var stream = new MemoryStream(bytes, writable: false);
-            using var reader = new StreamReader(
-                stream,
-                Encoding.UTF8,
-                detectEncodingFromByteOrderMarks: true);
-            var manifest = ProjectManifestReader.Parse(reader.ReadToEnd(), manifestPath);
-            _ = DocumentSourceSetIsolationValidator.ResolveAndValidate(
-                manifest,
-                manifestPath,
-                manifestPath,
-                new FileSystemPathIdentityResolver());
-            return manifest;
-        }
-        catch (VbaProjectManifestException ex)
-        {
-            throw new ProjectManifestException(ex.Message, ex);
         }
     }
 

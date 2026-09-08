@@ -1099,6 +1099,30 @@ Events nor `IntrinsicHostEventCatalogSnapshot` state. A project-local
 behavior.
 _Avoid_: package file, extension settings, workspace settings
 
+**ProjectManifestByteAdmission**:
+The disk-byte contract for `vba-project.json`: strict UTF-8 with or without a
+BOM, or strict UTF-16 LE/BE with the corresponding BOM. UTF-32 signatures are
+rejected before the shared UTF-16LE prefix. BOM-less UTF-16, malformed or
+truncated BOMs, invalid UTF-8, malformed or odd-length UTF-16, and replacement
+decoding fail before JSON parsing. A literally encoded U+FFFD remains valid.
+This contract is independent of VBA `SnapshotSourceEncoding` and the
+language server's ACP-based `DiskSourceDecoding`; manifests have no ACP fallback.
+The repository-neutral `fixtures/project-manifest-encoding/cases.json` corpus
+checks the same classification in VbaDev, VbaLanguageServer, and VscodeExtension.
+Language-server open Unicode manifest overlays retain their existing authority.
+VscodeExtension routes disk target selection, Test Explorer, debugging, export,
+and mutation coherence through `decodeProjectManifestBytes`.
+
+**ProjectManifestCodec**:
+VbaDev's validated value boundary for ordinary disk load, mutation-snapshot
+decode, canonical encoding, atomic-write preparation, and initial-project
+staging. It owns strict decode, JSON/schema validation, physical
+DocumentSourceSet isolation, expected exception projection, and canonical
+encoding. Canonical bytes remain UTF-16LE with BOM, two-space indentation,
+stable property order, CRLF, and one trailing CRLF. Disk I/O, original raw-byte
+comparison, the mutation lease, recovery artifacts, and atomic commitment stay
+with their existing owners outside the codec.
+
 **ProjectManifestSchema**:
 The closed, case-sensitive schema-1 structural vocabulary of a
 **ProjectManifest**. It supports editor feedback but does not replace

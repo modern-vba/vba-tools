@@ -1,3 +1,4 @@
+import { decodeProjectManifestBytes } from './projectManifestBytes';
 import * as path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -1449,27 +1450,7 @@ async function fileExists(filePath: string): Promise<boolean> {
 }
 
 async function readTextFile(filePath: string): Promise<string> {
-  const buffer = await fs.readFile(filePath);
-  if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {
-    return buffer.subarray(2).toString('utf16le');
-  }
-
-  if (buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf) {
-    return buffer.subarray(3).toString('utf8');
-  }
-
-  return buffer.toString('utf8');
-}
-
-function decodeProjectManifestBytes(bytes: Uint8Array): string {
-  const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {
-    return buffer.subarray(2).toString('utf16le');
-  }
-  if (buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf) {
-    return buffer.subarray(3).toString('utf8');
-  }
-  return buffer.toString('utf8');
+  return decodeProjectManifestBytes(await fs.readFile(filePath));
 }
 
 async function findProjectManifests(): Promise<readonly string[]> {
