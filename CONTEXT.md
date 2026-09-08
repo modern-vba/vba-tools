@@ -211,6 +211,11 @@ command behavior: capabilities, command spelling, standard streams, exit
 status, cancellation transport, and declared result schemas. It exposes no
 provider implementation assembly, application service, test harness, or private
 DTO. Explicitly public non-command library interfaces are separate reuse seams.
+For ordinary Build, Publish, and source-snapshot Build, pre-commit cancellation
+returns `130` only with proved process and STA release. Unproved release returns
+`1` even when cancellation was observed; cancellation after durable output
+commitment preserves success. These command-owned policies consume common
+`WorkbookAutomationTerminalFacts` rather than separate exception traversals.
 _Avoid_: in-process command invocation, shared product DTO, product test helper
 
 **CrossProductConformanceFixture**:
@@ -396,8 +401,10 @@ Import projects pre-commit cancellation to `130` only after both release proofs,
 and lifecycle uncertainty to `1` even when cancellation was observed. It keeps
 process release separate from STA retirement in its result evidence. Saved
 staging is not committed output; after target replacement, later cancellation
-does not undo Import success. Other command surfaces migrate to these facts
-while retaining their own commitment and result policies.
+does not undo Import success. Ordinary Build, Publish, and source-snapshot Build
+also consume these facts through their shared output-command owner, retaining
+existing validation, warnings, output text, recovery, and atomic commitment.
+Remaining command surfaces migrate while retaining their own result policies.
 _Avoid_: command result, generic exception handler, process cleanup authority
 
 **AutomationDesktopIsolation**:

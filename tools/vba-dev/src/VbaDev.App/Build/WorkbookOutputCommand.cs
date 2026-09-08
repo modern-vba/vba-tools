@@ -187,58 +187,37 @@ internal sealed class WorkbookOutputCommand
                     VbeImportWarningRenderer.Render(result.VerificationReport)),
                 result);
         }
-        catch (WorkbookAutomationCanceledException ex)
+        catch (Exception ex) when (WorkbookAutomationFailureClassifier.TryClassify(
+            ex, out var facts, cancellationToken.IsCancellationRequested))
         {
-            return Failed(PreserveReleaseProof(ex, CommandResult.Cancelled(ex.Message)));
+            CommandResult result;
+            if (facts.PrimaryFailure!.Category == WorkbookAutomationFailureCategory.Cancellation)
+            {
+                var typedCancellation = facts.Failures.FirstOrDefault(failure =>
+                    failure.Error is WorkbookAutomationCanceledException);
+                if (typedCancellation is null && !cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+
+                result = CommandResult.Cancelled(typedCancellation is null
+                    ? "Workbook automation was cancelled during the active generation stage."
+                    : ex.Message);
+            }
+            else
+            {
+                result = CommandResult.UsageError(ex is COMException
+                    ? CommandErrorMessages.ExcelComAutomationFailed(operationName, ex)
+                    : ex.Message);
+            }
+
+            return Failed(PreserveReleaseProof(facts, result));
         }
-        catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
+        catch (Exception ex) when (ex is BuildCommandException or CommonModulesManifestException
+            or InvalidOperationException or IOException or UnauthorizedAccessException)
         {
-            return Failed(PreserveReleaseProof(
-                ex,
-                CommandResult.Cancelled(
-                    "Workbook automation was cancelled during the active generation stage.")));
-        }
-        catch (WorkbookAutomationTimeoutException ex)
-        {
-            return Failed(CreateFailureResult(ex));
-        }
-        catch (WorkbookAutomationProcessLostException ex)
-        {
-            return Failed(CreateFailureResult(ex));
-        }
-        catch (WorkbookAutomationCleanupException ex)
-        {
-            return Failed(CreateFailureResult(ex));
-        }
-        catch (WorkbookAutomationReleasedProcessCleanupException ex)
-        {
-            return Failed(CreateFailureResult(ex));
-        }
-        catch (BuildCommandException ex)
-        {
-            return Failed(CreateFailureResult(ex));
-        }
-        catch (CommonModulesManifestException ex)
-        {
-            return Failed(CreateFailureResult(ex));
-        }
-        catch (InvalidOperationException ex)
-        {
-            return Failed(CreateFailureResult(ex));
-        }
-        catch (IOException ex)
-        {
-            return Failed(CreateFailureResult(ex));
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            return Failed(CreateFailureResult(ex));
-        }
-        catch (COMException ex)
-        {
-            return Failed(CreateFailureResult(
-                ex,
-                CommandErrorMessages.ExcelComAutomationFailed(operationName, ex)));
+            WorkbookAutomationFailureClassifier.TryClassify(ex, out var facts);
+            return Failed(PreserveReleaseProof(facts, CommandResult.UsageError(ex.Message)));
         }
     }
 
@@ -257,16 +236,8 @@ internal sealed class WorkbookOutputCommand
                 targetDocumentPath),
             cancellationToken);
 
-    private static CommandResult CreateFailureResult(Exception error, string? message = null)
-    {
-        var result = CommandResult.UsageError(message ?? error.Message);
-        return PreserveReleaseProof(error, result);
-    }
-
-    private static CommandResult PreserveReleaseProof(Exception error, CommandResult result)
-        => WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error)
-            ? result.MarkOwnedProcessReleaseUnproven()
-            : result;
+    private static CommandResult PreserveReleaseProof(WorkbookAutomationTerminalFacts facts, CommandResult result)
+        => facts.ProcessReleaseProven ? result : result.MarkOwnedProcessReleaseUnproven();
 
     private static string RenderOutput(
         string completedVerb,
