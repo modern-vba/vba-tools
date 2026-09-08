@@ -12,11 +12,6 @@ internal interface ICommonModulesPackageSnapshotCleanupObserver
 /// </summary>
 public sealed class CommonModulesPackageSnapshotFactory
 {
-    private const int CleanupAttempts = 3;
-    private static readonly TimeSpan CleanupRetryDelay = TimeSpan.FromMilliseconds(50);
-    private static readonly StringComparer PathComparer = OperatingSystem.IsWindows()
-        ? StringComparer.OrdinalIgnoreCase
-        : StringComparer.Ordinal;
     private readonly IExactFileSystemObjectOwnershipFactory ownershipFactory;
     private readonly CommonModulesPackageReader packageReader;
     private readonly string scratchRoot;
@@ -126,7 +121,7 @@ public sealed class CommonModulesPackageSnapshotFactory
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var content = ReadExactBytes(entry.FullName);
-                staging.Files.Add(ownership.CreateOnlyFile(
+                staging.Scratch.Register(ownership.CreateOnlyFile(
                     staging.DirectoryReceipt,
                     entry.Name,
                     content));
@@ -182,77 +177,13 @@ public sealed class CommonModulesPackageSnapshotFactory
         ArgumentNullException.ThrowIfNull(cleanupObserver);
         ValidateStagingPath(staging.ScratchRoot, staging.Path);
 
-        var removedFiles = new HashSet<string>(PathComparer);
-        var retainedPaths = new HashSet<string>(PathComparer);
-        var observationIncompletePaths = new HashSet<string>(PathComparer);
-        for (var attempt = 1; attempt <= CleanupAttempts; attempt++)
-        {
-            retainedPaths.Clear();
-            observationIncompletePaths.Clear();
-            var retryable = false;
-            foreach (var file in staging.Files)
-            {
-                if (removedFiles.Contains(file.Route))
-                {
-                    continue;
-                }
-
-                var fileCleanup = staging.Ownership.TryDelete(
-                    file,
-                    cleanupObserver.OnProofComplete);
-                if (fileCleanup.Removed)
-                {
-                    removedFiles.Add(file.Route);
-                    continue;
-                }
-
-                retainedPaths.Add(file.Route);
-                retainedPaths.UnionWith(fileCleanup.RetainedPaths);
-                if (!fileCleanup.Conclusive)
-                {
-                    observationIncompletePaths.Add(file.Route);
-                    retryable = true;
-                }
-            }
-
-            if (removedFiles.Count == staging.Files.Count)
-            {
-                var directoryCleanup = staging.Ownership.TryDeleteEmpty(
-                    staging.DirectoryReceipt,
-                    cleanupObserver.OnProofComplete);
-                if (directoryCleanup.Removed)
-                {
-                    return new CommonModulesPackageSnapshotCleanupResult(
-                        Deleted: true,
-                        RetainedPath: null);
-                }
-
-                retainedPaths.UnionWith(directoryCleanup.RetainedPaths);
-                if (!directoryCleanup.Conclusive)
-                {
-                    observationIncompletePaths.Add(staging.Path);
-                    retryable = true;
-                }
-            }
-            else
-            {
-                retainedPaths.Add(staging.Path);
-            }
-
-            if (!retryable || attempt == CleanupAttempts)
-            {
-                break;
-            }
-
-            Thread.Sleep(CleanupRetryDelay);
-        }
-
+        var evidence = staging.Scratch.Cleanup(cleanupObserver.OnProofComplete);
         return new CommonModulesPackageSnapshotCleanupResult(
-            Deleted: false,
-            RetainedPath: staging.Path)
+            Deleted: evidence.Status == InvocationScratchCleanupStatus.Removed,
+            RetainedPath: evidence.Status == InvocationScratchCleanupStatus.Removed ? null : staging.Path)
         {
-            RetainedEntryPaths = SortPaths(retainedPaths.Append(staging.Path)),
-            ObservationIncompletePaths = SortPaths(observationIncompletePaths)
+            RetainedEntryPaths = evidence.RetainedPaths,
+            ObservationIncompletePaths = evidence.InconclusivePaths
         };
     }
 
@@ -297,13 +228,6 @@ public sealed class CommonModulesPackageSnapshotFactory
                 $"CommonModules package snapshot must be a direct GUID child of its scratch root: {absoluteStagingPath}");
         }
     }
-
-    private static IReadOnlyList<string> SortPaths(IEnumerable<string> paths)
-        => paths
-            .Distinct(PathComparer)
-            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(path => path, StringComparer.Ordinal)
-            .ToArray();
 
     private static IReadOnlyList<FileInfo> ReadInventory(string repositoryPath)
     {
@@ -438,6 +362,8 @@ internal sealed class CommonModulesPackageSnapshotStagingState
         ScratchRoot = System.IO.Path.GetFullPath(scratchRoot);
         DirectoryReceipt = directoryReceipt
             ?? throw new ArgumentNullException(nameof(directoryReceipt));
+        Scratch = new InvocationScratch(ownership);
+        Scratch.Register(directoryReceipt);
     }
 
     public ExactFileSystemObjectOwnership Ownership { get; }
@@ -448,7 +374,7 @@ internal sealed class CommonModulesPackageSnapshotStagingState
 
     public ExactFileSystemObjectOwnership.DirectoryReceipt DirectoryReceipt { get; }
 
-    public List<ExactFileSystemObjectOwnership.FileReceipt> Files { get; } = [];
+    public InvocationScratch Scratch { get; }
 }
 
 /// <summary>
