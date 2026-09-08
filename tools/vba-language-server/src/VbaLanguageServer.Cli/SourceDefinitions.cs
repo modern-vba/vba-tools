@@ -1455,7 +1455,7 @@ internal static class VbaSourceDocumentProjector
                     IsOptional: parameter.IsOptional,
                     DisplayLabel: parameterLabels[index],
                     TypeReference: parameter.TypeReference is null
-                        ? new VbaTypeReference("Variant")
+                        ? null
                         : MapTypeReference(parameter.TypeReference),
                     IsByRef: parameter.IsByRef,
                     IsParamArray: parameter.IsParamArray,

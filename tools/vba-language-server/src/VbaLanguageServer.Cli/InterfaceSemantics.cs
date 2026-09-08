@@ -930,7 +930,6 @@ internal sealed class VbaInterfaceSemanticModel
                                  && !definition.IsFixedLengthString))
                 {
                     var effectiveType = GetEffectiveType(
-                        interfaceDocument,
                         variable);
                     if (effectiveType is { Identity: not null })
                     {
@@ -968,17 +967,9 @@ internal sealed class VbaInterfaceSemanticModel
                         || callable is null;
                     if (!hasIncompleteEvidence && callable is not null)
                     {
-                        hasIncompleteEvidence = callable.Parameters.Any(
-                            parameter => GetEffectiveType(
-                                interfaceDocument,
-                                parameter.Name,
-                                parameter.TypeReference is null
-                                    ? null
-                                    : new VbaTypeReference(
-                                        parameter.TypeReference.Name,
-                                        parameter.TypeReference.Qualifier),
-                                definition.ConditionalCompilationPath)
-                                is not { Identity: not null });
+                        hasIncompleteEvidence = callable.Parameters
+                            .Select((parameter, ordinal) => GetEffectiveType(definition, ordinal))
+                            .Any(type => type is not { Identity: not null });
                     }
 
                     if (!hasIncompleteEvidence
@@ -986,10 +977,7 @@ internal sealed class VbaInterfaceSemanticModel
                             or VbaInterfaceAccessorContractKind.Get)
                     {
                         hasIncompleteEvidence = GetEffectiveType(
-                            interfaceDocument,
-                            definition.Name,
-                            definition.TypeReference,
-                            definition.ConditionalCompilationPath)
+                            definition)
                             is not { Identity: not null };
                     }
 
@@ -1498,7 +1486,7 @@ internal sealed class VbaInterfaceSemanticModel
                          && !definition.IsArray
                          && !definition.IsFixedLengthString))
             {
-                var effectiveType = GetEffectiveType(interfaceDocument, variable);
+                var effectiveType = GetEffectiveType(variable);
                 if (effectiveType is null)
                 {
                     continue;
@@ -1562,10 +1550,10 @@ internal sealed class VbaInterfaceSemanticModel
                 }
 
                 var parameters = callable.Parameters
-                    .Select(parameter => CreateParameterContract(
-                        interfaceDocument,
+                    .Select((parameter, ordinal) => CreateParameterContract(
+                        definition,
                         parameter,
-                        definition.ConditionalCompilationPath))
+                        ordinal))
                     .ToArray();
                 VbaInterfaceContractParameter? valueParameter = null;
                 IReadOnlyList<VbaInterfaceContractParameter> ordinaryParameters =
@@ -1583,10 +1571,7 @@ internal sealed class VbaInterfaceSemanticModel
                     or VbaInterfaceAccessorContractKind.Get)
                 {
                     var effectiveType = GetEffectiveType(
-                        interfaceDocument,
-                        definition.Name,
-                        definition.TypeReference,
-                        definition.ConditionalCompilationPath);
+                        definition);
                     if (effectiveType is null)
                     {
                         continue;
@@ -1650,9 +1635,10 @@ internal sealed class VbaInterfaceSemanticModel
                 }
 
                 var parameters = member.Signature?.Parameters
-                    .Select(parameter => CreateProjectReferenceParameterContract(
+                    .Select((parameter, ordinal) => CreateProjectReferenceParameterContract(
                         member,
-                        parameter))
+                        parameter,
+                        ordinal))
                     .ToArray()
                     ?? [];
                 VbaInterfaceContractParameter? valueParameter = null;
@@ -1670,9 +1656,7 @@ internal sealed class VbaInterfaceSemanticModel
                 if (kind is VbaInterfaceAccessorContractKind.Function
                     or VbaInterfaceAccessorContractKind.Get)
                 {
-                    var effectiveType = GetProjectReferenceEffectiveType(
-                        member,
-                        member.TypeReference);
+                    var effectiveType = GetEffectiveType(member);
                     result = new VbaCallableContractResult(
                         effectiveType is null
                             ? null
@@ -1720,11 +1704,10 @@ internal sealed class VbaInterfaceSemanticModel
     private VbaInterfaceContractParameter
         CreateProjectReferenceParameterContract(
             VbaSourceDefinition owner,
-            VbaCallableParameter parameter)
+            VbaCallableParameter parameter,
+            int ordinal)
     {
-        var effectiveType = GetProjectReferenceEffectiveType(
-            owner,
-            parameter.TypeReference);
+        var effectiveType = GetEffectiveType(owner, ordinal);
         var defaultEvidence = parameter.DefaultExpression is null
             ? parameter.IsOptional
                 ? VbaCallableContractDefault.Indeterminate
@@ -1750,11 +1733,11 @@ internal sealed class VbaInterfaceSemanticModel
     }
 
     private VbaInterfaceContractParameter CreateParameterContract(
-        VbaSourceDocument declarationDocument,
+        VbaSourceDefinition owner,
         VbaCallableParameterSyntax parameter,
-        VbaConditionalCompilationBranchPath? declarationPath)
+        int ordinal)
         => CreateParameterContract(
-            declarationDocument,
+            owner,
             new VbaCallableParameter(
                 parameter.Name,
                 parameter.Documentation,
@@ -1770,33 +1753,24 @@ internal sealed class VbaInterfaceSemanticModel
             {
                 DefaultExpression = parameter.DefaultExpression
             },
-            declarationPath);
+            ordinal);
 
     private VbaInterfaceContractParameter CreateParameterContract(
-        VbaSourceDocument declarationDocument,
+        VbaSourceDefinition owner,
         VbaCallableParameter parameter,
-        VbaConditionalCompilationBranchPath? declarationPath)
+        int ordinal)
     {
-        var effectiveType = GetEffectiveType(
-            declarationDocument,
-            parameter.Name,
-            parameter.TypeReference,
-            declarationPath)
-            ?? (
-                "Variant",
-                EffectiveTypeCategory.Variant,
-                (object?)"Variant",
-                (string?)null);
+        var effectiveType = GetEffectiveType(owner, ordinal);
         var defaultEvidence = parameter.DefaultExpression is null
             ? VbaCallableContractDefault.Absent
             : VbaCallableContractDefault.FromExpression(
                 parameter.DefaultExpression);
         return new VbaInterfaceContractParameter(
             parameter.Name,
-            new VbaCallableContractType(
-                effectiveType.Name,
-                effectiveType.Identity,
-                effectiveType.ReferenceQualifiedName),
+            effectiveType is null ? null : new VbaCallableContractType(
+                effectiveType.Value.Name,
+                effectiveType.Value.Identity,
+                effectiveType.Value.ReferenceQualifiedName),
             parameter.IsArray,
             parameter.IsByRef ?? true,
             parameter.IsParamArray
@@ -1897,236 +1871,26 @@ internal sealed class VbaInterfaceSemanticModel
             : label;
     }
 
-    private (
-        string Name,
-        EffectiveTypeCategory Category,
-        object? Identity,
-        string? ReferenceQualifiedName)?
-        GetEffectiveType(
-        VbaSourceDocument interfaceDocument,
-        VbaSourceDefinition variable)
-        => GetEffectiveType(
-            interfaceDocument,
-            variable.Name,
-            variable.TypeReference,
-            variable.ConditionalCompilationPath);
-
-    private (
-        string Name,
-        EffectiveTypeCategory Category,
-        object? Identity,
-        string? ReferenceQualifiedName)?
-        GetEffectiveType(
-        VbaSourceDocument interfaceDocument,
-        string declaredName,
-        VbaTypeReference? typeReference,
-        VbaConditionalCompilationBranchPath? declarationPath = null)
+    private (string Name, EffectiveTypeCategory Category, object? Identity, string? ReferenceQualifiedName)?
+        GetEffectiveType(VbaSourceDefinition definition, int ordinal = -1)
     {
-        if (typeReference is null)
-        {
-            var syntaxTree = interfaceDocument.SyntaxTree
-                ?? VbaSyntaxTree.ParseModule(
-                    interfaceDocument.Uri,
-                    interfaceDocument.Text);
-            var initial = char.ToUpperInvariant(declaredName[0]);
-            var effectiveDeclarationPath = declarationPath
-                ?? VbaConditionalCompilationBranchPath.Root;
-            var defType = syntaxTree.Module.DefTypeDirectives
-                .Where(directive => VbaConditionalCompilationBranchFacts
-                    .TryGetPath(
-                        syntaxTree,
-                        directive.Range,
-                        requireCompleteStructure: true,
-                        out var directivePath)
-                    && directivePath.IsPrefixOf(effectiveDeclarationPath))
-                .LastOrDefault(directive => directive.LetterRanges.Any(range =>
-                    range.Start <= initial && initial <= range.End));
-            if (defType is null)
-            {
-                return (
-                    "Variant",
-                    EffectiveTypeCategory.Variant,
-                    "Variant",
-                    null);
-            }
-
-            return defType.TypeName switch
-            {
-                "Variant" => (
-                    defType.TypeName,
-                    EffectiveTypeCategory.Variant,
-                    defType.TypeName,
-                    null),
-                "Object" => (
-                    defType.TypeName,
-                    EffectiveTypeCategory.Object,
-                    defType.TypeName,
-                    null),
-                _ => (
-                    defType.TypeName,
-                    EffectiveTypeCategory.Value,
-                    defType.TypeName,
-                    null)
-            };
-        }
-
-        if (typeReference.Qualifier is null
-            && VbaLanguageVocabulary.TryGetCanonicalTypeName(
-                typeReference.Name,
-                out var canonicalName))
-        {
-            return canonicalName switch
-            {
-                "Variant" => (
-                    canonicalName,
-                    EffectiveTypeCategory.Variant,
-                    canonicalName,
-                    null),
-                "Object" => (
-                    canonicalName,
-                    EffectiveTypeCategory.Object,
-                    canonicalName,
-                    null),
-                _ => (
-                    canonicalName,
-                    EffectiveTypeCategory.Value,
-                    canonicalName,
-                    null)
-            };
-        }
-
-        var outcome = nameResolution.ResolveTypeDefinitionOutcome(
-            interfaceDocument,
-            typeReference);
-        if (outcome.Kind != VbaNameResolutionKind.Resolved
-            || outcome.Target is null)
-        {
-            return (
-                GetTypePresentation(typeReference),
-                EffectiveTypeCategory.UnresolvedNamed,
-                null,
-                null);
-        }
-
-        var definitions = outcome.Target.PhysicalDefinitions;
-        var selectedDefinition = outcome.Target.SelectedDefinition;
-        var canonicalQualifier = typeReference.Qualifier is null
-            ? null
-            : nameResolution.GetCanonicalQualifierName(
-                selectedDefinition,
-                typeReference.Qualifier) ?? typeReference.Qualifier;
-        var effectiveTypeName = canonicalQualifier is null
-            ? outcome.Target.CanonicalName
-            : $"{canonicalQualifier}.{outcome.Target.CanonicalName}";
-        var preferredReferenceQualifier =
-            nameResolution.GetPreferredReferenceQualifierName(selectedDefinition);
-        var referenceQualifiedName = string.IsNullOrEmpty(
-                preferredReferenceQualifier)
-            ? null
-            : $"{preferredReferenceQualifier}.{outcome.Target.CanonicalName}";
-        if (definitions.All(definition => definition.Kind is
-                VbaSourceDefinitionKind.Class or VbaSourceDefinitionKind.Form))
-        {
-            return (
-                effectiveTypeName,
-                EffectiveTypeCategory.Object,
-                outcome.Target.Identity,
-                referenceQualifiedName);
-        }
-
-        if (definitions.All(definition => definition.Kind is
-                VbaSourceDefinitionKind.Enum or VbaSourceDefinitionKind.Type))
-        {
-            return (
-                effectiveTypeName,
-                EffectiveTypeCategory.Value,
-                outcome.Target.Identity,
-                referenceQualifiedName);
-        }
-
-        return null;
-    }
-
-    private (
-        string Name,
-        EffectiveTypeCategory Category,
-        object? Identity,
-        string? ReferenceQualifiedName)?
-        GetProjectReferenceEffectiveType(
-            VbaSourceDefinition owner,
-            VbaTypeReference? typeReference)
-    {
-        if (typeReference is null)
+        var type = nameResolution.EffectiveDeclaredTypes.Get(definition, ordinal);
+        if (type.State is VbaEffectiveDeclaredTypeState.InsufficientEvidence or VbaEffectiveDeclaredTypeState.NoReturnType)
         {
             return null;
         }
-
-        if (typeReference.Qualifier is null
-            && VbaLanguageVocabulary.TryGetCanonicalTypeName(
-                typeReference.Name,
-                out var canonicalName))
-        {
-            return canonicalName switch
-            {
-                "Variant" => (
-                    canonicalName,
-                    EffectiveTypeCategory.Variant,
-                    canonicalName,
-                    null),
-                "Object" => (
-                    canonicalName,
-                    EffectiveTypeCategory.Object,
-                    canonicalName,
-                    null),
-                _ => (
-                    canonicalName,
-                    EffectiveTypeCategory.Value,
-                    canonicalName,
-                    null)
-            };
-        }
-
-        var definition = nameResolution.ResolveProjectReferenceTypeDefinition(
-            owner.Identity.ReferenceName ?? owner.ModuleName,
-            typeReference);
-        if (definition is null)
-        {
-            return (
-                GetTypePresentation(typeReference),
-                EffectiveTypeCategory.UnresolvedNamed,
-                null,
-                null);
-        }
-
-        var canonicalQualifier = typeReference.Qualifier is null
-            ? null
-            : nameResolution.GetCanonicalQualifierName(
-                definition,
-                typeReference.Qualifier) ?? typeReference.Qualifier;
-        var effectiveTypeName = canonicalQualifier is null
-            ? definition.Name
-            : $"{canonicalQualifier}.{definition.Name}";
-        var preferredReferenceQualifier =
-            nameResolution.GetPreferredReferenceQualifierName(definition);
-        var referenceQualifiedName = string.IsNullOrEmpty(
-                preferredReferenceQualifier)
-            ? null
-            : $"{preferredReferenceQualifier}.{definition.Name}";
-        var identity = new VbaDefinitionNameTargetIdentity(definition.Identity);
-        return definition.Kind switch
-        {
-            VbaSourceDefinitionKind.Class or VbaSourceDefinitionKind.Form => (
-                effectiveTypeName,
-                EffectiveTypeCategory.Object,
-                identity,
-                referenceQualifiedName),
-            VbaSourceDefinitionKind.Enum or VbaSourceDefinitionKind.Type => (
-                effectiveTypeName,
-                EffectiveTypeCategory.Value,
-                identity,
-                referenceQualifiedName),
-            _ => null
-        };
+        var category = type.State == VbaEffectiveDeclaredTypeState.ExplicitlyUnresolved
+            ? EffectiveTypeCategory.UnresolvedNamed
+            : type.Target is null
+                ? type.Reference!.Name switch
+                {
+                    "Variant" => EffectiveTypeCategory.Variant,
+                    "Object" => EffectiveTypeCategory.Object,
+                    _ => EffectiveTypeCategory.Value
+                }
+                : type.Target.SelectedDefinition.Kind is VbaSourceDefinitionKind.Class or VbaSourceDefinitionKind.Form
+                    ? EffectiveTypeCategory.Object : EffectiveTypeCategory.Value;
+        return (type.DisplayName!, category, type.Identity, type.ReferenceQualifiedDisplayName);
     }
 
     private static IReadOnlyList<VbaInterfaceAccessorContractKind>
@@ -2217,16 +1981,16 @@ internal sealed class VbaInterfaceSemanticModel
         var callable = FindCallable(syntaxTree, implementation);
         var foundParameters = callable?.ParameterListRange is not null
             ? callable.Parameters
-                .Select(parameter => CreateParameterContract(
-                    implementingDocument,
+                .Select((parameter, ordinal) => CreateParameterContract(
+                    implementation,
                     parameter,
-                    implementation.ConditionalCompilationPath))
+                    ordinal))
                 .ToArray()
             : implementationSignature.Parameters
-                .Select(parameter => CreateParameterContract(
-                    implementingDocument,
+                .Select((parameter, ordinal) => CreateParameterContract(
+                    implementation,
                     parameter,
-                    implementation.ConditionalCompilationPath))
+                    ordinal))
                 .ToArray();
         VbaInterfaceContractParameter? foundValueParameter = null;
         IReadOnlyList<VbaInterfaceContractParameter> foundOrdinaryParameters =
@@ -2243,10 +2007,7 @@ internal sealed class VbaInterfaceSemanticModel
         if (contract.Result is not null)
         {
             var foundEffectiveType = GetEffectiveType(
-                implementingDocument,
-                implementation.Name,
-                implementation.TypeReference,
-                implementation.ConditionalCompilationPath);
+                implementation);
             foundResult = new VbaCallableContractResult(
                 foundEffectiveType is null
                     ? null
@@ -2315,11 +2076,6 @@ internal sealed class VbaInterfaceSemanticModel
             CallableKind: VbaCallableKind.Property,
             SupportsNamedArguments: true);
     }
-
-    private static string GetTypePresentation(VbaTypeReference? typeReference)
-        => typeReference?.Qualifier is { Length: > 0 } qualifier
-            ? $"{qualifier}.{typeReference.Name}"
-            : typeReference?.Name ?? "Variant";
 
     private static VbaCallableDeclarationSyntax? FindCallable(
         VbaSyntaxTree syntaxTree,

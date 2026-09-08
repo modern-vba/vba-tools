@@ -3717,13 +3717,34 @@ under one future feature rather than extending ordinary completion or
 `BlockSkeletonInsertion`.
 _Avoid_: Event-name completion, handler-only generator, block skeleton insertion
 
+**EffectiveDeclaredType**:
+The inventory-owned type evidence for one physical declaration or callable
+parameter ordinal. Ordinary calls, Event and Implements contracts, type-member
+navigation, Hover, and Signature Help consume the same result. Written `As`
+types and type-declaration characters take precedence. A genuinely omitted
+source type uses the declaring module's preceding applicable `DefType`, then
+Variant only when the absence of an applicable directive is known. This applies
+independently to module and local variables, parameters, and Function/Property
+Get returns; Sub, Event, Property Let, and Property Set have no return type.
+
+Known type, explicitly unresolved written type, insufficient evidence, and no
+return type are distinct states. Unfinished `As` clauses, unknown conditional
+ownership, and absent external metadata never acquire a Variant default.
+Conditional directives are considered in source order for each physical
+declaration's ancestor branch path. A possibly coexisting directive whose
+effect is uncertain leaves the type unknown until a later applicable directive
+establishes it. Conditions are neither evaluated nor expanded into speculative
+declaration variants. Display may retain an unresolved written name, but omitted
+unknown types receive no invented `As Variant` or DefType-origin annotation.
+Canonical source-target and TypeLib identities remain separate from labels.
+_Avoid_: consumer-specific implicit type fallback, current-module defaults for foreign declarations
+
 **InterfaceVariableAccessorContract**:
 The derived Get, Let, and Set implementation requirements contributed by one
 valid Public variable in a source interface class named by `Implements`. The
 variable remains the sole physical `VbaDefinition` and navigation target:
-each declarator's effective declared type comes from its explicit type or
-type-declaration character, otherwise the interface module's applicable
-`DefType`, otherwise Variant. Variant contributes Get, Let, and Set; Object or a
+each declarator uses the shared `EffectiveDeclaredType` in the interface
+module. Variant contributes Get, Let, and Set; Object or a
 named class contributes Get and Set; every other valid declared type contributes
 Get and Let. When the identity of a named type is unresolved, including one
 written with `As New`, Get is the only available contract; Let and Set remain

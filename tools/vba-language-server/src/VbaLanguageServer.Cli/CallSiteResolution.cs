@@ -395,12 +395,7 @@ internal sealed class VbaCallSiteResolution
             }
 
             VbaCanonicalTypeEvidence? parameterType = null;
-            if (parameter.TypeReference is null
-                || !TryGetCanonicalTypeEvidence(
-                    currentDocument,
-                    callableDefinition,
-                    parameter.TypeReference,
-                    out parameterType))
+            if (!TryGetDeclaredTypeEvidence(callableDefinition, parameterIndex, out parameterType))
             {
                 hasIndeterminateEvidence = true;
             }
@@ -699,12 +694,7 @@ internal sealed class VbaCallSiteResolution
                             signature,
                             VbaCallContext.ValueRead)).State
                     != VbaCallCompatibilityState.Applicable
-                || definition.TypeReference is null
-                || !TryGetCanonicalTypeEvidence(
-                    currentDocument,
-                    definition,
-                    definition.TypeReference,
-                    out var definitionType))
+                || !TryGetDeclaredTypeEvidence(definition, -1, out var definitionType))
             {
                 evidence = default!;
                 return false;
@@ -845,12 +835,7 @@ internal sealed class VbaCallSiteResolution
                     && !(signature.CallableKind == VbaCallableKind.Property
                         && variant.Definition.PropertyAccess.HasFlag(
                             VbaPropertyAccess.Readable)))
-                || variant.Definition.TypeReference is null
-                || !TryGetCanonicalTypeEvidence(
-                    currentDocument,
-                    variant.Definition,
-                    variant.Definition.TypeReference,
-                    out var variantType))
+                || !TryGetDeclaredTypeEvidence(variant.Definition, -1, out var variantType))
             {
                 evidence = default!;
                 return false;
@@ -1235,12 +1220,7 @@ internal sealed class VbaCallSiteResolution
                 hasConvergedShape = false;
             }
 
-            if (definition.TypeReference is null
-                || !TryGetCanonicalTypeEvidence(
-                    currentDocument,
-                    definition,
-                    definition.TypeReference,
-                    out var definitionType))
+            if (!TryGetDeclaredTypeEvidence(definition, -1, out var definitionType))
             {
                 hasCompleteTypeEvidence = false;
                 continue;
@@ -1263,72 +1243,19 @@ internal sealed class VbaCallSiteResolution
         return hasDefinition;
     }
 
-    private bool TryGetCanonicalTypeEvidence(
-        VbaSourceDocument currentDocument,
-        VbaSourceDefinition owner,
-        VbaTypeReference typeReference,
+    private bool TryGetDeclaredTypeEvidence(VbaSourceDefinition owner, int ordinal,
         out VbaCanonicalTypeEvidence evidence)
     {
-        if (typeReference.Qualifier is null
-            && VbaLanguageVocabulary.TryGetCanonicalTypeName(
-                typeReference.Name,
-                out var canonicalName))
-        {
-            evidence = CreateIntrinsicTypeEvidence(canonicalName);
-            return true;
-        }
-
-        VbaResolvedNameTarget? target;
-        if (owner.Identity.Origin == VbaDefinitionOrigin.ProjectReference)
-        {
-            target = nameResolution.ResolveProjectReferenceTypeDefinition(
-                    owner.Identity.ReferenceName ?? owner.ModuleName,
-                    typeReference) is { } referenceTypeDefinition
-                ? new VbaDefinitionNameTarget(referenceTypeDefinition)
-                : null;
-        }
-        else
-        {
-            var ownerDocument = nameResolution.FindDocument(owner.Uri);
-            target = ownerDocument is null
-                ? null
-                : nameResolution.ResolveTypeDefinitionOutcome(
-                        ownerDocument,
-                        typeReference)
-                    .Target;
-        }
-        if (target is null)
+        var type = nameResolution.EffectiveDeclaredTypes.Get(owner, ordinal);
+        if (type.State != VbaEffectiveDeclaredTypeState.Known)
         {
             evidence = default!;
             return false;
         }
-
-        var definition = target.SelectedDefinition;
-        var qualifier = typeReference.Qualifier is null
-            ? null
-            : nameResolution.GetCanonicalQualifierName(
-                definition,
-                typeReference.Qualifier) ?? typeReference.Qualifier;
-        var preferredReferenceQualifier =
-            nameResolution.GetPreferredReferenceQualifierName(definition);
-        if (owner.Identity.Origin == VbaDefinitionOrigin.ProjectReference
-            && typeReference.Qualifier is not null
-            && nameResolution.IsReferenceQualifierAmbiguous(typeReference.Qualifier)
-            && !string.IsNullOrEmpty(preferredReferenceQualifier))
-        {
-            qualifier = preferredReferenceQualifier;
-        }
-
-        evidence = new VbaCanonicalTypeEvidence(
-            qualifier is null
-                ? target.CanonicalName
-                : $"{qualifier}.{target.CanonicalName}",
-            !string.IsNullOrEmpty(preferredReferenceQualifier)
-                ? $"{preferredReferenceQualifier}.{target.CanonicalName}"
-                : null,
-            IntrinsicName: null,
-            target.Identity,
-            GetCanonicalTypeCategory(definition.Kind));
+        evidence = type.Target is null
+            ? CreateIntrinsicTypeEvidence(type.Reference!.Name)
+            : new VbaCanonicalTypeEvidence(type.DisplayName!, type.ReferenceQualifiedDisplayName,
+                IntrinsicName: null, type.Target.Identity, GetCanonicalTypeCategory(type.Target.SelectedDefinition.Kind));
         return true;
     }
 
@@ -1613,7 +1540,7 @@ internal sealed class VbaCallSiteResolution
                     currentDocument,
                     callableDefinition,
                     argument,
-                    signature.Parameters[parameterIndex]))
+                    signature.Parameters[parameterIndex], parameterIndex))
             {
                 rank++;
             }
@@ -1626,7 +1553,7 @@ internal sealed class VbaCallSiteResolution
                 currentDocument,
                 callableDefinition,
                 activeArgument,
-                signature.Parameters[activeParameter]))
+                signature.Parameters[activeParameter], activeParameter))
         {
             rank++;
         }
@@ -1638,16 +1565,11 @@ internal sealed class VbaCallSiteResolution
         VbaSourceDocument currentDocument,
         VbaSourceDefinition callableDefinition,
         VbaCallArgumentSyntax argument,
-        VbaCallableParameter parameter)
+        VbaCallableParameter parameter,
+        int parameterOrdinal)
     {
-        var parameterType = parameter.TypeReference;
-        if (parameterType is null
-            || parameter.IsByRef is null
-            || !TryGetCanonicalTypeEvidence(
-                currentDocument,
-                callableDefinition,
-                parameterType,
-                out var canonicalParameterType)
+        if (parameter.IsByRef is null
+            || !TryGetDeclaredTypeEvidence(callableDefinition, parameterOrdinal, out var canonicalParameterType)
             || !TryGetArgumentTypeEvidence(
                 currentDocument,
                 argument,

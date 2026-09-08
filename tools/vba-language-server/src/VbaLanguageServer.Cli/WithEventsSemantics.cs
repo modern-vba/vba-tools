@@ -674,9 +674,10 @@ internal sealed class VbaWithEventsSemanticModel
                 .ToArray());
         var found = new VbaCallableContract(
             handlerSignature.Parameters
-                .Select(parameter => CreateHandlerContractParameter(
+                .Select((parameter, ordinal) => CreateHandlerContractParameter(
                     handler,
-                    parameter))
+                    parameter,
+                    ordinal))
                 .ToArray());
         var comparison = VbaCallableContractComparison.Compare(
             expected,
@@ -712,10 +713,11 @@ internal sealed class VbaWithEventsSemanticModel
 
     private VbaCallableContractParameter CreateHandlerContractParameter(
         VbaSourceDefinition handler,
-        VbaCallableParameter parameter)
+        VbaCallableParameter parameter,
+        int ordinal)
         => CreateCallableContractParameter(
             parameter,
-            TryGetCanonicalParameterType(handler, parameter, out var evidence)
+            TryGetCanonicalParameterType(handler, ordinal, out var evidence)
                 ? CreateCallableContractType(evidence)
                 : null,
             hasAuthoritativeDefaultAbsence: true);
@@ -765,9 +767,9 @@ internal sealed class VbaWithEventsSemanticModel
         => eventDefinition.Signature is null
             ? []
             : eventDefinition.Signature.Parameters
-                .Select(parameter => TryGetCanonicalParameterType(
+                .Select((parameter, ordinal) => TryGetCanonicalParameterType(
                         eventDefinition,
-                        parameter,
+                        ordinal,
                         out var type)
                     ? type
                     : null)
@@ -794,105 +796,27 @@ internal sealed class VbaWithEventsSemanticModel
 
         return TryGetCanonicalParameterType(
             eventContract.Definition,
-            parameter,
+            parameterIndex,
             out type);
     }
 
     private bool TryGetCanonicalParameterType(
         VbaSourceDefinition? owner,
-        VbaCallableParameter parameter,
+        int ordinal,
         out VbaResolvedEventParameterTypeEvidence type)
     {
-        if (parameter.TypeReference is null)
-        {
-            if (owner?.Identity.Origin != VbaDefinitionOrigin.Source)
-            {
-                type = default!;
-                return false;
-            }
-
-            type = new VbaResolvedEventParameterTypeEvidence(
-                "Variant",
-                ReferenceQualifiedDisplayName: null,
-                Identity: new VbaIntrinsicParameterTypeIdentity("Variant"));
-            return true;
-        }
-
-        if (parameter.TypeReference.Qualifier is null
-            && VbaLanguageVocabulary.TryGetCanonicalTypeName(
-                parameter.TypeReference.Name,
-                out var intrinsicName))
-        {
-            type = new VbaResolvedEventParameterTypeEvidence(
-                intrinsicName,
-                ReferenceQualifiedDisplayName: null,
-                Identity: new VbaIntrinsicParameterTypeIdentity(intrinsicName));
-            return true;
-        }
-
-        if (owner is null)
+        var effective = owner is null ? null : nameResolution.EffectiveDeclaredTypes.Get(owner, ordinal);
+        if (effective?.State != VbaEffectiveDeclaredTypeState.Known)
         {
             type = default!;
             return false;
         }
-
-        VbaResolvedNameTarget? target;
-        if (owner.Identity.Origin == VbaDefinitionOrigin.ProjectReference)
-        {
-            target = nameResolution.ResolveProjectReferenceTypeDefinition(
-                    owner.Identity.ReferenceName ?? owner.ModuleName,
-                    parameter.TypeReference) is { } referenceDefinition
-                ? new VbaDefinitionNameTarget(referenceDefinition)
-                : null;
-        }
-        else
-        {
-            var ownerDocument = nameResolution.FindDocument(owner.Uri);
-            target = ownerDocument is null
-                ? null
-                : nameResolution.ResolveTypeDefinitionOutcome(
-                        ownerDocument,
-                        parameter.TypeReference)
-                    .Target;
-        }
-
-        if (target is null)
-        {
-            type = default!;
-            return false;
-        }
-
-        var definition = target.SelectedDefinition;
-        var qualifier = parameter.TypeReference.Qualifier is null
-            ? null
-            : nameResolution.GetCanonicalQualifierName(
-                definition,
-                parameter.TypeReference.Qualifier)
-                ?? parameter.TypeReference.Qualifier;
-        var preferredReferenceQualifier =
-            nameResolution.GetPreferredReferenceQualifierName(definition);
-        if (owner.Identity.Origin == VbaDefinitionOrigin.ProjectReference
-            && parameter.TypeReference.Qualifier is not null
-            && nameResolution.IsReferenceQualifierAmbiguous(
-                parameter.TypeReference.Qualifier)
-            && !string.IsNullOrEmpty(preferredReferenceQualifier))
-        {
-            qualifier = preferredReferenceQualifier;
-        }
-
-        object identity = TryCreateTypeLibraryParameterTypeIdentity(
-                definition,
-                out var typeLibraryIdentity)
-            ? typeLibraryIdentity
-            : target.Identity;
-        type = new VbaResolvedEventParameterTypeEvidence(
-            qualifier is null
-                ? target.CanonicalName
-                : $"{qualifier}.{target.CanonicalName}",
-            !string.IsNullOrEmpty(preferredReferenceQualifier)
-                ? $"{preferredReferenceQualifier}.{target.CanonicalName}"
-                : null,
-            identity);
+        object identity = effective.Target is null
+            ? new VbaIntrinsicParameterTypeIdentity(effective.Reference!.Name)
+            : TryCreateTypeLibraryParameterTypeIdentity(effective.Target.SelectedDefinition, out var libraryIdentity)
+                ? libraryIdentity : effective.Target.Identity;
+        type = new VbaResolvedEventParameterTypeEvidence(effective.DisplayName!,
+            effective.ReferenceQualifiedDisplayName, identity);
         return true;
     }
 
