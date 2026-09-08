@@ -30,6 +30,25 @@ internal sealed class AutomationExcelProcessOutcome<TResult>(
 
     internal TResult GetReleasedResult()
     {
+        try
+        {
+            return GetReleasedResultCore();
+        }
+        catch (Exception error) when (error is IWorkbookAutomationLifecycleFailure)
+        {
+            // Enrich the original exception without replacing its type, cause, or stack.
+            // The immutable observation is captured only after both cleanup attempts finish.
+            ((IWorkbookAutomationLifecycleFailure)error).LifecycleEvidence = new(
+                Evidence.LastOperationStage,
+                Evidence.ProcessReleaseVerified,
+                Evidence.DispatcherRetired,
+                Evidence.CancellationRequestedDuringCleanup);
+            throw;
+        }
+    }
+
+    private TResult GetReleasedResultCore()
+    {
         var operationError = Evidence.OperationFailure;
         var cleanupError = Evidence.CleanupFailure;
         if (Evidence.DispatcherFailure is { } dispatcherError)

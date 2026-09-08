@@ -463,7 +463,7 @@ public sealed class WorkbookMaterializerTests
                 VerificationReport = null
             });
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        var error = await Assert.ThrowsAsync<WorkbookVerificationReportMissingException>(() =>
             pipeline.MaterializeSourceSnapshotAsync(
                 "Book1",
                 templatePath,

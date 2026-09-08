@@ -378,6 +378,28 @@ dispatcher-retirement uncertainty remain separately classified, and no catalog
 is exposed before both release proofs succeed.
 _Avoid_: public automation framework, DebugExcelProcess owner, command transaction
 
+**WorkbookAutomationTerminalFacts**:
+The shell-neutral classification of one automation failure tree. It retains
+cancellation observation, active stages, timeout, process loss, COM failure,
+unproved exact-process release, unproved STA retirement, and secondary cleanup
+failure after proved process release. Nested and aggregate evidence is traversed
+in source order; a stable priority selects lifecycle uncertainty before other
+failure categories and cancellation without discarding the remaining evidence.
+An enclosing runtime release observation applies only to its own failure subtree;
+proved release can supersede an earlier cleanup attempt's uncertainty without
+hiding that attempt's cancellation or operation failure. Unknown independent
+program defects remain unclassified and cannot become ordinary cancellation.
+Absent lifecycle uncertainty means released or not started under the existing
+automation adapter contract, rather than authority to inspect or terminate a PID.
+The classifier owns no commitment, public wording, exit code, or command result.
+Import projects pre-commit cancellation to `130` only after both release proofs,
+and lifecycle uncertainty to `1` even when cancellation was observed. It keeps
+process release separate from STA retirement in its result evidence. Saved
+staging is not committed output; after target replacement, later cancellation
+does not undo Import success. Other command surfaces migrate to these facts
+while retaining their own commitment and result policies.
+_Avoid_: command result, generic exception handler, process cleanup authority
+
 **AutomationDesktopIsolation**:
 The exact-PID lifecycle invariant for an `AutomationExcelProcess`: no
 user-facing top-level window owned by that process may appear on the caller's

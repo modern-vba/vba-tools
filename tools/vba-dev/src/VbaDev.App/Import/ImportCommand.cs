@@ -1,4 +1,3 @@
-using System.Runtime.InteropServices;
 using VbaDev.App.Build;
 using VbaDev.App.Cli;
 using VbaDev.App.Workbooks;
@@ -74,72 +73,54 @@ public sealed class ImportCommand
         {
             return await RunImportAsync(request, cancellationToken).ConfigureAwait(false);
         }
-        catch (WorkbookAutomationCanceledException ex)
+        catch (Exception ex) when (WorkbookAutomationFailureClassifier.TryClassify(
+            ex, out var facts, cancellationToken.IsCancellationRequested))
         {
-            var message = ex.Stage.Kind == WorkbookAutomationStageKind.OutputCommit
-                ? "Workbook import was cancelled."
-                : ex.Message;
-            return CreateCancellationResult(ex, message);
+            if (!facts.ProcessReleaseProven)
+            {
+                var message = facts.CancellationObserved
+                    ? $"{ex.Message} The owned Excel process release could not be verified."
+                    : ex.Message;
+                return CommandResult.UsageError(message).MarkOwnedProcessReleaseUnproven();
+            }
+
+            if (!facts.DispatcherRetired)
+            {
+                return CommandResult.UsageError(ex.Message);
+            }
+
+            if (facts.PrimaryFailure!.Category != WorkbookAutomationFailureCategory.Cancellation)
+            {
+                return CommandResult.UsageError(
+                    facts.PrimaryFailure.Category == WorkbookAutomationFailureCategory.ComFailure
+                        ? CommandErrorMessages.ExcelComAutomationFailed("import", ex)
+                        : ex.Message);
+            }
+
+            var cancellation = facts.Failures.FirstOrDefault(failure =>
+                failure.Error is WorkbookAutomationCanceledException) ?? facts.PrimaryFailure;
+            if (cancellation.Error is not WorkbookAutomationCanceledException
+                && !cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+
+            return CommandResult.Cancelled(
+                cancellation.Stage is null || cancellation.Stage.Kind == WorkbookAutomationStageKind.OutputCommit
+                    ? "Workbook import was cancelled."
+                    : ex.Message);
         }
-        catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
+        catch (Exception ex) when (ex is InvalidOperationException or BuildCommandException
+            or IOException or UnauthorizedAccessException)
         {
-            return CreateCancellationResult(ex, "Workbook import was cancelled.");
-        }
-        catch (WorkbookAutomationTimeoutException ex)
-        {
-            return PreserveReleaseProof(ex, CommandResult.UsageError(ex.Message));
-        }
-        catch (WorkbookAutomationProcessLostException ex)
-        {
-            return PreserveReleaseProof(ex, CommandResult.UsageError(ex.Message));
-        }
-        catch (WorkbookAutomationCleanupException ex)
-        {
-            return PreserveReleaseProof(ex, CommandResult.UsageError(ex.Message));
-        }
-        catch (WorkbookAutomationReleasedProcessCleanupException ex)
-        {
-            return PreserveReleaseProof(ex, CommandResult.UsageError(ex.Message));
-        }
-        catch (InvalidOperationException ex)
-        {
-            var message = ex.Message.Equals(
-                "Workbook generation verification returned no verification report.",
-                StringComparison.Ordinal)
+            var message = ex is WorkbookVerificationReportMissingException
                 ? "Workbook import verification returned no verification report."
                 : ex.Message;
-            return PreserveReleaseProof(ex, CommandResult.UsageError(message));
-        }
-        catch (BuildCommandException ex)
-        {
-            return PreserveReleaseProof(ex, CommandResult.UsageError(ex.Message));
-        }
-        catch (IOException ex)
-        {
-            return CommandResult.UsageError(ex.Message);
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            return CommandResult.UsageError(ex.Message);
-        }
-        catch (COMException ex)
-        {
-            return CommandResult.UsageError(CommandErrorMessages.ExcelComAutomationFailed("import", ex));
+            WorkbookAutomationFailureClassifier.TryClassify(ex, out var facts);
+            var result = CommandResult.UsageError(message);
+            return facts.ProcessReleaseProven ? result : result.MarkOwnedProcessReleaseUnproven();
         }
     }
-
-    private static CommandResult PreserveReleaseProof(Exception error, CommandResult result)
-        => WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error)
-            ? result.MarkOwnedProcessReleaseUnproven()
-            : result;
-
-    private static CommandResult CreateCancellationResult(Exception error, string message)
-        => WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error)
-            ? PreserveReleaseProof(
-                error,
-                CommandResult.UsageError(
-                    $"{message} The owned Excel process release could not be verified."))
-            : CommandResult.Cancelled(message);
 
     private static void ValidateTargetWorkbook(string targetWorkbookPath)
     {

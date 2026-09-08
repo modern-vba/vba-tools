@@ -720,8 +720,7 @@ internal sealed class WorkbookMaterializer
                     var verificationReport = await session
                         .VerifyAsync(operationCancellationToken)
                         .ConfigureAwait(false)
-                        ?? throw new InvalidOperationException(
-                            "Workbook generation verification returned no verification report.");
+                        ?? throw new WorkbookVerificationReportMissingException();
                     var committedProjectName = await session
                         .GetProjectNameAsync(operationCancellationToken)
                         .ConfigureAwait(false);
