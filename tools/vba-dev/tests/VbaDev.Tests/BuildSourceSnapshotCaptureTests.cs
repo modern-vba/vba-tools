@@ -1,11 +1,195 @@
+using VbaDev.Infrastructure.FileSystem;
 using System.Text;
+using System.Runtime.InteropServices;
 using VbaDev.App.Build;
+using VbaDev.App.FileSystem;
+using VbaDev.App.Workbooks;
 using Xunit;
 
 namespace VbaDev.Tests;
 
 public sealed class BuildSourceSnapshotCaptureTests
 {
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void PreparationFailurePreservesPrimaryAndReportsIndependentCleanup(bool cancelled, bool retained)
+    {
+        using var temp = TempDirectory.Create();
+        using var cancellation = new CancellationTokenSource();
+        var snapshot = CreateSource(temp);
+        var scratchRoot = temp.CreateDirectory("scratch");
+        Exception primary = cancelled ? new OperationCanceledException(cancellation.Token) : new IOException("Copy preparation failed");
+        string? copied = null;
+        var factory = new BuildSourceSnapshotCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(), scratchRoot,
+            new VbaSourceAdmission(() => 65001), path =>
+            {
+                copied = path;
+                if (retained) File.WriteAllText(path, "external content");
+                if (cancelled) cancellation.Cancel();
+                throw primary;
+            });
+
+        var error = Assert.ThrowsAny<Exception>(() => factory.Create(snapshot, cancellation.Token));
+
+        if (retained)
+        {
+            var failure = Assert.IsType<BuildSourceSnapshotCaptureRetainedException>(error);
+            Assert.Same(primary, failure.CaptureError);
+            Assert.Equal(InvocationScratchCleanupStatus.Retained, failure.CleanupEvidence.Status);
+            Assert.Contains(copied!, failure.CleanupEvidence.RetainedPaths);
+            Assert.Contains(copied!, error.Message);
+            Assert.Equal("external content", File.ReadAllText(copied!));
+        }
+        else
+        {
+            Assert.Same(primary, error);
+            Assert.Empty(Directory.GetDirectories(scratchRoot));
+        }
+        Assert.Contains("Attribute VB_Name", File.ReadAllText(Path.Combine(snapshot, "Module1.bas")));
+    }
+
+    [Theory]
+    [InlineData("replaced")]
+    [InlineData("hard-link")]
+    [InlineData("reparse")]
+    public void CleanupPreservesUnprovedIdentity(string mutation)
+    {
+        using var temp = TempDirectory.Create();
+        var capture = new BuildSourceSnapshotCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(), temp.CreateDirectory("scratch"))
+            .Create(CreateSource(temp), CancellationToken.None);
+        var path = Assert.Single(capture.SourceFiles).SourcePath;
+        var bytes = File.ReadAllBytes(path);
+        var outside = Path.Combine(temp.Path, "outside.bas");
+        if (mutation == "hard-link")
+            Assert.True(CreateHardLink(outside, path, IntPtr.Zero));
+        else
+        {
+            File.Move(path, outside);
+            if (mutation == "reparse") File.CreateSymbolicLink(path, outside);
+            else File.WriteAllBytes(path, bytes);
+        }
+
+        var evidence = capture.Cleanup();
+
+        Assert.Equal(InvocationScratchCleanupStatus.Retained, evidence.Status);
+        Assert.Contains(path, evidence.RetainedPaths);
+        Assert.Equal(bytes, File.ReadAllBytes(path));
+        Assert.Equal(bytes, File.ReadAllBytes(outside));
+        Assert.Same(evidence, capture.Cleanup());
+        Assert.Throws<InvalidOperationException>(capture.Dispose);
+    }
+
+    [Fact]
+    public void CleanupContinuesAfterCancellationAndReturnsStableRemovedEvidence()
+    {
+        using var temp = TempDirectory.Create();
+        using var cancellation = new CancellationTokenSource();
+        var capture = new BuildSourceSnapshotCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(), temp.CreateDirectory("scratch"))
+            .Create(CreateSource(temp), CancellationToken.None);
+
+        var evidence = capture.Cleanup(_ => cancellation.Cancel());
+
+        Assert.True(cancellation.IsCancellationRequested);
+        Assert.Equal(InvocationScratchCleanupStatus.Removed, evidence.Status);
+        Assert.Empty(evidence.RetainedPaths);
+        Assert.False(Directory.Exists(capture.StagingPath));
+        Assert.Same(evidence, capture.Cleanup());
+        capture.Dispose();
+    }
+
+    [Fact]
+    public async Task LockedCaptureReturnsBoundedStableInconclusiveEvidence()
+    {
+        using var temp = TempDirectory.Create();
+        var capture = new BuildSourceSnapshotCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(), temp.CreateDirectory("scratch"))
+            .Create(CreateSource(temp), CancellationToken.None);
+        var path = Assert.Single(capture.SourceFiles).SourcePath;
+        InvocationScratchCleanupEvidence evidence;
+        using (File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+            evidence = await Task.Run(() => capture.Cleanup()).WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal(InvocationScratchCleanupStatus.Inconclusive, evidence.Status);
+        Assert.Equal(new[] { path }, evidence.InconclusivePaths.AsEnumerable());
+        Assert.Same(evidence, capture.Cleanup());
+        Assert.True(File.Exists(path));
+        Assert.Throws<InvalidOperationException>(capture.Dispose);
+    }
+
+    [Fact]
+    public void SourceChangeBetweenAdmissionAndCopyCannotChangeCapturedBytes()
+    {
+        using var temp = TempDirectory.Create();
+        var snapshot = CreateSource(temp);
+        var laterPath = Path.Combine(snapshot, "Zeta.bas");
+        var original = Encoding.UTF8.GetBytes("Attribute VB_Name = \"Zeta\"\n");
+        File.WriteAllBytes(laterPath, original);
+        using var capture = new BuildSourceSnapshotCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(), temp.CreateDirectory("scratch"),
+            new VbaSourceAdmission(() => 65001), _ => File.WriteAllText(laterPath, "caller mutation"))
+            .Create(snapshot, CancellationToken.None);
+
+        Assert.Equal(original, File.ReadAllBytes(Assert.Single(capture.SourceFiles, file => file.FileName == "Zeta.bas").SourcePath));
+        Assert.Equal("caller mutation", File.ReadAllText(laterPath));
+    }
+
+    [Fact]
+    public void ForeignDirectoryDuringCaptureIsNeverAdopted()
+    {
+        using var temp = TempDirectory.Create();
+        var snapshot = CreateSource(temp);
+        Directory.CreateDirectory(Path.Combine(snapshot, "nested"));
+        File.WriteAllText(Path.Combine(snapshot, "nested", "Zeta.bas"), "Attribute VB_Name = \"Zeta\"\n");
+        string? foreign = null;
+        var factory = new BuildSourceSnapshotCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(), temp.CreateDirectory("scratch"),
+            new VbaSourceAdmission(() => 65001), path =>
+            {
+                var directory = Path.Combine(Path.GetDirectoryName(path)!, "nested");
+                Directory.CreateDirectory(directory);
+                foreign = Path.Combine(directory, "foreign.txt");
+                File.WriteAllText(foreign, "keep");
+            });
+
+        var error = Assert.Throws<BuildSourceSnapshotCaptureRetainedException>(() => factory.Create(snapshot, CancellationToken.None));
+
+        Assert.IsType<IOException>(error.CaptureError);
+        Assert.Equal("keep", File.ReadAllText(foreign!));
+        Assert.Contains(Path.GetDirectoryName(foreign!)!, error.Message);
+        Assert.Equal(InvocationScratchCleanupStatus.Retained, error.CleanupEvidence.Status);
+    }
+
+    private static string CreateSource(TempDirectory temp)
+    {
+        var snapshot = temp.CreateDirectory("snapshot");
+        File.WriteAllText(Path.Combine(snapshot, "Module1.bas"), "Attribute VB_Name = \"Module1\"\n");
+        return snapshot;
+    }
+
+    [DllImport("kernel32.dll", EntryPoint = "CreateHardLinkW", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CreateHardLink(string linkPath, string existingPath, IntPtr securityAttributes);
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CleanupPreservesChangedOrForeignContent(bool foreign)
+    {
+        using var temp = TempDirectory.Create();
+        var snapshot = temp.CreateDirectory("snapshot");
+        File.WriteAllText(Path.Combine(snapshot, "Module1.bas"), "Attribute VB_Name = \"Module1\"\n");
+        var capture = new BuildSourceSnapshotCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(), temp.CreateDirectory("scratch"))
+            .Create(snapshot, CancellationToken.None);
+        var retainedPath = Path.Combine(capture.StagingPath, foreign ? "foreign.txt" : "Module1.bas");
+        File.WriteAllText(retainedPath, "external content");
+
+        var error = Assert.Throws<InvalidOperationException>(capture.Dispose);
+
+        Assert.Equal("external content", File.ReadAllText(retainedPath));
+        Assert.Contains(Path.GetFullPath(retainedPath), error.Message);
+        Assert.True(File.Exists(Path.Combine(snapshot, "Module1.bas")));
+    }
+
     [Fact]
     public void CaptureFixesRecursiveSourceAndSidecarBytesAndRemovesOwnedScratch()
     {
@@ -30,7 +214,7 @@ public sealed class BuildSourceSnapshotCaptureTests
         File.WriteAllBytes(formPath, formBytes);
         File.WriteAllBytes(sidecarPath, sidecarBytes);
         var scratchRoot = temp.CreateDirectory("scratch");
-        var capture = new BuildSourceSnapshotCaptureFactory(scratchRoot)
+        var capture = new BuildSourceSnapshotCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(), scratchRoot)
             .Create(snapshotPath, CancellationToken.None);
         var capturePath = capture.StagingPath;
 
@@ -88,7 +272,7 @@ public sealed class BuildSourceSnapshotCaptureTests
             FileMode.Open,
             FileAccess.ReadWrite,
             FileShare.None);
-        var factory = new BuildSourceSnapshotCaptureFactory(scratchRoot);
+        var factory = new BuildSourceSnapshotCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(), scratchRoot);
 
         Assert.Throws<IOException>(() =>
             factory.Create(snapshotPath, CancellationToken.None));
@@ -118,7 +302,7 @@ public sealed class BuildSourceSnapshotCaptureTests
             Encoding.UTF8);
         var scratchRoot = temp.CreateDirectory("scratch");
 
-        using var capture = new BuildSourceSnapshotCaptureFactory(scratchRoot)
+        using var capture = new BuildSourceSnapshotCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(), scratchRoot)
             .Create(snapshotPath, CancellationToken.None);
 
         Assert.Equal(

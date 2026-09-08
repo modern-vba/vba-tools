@@ -133,14 +133,15 @@ public static class ToolingCompositionRoot
             mutationLeaseProvider,
             pathIdentityResolver);
         var workbookOutputCommand = new WorkbookOutputCommand(materializer);
-        var buildCommand = new BuildCommand(workbookOutputCommand, pathIdentityResolver);
+        var buildCommand = new BuildCommand(workbookOutputCommand, pathIdentityResolver, ownershipFactory);
         var publishCommand = new PublishCommand(workbookOutputCommand);
         var testCommand = new TestCommand(
             buildCommand,
             workbookTestRunner ?? new ExcelComWorkbookTestRunner(),
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
-            pathIdentityResolver);
+            pathIdentityResolver,
+            ownershipFactory);
         var exportCommand = new ExportCommand(
             workbookModuleExporter ?? new ExcelComWorkbookModuleExporter(),
             exportDestinationFileOperations ?? new ExportDestinationFileOperations());

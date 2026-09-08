@@ -24,7 +24,7 @@ public sealed class SnapshotTestExecutionWorkspaceTests
         var siblingSentinel = Path.Combine(siblingPath, "sentinel.txt");
         File.WriteAllText(siblingSentinel, "keep", Encoding.UTF8);
         var fileSystem = new RetryingSnapshotWorkspaceFileSystem(failuresBeforeDelete: 2);
-        var factory = new SnapshotTestExecutionWorkspaceFactory(
+        var factory = new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
             new FileSystemPathIdentityResolver(),
             scratchRoot,
             fileSystem,
@@ -73,7 +73,7 @@ public sealed class SnapshotTestExecutionWorkspaceTests
             Encoding.UTF8);
         var scratchRoot = temp.CreateDirectory("scratch");
         var fileSystem = new InaccessibleSnapshotWorkspaceFileSystem();
-        var factory = new SnapshotTestExecutionWorkspaceFactory(
+        var factory = new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
             new FileSystemPathIdentityResolver(),
             scratchRoot,
             fileSystem,
@@ -119,8 +119,11 @@ public sealed class SnapshotTestExecutionWorkspaceTests
         var workspacePath = Path.Combine(scratchRoot, Guid.NewGuid().ToString("N"));
         var sourcePath = Path.Combine(workspacePath, "source");
         Directory.CreateDirectory(sourcePath);
-        using var sourceCapture = new BuildSourceSnapshotCapture(
-            sourcePath, [], new AdmittedVbaSourceSet(VbaSourceAdmissionIntent.Build, 65001, []), sourcePath);
+        var callerSource = temp.CreateDirectory("caller-source");
+        File.WriteAllText(Path.Combine(callerSource, "Module1.bas"), "Attribute VB_Name = \"Module1\"\n");
+        using var sourceCapture = new BuildSourceSnapshotCaptureFactory(
+            new WindowsExactFileSystemObjectOwnershipFactory(), sourcePath)
+            .Create(callerSource, CancellationToken.None);
         var outsideWorkbookPath = Path.Combine(temp.Path, "Book1.xlsm");
 
         var error = Assert.Throws<InvalidOperationException>(() =>
@@ -147,8 +150,10 @@ public sealed class SnapshotTestExecutionWorkspaceTests
         var outsideSourcePath = temp.CreateDirectory("outside-source");
         var outsideSentinel = Path.Combine(outsideSourcePath, "sentinel.txt");
         File.WriteAllText(outsideSentinel, "keep", Encoding.UTF8);
-        var sourceCapture = new BuildSourceSnapshotCapture(
-            outsideSourcePath, [], new AdmittedVbaSourceSet(VbaSourceAdmissionIntent.Build, 65001, []), outsideSourcePath);
+        File.WriteAllText(Path.Combine(outsideSourcePath, "Module1.bas"), "Attribute VB_Name = \"Module1\"\n");
+        using var sourceCapture = new BuildSourceSnapshotCaptureFactory(
+            new WindowsExactFileSystemObjectOwnershipFactory(), temp.CreateDirectory("outside-capture"))
+            .Create(outsideSourcePath, CancellationToken.None);
         var workbookPath = Path.Combine(workspacePath, "Book1.xlsm");
 
         var error = Assert.Throws<InvalidOperationException>(() =>
@@ -179,14 +184,14 @@ public sealed class SnapshotTestExecutionWorkspaceTests
         var outsideSourcePath = temp.CreateDirectory("outside-source");
         var outsideSentinel = Path.Combine(outsideSourcePath, "sentinel.txt");
         File.WriteAllText(outsideSentinel, "keep", Encoding.UTF8);
-        var factory = new SnapshotTestExecutionWorkspaceFactory(
+        using var externalCaptureFactory = new ExternalSnapshotSourceCaptureFactory(outsideSourcePath);
+        var factory = new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
             new FileSystemPathIdentityResolver(),
             scratchRoot,
             new SnapshotTestWorkspaceFileSystem(),
             cleanupAttempts: 3,
             retryDelay: TimeSpan.Zero,
-            sourceCaptureFactory: new ExternalSnapshotSourceCaptureFactory(
-                outsideSourcePath));
+            sourceCaptureFactory: externalCaptureFactory);
         var projectRoot = temp.CreateDirectory("Project");
         new VbaDev.Infrastructure.Projects.JsonProjectManifestStore().Save(
             projectRoot,
@@ -212,6 +217,7 @@ public sealed class SnapshotTestExecutionWorkspaceTests
         Assert.Contains("source capture", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Equal("keep", File.ReadAllText(outsideSentinel, Encoding.UTF8));
         Assert.Empty(Directory.EnumerateDirectories(scratchRoot));
+        Assert.True(Directory.Exists(externalCaptureFactory.Capture!.StagingPath));
     }
 
     private sealed class RetryingSnapshotWorkspaceFileSystem(int failuresBeforeDelete)
@@ -252,12 +258,17 @@ public sealed class SnapshotTestExecutionWorkspaceTests
     }
 
     private sealed class ExternalSnapshotSourceCaptureFactory(string outsideSourcePath)
-        : ISnapshotSourceCaptureFactory
+        : ISnapshotSourceCaptureFactory, IDisposable
     {
+        internal BuildSourceSnapshotCapture? Capture { get; private set; }
+
         public BuildSourceSnapshotCapture Create(
             string scratchRoot,
             string sourceSnapshotPath,
             CancellationToken cancellationToken)
-            => new(outsideSourcePath, [], new AdmittedVbaSourceSet(VbaSourceAdmissionIntent.Build, 65001, []), sourceSnapshotPath);
+            => Capture = new BuildSourceSnapshotCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(), outsideSourcePath)
+                .Create(sourceSnapshotPath, cancellationToken);
+
+        public void Dispose() => Capture?.Dispose();
     }
 }

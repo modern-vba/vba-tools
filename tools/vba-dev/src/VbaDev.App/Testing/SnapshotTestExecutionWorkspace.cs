@@ -1,5 +1,6 @@
 using VbaDev.Domain;
 using VbaDev.App.Build;
+using VbaDev.App.FileSystem;
 using VbaDev.App.Projects;
 using VbaDev.App.Workbooks;
 
@@ -38,22 +39,24 @@ internal interface ISnapshotSourceCaptureFactory
 internal sealed class SnapshotSourceCaptureFactory : ISnapshotSourceCaptureFactory
 {
     private readonly VbaSourceAdmission admission;
+    private readonly IExactFileSystemObjectOwnershipFactory ownershipFactory;
 
-    internal SnapshotSourceCaptureFactory()
-        : this(new VbaSourceAdmission(ActiveWindowsAnsiCodePage.Get))
+    internal SnapshotSourceCaptureFactory(IExactFileSystemObjectOwnershipFactory ownershipFactory)
+        : this(ownershipFactory, new VbaSourceAdmission(ActiveWindowsAnsiCodePage.Get))
     {
     }
 
-    internal SnapshotSourceCaptureFactory(VbaSourceAdmission admission)
+    internal SnapshotSourceCaptureFactory(IExactFileSystemObjectOwnershipFactory ownershipFactory, VbaSourceAdmission admission)
     {
         this.admission = admission;
+        this.ownershipFactory = ownershipFactory;
     }
 
     public BuildSourceSnapshotCapture Create(
         string scratchRoot,
         string sourceSnapshotPath,
         CancellationToken cancellationToken)
-        => new BuildSourceSnapshotCaptureFactory(scratchRoot, admission)
+        => new BuildSourceSnapshotCaptureFactory(ownershipFactory, scratchRoot, admission)
             .Create(sourceSnapshotPath, cancellationToken);
 }
 
@@ -147,33 +150,37 @@ internal sealed class SnapshotTestExecutionWorkspaceFactory
     private readonly BuildSourceSnapshotOutputSafetyValidator outputSafetyValidator;
     private readonly ISnapshotSourceCaptureFactory sourceCaptureFactory;
 
-    public SnapshotTestExecutionWorkspaceFactory(IFileSystemPathIdentityResolver pathIdentityResolver)
+    public SnapshotTestExecutionWorkspaceFactory(IExactFileSystemObjectOwnershipFactory ownershipFactory, IFileSystemPathIdentityResolver pathIdentityResolver)
         : this(
+            ownershipFactory,
             pathIdentityResolver,
             Path.Combine(Path.GetTempPath(), "vba-dev-snapshot-test"),
             new SnapshotTestWorkspaceFileSystem(),
             cleanupAttempts: 3,
             retryDelay: TimeSpan.FromMilliseconds(50),
             new BuildSourceSnapshotOutputSafetyValidator(pathIdentityResolver),
-            new SnapshotSourceCaptureFactory())
+            new SnapshotSourceCaptureFactory(ownershipFactory))
     {
     }
 
     internal SnapshotTestExecutionWorkspaceFactory(
+        IExactFileSystemObjectOwnershipFactory ownershipFactory,
         IFileSystemPathIdentityResolver pathIdentityResolver,
         string scratchRoot)
         : this(
+            ownershipFactory,
             pathIdentityResolver,
             scratchRoot,
             new SnapshotTestWorkspaceFileSystem(),
             cleanupAttempts: 3,
             retryDelay: TimeSpan.FromMilliseconds(50),
             new BuildSourceSnapshotOutputSafetyValidator(pathIdentityResolver),
-            new SnapshotSourceCaptureFactory())
+            new SnapshotSourceCaptureFactory(ownershipFactory))
     {
     }
 
     internal SnapshotTestExecutionWorkspaceFactory(
+        IExactFileSystemObjectOwnershipFactory ownershipFactory,
         IFileSystemPathIdentityResolver pathIdentityResolver,
         string scratchRoot,
         ISnapshotTestWorkspaceFileSystem fileSystem,
@@ -193,7 +200,7 @@ internal sealed class SnapshotTestExecutionWorkspaceFactory
         this.outputSafetyValidator = outputSafetyValidator
             ?? new BuildSourceSnapshotOutputSafetyValidator(pathIdentityResolver);
         this.sourceCaptureFactory = sourceCaptureFactory
-            ?? new SnapshotSourceCaptureFactory();
+            ?? new SnapshotSourceCaptureFactory(ownershipFactory);
     }
 
     public SnapshotTestExecutionWorkspace Create(

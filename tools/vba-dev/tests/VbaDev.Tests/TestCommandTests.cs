@@ -1177,7 +1177,7 @@ public sealed class TestCommandTests
             runner,
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(new FileSystemPathIdentityResolver(), scratchRoot));
+            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot));
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -1396,7 +1396,7 @@ public sealed class TestCommandTests
             runner,
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(
+            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new FileSystemPathIdentityResolver(),
                 temp.CreateDirectory("snapshot-test-scratch"),
                 fileSystem,
@@ -1450,7 +1450,7 @@ public sealed class TestCommandTests
             runner,
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(
+            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new FileSystemPathIdentityResolver(),
                 scratchRoot,
                 fileSystem,
@@ -1512,7 +1512,7 @@ public sealed class TestCommandTests
             runner,
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(
+            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new FileSystemPathIdentityResolver(),
                 scratchRoot,
                 new SnapshotTestWorkspaceFileSystem(),
@@ -1565,7 +1565,7 @@ public sealed class TestCommandTests
             runner,
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(
+            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new FileSystemPathIdentityResolver(),
                 scratchRoot,
                 new SnapshotTestWorkspaceFileSystem(),
@@ -1620,7 +1620,7 @@ public sealed class TestCommandTests
             runner,
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(
+            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new FileSystemPathIdentityResolver(),
                 scratchRoot,
                 new SnapshotTestWorkspaceFileSystem(),
@@ -1683,7 +1683,7 @@ public sealed class TestCommandTests
             runner,
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(new FileSystemPathIdentityResolver(), scratchRoot));
+            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot));
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -1730,7 +1730,7 @@ public sealed class TestCommandTests
             runner,
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(new FileSystemPathIdentityResolver(), scratchRoot));
+            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot));
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -1785,7 +1785,7 @@ public sealed class TestCommandTests
             runner,
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(new FileSystemPathIdentityResolver(), scratchRoot));
+            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot));
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -1843,7 +1843,7 @@ public sealed class TestCommandTests
             runner,
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(new FileSystemPathIdentityResolver(), scratchRoot));
+            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot));
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -1894,7 +1894,7 @@ public sealed class TestCommandTests
             runner,
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(new FileSystemPathIdentityResolver(), scratchRoot));
+            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot));
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -1943,7 +1943,7 @@ public sealed class TestCommandTests
             runner,
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(new FileSystemPathIdentityResolver(), scratchRoot));
+            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot));
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -1987,7 +1987,7 @@ public sealed class TestCommandTests
             runner,
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(new FileSystemPathIdentityResolver(), scratchRoot));
+            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot));
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -2038,7 +2038,7 @@ public sealed class TestCommandTests
             runner,
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
-            new SnapshotTestExecutionWorkspaceFactory(new FileSystemPathIdentityResolver(), scratchRoot));
+            new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratchRoot));
         var application = VbaDevCommandLine.Create(composition with { TestCommand = testCommand });
 
         var result = application.Run(
@@ -2416,7 +2416,7 @@ internal sealed class CancelingLockedSnapshotSourceCaptureFactory(
         string sourceSnapshotPath,
         CancellationToken cancellationToken)
     {
-        var capture = new SnapshotSourceCaptureFactory(
+        var capture = new SnapshotSourceCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 new VbaSourceAdmission(() => 1252))
             .Create(scratchRoot, sourceSnapshotPath, cancellationToken);
         try

@@ -52,7 +52,7 @@ public sealed class BuildSourceSnapshotOutputSafetyValidatorTests
         Directory.Delete(outputAliasPath);
         Directory.CreateSymbolicLink(outputAliasPath, laterOutputDirectory);
 
-        using var capture = new BuildSourceSnapshotCaptureFactory(
+        using var capture = new BuildSourceSnapshotCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
                 temp.CreateDirectory("scratch"))
             .Create(validatedPaths.SourceSnapshotPath, CancellationToken.None);
         using var transaction = WorkbookOutputTransaction.Create(
