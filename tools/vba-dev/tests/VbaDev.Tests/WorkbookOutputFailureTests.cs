@@ -14,6 +14,145 @@ namespace VbaDev.Tests;
 
 public sealed class WorkbookOutputFailureTests
 {
+    public static IEnumerable<object[]> TerminalFailureMatrix()
+    {
+        foreach (var command in new[] { "build", "publish", "snapshot" })
+        foreach (var category in new[] { "cancel", "timeout", "process-loss", "com", "process-release", "dispatcher", "released-cleanup" })
+        foreach (var saved in new[] { false, true })
+        foreach (var cancelled in new[] { false, true })
+        {
+            yield return [command, category, saved, cancelled];
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(TerminalFailureMatrix))]
+    public async Task AllBuildPathsProjectEquivalentTerminalEvidenceWithoutCommitting(
+        string commandName, string category, bool saved, bool cancelled)
+    {
+        using var temp = TempDirectory.Create();
+        using var cancellation = new CancellationTokenSource();
+        var project = CreateProject(temp);
+        var snapshot = CreateCallerSnapshot(temp);
+        var stage = new WorkbookAutomationStage(saved
+            ? WorkbookAutomationStageKind.WorkbookSave : WorkbookAutomationStageKind.ModuleImport, "Local.bas");
+        var automation = new TerminalWorkbookGenerationAutomation(saved, token =>
+        {
+            if (cancelled) cancellation.Cancel();
+            Exception error = category switch
+            {
+                "cancel" => new WorkbookAutomationCanceledException(stage, token),
+                "timeout" => new WorkbookAutomationTimeoutException(stage, TimeSpan.FromSeconds(1)),
+                "process-loss" => new WorkbookAutomationProcessLostException(stage),
+                "com" => new System.Runtime.InteropServices.COMException("COM detail"),
+                "process-release" or "dispatcher" => new WorkbookAutomationCleanupException("Release detail"),
+                _ => new WorkbookAutomationReleasedProcessCleanupException("Secondary cleanup detail")
+            };
+            if (error is IWorkbookAutomationLifecycleFailure lifecycle)
+            {
+                lifecycle.LifecycleEvidence = new(stage, category != "process-release", category != "dispatcher", cancelled);
+            }
+            if (cancelled && category != "cancel")
+            {
+                error = new AggregateException(new WorkbookAutomationCanceledException(stage, token), error);
+            }
+            return new WorkbookAutomationStageFailureException(stage, error);
+        });
+        var command = CreateCommand(project.Context, automation);
+
+        var result = commandName == "snapshot"
+            ? await RunCallerSnapshotAsync(command, project.Context, snapshot, cancellation.Token)
+            : await RunAsync(commandName, command, project.Context, cancellation.Token);
+
+        Assert.Equal(category == "cancel" ? 130 : 1, result.ExitCode);
+        Assert.Equal(category == "process-release" ? OwnedProcessReleaseProof.Unproven
+            : OwnedProcessReleaseProof.ProvenOrNotStarted, result.OwnedProcessReleaseProof);
+        Assert.Contains(stage.Description, result.StandardError, StringComparison.Ordinal);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal("previous-bin", File.ReadAllText(project.Context.BinDocumentPath, Encoding.UTF8));
+        Assert.Equal("previous-publish", File.ReadAllText(project.Context.PublishDocumentPath, Encoding.UTF8));
+        Assert.Equal("previous-caller", File.ReadAllText(snapshot.OutputPath, Encoding.UTF8));
+        Assert.Equal("Attribute VB_Name = \"Local\"", File.ReadAllText(Path.Combine(snapshot.SourcePath, "Local.bas")));
+        Assert.Empty(EnumerateOwnedStaging(Path.GetDirectoryName(snapshot.OutputPath)!));
+        Assert.Empty(EnumerateOwnedStaging(project.SelectedOutputDirectory("build")));
+        Assert.Empty(EnumerateOwnedStaging(project.SelectedOutputDirectory("publish")));
+    }
+
+    [Fact]
+    public async Task SnapshotCancellationAfterAtomicCommitKeepsCommittedCallerOutput()
+    {
+        using var temp = TempDirectory.Create();
+        using var cancellation = new CancellationTokenSource();
+        var project = CreateProject(temp);
+        var snapshot = CreateCallerSnapshot(temp);
+        var command = CreateCommand(project.Context, new CompletingWorkbookGenerationAutomation(),
+            new CancelAfterCommitTransactionFactory(cancellation));
+
+        var result = await RunCallerSnapshotAsync(command, project.Context, snapshot, cancellation.Token);
+
+        Assert.True(cancellation.IsCancellationRequested);
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal("new-template", File.ReadAllText(snapshot.OutputPath, Encoding.UTF8));
+        Assert.Equal("previous-bin", File.ReadAllText(project.Context.BinDocumentPath, Encoding.UTF8));
+        Assert.Equal("previous-publish", File.ReadAllText(project.Context.PublishDocumentPath, Encoding.UTF8));
+        Assert.True(File.Exists(Path.Combine(snapshot.SourcePath, "Local.bas")));
+    }
+
+    private sealed record CallerSnapshot(string SourcePath, string OutputPath, string CaptureRoot);
+
+    private static CallerSnapshot CreateCallerSnapshot(TempDirectory temp)
+    {
+        var source = temp.CreateDirectory("caller-snapshot");
+        File.WriteAllText(Path.Combine(source, "Local.bas"), "Attribute VB_Name = \"Local\"", new UTF8Encoding(false));
+        var output = Path.Combine(temp.CreateDirectory("caller-output"), "Book1.xlsm");
+        File.WriteAllText(output, "previous-caller", Encoding.UTF8);
+        return new(source, output, temp.CreateDirectory("snapshot-capture"));
+    }
+
+    private static Task<CommandResult> RunCallerSnapshotAsync(WorkbookOutputCommand command,
+        ResolvedProjectContext context, CallerSnapshot snapshot, CancellationToken cancellationToken)
+        => command.RunSnapshotBuildAsync(context, snapshot.SourcePath, snapshot.OutputPath,
+            new BuildSourceSnapshotCaptureFactory(snapshot.CaptureRoot),
+            new BuildSourceSnapshotOutputSafetyValidator(new FileSystemPathIdentityResolver()), cancellationToken);
+
+    private sealed class TerminalWorkbookGenerationAutomation(bool saved, Func<CancellationToken, Exception> failure)
+        : IWorkbookGenerationAutomation
+    {
+        public async Task<TResult> RunAsync<TResult>(string workbookPath, WorkbookAutomationTimeouts timeouts,
+            Func<IWorkbookGenerationSession, CancellationToken, Task<TResult>> operation, CancellationToken cancellationToken)
+        {
+            if (saved) await operation(new EmptyWorkbookGenerationSession(), cancellationToken);
+            throw failure(cancellationToken);
+        }
+    }
+
+    [Theory]
+    [InlineData("build")]
+    [InlineData("publish")]
+    public async Task CancellationWithUnprovedProcessReleaseReturnsFailure(string commandName)
+    {
+        using var temp = TempDirectory.Create();
+        using var cancellation = new CancellationTokenSource();
+        var project = CreateProject(temp);
+        var automation = new FailingWorkbookGenerationAutomation(token =>
+        {
+            cancellation.Cancel();
+            return new WorkbookAutomationCanceledException(
+                new WorkbookAutomationStage(WorkbookAutomationStageKind.WorkbookSave), token,
+                new WorkbookAutomationCleanupException("Owned release could not be proved."));
+        });
+
+        var result = await RunAsync(commandName, CreateCommand(project.Context, automation),
+            project.Context, cancellation.Token);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Equal(OwnedProcessReleaseProof.Unproven, result.OwnedProcessReleaseProof);
+        Assert.Contains("workbook save", result.StandardError, StringComparison.Ordinal);
+        Assert.Equal("previous-bin", File.ReadAllText(project.Context.BinDocumentPath, Encoding.UTF8));
+        Assert.Equal("previous-publish", File.ReadAllText(project.Context.PublishDocumentPath, Encoding.UTF8));
+        Assert.Empty(EnumerateOwnedStaging(project.SelectedOutputDirectory(commandName)));
+    }
+
     [Fact]
     public async Task CleanupProofFailureIsClassifiedForDependentWorkspaceRetention()
     {

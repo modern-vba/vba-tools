@@ -27,6 +27,17 @@ cancellation; ordinary terminal invocations do not read standard input.
 Consumers of built-in UserForm Event catalogs can require `hostEvent.list`
 version `1.0` before invoking `host-event list --format json`.
 
+For ordinary `build`, `publish`, and `build --source-snapshot ... --output ...`,
+exit `130` means cancellation won before output commitment and both owned Excel
+process release and STA dispatcher retirement were proved. Unproved process
+release or dispatcher retirement returns `1`, even when cancellation was also
+observed. Timeout, process-loss, COM, and secondary cleanup failures remain
+failures with their stage diagnostics. Saving private staging is not output
+commitment: an earlier failure preserves the previous output. Cancellation
+after atomic output replacement preserves committed success. All three paths
+use the same terminal evidence; command-specific output and warnings remain
+unchanged.
+
 ## PowerShell completion
 
 Load completion into the current Windows PowerShell 5.1 or PowerShell 7

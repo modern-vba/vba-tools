@@ -62,6 +62,16 @@ later cancellation cannot convert committed output to cancellation. Unknown
 independent defects do not qualify as recognized cancellation. Missing verification
 reports have a typed failure so Import wording also avoids message matching.
 
+Ordinary Build, Publish, and source-snapshot Build now consume the same facts in
+their shared output-command owner. Pre-commit cancellation with both release
+proofs remains `130`; unproved owned-process release returns `1` even when nested
+inside cancellation, and STA uncertainty remains a failure without claiming
+unproved process release. Equivalent terminal trees have the same classification
+on all three paths. The command family retains its validation, warnings, stage
+diagnostics, output text, recovery, and atomic output commitment. A cancellation
+observed after replacement preserves success, including caller-owned snapshot
+output. No exception traversal or commitment policy moved into another product.
+
 The runtime does not decide whether cleanup-time cancellation overrides a
 scenario's commitment. The generation adapter preserves its existing
 pre-commit cancellation behavior only after mandatory cleanup verification;
