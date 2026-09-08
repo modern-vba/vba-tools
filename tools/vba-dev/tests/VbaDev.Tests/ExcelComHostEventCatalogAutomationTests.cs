@@ -360,6 +360,37 @@ public sealed class ExcelComHostEventCatalogAutomationTests
             StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData(false, false, false)]
+    [InlineData(false, false, true)]
+    [InlineData(false, true, false)]
+    [InlineData(false, true, true)]
+    [InlineData(true, false, false)]
+    [InlineData(true, false, true)]
+    [InlineData(true, true, false)]
+    [InlineData(true, true, true)]
+    public async Task PublicCommandPublishesOnlyWithSuccessfulOperationAndBothReleaseProofs(
+        bool processFailure, bool dispatcherFailure, bool cancelled)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var events = new List<string>();
+        var lifecycle = new RecordingHostEventLifecycle(events,
+            ownerDisposeError: processFailure ? new WorkbookAutomationCleanupException("Unproved process release") : null,
+            userFormRemovalObserver: cancelled ? cancellation.Cancel : null);
+        var automation = new ExcelComHostEventCatalogAutomation(
+            new RecordingDispatcherFactory(events, dispatcherFailure ? new InvalidOperationException("Dispatcher failure") : null),
+            lifecycle.ProcessLifecycle, lifecycle, CreateTimeouts());
+
+        var result = await new HostEventListCommand(automation).RunAsync("json", cancellation.Token);
+
+        Assert.Equal(processFailure || dispatcherFailure ? 1 : cancelled ? 130 : 0, result.ExitCode);
+        if (result.ExitCode == 0) Assert.Contains("\"schemaVersion\": \"1.0\"", result.StandardOutput);
+        else Assert.Empty(result.StandardOutput);
+        Assert.Contains("dispatcher-dispose", events);
+        Assert.Equal(1, automation.LifecycleMetrics.EmptyUserFormsRemoved);
+        Assert.Equal(1, automation.LifecycleMetrics.WorkbooksClosedWithoutSave);
+    }
+
     private static HostEventCatalogTimeouts CreateTimeouts()
         => new(
             ExcelProcessStart: TimeSpan.FromSeconds(30),

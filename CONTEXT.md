@@ -2094,7 +2094,12 @@ temporary UserForm, without importing user source or saving a workbook. It never
 attaches to a user Excel process or workbook and exposes no catalog until exact
 process release and STA dispatcher retirement are proved. Failure leaves
 UserForm host Event evidence unavailable rather than causing project-template
-inspection.
+inspection. `HostEventListCommand` consumes `WorkbookAutomationTerminalFacts`:
+pure cancellation with both release proofs is `130`; unproved process release
+or dispatcher retirement is `1` even during cancellation. Known failures retain
+stage diagnostics and unknown defects cannot become cancellation. Security,
+catalog construction, validation, and publication remain scenario-owned; shared
+terminal evidence grants no catalog authority.
 _Avoid_: source-template inspection, UserForm source import, user-workbook discovery
 
 **UserFormHostEventBinding**:

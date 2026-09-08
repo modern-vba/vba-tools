@@ -94,7 +94,14 @@ one temporary UserForm, catalog projection, component removal, and close without
 save. It does not attach to a user process or workbook, and it publishes no
 catalog until both process release and dispatcher retirement are proved.
 Timeout, cancellation, catalog failure, cooperative cleanup failure, and either
-lifecycle uncertainty remain distinct terminal evidence. Only the intentionally
+lifecycle uncertainty remain distinct terminal evidence. Host Event's command
+projects this shared evidence before its generic unknown-error fallback:
+cancellation is `130` only with both release proofs, while either uncertainty
+is `1` even during cancellation. Operation, timeout, process-loss, COM, and
+secondary cleanup failures retain their diagnostics and publish no catalog.
+The classifier owns neither security configuration nor catalog construction,
+validation, or publication; successful catalog shape and schema remain unchanged.
+Only the intentionally
 visible `DebugExcelProcess` and debug-session lifetime remain separate.
 
 The initial-workbook scenario establishes and verifies the existing identity

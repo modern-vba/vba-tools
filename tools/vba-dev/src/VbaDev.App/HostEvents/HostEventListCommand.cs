@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using VbaDev.App.Cli;
+using VbaDev.App.Workbooks;
 
 namespace VbaDev.App.HostEvents;
 
@@ -28,16 +29,27 @@ public sealed class HostEventListCommand(IHostEventCatalogAutomation catalogAuto
         {
             catalog = await catalogAutomation.ReadAsync(cancellationToken).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (Exception exception) when (WorkbookAutomationFailureClassifier.TryClassify(
+            exception, out var facts, cancellationToken.IsCancellationRequested))
         {
-            return new CommandResult(
-                130,
-                string.Empty,
-                "Host Event catalog acquisition was cancelled." + Environment.NewLine);
+            var typedCancellation = facts.Failures.Any(failure =>
+                failure.Error is WorkbookAutomationCanceledException);
+            var cancelled = facts.PrimaryFailure!.Category == WorkbookAutomationFailureCategory.Cancellation &&
+                (typedCancellation || cancellationToken.IsCancellationRequested);
+            var message = cancelled && !typedCancellation
+                ? "Host Event catalog acquisition was cancelled."
+                : string.Join(Environment.NewLine,
+                    new[] { exception.Message }
+                        .Concat(facts.Failures.Select(failure => failure.Error.Message))
+                        .Distinct(StringComparer.Ordinal));
+            var result = new CommandResult(cancelled ? 130 : 1, string.Empty, message + Environment.NewLine);
+            return facts.ProcessReleaseProven ? result : result.MarkOwnedProcessReleaseUnproven();
         }
         catch (Exception exception)
         {
-            return new CommandResult(1, string.Empty, exception.Message + Environment.NewLine);
+            WorkbookAutomationFailureClassifier.TryClassify(exception, out var facts);
+            var result = new CommandResult(1, string.Empty, exception.Message + Environment.NewLine);
+            return facts.ProcessReleaseProven ? result : result.MarkOwnedProcessReleaseUnproven();
         }
 
         if (!TryCanonicalize(catalog, out var canonical, out var error))
