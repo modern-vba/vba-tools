@@ -354,9 +354,8 @@ public sealed class OwnedExcelApplicationBootstrapperTests
             events: events);
         using var cancellation = new CancellationTokenSource();
         using var terminationController = new OwnedExcelTerminationController();
-        using var cancellationRegistration = ExcelComWorkbookSession.RegisterCallerCancellation(
-            terminationController,
-            cancellation.Token);
+        using var cancellationRegistration = cancellation.Token.Register(
+            () => terminationController.RequestForcedTermination(TimeSpan.Zero));
         using var bindingStarted = new ManualResetEventSlim();
         var isolation = new FakeExcelAutomationDesktopIsolation(events);
         var launcher = new FakeOwnedProcessLauncher(process, events: events);
@@ -387,7 +386,7 @@ public sealed class OwnedExcelApplicationBootstrapperTests
         Assert.Same(nativeBindingExit, cancellationCause.InnerException);
         await terminationController.WaitForLaunchSettlementAsync()
             .WaitAsync(TimeSpan.FromSeconds(1));
-        await terminationController.ObserveTerminationAsync()
+        await terminationController.RequestCleanupAsync(TimeSpan.Zero)
             .WaitAsync(TimeSpan.FromSeconds(1));
         Assert.True(process.HasExited);
         Assert.True(process.Disposed);

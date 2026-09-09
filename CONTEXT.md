@@ -379,8 +379,16 @@ proof, dispatcher-retirement proof, and cleanup-time cancellation separate.
 Only the owning scenario decides whether a proved cleanup-time cancellation
 request overrides its result. The bounded scenario session exposes workbook,
 reference, module, test, save, and export work without process-lifecycle authority
-and becomes unusable before cleanup starts. The mechanism and its native
-dependencies belong wholly to `VbaDev`.
+and becomes unusable before cleanup starts. `IWorkbookBuildSession` and its
+concrete Excel operation session expose no generic disposal authority. Only the
+runtime's lifecycle adapters open or create the owned workbook and perform
+cooperative host/session cleanup with the runtime's cleanup grace; exact process
+release and dispatcher retirement remain runtime responsibilities. The obsolete
+standalone Open/Create, build-owned Open, workbook-count inference and
+best-effort process tracker have been removed. Current debug inspection obtains
+its read-only process snapshot from its own process adapter. Startup and
+intrinsic UserForm Event inspection retain exact strong process ownership.
+The mechanism and its native dependencies belong wholly to `VbaDev`.
 Workbook generation and reference probing share one process startup, termination,
 cleanup, and dispatcher-retirement loop. The narrow reference scenario exposes
 bounded COM execution, not dispatcher or process-control authority. The reference

@@ -1,9 +1,9 @@
 namespace VbaDev.App.Workbooks;
 
 /// <summary>
-/// Represents an open workbook automation session that can inspect and mutate a VBA project.
+/// Provides bounded workbook operations without independent session disposal authority.
 /// </summary>
-public interface IWorkbookBuildSession : IDisposable
+public interface IWorkbookBuildSession
 {
     /// <summary>
     /// Gets the actual name of the open workbook's VBA project.

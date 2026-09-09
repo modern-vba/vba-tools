@@ -32,7 +32,11 @@ both the caller and private desktops at lifecycle boundaries.
 ## Adopted lifecycle contract
 
 Production applies this proven contract to every non-debug Excel automation
-process:
+process. `AutomationExcelProcessRuntime` owns the lifecycle and its narrow
+scenario adapters, including cooperative COM cleanup, exact process-tree release
+and STA dispatcher retirement. Workbook operation sessions have no independent
+disposal authority. Standalone session Open/Create, workbook-count inference
+and best-effort process termination are not supported alternative paths:
 
 1. Capture the caller's interactive desktop and the pre-existing Excel state.
 2. Create a uniquely named, invocation-scoped desktop in the current window

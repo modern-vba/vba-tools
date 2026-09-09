@@ -9,7 +9,7 @@ public sealed class ExcelComWorkbookModuleExporterTests
     [Fact]
     public void LegacyWorkbookBuildSessionDoesNotRequireModuleExportCapability()
     {
-        using IWorkbookBuildSession session = new LegacyWorkbookBuildSession();
+        IWorkbookBuildSession session = new LegacyWorkbookBuildSession();
 
         var error = Assert.Throws<NotSupportedException>(() =>
             session.ExportModule("Module1", "Module1.bas"));
@@ -99,9 +99,6 @@ public sealed class ExcelComWorkbookModuleExporterTests
         {
         }
 
-        public void Dispose()
-        {
-        }
     }
 
     private sealed class LegacyWorkbookGenerationSession : IWorkbookGenerationSession

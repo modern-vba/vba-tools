@@ -107,6 +107,20 @@ successful closure and invalidation of the owned `HDESK`. Windows has no
 delete-desktop operation, so the desktop object's name may remain until all
 references close or logoff ends the window-station session.
 
+Within `VbaDev`, `AutomationExcelProcessRuntime` is the sole lifecycle and
+extension authority for these automation scenarios. Its adapters establish the
+owned host, open or create the workbook, and perform cooperative COM cleanup
+with the runtime's cleanup grace. The runtime withholds a successful result
+until exact process-tree release, private-desktop release and STA dispatcher
+retirement are proved. Bounded workbook sessions provide operations without
+`IDisposable` or another independent disposal path, and become unusable before
+cleanup begins. The unreachable generic Open/Create/build-owned Open and
+workbook-count-based best-effort termination implementation has been deleted.
+Current debug inspection keeps read-only process snapshot capture in its debug
+process adapter; it cannot use that snapshot to adopt a generic workbook owner.
+Startup cleanup and intrinsic UserForm Event inspection retain their exact
+strong process owner.
+
 The subsequent `DebugExcelProcess` deliberately does not use this path. Excel,
 the VBE, selected code pane, modal prompts, and breakpoint interaction remain
 visible on the caller's desktop and under the debug session's separate exact

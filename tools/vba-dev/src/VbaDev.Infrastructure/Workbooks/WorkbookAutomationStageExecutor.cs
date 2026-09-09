@@ -58,20 +58,8 @@ internal sealed class OwnedExcelTerminationController : IDisposable
     private bool launchSealed;
     private bool disposed;
     private Task? cleanupTask;
-    private Exception? cleanupFailure;
     private Stopwatch? cleanupClock;
     private TimeSpan cleanupGrace;
-
-    public Exception? TerminationFailure
-    {
-        get
-        {
-            lock (gate)
-            {
-                return cleanupFailure;
-            }
-        }
-    }
 
     public bool HasAttachedProcessExited
     {
@@ -289,40 +277,6 @@ internal sealed class OwnedExcelTerminationController : IDisposable
     public void RequestForcedTermination(TimeSpan grace)
         => _ = RequestCleanupAsync(grace);
 
-    public void CancelForcedTermination()
-    {
-        // Cleanup is irreversible after launch admission is sealed.
-    }
-
-    public async Task ObserveTerminationAsync()
-    {
-        Task? task;
-        lock (gate)
-        {
-            task = cleanupTask;
-        }
-
-        if (task is not null)
-        {
-            await task.ConfigureAwait(false);
-        }
-    }
-
-    public async Task<bool> WaitForExitOrTerminationAttemptAsync()
-    {
-        Task cleanup;
-        Task? completion;
-        lock (gate)
-        {
-            cleanup = cleanupTask
-                ?? throw new InvalidOperationException("Forced termination has not been requested.");
-            completion = owner?.Completion;
-        }
-
-        await cleanup.ConfigureAwait(false);
-        return completion?.IsCompletedSuccessfully ?? true;
-    }
-
     public void Dispose()
     {
         Task? cleanupToObserve = null;
@@ -520,11 +474,6 @@ internal sealed class OwnedExcelTerminationController : IDisposable
                 : new WorkbookAutomationCleanupException(
                     "Automation isolation evidence capture failed, and exact owned Excel process cleanup could not be verified.",
                     combinedFailure);
-        }
-
-        lock (gate)
-        {
-            cleanupFailure = failure;
         }
 
         throw failure;
