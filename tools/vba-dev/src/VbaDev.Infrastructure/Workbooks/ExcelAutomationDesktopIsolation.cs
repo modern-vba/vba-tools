@@ -287,7 +287,8 @@ internal sealed class PrivateDesktopOwnedExcelProcessControl(
     DebugExcelProcessOwner owner,
     IExcelAutomationDesktopIsolation desktopIsolation)
     : IOwnedExcelProcessControl,
-      IExcelAutomationDesktopProcessControl
+      IExcelAutomationDesktopProcessControl,
+      IOwnedExcelLoadedModules
 {
     private static readonly TimeSpan ProcessTreeCleanupTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan ExitObservationTimeout = TimeSpan.FromSeconds(5);
@@ -320,6 +321,15 @@ internal sealed class PrivateDesktopOwnedExcelProcessControl(
     }
 
     public Task Completion => owner.Completion;
+
+    public IReadOnlyList<string> CaptureLoadedModulePaths()
+    {
+        if (owner.HasExited) throw new InvalidOperationException("The owned Excel process exited before its loaded libraries could be inspected.");
+        using var process = System.Diagnostics.Process.GetProcessById(owner.ProcessId);
+        var paths = WindowsLoadedLibraryPaths.Capture(process);
+        if (owner.HasExited) throw new InvalidOperationException("The owned Excel process exited while its loaded libraries were inspected.");
+        return paths;
+    }
 
     public void Capture(DesktopWindowLifecyclePhase phase)
     {

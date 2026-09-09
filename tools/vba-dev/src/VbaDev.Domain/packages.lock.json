@@ -2,6 +2,12 @@
   "version": 1,
   "dependencies": {
     "net10.0": {
+      "vbatools.semantics": {
+        "type": "Project",
+        "dependencies": {
+          "VbaTools.Syntax": "[1.0.0, )"
+        }
+      },
       "vbatools.syntax": {
         "type": "Project"
       }

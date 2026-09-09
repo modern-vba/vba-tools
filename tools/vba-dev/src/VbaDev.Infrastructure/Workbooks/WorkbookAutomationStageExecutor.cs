@@ -75,6 +75,14 @@ internal sealed class OwnedExcelTerminationController : IDisposable
         }
     }
 
+    internal IReadOnlyList<string> CaptureLoadedModulePaths()
+    {
+        IOwnedExcelLoadedModules? modules;
+        lock (gate) { modules = owner as IOwnedExcelLoadedModules; }
+        return modules?.CaptureLoadedModulePaths()
+            ?? throw new InvalidOperationException("No exactly owned Excel process can supply its loaded library paths.");
+    }
+
     public bool HasAttachedProcess
     {
         get

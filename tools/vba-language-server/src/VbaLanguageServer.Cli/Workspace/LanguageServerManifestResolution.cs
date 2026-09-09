@@ -250,7 +250,7 @@ internal static class LanguageServerManifestResolution
                 $"Manifest/reference consistency warning: document '{resolution.DocumentName}' kind '{resolution.DocumentKind}' is missing expected main reference '{selection.MissingExpectedMainReference}'. Host definitions will not be activated implicitly."));
         }
 
-        foreach (var referenceName in catalogSet.GetMissingCatalogReferenceNames(selection))
+        foreach (var referenceName in catalogSet.GetMissingCatalogReferenceNames(selection.ToSemanticSelection()))
         {
             messages.Add(new VbaLanguageServerManifestMessage(
                 3,

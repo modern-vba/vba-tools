@@ -788,6 +788,11 @@ internal sealed class AutomationExcelProcessRuntime
                 cancellationToken,
                 session.GetReferences);
 
+        public Task<IReadOnlyList<WorkbookReference>> GetReferenceIdentitiesAsync(
+            IReadOnlyList<string> referenceNames, CancellationToken cancellationToken)
+            => ExecuteAsync(new WorkbookAutomationStage(WorkbookAutomationStageKind.ReferenceAttempt),
+                timeouts.ReferenceAttempt, cancellationToken, () => session.GetReferenceIdentities(referenceNames));
+
         public Task<bool> RemoveReferenceAsync(
             string referenceName,
             CancellationToken cancellationToken)

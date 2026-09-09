@@ -38,6 +38,38 @@
             }
           }
         }
+      ],
+      "projectValidationDiagnostics": [
+        {
+          "code": "validation.duplicateDeclaration",
+          "message": "Declaration 'name' conflicts with another declaration in this scope.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 1,
+              "character": 21
+            },
+            "end": {
+              "line": 1,
+              "character": 25
+            }
+          }
+        },
+        {
+          "code": "validation.duplicateDeclaration",
+          "message": "Declaration 'name' conflicts with another declaration in this scope.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 1,
+              "character": 43
+            },
+            "end": {
+              "line": 1,
+              "character": 47
+            }
+          }
+        }
       ]
     },
     {
@@ -61,7 +93,8 @@
             }
           }
         }
-      ]
+      ],
+      "projectValidationDiagnostics": []
     },
     {
       "id": "form-original-code-coordinates",
@@ -84,7 +117,8 @@
           }
         }
       ],
-      "documentValidationDiagnostics": []
+      "documentValidationDiagnostics": [],
+      "projectValidationDiagnostics": []
     },
     {
       "id": "continued-event-parameter",
@@ -107,7 +141,8 @@
             }
           }
         }
-      ]
+      ],
+      "projectValidationDiagnostics": []
     },
     {
       "id": "named-argument-rule-order",
@@ -145,7 +180,8 @@
             }
           }
         }
-      ]
+      ],
+      "projectValidationDiagnostics": []
     },
     {
       "id": "early-string-recovery-later-call",
@@ -184,7 +220,8 @@
             }
           }
         }
-      ]
+      ],
+      "projectValidationDiagnostics": []
     },
     {
       "id": "conditional-branch-document-validation",
@@ -222,6 +259,68 @@
             }
           }
         }
+      ],
+      "projectValidationDiagnostics": [
+        {
+          "code": "validation.duplicateDeclaration",
+          "message": "Declaration 'name' conflicts with another declaration in this scope.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 2,
+              "character": 21
+            },
+            "end": {
+              "line": 2,
+              "character": 25
+            }
+          }
+        },
+        {
+          "code": "validation.duplicateDeclaration",
+          "message": "Declaration 'NAME' conflicts with another declaration in this scope.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 2,
+              "character": 43
+            },
+            "end": {
+              "line": 2,
+              "character": 47
+            }
+          }
+        },
+        {
+          "code": "validation.duplicateDeclaration",
+          "message": "Declaration 'value' conflicts with another declaration in this scope.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 5,
+              "character": 23
+            },
+            "end": {
+              "line": 5,
+              "character": 28
+            }
+          }
+        },
+        {
+          "code": "validation.duplicateDeclaration",
+          "message": "Declaration 'VALUE' conflicts with another declaration in this scope.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 5,
+              "character": 46
+            },
+            "end": {
+              "line": 5,
+              "character": 51
+            }
+          }
+        }
       ]
     },
     {
@@ -229,7 +328,8 @@
       "fileName": "ValidSource.bas",
       "source": "Attribute VB_Name = \"ValidSource\"\nPublic Sub Run(ByVal name As String, ByVal count As Long)\n    Example(, Arg2:=2)\n    Example(1, Arg2:=Nested(Arg1:=1, Arg2:=2))\nEnd Sub\n",
       "syntaxDiagnostics": [],
-      "documentValidationDiagnostics": []
+      "documentValidationDiagnostics": [],
+      "projectValidationDiagnostics": []
     }
   ]
 }

@@ -1926,6 +1926,11 @@ public sealed class WorkbookMaterializerTests
             => new CancelAfterCommitTransaction(
                 WorkbookOutputTransaction.Create(new WindowsExactFileSystemObjectOwnershipFactory(), templateWorkbookPath, targetWorkbookPath),
                 cancellation);
+
+        public IWorkbookOutputTransaction Create(CapturedWorkbookTemplate templateWorkbookPath, string targetWorkbookPath)
+            => new CancelAfterCommitTransaction(
+                WorkbookOutputTransaction.Create(new WindowsExactFileSystemObjectOwnershipFactory(), templateWorkbookPath, targetWorkbookPath),
+                cancellation);
     }
 
     private sealed class CancelAfterCommitTransaction(
@@ -1963,12 +1968,29 @@ public sealed class WorkbookMaterializerTests
                 templateWorkbookPath,
                 targetWorkbookPath);
         }
+
+        public IWorkbookOutputTransaction Create(
+            CapturedWorkbookTemplate templateWorkbookPath,
+            string targetWorkbookPath)
+        {
+            beforeCreate?.Invoke();
+            events.Add("transaction-create");
+            return WorkbookOutputTransaction.Create(new WindowsExactFileSystemObjectOwnershipFactory(),
+                templateWorkbookPath,
+                targetWorkbookPath);
+        }
     }
 
     private sealed class ForbiddenTransactionFactory : IWorkbookOutputTransactionFactory
     {
         public IWorkbookOutputTransaction Create(
             string templateWorkbookPath,
+            string targetWorkbookPath)
+            => throw new InvalidOperationException(
+                "Project inspection must not create a committable output transaction.");
+
+        public IWorkbookOutputTransaction Create(
+            CapturedWorkbookTemplate templateWorkbookPath,
             string targetWorkbookPath)
             => throw new InvalidOperationException(
                 "Project inspection must not create a committable output transaction.");
@@ -1989,6 +2011,12 @@ public sealed class WorkbookMaterializerTests
     {
         public IWorkbookOutputTransaction Create(
             string templateWorkbookPath,
+            string targetWorkbookPath)
+            => new CleanupFailureTransaction(
+                WorkbookOutputTransaction.Create(new WindowsExactFileSystemObjectOwnershipFactory(), templateWorkbookPath, targetWorkbookPath));
+
+        public IWorkbookOutputTransaction Create(
+            CapturedWorkbookTemplate templateWorkbookPath,
             string targetWorkbookPath)
             => new CleanupFailureTransaction(
                 WorkbookOutputTransaction.Create(new WindowsExactFileSystemObjectOwnershipFactory(), templateWorkbookPath, targetWorkbookPath));

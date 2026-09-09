@@ -3,6 +3,7 @@ using VbaDev.App.FileSystem;
 using VbaDev.App.Projects;
 using VbaDev.App.Workbooks;
 using VbaDev.Domain;
+using VbaTools.Semantics;
 
 namespace VbaDev.App.Build;
 
@@ -21,6 +22,7 @@ internal sealed class WorkbookMaterializer
     private readonly Func<string, WorkbookStagingArtifact> inspectionWorkbookStager;
     private readonly WorkbookMaterializationNamePreflight namePreflight;
     private readonly WorkbookMaterializationOutputValidator outputValidator = new();
+    private readonly IProjectSemanticInputProvider? semanticInputProvider;
 
     /// <summary>
     /// Creates the workbook materializer.
@@ -85,7 +87,8 @@ internal sealed class WorkbookMaterializer
         VbeImportSourceSetFactory importSourceSetFactory,
         WorkbookAutomationTimeouts? baseTimeouts = null,
         Func<string, WorkbookStagingArtifact>? inspectionWorkbookStager = null,
-        WorkbookMaterializationNamePreflight? namePreflight = null)
+        WorkbookMaterializationNamePreflight? namePreflight = null,
+        IProjectSemanticInputProvider? semanticInputProvider = null)
     {
         this.ownershipFactory = ownershipFactory;
         this.sourceAdmission = sourceAdmission;
@@ -96,15 +99,18 @@ internal sealed class WorkbookMaterializer
         this.baseTimeouts = baseTimeouts ?? WorkbookAutomationTimeouts.Default;
         this.inspectionWorkbookStager = inspectionWorkbookStager ?? (template => StageInspectionWorkbook(ownershipFactory, template));
         this.namePreflight = namePreflight ?? new WorkbookMaterializationNamePreflight();
+        this.semanticInputProvider = semanticInputProvider;
     }
 
-    internal Task<WorkbookMaterializationResult> MaterializeAsync(
+    internal async Task<WorkbookMaterializationResult> MaterializeAsync(
         WorkbookMaterializationIntent intent,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(intent);
-        var plan = CreatePlan(intent, cancellationToken);
-        return MaterializeCoreAsync(
+        var plan = intent is WorkbookMaterializationIntent.ProjectBuild build
+            ? await CreateAnalyzedBuildPlanAsync(build.Context, cancellationToken).ConfigureAwait(false)
+            : CreatePlan(intent, cancellationToken);
+        return await MaterializeCoreAsync(
             plan.DocumentName,
             plan.TemplateWorkbookPath,
             plan.TargetWorkbookPath,
@@ -113,7 +119,32 @@ internal sealed class WorkbookMaterializer
             plan.Timeouts,
             plan.NormalizeReferences,
             plan.GuardExistingTarget,
-            cancellationToken);
+            plan.CapturedTemplate,
+            plan.SemanticInputs,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<WorkbookMaterializationPlan> CreateAnalyzedBuildPlanAsync(
+        ResolvedProjectContext context, CancellationToken cancellationToken)
+    {
+        CapturedWorkbookTemplate? template = null;
+        VbaProjectSemanticInputs? inputs = null;
+        var admission = await sourceAdmission.AdmitAnalyzedProjectBuildAsync(
+            context.DocumentSourceSetPath, context.Document.CommonModules,
+            async (sources, token) =>
+            {
+                var provider = semanticInputProvider
+                    ?? throw new InvalidOperationException("A required project semantic input provider was not configured for ordinary Build.");
+                template = CapturedWorkbookTemplate.Capture(context.TemplateDocumentPath, token);
+                inputs = await provider.AcquireAsync(context, template, sources, token).ConfigureAwait(false);
+                return inputs;
+            }, cancellationToken).ConfigureAwait(false);
+        return CreateProjectPlan(context, context.BinDocumentPath, ResolveTimeouts(context),
+            new AdmittedWorkbookGenerationSourceInput(admission)) with
+        {
+            CapturedTemplate = template,
+            SemanticInputs = inputs
+        };
     }
 
     internal async Task<ProjectInspectionResult> InspectAsync(
@@ -352,11 +383,6 @@ internal sealed class WorkbookMaterializer
         CancellationToken cancellationToken)
         => intent switch
         {
-            WorkbookMaterializationIntent.ProjectBuild build => CreateProjectPlan(
-                build.Context,
-                build.Context.BinDocumentPath,
-                ResolveTimeouts(build.Context),
-                CreateAnalyzedBuildSourceInput(build.Context, cancellationToken)),
             WorkbookMaterializationIntent.Publish publish => CreateProjectPlan(
                 publish.Context,
                 publish.Context.PublishDocumentPath,
@@ -381,15 +407,6 @@ internal sealed class WorkbookMaterializer
                 GuardExistingTarget: true),
             _ => throw new ArgumentOutOfRangeException(nameof(intent), intent, null)
         };
-
-    private AdmittedWorkbookGenerationSourceInput CreateAnalyzedBuildSourceInput(
-        ResolvedProjectContext context,
-        CancellationToken cancellationToken)
-    {
-        var admission = sourceAdmission.AdmitAnalyzedProjectBuild(
-            context.DocumentSourceSetPath, context.Document.CommonModules, cancellationToken);
-        return new AdmittedWorkbookGenerationSourceInput(admission);
-    }
 
     private WorkbookMaterializationPlan CreateProjectPlan(
         ResolvedProjectContext context,
@@ -595,6 +612,37 @@ internal sealed class WorkbookMaterializer
             directory ?? Path.Combine(Path.GetTempPath(), $"vba-dev-doctor-{Guid.NewGuid():N}"),
             Path.GetFileName(templateWorkbookPath), createDirectory: true);
 
+    private static void VerifyAnalyzedProjectIdentity(VbaProjectSemanticInputs? inputs, string actualName)
+    {
+        if (inputs?.ProjectNamespaces?.ContainingProjectName is { } expectedName
+            && !expectedName.Equals(actualName, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new BuildCommandException($"The generated VBA project identity differs from the analyzed template: expected '{expectedName}', found '{actualName}'. Restore or re-export the source template before rebuilding.");
+        }
+    }
+
+    private static void VerifyAnalyzedReferences(VbaProjectSemanticInputs? inputs, IReadOnlyList<WorkbookReference> references)
+    {
+        if (inputs is null) return;
+        foreach (var (name, expected) in inputs.ReferenceCatalogIdentities)
+        {
+            var actual = references.Where(reference => VbaReferenceName.Comparer.Equals(reference.Name, name)).ToArray();
+            var expectedNamespace = inputs.ProjectNamespaces?.References.FirstOrDefault(reference =>
+                VbaReferenceName.Comparer.Equals(reference.ReferenceName, name))?.Name;
+            if (actual.Length == 1 && Guid.TryParse(actual[0].Guid, out var actualGuid)
+                && Guid.TryParse(expected.Guid, out var expectedGuid) && actualGuid == expectedGuid
+                && actual[0].Major == expected.MajorVersion && actual[0].Minor == expected.MinorVersion
+                && (expectedNamespace is null || expectedNamespace.Equals(actual[0].NamespaceName, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+            var found = actual.Length == 1
+                ? $"{actual[0].Guid ?? "unavailable GUID"} {actual[0].Major}.{actual[0].Minor}, namespace '{actual[0].NamespaceName}'"
+                : $"{actual.Length} matching references";
+            throw new BuildCommandException($"Generated reference '{name}' differs from the analyzed catalog: expected {expected.Guid} {expected.MajorVersion}.{expected.MinorVersion}, namespace '{expectedNamespace}'; found {found}. Repair the source-template references or registered TypeLib before rebuilding.");
+        }
+    }
+
     private async Task<WorkbookMaterializationResult> MaterializeCoreAsync(
         string documentName,
         string templateWorkbookPath,
@@ -604,11 +652,13 @@ internal sealed class WorkbookMaterializer
         WorkbookAutomationTimeouts timeouts,
         bool normalizeReferences,
         bool guardExistingTarget,
+        CapturedWorkbookTemplate? capturedTemplate,
+        VbaProjectSemanticInputs? semanticInputs,
         CancellationToken cancellationToken)
     {
         var sourceAdmission = sourceInput.Admission;
         var preparedSource = CreateImportSourceSetAndReleaseInput(
-            guardExistingTarget ? null : templateWorkbookPath,
+            guardExistingTarget || capturedTemplate is not null ? null : templateWorkbookPath,
             sourceInput,
             cancellationToken);
         VbeImportSourceSet? importSourceSet = preparedSource.SourceSet;
@@ -626,9 +676,9 @@ internal sealed class WorkbookMaterializer
                     FileShare.Read);
             }
 
-            transaction = transactionFactory.Create(
-                templateWorkbookPath,
-                targetWorkbookPath);
+            transaction = capturedTemplate is null
+                ? transactionFactory.Create(templateWorkbookPath, targetWorkbookPath)
+                : transactionFactory.Create(capturedTemplate, targetWorkbookPath);
             var sessionResult = await workbookGenerationAutomation.RunAsync(
                 transaction.StagingWorkbookPath,
                 timeouts,
@@ -637,6 +687,7 @@ internal sealed class WorkbookMaterializer
                     var projectName = await session
                         .GetProjectNameAsync(operationCancellationToken)
                         .ConfigureAwait(false);
+                    VerifyAnalyzedProjectIdentity(semanticInputs, projectName);
                     var modules = await session
                         .GetModulesAsync(operationCancellationToken)
                         .ConfigureAwait(false);
@@ -677,18 +728,21 @@ internal sealed class WorkbookMaterializer
                                 session,
                                 documentName,
                                 desiredReferences,
-                                operationCancellationToken)
+                                operationCancellationToken,
+                                semanticInputs)
                             .ConfigureAwait(false)
                         : [];
                     var finalProjectName = await session
                         .GetProjectNameAsync(operationCancellationToken)
                         .ConfigureAwait(false);
+                    VerifyAnalyzedProjectIdentity(semanticInputs, finalProjectName);
                     var finalModules = await session
                         .GetModulesAsync(operationCancellationToken)
                         .ConfigureAwait(false);
                     var finalReferences = await session
                         .GetReferencesAsync(operationCancellationToken)
                         .ConfigureAwait(false);
+                    VerifyAnalyzedReferences(semanticInputs, finalReferences);
                     var finalLivePreflight = namePreflight.InspectLivePhase(
                         importSourceSet.SourceFiles,
                         finalModules,
@@ -710,6 +764,7 @@ internal sealed class WorkbookMaterializer
                     var committedProjectName = await session
                         .GetProjectNameAsync(operationCancellationToken)
                         .ConfigureAwait(false);
+                    VerifyAnalyzedProjectIdentity(semanticInputs, committedProjectName);
                     var committedModules = await session
                         .GetModulesAsync(operationCancellationToken)
                         .ConfigureAwait(false);
@@ -722,6 +777,7 @@ internal sealed class WorkbookMaterializer
                     var committedReferences = await session
                         .GetReferencesAsync(operationCancellationToken)
                         .ConfigureAwait(false);
+                    VerifyAnalyzedReferences(semanticInputs, committedReferences);
                     var committedLivePreflight = namePreflight.InspectLivePhase(
                         importSourceSet.SourceFiles,
                         committedRetainedModules,
@@ -951,7 +1007,9 @@ internal sealed class WorkbookMaterializer
         IAdmittedWorkbookGenerationSourceInput SourceInput,
         WorkbookAutomationTimeouts Timeouts,
         bool NormalizeReferences,
-        bool GuardExistingTarget);
+        bool GuardExistingTarget,
+        CapturedWorkbookTemplate? CapturedTemplate = null,
+        VbaProjectSemanticInputs? SemanticInputs = null);
 
     private static void ThrowIfCanceled(
         CancellationToken cancellationToken,

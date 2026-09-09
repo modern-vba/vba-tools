@@ -252,7 +252,7 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
         Assert.Equal(selectedGuid, cache.Identities[referenceName].Guid);
         Assert.Equal(1, registryReader.ReadCount);
         Assert.Contains(
-            cache.Current.GetActiveDefinitions(selection),
+            cache.Current.GetActiveDefinitions(selection.ToSemanticSelection()),
             definition => definition.Name == "ResolvedType");
     }
 
@@ -427,7 +427,7 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
         Assert.Equal(VbaProjectReferenceCatalogSource.StalePersisted, cache.GetCatalogSource(ambiguousName));
         Assert.Equal(revisionBefore, cache.CaptureSelectionState(ambiguousSelection.References).Revision);
         Assert.Contains(
-            cache.Current.GetActiveDefinitions(ambiguousSelection),
+            cache.Current.GetActiveDefinitions(ambiguousSelection.ToSemanticSelection()),
             definition => definition.Name == "LastKnownGoodType");
         Assert.Equal(resolvedGuid, cache.Identities[resolvedName].Guid);
     }
@@ -484,7 +484,7 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
         Assert.Equal(VbaProjectReferenceCatalogSource.StalePersisted, cache.GetCatalogSource(referenceName));
         Assert.Equal(revisionBefore, cache.CaptureSelectionState(selection.References).Revision);
         Assert.Contains(
-            cache.Current.GetActiveDefinitions(selection),
+            cache.Current.GetActiveDefinitions(selection.ToSemanticSelection()),
             definition => definition.Name == "LastKnownGoodType");
     }
 
@@ -534,7 +534,7 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
             selection.References,
             scope);
         Assert.DoesNotContain(
-            state.CatalogSet.GetActiveDefinitions(selection),
+            state.CatalogSet.GetActiveDefinitions(selection.ToSemanticSelection()),
             definition => definition.Name == "SupersededType");
     }
 
@@ -598,7 +598,7 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
             supersededScope);
         Assert.Empty(superseded.AuthoritativeProjectNames);
         Assert.DoesNotContain(
-            superseded.CatalogSet.GetActiveDefinitions(selection),
+            superseded.CatalogSet.GetActiveDefinitions(selection.ToSemanticSelection()),
             definition => definition.Name == "ScopedType");
     }
 
@@ -687,7 +687,7 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
             scope);
         Assert.Equal(revisionBefore, state.Revision);
         Assert.Contains(
-            state.CatalogSet.GetActiveDefinitions(selection),
+            state.CatalogSet.GetActiveDefinitions(selection.ToSemanticSelection()),
             definition => definition.Name == "ScopedLastKnownGoodType");
     }
 
@@ -733,7 +733,7 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
             selection.References,
             scope);
         Assert.DoesNotContain(
-            state.CatalogSet.GetActiveDefinitions(selection),
+            state.CatalogSet.GetActiveDefinitions(selection.ToSemanticSelection()),
             definition => definition.Name == "ProjectAType");
     }
 
@@ -812,16 +812,16 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
                 selection.References,
                 projectBScope);
             Assert.Contains(
-                projectAState.CatalogSet.GetActiveDefinitions(selection),
+                projectAState.CatalogSet.GetActiveDefinitions(selection.ToSemanticSelection()),
                 definition => definition.Name == "ProjectAType");
             Assert.DoesNotContain(
-                projectAState.CatalogSet.GetActiveDefinitions(selection),
+                projectAState.CatalogSet.GetActiveDefinitions(selection.ToSemanticSelection()),
                 definition => definition.Name == "ProjectBType");
             Assert.Contains(
-                projectBState.CatalogSet.GetActiveDefinitions(selection),
+                projectBState.CatalogSet.GetActiveDefinitions(selection.ToSemanticSelection()),
                 definition => definition.Name == "ProjectBType");
             Assert.DoesNotContain(
-                projectBState.CatalogSet.GetActiveDefinitions(selection),
+                projectBState.CatalogSet.GetActiveDefinitions(selection.ToSemanticSelection()),
                 definition => definition.Name == "ProjectAType");
         }
         finally
@@ -913,7 +913,7 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
         Assert.True(cache.HasIdentity(" custom library "));
         Assert.True(cache.Current.HasCatalog(" custom library "));
         Assert.Contains(
-            cache.Current.GetActiveDefinitions(selection),
+            cache.Current.GetActiveDefinitions(selection.ToSemanticSelection()),
             definition => definition.Name == "CustomType");
     }
 
@@ -962,7 +962,7 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
         Assert.True(results.Single(result => result.ReferenceName == "Library B").DiscoveryResult.HasUsableCatalog);
         Assert.Equal(VbaProjectReferenceCatalogSource.StalePersisted, cache.GetCatalogSource("Library A"));
         Assert.Equal(VbaProjectReferenceCatalogSource.Generated, cache.GetCatalogSource("Library B"));
-        var activeNames = cache.Current.GetActiveDefinitions(selection)
+        var activeNames = cache.Current.GetActiveDefinitions(selection.ToSemanticSelection())
             .Select(definition => definition.Name)
             .ToArray();
         Assert.Contains("AKnownType", activeNames);
@@ -1021,7 +1021,7 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
 
         var definitions = VbaProjectReferenceCatalogSet.Empty
             .WithCatalog(catalog)
-            .GetActiveDefinitions(selection);
+            .GetActiveDefinitions(selection.ToSemanticSelection());
 
         Assert.Contains(definitions, definition =>
             definition.Name == "\u00a0"
@@ -1047,7 +1047,7 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
 
         var definitions = VbaProjectReferenceCatalogSet.Empty
             .WithCatalog(catalog)
-            .GetQualifiedDefinitions(selection, "\u00a0");
+            .GetQualifiedDefinitions(selection.ToSemanticSelection(), "\u00a0");
 
         Assert.Contains(definitions, definition => definition.Name == "Target");
     }
@@ -1067,7 +1067,7 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
 
         var definitions = VbaProjectReferenceCatalogSet.Empty
             .WithCatalog(catalog)
-            .GetQualifiedDefinitions(selection, "Generated-2");
+            .GetQualifiedDefinitions(selection.ToSemanticSelection(), "Generated-2");
 
         Assert.Contains(definitions, definition => definition.Name == "Target");
     }
@@ -1087,7 +1087,7 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
 
         var definitions = VbaProjectReferenceCatalogSet.Empty
             .WithCatalog(catalog)
-            .GetQualifiedDefinitions(selection, "日本2");
+            .GetQualifiedDefinitions(selection.ToSemanticSelection(), "日本2");
 
         Assert.Contains(definitions, definition => definition.Name == "Target");
     }

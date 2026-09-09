@@ -9,7 +9,7 @@
     "hostEvent.list": "1.0"
   },
   "commandSchemaVersions": {
-    "build": "2.0",
+    "build": "3.0",
     "common-module add": "1.0",
     "common-module list": "1.0",
     "common-module update": "1.0",

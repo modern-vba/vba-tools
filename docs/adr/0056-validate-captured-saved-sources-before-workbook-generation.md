@@ -10,6 +10,11 @@ Build. It extends the source authority in
 on the language-server product. The existing workbook ownership, import
 verification, and output-commitment contracts remain in place.
 
+[ADR 0057](0057-share-project-semantic-validation-with-ordinary-build.md)
+subsequently extends ordinary Build to the existing project-semantic diagnostic
+boundary and evolves the output to schema `3.0` with related information. The
+schema `2.0` and syntax/document-only scope below describe the #399 decision.
+
 ## Context
 
 Ordinary Build admitted source bytes and generated a workbook without using

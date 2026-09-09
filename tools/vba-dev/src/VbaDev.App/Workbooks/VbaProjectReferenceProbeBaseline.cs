@@ -1,3 +1,5 @@
+using VbaDev.App.Build;
+
 namespace VbaDev.App.Workbooks;
 
 /// <summary>
@@ -22,6 +24,11 @@ public sealed record VbaProjectReferenceProbeBaseline
     /// Gets the selected source-template path, or <see langword="null"/> for a blank workbook.
     /// </summary>
     public string? WorkbookPath { get; }
+
+    internal CapturedWorkbookTemplate? CapturedTemplate { get; private init; }
+
+    internal static VbaProjectReferenceProbeBaseline SourceTemplate(CapturedWorkbookTemplate template)
+        => new(VbaProjectReferenceProbeBaselineKind.SourceTemplate, template.SourcePath) { CapturedTemplate = template };
 
     /// <summary>
     /// Creates a source-template baseline.

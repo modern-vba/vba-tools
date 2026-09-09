@@ -58,7 +58,8 @@ public sealed class BuildCommandTests
         var application = VbaDevCommandLine.Create(
             ToolingCompositionRoot.CreateApplicationComposition(
                 root,
-                workbookGenerationAutomation: automation));
+                workbookGenerationAutomation: automation,
+                projectSemanticInputProvider: FakeProjectSemanticInputProvider.Empty));
         using var standardOutput = new StringWriter();
         using var standardError = new StringWriter();
 
@@ -1070,7 +1071,7 @@ public sealed class BuildCommandTests
             result.StandardError.Split('\n', StringSplitOptions.RemoveEmptyEntries)));
         var report = document.RootElement;
         Assert.Equal("sourceAnalysis", report.GetProperty("type").GetString());
-        Assert.Equal("2.0", report.GetProperty("schemaVersion").GetString());
+        Assert.Equal("3.0", report.GetProperty("schemaVersion").GetString());
         Assert.False(report.GetProperty("complete").GetBoolean());
         Assert.Empty(report.GetProperty("diagnostics").EnumerateArray());
         var failure = Assert.Single(report.GetProperty("failures").EnumerateArray());
@@ -1152,7 +1153,7 @@ public sealed class BuildCommandTests
     }
 
     [Fact]
-    public void BuildTreatsExistingDesiredWorkbookReferencesAsSatisfiedBeforeRegistryResolution()
+    public void BuildRequiresUniqueAcceptedMetadataEvenWhenTheWorkbookAlreadyContainsTheReference()
     {
         using var temp = TempDirectory.Create();
         var root = temp.CreateDirectory("Project");
@@ -1176,18 +1177,16 @@ public sealed class BuildCommandTests
 
         var result = application.Run(["build"]);
 
-        Assert.Equal(0, result.ExitCode);
-        Assert.DoesNotContain("OLE Automation", resolver.RequestedNames);
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("OLE Automation", resolver.RequestedNames);
         Assert.Contains("Microsoft Scripting Runtime", resolver.RequestedNames);
-        Assert.Equal(
-            [
-                "remove:Standard1",
-                "remove-ref:Unlisted Library",
-                "add-ref:Microsoft Scripting Runtime",
-                "import:Local.bas",
-                "save"
-            ],
-            automation.Events);
+        using var report = JsonDocument.Parse(result.StandardError.Split('\n')[0]);
+        Assert.False(report.RootElement.GetProperty("complete").GetBoolean());
+        Assert.Contains("ambiguous", Assert.Single(report.RootElement.GetProperty("failures").EnumerateArray())
+            .GetProperty("message").GetString(), StringComparison.Ordinal);
+        Assert.Empty(automation.Events);
+        Assert.Empty(automation.OpenedWorkbooks);
+        Assert.False(File.Exists(Path.Combine(root, "bin", "Book1.xlsm")));
     }
 
     [Fact]
@@ -1208,9 +1207,12 @@ public sealed class BuildCommandTests
         var result = application.Run(["build"]);
 
         Assert.Equal(1, result.ExitCode);
-        Assert.Contains("Book1", result.StandardError, StringComparison.Ordinal);
+        using var report = JsonDocument.Parse(result.StandardError.Split('\n')[0]);
+        Assert.False(report.RootElement.GetProperty("complete").GetBoolean());
+        Assert.Empty(report.RootElement.GetProperty("diagnostics").EnumerateArray());
         Assert.Contains("Missing Library", result.StandardError, StringComparison.Ordinal);
         Assert.DoesNotContain("import:", automation.Events);
+        Assert.Empty(automation.OpenedWorkbooks);
     }
 
     [Fact]
@@ -1517,7 +1519,10 @@ internal sealed class FakeWorkbookGenerationAutomation : IWorkbookGenerationAuto
             owner.References.Add(new WorkbookReference(
                 reference.Name,
                 IsRemovable: true,
-                NamespaceName: namespaceName));
+                NamespaceName: namespaceName,
+                Guid: reference.Guid,
+                Major: reference.Major,
+                Minor: reference.Minor));
             owner.Events.Add($"add-ref:{reference.Name}");
             return Task.CompletedTask;
         }

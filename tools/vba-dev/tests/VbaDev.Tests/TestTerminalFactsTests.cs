@@ -342,7 +342,8 @@ public sealed class TestTerminalFactsTests
         var scratch = temp.CreateDirectory("snapshot-test-scratch");
         var composition = ToolingCompositionRoot.CreateApplicationComposition(root,
             workbookGenerationAutomation: generation ?? new FakeWorkbookGenerationAutomation(),
-            workbookTestRunner: runner);
+            workbookTestRunner: runner,
+            projectSemanticInputProvider: FakeProjectSemanticInputProvider.Empty);
         var command = new TestCommand(composition.BuildCommand, runner,
             new TestResultOutputFormatter(), new TestProcedureSourceLocator(),
             new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratch,

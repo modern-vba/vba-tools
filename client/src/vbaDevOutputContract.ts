@@ -59,6 +59,12 @@ export interface VbaDevDiagnostic {
   range: VbaDevDiagnosticRange;
   message: string;
   code: string;
+  relatedInformation?: readonly VbaDevDiagnosticRelatedInformation[];
+}
+
+export interface VbaDevDiagnosticRelatedInformation {
+  location: { uriPath: string; range: VbaDevDiagnosticRange };
+  message: string;
 }
 
 export interface VbaDevTestEvent {
@@ -261,8 +267,8 @@ function parseJsonRecords(output: string): unknown[] {
 }
 
 function parseSourceAnalysisDiagnostics(value: Record<string, unknown>): VbaDevDiagnostic[] {
-  if (value.schemaVersion !== '2.0') {
-    throw new VbaDevOutputContractError('Unsupported sourceAnalysis schemaVersion; expected 2.0.');
+  if (value.schemaVersion !== '3.0') {
+    throw new VbaDevOutputContractError('Unsupported sourceAnalysis schemaVersion; expected 3.0.');
   }
   if (
     typeof value.complete !== 'boolean'
@@ -271,7 +277,7 @@ function parseSourceAnalysisDiagnostics(value: Record<string, unknown>): VbaDevD
     || value.complete !== (value.failures.length === 0)
     || !value.failures.every(isSourceAnalysisFailure)
   ) {
-    throw new VbaDevOutputContractError('Invalid sourceAnalysis 2.0 completeness or failures.');
+    throw new VbaDevOutputContractError('Invalid sourceAnalysis 3.0 completeness or failures.');
   }
 
   return value.diagnostics.map(toSourceAnalysisDiagnostic);
@@ -279,7 +285,7 @@ function parseSourceAnalysisDiagnostics(value: Record<string, unknown>): VbaDevD
 
 function toSourceAnalysisDiagnostic(value: unknown): VbaDevDiagnostic {
   if (!isRecord(value) || value.type !== 'diagnostic' || value.owner !== 'vba-dev') {
-    throw new VbaDevOutputContractError('Invalid sourceAnalysis 2.0 diagnostic type or owner.');
+    throw new VbaDevOutputContractError('Invalid sourceAnalysis 3.0 diagnostic type or owner.');
   }
 
   const severity = toSeverity(value.severity);
@@ -289,15 +295,40 @@ function toSourceAnalysisDiagnostic(value: unknown): VbaDevDiagnostic {
   const code = getString(value.code);
   if (
     !severity || severity !== value.severity || !uriPath || !range || !message || !code
-    || ![range.start.line, range.start.character, range.end.line, range.end.character]
-      .every(position => Number.isSafeInteger(position) && position >= 0)
-    || range.end.line < range.start.line
-    || (range.end.line === range.start.line && range.end.character < range.start.character)
+    || !isSourceAnalysisRange(range)
   ) {
-    throw new VbaDevOutputContractError('Invalid sourceAnalysis 2.0 diagnostic fields or range.');
+    throw new VbaDevOutputContractError('Invalid sourceAnalysis 3.0 diagnostic fields or range.');
   }
 
-  return { owner: value.owner, severity, uriPath, range, message, code };
+  const relatedInformation = value.relatedInformation === undefined
+    ? undefined : toSourceAnalysisRelatedInformation(value.relatedInformation);
+  return {
+    owner: value.owner, severity, uriPath, range, message, code,
+    ...(relatedInformation === undefined ? {} : { relatedInformation })
+  };
+}
+
+function isSourceAnalysisRange(range: VbaDevDiagnosticRange): boolean {
+  return [range.start.line, range.start.character, range.end.line, range.end.character]
+    .every(position => Number.isSafeInteger(position) && position >= 0)
+    && (range.end.line > range.start.line
+      || (range.end.line === range.start.line && range.end.character >= range.start.character));
+}
+
+function toSourceAnalysisRelatedInformation(value: unknown): VbaDevDiagnosticRelatedInformation[] {
+  if (!Array.isArray(value)) {
+    throw new VbaDevOutputContractError('Invalid sourceAnalysis 3.0 relatedInformation array.');
+  }
+  return value.map(item => {
+    const location = isRecord(item) && isRecord(item.location) ? item.location : undefined;
+    const uriPath = location && toSourceAnalysisUriPath(location.uri);
+    const range = location && toRange(location.range);
+    const message = isRecord(item) && getString(item.message);
+    if (!uriPath || !range || !isSourceAnalysisRange(range) || !message) {
+      throw new VbaDevOutputContractError('Invalid sourceAnalysis 3.0 related declaration location or message.');
+    }
+    return { location: { uriPath, range }, message };
+  });
 }
 
 function isSourceAnalysisFailure(value: unknown): boolean {

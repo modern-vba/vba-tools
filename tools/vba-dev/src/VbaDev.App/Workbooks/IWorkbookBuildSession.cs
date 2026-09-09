@@ -22,6 +22,10 @@ public interface IWorkbookBuildSession
     /// <returns>The current workbook references.</returns>
     IReadOnlyList<WorkbookReference> GetReferences();
 
+    /// <summary>Reads present required references with library paths suitable for independent semantic analysis.</summary>
+    IReadOnlyList<WorkbookReference> GetReferenceIdentities(IReadOnlyList<string> referenceNames)
+        => GetReferences().Where(reference => referenceNames.Contains(reference.Name, StringComparer.OrdinalIgnoreCase)).ToArray();
+
     /// <summary>
     /// Removes a reference by name when the host allows it.
     /// </summary>

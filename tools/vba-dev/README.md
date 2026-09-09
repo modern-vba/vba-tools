@@ -460,20 +460,37 @@ uses the same BOM-or-ACP admission for the complete caller-owned inventory.
 Its `build.sourceSnapshot` and `test.sourceSnapshot` feature versions remain
 `2.0`; the top-level `contractVersion` and
 `sourceSnapshot.activeWindowsCodePage` feature remain `1.0`. These are separate
-from the Build output schema `2.0`. Project Doctor uses the
+from the Build output schema `3.0`. Project Doctor uses the
 same BOM-or-ACP admission and shares one captured source authority across its
 source diagnostics and Build/Publish profiles. VbaDev independently admits bytes supplied by any caller; it neither
 requires nor reads an adapter, extension, editor state, or consumer proof.
 
 Ordinary saved-source `build` analyzes every selected source, regardless of
 editor-open state, using the captured syntax tree and the same decoded source
-that successful import consumes. It combines existing syntax diagnostics with
-document-local validation shared with the language server: duplicate callable
-or Event parameter names, duplicate named call arguments, and positional or
-omitted arguments after a named argument. Existing parser recovery, suppression,
-and conditional-compilation behavior determine the findings. Unresolved names
-and other project-semantic questions are outside this gate. Warning and
-information diagnostics do not become errors.
+that successful import consumes. It combines existing syntax and document-local
+diagnostics with the language server's project-semantic diagnostics through
+`VbaTools.Semantics`: duplicate declarations, call argument contracts, ByRef and
+array compatibility, Implements, WithEvents, source and intrinsic UserForm Event
+contracts, RaiseEvent targets, and module/project/reference namespace conflicts.
+Existing parser recovery, suppression, modeled indeterminacy and conditional
+alternatives retain their behavior. Warning and information diagnostics do not
+become errors, and an unresolved static inference is not a new compiler error.
+
+Build captures the whole source-template package for analysis and successful
+generation. Read-only inspection of an owned copy supplies the actual VBA project
+name and installed reference identities; it never imports, normalizes or saves.
+Already installed references use their observed GUID and version, including the
+Excel workbook's VBA runtime, rather than an unrelated newer registered version.
+The library path supplied by Excel also supports references absent from the normal
+registry view; its actual TypeLib identity must match the workbook's reference.
+Missing manifest references use normal resolution. Required reference catalogs
+use observed library paths or exact identities from one captured registry snapshot;
+required intrinsic host Events use the normal owned discovery
+lifecycle. Successfully read empty TypeLibs are valid evidence. Failed required
+source, reference, host or identity acquisition makes analysis incomplete and
+fails Build even when no conclusive source Error exists. Static validation does
+not claim native VBE compile success and works without VS Code or a language
+server. See [ADR 0057](../../docs/adr/0057-share-project-semantic-validation-with-ordinary-build.md).
 
 Build accumulates recoverable findings within a file and across independent
 selected files, in the established filename encounter order. Known file-local
@@ -491,12 +508,15 @@ separate from diagnostic encounter order.
 Build writes a nonempty source-analysis report as one newline-terminated JSON
 record on stderr, both when analysis blocks generation and when Build succeeds
 with non-error diagnostics. Absent or empty reports add no output. The Build
-output schema is `2.0`; the record's `type` is `sourceAnalysis`,
-`schemaVersion` is `2.0`, and `complete` is true exactly when `failures` is empty.
+output schema is `3.0`; the record's `type` is `sourceAnalysis`,
+`schemaVersion` is `3.0`, and `complete` is true exactly when `failures` is empty.
 A complete report can still contain errors and fail Build. Each `diagnostics`
 entry has `type: "diagnostic"`, `owner: "vba-dev"`, an absolute original-source
 file `uri`, `code`, `message`, `severity`, and a zero-based `range` with `start`
-and `end` positions. Ranges retain exported-source coordinates, including
+and `end` positions. Optional `relatedInformation` entries carry a `location`
+with an original-source `uri` and `range`, and a `message` explaining the related
+declaration or expected/found contract. Explanations without a navigable location
+remain in the top-level message. Ranges retain exported-source coordinates, including
 `Attribute` lines and form headers. Each processing failure has `scope`, `uri`,
 and `message`: `source` scope has the affected file URI; `project` scope has a
 null URI. An empty or whitespace-only failure message becomes
@@ -505,7 +525,7 @@ source range. For example, this complete
 report still blocks Build and occupies one output line:
 
 ```json
-{"type":"sourceAnalysis","schemaVersion":"2.0","complete":true,"diagnostics":[{"type":"diagnostic","owner":"vba-dev","uri":"file:///C:/Example/src/Main.bas","code":"validation.duplicateCallableParameterName","message":"Duplicate callable parameter name 'name'.","severity":"error","range":{"start":{"line":1,"character":43},"end":{"line":1,"character":47}}}],"failures":[]}
+{"type":"sourceAnalysis","schemaVersion":"3.0","complete":true,"diagnostics":[{"type":"diagnostic","owner":"vba-dev","uri":"file:///C:/Example/src/Main.bas","code":"validation.duplicateCallableParameterName","message":"Duplicate callable parameter name 'name'.","severity":"error","range":{"start":{"line":1,"character":43},"end":{"line":1,"character":47}}}],"failures":[]}
 ```
 
 The ordinary saved-source build stage of `test` inherits this gate. It does not

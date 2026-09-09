@@ -559,7 +559,7 @@ public sealed class BuildSourceAdmissionTests
             standardError.Split('\n', StringSplitOptions.RemoveEmptyEntries)));
         var report = document.RootElement;
         Assert.Equal("sourceAnalysis", report.GetProperty("type").GetString());
-        Assert.Equal("2.0", report.GetProperty("schemaVersion").GetString());
+        Assert.Equal("3.0", report.GetProperty("schemaVersion").GetString());
         Assert.False(report.GetProperty("complete").GetBoolean());
         Assert.Empty(report.GetProperty("diagnostics").EnumerateArray());
         var failure = Assert.Single(report.GetProperty("failures").EnumerateArray());
@@ -608,5 +608,6 @@ public sealed class BuildSourceAdmissionTests
                 automation,
                 new WorkbookReferenceNormalizer(new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),
                 new WorkbookOutputTransactionFactory(new WindowsExactFileSystemObjectOwnershipFactory()),
-                mirrorFactory ?? new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory())));
+                mirrorFactory ?? new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory()),
+                semanticInputProvider: FakeProjectSemanticInputProvider.Empty));
 }

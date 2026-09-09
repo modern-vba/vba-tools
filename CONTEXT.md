@@ -228,10 +228,11 @@ returns `130` only with proved process and STA release. Unproved release returns
 commitment preserves success. These command-owned policies consume common
 `WorkbookAutomationTerminalFacts` rather than separate exception traversals.
 
-Ordinary Build exposes a nonempty source-analysis report as one schema `2.0`
+Ordinary Build exposes a nonempty source-analysis report as one schema `3.0`
 `sourceAnalysis` record on stderr, whether analysis blocks generation or Build
 succeeds with non-error findings. Absent or empty reports add no output.
-The record contains ordered diagnostics and explicit processing failures.
+The record contains ordered diagnostics, optional related declaration locations
+with expected/found explanations, and explicit processing failures.
 Consumers validate the public schema and use original
 file URIs and exported-source ranges without importing a provider DTO. The
 VS Code Build contribution is bound to the invocation's tool/command, project,
@@ -687,7 +688,8 @@ The invocation-owned VBE-facing mirror derived from admitted ordinary Build, Pub
 `VBComponents.Import`; text components strictly
 round-trip through the operation-fixed active Windows ANSI code page while
 `.frx` sidecars retain their exact bytes and relative pairing. An
-unrepresentable or best-fit-only character fails before Excel starts, and the
+unrepresentable or best-fit-only character fails before generation opens its
+staged workbook, and the
 mirror never changes caller-owned bytes. Its exact owned copies are eligible for
 command scratch cleanup only after the consuming Excel process is proved released.
 For explicit Import, project Build and Publish, and snapshot Build/Test, it
@@ -1327,8 +1329,12 @@ _Avoid_: raw source list, mutable plan, source-file paths as content authority
 **VbaSourceAnalysisReport**:
 The immutable findings and processing-failure snapshot for one ordinary
 saved-source Build admission. It contains existing `SyntaxDiagnostic`s and
-document-local `VbaValidationDiagnostic`s projected from the exact captured
-source trees, with original file URIs, codes, messages, severities, and ranges.
+document-local `VbaValidationDiagnostic`s and shared project-semantic diagnostics
+projected from the exact captured source trees, with original file URIs, codes,
+messages, severities, ranges and related declaration information. The neutral
+`VbaTools.Semantics` foundation accepts immutable reference selection, catalogs,
+TypeLib identities, intrinsic host Event facts and authoritative project names;
+product adapters retain discovery, process ownership and publication.
 Diagnostics retain filename analysis encounter order; successful import retains
 its separate final admission order. Complete means that no required processing
 failure was recorded; it does not mean that the report has no error diagnostics.
@@ -1336,15 +1342,19 @@ File-local failures retain their affected source identity, while project-fatal
 failures retain the stopping reason and all findings already collected. An
 empty or whitespace-only failure message becomes
 `Source analysis failed without an error message.` Errors
-or incomplete analysis prevent workbook generation. Cancellation is not a
-report failure. Warning and information diagnostics are not promoted to errors.
+or incomplete analysis prevent workbook generation. Failed required reference,
+host or identity acquisition is incomplete even without a source Error; a
+successfully read empty catalog and modeled static indeterminacy remain distinct.
+Operational causes retain their cancellation and lifecycle evidence. Warning
+and information diagnostics are not promoted to errors.
 _Avoid_: compiler result, semantic validation proof, first-error exception
 
 **WorkbookMaterializationNamePreflight**:
 The compatibility decision required before a materialized workbook accepts its
 selected source set, using authoritative source identities and the workbook's
 actual project, active-reference, and retained-component names. Source-only
-preflight runs before Excel. The prepared-workbook authority is checked after
+preflight runs before generation opens its staged workbook. Ordinary Build may
+already have used read-only owned discovery for semantic inputs. The prepared-workbook authority is checked after
 component removal and, for manifest-driven intents, reference normalization;
 the live authority is checked again after `VbeImportVerification`. Only
 verified imported identities are excluded from the retained-component set at

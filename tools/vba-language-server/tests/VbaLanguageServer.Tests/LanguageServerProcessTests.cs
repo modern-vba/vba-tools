@@ -26708,7 +26708,7 @@ public sealed class LanguageServerProcessTests
             referenceNames.Select(name => new VbaProjectReference(name)).ToArray());
         var documents = VbaSemanticInventoryFixture.ProjectSourceDocuments(sourceTexts);
         var inventory = VbaSemanticInventory.Create(documents, selection, catalogs);
-        var names = new VbaNameResolutionService(documents.Values.ToArray(), selection, catalogs);
+        var names = new VbaNameResolutionService(documents.Values.ToArray(), selection.ToSemanticSelection(), catalogs);
         var target = Assert.IsAssignableFrom<VbaResolvedNameTarget>(
             inventory.ResolveSourceTarget(callerUri, 3, "    ".Length));
         Assert.Equal("Work", target.CanonicalName);

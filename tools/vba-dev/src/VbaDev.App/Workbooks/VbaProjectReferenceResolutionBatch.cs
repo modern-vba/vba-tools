@@ -16,6 +16,10 @@ public sealed record VbaProjectReferenceResolutionBatch(
     IReadOnlyList<VbaProjectReferenceNameResolution> References,
     IReadOnlyList<TypeLibRegistryCatalogDiagnostic>? AdditionalDiagnostics = null)
 {
+    // Product adapters retain operational proof separately from public inventory
+    // diagnostics. This cause is never serialized as part of a reference report.
+    internal Exception? OperationalFailure { get; init; }
+
     /// <summary>
     /// Gets every catalog- or probe-level diagnostic in stable occurrence order.
     /// </summary>

@@ -1,0 +1,196 @@
+{
+  "schemaVersion": "1.0",
+  "cases": [
+    {
+      "fileName": "SourceUnit.bas",
+      "source": "Attribute VB_Name = \"Excel\"\n",
+      "id": "containing-project-name",
+      "kind": "manifest",
+      "containingProjectName": "Excel",
+      "references": [],
+      "diagnostics": [
+        {
+          "code": "validation.moduleIdentityNameConflict",
+          "message": "Module name 'Excel' conflicts with containing VBA project 'Excel'.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 0,
+              "character": 21
+            },
+            "end": {
+              "line": 0,
+              "character": 26
+            }
+          },
+          "data": {
+            "conflicts": [
+              {
+                "collisionKind": "containingProject",
+                "name": "Excel"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "fileName": "SourceUnit.bas",
+      "source": "Attribute VB_Name = \"Excel\"\n",
+      "id": "referenced-project-name",
+      "kind": "manifest",
+      "containingProjectName": "OtherProject",
+      "references": [
+        {
+          "referenceName": "Excel Object Library",
+          "name": "Excel"
+        }
+      ],
+      "diagnostics": [
+        {
+          "code": "validation.moduleIdentityNameConflict",
+          "message": "Module name 'Excel' conflicts with referenced project or object library 'Excel'.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 0,
+              "character": 21
+            },
+            "end": {
+              "line": 0,
+              "character": 26
+            }
+          },
+          "data": {
+            "conflicts": [
+              {
+                "collisionKind": "referencedProject",
+                "name": "Excel",
+                "referenceName": "Excel Object Library"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "fileName": "SourceUnit.bas",
+      "source": "Attribute VB_Name = \"Excel\"\n",
+      "id": "containing-and-referenced-project-names",
+      "kind": "manifest",
+      "containingProjectName": "Excel",
+      "references": [
+        {
+          "referenceName": "Excel Object Library",
+          "name": "Excel"
+        }
+      ],
+      "diagnostics": [
+        {
+          "code": "validation.moduleIdentityNameConflict",
+          "message": "Module name 'Excel' conflicts with containing VBA project 'Excel', referenced project or object library 'Excel'.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 0,
+              "character": 21
+            },
+            "end": {
+              "line": 0,
+              "character": 26
+            }
+          },
+          "data": {
+            "conflicts": [
+              {
+                "collisionKind": "containingProject",
+                "name": "Excel"
+              },
+              {
+                "collisionKind": "referencedProject",
+                "name": "Excel",
+                "referenceName": "Excel Object Library"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "fileName": "SourceUnit.bas",
+      "source": "Attribute VB_Name = \"Excel\"\n",
+      "id": "reference-display-name-is-not-project-name",
+      "kind": "manifest",
+      "containingProjectName": "OtherProject",
+      "references": [
+        {
+          "referenceName": "Excel",
+          "name": "ActualLibrary"
+        }
+      ],
+      "diagnostics": []
+    },
+    {
+      "fileName": "SourceUnit.bas",
+      "source": "Attribute VB_Name = \"Excel\"\n",
+      "id": "unavailable-containing-identity-suppresses-conclusion",
+      "kind": "manifest",
+      "containingProjectName": null,
+      "references": [
+        {
+          "referenceName": "Excel Object Library",
+          "name": "Excel"
+        }
+      ],
+      "diagnostics": []
+    },
+    {
+      "fileName": "SourceUnit.bas",
+      "source": "Attribute VB_Name = \"Excel\"\n",
+      "id": "ad-hoc-reference-namespace",
+      "kind": "adHoc",
+      "containingProjectName": null,
+      "references": [
+        {
+          "referenceName": "Excel Object Library",
+          "name": "Excel"
+        }
+      ],
+      "diagnostics": [
+        {
+          "code": "validation.moduleIdentityNameConflict",
+          "message": "Module name 'Excel' conflicts with referenced project or object library 'Excel'.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 0,
+              "character": 21
+            },
+            "end": {
+              "line": 0,
+              "character": 26
+            }
+          },
+          "data": {
+            "conflicts": [
+              {
+                "collisionKind": "referencedProject",
+                "name": "Excel",
+                "referenceName": "Excel Object Library"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "fileName": "Excel.bas",
+      "source": "Public Sub Run()\nEnd Sub\n",
+      "id": "implicit-module-identity-is-not-authoritative",
+      "kind": "manifest",
+      "containingProjectName": "Excel",
+      "references": [],
+      "diagnostics": []
+    }
+  ]
+}

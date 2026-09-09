@@ -3,86 +3,6 @@ using VbaDev.Domain;
 namespace VbaLanguageServer.ProjectModel;
 
 /// <summary>
-/// Opaque equality identity for one language-server source document.
-/// </summary>
-internal readonly struct VbaDocumentIdentity
-    : IEquatable<VbaDocumentIdentity>,
-      IComparable<VbaDocumentIdentity>
-{
-    private readonly VbaDocumentIdentityKind kind;
-    private readonly string? canonicalValue;
-
-    internal VbaDocumentIdentity(
-        VbaDocumentIdentityKind kind,
-        string canonicalValue)
-    {
-        this.kind = kind;
-        this.canonicalValue = canonicalValue;
-    }
-
-    internal bool IsLocalFile
-        => kind == VbaDocumentIdentityKind.LocalFile
-            && canonicalValue is not null;
-
-    internal string CanonicalValue
-        => canonicalValue
-            ?? throw new InvalidOperationException(
-                "An uninitialized document identity has no canonical value.");
-
-    internal string StableKey
-        => canonicalValue is null
-            ? throw new InvalidOperationException(
-                "An uninitialized document identity has no stable key.")
-            : string.Join("\u001e", kind, canonicalValue);
-
-    public bool Equals(VbaDocumentIdentity other)
-        => kind == other.kind
-            && StringComparer.OrdinalIgnoreCase.Equals(
-                canonicalValue,
-                other.canonicalValue);
-
-    public override bool Equals(object? obj)
-        => obj is VbaDocumentIdentity other && Equals(other);
-
-    public override int GetHashCode()
-        => HashCode.Combine(
-            kind,
-            canonicalValue is null
-                ? 0
-                : StringComparer.OrdinalIgnoreCase.GetHashCode(
-                    canonicalValue));
-
-    public int CompareTo(VbaDocumentIdentity other)
-    {
-        var kindComparison = kind.CompareTo(other.kind);
-        return kindComparison != 0
-            ? kindComparison
-            : StringComparer.OrdinalIgnoreCase.Compare(
-                canonicalValue,
-                other.canonicalValue);
-    }
-
-    public static bool operator ==(
-        VbaDocumentIdentity left,
-        VbaDocumentIdentity right)
-        => left.Equals(right);
-
-    public static bool operator !=(
-        VbaDocumentIdentity left,
-        VbaDocumentIdentity right)
-        => !left.Equals(right);
-
-    public override string ToString() => canonicalValue ?? "";
-}
-
-internal enum VbaDocumentIdentityKind
-{
-    LocalFile,
-    UnresolvedFileUri,
-    NormalizedUri
-}
-
-/// <summary>
 /// Carries typed document identity together with its current presentation URI.
 /// </summary>
 internal sealed record VbaIdentifiedDocument(
@@ -445,41 +365,8 @@ internal sealed record VbaProjectAuthorityRelation(
 /// </summary>
 internal static class VbaProjectIdentityModel
 {
-    internal static bool TryIdentifyDocument(
-        string uri,
-        out VbaDocumentIdentity identity)
-    {
-        identity = default;
-        if (string.IsNullOrWhiteSpace(uri)
-            || LooksLikeLocalPath(uri)
-            || !Uri.TryCreate(uri, UriKind.Absolute, out var parsed))
-        {
-            return false;
-        }
-
-        if (parsed.IsFile)
-        {
-            var localPath = VbaProjectResolver.TryGetLocalPath(uri);
-            if (localPath is null
-                || !TryNormalizePath(localPath, out var canonicalPath))
-            {
-                identity = new VbaDocumentIdentity(
-                    VbaDocumentIdentityKind.UnresolvedFileUri,
-                    parsed.AbsoluteUri);
-                return true;
-            }
-
-            identity = new VbaDocumentIdentity(
-                VbaDocumentIdentityKind.LocalFile,
-                canonicalPath);
-            return true;
-        }
-
-        identity = new VbaDocumentIdentity(
-            VbaDocumentIdentityKind.NormalizedUri,
-            parsed.AbsoluteUri);
-        return true;
-    }
+    internal static bool TryIdentifyDocument(string uri, out VbaDocumentIdentity identity)
+        => VbaDocumentIdentityPolicy.TryIdentifyDocument(uri, out identity);
 
     internal static bool TryIdentifyAuthority(
         VbaProjectResolution resolution,
@@ -593,34 +480,14 @@ internal static class VbaProjectIdentityModel
             ownership);
     }
 
-    internal static bool SameDocument(
-        string leftUri,
-        string rightUri)
-        => TryIdentifyDocument(leftUri, out var left)
-            && TryIdentifyDocument(rightUri, out var right)
-            && left == right;
+    internal static bool SameDocument(string leftUri, string rightUri)
+        => VbaDocumentIdentityPolicy.SameDocument(leftUri, rightUri);
 
-    internal static IEnumerable<string> DistinctDocumentUris(
-        IEnumerable<string> uris)
-    {
-        var identified = new HashSet<VbaDocumentIdentity>();
-        var unidentified = new HashSet<string>(
-            StringComparer.OrdinalIgnoreCase);
-        foreach (var uri in uris)
-        {
-            if (TryIdentifyDocument(uri, out var identity)
-                    ? identified.Add(identity)
-                    : unidentified.Add(uri))
-            {
-                yield return uri;
-            }
-        }
-    }
+    internal static IEnumerable<string> DistinctDocumentUris(IEnumerable<string> uris)
+        => VbaDocumentIdentityPolicy.DistinctDocumentUris(uris);
 
     internal static string GetDocumentStableKey(string uri)
-        => TryIdentifyDocument(uri, out var identity)
-            ? identity.StableKey
-            : string.Join("\u001e", "unidentified", uri);
+        => VbaDocumentIdentityPolicy.GetDocumentStableKey(uri);
 
     internal static bool TryNormalizeSnapshotPath(
         string? path,
@@ -635,21 +502,8 @@ internal static class VbaProjectIdentityModel
         return TryNormalizeAuthorityPath(path, out canonicalPath);
     }
 
-    internal static bool TryIdentifyLocalDocumentPath(
-        string path,
-        out VbaDocumentIdentity identity)
-    {
-        identity = default;
-        if (!TryNormalizePath(path, out var canonicalPath))
-        {
-            return false;
-        }
-
-        identity = new VbaDocumentIdentity(
-            VbaDocumentIdentityKind.LocalFile,
-            canonicalPath);
-        return true;
-    }
+    internal static bool TryIdentifyLocalDocumentPath(string path, out VbaDocumentIdentity identity)
+        => VbaDocumentIdentityPolicy.TryIdentifyLocalDocumentPath(path, out identity);
 
     internal static bool? OwnsTransferredProjectDocument(
         VbaProjectResolution resolution,
@@ -933,36 +787,6 @@ internal static class VbaProjectIdentityModel
                 StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool TryNormalizePath(
-        string path,
-        out string canonicalPath)
-    {
-        canonicalPath = "";
-        if (string.IsNullOrWhiteSpace(path)
-            || !Path.IsPathFullyQualified(path))
-        {
-            return false;
-        }
-
-        try
-        {
-            canonicalPath = Path.GetFullPath(path);
-            return true;
-        }
-        catch (Exception ex) when (ex is ArgumentException
-            or NotSupportedException
-            or PathTooLongException
-            or System.Security.SecurityException)
-        {
-            return false;
-        }
-    }
-
-    private static bool LooksLikeLocalPath(string value)
-        => Path.IsPathFullyQualified(value)
-            || value.StartsWith("\\\\", StringComparison.Ordinal)
-            || value.Length >= 3
-                && char.IsAsciiLetter(value[0])
-                && value[1] == ':'
-                && value[2] is '\\' or '/';
+    private static bool TryNormalizePath(string path, out string canonicalPath)
+        => VbaDocumentIdentityPolicy.TryNormalizePath(path, out canonicalPath);
 }

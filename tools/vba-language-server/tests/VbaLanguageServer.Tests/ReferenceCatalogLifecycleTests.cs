@@ -1602,7 +1602,7 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
                 selection.References,
                 supersededScope);
             Assert.DoesNotContain(
-                supersededState.CatalogSet.GetActiveDefinitions(selection),
+                supersededState.CatalogSet.GetActiveDefinitions(selection.ToSemanticSelection()),
                 definition => definition.Name.StartsWith("Superseded", StringComparison.Ordinal));
 
             planObserver.ReleaseSecondPlan();
@@ -1617,10 +1617,10 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
                 selection.References,
                 currentScope);
             Assert.Contains(
-                currentState.CatalogSet.GetActiveDefinitions(selection),
+                currentState.CatalogSet.GetActiveDefinitions(selection.ToSemanticSelection()),
                 definition => definition.Name == "CurrentLibraryAType");
             Assert.Contains(
-                currentState.CatalogSet.GetActiveDefinitions(selection),
+                currentState.CatalogSet.GetActiveDefinitions(selection.ToSemanticSelection()),
                 definition => definition.Name == "CurrentLibraryBType");
         }
         finally
@@ -1681,7 +1681,7 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
                 removedSelection.References,
                 removedScope);
             Assert.DoesNotContain(
-                removedState.CatalogSet.GetActiveDefinitions(removedSelection),
+                removedState.CatalogSet.GetActiveDefinitions(removedSelection.ToSemanticSelection()),
                 definition => definition.Name == "SupersededRemovedLibraryType");
 
             planObserver.ReleaseSecondPlan();
@@ -2683,16 +2683,16 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
             book2Scope);
 
         Assert.Contains(
-            book1State.CatalogSet.GetActiveDefinitions(selection),
+            book1State.CatalogSet.GetActiveDefinitions(selection.ToSemanticSelection()),
             definition => definition.Name == "Book1ResolvedType");
         Assert.DoesNotContain(
-            book1State.CatalogSet.GetActiveDefinitions(selection),
+            book1State.CatalogSet.GetActiveDefinitions(selection.ToSemanticSelection()),
             definition => definition.Name == "Book2ResolvedType");
         Assert.Contains(
-            book2State.CatalogSet.GetActiveDefinitions(selection),
+            book2State.CatalogSet.GetActiveDefinitions(selection.ToSemanticSelection()),
             definition => definition.Name == "Book2ResolvedType");
         Assert.DoesNotContain(
-            book2State.CatalogSet.GetActiveDefinitions(selection),
+            book2State.CatalogSet.GetActiveDefinitions(selection.ToSemanticSelection()),
             definition => definition.Name == "Book1ResolvedType");
         Assert.Equal(
             "11111111-1111-1111-1111-111111111111",
@@ -2738,10 +2738,10 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
             selection.References,
             initialScope);
         Assert.Contains(
-            initialState.CatalogSet.GetActiveDefinitions(selection),
+            initialState.CatalogSet.GetActiveDefinitions(selection.ToSemanticSelection()),
             definition => definition.Name == "SupersededLibraryAType");
         Assert.Contains(
-            initialState.CatalogSet.GetActiveDefinitions(selection),
+            initialState.CatalogSet.GetActiveDefinitions(selection.ToSemanticSelection()),
             definition => definition.Name == "SupersededLibraryBType");
 
         lifecycle.ApplyManifestSelectionChange(
@@ -2757,7 +2757,7 @@ public sealed class ReferenceCatalogLifecycleTests : IAsyncLifetime
         var reorderedState = catalogCache.CaptureSelectionState(
             selection.References,
             reorderedScope);
-        var reorderedDefinitions = reorderedState.CatalogSet.GetActiveDefinitions(selection);
+        var reorderedDefinitions = reorderedState.CatalogSet.GetActiveDefinitions(selection.ToSemanticSelection());
         Assert.Contains(
             reorderedDefinitions,
             definition => definition.Name == "CurrentLibraryAType");

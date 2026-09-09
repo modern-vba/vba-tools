@@ -32,6 +32,12 @@
     <Content Include="..\..\..\..\fixtures\document-diagnostics\cases.json"
              Link="fixtures\document-diagnostics\cases.json"
              CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\..\..\fixtures\project-semantic-diagnostics\namespace-cases.json"
+             Link="fixtures\project-semantic-diagnostics\namespace-cases.json"
+             CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\..\..\fixtures\project-semantic-diagnostics\cases.json"
+             Link="fixtures\project-semantic-diagnostics\cases.json"
+             CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using VbaDev.App.Workbooks;
+using VbaTools.Semantics;
 
 namespace VbaDev.App.Cli;
 
@@ -15,22 +16,9 @@ internal static class VbaSourceAnalysisOutput
         return JsonSerializer.Serialize(new
         {
             type = "sourceAnalysis",
-            schemaVersion = "2.0",
+            schemaVersion = "3.0",
             complete = report.Complete,
-            diagnostics = report.Diagnostics.Select(diagnostic => new
-            {
-                type = "diagnostic",
-                owner = "vba-dev",
-                uri = diagnostic.SourceUri,
-                code = diagnostic.Code,
-                message = diagnostic.Message,
-                severity = diagnostic.Severity,
-                range = new
-                {
-                    start = new { line = diagnostic.Range.Start.Line, character = diagnostic.Range.Start.Character },
-                    end = new { line = diagnostic.Range.End.Line, character = diagnostic.Range.End.Character }
-                }
-            }),
+            diagnostics = report.Diagnostics.Select(ProjectDiagnostic),
             failures = report.Failures.Select(failure => new
             {
                 scope = failure.Scope,
@@ -39,4 +27,31 @@ internal static class VbaSourceAnalysisOutput
             })
         }) + Environment.NewLine;
     }
+
+    private static object ProjectDiagnostic(VbaSourceDiagnostic diagnostic)
+    {
+        var presentation = VbaDiagnosticPresentation.Create(diagnostic.Message, diagnostic.Details,
+            supportsRelatedInformation: true);
+        var result = new Dictionary<string, object?>
+        {
+            ["type"] = "diagnostic", ["owner"] = "vba-dev", ["uri"] = diagnostic.SourceUri,
+            ["code"] = diagnostic.Code, ["message"] = presentation.Message,
+            ["severity"] = diagnostic.Severity, ["range"] = ProjectRange(diagnostic.Range)
+        };
+        if (!presentation.RelatedInformation.IsEmpty)
+        {
+            result["relatedInformation"] = presentation.RelatedInformation.Select(related => new
+            {
+                location = new { uri = related.Location.Uri, range = ProjectRange(related.Location.Range) },
+                message = related.Message
+            });
+        }
+        return result;
+    }
+
+    private static object ProjectRange(VbaRange range) => new
+    {
+        start = new { line = range.Start.Line, character = range.Start.Character },
+        end = new { line = range.End.Line, character = range.End.Character }
+    };
 }

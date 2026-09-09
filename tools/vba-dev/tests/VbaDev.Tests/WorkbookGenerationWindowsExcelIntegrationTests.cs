@@ -1730,7 +1730,8 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
                 automation ?? new ExcelComWorkbookGenerationAutomation(),
                 new WorkbookReferenceNormalizer(new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),
                 transactionFactory ?? new WorkbookOutputTransactionFactory(new WindowsExactFileSystemObjectOwnershipFactory()),
-                new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory(), sourceSetCreated)));
+                new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory(), sourceSetCreated),
+                semanticInputProvider: FakeProjectSemanticInputProvider.Empty));
 
     private static async Task<OrdinaryWorkbookFixture> CreateOrdinaryWorkbookFixtureAsync(
         TempDirectory temp,
@@ -1914,6 +1915,9 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         private readonly IWorkbookOutputTransactionFactory inner = new WorkbookOutputTransactionFactory(new WindowsExactFileSystemObjectOwnershipFactory());
 
         public IWorkbookOutputTransaction Create(string templateWorkbookPath, string targetWorkbookPath)
+            => new CancelAfterCommitTransaction(inner.Create(templateWorkbookPath, targetWorkbookPath), cancellation);
+
+        public IWorkbookOutputTransaction Create(CapturedWorkbookTemplate templateWorkbookPath, string targetWorkbookPath)
             => new CancelAfterCommitTransaction(inner.Create(templateWorkbookPath, targetWorkbookPath), cancellation);
     }
 

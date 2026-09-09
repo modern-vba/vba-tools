@@ -49,7 +49,16 @@ public sealed record TypeLibRegistryLineage(
 public sealed record TypeLibRegistryVersion(
     int Major,
     int Minor,
-    IReadOnlyList<TypeLibRegistryLocale> Locales);
+    IReadOnlyList<TypeLibRegistryLocale> Locales)
+{
+    public IEnumerable<TypeLibRegistryLocation> GetOrderedLocations()
+        => Locales.SelectMany(locale => locale.Paths.Select(path => new TypeLibRegistryLocation(locale.Lcid, path.Platform, path.Path)))
+            .OrderBy(location => location.Lcid)
+            .ThenBy(location => location.Platform, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(location => location.Path, StringComparer.OrdinalIgnoreCase);
+}
+
+public sealed record TypeLibRegistryLocation(int Lcid, string Platform, string Path);
 
 public sealed record TypeLibRegistryLocale(
     int Lcid,

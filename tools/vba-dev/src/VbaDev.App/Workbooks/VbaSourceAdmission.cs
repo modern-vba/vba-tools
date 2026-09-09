@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using System.Text;
 using VbaDev.Domain;
 using VbaTools.Syntax;
+using VbaTools.Semantics;
 
 namespace VbaDev.App.Workbooks;
 
@@ -160,21 +161,68 @@ internal sealed class VbaSourceAdmission
         string sourceDirectory,
         IReadOnlyList<InstalledCommonModule> commonModules,
         CancellationToken cancellationToken)
+        => ReadAnalyzedProjectBuildAsync(sourceDirectory, commonModules, null, cancellationToken).GetAwaiter().GetResult();
+
+    internal Task<AdmittedVbaSourceSet> AdmitAnalyzedProjectBuildAsync(
+        string sourceDirectory,
+        IReadOnlyList<InstalledCommonModule> commonModules,
+        Func<IReadOnlyList<VbaSyntaxTree>, CancellationToken, Task<VbaProjectSemanticInputs>> acquireInputs,
+        CancellationToken cancellationToken)
+        => AdmittedVbaSourceSet.AdmitAnalyzedProjectBuildAsync(this, sourceDirectory, commonModules,
+            acquireInputs, cancellationToken);
+
+    internal async Task<(AdmittedVbaSourceData Admission, VbaSourceAnalysisReport Report)> ReadAnalyzedProjectBuildAsync(
+        string sourceDirectory,
+        IReadOnlyList<InstalledCommonModule> commonModules,
+        Func<IReadOnlyList<VbaSyntaxTree>, CancellationToken, Task<VbaProjectSemanticInputs>>? acquireInputs,
+        CancellationToken cancellationToken)
     {
         var analysis = new VbaSourceAnalysisReport.Builder();
         AdmittedVbaSourceData data = default;
+        var projectFatal = false;
         try
         {
             data = AdmitCore(sourceDirectory, AdmissionPurpose.ProjectBuild, commonModules, cancellationToken, analysis);
         }
         catch (Exception error) when (error is not OperationCanceledException)
         {
+            projectFatal = true;
             analysis.FailProject(error);
+        }
+        VbaProjectSemanticInputs? inputs = null;
+        Exception? operationalFailure = null;
+        if (!projectFatal && acquireInputs is not null)
+        {
+            try
+            {
+                inputs = await acquireInputs(analysis.CapturedSyntaxTrees, cancellationToken).ConfigureAwait(false);
+                ArgumentNullException.ThrowIfNull(inputs);
+            }
+            catch (Exception error)
+            {
+                operationalFailure = error;
+                analysis.FailProject(error);
+            }
+        }
+        try
+        {
+            if (operationalFailure is null || !cancellationToken.IsCancellationRequested)
+            {
+                analysis.AnalyzeProjectSources(cancellationToken, inputs);
+            }
+        }
+        catch (Exception error) when (error is not OperationCanceledException || operationalFailure is not null)
+        {
+            analysis.FailProject(error);
+            if (operationalFailure is not null)
+            {
+                operationalFailure = new AggregateException(operationalFailure, error);
+            }
         }
         var report = analysis.ToReport();
         if (!report.Complete || report.HasErrors)
         {
-            throw new VbaSourceAnalysisException(report);
+            throw new VbaSourceAnalysisException(report, operationalFailure);
         }
         return (data, report);
     }
@@ -802,6 +850,18 @@ internal sealed class AdmittedVbaSourceSet
         CancellationToken cancellationToken)
     {
         var result = admission.ReadAnalyzedProjectBuild(sourceDirectory, commonModules, cancellationToken);
+        return new(result.Admission, result.Report);
+    }
+
+    internal static async Task<AdmittedVbaSourceSet> AdmitAnalyzedProjectBuildAsync(
+        VbaSourceAdmission admission,
+        string sourceDirectory,
+        IReadOnlyList<InstalledCommonModule> commonModules,
+        Func<IReadOnlyList<VbaSyntaxTree>, CancellationToken, Task<VbaProjectSemanticInputs>> acquireInputs,
+        CancellationToken cancellationToken)
+    {
+        var result = await admission.ReadAnalyzedProjectBuildAsync(sourceDirectory, commonModules,
+            acquireInputs, cancellationToken).ConfigureAwait(false);
         return new(result.Admission, result.Report);
     }
 

@@ -99,7 +99,7 @@ public sealed class VbaCreatableTypeTests
             .WithCatalog(catalog)
             .GetActiveDefinitions(VbaProjectReferenceSelection.Create(
                 ProjectDocument.ExcelKind,
-                [new VbaProjectReference("Generated Library")]));
+                [new VbaProjectReference("Generated Library")]).ToSemanticSelection());
         Assert.True(Assert.Single(
             definitions,
             definition => definition.Name == "Widget").IsCreatable);
@@ -121,7 +121,7 @@ public sealed class VbaCreatableTypeTests
                 new VbaProjectReference("Microsoft Office 16.0 Object Library"),
                 new VbaProjectReference("Microsoft Outlook 16.0 Object Library")
             ]);
-        var definitions = catalogs.GetActiveDefinitions(selection);
+        var definitions = catalogs.GetActiveDefinitions(selection.ToSemanticSelection());
 
         Assert.True(Assert.Single(
             definitions,

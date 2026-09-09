@@ -71,7 +71,7 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
         ArgumentNullException.ThrowIfNull(operation);
 
         var workspace = baseline.Kind == VbaProjectReferenceProbeBaselineKind.SourceTemplate
-            ? ReferenceProbeWorkspace.Create(baseline.WorkbookPath!)
+            ? ReferenceProbeWorkspace.Create(baseline)
             : null;
         TResult? result = default;
         var outcome = await runtime.RunReferenceProbeAsync(
@@ -109,31 +109,39 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
                         new AggregateException(cleanupError, dispatcherError));
         }
 
-        try
+        var retainedWorkspacePath = !evidence.ProcessReleaseVerified ? workspace?.WorkspacePath : null;
+        if (retainedWorkspacePath is not null)
         {
-            workspace?.Dispose();
+            cleanupError = new WorkbookAutomationCleanupException(
+                $"Reference-probe scratch was retained because exact owned-process release could not be proved: {retainedWorkspacePath}",
+                cleanupError);
         }
-        catch (Exception exception)
+        else
         {
-            var combinedCleanupError = cleanupError is null
-                ? exception
-                : new AggregateException(cleanupError, exception);
-            cleanupError = !evidence.ProcessReleaseVerified
-                ? new WorkbookAutomationCleanupException(
-                    "The reference probe could not verify exact owned-process release, and its workspace cleanup also failed.",
-                    combinedCleanupError)
-                : new WorkbookAutomationReleasedProcessCleanupException(
+            try
+            {
+                workspace?.Dispose();
+            }
+            catch (Exception exception)
+            {
+                var combinedCleanupError = cleanupError is null
+                    ? exception
+                    : new AggregateException(cleanupError, exception);
+                cleanupError = new WorkbookAutomationReleasedProcessCleanupException(
                     "The reference-probe Excel process was released, but its workspace cleanup failed.",
                     combinedCleanupError);
+            }
         }
 
         if (cleanupError is not null)
         {
             throw new VbaProjectReferenceProbeAttemptException(
                 "cleanupFailure",
-                evidence.ProcessReleaseVerified
+                (evidence.ProcessReleaseVerified
                     ? "The reference-probe Excel process was released, but cooperative cleanup or automation isolation failed."
-                    : "The reference probe could not prove cleanup of its workbook copies and owned Excel process.",
+                    : "The reference probe could not prove cleanup of its workbook copies and owned Excel process.")
+                    + (retainedWorkspacePath is null ? string.Empty
+                        : $" The probe workspace was retained at '{retainedWorkspacePath}'; verify exact process release before removing it."),
                 processTrusted: !evidence.DispatcherCreated,
                 operationError is null
                     ? cleanupError
@@ -403,6 +411,8 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
         private int attemptOrdinal;
         private bool disposed;
 
+        internal string WorkspacePath => workspacePath;
+
         private ReferenceProbeWorkspace(
             string workspacePath,
             string fixedBaselinePath)
@@ -411,9 +421,9 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
             this.fixedBaselinePath = fixedBaselinePath;
         }
 
-        public static ReferenceProbeWorkspace Create(string baselineWorkbookPath)
+        public static ReferenceProbeWorkspace Create(VbaProjectReferenceProbeBaseline baseline)
         {
-            var sourcePath = Path.GetFullPath(baselineWorkbookPath);
+            var sourcePath = Path.GetFullPath(baseline.WorkbookPath!);
             var workspacePath = Path.Combine(
                 Path.GetTempPath(),
                 "vba-dev-reference-probe",
@@ -423,7 +433,7 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
                 "baseline" + Path.GetExtension(sourcePath));
             try
             {
-                if (!File.Exists(sourcePath))
+                if (baseline.CapturedTemplate is null && !File.Exists(sourcePath))
                 {
                     throw new FileNotFoundException(
                         "The selected source-template workbook was not found.",
@@ -431,7 +441,15 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomation
                 }
 
                 Directory.CreateDirectory(workspacePath);
-                File.Copy(sourcePath, fixedBaselinePath, overwrite: false);
+                if (baseline.CapturedTemplate is { } captured)
+                {
+                    using var destination = new FileStream(fixedBaselinePath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                    captured.WriteTo(destination);
+                }
+                else
+                {
+                    File.Copy(sourcePath, fixedBaselinePath, overwrite: false);
+                }
                 return new ReferenceProbeWorkspace(workspacePath, fixedBaselinePath);
             }
             catch (Exception exception)

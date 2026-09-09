@@ -1,4 +1,5 @@
 using VbaDev.App.Diagnostics;
+using VbaDev.App.Build;
 using VbaDev.App.Projects;
 using VbaDev.App.Workbooks;
 using VbaDev.Domain;
@@ -159,6 +160,15 @@ public sealed class VbaProjectReferencePlanner
         string baselineWorkbookPath,
         IReadOnlyList<string> referenceNames,
         CancellationToken cancellationToken)
+        => await ResolveReferencesAsync(VbaProjectReferenceProbeBaseline.SourceTemplate(baselineWorkbookPath),
+            referenceNames, cancellationToken).ConfigureAwait(false);
+
+    internal Task<VbaProjectReferenceResolutionBatch> ResolveReferencesAsync(
+        CapturedWorkbookTemplate template, IReadOnlyList<string> referenceNames, CancellationToken cancellationToken)
+        => ResolveReferencesAsync(VbaProjectReferenceProbeBaseline.SourceTemplate(template), referenceNames, cancellationToken);
+
+    private async Task<VbaProjectReferenceResolutionBatch> ResolveReferencesAsync(
+        VbaProjectReferenceProbeBaseline baseline, IReadOnlyList<string> referenceNames, CancellationToken cancellationToken)
     {
         var batch = ResolveReferences(referenceNames);
         if (!batch.Complete ||
@@ -169,7 +179,7 @@ public sealed class VbaProjectReferencePlanner
         }
 
         return await ambiguityProbe.ResolveAsync(
-                VbaProjectReferenceProbeBaseline.SourceTemplate(baselineWorkbookPath),
+                baseline,
                 batch,
                 cancellationToken)
             .ConfigureAwait(false);

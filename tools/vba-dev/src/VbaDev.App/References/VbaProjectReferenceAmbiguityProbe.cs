@@ -37,33 +37,33 @@ public sealed class VbaProjectReferenceAmbiguityProbe(
         }
         catch (VbaProjectReferenceProbeBaselineException exception)
         {
-            return AbortProbeDependentReferences(
+            return RetainFailure(AbortProbeDependentReferences(
                 registryResolution,
                 "probeBaselineUnavailable",
-                exception.Message);
+                exception.Message), exception);
         }
         catch (VbaProjectReferenceProbeAttemptException exception)
         {
             if (exception.PartialResult is
                 VbaProjectReferenceResolutionBatch partialResult)
             {
-                return ApplyFinalLifecycleFailure(
+                return RetainFailure(ApplyFinalLifecycleFailure(
                     registryResolution,
                     partialResult,
                     exception.ReasonCode,
                     exception.Message,
-                    exception.ProcessTrusted);
+                    exception.ProcessTrusted), exception);
             }
 
-            return AbortAfterLifecycleFailure(
+            return RetainFailure(AbortAfterLifecycleFailure(
                 registryResolution,
                 exception.ReasonCode,
                 exception.Message,
-                exception.ProcessTrusted);
+                exception.ProcessTrusted), exception);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException exception) when (cancellationToken.IsCancellationRequested)
         {
-            return CancelProbeDependentReferences(registryResolution);
+            return RetainFailure(CancelProbeDependentReferences(registryResolution), exception);
         }
     }
 
@@ -98,6 +98,7 @@ public sealed class VbaProjectReferenceAmbiguityProbe(
         var references = new List<VbaProjectReferenceNameResolution>(
             registryResolution.References.Count);
         var processTrusted = true;
+        Exception? operationalFailure = registryResolution.OperationalFailure;
         for (var index = 0; index < registryResolution.References.Count; index++)
         {
             var reference = registryResolution.References[index];
@@ -125,7 +126,7 @@ public sealed class VbaProjectReferenceAmbiguityProbe(
                         cancellationToken)
                     .ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException exception) when (cancellationToken.IsCancellationRequested)
             {
                 if (!preserveCancellationAsEvidence)
                 {
@@ -159,11 +160,13 @@ public sealed class VbaProjectReferenceAmbiguityProbe(
                 {
                     Complete = false,
                     References = references,
-                    AdditionalDiagnostics = cancellationDiagnostics
+                    AdditionalDiagnostics = cancellationDiagnostics,
+                    OperationalFailure = CombineFailures(operationalFailure, exception)
                 };
             }
 
             references.Add(probeResult.Resolution);
+            operationalFailure = CombineFailures(operationalFailure, probeResult.OperationalFailure);
             processTrusted = probeResult.ProcessTrusted;
         }
 
@@ -181,7 +184,8 @@ public sealed class VbaProjectReferenceAmbiguityProbe(
             Complete = registryResolution.Complete &&
                        references.All(reference => reference.UnverifiedReasonCode is null),
             References = references,
-            AdditionalDiagnostics = additionalDiagnostics
+            AdditionalDiagnostics = additionalDiagnostics,
+            OperationalFailure = operationalFailure
         };
     }
 
@@ -193,6 +197,7 @@ public sealed class VbaProjectReferenceAmbiguityProbe(
         var usableIdentities = new List<ResolvedVbaProjectReference>();
         string? unverifiedReasonCode = null;
         string? unverifiedMessage = null;
+        Exception? operationalFailure = null;
         foreach (var lineage in registryResolution.CandidateLineages)
         {
             foreach (var candidate in lineage.Versions
@@ -217,6 +222,7 @@ public sealed class VbaProjectReferenceAmbiguityProbe(
                 catch (VbaProjectReferenceProbeAttemptException exception)
                     when (exception.ProcessTrusted)
                 {
+                    operationalFailure = CombineFailures(operationalFailure, exception);
                     unverifiedReasonCode ??= exception.ReasonCode;
                     unverifiedMessage ??= exception.Message;
                     break;
@@ -228,7 +234,8 @@ public sealed class VbaProjectReferenceAmbiguityProbe(
                             registryResolution,
                             exception.ReasonCode,
                             exception.Message),
-                        ProcessTrusted: false);
+                        ProcessTrusted: false,
+                        OperationalFailure: CombineFailures(operationalFailure, exception));
                 }
 
                 if (attempt.Outcome == VbaProjectReferenceProbeAttemptOutcome.Rejected)
@@ -277,7 +284,8 @@ public sealed class VbaProjectReferenceAmbiguityProbe(
                 UnverifiedReasonCode = unverifiedReasonCode,
                 Message = unverifiedMessage
             },
-            ProcessTrusted: true);
+            ProcessTrusted: true,
+            OperationalFailure: operationalFailure);
     }
 
     private static VbaProjectReferenceNameResolution CreateUnverified(
@@ -436,7 +444,14 @@ public sealed class VbaProjectReferenceAmbiguityProbe(
         };
     }
 
+    private static VbaProjectReferenceResolutionBatch RetainFailure(VbaProjectReferenceResolutionBatch batch, Exception error)
+        => batch with { OperationalFailure = CombineFailures(batch.OperationalFailure, error) };
+
+    private static Exception? CombineFailures(Exception? first, Exception? second)
+        => first is null ? second : second is null || ReferenceEquals(first, second) ? first : new AggregateException(first, second);
+
     private sealed record ReferenceProbeResult(
         VbaProjectReferenceNameResolution Resolution,
-        bool ProcessTrusted);
+        bool ProcessTrusted,
+        Exception? OperationalFailure = null);
 }

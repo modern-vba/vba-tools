@@ -120,11 +120,18 @@ internal sealed class ExcelComWorkbookBuildSession :
     /// </summary>
     /// <returns>The reference names and whether each reference can be removed.</returns>
     public IReadOnlyList<WorkbookReference> GetReferences()
+        => GetReferencesCore(null);
+
+    public IReadOnlyList<WorkbookReference> GetReferenceIdentities(IReadOnlyList<string> referenceNames)
+        => GetReferencesCore(referenceNames);
+
+    private IReadOnlyList<WorkbookReference> GetReferencesCore(IReadOnlyList<string>? requiredIdentities)
     {
         dynamic workbook = session.WorkbookObject;
         object? vbProjectObject = null;
         object? referencesObject = null;
         var result = new List<WorkbookReference>();
+        IReadOnlyList<string>? loadedModulePaths = null;
         try
         {
             vbProjectObject = workbook.VBProject;
@@ -147,10 +154,36 @@ internal sealed class ExcelComWorkbookBuildSession :
                         : !string.IsNullOrWhiteSpace(namespaceName)
                             ? namespaceName
                             : $"Reference #{index}";
-                    result.Add(new WorkbookReference(
+                    if (requiredIdentities is not null
+                        && !requiredIdentities.Contains(humanVisibleName, StringComparer.OrdinalIgnoreCase)) continue;
+                    var observed = new WorkbookReference(
                         humanVisibleName,
                         IsRemovable: !isBuiltIn,
-                        NamespaceName: namespaceName));
+                        NamespaceName: namespaceName);
+                    try
+                    {
+                        observed = observed with
+                        {
+                            Guid = (string?)reference.Guid,
+                            Major = (int)reference.Major,
+                            Minor = (int)reference.Minor
+                        };
+                    }
+                    catch (COMException)
+                    {
+                        // Broken or unreadable references remain visible to existing
+                        // inspection/removal policy. An analyzed build requires proof
+                        // for each accepted identity and rejects these missing facts.
+                    }
+                    try { observed = observed with { FullPath = (string?)reference.FullPath }; }
+                    catch (COMException) { /* The catalog reader may still use an exact registered identity. */ }
+                    if (requiredIdentities is not null && !string.IsNullOrWhiteSpace(observed.FullPath)
+                        && !File.Exists(observed.FullPath))
+                    {
+                        loadedModulePaths ??= session.CaptureLoadedModulePaths();
+                        observed = observed with { FullPath = WorkbookReferenceLibraryPath.Resolve(observed.FullPath, loadedModulePaths) };
+                    }
+                    result.Add(observed);
                 }
                 finally
                 {

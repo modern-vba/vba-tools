@@ -71,7 +71,7 @@ public sealed class VbaNameResolutionServiceTests
                 new VbaSourceDocument(currentUri, "", "Worker", currentDefinitions),
                 new VbaSourceDocument(helperUri, "", "Helpers", projectDefinitions)
             ],
-            selection,
+            selection.ToSemanticSelection(),
             VbaProjectReferenceCatalogSet.Empty,
             [referenceDefinition]);
 
@@ -128,7 +128,7 @@ public sealed class VbaNameResolutionServiceTests
         };
         var resolver = new VbaNameResolutionService(
             documents,
-            selection,
+            selection.ToSemanticSelection(),
             VbaProjectReferenceCatalogSet.Empty,
             referenceDefinitions);
 
@@ -147,7 +147,7 @@ public sealed class VbaNameResolutionServiceTests
             [new VbaProjectReference("Microsoft Excel 16.0 Object Library")]);
         var resolver = new VbaNameResolutionService(
             [new VbaSourceDocument(currentUri, "", "Worker", [])],
-            selection,
+            selection.ToSemanticSelection(),
             VbaProjectReferenceCatalogSet.CreateBundled());
 
         var resolved = resolver.Resolve(currentUri, new VbaPosition(1, 0), null, "Run");
@@ -187,7 +187,7 @@ public sealed class VbaNameResolutionServiceTests
             ]);
         var resolver = new VbaNameResolutionService(
             [currentDocument, helperDocument],
-            selection,
+            selection.ToSemanticSelection(),
             VbaProjectReferenceCatalogSet.CreateBundled());
 
         Assert.Equal(VbaSourceDefinitionVisibility.Local, resolver.Resolve(currentUri, new VbaPosition(3, 4), null, "SharedName")?.Visibility);
@@ -215,11 +215,11 @@ public sealed class VbaNameResolutionServiceTests
             ]);
         var sourceResolver = new VbaNameResolutionService(
             [sourceApplication],
-            excelSelection,
+            excelSelection.ToSemanticSelection(),
             VbaProjectReferenceCatalogSet.CreateBundled());
         var referenceResolver = new VbaNameResolutionService(
             [new VbaSourceDocument(currentUri, "", "Worker", [])],
-            excelSelection,
+            excelSelection.ToSemanticSelection(),
             VbaProjectReferenceCatalogSet.CreateBundled());
         var ambiguousSelection = VbaProjectReferenceSelection.Create(
             "word",
@@ -229,7 +229,7 @@ public sealed class VbaNameResolutionServiceTests
             ]);
         var ambiguousResolver = new VbaNameResolutionService(
             [new VbaSourceDocument(currentUri, "", "Worker", [])],
-            ambiguousSelection,
+            ambiguousSelection.ToSemanticSelection(),
             VbaProjectReferenceCatalogSet.CreateBundled());
 
         Assert.Equal(currentUri, sourceResolver.Resolve(currentUri, new VbaPosition(9, 0), null, "Application")?.Uri);
@@ -257,11 +257,11 @@ public sealed class VbaNameResolutionServiceTests
             ]);
         var resolver = new VbaNameResolutionService(
             [currentDocument, excelSourceDocument],
-            selection,
+            selection.ToSemanticSelection(),
             VbaProjectReferenceCatalogSet.CreateBundled());
         var referenceOnlyResolver = new VbaNameResolutionService(
             [currentDocument],
-            selection,
+            selection.ToSemanticSelection(),
             VbaProjectReferenceCatalogSet.CreateBundled());
 
         Assert.Equal(excelSourceUri, resolver.Resolve(currentUri, new VbaPosition(1, 0), "Excel", "Application")?.Uri);

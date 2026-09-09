@@ -8,6 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="../../../../fixtures/project-metadata/PackageMetadataFixture.cs" Link="Fixtures/PackageMetadataFixture.cs" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4">
@@ -19,6 +20,12 @@
   <ItemGroup>
     <Content Include="..\..\..\..\fixtures\document-diagnostics\cases.json"
              Link="fixtures\document-diagnostics\cases.json"
+             CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\..\..\fixtures\project-semantic-diagnostics\namespace-cases.json"
+             Link="fixtures\project-semantic-diagnostics\namespace-cases.json"
+             CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\..\..\fixtures\project-semantic-diagnostics\cases.json"
+             Link="fixtures\project-semantic-diagnostics\cases.json"
              CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\..\..\fixtures\project-manifest-encoding\cases.json"
              Link="fixtures\project-manifest-encoding\cases.json"

@@ -18,9 +18,15 @@ public sealed class DebugEnvironmentDoctorStageRunnerTests
             TimeSpan.FromSeconds(60),
             async cancellationToken =>
             {
-                using var registration = cancellationToken.Register(
-                    () => operationCancelled.TrySetResult());
-                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    operationCancelled.TrySetResult();
+                    throw;
+                }
                 return DebugEnvironmentProbeCheckResult.Pass("Unexpected completion.");
             },
             CancellationToken.None);

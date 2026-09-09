@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 const ignoredDirectories = new Set(['.git', '.vs', 'node_modules', 'bin', 'obj', 'out', 'coverage']);
 // These are explicitly designated foundations, not every directory outside a product.
 // The integration-test owner may consume public products and is not a foundation.
-const foundationOwners = new Set(['VbaTools.Syntax', 'VbaTools.ContentLengthFraming', 'VbaTools.ProjectMetadata', 'VbaTools.ProcessInvocation']);
+const foundationOwners = new Set(['VbaTools.Syntax', 'VbaTools.Semantics', 'VbaTools.ContentLengthFraming', 'VbaTools.ProjectMetadata', 'VbaTools.ProcessInvocation']);
 const consumerOwners = new Set(['VbaDev', 'VbaLanguageServer', 'VbaDebugAdapter', 'VscodeExtension', 'IntegrationTests']);
 
 function owner(file) {
@@ -15,6 +15,7 @@ function owner(file) {
   if (normalized.startsWith('tools/vba-debug-adapter/')) return 'VbaDebugAdapter';
   if (normalized.startsWith('client/') || normalized.startsWith('src/')) return 'VscodeExtension';
   if (normalized.startsWith('tools/vba-syntax/')) return 'VbaTools.Syntax';
+  if (normalized.startsWith('tools/vba-semantics/')) return 'VbaTools.Semantics';
   if (normalized.startsWith('tools/vba-protocol-framing/')) return 'VbaTools.ContentLengthFraming';
   if (normalized.startsWith('tools/vba-project-metadata/')) return 'VbaTools.ProjectMetadata';
   if (normalized.startsWith('tools/vba-process-invocation/')) return 'VbaTools.ProcessInvocation';

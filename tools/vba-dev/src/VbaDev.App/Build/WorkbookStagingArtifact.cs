@@ -34,8 +34,17 @@ internal sealed class WorkbookStagingArtifact : IDisposable
         string fileName,
         bool createDirectory = false,
         Action<string>? afterCreated = null)
+        => CreateFromBytes(ownershipFactory, File.ReadAllBytes(System.IO.Path.GetFullPath(templatePath)),
+            directoryPath, fileName, createDirectory, afterCreated);
+
+    internal static WorkbookStagingArtifact CreateFromBytes(
+        IExactFileSystemObjectOwnershipFactory ownershipFactory,
+        ReadOnlySpan<byte> bytes,
+        string directoryPath,
+        string fileName,
+        bool createDirectory = false,
+        Action<string>? afterCreated = null)
     {
-        var bytes = File.ReadAllBytes(System.IO.Path.GetFullPath(templatePath));
         var absoluteDirectory = System.IO.Path.GetFullPath(directoryPath);
         var ownership = ownershipFactory.Open();
         ExactFileSystemObjectOwnership.DirectoryReceipt? directory = null;
