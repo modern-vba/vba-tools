@@ -1,5 +1,6 @@
 using VbaDev.Infrastructure.FileSystem;
 using System.Text;
+using System.Text.Json;
 using System.Runtime.InteropServices;
 using VbaDev.App.Build;
 using VbaDev.App.Projects;
@@ -1064,9 +1065,26 @@ public sealed class BuildCommandTests
         var result = application.Run(["build"]);
 
         Assert.Equal(1, result.ExitCode);
-        Assert.Contains("Shared.bas", result.StandardError, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains(Path.Combine("feature", "Shared.bas"), result.StandardError, StringComparison.Ordinal);
-        Assert.Contains(Path.Combine("legacy", "shared.bas"), result.StandardError, StringComparison.Ordinal);
+        Assert.Empty(result.StandardOutput);
+        using var document = JsonDocument.Parse(Assert.Single(
+            result.StandardError.Split('\n', StringSplitOptions.RemoveEmptyEntries)));
+        var report = document.RootElement;
+        Assert.Equal("sourceAnalysis", report.GetProperty("type").GetString());
+        Assert.Equal("2.0", report.GetProperty("schemaVersion").GetString());
+        Assert.False(report.GetProperty("complete").GetBoolean());
+        Assert.Empty(report.GetProperty("diagnostics").EnumerateArray());
+        var failure = Assert.Single(report.GetProperty("failures").EnumerateArray());
+        Assert.Equal("project", failure.GetProperty("scope").GetString());
+        Assert.Equal(JsonValueKind.Null, failure.GetProperty("uri").ValueKind);
+        Assert.False(failure.TryGetProperty("range", out _));
+        var reason = failure.GetProperty("message").GetString()!;
+        Assert.Contains("Duplicate VBA source file names", reason, StringComparison.Ordinal);
+        Assert.Contains("Shared.bas", reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(Path.Combine("feature", "Shared.bas"), reason, StringComparison.Ordinal);
+        Assert.Contains(Path.Combine("legacy", "shared.bas"), reason, StringComparison.Ordinal);
+        Assert.Empty(automation.OpenedWorkbooks);
+        Assert.Empty(automation.ImportedSources);
+        Assert.Equal(0, automation.SaveCalls);
         Assert.DoesNotContain("import:", automation.Events);
     }
 

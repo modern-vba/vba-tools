@@ -29,6 +29,9 @@
     <Content Include="..\..\..\..\fixtures\vba-source-encoding\cases.json"
              Link="fixtures\vba-source-encoding\cases.json"
              CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\..\..\fixtures\document-diagnostics\cases.json"
+             Link="fixtures\document-diagnostics\cases.json"
+             CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

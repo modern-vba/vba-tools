@@ -148,120 +148,13 @@ public static class VbaDocumentValidationDiagnosticCollector
     /// <param name="uri">The document URI used for caller context.</param>
     /// <returns>The validation diagnostics.</returns>
     public static IReadOnlyList<VbaValidationDiagnostic> Collect(VbaSyntaxTree tree, string uri)
-    {
-        var diagnostics = new List<VbaValidationDiagnostic>();
-        foreach (var declaration in tree.Module.CallableDeclarations)
-        {
-            if (declaration.Parameters.Count < 2)
-            {
-                continue;
-            }
-
-            AddDuplicateCallableParameterDiagnostics(
-                diagnostics,
-                declaration.Parameters.Select(parameter => new NamedSyntax(parameter.Name, parameter.Range)));
-        }
-
-        foreach (var declaration in tree.Module.Declarations.Where(declaration => declaration.Kind == VbaDeclarationKind.Event))
-        {
-            var parameters = declaration.Signature?.Parameters ?? [];
-            if (parameters.Count < 2)
-            {
-                continue;
-            }
-
-            AddDuplicateCallableParameterDiagnostics(
-                diagnostics,
-                parameters
-                    .Where(parameter => parameter.Range is not null)
-                    .Select(parameter => new NamedSyntax(parameter.Name, parameter.Range!)));
-        }
-
-        foreach (var argumentList in tree.Module.ArgumentLists)
-        {
-            if (argumentList.Arguments.Count < 2)
-            {
-                continue;
-            }
-
-            AddDuplicateNamedCallArgumentDiagnostics(
-                diagnostics,
-                argumentList.Arguments
-                    .Where(argument => argument.Kind == VbaArgumentKind.Named && argument.Name is not null)
-                    .Select(argument => new NamedSyntax(argument.Name!, argument.NameRange ?? argument.Range)));
-            AddPositionalAfterNamedCallArgumentDiagnostics(diagnostics, argumentList.Arguments);
-        }
-
-        return diagnostics;
-    }
-
-    private static void AddDuplicateCallableParameterDiagnostics(
-        ICollection<VbaValidationDiagnostic> diagnostics,
-        IEnumerable<NamedSyntax> parameters)
-    {
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var parameter in parameters)
-        {
-            if (seen.Add(parameter.Name))
-            {
-                continue;
-            }
-
-            diagnostics.Add(new VbaValidationDiagnostic(
-                "validation.duplicateCallableParameterName",
-                $"Duplicate callable parameter name '{parameter.Name}'.",
-                ToDiagnosticRange(parameter.Range)));
-        }
-    }
-
-    private static void AddDuplicateNamedCallArgumentDiagnostics(
-        ICollection<VbaValidationDiagnostic> diagnostics,
-        IEnumerable<NamedSyntax> arguments)
-    {
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var argument in arguments)
-        {
-            if (seen.Add(argument.Name))
-            {
-                continue;
-            }
-
-            diagnostics.Add(new VbaValidationDiagnostic(
-                "validation.duplicateNamedCallArgument",
-                $"Duplicate named call argument '{argument.Name}'.",
-                ToDiagnosticRange(argument.Range)));
-        }
-    }
-
-    private static void AddPositionalAfterNamedCallArgumentDiagnostics(
-        ICollection<VbaValidationDiagnostic> diagnostics,
-        IEnumerable<VbaArgumentSyntax> arguments)
-    {
-        var hasNamedArgument = false;
-        foreach (var argument in arguments)
-        {
-            if (argument.Kind == VbaArgumentKind.Named)
-            {
-                hasNamedArgument = true;
-                continue;
-            }
-
-            if (!hasNamedArgument)
-            {
-                continue;
-            }
-
-            diagnostics.Add(new VbaValidationDiagnostic(
-                "validation.positionalCallArgumentAfterNamed",
-                "Positional call argument cannot appear after a named argument.",
-                ToDiagnosticRange(argument.ValueRange ?? argument.Range)));
-        }
-    }
-
-    private static VbaRange ToDiagnosticRange(VbaSyntaxRange range)
-        => new(
-            new VbaPosition(range.Start.Line, range.Start.Character),
-            new VbaPosition(range.End.Line, range.End.Character));
-
-    private sealed record NamedSyntax(string Name, VbaSyntaxRange Range);
+        => VbaDocumentValidationDiagnostics.Collect(tree)
+            .Select(diagnostic => new VbaValidationDiagnostic(
+                diagnostic.Code,
+                diagnostic.Message,
+                new VbaRange(
+                    new VbaPosition(diagnostic.Range.Start.Line, diagnostic.Range.Start.Character),
+                    new VbaPosition(diagnostic.Range.End.Line, diagnostic.Range.End.Character)),
+                diagnostic.Severity))
+            .ToArray();
 }

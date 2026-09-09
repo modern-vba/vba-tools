@@ -4,6 +4,7 @@ import * as path from 'node:path';
 
 import { VbaDevCompatibilityError, VbaDevSessionResolver } from './devtool';
 import { runWorkbookBackedProjectCommand } from './projectCommand';
+import { windowsPathKey } from './windowsPathIdentity';
 
 for (const commandName of ['build', 'test', 'publish'] as const) {
   test(`WorkbookBackedProject command invokes ${commandName} with explicit project root`, async () => {
@@ -101,7 +102,7 @@ for (const commandName of ['build', 'test', 'publish'] as const) {
     assert.match(output.join(''), new RegExp(`${commandName} output`));
     assert.deepEqual(diagnosticRefreshes, [
       {
-        scopeKey: `project:${projectRoot}`,
+        scopeKey: JSON.stringify(['vba-dev', commandName, windowsPathKey(projectRoot), 'BOOK2']),
         output: `${commandName} output\n`
       }
     ]);

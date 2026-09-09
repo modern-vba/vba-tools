@@ -25,6 +25,7 @@ import {
   runCompanionCommand
 } from './devtoolCommand';
 import { ProjectManifestMutationCommandCoordinator } from './projectManifestMutation';
+import { vbaDevDiagnosticScope } from './toolDiagnostics';
 
 export const FirstRunDoctorPromptState = {
   Prompted: 'vbaTools.doctor.firstRunPrompted',
@@ -68,6 +69,7 @@ export async function runDoctorCommand(options: DoctorCommandOptions): Promise<D
   if (!context) {
     return undefined;
   }
+  const diagnosticScope = vbaDevDiagnosticScope('doctor', context.project.projectRoot);
   options.outputChannel.appendLine('Project automation');
   await options.projectManifestMutationCoordinator.reportReadOnlyDiskBasis({
     command: 'Doctor',
@@ -110,7 +112,7 @@ export async function runDoctorCommand(options: DoctorCommandOptions): Promise<D
       const renderedOutput = `${renderVbaDevDoctorReport(report).join('\n')}\n`;
       options.outputChannel.append(renderedOutput);
       options.diagnosticReporter?.refresh(
-        `project:${result.projectRoot}`,
+        diagnosticScope,
         renderedOutput
       );
       projectBlocking = result.exitCode !== 130 &&

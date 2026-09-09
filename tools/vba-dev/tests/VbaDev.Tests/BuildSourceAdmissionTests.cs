@@ -228,15 +228,26 @@ public sealed class BuildSourceAdmissionTests
         var result = await CreateCommand(automation, activeCodePage, mirrorFactory: mirrorFactory)
             .RunAsync(context, CancellationToken.None);
 
-        var shouldFail = (item.TryGetProperty("expectedFailure", out var failure) && failure.GetBoolean())
+        var admissionShouldFail = item.TryGetProperty("expectedFailure", out var failure) && failure.GetBoolean();
+        var shouldFail = admissionShouldFail
             || (item.TryGetProperty("expectedProjectionFailure", out var projectionFailure) && projectionFailure.GetBoolean());
         Assert.True(result.ExitCode == (shouldFail ? 1 : 0), $"{id}: {result.StandardError}");
         Assert.Equal(!shouldFail, mirrorObserved);
         if (shouldFail)
         {
-            Assert.Contains(sourcePath, result.StandardError, StringComparison.Ordinal);
+            Assert.Empty(result.StandardOutput);
+            if (admissionShouldFail)
+            {
+                var reason = ReadSourceAnalysisFailure(result.StandardError, sourcePath);
+                Assert.Contains("cannot be strictly decoded", reason, StringComparison.Ordinal);
+            }
+            else
+            {
+                Assert.Contains(sourcePath, result.StandardError, StringComparison.Ordinal);
+            }
             Assert.Empty(automation.OpenedWorkbooks);
             Assert.Empty(automation.ImportedSources);
+            Assert.Equal(0, automation.SaveCalls);
         }
         else
         {
@@ -393,8 +404,11 @@ public sealed class BuildSourceAdmissionTests
         Assert.Equal(1, result.ExitCode);
         Assert.Equal(1, acpCalls);
         Assert.Empty(result.StandardOutput);
-        Assert.Contains(sourcePath, result.StandardError, StringComparison.Ordinal);
+        Assert.Equal($"VBA source '{sourcePath}' cannot be strictly decoded as utf8bom without changing its bytes.",
+            ReadSourceAnalysisFailure(result.StandardError, sourcePath));
         Assert.Empty(automation.OpenedWorkbooks);
+        Assert.Empty(automation.ImportedSources);
+        Assert.Equal(0, automation.SaveCalls);
         Assert.Empty(runner.Workbooks);
         Assert.Equal("previous-output", File.ReadAllText(context.BinDocumentPath));
         Assert.Equal(invalidUtf8, File.ReadAllBytes(sourcePath));
@@ -537,6 +551,24 @@ public sealed class BuildSourceAdmissionTests
         Assert.Empty(Directory.EnumerateDirectories(scratchRoot));
         Assert.DoesNotContain(snapshotPath, result.StandardOutput, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(string.Empty, result.StandardError);
+    }
+
+    private static string ReadSourceAnalysisFailure(string standardError, string sourcePath)
+    {
+        using var document = JsonDocument.Parse(Assert.Single(
+            standardError.Split('\n', StringSplitOptions.RemoveEmptyEntries)));
+        var report = document.RootElement;
+        Assert.Equal("sourceAnalysis", report.GetProperty("type").GetString());
+        Assert.Equal("2.0", report.GetProperty("schemaVersion").GetString());
+        Assert.False(report.GetProperty("complete").GetBoolean());
+        Assert.Empty(report.GetProperty("diagnostics").EnumerateArray());
+        var failure = Assert.Single(report.GetProperty("failures").EnumerateArray());
+        Assert.Equal("source", failure.GetProperty("scope").GetString());
+        Assert.Equal(new Uri(sourcePath).AbsoluteUri, failure.GetProperty("uri").GetString());
+        Assert.False(failure.TryGetProperty("range", out _));
+        var reason = failure.GetProperty("message").GetString()!;
+        Assert.Contains(sourcePath, reason, StringComparison.Ordinal);
+        return reason;
     }
 
     private static ResolvedProjectContext CreateContext(string root)

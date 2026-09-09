@@ -412,6 +412,34 @@ vba-dev new excel -o <project-dir> -n <project-name>
 workbook, applies manifest-defined references, imports exported source files,
 and writes the generated workbook output.
 
+Before generation, an ordinary Build checks all saved source files in the
+selected document for supported syntax and document-local validation errors,
+including files that are not open in VS Code. The checks reuse the language
+server's parser and document-local rules, such as duplicate parameter names and
+invalid named-argument ordering. Analysis and successful import consume the
+same captured source; changes after capture apply to a later invocation.
+
+Build collects recoverable findings across the selected files. Known source
+read, strict-decode, and form-sidecar read failures retain their affected source
+and allow independent files to be inspected. A failure that prevents further
+analysis retains earlier findings and reports the stopping reason and incomplete
+status. Any error or incomplete analysis stops Build before workbook generation,
+leaving source files, the template, and the previous completed bin workbook
+unchanged. Cancellation remains cancellation.
+
+Build adds source findings to Problems, where selecting a finding opens its
+original exported-source range, including `Attribute` lines and form headers.
+After correcting and saving the files, run Build again to refresh that project's
+selected document. Resolved Build findings are removed while findings belonging
+to other commands, documents, or tools are retained. Processing failures and
+the reason for incomplete analysis remain available in the VBA Tools output.
+
+This gate covers saved-source syntax and document-local rules, not project-wide
+semantic validation or native VBE compilation. The ordinary saved-source build
+stage of `vba-dev test` uses the same gate. Snapshot Build/Test, debug snapshots,
+Publish, standalone Import and Export, `test --no-build`, and Test Explorer
+result integration retain their existing behavior.
+
 Workbook open and save stages each use a 300-second timeout by default. A
 project can set positive whole-second overrides through
 `commandDefaults.excelAutomation.workbookOpenTimeoutSeconds` and

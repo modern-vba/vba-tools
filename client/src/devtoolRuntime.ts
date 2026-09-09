@@ -22,7 +22,7 @@ import {
 import {
   VbaDevDiagnosticReporterLike,
   combineVbaDevDiagnosticOutput,
-  projectDiagnosticScope
+  vbaDevDiagnosticScope
 } from './toolDiagnostics';
 
 export const VbaDevCooperativeCancellationGraceMilliseconds = 10_000;
@@ -229,6 +229,9 @@ export async function runResolvedVbaDevProjectCommandInvocation(
   invocation: VbaDevProjectCommandInvocation,
   capabilities: VbaDevCapabilities
 ): Promise<VbaDevProjectCommandRunResult> {
+  const diagnosticScope = invocation.refreshDiagnostics === false
+    ? undefined
+    : capturedProjectDiagnosticScope(invocation, capabilities);
   const args = [
     ...invocation.argsBeforeProject,
     '--project',
@@ -263,9 +266,9 @@ export async function runResolvedVbaDevProjectCommandInvocation(
     )
   });
 
-  if (invocation.refreshDiagnostics !== false) {
+  if (diagnosticScope !== undefined) {
     options.diagnosticReporter?.refresh(
-      projectDiagnosticScope(invocation.projectRoot),
+      diagnosticScope,
       combineVbaDevDiagnosticOutput(result.stdout, result.stderr)
     );
   }
@@ -281,6 +284,19 @@ export async function runResolvedVbaDevProjectCommandInvocation(
     cancellationRequestDelivered: result.cancellationRequestDelivered,
     cancellationRequestError: result.cancellationRequestError
   };
+}
+
+function capturedProjectDiagnosticScope(
+  invocation: VbaDevProjectCommandInvocation,
+  capabilities: VbaDevCapabilities
+): string | undefined {
+  const command = Object.keys(capabilities.commands)
+    .map(name => ({ name, path: name.split(' ') }))
+    .filter(candidate => candidate.path.every((segment, index) => invocation.argsBeforeProject[index] === segment))
+    .sort((left, right) => right.path.length - left.path.length)[0];
+  return command === undefined ? undefined : vbaDevDiagnosticScope(
+    command.name, invocation.projectRoot, invocation.documentName
+  );
 }
 
 export function reportCommandPaletteTargetSelection(

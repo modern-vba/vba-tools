@@ -20,4 +20,10 @@
     <ProjectReference Include="..\..\src\VbaTools.Syntax\VbaTools.Syntax.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Include="..\..\..\..\fixtures\document-diagnostics\cases.json"
+             Link="fixtures\document-diagnostics\cases.json"
+             CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

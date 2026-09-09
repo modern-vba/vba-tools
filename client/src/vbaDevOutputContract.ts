@@ -195,6 +195,10 @@ export function parseReferenceListOutput(stdout: string): ReferenceList {
 export function parseVbaDevDiagnostics(output: string): VbaDevDiagnostic[] {
   const diagnostics: VbaDevDiagnostic[] = [];
   for (const value of parseJsonRecords(output)) {
+    if (isRecord(value) && value.type === 'sourceAnalysis') {
+      diagnostics.push(...parseSourceAnalysisDiagnostics(value));
+      continue;
+    }
     if (isRecord(value) && Array.isArray(value.diagnostics)) {
       for (const diagnostic of value.diagnostics) {
         const mapped = toDiagnostic(diagnostic);
@@ -254,6 +258,73 @@ function parseJsonRecords(output: string): unknown[] {
   }
 
   return records;
+}
+
+function parseSourceAnalysisDiagnostics(value: Record<string, unknown>): VbaDevDiagnostic[] {
+  if (value.schemaVersion !== '2.0') {
+    throw new VbaDevOutputContractError('Unsupported sourceAnalysis schemaVersion; expected 2.0.');
+  }
+  if (
+    typeof value.complete !== 'boolean'
+    || !Array.isArray(value.diagnostics)
+    || !Array.isArray(value.failures)
+    || value.complete !== (value.failures.length === 0)
+    || !value.failures.every(isSourceAnalysisFailure)
+  ) {
+    throw new VbaDevOutputContractError('Invalid sourceAnalysis 2.0 completeness or failures.');
+  }
+
+  return value.diagnostics.map(toSourceAnalysisDiagnostic);
+}
+
+function toSourceAnalysisDiagnostic(value: unknown): VbaDevDiagnostic {
+  if (!isRecord(value) || value.type !== 'diagnostic' || value.owner !== 'vba-dev') {
+    throw new VbaDevOutputContractError('Invalid sourceAnalysis 2.0 diagnostic type or owner.');
+  }
+
+  const severity = toSeverity(value.severity);
+  const uriPath = toSourceAnalysisUriPath(value.uri);
+  const range = toRange(value.range);
+  const message = getString(value.message);
+  const code = getString(value.code);
+  if (
+    !severity || severity !== value.severity || !uriPath || !range || !message || !code
+    || ![range.start.line, range.start.character, range.end.line, range.end.character]
+      .every(position => Number.isSafeInteger(position) && position >= 0)
+    || range.end.line < range.start.line
+    || (range.end.line === range.start.line && range.end.character < range.start.character)
+  ) {
+    throw new VbaDevOutputContractError('Invalid sourceAnalysis 2.0 diagnostic fields or range.');
+  }
+
+  return { owner: value.owner, severity, uriPath, range, message, code };
+}
+
+function isSourceAnalysisFailure(value: unknown): boolean {
+  if (!isRecord(value) || !getString(value.message)) {
+    return false;
+  }
+
+  return value.scope === 'source'
+    ? toSourceAnalysisUriPath(value.uri) !== undefined
+    : value.scope === 'project' && value.uri === null;
+}
+
+function toSourceAnalysisUriPath(value: unknown): string | undefined {
+  if (
+    typeof value !== 'string'
+    || !/^file:\/\/(?:\/(?!\/)|[^/\\?#:]+\/)/i.test(value)
+    || /[\\?#\u0000-\u0020]/.test(value)
+    || /%(?:2f|5c)/i.test(value)
+  ) {
+    return undefined;
+  }
+
+  try {
+    return fileURLToPath(value);
+  } catch {
+    return undefined;
+  }
 }
 
 function toDiagnostic(value: unknown): VbaDevDiagnostic | undefined {

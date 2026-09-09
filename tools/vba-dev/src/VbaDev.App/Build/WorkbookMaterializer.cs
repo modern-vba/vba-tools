@@ -356,10 +356,7 @@ internal sealed class WorkbookMaterializer
                 build.Context,
                 build.Context.BinDocumentPath,
                 ResolveTimeouts(build.Context),
-                new AdmittedWorkbookGenerationSourceInput(sourceAdmission.AdmitProjectBuild(
-                    build.Context.DocumentSourceSetPath,
-                    build.Context.Document.CommonModules,
-                    cancellationToken))),
+                CreateAnalyzedBuildSourceInput(build.Context, cancellationToken)),
             WorkbookMaterializationIntent.Publish publish => CreateProjectPlan(
                 publish.Context,
                 publish.Context.PublishDocumentPath,
@@ -384,6 +381,15 @@ internal sealed class WorkbookMaterializer
                 GuardExistingTarget: true),
             _ => throw new ArgumentOutOfRangeException(nameof(intent), intent, null)
         };
+
+    private AdmittedWorkbookGenerationSourceInput CreateAnalyzedBuildSourceInput(
+        ResolvedProjectContext context,
+        CancellationToken cancellationToken)
+    {
+        var admission = sourceAdmission.AdmitAnalyzedProjectBuild(
+            context.DocumentSourceSetPath, context.Document.CommonModules, cancellationToken);
+        return new AdmittedWorkbookGenerationSourceInput(admission);
+    }
 
     private WorkbookMaterializationPlan CreateProjectPlan(
         ResolvedProjectContext context,
