@@ -1263,8 +1263,8 @@ test('Doctor resolves and runs the configured adapter without an injected resolv
     sessionIdFormat: 'lowercase-hex-32',
     commands: ['cleanup', 'doctor'],
     commandSchemaVersions: { doctor: '1.0' },
-    featureVersions: { 'doctor.stdinCancellation': '1.0' },
-    requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0' }
+    featureVersions: { 'doctor.stdinCancellation': '1.0', 'snapshotBuild.diagnostics': '1.0' },
+    requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0' }
   };
   fixture.options.debugAdapterCapabilitiesProcess = async (file, args) => {
     adapterInvocations.push({ file, args });
@@ -1609,8 +1609,8 @@ function createAggregateDoctorFixture(
           sessionIdFormat: 'lowercase-hex-32',
           commands: ['cleanup', 'doctor'],
           commandSchemaVersions: { doctor: '1.0' },
-          featureVersions: { 'doctor.stdinCancellation': '1.0' },
-          requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0' }
+          featureVersions: { 'doctor.stdinCancellation': '1.0', 'snapshotBuild.diagnostics': '1.0' },
+          requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0' }
         }
       })
     },

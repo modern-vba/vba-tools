@@ -563,10 +563,10 @@ export function assertBundledDebugAdapterCapabilities(
   const contract = requiredContract ?? readRequiredVbaDebugAdapterContract();
   if (!equalStringRecords(
     contract.requiredVbaDevFeatureVersions,
-    { 'build.sourceSnapshot': '2.0' }
+    { 'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0' }
   )) {
     throw new Error(
-      'Bundled vba-debug-adapter contract must require only build.sourceSnapshot 2.0.'
+      'Bundled vba-debug-adapter contract must require only build.sourceSnapshot 2.0 and build.sourceSnapshotAnalysis 1.0.'
     );
   }
   let parsed;

@@ -361,7 +361,14 @@ public sealed class BuildSourceAdmissionTests
         Assert.Equal(!shouldFail, mirrorObserved);
         if (shouldFail)
         {
-            Assert.Contains(sourcePath, result.StandardError, StringComparison.Ordinal);
+            if (result.StandardError.StartsWith("{\"type\":\"sourceAnalysis\"", StringComparison.Ordinal))
+            {
+                using var report = JsonDocument.Parse(result.StandardError.Split('\n')[0]);
+                Assert.False(report.RootElement.GetProperty("complete").GetBoolean());
+                Assert.Contains(report.RootElement.GetProperty("failures").EnumerateArray(), failure =>
+                    failure.GetProperty("uri").GetString() == new Uri(sourcePath).AbsoluteUri);
+            }
+            else Assert.Contains(sourcePath, result.StandardError, StringComparison.Ordinal);
             Assert.Empty(automation.OpenedWorkbooks);
             Assert.Empty(runner.Workbooks);
             Assert.Empty(result.StandardOutput);

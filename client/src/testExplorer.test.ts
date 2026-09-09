@@ -2173,8 +2173,8 @@ function createExplorer(
     requiredDebugAdapterContract: {
       contractVersion: '1.0', protocolVersion: '2.0', transports: ['stdio'],
       sessionIdFormat: 'lowercase-hex-32', commands: ['cleanup', 'doctor'],
-      commandSchemaVersions: { doctor: '1.0' }, featureVersions: { 'doctor.stdinCancellation': '1.0' },
-      requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0' }
+      commandSchemaVersions: { doctor: '1.0' }, featureVersions: { 'doctor.stdinCancellation': '1.0', 'snapshotBuild.diagnostics': '1.0' },
+      requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0' }
     },
     vbaDevResolver: options.vbaDevResolver,
     requireTrustedWorkspace: options.requireTrustedWorkspace,
@@ -2194,8 +2194,8 @@ function createExplorer(
           stdout: JSON.stringify({
             toolVersion: '0.1.0', contractVersion: '1.0', protocolVersion: options.adapterProtocol ?? '2.0',
             transports: ['stdio'], sessionIdFormat: 'lowercase-hex-32', commands: ['cleanup', 'doctor'],
-            commandSchemaVersions: { doctor: '1.0' }, featureVersions: { 'doctor.stdinCancellation': '1.0' },
-            requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0' }
+            commandSchemaVersions: { doctor: '1.0' }, featureVersions: { 'doctor.stdinCancellation': '1.0', 'snapshotBuild.diagnostics': '1.0' },
+            requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0' }
           }),
           stderr: ''
         };
@@ -2207,7 +2207,7 @@ function createExplorer(
           contractVersion: '1.0',
           featureVersions: {
             'test.sourceSnapshot': '2.0',
-            'build.sourceSnapshot': '2.0',
+            'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0',
             'sourceSnapshot.activeWindowsCodePage': '1.0',
             ...(options.vbaDevResolver === undefined ? {} : { 'invocation.stdinCancellation': '1.0' })
           },
@@ -2228,7 +2228,7 @@ function createExplorer(
       contractVersion: '1.0',
       featureVersions: {
         'test.sourceSnapshot': '2.0',
-        'build.sourceSnapshot': '2.0',
+        'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0',
         'sourceSnapshot.activeWindowsCodePage': '1.0'
       },
       commandSchemaVersions: {

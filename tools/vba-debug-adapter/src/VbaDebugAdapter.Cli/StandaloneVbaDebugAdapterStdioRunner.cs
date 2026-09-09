@@ -999,8 +999,11 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                 "module",
                 "procedure",
                 "noDebug",
+                "__sessionId",
                 "__vbaRestartPreparation"
             ]);
+        // VS Code adds an opaque client ID. Only the CLI --session lease establishes ownership.
+        _ = OptionalExactString(arguments, "__sessionId");
         if (arguments.TryGetProperty("noDebug", out var noDebug))
         {
             if (noDebug.ValueKind is not JsonValueKind.True and not JsonValueKind.False)
@@ -1600,6 +1603,24 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
             DebugLifecycleMessage message,
             CancellationToken cancellationToken)
         {
+            if (message.SnapshotBuild is { } report)
+            {
+                return new ValueTask(connection.WriteEventAsync("vba/snapshotBuild", new
+                {
+                    schemaVersion = report.SchemaVersion,
+                    projectRoot = report.ProjectRoot,
+                    documentName = report.DocumentName,
+                    generation = report.Generation,
+                    exitCode = report.ExitCode,
+                    stdout = report.Stdout,
+                    stderr = report.Stderr,
+                    origins = report.Origins.Select(origin => new
+                    {
+                        snapshotUri = origin.SnapshotUri,
+                        sourceUri = origin.SourceUri
+                    })
+                }, transportCancellationToken));
+            }
             var output = message.Output.EndsWith('\n')
                 ? message.Output
                 : message.Output + Environment.NewLine;

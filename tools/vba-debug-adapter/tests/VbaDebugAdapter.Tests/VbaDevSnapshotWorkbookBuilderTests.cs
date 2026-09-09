@@ -671,7 +671,8 @@ public sealed class VbaDevSnapshotWorkbookBuilderTests
             var outcome = Assert.IsAssignableFrom<IDebugFailureEvidence>(exception).FailureOutcome;
             Assert.False(outcome.HasCleanupFailure);
             Assert.Contains(outcome.Evidence, item => item.Kind == DebugResourceKind.Process && item.Released);
-            Assert.IsType<InvalidOperationException>(outcome.PrimaryFailure);
+            var buildFailure = Assert.IsType<SnapshotBuildFailedException>(outcome.PrimaryFailure);
+            Assert.Equal(7, buildFailure.Report.ExitCode);
             Assert.Contains("code 7", exception.Message, StringComparison.Ordinal);
             Assert.Contains("Preparing snapshot.", exception.Message, StringComparison.Ordinal);
             Assert.Contains("Importing sources.", exception.Message, StringComparison.Ordinal);

@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using VbaDebugAdapter.Build;
 using VbaDebugAdapter.Cli;
 using VbaDebugAdapter.Debugging;
@@ -9,6 +10,97 @@ namespace VbaDebugAdapter.Tests;
 
 public sealed class StandaloneVbaDebugLaunchServiceTests
 {
+    [Fact]
+    public async Task SuccessfulSnapshotBuildReportsCompletionBeforePreparingTheVisibleSession()
+    {
+        using var temp = TempDirectory.Create();
+        var project = Path.Combine(temp.Path, "project");
+        Directory.CreateDirectory(project);
+        var executable = Path.Combine(temp.Path, "vba-dev.exe");
+        File.WriteAllBytes(executable, []);
+        const string sourceUri = "file:///C:/source/Caller.bas";
+        var snapshot = new TransportedDebugSourceSnapshot(2,
+            [new("Caller.bas", sourceUri, "utf8bom", Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
+                "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\nEnd Sub\n")))]);
+        await using var lease = await new VbaDebugSessionWorkspaceManager(Path.Combine(temp.Path, "workspace"))
+            .ClaimAsync(DebugSessionId.Parse("0123456789abcdef0123456789abcdef"), CancellationToken.None);
+        var process = new RejectedDiagnosticBuildProcess { Succeeds = true };
+        var events = new List<string>();
+        var sink = new RecordingDebugLifecycleSink();
+        var service = new StandaloneVbaDebugLaunchService(new DebugSourceAdmission(932),
+            new VbaDevSnapshotWorkbookBuilder(process),
+            new RecordingVbeDebugSessionFactory(events, new RecordingVbeDebugSession(events)));
+
+        await using var plan = await service.PrepareAsync(executable, lease,
+            new(project, "Book1", "Book1.xlsm", "Caller", "Run", snapshot),
+            restartBinding: null, CancellationToken.None, sink);
+
+        Assert.Empty(events);
+        var report = Assert.Single(sink.Messages).SnapshotBuild;
+        Assert.NotNull(report);
+        Assert.Equal(0, report.ExitCode);
+        Assert.Empty(report.Stdout);
+        Assert.Empty(report.Stderr);
+        Assert.Equal(sourceUri, Assert.Single(report.Origins).SourceUri);
+        await plan.DisposeAsync();
+        Assert.False(Directory.Exists(process.SnapshotPath));
+    }
+
+    [Fact]
+    public async Task RejectedSnapshotBuildReportsItsOriginalSourceMapAfterCleanupWithoutLaunchingExcel()
+    {
+        using var temp = TempDirectory.Create();
+        var project = Path.Combine(temp.Path, "project");
+        Directory.CreateDirectory(project);
+        var executable = Path.Combine(temp.Path, "vba-dev.exe");
+        File.WriteAllBytes(executable, []);
+        var originalCaller = new Uri(Path.Combine(project, "src", "日本語", "nested", "Caller.bas")).AbsoluteUri;
+        var originalTarget = new Uri(Path.Combine(project, "src", "日本語", "Target.bas")).AbsoluteUri;
+        var sourceSnapshot = new TransportedDebugSourceSnapshot(2,
+        [
+            new("Target.bas", originalTarget, "utf8bom", Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
+                "Attribute VB_Name = \"Target\"\nPublic Sub AcceptValue(ByRef value As Long)\nEnd Sub\n"))),
+            new("nested/Caller.bas", originalCaller, "utf8bom", Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
+                "Attribute VB_Name = \"Caller\"\r\nPublic Sub Run()\r\n    Dim item As Integer\r\n    AcceptValue item\r\nEnd Sub\r\n")))
+        ]);
+        await using var lease = await new VbaDebugSessionWorkspaceManager(Path.Combine(temp.Path, "workspace"))
+            .ClaimAsync(DebugSessionId.Parse("0123456789abcdef0123456789abcdef"), CancellationToken.None);
+        var process = new RejectedDiagnosticBuildProcess();
+        var events = new List<string>();
+        var sink = new RecordingDebugLifecycleSink();
+        var service = new StandaloneVbaDebugLaunchService(new DebugSourceAdmission(932),
+            new VbaDevSnapshotWorkbookBuilder(process),
+            new RecordingVbeDebugSessionFactory(events, new RecordingVbeDebugSession(events)));
+
+        var failure = await Record.ExceptionAsync(() => service.PrepareAsync(executable, lease,
+            new(project, "Book1", "Book1.xlsm", "Caller", "Run", sourceSnapshot),
+            restartBinding: null, CancellationToken.None, sink));
+
+        var outcome = Assert.IsAssignableFrom<IDebugFailureEvidence>(failure).FailureOutcome;
+        Assert.False(outcome.HasUnprovedRelease);
+        Assert.False(outcome.HasCleanupFailure);
+        Assert.Empty(events);
+        Assert.True(process.SnapshotPath is not null, failure!.ToString());
+        Assert.False(Directory.Exists(process.SnapshotPath));
+        var message = JsonSerializer.SerializeToElement(Assert.Single(sink.Messages),
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+        var report = message.GetProperty("snapshotBuild");
+        Assert.Equal("1.0", report.GetProperty("schemaVersion").GetString());
+        Assert.Equal(project, report.GetProperty("projectRoot").GetString());
+        Assert.Equal("Book1", report.GetProperty("documentName").GetString());
+        Assert.Equal(0, report.GetProperty("generation").GetInt32());
+        Assert.Equal(1, report.GetProperty("exitCode").GetInt32());
+        Assert.Equal(process.StandardError, report.GetProperty("stderr").GetString());
+        var origins = report.GetProperty("origins").EnumerateArray().ToArray();
+        Assert.Equal(2, origins.Length);
+        Assert.Contains(origins, origin => origin.GetProperty("snapshotUri").GetString()
+                == new Uri(Path.Combine(process.SnapshotPath, "nested", "Caller.bas")).AbsoluteUri
+            && origin.GetProperty("sourceUri").GetString() == originalCaller);
+        Assert.Contains(origins, origin => origin.GetProperty("snapshotUri").GetString()
+                == new Uri(Path.Combine(process.SnapshotPath, "Target.bas")).AbsoluteUri
+            && origin.GetProperty("sourceUri").GetString() == originalTarget);
+    }
+
     [Fact]
     public async Task GenerationAdoptionFailureRetainsItsCauseAndUntransferredWorkspaceCleanupFailure()
     {
@@ -921,7 +1013,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
                 events,
                 new RecordingVbeDebugSession(events)));
 
-        var error = await DebugFailureAssertions.ThrowsWithProvedCleanupAsync<InvalidOperationException>(() =>
+        var error = await DebugFailureAssertions.ThrowsWithProvedCleanupAsync<SnapshotBuildFailedException>(() =>
             service.PrepareAsync(
                 vbaDevPath,
                 workspaceLease,
@@ -930,6 +1022,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
                 CancellationToken.None));
 
         Assert.Contains("snapshot build exited", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, error.Report.Generation);
         Assert.Equal(["build-failed"], events);
         Assert.Equal(0, oldSession.TerminateCalls);
         Assert.Equal(0, oldSession.DisposeCalls);
@@ -2145,6 +2238,42 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
                 }
                 CleanupOutcome = completion.Complete();
             }
+        }
+    }
+
+    private sealed class RejectedDiagnosticBuildProcess : IVbaDevBuildProcess
+    {
+        internal bool Succeeds { get; init; }
+        internal string? SnapshotPath { get; private set; }
+        internal string? StandardError { get; private set; }
+
+        public Task<VbaDevBuildProcessResult> RunAsync(string fileName, IReadOnlyList<string> arguments,
+            CancellationToken cancellationToken)
+        {
+            SnapshotPath = arguments[arguments.ToList().IndexOf("--source-snapshot") + 1];
+            if (Succeeds)
+                File.WriteAllBytes(arguments[arguments.ToList().IndexOf("--output") + 1], [0x50, 0x4b]);
+            StandardError = Succeeds ? string.Empty : JsonSerializer.Serialize(new
+            {
+                type = "sourceAnalysis", schemaVersion = "3.0", complete = true,
+                diagnostics = new[] { new {
+                    type = "diagnostic", owner = "vba-dev", severity = "error",
+                    code = "validation.incompatibleCallArgumentList", message = "ByRef type mismatch.",
+                    uri = new Uri(Path.Combine(SnapshotPath, "nested", "Caller.bas")).AbsoluteUri,
+                    range = new { start = new { line = 3, character = 16 }, end = new { line = 3, character = 20 } },
+                    relatedInformation = new[] { new {
+                        location = new {
+                            uri = new Uri(Path.Combine(SnapshotPath, "Target.bas")).AbsoluteUri,
+                            range = new { start = new { line = 1, character = 11 }, end = new { line = 1, character = 22 } }
+                        }, message = "ByRef type: expected Long, found Integer."
+                    } }
+                } }, failures = Array.Empty<object>()
+            });
+            var completion = new DebugFailureCompletion();
+            foreach (var kind in new[] { DebugResourceKind.Process, DebugResourceKind.Handle })
+                completion.AddEvidence(new("fake-build", "vba-dev", kind, true, "The fake process owner completed release."));
+            return Task.FromResult(new VbaDevBuildProcessResult(Succeeds ? 0 : 1, string.Empty, StandardError)
+                { CleanupOutcome = completion.Complete() });
         }
     }
 

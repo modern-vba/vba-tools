@@ -32,12 +32,29 @@ internal sealed class VbaSourceAnalysisReport
     internal bool HasErrors => Diagnostics.Any(diagnostic =>
         diagnostic.Severity.Equals("error", StringComparison.OrdinalIgnoreCase));
 
+    internal VbaSourceAnalysisReport WithProjectFailure(Exception error)
+        => new(Diagnostics, Failures.Add(new("project", null, FailureMessage(error))));
+
+    private static string FailureMessage(Exception error)
+        => string.IsNullOrWhiteSpace(error.Message)
+            ? "Source analysis failed without an error message."
+            : error.Message;
+
     internal sealed class Builder
     {
         private readonly ImmutableArray<VbaSourceDiagnostic>.Builder diagnostics = ImmutableArray.CreateBuilder<VbaSourceDiagnostic>();
         private readonly ImmutableArray<VbaSourceAnalysisFailure>.Builder failures = ImmutableArray.CreateBuilder<VbaSourceAnalysisFailure>();
 
         private readonly ImmutableArray<VbaSyntaxTree>.Builder syntaxTrees = ImmutableArray.CreateBuilder<VbaSyntaxTree>();
+
+        internal Builder Clone()
+        {
+            var copy = new Builder();
+            copy.diagnostics.AddRange(diagnostics);
+            copy.failures.AddRange(failures);
+            copy.syntaxTrees.AddRange(syntaxTrees);
+            return copy;
+        }
 
         internal void Add(VbaSyntaxTree syntax)
         {
@@ -78,11 +95,6 @@ internal sealed class VbaSourceAnalysisReport
 
         internal void FailProject(Exception error)
             => failures.Add(new("project", null, FailureMessage(error)));
-
-        private static string FailureMessage(Exception error)
-            => string.IsNullOrWhiteSpace(error.Message)
-                ? "Source analysis failed without an error message."
-                : error.Message;
 
         internal VbaSourceAnalysisReport ToReport()
             => new(diagnostics.ToImmutable(), failures.ToImmutable());

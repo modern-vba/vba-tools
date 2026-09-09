@@ -12,6 +12,53 @@ namespace VbaDebugAdapter.Tests;
 
 public sealed class VbaDebugAdapterCliSurfaceTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SnapshotBuildReportUsesAVersionedDapEventWithExactOutputAndSourceOrigins(bool vscodeSessionMetadata)
+    {
+        const string snapshotUri = "file:///C:/snapshot/nested/Module1.bas";
+        const string sourceUri = "file:///C:/source/nested/Module1.bas";
+        const string stderr = "{\"type\":\"sourceAnalysis\",\"schemaVersion\":\"3.0\",\"complete\":true,\"diagnostics\":[],\"failures\":[]}\n";
+        var sourceSet = new AdmittedDebugBuildSourceSet(DebugGenerationId.Initial,
+            [new("nested/Module1.bas", sourceUri, "utf8bom", [], "Attribute VB_Name = \"Module1\"\n")]);
+        var report = DebugSnapshotBuildReport.Capture(
+            new(Path.GetFullPath("project"), "Book1", "Book1.xlsm", sourceSet),
+            [new(snapshotUri, sourceUri)], new(0, "Built workbook.\r\n", stderr));
+        var probe = new RecordingVbaDevCapabilitiesProbe(new(0,
+            "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}", string.Empty));
+        var service = new RecordingDebugLaunchService(lifecycleMessage:
+            new DebugLifecycleMessage("Snapshot build completed.") { SnapshotBuild = report });
+        var commandLine = CreateCommandLine(new StandaloneVbaDebugAdapterStdioRunner(service), probe);
+        var arguments = CreateValidLaunchArguments();
+        if (vscodeSessionMetadata) arguments["__sessionId"] = "opaque-vscode-client-session";
+        using var input = CreateDapInput(
+            new { seq = 1, type = "request", command = "launch", arguments },
+            new { seq = 2, type = "request", command = "configurationDone", arguments = new { } });
+        using var output = new MemoryStream();
+        using var error = new MemoryStream();
+
+        var exitCode = await commandLine.InvokeAsync(
+            ["--stdio", "--vba-dev", Path.GetFullPath("vba-dev.exe"), "--session", "0123456789abcdef0123456789abcdef"],
+            input, output, error, CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal("0123456789abcdef0123456789abcdef", Assert.Single(service.Invocations).WorkspaceLease.SessionId.Value);
+        var notification = Assert.Single(ReadDapMessages(output), message =>
+            message.TryGetProperty("event", out var name) && name.GetString() == "vba/snapshotBuild");
+        var body = notification.GetProperty("body");
+        Assert.Equal("1.0", body.GetProperty("schemaVersion").GetString());
+        Assert.Equal(report.ProjectRoot, body.GetProperty("projectRoot").GetString());
+        Assert.Equal("Book1", body.GetProperty("documentName").GetString());
+        Assert.Equal(0, body.GetProperty("generation").GetInt32());
+        Assert.Equal(0, body.GetProperty("exitCode").GetInt32());
+        Assert.Equal("Built workbook.\r\n", body.GetProperty("stdout").GetString());
+        Assert.Equal(stderr, body.GetProperty("stderr").GetString());
+        var origin = Assert.Single(body.GetProperty("origins").EnumerateArray());
+        Assert.Equal(snapshotUri, origin.GetProperty("snapshotUri").GetString());
+        Assert.Equal(sourceUri, origin.GetProperty("sourceUri").GetString());
+    }
+
     [Fact]
     public async Task CapabilitiesAdvertiseTheIndependentAdapterContract()
     {
@@ -27,7 +74,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
 
         Assert.Equal(0, exitCode);
         Assert.Equal(
-            "{\"toolVersion\":\"0.1.0\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}" + Environment.NewLine,
+            "{\"toolVersion\":\"0.1.0\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}" + Environment.NewLine,
             ReadUtf8(standardOutput));
         Assert.Empty(ReadUtf8(standardError));
     }
@@ -468,7 +515,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"contractVersion\":\"1.0\",\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                "{\"contractVersion\":\"1.0\",\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                 string.Empty));
         var commandLine = CreateCommandLine(
             runner,
@@ -545,7 +592,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                 string.Empty));
         var commandLine = CreateCommandLine(
             runner,
@@ -591,7 +638,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                     string.Empty)),
             new FailingDisposeSessionWorkspaceManager(retainedPath));
         using var standardError = new MemoryStream();
@@ -715,7 +762,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                     string.Empty)),
             manager);
 
@@ -768,7 +815,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                     string.Empty)),
             new VbaDebugSessionWorkspaceManager(root));
 
@@ -804,6 +851,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
     [InlineData("0.9")]
     [InlineData("1.0")]
     [InlineData("2")]
+    [InlineData("2.0")]
     [InlineData("2.1")]
     [InlineData("3.0")]
     public async Task StdioRejectsAPinnedCliWithoutExactSnapshotBuildSemantics(string featureVersion)
@@ -845,7 +893,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                 string.Empty));
         var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(),
@@ -894,7 +942,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                 string.Empty));
         var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(),
@@ -936,7 +984,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService();
         var commandLine = CreateCommandLine(
@@ -1037,7 +1085,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService();
         var commandLine = CreateCommandLine(
@@ -1087,7 +1135,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService();
         var commandLine = CreateCommandLine(
@@ -1146,7 +1194,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                 string.Empty));
         var runningSession = new RecordingRunningSession();
         var launchService = new RecordingDebugLaunchService(runningSession);
@@ -1260,7 +1308,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                     string.Empty)));
         var launchArguments = CreateValidLaunchArguments();
         launchArguments["__vbaRestartPreparation"] = new
@@ -1378,7 +1426,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                     string.Empty)));
         var initialLaunch = CreateValidLaunchArguments();
         initialLaunch["__vbaRestartPreparation"] = new
@@ -1494,7 +1542,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                     string.Empty)));
         var initialLaunch = CreateValidLaunchArguments();
         initialLaunch["__vbaRestartPreparation"] = new
@@ -1589,7 +1637,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                     string.Empty)));
         var initialLaunch = CreateValidLaunchArguments();
         initialLaunch["__vbaRestartPreparation"] = new
@@ -1677,7 +1725,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                     string.Empty)));
         var oldContent = Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
             "Attribute VB_Name = \"Module1\"\r\nPublic Sub Run()\r\nEnd Sub\r\n"));
@@ -1798,7 +1846,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                     string.Empty)));
         var initialLaunch = CreateValidLaunchArguments();
         initialLaunch["project"] = aliasedProjectRoot;
@@ -1870,7 +1918,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                     string.Empty)));
         var initialLaunch = CreateValidLaunchArguments();
         initialLaunch["__vbaRestartPreparation"] = new
@@ -1973,7 +2021,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                     string.Empty)));
         var initialLaunch = CreateValidLaunchArguments();
         initialLaunch["__vbaRestartPreparation"] = new
@@ -2088,7 +2136,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                     string.Empty)));
         var initialLaunch = CreateValidLaunchArguments();
         initialLaunch["module"] = "module1";
@@ -2169,7 +2217,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                     string.Empty)));
         var initialLaunch = CreateValidLaunchArguments();
         initialLaunch["__vbaRestartPreparation"] = new
@@ -2274,7 +2322,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         });
         var commandLine = CreateCommandLine(new StandaloneVbaDebugAdapterStdioRunner(service),
             new RecordingVbaDevCapabilitiesProbe(new VbaDevCapabilitiesProbeResult(
-                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}", string.Empty)));
+                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}", string.Empty)));
         var initialLaunch = CreateValidLaunchArguments();
         initialLaunch["__vbaRestartPreparation"] = new { protocolVersion = 1, id = preparationId, generation = 0 };
         var freshLaunch = CreateValidLaunchArguments();
@@ -2329,7 +2377,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var service = new RestartReplacementFailingDebugLaunchService(oldSession, []);
         var commandLine = CreateCommandLine(new StandaloneVbaDebugAdapterStdioRunner(service),
             new RecordingVbaDevCapabilitiesProbe(new VbaDevCapabilitiesProbeResult(
-                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}", string.Empty)));
+                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}", string.Empty)));
         using var input = CreatePreparedRestartInput();
         using var output = new MemoryStream();
         _ = await commandLine.InvokeAsync(
@@ -2384,7 +2432,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             phase == "cleanup" ? EndOldSession : null);
         var commandLine = CreateCommandLine(new StandaloneVbaDebugAdapterStdioRunner(service),
             new RecordingVbaDevCapabilitiesProbe(new VbaDevCapabilitiesProbeResult(
-                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}", string.Empty)));
+                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}", string.Empty)));
         using var prefix = CreatePreparedRestartInput();
         using var input = new BlockingTailStream(prefix.ToArray());
         using var output = new GatedDapResponseStream(3);
@@ -2427,7 +2475,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var service = new FailingRestartPlanDebugLaunchService(oldSession, CreateFileOnlyGenerationFailure());
         var commandLine = CreateCommandLine(new StandaloneVbaDebugAdapterStdioRunner(service),
             new RecordingVbaDevCapabilitiesProbe(new VbaDevCapabilitiesProbeResult(
-                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}", string.Empty)));
+                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}", string.Empty)));
         using var prefix = CreatePreparedRestartInput(stop == "root cancellation" ? null : stop);
         using var input = new BlockingTailStream(prefix.ToArray());
         using var output = new GatedDapResponseStream(3);
@@ -2491,7 +2539,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var service = new FailingRestartPlanDebugLaunchService(oldSession, cleanup.Complete());
         var commandLine = CreateCommandLine(new StandaloneVbaDebugAdapterStdioRunner(service),
             new RecordingVbaDevCapabilitiesProbe(new VbaDevCapabilitiesProbeResult(
-                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}", string.Empty)));
+                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}", string.Empty)));
         var initialLaunch = CreateValidLaunchArguments();
         initialLaunch["__vbaRestartPreparation"] = new { protocolVersion = 1, id = preparationId, generation = 0 };
         var freshLaunch = CreateValidLaunchArguments();
@@ -2555,7 +2603,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                     string.Empty)));
         var initialLaunch = CreateValidLaunchArguments();
         initialLaunch["__vbaRestartPreparation"] = new
@@ -2635,7 +2683,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                     string.Empty)));
         var initialLaunch = CreateValidLaunchArguments();
         initialLaunch["__vbaRestartPreparation"] = new
@@ -2706,7 +2754,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                     string.Empty)));
         var initialLaunch = CreateValidLaunchArguments();
         initialLaunch.Remove("module");
@@ -2779,7 +2827,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                     string.Empty)));
         var launchArguments = CreateValidLaunchArguments();
         launchArguments["__vbaRestartPreparation"] = new
@@ -2853,7 +2901,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                     string.Empty)));
         var launchArguments = CreateValidLaunchArguments();
         launchArguments["__vbaRestartPreparation"] = new
@@ -2946,7 +2994,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                     string.Empty)));
         var initialLaunch = CreateValidLaunchArguments();
         initialLaunch["__vbaRestartPreparation"] = new
@@ -3043,7 +3091,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
             new RecordingVbaDevCapabilitiesProbe(
                 new VbaDevCapabilitiesProbeResult(
                     0,
-                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                    "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                     string.Empty)));
         var initialLaunch = CreateValidLaunchArguments();
         initialLaunch["__vbaRestartPreparation"] = new
@@ -3132,7 +3180,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService();
         var commandLine = CreateCommandLine(
@@ -3200,7 +3248,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService();
         var commandLine = CreateCommandLine(
@@ -3396,7 +3444,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                 string.Empty));
         var runningSession = new RecordingRunningSession();
         var commandLine = CreateCommandLine(
@@ -3470,7 +3518,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                 string.Empty));
         var runningSession = new RecordingRunningSession();
         var launchService = new RecordingDebugLaunchService(runningSession);
@@ -3543,7 +3591,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                 string.Empty));
         var launchService = new CancellationAwareDebugLaunchService();
         var commandLine = CreateCommandLine(
@@ -3630,7 +3678,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                 string.Empty));
         var runningSession = new RecordingRunningSession(
             processId: 2718,
@@ -3733,7 +3781,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(new RecordingDebugLaunchService(runningSession)),
             new RecordingVbaDevCapabilitiesProbe(new VbaDevCapabilitiesProbeResult(
-                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}", string.Empty)));
+                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}", string.Empty)));
         using var prefix = CreateDapInput(
             new { seq = 1, type = "request", command = "launch", arguments = CreateValidLaunchArguments() },
             new { seq = 2, type = "request", command = "configurationDone", arguments = new { } });
@@ -3774,7 +3822,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(new RecordingDebugLaunchService(runningSession)),
             new RecordingVbaDevCapabilitiesProbe(new VbaDevCapabilitiesProbeResult(
-                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}", string.Empty)));
+                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}", string.Empty)));
         using var prefix = CreateDapInput(
             new { seq = 1, type = "request", command = "launch", arguments = CreateValidLaunchArguments() },
             new { seq = 2, type = "request", command = "configurationDone", arguments = new { } });
@@ -3806,7 +3854,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(new RecordingDebugLaunchService(runningSession)),
             new RecordingVbaDevCapabilitiesProbe(new VbaDevCapabilitiesProbeResult(
-                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}", string.Empty)));
+                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}", string.Empty)));
         using var input = CreateDapInput(
             new { seq = 1, type = "request", command = "launch", arguments = CreateValidLaunchArguments() },
             new { seq = 2, type = "request", command = "configurationDone", arguments = new { } },
@@ -3833,7 +3881,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(new RecordingDebugLaunchService(runningSession)),
             new RecordingVbaDevCapabilitiesProbe(new VbaDevCapabilitiesProbeResult(
-                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}", string.Empty)));
+                0, "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}", string.Empty)));
         using var input = CreateDapInput(
             new { seq = 1, type = "request", command = "launch", arguments = CreateValidLaunchArguments() },
             new { seq = 2, type = "request", command = "configurationDone", arguments = new { } },
@@ -3854,7 +3902,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService(
             inputWait: new DebugInputWait(
@@ -3907,7 +3955,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService(
             lifecycleMessage: new DebugLifecycleMessage(warning));
@@ -3956,7 +4004,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                 string.Empty));
         var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(
@@ -4015,7 +4063,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                 string.Empty));
         var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(new RecordingDebugLaunchService()),
@@ -4064,7 +4112,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                 string.Empty));
         var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(new RecordingDebugLaunchService()),
@@ -4120,7 +4168,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                 string.Empty));
         var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(new RecordingDebugLaunchService()),
@@ -4161,7 +4209,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService();
         var commandLine = CreateCommandLine(
@@ -4232,7 +4280,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService();
         var commandLine = CreateCommandLine(
@@ -4335,7 +4383,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService();
         var commandLine = CreateCommandLine(
@@ -4403,7 +4451,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                 string.Empty));
         var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(new RecordingDebugLaunchService()),
@@ -4460,7 +4508,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService();
         var commandLine = CreateCommandLine(
@@ -4529,7 +4577,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService(
             new RecordingRunningSession([mappedBreakpoint]));
@@ -4972,7 +5020,7 @@ public sealed class VbaDebugAdapterCliSurfaceTests
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
                 0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
                 string.Empty));
         var launchService = new RecordingDebugLaunchService(validate: validate);
         var commandLine = CreateCommandLine(

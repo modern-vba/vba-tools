@@ -256,7 +256,7 @@ public sealed class BuildSourceSnapshotCaptureTests
     }
 
     [Fact]
-    public void CopyFailureRemovesOnlyInvocationOwnedScratch()
+    public async Task ReadFailureIsRetainedForAnalysisAndCleanupRemovesOnlyInvocationOwnedScratch()
     {
         using var temp = TempDirectory.Create();
         var snapshotPath = temp.CreateDirectory("snapshot");
@@ -274,8 +274,13 @@ public sealed class BuildSourceSnapshotCaptureTests
             FileShare.None);
         var factory = new BuildSourceSnapshotCaptureFactory(new WindowsExactFileSystemObjectOwnershipFactory(), scratchRoot);
 
-        Assert.Throws<IOException>(() =>
-            factory.Create(snapshotPath, CancellationToken.None));
+        using (var capture = factory.Create(snapshotPath, CancellationToken.None))
+        {
+            var error = await Assert.ThrowsAsync<VbaSourceAnalysisException>(() => capture.AdmitAnalyzedAsync(
+                (_, _) => Task.FromResult(VbaTools.Semantics.VbaProjectSemanticInputs.Empty), CancellationToken.None));
+            Assert.False(error.Report.Complete);
+            Assert.Equal(new Uri(sourcePath).AbsoluteUri, Assert.Single(error.Report.Failures).SourceUri);
+        }
 
         sourceLock.Position = 0;
         var actualSourceBytes = new byte[sourceLock.Length];

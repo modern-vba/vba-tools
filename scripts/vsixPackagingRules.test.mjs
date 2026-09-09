@@ -770,8 +770,8 @@ test('bundled debug adapter capabilities require the snapshot build feature cont
     sessionIdFormat: 'lowercase-hex-32',
     commands: ['cleanup', 'doctor'],
     commandSchemaVersions: { doctor: '1.0' },
-    featureVersions: { 'doctor.stdinCancellation': '1.0' },
-    requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0' }
+    featureVersions: { 'doctor.stdinCancellation': '1.0', 'snapshotBuild.diagnostics': '1.0' },
+    requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0' }
   });
   const compatibleCapabilities = {
     toolVersion: '0.1.0',
@@ -808,7 +808,7 @@ test('bundled debug adapter capabilities require the snapshot build feature cont
       toolVersion: '0.1.0',
       ...contractWithExtraFeature
     }), contractWithExtraFeature),
-    /only build\.sourceSnapshot 2\.0/i
+    /only build\.sourceSnapshot 2\.0 and build\.sourceSnapshotAnalysis 1\.0/i
   );
 });
 
@@ -821,7 +821,7 @@ test('packaging admits the coordinated ACP-authoritative snapshot v2 providers',
   assert.equal(cliContract.featureVersions['sourceSnapshot.activeWindowsCodePage'], '1.0');
   assert.equal(adapterContract.contractVersion, '1.0');
   assert.equal(adapterContract.protocolVersion, '2.0');
-  assert.deepEqual(adapterContract.requiredVbaDevFeatureVersions, { 'build.sourceSnapshot': '2.0' });
+  assert.deepEqual(adapterContract.requiredVbaDevFeatureVersions, { 'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0' });
   assert.doesNotThrow(() => assertBundledCliCapabilities(JSON.stringify({
     toolVersion: '0.1.0',
     contractVersion: cliContract.contractVersion,
@@ -834,6 +834,27 @@ test('packaging admits the coordinated ACP-authoritative snapshot v2 providers',
     toolVersion: '0.1.0',
     ...adapterContract
   })));
+});
+
+test('packaging rejects missing snapshot analysis or diagnostic transport capabilities', () => {
+  const cliContract = readRequiredVbaDevContract();
+  const adapterContract = readRequiredVbaDebugAdapterContract();
+  const cliFeatures = { ...cliContract.featureVersions };
+  delete cliFeatures['build.sourceSnapshotAnalysis'];
+  assert.throws(() => assertBundledCliCapabilities(JSON.stringify({
+    contractVersion: cliContract.contractVersion, featureVersions: cliFeatures, activeWindowsCodePage: 932,
+    commands: Object.fromEntries(Object.entries(cliContract.commandSchemaVersions)
+      .map(([name, version]) => [name, { outputSchemaVersion: version }]))
+  })), /build\.sourceSnapshotAnalysis/);
+  const adapterFeatures = { ...adapterContract.featureVersions };
+  delete adapterFeatures['snapshotBuild.diagnostics'];
+  assert.throws(() => assertBundledDebugAdapterCapabilities(JSON.stringify({
+    toolVersion: '0.1.0', ...adapterContract, featureVersions: adapterFeatures
+  })), /snapshotBuild\.diagnostics/);
+  assert.throws(() => assertBundledDebugAdapterCapabilities(JSON.stringify({
+    toolVersion: '0.1.0', ...adapterContract,
+    requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0' }
+  })), /build\.sourceSnapshotAnalysis/);
 });
 
 test('packaging rejects mixed snapshot feature requirements and providers in either direction', () => {

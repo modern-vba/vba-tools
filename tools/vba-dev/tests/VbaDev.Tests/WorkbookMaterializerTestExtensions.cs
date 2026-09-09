@@ -92,7 +92,7 @@ internal static class WorkbookMaterializerTestExtensions
             expectedSourceFiles
                 .Select(source => Path.GetFullPath(source.SourcePath))
                 .OrderBy(path => Path.GetFileName(path), StringComparer.OrdinalIgnoreCase),
-            sourceCapture.Admission.Sources.Select(source => source.SourcePath),
+            sourceCapture.CapturedSources.Select(source => source.SourcePath),
             StringComparer.OrdinalIgnoreCase);
         captureCreated?.Invoke(sourceCapture);
 

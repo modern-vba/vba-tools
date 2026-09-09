@@ -2160,8 +2160,8 @@ function createIntegration(options: {
                 sessionIdFormat: 'lowercase-hex-32',
                 commands: ['cleanup', 'doctor'],
                 commandSchemaVersions: { doctor: '1.0' },
-                featureVersions: { 'doctor.stdinCancellation': '1.0' },
-                requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0' }
+                featureVersions: { 'doctor.stdinCancellation': '1.0', 'snapshotBuild.diagnostics': '1.0' },
+                requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0' }
               }
             })
           }
@@ -2272,13 +2272,13 @@ function fixtureIntegration(options: ConstructorParameters<typeof VscodeDebugInt
   return new VscodeDebugIntegration({
     requiredContract: {
       contractVersion: '1.0', commandSchemaVersions: {},
-      featureVersions: { 'build.sourceSnapshot': '2.0', 'test.sourceSnapshot': '2.0', 'sourceSnapshot.activeWindowsCodePage': '1.0' }
+      featureVersions: { 'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0', 'test.sourceSnapshot': '2.0', 'sourceSnapshot.activeWindowsCodePage': '1.0' }
     },
     requiredDebugAdapterContract: {
       contractVersion: '1.0', protocolVersion: '2.0', transports: ['stdio'],
       sessionIdFormat: 'lowercase-hex-32', commands: ['cleanup', 'doctor'],
-      commandSchemaVersions: { doctor: '1.0' }, featureVersions: { 'doctor.stdinCancellation': '1.0' },
-      requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0' }
+      commandSchemaVersions: { doctor: '1.0' }, featureVersions: { 'doctor.stdinCancellation': '1.0', 'snapshotBuild.diagnostics': '1.0' },
+      requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0' }
     },
     vbaDevResolver: {
       resolve: async () => ({
@@ -2292,20 +2292,20 @@ function fixtureIntegration(options: ConstructorParameters<typeof VscodeDebugInt
         capabilities: {
           toolVersion: '0.1.0', contractVersion: '1.0', protocolVersion: '2.0', transports: ['stdio'],
           sessionIdFormat: 'lowercase-hex-32', commands: ['cleanup', 'doctor'],
-          commandSchemaVersions: { doctor: '1.0' }, featureVersions: { 'doctor.stdinCancellation': '1.0' },
-          requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0' }
+          commandSchemaVersions: { doctor: '1.0' }, featureVersions: { 'doctor.stdinCancellation': '1.0', 'snapshotBuild.diagnostics': '1.0' },
+          requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0' }
         }
       })
     },
     capabilitiesProcess: async file => ({
       stdout: JSON.stringify(file.endsWith('vba-dev.exe') ? {
         toolVersion: '0.1.0', contractVersion: '1.0', commands: {}, activeWindowsCodePage: 65001,
-        featureVersions: { 'build.sourceSnapshot': '2.0', 'test.sourceSnapshot': '2.0', 'sourceSnapshot.activeWindowsCodePage': '1.0' }
+        featureVersions: { 'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0', 'test.sourceSnapshot': '2.0', 'sourceSnapshot.activeWindowsCodePage': '1.0' }
       } : {
         toolVersion: '0.1.0', contractVersion: '1.0', protocolVersion: '2.0', transports: ['stdio'],
         sessionIdFormat: 'lowercase-hex-32', commands: ['cleanup', 'doctor'],
-        commandSchemaVersions: { doctor: '1.0' }, featureVersions: { 'doctor.stdinCancellation': '1.0' },
-        requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0' }
+        commandSchemaVersions: { doctor: '1.0' }, featureVersions: { 'doctor.stdinCancellation': '1.0', 'snapshotBuild.diagnostics': '1.0' },
+        requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0' }
       }),
       stderr: ''
     }),

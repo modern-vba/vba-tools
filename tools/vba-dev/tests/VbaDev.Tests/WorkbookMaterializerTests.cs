@@ -564,11 +564,13 @@ public sealed class WorkbookMaterializerTests
             Assert.Equal("Module1.bas", Assert.Single(capture.SourceFiles).FileName);
             Assert.True(Directory.Exists(capture.StagingPath));
 
-            var error = await Assert.ThrowsAsync<BuildCommandException>(() => pipeline.MaterializeAsync(
+            var error = await Assert.ThrowsAsync<VbaSourceAnalysisException>(() => pipeline.MaterializeAsync(
                 new WorkbookMaterializationIntent.SourceSnapshotBuild(context, capture, context.BinDocumentPath),
                 CancellationToken.None));
 
-            Assert.Equal($"Template workbook was not found: {fixture.TemplatePath}", error.Message);
+            Assert.Equal(fixture.TemplatePath, Assert.IsType<FileNotFoundException>(error.OperationalFailure).FileName);
+            Assert.False(error.Report.Complete);
+            Assert.Contains(fixture.TemplatePath, Assert.Single(error.Report.Failures).Message, StringComparison.Ordinal);
             Assert.False(Directory.Exists(capture.StagingPath));
             Assert.Equal(sourceBytes, File.ReadAllBytes(sourcePath));
             Assert.Equal(outputBytes, File.ReadAllBytes(context.BinDocumentPath));
@@ -618,22 +620,21 @@ public sealed class WorkbookMaterializerTests
             var capturedSource = Assert.Single(capture.SourceFiles);
             sourceLock = File.Open(capturedSource.SourcePath, FileMode.Open, FileAccess.Read, FileShare.None);
 
-            var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.MaterializeAsync(
+            var error = await Assert.ThrowsAsync<VbaSourceAnalysisException>(() => pipeline.MaterializeAsync(
                 new WorkbookMaterializationIntent.SourceSnapshotBuild(context, capture, context.BinDocumentPath),
                 CancellationToken.None));
 
-            var causes = Assert.IsType<AggregateException>(error.InnerException).InnerExceptions;
+            var causes = Assert.IsType<AggregateException>(error.OperationalFailure).InnerExceptions;
             Assert.Collection(causes,
-                cause => Assert.Equal($"Template workbook was not found: {fixture.TemplatePath}",
-                    Assert.IsType<BuildCommandException>(cause).Message),
+                cause => Assert.Equal(fixture.TemplatePath, Assert.IsType<FileNotFoundException>(cause).FileName),
                 cause =>
                 {
                     var cleanupFailure = Assert.IsType<InvalidOperationException>(cause);
                     Assert.Contains("could not be removed", cleanupFailure.Message, StringComparison.OrdinalIgnoreCase);
                     Assert.Contains(capture.StagingPath, cleanupFailure.Message, StringComparison.Ordinal);
                 });
-            Assert.Contains(fixture.TemplatePath, error.Message, StringComparison.Ordinal);
-            Assert.Contains(capture.StagingPath, error.Message, StringComparison.Ordinal);
+            Assert.Contains(fixture.TemplatePath, error.OperationalFailure.Message, StringComparison.Ordinal);
+            Assert.Contains(capture.StagingPath, error.OperationalFailure.Message, StringComparison.Ordinal);
             Assert.True(Directory.Exists(capture.StagingPath));
             Assert.Equal(sourceBytes, File.ReadAllBytes(sourcePath));
             Assert.Equal(outputBytes, File.ReadAllBytes(context.BinDocumentPath));
@@ -713,7 +714,7 @@ public sealed class WorkbookMaterializerTests
     }
 
     [Fact]
-    public async Task MissingAmbiguousReferenceIsProbedAgainstTheCleanedOpenWorkbook()
+    public async Task SnapshotGenerationAddsTheAlreadyAnalyzedReferenceWithoutProbingAgain()
     {
         using var temp = TempDirectory.Create();
         var templatePath = Path.Combine(temp.Path, "Template.xlsm");
@@ -742,7 +743,7 @@ public sealed class WorkbookMaterializerTests
                 new WorkbookReference(
                     "Ambiguous Library",
                     IsRemovable: true,
-                    NamespaceName: "AdoptedNamespace")
+                    NamespaceName: "AdoptedNamespace", Guid: resolvedIdentity.Guid, Major: 2, Minor: 0)
             ],
             OnRemoveModule = moduleName => events.Add($"remove-module:{moduleName}"),
             OnRemoveReference = referenceName => events.Add($"remove-reference:{referenceName}"),
@@ -753,9 +754,8 @@ public sealed class WorkbookMaterializerTests
             }
         };
         var probe = new RecordingBuildAmbiguityProbe(resolvedIdentity);
-        var pipeline = new WorkbookMaterializer(new WindowsExactFileSystemObjectOwnershipFactory(),
-            automation,
-            new WorkbookReferenceNormalizer(
+        var pipeline = CreatePipeline(automation,
+            referenceNormalizer: new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(
                     new FakeVbaProjectReferenceResolver(
                         resolvedIdentity,
@@ -764,7 +764,8 @@ public sealed class WorkbookMaterializerTests
                             "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
                             3,
                             0)),
-                    probe)));
+                    probe)),
+            semanticInputProvider: new FakeProjectSemanticInputProvider(new FakeVbaProjectReferenceResolver(resolvedIdentity)));
 
         await pipeline.MaterializeSourceSnapshotAsync(
             "Book1",
@@ -780,9 +781,7 @@ public sealed class WorkbookMaterializerTests
         Assert.True(
             events.IndexOf("remove-module:OldModule") <
             events.IndexOf("remove-reference:Old Library"));
-        Assert.True(
-            events.IndexOf("remove-reference:Old Library") <
-            events.IndexOf($"probe-reference:{resolvedIdentity.Guid}"));
+        Assert.DoesNotContain(events, item => item.StartsWith("probe-reference:", StringComparison.Ordinal));
         Assert.True(File.Exists(targetPath));
     }
 
@@ -900,7 +899,7 @@ public sealed class WorkbookMaterializerTests
         var events = new List<string>();
         var pipeline = CreatePipeline(new RecordingWorkbookGenerationAutomation(events));
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.MaterializeSourceSnapshotAsync(
+        var error = await Assert.ThrowsAsync<VbaSourceAnalysisException>(() => pipeline.MaterializeSourceSnapshotAsync(
             "Book1",
             templatePath,
             targetPath,
@@ -912,9 +911,9 @@ public sealed class WorkbookMaterializerTests
             WorkbookAutomationTimeouts.Default,
             CancellationToken.None));
 
-        Assert.Contains("SharedName", error.Message, StringComparison.Ordinal);
-        Assert.Contains(firstSourcePath, error.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains(secondSourcePath, error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.True(error.Report.Complete);
+        Assert.Contains(error.Report.Diagnostics, item => item.SourceUri == new Uri(firstSourcePath).AbsoluteUri);
+        Assert.Contains(error.Report.Diagnostics, item => item.SourceUri == new Uri(secondSourcePath).AbsoluteUri);
         Assert.Empty(events);
         Assert.Equal("previous-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
         Assert.Empty(Directory.EnumerateFiles(temp.Path, ".Book1.*.tmp.xlsm"));
@@ -953,7 +952,7 @@ public sealed class WorkbookMaterializerTests
     }
 
     [Fact]
-    public async Task StaticPreflightReportsEveryInvalidIdentityAndProvableConflictInSourceOrder()
+    public async Task SharedSnapshotAnalysisReportsMalformedIdentityAndSourceConflictsBeforePreflight()
     {
         using var temp = TempDirectory.Create();
         var templatePath = Path.Combine(temp.Path, "Template.xlsm");
@@ -983,7 +982,7 @@ public sealed class WorkbookMaterializerTests
         var events = new List<string>();
         var pipeline = CreatePipeline(new RecordingWorkbookGenerationAutomation(events));
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.MaterializeSourceSnapshotAsync(
+        var error = await Assert.ThrowsAsync<VbaSourceAnalysisException>(() => pipeline.MaterializeSourceSnapshotAsync(
             "Book1",
             templatePath,
             targetPath,
@@ -997,16 +996,11 @@ public sealed class WorkbookMaterializerTests
             WorkbookAutomationTimeouts.Default,
             CancellationToken.None));
 
-        var misplacedIndex = error.Message.IndexOf(misplacedPath, StringComparison.OrdinalIgnoreCase);
-        var missingIndex = error.Message.IndexOf(missingPath, StringComparison.OrdinalIgnoreCase);
-        var conflictIndex = error.Message.IndexOf("Source identity 'CollisionName'", StringComparison.Ordinal);
-        var conflictSourceIndex = error.Message.IndexOf(conflictPath, conflictIndex, StringComparison.OrdinalIgnoreCase);
-        var caseConflictSourceIndex = error.Message.IndexOf(caseConflictPath, conflictIndex, StringComparison.OrdinalIgnoreCase);
-        Assert.True(conflictIndex >= 0);
-        Assert.True(conflictSourceIndex > conflictIndex);
-        Assert.True(caseConflictSourceIndex > conflictSourceIndex);
-        Assert.True(misplacedIndex > caseConflictSourceIndex);
-        Assert.True(missingIndex > misplacedIndex);
+        Assert.True(error.Report.Complete);
+        Assert.Contains(error.Report.Diagnostics, item => item.SourceUri == new Uri(conflictPath).AbsoluteUri);
+        Assert.Contains(error.Report.Diagnostics, item => item.SourceUri == new Uri(caseConflictPath).AbsoluteUri);
+        Assert.Contains(error.Report.Diagnostics, item => item.SourceUri == new Uri(misplacedPath).AbsoluteUri
+            && item.Code == "syntax.moduleIdentityMetadataMalformed");
         Assert.Empty(events);
         Assert.Equal("previous-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
         Assert.Empty(Directory.EnumerateFiles(temp.Path, ".Book1.*.tmp.xlsm"));
@@ -1038,7 +1032,7 @@ public sealed class WorkbookMaterializerTests
         var events = new List<string>();
         var pipeline = CreatePipeline(new RecordingWorkbookGenerationAutomation(events));
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.MaterializeSourceSnapshotAsync(
+        var error = await Assert.ThrowsAsync<VbaSourceAnalysisException>(() => pipeline.MaterializeSourceSnapshotAsync(
             "Book1",
             templatePath,
             targetPath,
@@ -1047,8 +1041,9 @@ public sealed class WorkbookMaterializerTests
             WorkbookAutomationTimeouts.Default,
             CancellationToken.None));
 
-        Assert.Contains("invalid ModuleIdentity metadata", error.Message, StringComparison.Ordinal);
-        Assert.Contains(sourcePath, error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.True(error.Report.Complete);
+        Assert.Contains(error.Report.Diagnostics, item => item.SourceUri == new Uri(sourcePath).AbsoluteUri
+            && item.Code == "syntax.moduleIdentityMetadataMalformed");
         Assert.Empty(events);
         Assert.Equal("previous-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
         Assert.Empty(Directory.EnumerateFiles(temp.Path, ".Book1.*.tmp.xlsm"));
@@ -1201,7 +1196,7 @@ public sealed class WorkbookMaterializerTests
     }
 
     [Fact]
-    public async Task ConclusiveProjectConflictFailsBeforeReferenceNormalization()
+    public async Task MissingRequiredReferenceFailsBeforeAnyLiveProjectPreflight()
     {
         using var temp = TempDirectory.Create();
         var templatePath = Path.Combine(temp.Path, "Template.xlsm");
@@ -1220,7 +1215,7 @@ public sealed class WorkbookMaterializerTests
         };
         var pipeline = CreatePipeline(automation);
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.MaterializeSourceSnapshotAsync(
+        var error = await Assert.ThrowsAsync<VbaSourceAnalysisException>(() => pipeline.MaterializeSourceSnapshotAsync(
             "Book1",
             templatePath,
             targetPath,
@@ -1229,10 +1224,9 @@ public sealed class WorkbookMaterializerTests
             WorkbookAutomationTimeouts.Default,
             CancellationToken.None));
 
-        Assert.Contains("containing project 'ActualProject'", error.Message, StringComparison.Ordinal);
-        Assert.DoesNotContain("Missing Library", error.Message, StringComparison.Ordinal);
-        Assert.DoesNotContain("verify", events);
-        Assert.DoesNotContain("save", events);
+        Assert.False(error.Report.Complete);
+        Assert.Contains("Missing Library", Assert.Single(error.Report.Failures).Message, StringComparison.Ordinal);
+        Assert.Empty(events);
         Assert.Equal("previous-workbook", File.ReadAllText(targetPath, Encoding.UTF8));
         Assert.Empty(Directory.EnumerateFiles(temp.Path, ".Book1.*.tmp.xlsm"));
     }
@@ -1529,14 +1523,14 @@ public sealed class WorkbookMaterializerTests
                 new WorkbookReference(
                     "Friendly Library Description",
                     IsRemovable: true,
-                    NamespaceName: "AdoptedNamespace")
+                    NamespaceName: "AdoptedNamespace", Guid: resolvedReference.Guid, Major: 1, Minor: 0)
             ]
         };
-        var pipeline = new WorkbookMaterializer(new WindowsExactFileSystemObjectOwnershipFactory(),
-            automation,
-            new WorkbookReferenceNormalizer(
+        var pipeline = CreatePipeline(automation,
+            referenceNormalizer: new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(
-                    new FakeVbaProjectReferenceResolver(resolvedReference))));
+                    new FakeVbaProjectReferenceResolver(resolvedReference))),
+            semanticInputProvider: new FakeProjectSemanticInputProvider(new FakeVbaProjectReferenceResolver(resolvedReference)));
 
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.MaterializeSourceSnapshotAsync(
             "Book1",
@@ -1658,17 +1652,20 @@ public sealed class WorkbookMaterializerTests
         IWorkbookOutputTransactionFactory? transactionFactory = null,
         VbeImportSourceSetFactory? importSourceSetFactory = null,
         WorkbookAutomationTimeouts? baseTimeouts = null,
-        Func<string, WorkbookStagingArtifact>? inspectionWorkbookStager = null)
+        Func<string, WorkbookStagingArtifact>? inspectionWorkbookStager = null,
+        WorkbookReferenceNormalizer? referenceNormalizer = null,
+        IProjectSemanticInputProvider? semanticInputProvider = null)
         => new(
             new WindowsExactFileSystemObjectOwnershipFactory(),
             new VbaSourceAdmission(() => 65001),
             automation,
-            new WorkbookReferenceNormalizer(
+            referenceNormalizer ?? new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),
             transactionFactory ?? new WorkbookOutputTransactionFactory(new WindowsExactFileSystemObjectOwnershipFactory()),
             importSourceSetFactory ?? new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory()),
             baseTimeouts,
-            inspectionWorkbookStager);
+            inspectionWorkbookStager,
+            semanticInputProvider: semanticInputProvider ?? FakeProjectSemanticInputProvider.Empty);
 
     private static ProjectInspectionFixture CreateProjectInspectionFixture(
         TempDirectory temp,

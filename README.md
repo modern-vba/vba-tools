@@ -441,9 +441,18 @@ the reason for incomplete analysis remain available in the VBA Tools output.
 
 This gate includes the existing project-semantic source diagnostics. It does not
 claim native VBE compile success. The ordinary saved-source build
-stage of `vba-dev test` uses the same gate. Snapshot Build/Test, debug snapshots,
+stage of `vba-dev test` uses the same gate. Source-snapshot Build, including the
+Build stage of snapshot Test and debug launch, validates its captured bytes with
+the same selected-project evidence. It does not substitute saved source text.
+Debug Problems point to the original editor documents, including related
+locations, and remain navigable after temporary files are removed. A failed
+snapshot Build does not open the runnable debug workbook or execute its target.
+A successful rerun removes resolved debug Build findings without saving editors
+or clearing other diagnostic scopes. Unsupported origin mappings are explained
+in Output rather than linked to a deleted temporary file.
+
 Publish, standalone Import and Export, `test --no-build`, and Test Explorer
-result integration retain their existing behavior.
+result integration retain their existing behavior at this stage.
 
 Workbook open and save stages each use a 300-second timeout by default. A
 project can set positive whole-second overrides through
