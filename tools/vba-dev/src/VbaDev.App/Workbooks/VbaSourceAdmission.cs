@@ -150,6 +150,35 @@ internal sealed class VbaSourceAdmission
         CancellationToken cancellationToken = default)
         => AdmittedVbaSourceSet.AdmitProjectBuild(this, sourceDirectory, commonModules, cancellationToken);
 
+    internal AdmittedVbaSourceSet AdmitAnalyzedProjectBuild(
+        string sourceDirectory,
+        IReadOnlyList<InstalledCommonModule> commonModules,
+        CancellationToken cancellationToken)
+        => AdmittedVbaSourceSet.AdmitAnalyzedProjectBuild(this, sourceDirectory, commonModules, cancellationToken);
+
+    internal (AdmittedVbaSourceData Admission, VbaSourceAnalysisReport Report) ReadAnalyzedProjectBuild(
+        string sourceDirectory,
+        IReadOnlyList<InstalledCommonModule> commonModules,
+        CancellationToken cancellationToken)
+    {
+        var analysis = new VbaSourceAnalysisReport.Builder();
+        AdmittedVbaSourceData data = default;
+        try
+        {
+            data = AdmitCore(sourceDirectory, AdmissionPurpose.ProjectBuild, commonModules, cancellationToken, analysis);
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            analysis.FailProject(error);
+        }
+        var report = analysis.ToReport();
+        if (!report.Complete || report.HasErrors)
+        {
+            throw new VbaSourceAnalysisException(report);
+        }
+        return (data, report);
+    }
+
     internal AdmittedVbaSourceSet AdmitProjectPublish(
         string sourceDirectory,
         IReadOnlyList<InstalledCommonModule> commonModules,
@@ -192,7 +221,8 @@ internal sealed class VbaSourceAdmission
         string sourceDirectory,
         AdmissionPurpose purpose,
         IReadOnlyList<InstalledCommonModule> commonModules,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        VbaSourceAnalysisReport.Builder? analysis = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var activeCodePage = getActiveCodePage();
@@ -215,8 +245,8 @@ internal sealed class VbaSourceAdmission
         var sources = ResolveSourceFiles(paths);
         return SelectSources(root, activeCodePage,
             sources.Select(source => (SourceSelectionInput)new LiveSourceInput(
-                this, source, encoding, activeCodePage)).ToArray(),
-            purpose, commonModules, cancellationToken);
+                this, source, encoding, activeCodePage, analysis is not null)).ToArray(),
+            purpose, commonModules, cancellationToken, analysis);
     }
 
     internal static AdmittedVbaSourceData ReadCapturedProjectBuild(
@@ -254,7 +284,8 @@ internal sealed class VbaSourceAdmission
         SourceSelectionInput[] sources,
         AdmissionPurpose purpose,
         IReadOnlyList<InstalledCommonModule> commonModules,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        VbaSourceAnalysisReport.Builder? analysis = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (sources.Length == 0 && purpose == AdmissionPurpose.ExplicitImport)
@@ -277,12 +308,33 @@ internal sealed class VbaSourceAdmission
             {
                 continue;
             }
-            var text = source.ReadDecodedText(cancellationToken);
+            string text;
+            try
+            {
+                text = source.ReadDecodedText(cancellationToken);
+            }
+            catch (Exception error) when (analysis is not null
+                && error is IOException or UnauthorizedAccessException or SourceFileProcessingException)
+            {
+                analysis.FailSource(source.SourceFile.SourcePath, error);
+                continue;
+            }
             if (purpose == AdmissionPurpose.ProjectPublish && !isCommonModule && VbaPublishExclusionMarker.IsPresent(text))
             {
                 continue;
             }
-            admitted.Add(source.AdmitSelectedSource(cancellationToken));
+            if (analysis is not null)
+            {
+                analysis.Add(source.ReadSyntax(cancellationToken));
+            }
+            try
+            {
+                admitted.Add(source.AdmitSelectedSource(cancellationToken));
+            }
+            catch (SourceFileProcessingException error) when (analysis is not null)
+            {
+                analysis.FailSource(source.SourceFile.SourcePath, error);
+            }
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -334,9 +386,10 @@ internal sealed class VbaSourceAdmission
         ImmutableArray<byte> bytes,
         DecodedSource decoded,
         Func<string, ImmutableArray<byte>> readBinaryBytes,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        VbaSyntaxTree? capturedSyntax = null)
     {
-        var syntax = VbaSyntaxTree.ParseModule(new Uri(source.SourcePath).AbsoluteUri, decoded.Text);
+        var syntax = capturedSyntax ?? VbaSyntaxTree.ParseModule(new Uri(source.SourcePath).AbsoluteUri, decoded.Text);
         var projection = VbaCodeModuleProjection.Create(syntax);
         var projectedKind = KindFromSyntax(projection.ModuleKind);
         if (projectedKind != source.Kind)
@@ -503,6 +556,7 @@ internal sealed class VbaSourceAdmission
     {
         internal VbaSourceFile SourceFile { get; } = sourceFile;
         internal abstract string ReadDecodedText(CancellationToken cancellationToken);
+        internal abstract VbaSyntaxTree ReadSyntax(CancellationToken cancellationToken);
         internal abstract AdmittedVbaSource AdmitSelectedSource(CancellationToken cancellationToken);
     }
 
@@ -510,19 +564,37 @@ internal sealed class VbaSourceAdmission
         VbaSourceAdmission admission,
         VbaSourceFile sourceFile,
         Encoding encoding,
-        int activeCodePage) : SourceSelectionInput(sourceFile)
+        int activeCodePage,
+        bool reportFileFailures) : SourceSelectionInput(sourceFile)
     {
         private ImmutableArray<byte> bytes;
         private DecodedSource? decoded;
+        private VbaSyntaxTree? syntax;
 
         internal override string ReadDecodedText(CancellationToken cancellationToken)
             => GetDecoded(cancellationToken).Text;
+
+        internal override VbaSyntaxTree ReadSyntax(CancellationToken cancellationToken)
+            => syntax ??= VbaSyntaxTree.ParseModule(
+                new Uri(SourceFile.SourcePath).AbsoluteUri, GetDecoded(cancellationToken).Text);
 
         internal override AdmittedVbaSource AdmitSelectedSource(CancellationToken cancellationToken)
         {
             var decodedSource = GetDecoded(cancellationToken);
             return AdmitSource(SourceFile, bytes, decodedSource,
-                path => ImmutableArray.CreateRange(admission.readAllBytes(path)), cancellationToken);
+                ReadBinaryBytes, cancellationToken, ReadSyntax(cancellationToken));
+        }
+
+        private ImmutableArray<byte> ReadBinaryBytes(string path)
+        {
+            try
+            {
+                return ImmutableArray.CreateRange(admission.readAllBytes(path));
+            }
+            catch (Exception error) when (reportFileFailures && error is IOException or UnauthorizedAccessException)
+            {
+                throw new SourceFileProcessingException(error);
+            }
         }
 
         private DecodedSource GetDecoded(CancellationToken cancellationToken)
@@ -531,7 +603,14 @@ internal sealed class VbaSourceAdmission
             {
                 bytes = ImmutableArray.CreateRange(admission.readAllBytes(SourceFile.SourcePath));
                 cancellationToken.ThrowIfCancellationRequested();
-                decoded = Decode(bytes, encoding, activeCodePage, SourceFile.SourcePath);
+                try
+                {
+                    decoded = Decode(bytes, encoding, activeCodePage, SourceFile.SourcePath);
+                }
+                catch (InvalidOperationException error) when (reportFileFailures)
+                {
+                    throw new SourceFileProcessingException(error);
+                }
             }
             return decoded;
         }
@@ -539,6 +618,9 @@ internal sealed class VbaSourceAdmission
 
     private sealed class CapturedSourceInput(CapturedDoctorSource source) : SourceSelectionInput(source.SourceFile)
     {
+        internal override VbaSyntaxTree ReadSyntax(CancellationToken cancellationToken)
+            => AdmitSelectedSource(cancellationToken).Syntax;
+
         internal override string ReadDecodedText(CancellationToken cancellationToken)
         {
             if (source.DecodeFailure is not null)
@@ -559,6 +641,8 @@ internal sealed class VbaSourceAdmission
     }
 
     private sealed record DecodedSource(string Text, string EncodingToken);
+
+    private sealed class SourceFileProcessingException(Exception error) : Exception(error.Message, error);
 }
 
 internal sealed class DoctorSourceAdmissionRun
@@ -704,10 +788,21 @@ internal sealed record CapturedDoctorSource(
 
 internal sealed class AdmittedVbaSourceSet
 {
-    private AdmittedVbaSourceSet(AdmittedVbaSourceData admission)
+    private AdmittedVbaSourceSet(AdmittedVbaSourceData admission, VbaSourceAnalysisReport? analysis = null)
     {
         ActiveCodePage = admission.ActiveCodePage;
         Sources = admission.Sources;
+        Analysis = analysis;
+    }
+
+    internal static AdmittedVbaSourceSet AdmitAnalyzedProjectBuild(
+        VbaSourceAdmission admission,
+        string sourceDirectory,
+        IReadOnlyList<InstalledCommonModule> commonModules,
+        CancellationToken cancellationToken)
+    {
+        var result = admission.ReadAnalyzedProjectBuild(sourceDirectory, commonModules, cancellationToken);
+        return new(result.Admission, result.Report);
     }
 
     internal static AdmittedVbaSourceSet AdmitProjectBuild(
@@ -750,6 +845,7 @@ internal sealed class AdmittedVbaSourceSet
 
     internal int ActiveCodePage { get; }
     internal ImmutableArray<AdmittedVbaSource> Sources { get; }
+    internal VbaSourceAnalysisReport? Analysis { get; }
 }
 
 internal readonly record struct AdmittedVbaSourceData(

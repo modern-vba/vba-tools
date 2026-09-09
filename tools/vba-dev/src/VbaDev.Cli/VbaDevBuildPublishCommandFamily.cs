@@ -75,7 +75,7 @@ internal sealed class VbaDevBuildPublishCommandFamily
             "build",
             "Build the selected document into bin output.",
             "build",
-            "1.0",
+            "2.0",
             capabilityRegistrations);
         var projectOptions = VbaDevCommandGrammar.AddProjectDocumentOptions(BuildCommand, grammarFailureRules);
         BuildProjectOption = projectOptions.Project;

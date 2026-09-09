@@ -455,13 +455,64 @@ template existence, so a source-admission error is reported first when both
 inputs are invalid. A missing
 template still releases captured input and reports any cleanup failure.
 The ordinary build stage of `test` uses these same rules;
-Publish shares this admission with its own exclusion rules. Snapshot Build/Test
-uses the same BOM-or-ACP admission for the complete caller-owned inventory and
-advertises both snapshot features as `2.0`; the command contract and
-`sourceSnapshot.activeWindowsCodePage` remain `1.0`. Project Doctor uses the
+Publish shares these capture rules with its own exclusions. Snapshot Build/Test
+uses the same BOM-or-ACP admission for the complete caller-owned inventory.
+Its `build.sourceSnapshot` and `test.sourceSnapshot` feature versions remain
+`2.0`; the top-level `contractVersion` and
+`sourceSnapshot.activeWindowsCodePage` feature remain `1.0`. These are separate
+from the Build output schema `2.0`. Project Doctor uses the
 same BOM-or-ACP admission and shares one captured source authority across its
 source diagnostics and Build/Publish profiles. VbaDev independently admits bytes supplied by any caller; it neither
 requires nor reads an adapter, extension, editor state, or consumer proof.
+
+Ordinary saved-source `build` analyzes every selected source, regardless of
+editor-open state, using the captured syntax tree and the same decoded source
+that successful import consumes. It combines existing syntax diagnostics with
+document-local validation shared with the language server: duplicate callable
+or Event parameter names, duplicate named call arguments, and positional or
+omitted arguments after a named argument. Existing parser recovery, suppression,
+and conditional-compilation behavior determine the findings. Unresolved names
+and other project-semantic questions are outside this gate. Warning and
+information diagnostics do not become errors.
+
+Build accumulates recoverable findings within a file and across independent
+selected files, in the established filename encounter order. Known file-local
+source read, strict-decode, and sidecar read failures are reported against their
+source while independent files can still be inspected. Unexpected or
+project-wide failures stop continuation, retain earlier findings, and report
+the stopping reason. An unreadable or otherwise unprocessed required source
+makes analysis incomplete. Any error or incomplete analysis returns a nonzero
+result before workbook generation, with no success receipt or replacement
+artifact. Source and template bytes and the previous completed bin output
+remain unchanged. Cancellation follows the existing cancellation path rather
+than becoming a source-processing failure. Final successful import order remains
+separate from diagnostic encounter order.
+
+Build writes a nonempty source-analysis report as one newline-terminated JSON
+record on stderr, both when analysis blocks generation and when Build succeeds
+with non-error diagnostics. Absent or empty reports add no output. The Build
+output schema is `2.0`; the record's `type` is `sourceAnalysis`,
+`schemaVersion` is `2.0`, and `complete` is true exactly when `failures` is empty.
+A complete report can still contain errors and fail Build. Each `diagnostics`
+entry has `type: "diagnostic"`, `owner: "vba-dev"`, an absolute original-source
+file `uri`, `code`, `message`, `severity`, and a zero-based `range` with `start`
+and `end` positions. Ranges retain exported-source coordinates, including
+`Attribute` lines and form headers. Each processing failure has `scope`, `uri`,
+and `message`: `source` scope has the affected file URI; `project` scope has a
+null URI. An empty or whitespace-only failure message becomes
+`Source analysis failed without an error message.` A failure has no invented
+source range. For example, this complete
+report still blocks Build and occupies one output line:
+
+```json
+{"type":"sourceAnalysis","schemaVersion":"2.0","complete":true,"diagnostics":[{"type":"diagnostic","owner":"vba-dev","uri":"file:///C:/Example/src/Main.bas","code":"validation.duplicateCallableParameterName","message":"Duplicate callable parameter name 'name'.","severity":"error","range":{"start":{"line":1,"character":43},"end":{"line":1,"character":47}}}],"failures":[]}
+```
+
+The ordinary saved-source build stage of `test` inherits this gate. It does not
+apply to Publish, snapshot Build/Test, standalone Import or Export, or
+`test --no-build`, and does not change Test Explorer result events. Doctor's raw
+admission and Build/Publish readiness profiles retain their existing scope.
+Source editing and native VBE compilation remain separate.
 
 Before Excel starts, build stages every selected source, requires its authoritative exported module identity, and reports all case-insensitive source conflicts. In the disposable workbook it checks the actual project, retained-component, and active-reference namespaces, removes replaceable components, normalizes references, then checks the prepared protected and VBE-adopted reference identities before import. After imported components are verified, it re-enumerates the actual project, retained-component, and active-reference authority. A gap or conflict introduced by import fails before save or output commitment and preserves the source template and previous output. Build-before-test uses this same profile and preflight.
 

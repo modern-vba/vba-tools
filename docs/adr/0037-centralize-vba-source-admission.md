@@ -16,6 +16,10 @@ through `WorkbookMaterializer` without changing source admission. Issue #393
 establishes purpose-specific admission as the final selection and order authority.
 Issue #397 consolidates live and captured selection into one private policy
 while retaining their separate input acquisition and evidence ownership.
+Issue #399 adds analyzed admission for ordinary saved-source Build in
+[ADR 0056](0056-validate-captured-saved-sources-before-workbook-generation.md).
+That gate reuses this source authority; raw Doctor, Publish, snapshot, and
+explicit Import profiles retain their existing scope.
 Source ownership, VBE import verification, and owned Excel-process lifecycle
 contracts remain accepted.
 
@@ -107,7 +111,7 @@ the existing rule only after complete admission; it does not change the order
 in which failures are encountered. The two flat purposes retain their existing
 ordering, no CommonModules classification, and ExplicitImport-only empty rule.
 
-Input acquisition remains Adapter-specific. Live admission fixes ACP and
+Input acquisition remains Adapter-specific. Raw live admission fixes ACP and
 inventory once and fails fast before reading later candidates. Installed
 test-only sources and sidecars are unread for Publish; local-marker candidates
 are fully decoded before exclusion and do not read their sidecars. Doctor
@@ -199,7 +203,14 @@ and adds no retry or rollback of competing external changes.
 
 ## Ordinary Build admission
 
-Ordinary manifest-selected Build uses `AdmitProjectBuild`. One invocation fixes
+Ordinary manifest-selected Build originally used `AdmitProjectBuild` directly.
+Issue #399 uses `AdmitAnalyzedProjectBuild` for this materialization intent,
+collecting syntax and document-local diagnostics from the same captured trees
+before generation. Known source read, strict-decode, and sidecar read failures
+permit independent sources to continue; errors or incomplete analysis block
+generation. ADR 0056 defines the report and public output contract. The raw
+admission operation remains available to the unchanged inspection profiles.
+One invocation fixes
 ACP, the effective recursive source inventory, source bytes, and matching
 sidecars before source-only preflight or Excel startup. Identity, kind, syntax,
 Unicode, encoding provenance, and VBE

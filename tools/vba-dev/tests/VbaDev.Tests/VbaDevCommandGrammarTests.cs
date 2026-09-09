@@ -83,7 +83,7 @@ public sealed class VbaDevCommandGrammarTests
         var graph = CommandLineTestFactory.Create().CommandGraph;
         var expected = new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            ["build"] = "1.0",
+            ["build"] = "2.0",
             ["common-module add"] = "1.0",
             ["common-module list"] = "1.0",
             ["common-module update"] = "1.0",

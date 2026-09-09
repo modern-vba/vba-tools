@@ -10,6 +10,7 @@ import {
 } from './doctorCommand';
 import { VbaDebugAdapterCompatibilityError } from './debugAdapter';
 import { VbaDevCompatibilityError } from './devtool';
+import { windowsPathKey } from './windowsPathIdentity';
 
 test('Doctor command validates the CLI and invokes doctor with an explicit project root', async () => {
   const projectRoot = path.join('C:', 'work', 'BookProject');
@@ -116,7 +117,8 @@ test('Doctor command validates the CLI and invokes doctor with an explicit proje
   assert.match(output.join(''), /\[FAIL\] project\.manifest: Project manifest is missing\./);
   assert.match(notifications[0], /Doctor found blocking issues/);
   assert.equal(diagnosticRefreshes.length, 1);
-  assert.equal(diagnosticRefreshes[0].scopeKey, `project:${projectRoot}`);
+  assert.equal(diagnosticRefreshes[0].scopeKey,
+    JSON.stringify(['vba-dev', 'doctor', windowsPathKey(projectRoot), null]));
   assert.match(
     diagnosticRefreshes[0].output,
     /\[FAIL\] project\.manifest: Project manifest is missing\. \(0 ms\)/

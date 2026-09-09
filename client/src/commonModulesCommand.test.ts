@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as path from 'node:path';
+import { windowsPathKey } from './windowsPathIdentity';
 
 import {
   CommonModulesCommandOptions,
@@ -461,7 +462,7 @@ test('CommonModules command refreshes project diagnostics from failed command ou
 
   assert.deepEqual(diagnosticRefreshes, [
     {
-      scopeKey: `project:${projectRoot}`,
+      scopeKey: JSON.stringify(['vba-dev', 'common-module update', windowsPathKey(projectRoot), null]),
       output: stderr
     }
   ]);

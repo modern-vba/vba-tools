@@ -17,6 +17,9 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Content Include="..\..\..\..\fixtures\document-diagnostics\cases.json"
+             Link="fixtures\document-diagnostics\cases.json"
+             CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\..\..\fixtures\project-manifest-encoding\cases.json"
              Link="fixtures\project-manifest-encoding\cases.json"
              CopyToOutputDirectory="PreserveNewest" />

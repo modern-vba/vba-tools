@@ -227,6 +227,17 @@ returns `130` only with proved process and STA release. Unproved release returns
 `1` even when cancellation was observed; cancellation after durable output
 commitment preserves success. These command-owned policies consume common
 `WorkbookAutomationTerminalFacts` rather than separate exception traversals.
+
+Ordinary Build exposes a nonempty source-analysis report as one schema `2.0`
+`sourceAnalysis` record on stderr, whether analysis blocks generation or Build
+succeeds with non-error findings. Absent or empty reports add no output.
+The record contains ordered diagnostics and explicit processing failures.
+Consumers validate the public schema and use original
+file URIs and exported-source ranges without importing a provider DTO. The
+VS Code Build contribution is bound to the invocation's tool/command, project,
+and selected document; refresh replaces only that contribution. Shared URIs
+combine contributions from other scopes, so refreshing one scope cannot remove
+another scope's findings.
 _Avoid_: in-process command invocation, shared product DTO, product test helper
 
 **CrossProductConformanceFixture**:
@@ -1276,6 +1287,16 @@ Adapter construction does not read source. Empty decoded text is a valid cached
 value, and project manifest order is applied only after every selected source
 has passed admission, preserving filename-ordered failure traversal.
 
+Ordinary saved-source materialization additionally requests analyzed project
+Build admission. This retains the same private source-selection policy and
+source authority while collecting a `VbaSourceAnalysisReport` from each exact
+captured syntax tree. Known file-local source read, strict-decode, and sidecar
+read failures permit independent sources to continue; raw project admission,
+Doctor's captured profiles, Publish, snapshot admission, and explicit Import
+retain their existing contracts. Only complete, error-free analyzed admission
+can supply ordinary Build generation input. Successfully analyzed input is
+not reconstructed from paths after the gate. ADR 0056 records this scope.
+
 Issue #350 pairs a successful ordinary or snapshot test materialization with its
 exact admission and copies immutable navigation facts into an `ExecutedSourceIndex`.
 Result resolution neither rereads source nor reacquires ACP. Doctor captures
@@ -1303,6 +1324,22 @@ The value alone does not own disposable generation-input cleanup or workbook
 commitment.
 _Avoid_: raw source list, mutable plan, source-file paths as content authority
 
+**VbaSourceAnalysisReport**:
+The immutable findings and processing-failure snapshot for one ordinary
+saved-source Build admission. It contains existing `SyntaxDiagnostic`s and
+document-local `VbaValidationDiagnostic`s projected from the exact captured
+source trees, with original file URIs, codes, messages, severities, and ranges.
+Diagnostics retain filename analysis encounter order; successful import retains
+its separate final admission order. Complete means that no required processing
+failure was recorded; it does not mean that the report has no error diagnostics.
+File-local failures retain their affected source identity, while project-fatal
+failures retain the stopping reason and all findings already collected. An
+empty or whitespace-only failure message becomes
+`Source analysis failed without an error message.` Errors
+or incomplete analysis prevent workbook generation. Cancellation is not a
+report failure. Warning and information diagnostics are not promoted to errors.
+_Avoid_: compiler result, semantic validation proof, first-error exception
+
 **WorkbookMaterializationNamePreflight**:
 The compatibility decision required before a materialized workbook accepts its
 selected source set, using authoritative source identities and the workbook's
@@ -1324,7 +1361,8 @@ The internal sealed VbaDev operation owner for the four closed write intents
 `WorkbookMaterializationIntent.ExplicitImport`, and for the separate
 observational `ProjectInspectionIntent` used by project Doctor. `ProjectBuild`
 and `Publish` obtain their purpose-specific, final-order admissions from
-`VbaSourceAdmission`. `SourceSnapshotBuild` consumes a command-owned
+`VbaSourceAdmission`; ordinary saved-source `ProjectBuild` additionally requires
+complete, error-free analyzed admission before generation. `SourceSnapshotBuild` consumes a command-owned
 `BuildSourceSnapshotCapture` and its exact admitted set without reclassifying
 snapshot files from installed CommonModules, reordering sources, rereading the
 persistent `DocumentSourceSet`, redetecting encoding, or accepting consumer proof.
@@ -2687,7 +2725,10 @@ Editor coloring for VBA source text. It combines lexical classification for VBA 
 _Avoid_: color theme, formatting
 
 **SyntaxDiagnostic**:
-An editor diagnostic that reports malformed VBA source syntax in a `VbaProject`. A `SyntaxDiagnostic` is about grammar and source structure, not semantic checks such as unresolved `VbaDefinition`s, missing `VbaProjectReferenceDefinition`s, type mismatch, or ambiguous `NameResolution`. A source Event outside a class module's module-level code, a `Private` or `Friend` Event, an underscore in an Event name, an Event parameter declared with `Optional` or `ParamArray`, a `WithEvents` declarator outside a class module's module-level code or using an array, `As New`, a type-declaration character, or no explicit `As` type, a `RaiseEvent` outside a procedure in a class-module code section, a `RaiseEvent` argument list with a named argument, empty parentheses, or an omitted argument, a procedural-module duplicate `ModuleIdentityMetadata` record, and malformed `ModuleIdentityMetadata` are malformed syntax rather than validation failures. None of these invalid forms is admitted as a valid Event signature, eligible Event source, call shape, or authoritative module identity for later semantic analysis.
+A diagnostic that reports malformed VBA source syntax. The neutral parser's
+findings are consumed by editor diagnostics and ordinary saved-source Build
+without changing their grammar, recovery, or original-source ranges.
+A `SyntaxDiagnostic` is about grammar and source structure, not semantic checks such as unresolved `VbaDefinition`s, missing `VbaProjectReferenceDefinition`s, type mismatch, or ambiguous `NameResolution`. A source Event outside a class module's module-level code, a `Private` or `Friend` Event, an underscore in an Event name, an Event parameter declared with `Optional` or `ParamArray`, a `WithEvents` declarator outside a class module's module-level code or using an array, `As New`, a type-declaration character, or no explicit `As` type, a `RaiseEvent` outside a procedure in a class-module code section, a `RaiseEvent` argument list with a named argument, empty parentheses, or an omitted argument, a procedural-module duplicate `ModuleIdentityMetadata` record, and malformed `ModuleIdentityMetadata` are malformed syntax rather than validation failures. None of these invalid forms is admitted as a valid Event signature, eligible Event source, call shape, or authoritative module identity for later semantic analysis.
 _Avoid_: compile error, semantic diagnostic, runtime error
 
 **EventDeclarationPlacementSyntaxDiagnostic**:
@@ -2808,15 +2849,28 @@ emitted once per omitted slot. The complete malformed list is not admitted to
 own `RaiseEventNamedArgumentSyntaxDiagnostic`.
 _Avoid_: optional Event argument, per-slot omitted-argument diagnostic
 
+**DocumentLocalValidation**:
+Parsed-source validity rules requiring no project semantic state, implemented
+by `VbaDocumentValidationDiagnostics` in the neutral `VbaTools.Syntax`
+foundation. They inspect an existing syntax tree for duplicate callable and
+Event parameter names, duplicate named arguments, and positional or omitted
+arguments after a named argument. The language server projects the neutral
+findings to its own diagnostics; ordinary Build projects them to the public
+VbaDev process contract. Both preserve the original code, message, severity,
+and range. Project-aware validation retains its separate owner and lifecycle.
+_Avoid_: language-server service, name resolution, native VBA compiler
+
 **VbaValidationDiagnostic**:
-An editor diagnostic produced after a source file has been parsed into
+A diagnostic produced after a source file has been parsed into
 `VbaSyntaxTree`, when VBA validity rules can be checked without treating the
 source as parser recovery. Duplicate callable parameter names, duplicate
 call-site named arguments, and positional arguments after named arguments are
 `VbaValidationDiagnostic`s, even when they are published as LSP errors. Some
 `VbaValidationDiagnostic`s are document-local, while others require project
 state such as `NameResolution`, `TypeResolution`, `VbaProjectReferenceSelection`,
-or available `VbaProjectReferenceCatalog`s. Reference-catalog availability,
+or available `VbaProjectReferenceCatalog`s. Ordinary saved-source Build consumes
+only the shared `DocumentLocalValidation` subset in the current scope.
+Reference-catalog availability,
 stale exposure metadata, missing host globals, and host-global assignment
 validity are not `VbaValidationDiagnostic`s in the current scope. Project-aware
 validation evaluates each affected immutable `VbaProjectSnapshot` once. Every

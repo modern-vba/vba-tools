@@ -469,6 +469,78 @@ test('managed runtime default grace outlives CLI cleanup and observation', async
   assert.equal(result.cancelled, false);
 });
 
+test('diagnostic scope captures the canonical command project and document before the child starts', async () => {
+  const projectRoot = 'C:\\work\\Project';
+  const refreshes: string[] = [];
+  const capabilities = {
+    ...createResolution().capabilities,
+    commands: {
+      build: { outputSchemaVersion: '2.0' },
+      publish: { outputSchemaVersion: '1.0' },
+      reference: { outputSchemaVersion: '1.0' },
+      'reference add': { outputSchemaVersion: '1.0' },
+      'reference list': { outputSchemaVersion: '1.0' },
+      doctor: { outputSchemaVersion: '1.0' }
+    }
+  };
+  const scenarios: Array<{
+    projectRoot: string;
+    documentName: string | undefined;
+    args: string[];
+    expected: readonly (string | null)[];
+  }> = [
+    { projectRoot, documentName: 'BookA', args: ['build'],
+      expected: ['vba-dev', 'build', 'C:\\WORK\\PROJECT', 'BOOKA'] },
+    { projectRoot, documentName: 'BookB', args: ['build'],
+      expected: ['vba-dev', 'build', 'C:\\WORK\\PROJECT', 'BOOKB'] },
+    { projectRoot, documentName: 'BookA', args: ['publish'],
+      expected: ['vba-dev', 'publish', 'C:\\WORK\\PROJECT', 'BOOKA'] },
+    { projectRoot, documentName: 'BookA', args: ['reference', 'add', 'FirstLibrary'],
+      expected: ['vba-dev', 'reference add', 'C:\\WORK\\PROJECT', 'BOOKA'] },
+    { projectRoot, documentName: 'BookA', args: ['reference', 'add', 'OtherLibrary'],
+      expected: ['vba-dev', 'reference add', 'C:\\WORK\\PROJECT', 'BOOKA'] },
+    { projectRoot, documentName: 'BookA', args: ['reference', 'list', '--no-resolve'],
+      expected: ['vba-dev', 'reference list', 'C:\\WORK\\PROJECT', 'BOOKA'] },
+    { projectRoot: 'c:/work/project', documentName: 'booka', args: ['build'],
+      expected: ['vba-dev', 'build', 'C:\\WORK\\PROJECT', 'BOOKA'] },
+    { projectRoot, documentName: undefined, args: ['doctor', '--format', 'json'],
+      expected: ['vba-dev', 'doctor', 'C:\\WORK\\PROJECT', null] }
+  ];
+
+  for (const scenario of scenarios) {
+    const invocation = {
+      projectRoot: scenario.projectRoot,
+      documentName: scenario.documentName,
+      argsBeforeProject: [...scenario.args]
+    };
+    await runResolvedVbaDevProjectCommandInvocation({
+      extensionRoot: 'C:\\extensions\\vba-tools',
+      outputChannel: silentOutputChannel(),
+      diagnosticReporter: {
+        refresh: (scopeKey) => {
+          refreshes.push(scopeKey);
+          return [];
+        }
+      },
+      startProcess: (_file, args) => {
+        assert.ok(args.includes(scenario.projectRoot));
+        if (scenario.documentName !== undefined) assert.ok(args.includes(scenario.documentName));
+        invocation.projectRoot = 'D:\\retargeted-after-start';
+        invocation.documentName = 'AfterStart';
+        invocation.argsBeforeProject[0] = 'changed-after-start';
+        return {
+          onStdout: () => undefined,
+          onStderr: () => undefined,
+          onExit: (listener) => listener(0, null),
+          kill: () => undefined
+        };
+      }
+    }, 'C:\\tools\\vba-dev.exe', invocation, capabilities);
+  }
+
+  assert.deepEqual(refreshes, scenarios.map(scenario => JSON.stringify(scenario.expected)));
+});
+
 async function runProtectedCancellation(
   args: readonly string[],
   cancellationRequestError?: Error

@@ -46,7 +46,7 @@ public sealed class VbaDevBuildPublishCommandFamilyTests
             capabilities.Select(capability => capability.CommandPath));
         Assert.Same(family.BuildCommand, capabilities[0].Command);
         Assert.Same(family.PublishCommand, capabilities[1].Command);
-        Assert.All(capabilities, capability => Assert.Equal("1.0", capability.OutputSchemaVersion));
+        Assert.Equal(["2.0", "1.0"], capabilities.Select(capability => capability.OutputSchemaVersion));
         Assert.NotNull(family.BuildCommand.Action);
         Assert.NotNull(family.PublishCommand.Action);
         Assert.Equal(

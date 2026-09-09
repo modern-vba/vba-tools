@@ -1,0 +1,235 @@
+{
+  "schemaVersion": "1.0",
+  "cases": [
+    {
+      "id": "first-source-syntax-and-parameter",
+      "fileName": "AFirst.bas",
+      "source": "Attribute VB_Name = \"AFirst\"\nPublic Sub Run(ByVal name As String, ByVal name As Long)\n    value = \"unterminated\nEnd Sub\n",
+      "syntaxDiagnostics": [
+        {
+          "code": "syntax.unterminatedStringLiteral",
+          "message": "String literal is missing a closing double quote.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 2,
+              "character": 12
+            },
+            "end": {
+              "line": 2,
+              "character": 25
+            }
+          }
+        }
+      ],
+      "documentValidationDiagnostics": [
+        {
+          "code": "validation.duplicateCallableParameterName",
+          "message": "Duplicate callable parameter name 'name'.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 1,
+              "character": 43
+            },
+            "end": {
+              "line": 1,
+              "character": 47
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "later-source-named-argument",
+      "fileName": "ZLater.bas",
+      "source": "Attribute VB_Name = \"ZLater\"\nPublic Sub Run()\n    Example(Arg1:=1, ARG1:=2)\nEnd Sub\n",
+      "syntaxDiagnostics": [],
+      "documentValidationDiagnostics": [
+        {
+          "code": "validation.duplicateNamedCallArgument",
+          "message": "Duplicate named call argument 'ARG1'.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 2,
+              "character": 21
+            },
+            "end": {
+              "line": 2,
+              "character": 25
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "form-original-code-coordinates",
+      "fileName": "Dialog.frm",
+      "source": "VERSION 5.00\nBegin VB.Form Dialog\n  Caption = \"designer text is not code\"\nEnd\nAttribute VB_Name = \"Dialog\"\nOption Explicit\n\nPublic Sub Run()\n    value = \"unterminated\nEnd Sub\n",
+      "syntaxDiagnostics": [
+        {
+          "code": "syntax.unterminatedStringLiteral",
+          "message": "String literal is missing a closing double quote.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 8,
+              "character": 12
+            },
+            "end": {
+              "line": 8,
+              "character": 25
+            }
+          }
+        }
+      ],
+      "documentValidationDiagnostics": []
+    },
+    {
+      "id": "continued-event-parameter",
+      "fileName": "Worker.cls",
+      "source": "VERSION 1.0 CLASS\nAttribute VB_Name = \"Worker\"\nPublic Event Saved( _\n    ByVal Val As Long, _\n    ByVal Val As String)\n",
+      "syntaxDiagnostics": [],
+      "documentValidationDiagnostics": [
+        {
+          "code": "validation.duplicateCallableParameterName",
+          "message": "Duplicate callable parameter name 'Val'.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 4,
+              "character": 10
+            },
+            "end": {
+              "line": 4,
+              "character": 13
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "named-argument-rule-order",
+      "fileName": "Arguments.bas",
+      "source": "Attribute VB_Name = \"Arguments\"\nPublic Sub Run()\n    Example(Arg1:=1, 2, ARG1:=3)\nEnd Sub\n",
+      "syntaxDiagnostics": [],
+      "documentValidationDiagnostics": [
+        {
+          "code": "validation.duplicateNamedCallArgument",
+          "message": "Duplicate named call argument 'ARG1'.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 2,
+              "character": 24
+            },
+            "end": {
+              "line": 2,
+              "character": 28
+            }
+          }
+        },
+        {
+          "code": "validation.positionalCallArgumentAfterNamed",
+          "message": "Positional call argument cannot appear after a named argument.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 2,
+              "character": 21
+            },
+            "end": {
+              "line": 2,
+              "character": 22
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "early-string-recovery-later-call",
+      "fileName": "Recovery.bas",
+      "source": "Attribute VB_Name = \"Recovery\"\nPublic Sub Run()\n    value = \"unterminated\n    Example(Arg1:=1, ARG1:=2)\nEnd Sub\n",
+      "syntaxDiagnostics": [
+        {
+          "code": "syntax.unterminatedStringLiteral",
+          "message": "String literal is missing a closing double quote.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 2,
+              "character": 12
+            },
+            "end": {
+              "line": 2,
+              "character": 25
+            }
+          }
+        }
+      ],
+      "documentValidationDiagnostics": [
+        {
+          "code": "validation.duplicateNamedCallArgument",
+          "message": "Duplicate named call argument 'ARG1'.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 3,
+              "character": 21
+            },
+            "end": {
+              "line": 3,
+              "character": 25
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "conditional-branch-document-validation",
+      "fileName": "Conditional.bas",
+      "source": "Attribute VB_Name = \"Conditional\"\n#If VBA7 Then\nPublic Sub Run(ByVal name As String, ByVal NAME As Long)\nEnd Sub\n#Else\nPublic Sub Other(ByVal value As String, ByVal VALUE As Long)\nEnd Sub\n#End If\n",
+      "syntaxDiagnostics": [],
+      "documentValidationDiagnostics": [
+        {
+          "code": "validation.duplicateCallableParameterName",
+          "message": "Duplicate callable parameter name 'NAME'.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 2,
+              "character": 43
+            },
+            "end": {
+              "line": 2,
+              "character": 47
+            }
+          }
+        },
+        {
+          "code": "validation.duplicateCallableParameterName",
+          "message": "Duplicate callable parameter name 'VALUE'.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 5,
+              "character": 46
+            },
+            "end": {
+              "line": 5,
+              "character": 51
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "valid-control",
+      "fileName": "ValidSource.bas",
+      "source": "Attribute VB_Name = \"ValidSource\"\nPublic Sub Run(ByVal name As String, ByVal count As Long)\n    Example(, Arg2:=2)\n    Example(1, Arg2:=Nested(Arg1:=1, Arg2:=2))\nEnd Sub\n",
+      "syntaxDiagnostics": [],
+      "documentValidationDiagnostics": []
+    }
+  ]
+}

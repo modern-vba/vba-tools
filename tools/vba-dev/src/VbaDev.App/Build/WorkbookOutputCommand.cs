@@ -183,8 +183,13 @@ internal sealed class WorkbookOutputCommand
                         result.CommittedArtifactPath,
                         result.ImportedSourceCount,
                         result.Warnings),
-                    VbeImportWarningRenderer.Render(result.VerificationReport)),
+                    VbaSourceAnalysisOutput.Render(result.SourceAdmission.Analysis)
+                        + VbeImportWarningRenderer.Render(result.VerificationReport)),
                 result);
+        }
+        catch (VbaSourceAnalysisException ex)
+        {
+            return Failed(new CommandResult(1, string.Empty, VbaSourceAnalysisOutput.Render(ex.Report)));
         }
         catch (Exception ex)
         {

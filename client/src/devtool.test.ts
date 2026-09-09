@@ -683,6 +683,28 @@ test('Packaged VbaDev contract requires stdin cancellation 1.0', () => {
   );
 });
 
+test('Packaged Build contract requires source-analysis 2.0 and rejects an older provider', async () => {
+  const extensionRoot = path.resolve(__dirname, '..', '..');
+  const contract = loadRequiredVbaDevContract(extensionRoot);
+  assert.equal(contract.commandSchemaVersions.build, '2.0');
+  const commands = Object.fromEntries(Object.entries(contract.commandSchemaVersions)
+    .map(([command, outputSchemaVersion]) => [command, { outputSchemaVersion }]));
+  commands.build = { outputSchemaVersion: '1.0' };
+
+  await assert.rejects(() => resolveCompatibleVbaDev({
+    extensionRoot,
+    configuredPath: path.join('D:', 'tools', 'older-vba-dev.exe'),
+    requiredContract: contract,
+    runProcess: async () => ({
+      stdout: JSON.stringify({
+        toolVersion: '0.1.0', contractVersion: contract.contractVersion,
+        featureVersions: contract.featureVersions, activeWindowsCodePage: 65001, commands
+      }),
+      stderr: ''
+    })
+  }), /reports build outputSchemaVersion 1\.0.*requires 2\.0/);
+});
+
 test('Packaged VbaDev contract requires project-creation path validation 1.0', () => {
   const extensionRoot = path.resolve(__dirname, '..', '..');
   const contract = loadRequiredVbaDevContract(extensionRoot);
