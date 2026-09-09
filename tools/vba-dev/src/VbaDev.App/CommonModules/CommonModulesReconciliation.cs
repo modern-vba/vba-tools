@@ -22,7 +22,10 @@ internal sealed record MissingInstalledCommonModuleDependency(string RootName, s
 /// <summary>Derives immutable reconciliation facts from one validated repository and installed selection.</summary>
 internal sealed class CommonModulesReconciliation
 {
+    private readonly CommonModulesPackage package;
+
     private CommonModulesReconciliation(
+        CommonModulesPackage package,
         ImmutableArray<CommonModuleManifestEntry> requestedClosure,
         ImmutableArray<CommonModuleManifestEntry> entries,
         ImmutableArray<string> requiredReferences,
@@ -31,6 +34,7 @@ internal sealed class CommonModulesReconciliation
         ImmutableHashSet<string> reachableNames,
         bool allRequestedRootsCurrent)
     {
+        this.package = package;
         RequestedClosure = requestedClosure;
         Entries = entries;
         RequiredReferences = requiredReferences;
@@ -50,6 +54,8 @@ internal sealed class CommonModulesReconciliation
     internal ImmutableHashSet<string> ReachableNames { get; }
     internal bool AllRequestedRootsCurrent { get; }
     internal ImmutableArray<string> OrphanedNames { get; }
+
+    internal bool BelongsTo(CommonModulesPackage candidate) => ReferenceEquals(package, candidate);
 
     internal static CommonModulesReconciliation Create(
         CommonModulesPackage package,
@@ -99,7 +105,7 @@ internal sealed class CommonModulesReconciliation
             return new ReconciledInstalledCommonModule(module, entry, state,
                 entry is not null && allRootsCurrent && !module.Requested && !reachable.Contains(module.Name));
         }).ToImmutableArray();
-        return new(requestedClosure, orderedEntries, references, reconciled, missing.ToImmutable(),
+        return new(package, requestedClosure, orderedEntries, references, reconciled, missing.ToImmutable(),
             reachable.ToImmutableHashSet(StringComparer.OrdinalIgnoreCase), allRootsCurrent);
     }
 

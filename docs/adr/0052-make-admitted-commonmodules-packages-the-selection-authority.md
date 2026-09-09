@@ -113,6 +113,9 @@ reader does not, by itself, authorize later copying from a changing directory.
 Snapshot reads retain their existing lifetime checks and return independent
 byte copies. Immutable metadata or a plan captured before cleanup can remain
 usable afterward without retaining authority to read disposed snapshot bytes.
+The subsequent [captured source-unit decision](0054-return-owned-commonmodules-source-units.md)
+provides owner-bound selections for byte consumers while preserving these
+independent metadata lifetimes.
 
 Source copying, destination validation, reference-resolution evidence, project
 leases, cancellation, manifest-last commitment, recovery, and cleanup outcomes
