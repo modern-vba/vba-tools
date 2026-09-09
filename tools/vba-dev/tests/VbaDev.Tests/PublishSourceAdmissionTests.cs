@@ -231,7 +231,6 @@ public sealed class PublishSourceAdmissionTests
         Assert.Equal(1, inventoryCalls);
         Assert.Equal(4, reads.Count);
         Assert.NotNull(captured);
-        Assert.Equal(VbaSourceAdmissionIntent.Publish, captured.Intent);
         Assert.Equal(1252, captured.ActiveCodePage);
         Assert.Equal(["Dialog.frm", "Keep.bas"], automation.ImportedSources.Select(source => source.FileName));
         foreach (var source in captured.Sources)
@@ -271,7 +270,6 @@ public sealed class PublishSourceAdmissionTests
                 Assert.Empty(automation.OpenedWorkbooks);
                 var source = Assert.Single(mirror.Admission!.Sources);
                 var expectedText = item.GetProperty("expectedText").GetString();
-                Assert.Equal(VbaSourceAdmissionIntent.Publish, mirror.Admission.Intent);
                 Assert.Equal(expectedText, source.Text);
                 Assert.Equal(expectedText, source.Syntax.Text);
                 Assert.Equal(item.GetProperty("expectedEncoding").GetString(), source.OriginalEncoding);
@@ -359,7 +357,7 @@ public sealed class PublishSourceAdmissionTests
 
         var selected = new VbaSourceAdmission(() => 1252).BeginDoctorRun()
             .CaptureDocument(context.DocumentSourceSetPath)
-            .AdmitPublish(context.Document.CommonModules);
+            .AdmitProjectPublish(context.Document.CommonModules, CancellationToken.None);
 
         Assert.Equal(Encoding.GetEncoding(1252).GetString(bytes), Assert.Single(selected.Sources).Text);
         Assert.Equal(bytes, File.ReadAllBytes(sourcePath));
@@ -385,7 +383,7 @@ public sealed class PublishSourceAdmissionTests
         VbeImportSourceSetFactory? mirrorFactory = null)
         => new(new WorkbookOutputCommand(
             new WorkbookMaterializer(new WindowsExactFileSystemObjectOwnershipFactory(),
-                admission is null ? new WorkbookSourcePlanner(() => activeCodePage) : new WorkbookSourcePlanner(admission),
+                admission ?? new VbaSourceAdmission(() => activeCodePage),
                 automation,
                 new WorkbookReferenceNormalizer(new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),
                 new WorkbookOutputTransactionFactory(new WindowsExactFileSystemObjectOwnershipFactory()),

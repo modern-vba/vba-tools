@@ -620,8 +620,11 @@ A caller-owned complete source directory explicitly supplied to snapshot-aware
 `DocumentSourceSet`. Its recursive `.bas`, `.cls`, and `.frm` files and
 same-directory `.frx` sidecars are authoritative as bytes, not an overlay to
 compare with persistent source. Their paths preserve the original
-source-set-relative layout as provenance even though build identity remains flat
-by exported file name.
+source-set-relative layout as provenance. Successful snapshot admission fixes
+flat, case-insensitive exported-filename order and never borrows the selected
+project's installed CommonModules classification or Publish marker rules. An
+empty snapshot remains valid. The selected project still supplies the applicable
+template and references.
 `VbaDev` fixes the input in invocation-internal scratch and consumes it for one
 materialization but does not own the caller's directory. Snapshot Build pairs
 `--source-snapshot` with a caller-selected `--output` path outside the snapshot
@@ -652,8 +655,9 @@ round-trip through the operation-fixed active Windows ANSI code page while
 unrepresentable or best-fit-only character fails before Excel starts, and the
 mirror never changes caller-owned bytes. Its exact owned copies are eligible for
 command scratch cleanup only after the consuming Excel process is proved released.
-For `VbaSourceAdmissionIntent.ExplicitImport`, ordinary Build, Publish, and snapshot Build/Test, it consumes the admission's Unicode,
-fixed ACP, and captured sidecar bytes without calling `GetACP`, choosing a source encoding,
+For explicit Import, project Build and Publish, and snapshot Build/Test, it
+consumes the admission's final source order, Unicode, fixed ACP, and captured
+sidecar bytes without reordering, calling `GetACP`, choosing a source encoding,
 or rereading caller files.
 _Avoid_: source snapshot, persistent source conversion, lossy staging file
 
@@ -1141,9 +1145,11 @@ _Avoid_: destination rollback, path-based ownership, recursive scratch deletion
 **ExplicitWorkbookImport**:
 A `VbaDev` import operation scoped by a caller-provided source directory and
 workbook path rather than by a `ProjectManifest` document definition. Its
-source authority is the immutable `VbaSourceAdmission` captured with
-`VbaSourceAdmissionIntent.ExplicitImport`; the separate closed
-`WorkbookMaterializationIntent.ExplicitImport` owns the target workflow.
+source authority is the immutable `AdmittedVbaSourceSet` issued by the
+purpose-specific explicit Import admission operation; the separate closed
+`WorkbookMaterializationIntent.ExplicitImport` owns the target workflow. Its
+inventory has flat exported-filename order and must contain at least one
+importable source, independently of project CommonModules classification.
 Compatibility uses those admitted identities together with the actual project,
 reference, and retained-component names in a private copy of the existing
 target. Imported component names, kinds, and projected code are verified against
@@ -1159,47 +1165,74 @@ target compare-and-swap, retry, or rollback of competing external changes.
 _Avoid_: path-only import, ad hoc import, project import
 
 **VbaSourceAdmission**:
-The internal sealed module that captures source authority for one explicit
-import, ordinary saved-source Build, Publish, snapshot Build/Test, or project
-Doctor invocation.
-Its closed intents fix `GetACP` once,
-fix one recursive inventory, and read each selected text source and matching
-`.frx` once without retries or a closing stability check. Recognized UTF-8,
+The internal sealed module that establishes source selection and final import
+order through four purpose-specific operations: `AdmitProjectBuild`,
+`AdmitProjectPublish`, `AdmitSourceSnapshotBuild`, and `AdmitExplicitImport`.
+Doctor's captured Build and Publish profiles use the corresponding project
+operations. Callers do not compose a mode, callback, strategy, decoder, or
+ordering policy.
+
+One invocation fixes `GetACP` and one recursive inventory. Duplicate exported
+filenames fail before source-byte reads or Excel work. Selected text sources
+and matching `.frx` bytes are read at most once, in the established filename
+encounter order, without retries or a closing stability check. Recognized UTF-8,
 UTF-16 LE, and UTF-16 BE BOMs select strict decoders; BOM-less source uses only
 the fixed ACP, with ACP 65001 canonicalized as UTF-8. Admission never probes
 BOM-less UTF-8. Malformed or unsupported BOMs, strict-decoding failures, and
-inexact byte round trips fail closed. Immutable original bytes, Unicode,
-module identity and kind, syntax facts, deterministic order, sidecars, and
-provenance are shared by preflight, projection, verification, and diagnostics.
-Build preserves CommonModules manifest order followed by remaining filenames,
-includes test-only and orphaned entries, and permits an empty source set.
-Publish checks flat filename collisions before filtering, excludes manifest
-test-only sources and sidecars without reading them, and strictly decodes each
-entire project-local source once before its marker decision. A proved marker
-exclusion bypasses import eligibility, ACP projection, and sidecar capture;
-included CommonModules ignore that marker. Included sources share the admitted
-facts and ordering; an empty effective Publish source set is valid. Later
+inexact byte round trips fail closed.
+
+Project Build includes present installed CommonModules in stored manifest
+order, including test-only and orphaned entries, followed by local exported
+filenames in case-insensitive order. An absent manifest-listed module does not
+add a Build failure; Doctor retains its consistency checks. Project Publish
+uses the same final ordering for included sources, excludes manifest test-only
+sources and sidecars without reading them, and strictly decodes each entire
+project-local source before its marker decision. A proved marker exclusion
+bypasses import eligibility, ACP projection, and sidecar capture; included
+CommonModules ignore that marker. Neither project purpose re-resolves
+CommonModules dependencies or reads the external repository.
+
+SourceSnapshotBuild and ExplicitImport use caller-neutral flat exported-filename
+order without installed-project CommonModules classification or Publish marker
+filtering. An empty source set is valid for both project purposes and snapshot
+Build; explicit Import alone rejects it. Only after complete successful
+admission does the module apply the final purpose-specific order and issue an
+`AdmittedVbaSourceSet`. This preserves read and failure order within source
+admission. Later
 authoring changes belong to the next invocation, without new locks or retries.
-The legacy `WorkbookSourcePlanner.ResolveBuildSourceFiles` and
-`ResolvePublishSourceFiles` entry points have been removed, including their
-preflight variants and UTF-8-first decoding path. VBE mirror creation accepts
-only non-null admitted authority; raw source lists and `ExpectedUnicodeText`
-bridges cannot supply workbook-generation facts. Source ordering rearranges
-the existing immutable admitted objects without re-enumerating authoring files.
-Issue #335 introduced explicit import, #339 adds ordinary Build including the
-stage reused by ordinary Test, #340 adds Publish, and #344 adds snapshot
-Build/Test. Issue #350 pairs a successful ordinary or snapshot test
-materialization with its exact admission and copies only immutable navigation
-facts into an `ExecutedSourceIndex`; neither built mode rereads caller source or
-reacquires ACP during result resolution. Issue #345 captures each Doctor
-document once under one run ACP; layout, installed CommonModules drift, and
-both materialization profiles reuse those facts. Build failures cannot
-contaminate a valid Publish exclusion, and
-external CommonModules repository authority stays separate. No-build test
-location resolution has no source admission or index and always omits optional
-locations; language-server admission is independently owned.
-Snapshot feature versions are `2.0`; staged rollout is governed by ADR 0037.
-_Avoid_: public extension point, caller-composed decoding profile, mutable source cache
+
+Source-directory validity belongs to admission. Template existence belongs to
+materialization input validation, after source admission. When both source and
+template are invalid, project Build and Publish report the source-admission
+error first. A template failure still releases captured generation input and
+retains any cleanup failure. The shallow `WorkbookSourcePlanner` and its
+order reconstruction are removed. Consumers preserve final admission directly;
+raw source lists and `ExpectedUnicodeText` bridges cannot supply generation
+facts. Live and captured project-profile selection implementations remain
+separate; this boundary does not imply their later policy consolidation.
+
+Issue #350 pairs a successful ordinary or snapshot test materialization with its
+exact admission and copies immutable navigation facts into an `ExecutedSourceIndex`.
+Result resolution neither rereads source nor reacquires ACP. Doctor captures
+each document once under one run ACP; layout, installed CommonModules drift,
+and both materialization profiles reuse those facts without one profile's
+failure contaminating the other. External repository authority stays separate.
+No-build test location resolution has no admission or index and always omits
+optional locations. Language-server source admission remains independently
+owned. Snapshot feature versions remain `2.0`; ADR 0037 records the staged
+decisions and unchanged encoding contract.
+_Avoid_: public extension point, caller-composed policy, consumer order reconstruction
+
+**AdmittedVbaSourceSet**:
+The immutable source authority issued only by successful purpose-specific
+`VbaSourceAdmission`. It fixes ACP and selected sources in the final order
+chosen by admission, retaining the same original bytes, Unicode, module
+identities and kinds, syntax, sidecars, and provenance. Ordinary callers cannot
+reconstruct it with another purpose or order. Preflight, snapshot capture, VBE
+projection, import, verification, and diagnostics consume these facts directly.
+The value alone does not own disposable generation-input cleanup or workbook
+commitment.
+_Avoid_: raw source list, mutable plan, source-file paths as content authority
 
 **WorkbookMaterializationNamePreflight**:
 The compatibility decision required before a materialized workbook accepts its
@@ -1221,13 +1254,20 @@ The internal sealed VbaDev operation owner for the four closed write intents
 `WorkbookMaterializationIntent.SourceSnapshotBuild`, or
 `WorkbookMaterializationIntent.ExplicitImport`, and for the separate
 observational `ProjectInspectionIntent` used by project Doctor. `ProjectBuild`
-and `Publish` select their manifest-owned admitted sources. `SourceSnapshotBuild`
-consumes a command-owned `BuildSourceSnapshotCapture` and its immutable
-`VbaSourceAdmission` facts without rereading the persistent
-`DocumentSourceSet`, redetecting source encoding, or accepting consumer proof.
-`ExplicitImport` consumes the `AdmittedVbaSourceSet` captured by
-`VbaSourceAdmissionIntent.ExplicitImport` and a caller-provided existing target;
-it resolves no project context and performs no manifest reference normalization.
+and `Publish` obtain their purpose-specific, final-order admissions from
+`VbaSourceAdmission`. `SourceSnapshotBuild` consumes a command-owned
+`BuildSourceSnapshotCapture` and its exact admitted set without reclassifying
+snapshot files from installed CommonModules, reordering sources, rereading the
+persistent `DocumentSourceSet`, redetecting encoding, or accepting consumer proof.
+`ExplicitImport` consumes its dedicated admitted set and a caller-provided
+existing target; it resolves no project context and performs no manifest
+reference normalization.
+
+`IAdmittedWorkbookGenerationSourceInput` preserves the distinction between a
+persistent admitted input and a disposable captured snapshot. Materialization
+retains its existing release, failure, and cleanup sequencing across both
+owners. It validates template existence without taking over source-directory
+admission or bypassing disposal of an owned input.
 
 Across all four intents, the materializer keeps the applicable admitted-source
 preparation, static preflight, sibling workbook staging, repeated live-authority
@@ -1245,9 +1285,10 @@ artifact cleanup.
 `InspectAsync(ProjectInspectionIntent)` consumes the `CapturedDoctorSourceSet`
 already fixed for one document by the Doctor pipeline and derives independent
 Build and Publish profiles without recapturing, rereading, or redetecting the
-encoding of caller source. If either profile can continue past source
-preflight and the source template is available, the materializer owns exactly
-one disposable source-template copy and one Excel automation session for that
+encoding of caller source. Both captured admissions already have their final
+project order, which inspection consumes without reordering. If either profile
+can continue past source preflight and the source template is available, the
+materializer owns exactly one disposable source-template copy and one Excel automation session for that
 document and shares them across the viable profiles. Component removal,
 reference normalization, and final live authority inspection occur only in
 that unsaved copy. Inspection performs no source import or verification,
@@ -1442,12 +1483,14 @@ evidence and cannot acquire new deletion authority.
 _Avoid_: command success, rollback receipt, recoverable transaction state
 
 **BuildSourceSnapshotCapture**:
-The invocation-owned copy of an admitted caller source snapshot. It copies
-`AdmittedVbaSourceSet` source and sidecar bytes exactly without rereading caller
-paths, and retains the same immutable admission and diagnostic source identities
-for materialization. Its complete created subtree uses one exact ownership
-session and `InvocationScratch`; existing or foreign directories are never
-adopted. The factory releases creation fences before transferring the capture or
+The invocation-owned copy of a source set admitted for SourceSnapshotBuild.
+It copies `AdmittedVbaSourceSet` source and sidecar bytes exactly, in their final
+flat exported-filename order, without rereading caller paths or borrowing
+installed-project CommonModules classification. It retains the same immutable
+admission and diagnostic source identities for materialization. Its complete
+created subtree uses one exact ownership session and `InvocationScratch`;
+existing or foreign directories are never adopted.
+The factory releases creation fences before transferring the capture or
 cleaning up a failed preparation. Disposal completes bounded cleanup independent
 of cancellation and closes the session. Repeated cleanup returns the same
 `InvocationScratchCleanupEvidence`. An incomplete cleanup reports sorted absolute

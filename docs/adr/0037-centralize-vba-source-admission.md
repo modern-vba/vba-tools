@@ -12,30 +12,89 @@ saved-source Build; issue #340 adds Publish, #344 adds snapshot Build/Test, and
 #345 adds project Doctor. Issue #350 makes the exact admission paired with a
 successfully materialized test workbook the sole authority for built-test
 source locations. Issue #351 routes Doctor's observational workbook inspection
-through `WorkbookMaterializer` without changing source admission.
-Source ownership, VBE import
-verification, and owned Excel-process lifecycle contracts remain accepted.
+through `WorkbookMaterializer` without changing source admission. Issue #393
+establishes purpose-specific admission as the final selection and order authority.
+Source ownership, VBE import verification, and owned Excel-process lifecycle
+contracts remain accepted.
+
+## Purpose-specific admission and final order
+
+Successful source admission is authoritative for both selection and final VBE
+import order. The sealed `VbaSourceAdmission` module exposes four purpose-specific
+operations: `AdmitProjectBuild`, `AdmitProjectPublish`, `AdmitSourceSnapshotBuild`,
+and `AdmitExplicitImport`. Callers supply source and installed-state facts
+required by that purpose, not an open-ended mode, callback, or strategy. Doctor's
+captured Build and Publish profiles use the corresponding project operations;
+inspection does not add another write intent.
+
+Only complete admission can issue `AdmittedVbaSourceSet`. Its immutable sources
+already have their final order, and ordinary callers cannot reconstruct the
+result with another purpose or reorder its sources. The source objects retain
+the same identity, kind, syntax, Unicode, original bytes, provenance, and
+sidecars. Selection and final order follow these contracts:
+
+| Purpose | Final order and selection | Empty source set |
+| --- | --- | --- |
+| ProjectBuild | Present installed CommonModules in stored manifest order, including test-only and orphaned entries, then remaining local sources by case-insensitive exported filename. Missing installed source does not add a Build failure; Doctor owns consistency checks. | Valid |
+| ProjectPublish | Included installed CommonModules in stored manifest order, then included local sources by case-insensitive exported filename. Installed test-only entries are excluded before reading; included CommonModules ignore local Publish markers. | Valid |
+| SourceSnapshotBuild | Complete caller-owned inventory by case-insensitive exported filename, without installed-project CommonModules classification or Publish marker filtering. | Valid |
+| ExplicitImport | Complete caller-provided inventory by case-insensitive exported filename, without project CommonModules classification or Publish marker filtering. | Rejected |
+
+Project order comes from the stored installed selection, not a new dependency
+resolution or CommonModules repository lookup. The snapshot purpose also serves
+snapshot Test's build stage. The selected project still supplies the applicable
+template and reference configuration; that does not give it authority to
+reclassify snapshot source files.
+
+ACP remains fixed once per invocation. Admission checks the recursive inventory
+for duplicate exported filenames before source bytes or Excel work, retaining
+the established case-insensitive filename encounter order for reads and
+failures. Each selected source and matching sidecar is read at most once.
+Manifest-first final ordering happens only after complete successful admission.
+It preserves source-admission read and failure order without rereading or
+reparsing source.
+
+The remaining `WorkbookSourcePlanner`, its composition wiring, and its
+reconstruction-only tests are removed. Materialization, source-snapshot capture,
+Import, VBE mirror creation, and captured Doctor profile consumers preserve the
+issued order directly. Template existence is a materialization input concern;
+source-directory validity remains an admission concern. Project Build and
+Publish now complete source admission before checking template existence. If
+both are invalid, the source-admission error is reported first. A subsequent
+template failure still releases already captured generation input through the
+same cleanup path, retaining any concurrent cleanup failure.
+
+`IAdmittedWorkbookGenerationSourceInput` remains the lifetime boundary. A
+persistent admission wrapper has no disposable capture to release, while
+`BuildSourceSnapshotCapture` owns invocation scratch and cleanup evidence. Both
+expose final-order admission without transferring or erasing cleanup ownership.
+Existing failure paths still release owned generation input before output or
+Excel work; moving template validation does not bypass that release.
+
+This change does not consolidate the live and captured Build/Publish selection
+implementations. Both return final-order admission while preserving their
+existing capture and exclusion responsibilities. That policy consolidation is
+reserved for issue #397. This change also introduces no new source diagnostic
+gate, compile check, editor fence, output schema, or capability version.
 
 ## Explicit import admission
 
-Issue #372 completes removal of the legacy workbook source-authority paths.
-`WorkbookSourcePlanner.ResolveBuildSourceFiles`, `ResolvePublishSourceFiles`,
-and their preflight variants no longer exist. VBE mirror creation requires
-non-null `AdmittedVbaSourceSet`; it has no raw source-list overload, independent
-decoder, ACP acquisition, or `ExpectedUnicodeText` compatibility bridge.
-Ordering uses the same admitted source objects, including their identity,
-syntax, Unicode, and captured sidecars. The direct VbaDev.App C# surface is not
-a supported external contract, so no deprecation shim replaces the removed
-entry points. Public CLI grammar, output, result schemas, and exit behavior
-remain unchanged.
+Issue #372 removed the legacy raw-source resolution and preflight entry points.
+Issue #393 removes the remaining `WorkbookSourcePlanner` and its downstream order
+reconstruction. VBE mirror creation requires a non-null `AdmittedVbaSourceSet`
+and preserves its final source order. It has no raw source-list overload,
+independent decoder, ACP acquisition, or `ExpectedUnicodeText` compatibility
+bridge. The direct VbaDev.App C# surface is not a supported external contract,
+so no deprecation shim replaces removed entry points. Public CLI grammar,
+output, result schemas, and exit behavior remain unchanged.
 
-`VbaDev` uses one internal sealed `VbaSourceAdmission` module with one production
-implementation. Its initial closed intent is
-`VbaSourceAdmissionIntent.ExplicitImport`; callers do not compose decoding,
-capture, or projection policies and there is no public substitutable admission
-interface. One command invocation fixes `GetACP` exactly once before source
-capture, fixes one recursive inventory, and reads each selected `.bas`, `.cls`,
-`.frm`, and matching same-directory `.frx` at most once. A successful capture
+`VbaDev` uses one internal sealed `VbaSourceAdmission` module with purpose-specific
+operations and no public substitutable admission interface. Explicit Import
+selects its dedicated operation; callers do not compose decoding, capture,
+projection, or ordering policies. One command invocation fixes `GetACP` exactly
+once before source capture, fixes one recursive inventory, and reads each
+selected `.bas`, `.cls`, `.frm`, and matching same-directory `.frx` at most once.
+A successful capture
 contains each selected file's original bytes. A read failure fails admission;
 capture does not rescan, retry, or perform a closing stability check. Later
 caller edits cannot replace admitted facts.
@@ -58,7 +117,7 @@ fail before Excel starts. A `.frx` remains opaque binary content associated
 with its inventoried form; orphan sidecars are not import inputs.
 
 `VbeImportSourceSet` remains a separate invocation-owned module at the VBE
-boundary. For `VbaSourceAdmissionIntent.ExplicitImport`, it consumes admitted
+boundary. For explicit Import admission, it consumes admitted
 Unicode and the fixed ACP, strictly encodes text in that ACP, decodes it again,
 and requires exact Unicode equality before Excel starts. An unrepresentable or
 best-fit-only character is a failure. The mirror preserves captured `.frx`
@@ -81,8 +140,8 @@ an incomplete import into a successful target update.
 
 Issue #349 moves that target workflow into the distinct closed
 `WorkbookMaterializationIntent.ExplicitImport`. The materialization intent
-consumes the source authority already captured by
-`VbaSourceAdmissionIntent.ExplicitImport`; it performs no second source
+consumes the source authority already issued by explicit Import admission;
+it performs no second source
 inventory, filesystem read, or encoding decision and resolves no project
 context or manifest reference normalization.
 
@@ -97,10 +156,10 @@ and adds no retry or rollback of competing external changes.
 
 ## Ordinary Build admission
 
-Ordinary manifest-selected Build uses the closed `Build` intent of the same
-admission module. One invocation fixes ACP, the effective recursive source
-inventory, source bytes, and matching sidecars before source-only preflight or
-Excel startup. Identity, kind, syntax, Unicode, encoding provenance, and VBE
+Ordinary manifest-selected Build uses `AdmitProjectBuild`. One invocation fixes
+ACP, the effective recursive source inventory, source bytes, and matching
+sidecars before source-only preflight or Excel startup. Identity, kind, syntax,
+Unicode, encoding provenance, and VBE
 projection consume those admitted facts; neither later checks nor import reopen
 the authoring sources. The VBE mirror uses the admitted ACP without another
 `GetACP` call and retains captured sidecar bytes exactly.
@@ -109,9 +168,10 @@ Build retains its existing source-selection rules: installed CommonModules in
 manifest order, including test-only and orphaned entries, followed by remaining
 sources in case-insensitive filename order. A manifest entry whose source is
 absent does not add a new Build failure; Doctor retains its consistency checks.
-An empty Build source set remains valid, unlike
-`VbaSourceAdmissionIntent.ExplicitImport`'s empty-input rejection. Template and
-source-directory admission remain Build responsibilities.
+An empty project Build source set remains valid, unlike explicit Import's
+empty-input rejection. Source-directory validity belongs to admission; template
+existence belongs to materialization input validation. Successful admission
+already contains the final manifest-first import order.
 
 BOM-less Build source now uses only the captured ACP, including ACP 65001 as
 the canonical UTF-8 case. Supported BOMs, strict byte reproduction, and lossless
@@ -139,8 +199,8 @@ route. A no-build test receives no admission or index.
 
 ## Publish admission
 
-Ordinary Publish uses the same sealed module's closed `Publish` intent with
-manifest-owned CommonModules metadata. It fixes ACP and one recursive inventory
+Ordinary Publish uses `AdmitProjectPublish` with manifest-owned installed
+CommonModules metadata. It fixes ACP and one recursive inventory
 before selection. Case-insensitive flat exported-filename collisions fail
 across all candidates before content reads or exclusion decisions. Discovery,
 including hidden and tool-named directories, and same-directory form-sidecar
@@ -168,9 +228,10 @@ as Build. Preflight, mirror generation, import verification, and diagnostics
 share their admitted Unicode, syntax, identities, provenance, and captured
 sidecars without rereading authoring files.
 
-Publish orders included CommonModules by manifest order, followed by remaining
-sources in case-insensitive filename order, and accepts an empty effective
-source set. Later authoring changes do not alter the admitted publication.
+Successful Publish admission orders included CommonModules by manifest order,
+followed by remaining sources in case-insensitive filename order, and accepts an
+empty effective source set. Consumers preserve that order directly. Later
+authoring changes do not alter the admitted publication.
 As with Build, this is fixed-input ownership, not an atomic concurrent-author
 snapshot: unreadable selected files fail without retries, another inventory,
 closing stability checks, or new locks. The admitted Publish profile enters the
@@ -197,6 +258,11 @@ the document, and `WorkbookMaterializer.InspectAsync` derives its Build and
 Publish admissions from that capture. Neither the adapter nor the materializer
 recaptures the inventory, rereads source or sidecars, or makes another ACP or
 encoding decision.
+
+Both captured project admissions already contain their final manifest-first
+order. `InspectAsync` consumes them without reconstructing or reordering an
+admitted set. Its existing live/captured selection adapters and independent
+profile-failure behavior remain unchanged by this ordering migration.
 
 Build includes every source. Publish keeps ordinary Publish's filename-collision,
 manifest test-only, and local-marker ordering. Doctor captures test-only bytes
@@ -234,15 +300,15 @@ project capture and obtains no source ACP.
 Issue #341 applies the same closed-source encoding decisions independently
 inside the language server, as described below.
 
-Issue #335 introduced `VbaSourceAdmissionIntent.ExplicitImport`; issue #339
-adds ordinary Build and the ordinary Build stage reused by Test; issue #340 adds
-Publish. Issue #344 admits snapshot Build/Test with the existing closed
-`VbaSourceAdmissionIntent.Build`: the complete
-caller-owned inventory is authoritative, including an empty set, without
-Publish exclusions or comparison with persistent source. Snapshot ordering
-remains the existing flat filename order. Invocation scratch preserves original
-captured bytes and sidecars; preflight and the VBE import mirror consume the
-same admitted facts rather than decoding the scratch copy again.
+Issue #335 introduced explicit Import; issue #339 added ordinary Build and the
+ordinary Build stage reused by Test; issue #340 added Publish. Issue #344 added
+snapshot Build/Test. Issue #393 separates its SourceSnapshotBuild admission
+purpose from ProjectBuild. The complete caller-owned inventory is authoritative,
+including an empty set, without Publish exclusions, installed CommonModules
+classification, or comparison with persistent source. Successful snapshot
+admission fixes flat exported-filename order. Invocation scratch preserves
+original captured bytes, sidecars, and that order; preflight and the VBE import
+mirror consume the same admission without decoding the scratch copy again.
 
 Snapshot test materialization returns that exact admission with its committed
 workspace workbook. `TestCommand` copies its already-admitted syntax and
@@ -350,6 +416,8 @@ the same corpus without changing its ownership.
 
 ## Consequences
 
+- Successful admission fixes final source selection and import order. Consumers
+  cannot reconstruct that authority or add another ordering stage.
 - Explicit import of native VBE exports uses the operation ACP without an
   encoding guess. UTF-8 text intended for a host whose ACP is not 65001 must
   have a supported BOM or be converted to that ACP by its author.

@@ -43,7 +43,7 @@ public sealed class ExcelProjectMaterializationDiagnosticPort
         VbeImportSourceSetFactory importSourceSetFactory,
         WorkbookMaterializationNamePreflight namePreflight)
         : this(new WorkbookMaterializer(new WindowsExactFileSystemObjectOwnershipFactory(),
-            new WorkbookSourcePlanner(),
+            new VbaSourceAdmission(ActiveWindowsAnsiCodePage.Get),
             workbookAutomation,
             referenceNormalizer,
             new WorkbookOutputTransactionFactory(new WindowsExactFileSystemObjectOwnershipFactory()),
@@ -147,7 +147,7 @@ public sealed class ExcelProjectMaterializationDiagnosticPort
     private static WorkbookMaterializer CreateProductionMaterializer()
         => new(
             new WindowsExactFileSystemObjectOwnershipFactory(),
-            new WorkbookSourcePlanner(),
+            new VbaSourceAdmission(ActiveWindowsAnsiCodePage.Get),
             new ExcelComWorkbookGenerationAutomation(),
             CreateProductionReferenceNormalizer(),
             new WorkbookOutputTransactionFactory(new WindowsExactFileSystemObjectOwnershipFactory()));

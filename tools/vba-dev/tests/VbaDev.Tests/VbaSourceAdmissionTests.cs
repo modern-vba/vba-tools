@@ -1,7 +1,9 @@
 using VbaDev.Infrastructure.FileSystem;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using VbaDev.App.Workbooks;
+using VbaDev.Domain;
 using VbaTools.Syntax;
 using Xunit;
 
@@ -9,6 +11,120 @@ namespace VbaDev.Tests;
 
 public sealed class VbaSourceAdmissionTests
 {
+    [Theory]
+    [InlineData(typeof(AdmittedVbaSourceSet))]
+    [InlineData(typeof(CapturedDoctorSourceSet))]
+    [InlineData(typeof(DoctorSourceAdmissionRun))]
+    public void AdmissionAuthorityCannotBeReconstructedByOrdinaryCallers(Type authorityType)
+    {
+        Assert.DoesNotContain(authorityType.GetConstructors(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic),
+            constructor => !constructor.IsPrivate);
+    }
+
+    [Fact]
+    public void ProjectPublishAdmissionOwnsFinalImportOrder()
+    {
+        using var temp = TempDirectory.Create();
+        var paths = new[] { "zLocal.bas", "ARuntime.bas", "ZRuntime.bas", "ALocal.bas" }
+            .Select(fileName => Path.Combine(temp.Path, fileName)).ToArray();
+        foreach (var path in paths)
+        {
+            File.WriteAllText(path, $"Attribute VB_Name = \"{Path.GetFileNameWithoutExtension(path)}\"\r\n");
+        }
+        var admission = new VbaSourceAdmission(() => 1252, inventory: _ => paths);
+
+        var admitted = admission.AdmitProjectPublish(temp.Path,
+            [new InstalledCommonModule("ZRuntime", "ZRuntime.bas", true, false),
+                new InstalledCommonModule("ARuntime", "ARuntime.bas", true, false)]);
+
+        Assert.Equal(["ZRuntime.bas", "ARuntime.bas", "ALocal.bas", "zLocal.bas"],
+            admitted.Sources.Select(source => source.FileName));
+    }
+
+    [Fact]
+    public void ProjectBuildOrdersPresentInstalledSourcesAfterReadingEachSourceInFilenameOrder()
+    {
+        using var temp = TempDirectory.Create();
+        var paths = new[] { "zLocal.bas", "ATest.bas", "ZOrphan.bas", "ALocal.bas" }
+            .Select(fileName => Path.Combine(temp.Path, fileName)).ToArray();
+        foreach (var path in paths)
+        {
+            File.WriteAllText(path, $"Attribute VB_Name = \"{Path.GetFileNameWithoutExtension(path)}\"\r\n");
+        }
+        var reads = new List<string>();
+        var codePageReads = 0;
+        var admission = new VbaSourceAdmission(
+            () => { codePageReads++; return 1252; },
+            inventory: _ => paths,
+            readAllBytes: path => { reads.Add(Path.GetFileName(path)); return File.ReadAllBytes(path); });
+
+        var admitted = admission.AdmitProjectBuild(temp.Path,
+            [new InstalledCommonModule("Missing", "Missing.bas", true, false),
+                new InstalledCommonModule("ZOrphan", "ZOrphan.bas", false, false, Orphaned: true),
+                new InstalledCommonModule("ATest", "ATest.bas", false, true)]);
+
+        Assert.Equal(["ZOrphan.bas", "ATest.bas", "ALocal.bas", "zLocal.bas"],
+            admitted.Sources.Select(source => source.FileName));
+        Assert.Equal(["ALocal.bas", "ATest.bas", "zLocal.bas", "ZOrphan.bas"], reads);
+        Assert.Equal(1, codePageReads);
+    }
+
+    [Fact]
+    public void CapturedProjectProfilesOwnFinalOrderWithoutRereadingTheirInventory()
+    {
+        using var temp = TempDirectory.Create();
+        var names = new[] { "zLocal", "ATest", "ZOrphan", "ALocal", "Excluded" };
+        var paths = names.Select(name => Path.Combine(temp.Path, name + ".bas")).ToArray();
+        foreach (var path in paths)
+        {
+            var marker = Path.GetFileNameWithoutExtension(path) is "Excluded" or "ZOrphan"
+                ? "'#ExcludePublish\r\n" : string.Empty;
+            File.WriteAllText(path, $"Attribute VB_Name = \"{Path.GetFileNameWithoutExtension(path)}\"\r\n{marker}");
+        }
+        var reads = new Dictionary<string, int>();
+        var codePageReads = 0;
+        var admission = new VbaSourceAdmission(
+            () => { codePageReads++; return 1252; },
+            inventory: _ => paths,
+            readAllBytes: path => { reads[path] = reads.GetValueOrDefault(path) + 1; return File.ReadAllBytes(path); });
+        var capture = admission.BeginDoctorRun().CaptureDocument(temp.Path);
+        InstalledCommonModule[] installed =
+            [new("Missing", "Missing.bas", true, false),
+                new("ZOrphan", "ZOrphan.bas", false, false, Orphaned: true),
+                new("ATest", "ATest.bas", false, true)];
+        foreach (var path in paths)
+        {
+            File.Delete(path);
+        }
+
+        var build = capture.AdmitProjectBuild(installed);
+        var publish = capture.AdmitProjectPublish(installed);
+
+        Assert.Equal(["ZOrphan.bas", "ATest.bas", "ALocal.bas", "Excluded.bas", "zLocal.bas"],
+            build.Sources.Select(source => source.FileName));
+        Assert.Equal(["ZOrphan.bas", "ALocal.bas", "zLocal.bas"],
+            publish.Sources.Select(source => source.FileName));
+        Assert.Equal(paths.Length, reads.Count);
+        Assert.All(reads.Values, count => Assert.Equal(1, count));
+        Assert.Equal(1, codePageReads);
+    }
+
+    [Fact]
+    public void EmptyInventoryIsValidForBuildProfilesAndPublishButRejectedByExplicitImport()
+    {
+        using var temp = TempDirectory.Create();
+        var admission = new VbaSourceAdmission(() => 1252);
+
+        Assert.Empty(admission.AdmitProjectBuild(temp.Path, []).Sources);
+        Assert.Empty(admission.AdmitProjectPublish(temp.Path, []).Sources);
+        Assert.Empty(admission.AdmitSourceSnapshotBuild(temp.Path).Sources);
+        var capture = admission.BeginDoctorRun().CaptureDocument(temp.Path);
+        Assert.Empty(capture.AdmitProjectBuild([]).Sources);
+        Assert.Empty(capture.AdmitProjectPublish([]).Sources);
+        var error = Assert.Throws<InvalidOperationException>(() => admission.AdmitExplicitImport(temp.Path));
+        Assert.Contains("No importable VBA source files", error.Message, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData(new byte[] { 0xef, 0xbb, 0xbf }, "utf8bom")]
     [InlineData(new byte[] { 0xff, 0xfe }, "utf16le")]
@@ -18,7 +134,7 @@ public sealed class VbaSourceAdmissionTests
         using var temp = TempDirectory.Create();
         File.WriteAllBytes(Path.Combine(temp.Path, "Empty.bas"), bytes);
 
-        var admitted = new VbaSourceAdmission(() => 1252).Admit(temp.Path, VbaSourceAdmissionIntent.ExplicitImport);
+        var admitted = new VbaSourceAdmission(() => 1252).AdmitExplicitImport(temp.Path);
 
         var source = Assert.Single(admitted.Sources);
         Assert.Empty(source.Text);
@@ -51,9 +167,8 @@ public sealed class VbaSourceAdmissionTests
         var factory = new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
             sourceSet => { createdCalls++; observed = sourceSet; });
 
-        var admitted = admission.Admit(
-            temp.Path,
-            VbaSourceAdmissionIntent.ExplicitImport);
+        var admitted = admission.AdmitExplicitImport(
+            temp.Path);
         using var mirror = factory.Create(admitted);
         var report = new WorkbookMaterializationNamePreflight().InspectSourcePhase(mirror.SourceFiles);
 
@@ -83,7 +198,7 @@ public sealed class VbaSourceAdmissionTests
             readAllBytes: path => { reads++; return File.ReadAllBytes(path); });
 
         var error = Assert.Throws<InvalidOperationException>(() =>
-            admission.Admit(temp.Path, VbaSourceAdmissionIntent.ExplicitImport));
+            admission.AdmitExplicitImport(temp.Path));
 
         Assert.Equal(0, reads);
         Assert.Contains(first, error.Message, StringComparison.Ordinal);
@@ -103,7 +218,7 @@ public sealed class VbaSourceAdmissionTests
             _ => { inventoryCalls++; return []; });
 
         var error = Assert.Throws<InvalidOperationException>(() =>
-            admission.Admit(temp.Path, VbaSourceAdmissionIntent.ExplicitImport));
+            admission.AdmitExplicitImport(temp.Path));
 
         Assert.Contains($"'{activeCodePage}'", error.Message, StringComparison.Ordinal);
         Assert.Equal(0, inventoryCalls);
@@ -126,9 +241,8 @@ public sealed class VbaSourceAdmissionTests
 
         try
         {
-            var admitted = new VbaSourceAdmission(() => 65001).Admit(
-                temp.Path,
-                VbaSourceAdmissionIntent.ExplicitImport);
+            var admitted = new VbaSourceAdmission(() => 65001).AdmitExplicitImport(
+                temp.Path);
             var error = Assert.Throws<InvalidOperationException>(() => factory.Create(admitted));
 
             Assert.Contains("source-set callback failed", error.Message, StringComparison.Ordinal);
@@ -175,13 +289,13 @@ public sealed class VbaSourceAdmissionTests
         if (item.TryGetProperty("expectedFailure", out var expectedFailure) && expectedFailure.GetBoolean())
         {
             var error = Assert.Throws<InvalidOperationException>(() =>
-                admission.Admit(sourceDirectory, VbaSourceAdmissionIntent.ExplicitImport));
+                admission.AdmitExplicitImport(sourceDirectory));
             Assert.Contains(sourcePath, error.Message, StringComparison.Ordinal);
             Assert.Equal(bytes, File.ReadAllBytes(sourcePath));
             return;
         }
 
-        var admitted = admission.Admit(sourceDirectory, VbaSourceAdmissionIntent.ExplicitImport);
+        var admitted = admission.AdmitExplicitImport(sourceDirectory);
         var source = Assert.Single(admitted.Sources);
         var expectedText = item.GetProperty("expectedText").GetString();
         Assert.Equal(expectedText, source.Text);
@@ -247,7 +361,7 @@ public sealed class VbaSourceAdmissionTests
                 return bytes;
             });
 
-        var admitted = admission.Admit(root, VbaSourceAdmissionIntent.ExplicitImport);
+        var admitted = admission.AdmitExplicitImport(root);
         var capturedEvents = events.ToArray();
         foreach (var (path, bytes) in reads)
         {
@@ -299,7 +413,7 @@ public sealed class VbaSourceAdmissionTests
         File.WriteAllBytes(sourcePath, bytes);
 
         var error = Assert.Throws<InvalidOperationException>(() =>
-            new VbaSourceAdmission(() => 1252).Admit(temp.Path, VbaSourceAdmissionIntent.ExplicitImport));
+            new VbaSourceAdmission(() => 1252).AdmitExplicitImport(temp.Path));
 
         Assert.Contains("unsupported Unicode byte-order mark", error.Message, StringComparison.Ordinal);
         Assert.Contains(sourcePath, error.Message, StringComparison.Ordinal);
@@ -325,9 +439,8 @@ public sealed class VbaSourceAdmissionTests
         var bytes = encoding.GetPreamble().Concat(encoding.GetBytes(text)).ToArray();
         File.WriteAllBytes(sourcePath, bytes);
 
-        var admitted = new VbaSourceAdmission(() => 1252).Admit(
-            temp.Path,
-            VbaSourceAdmissionIntent.ExplicitImport);
+        var admitted = new VbaSourceAdmission(() => 1252).AdmitExplicitImport(
+            temp.Path);
 
         var source = Assert.Single(admitted.Sources);
         Assert.Equal(bytes, source.OriginalBytes.ToArray());
@@ -346,11 +459,9 @@ public sealed class VbaSourceAdmissionTests
         var bytes = new UTF8Encoding(false, true).GetBytes(utf8Text);
         File.WriteAllBytes(sourcePath, bytes);
 
-        var admitted = new VbaSourceAdmission(() => 1252).Admit(
-            temp.Path,
-            VbaSourceAdmissionIntent.ExplicitImport);
+        var admitted = new VbaSourceAdmission(() => 1252).AdmitExplicitImport(
+            temp.Path);
 
-        Assert.Equal(VbaSourceAdmissionIntent.ExplicitImport, admitted.Intent);
         Assert.Equal(1252, admitted.ActiveCodePage);
         var source = Assert.Single(admitted.Sources);
         Assert.Equal(bytes, source.OriginalBytes.ToArray());

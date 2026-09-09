@@ -447,7 +447,7 @@ public sealed class WorkbookOutputFailureTests
             project.Context,
             automation,
             importSourceSetFactory: importSourceSetFactory,
-            sourcePlanner: new WorkbookSourcePlanner(admission));
+            sourceAdmission: admission);
 
         var result = await RunAsync(
             "publish",
@@ -576,10 +576,10 @@ public sealed class WorkbookOutputFailureTests
         IWorkbookGenerationAutomation automation,
         IWorkbookOutputTransactionFactory? transactionFactory = null,
         VbeImportSourceSetFactory? importSourceSetFactory = null,
-        WorkbookSourcePlanner? sourcePlanner = null)
+        VbaSourceAdmission? sourceAdmission = null)
     {
         var pipeline = new WorkbookMaterializer(new WindowsExactFileSystemObjectOwnershipFactory(),
-            sourcePlanner ?? new WorkbookSourcePlanner(),
+            sourceAdmission ?? new VbaSourceAdmission(ActiveWindowsAnsiCodePage.Get),
             automation,
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),

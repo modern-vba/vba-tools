@@ -318,10 +318,12 @@ public sealed class PublishCommandTests
             Path.Combine(root, "bin", "Book1.xlsm"),
             Path.Combine(root, "publish", "Book1.xlsm"),
             null);
-        var planner = new WorkbookSourcePlanner(() => 1252);
+        var admission = new VbaSourceAdmission(() => 1252);
 
-        using var input = planner.CapturePublishSourceInput(context, CancellationToken.None);
-        var selected = input.Admission.Sources;
+        var selected = admission.AdmitProjectPublish(
+            context.DocumentSourceSetPath,
+            context.Document.CommonModules,
+            CancellationToken.None).Sources;
 
         Assert.Equal(["NonBreakingSpace.bas"], selected.Select(source => source.FileName));
     }

@@ -534,6 +534,124 @@ public sealed class WorkbookMaterializerTests
     }
 
     [Fact]
+    public async Task MissingTemplateReleasesSourceSnapshotWithoutStartingMaterialization()
+    {
+        using var temp = TempDirectory.Create();
+        var fixture = CreateProjectInspectionFixture(
+            temp,
+            [("Module1.bas", "Attribute VB_Name = \"Module1\"\r\n")]);
+        File.Delete(fixture.TemplatePath);
+        var context = fixture.Intent.Context;
+        var sourcePath = Path.Combine(context.DocumentSourceSetPath, "Module1.bas");
+        var sourceBytes = File.ReadAllBytes(sourcePath);
+        var outputBytes = Encoding.UTF8.GetBytes("previous-workbook");
+        Directory.CreateDirectory(Path.GetDirectoryName(context.BinDocumentPath)!);
+        File.WriteAllBytes(context.BinDocumentPath, outputBytes);
+        var events = new List<string>();
+        var pipeline = CreatePipeline(
+            new RecordingWorkbookGenerationAutomation(events),
+            new RecordingTransactionFactory(events),
+            new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
+                _ => events.Add("mirror-created")));
+        var capture = new BuildSourceSnapshotCaptureFactory(
+                new WindowsExactFileSystemObjectOwnershipFactory(),
+                temp.CreateDirectory("capture"),
+                new VbaSourceAdmission(() => 65001))
+            .Create(context.DocumentSourceSetPath, CancellationToken.None);
+
+        try
+        {
+            Assert.Equal("Module1.bas", Assert.Single(capture.SourceFiles).FileName);
+            Assert.True(Directory.Exists(capture.StagingPath));
+
+            var error = await Assert.ThrowsAsync<BuildCommandException>(() => pipeline.MaterializeAsync(
+                new WorkbookMaterializationIntent.SourceSnapshotBuild(context, capture, context.BinDocumentPath),
+                CancellationToken.None));
+
+            Assert.Equal($"Template workbook was not found: {fixture.TemplatePath}", error.Message);
+            Assert.False(Directory.Exists(capture.StagingPath));
+            Assert.Equal(sourceBytes, File.ReadAllBytes(sourcePath));
+            Assert.Equal(outputBytes, File.ReadAllBytes(context.BinDocumentPath));
+            Assert.Empty(events);
+            Assert.Empty(Directory.EnumerateFiles(Path.GetDirectoryName(context.BinDocumentPath)!, ".Book1.*.tmp.xlsm"));
+        }
+        finally
+        {
+            capture.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task MissingTemplateRetainsItsCauseAndSourceSnapshotCleanupFailure()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = TempDirectory.Create();
+        var fixture = CreateProjectInspectionFixture(
+            temp,
+            [("Module1.bas", "Attribute VB_Name = \"Module1\"\r\n")]);
+        File.Delete(fixture.TemplatePath);
+        var context = fixture.Intent.Context;
+        var sourcePath = Path.Combine(context.DocumentSourceSetPath, "Module1.bas");
+        var sourceBytes = File.ReadAllBytes(sourcePath);
+        var outputBytes = Encoding.UTF8.GetBytes("previous-workbook");
+        Directory.CreateDirectory(Path.GetDirectoryName(context.BinDocumentPath)!);
+        File.WriteAllBytes(context.BinDocumentPath, outputBytes);
+        var events = new List<string>();
+        var pipeline = CreatePipeline(
+            new RecordingWorkbookGenerationAutomation(events),
+            new RecordingTransactionFactory(events),
+            new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory(),
+                _ => events.Add("mirror-created")));
+        var capture = new BuildSourceSnapshotCaptureFactory(
+                new WindowsExactFileSystemObjectOwnershipFactory(),
+                temp.CreateDirectory("capture"),
+                new VbaSourceAdmission(() => 65001))
+            .Create(context.DocumentSourceSetPath, CancellationToken.None);
+        FileStream? sourceLock = null;
+
+        try
+        {
+            var capturedSource = Assert.Single(capture.SourceFiles);
+            sourceLock = File.Open(capturedSource.SourcePath, FileMode.Open, FileAccess.Read, FileShare.None);
+
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.MaterializeAsync(
+                new WorkbookMaterializationIntent.SourceSnapshotBuild(context, capture, context.BinDocumentPath),
+                CancellationToken.None));
+
+            var causes = Assert.IsType<AggregateException>(error.InnerException).InnerExceptions;
+            Assert.Collection(causes,
+                cause => Assert.Equal($"Template workbook was not found: {fixture.TemplatePath}",
+                    Assert.IsType<BuildCommandException>(cause).Message),
+                cause =>
+                {
+                    var cleanupFailure = Assert.IsType<InvalidOperationException>(cause);
+                    Assert.Contains("could not be removed", cleanupFailure.Message, StringComparison.OrdinalIgnoreCase);
+                    Assert.Contains(capture.StagingPath, cleanupFailure.Message, StringComparison.Ordinal);
+                });
+            Assert.Contains(fixture.TemplatePath, error.Message, StringComparison.Ordinal);
+            Assert.Contains(capture.StagingPath, error.Message, StringComparison.Ordinal);
+            Assert.True(Directory.Exists(capture.StagingPath));
+            Assert.Equal(sourceBytes, File.ReadAllBytes(sourcePath));
+            Assert.Equal(outputBytes, File.ReadAllBytes(context.BinDocumentPath));
+            Assert.Empty(events);
+            Assert.Empty(Directory.EnumerateFiles(Path.GetDirectoryName(context.BinDocumentPath)!, ".Book1.*.tmp.xlsm"));
+        }
+        finally
+        {
+            sourceLock?.Dispose();
+            capture.Dispose();
+            if (Directory.Exists(capture.StagingPath))
+            {
+                Directory.Delete(capture.StagingPath, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public async Task SourceSnapshotCaptureCleanupFailureStopsBeforeOutputOrExcelStarts()
     {
         if (!OperatingSystem.IsWindows())
@@ -1543,7 +1661,7 @@ public sealed class WorkbookMaterializerTests
         Func<string, WorkbookStagingArtifact>? inspectionWorkbookStager = null)
         => new(
             new WindowsExactFileSystemObjectOwnershipFactory(),
-            new WorkbookSourcePlanner(() => 65001),
+            new VbaSourceAdmission(() => 65001),
             automation,
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),

@@ -1174,7 +1174,7 @@ public sealed class ImportCommandTests
         VbaSourceAdmission sourceAdmission)
     {
         var materializer = new WorkbookMaterializer(new WindowsExactFileSystemObjectOwnershipFactory(),
-            new WorkbookSourcePlanner(),
+            new VbaSourceAdmission(ActiveWindowsAnsiCodePage.Get),
             automation,
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(

@@ -157,7 +157,7 @@ public sealed class TestCommandTests
         var sourcePath = Path.Combine(sourceRoot, "Encoded.bas");
         File.WriteAllBytes(sourcePath, Encoding.GetEncoding(932).GetBytes(source));
         var admission = new VbaSourceAdmission(() => 932)
-            .Admit(sourceRoot, VbaSourceAdmissionIntent.Build);
+            .AdmitProjectBuild(sourceRoot, [], CancellationToken.None);
         var locator = new TestProcedureSourceLocator();
 
         var located = Assert.Single(locator.Locate(
@@ -180,7 +180,7 @@ public sealed class TestCommandTests
         var sourcePath = Path.Combine(snapshotPath, "Encoded.bas");
         var source = "Attribute VB_Name = \"Test_Café\"\r\nPublic Sub Test_Passes()\r\nEnd Sub\r\n";
         File.WriteAllBytes(sourcePath, Encoding.GetEncoding(1252).GetBytes(source));
-        var admission = new VbaSourceAdmission(() => 1252).Admit(snapshotPath, VbaSourceAdmissionIntent.Build);
+        var admission = new VbaSourceAdmission(() => 1252).AdmitSourceSnapshotBuild(snapshotPath, CancellationToken.None);
         var locator = new TestProcedureSourceLocator();
         var result = new TestResultRecord(
             "Book1",
@@ -218,7 +218,7 @@ public sealed class TestCommandTests
             sourcePath,
             encoding.GetPreamble().Concat(encoding.GetBytes(source)).ToArray());
         var admission = new VbaSourceAdmission(() => 932)
-            .Admit(sourceRoot, VbaSourceAdmissionIntent.Build);
+            .AdmitProjectBuild(sourceRoot, [], CancellationToken.None);
         var locator = new TestProcedureSourceLocator();
 
         var located = Assert.Single(locator.Locate(
@@ -246,7 +246,7 @@ public sealed class TestCommandTests
             sourcePath,
             encoding.GetPreamble().Concat(encoding.GetBytes(source)).ToArray());
         var admission = new VbaSourceAdmission(() => 932)
-            .Admit(sourceRoot, VbaSourceAdmissionIntent.Build);
+            .AdmitProjectBuild(sourceRoot, [], CancellationToken.None);
         var locator = new TestProcedureSourceLocator();
 
         var located = Assert.Single(locator.Locate(
@@ -411,7 +411,7 @@ public sealed class TestCommandTests
             "Attribute VB_Name = \"Other_Module\"\nPublic Sub Test_Other()\nEnd Sub\n",
             new UTF8Encoding(false));
         var admission = new VbaSourceAdmission(() => 65001)
-            .Admit(sourceRoot, VbaSourceAdmissionIntent.Build);
+            .AdmitProjectBuild(sourceRoot, [], CancellationToken.None);
         var locator = new TestProcedureSourceLocator();
         TestResultRecord[] originals =
         [
@@ -2246,7 +2246,7 @@ public sealed class TestCommandTests
                 new UTF8Encoding(false));
         }
         var admission = new VbaSourceAdmission(() => 65001)
-            .Admit(sourceRoot, VbaSourceAdmissionIntent.Build);
+            .AdmitProjectBuild(sourceRoot, [], CancellationToken.None);
         var locator = new TestProcedureSourceLocator();
         var original = TestResultRecord.FromWorkbookRow("Book1", resultRow);
 
