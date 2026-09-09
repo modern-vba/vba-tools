@@ -336,7 +336,7 @@ public sealed class NewProjectCommand
         var requested = requestedModuleFiles.ToHashSet(
             StringComparer.OrdinalIgnoreCase);
         var selection = snapshot.ResolveRequestedPlan(requestedModuleFiles);
-        ValidateSelectedEntryIdentities(selection.Entries, sourceSetPath);
+        ValidateSelectedTargetPaths(selection.Entries, sourceSetPath);
         var commonModulesDirectory = Path.Combine(
             sourceSetPath,
             "common-modules");
@@ -373,29 +373,13 @@ public sealed class NewProjectCommand
             selection.RequiredReferences);
     }
 
-    private static void ValidateSelectedEntryIdentities(
+    private static void ValidateSelectedTargetPaths(
         IReadOnlyList<CommonModuleManifestEntry> entries,
         string sourceSetPath)
     {
-        var byName = new Dictionary<string, CommonModuleManifestEntry>(StringComparer.OrdinalIgnoreCase);
-        var byModuleFile = new Dictionary<string, CommonModuleManifestEntry>(StringComparer.OrdinalIgnoreCase);
         var byTargetPath = new Dictionary<string, CommonModuleManifestEntry>(StringComparer.OrdinalIgnoreCase);
         foreach (var entry in entries)
         {
-            if (byName.TryGetValue(entry.Name, out var matchingName))
-            {
-                throw new CommonModulesManifestException(
-                    $"CommonModules selection contains duplicate CommonModules name '{entry.Name}': " +
-                    $"'{matchingName.ModuleFile}' and '{entry.ModuleFile}'.");
-            }
-
-            if (byModuleFile.TryGetValue(entry.InstalledModuleFile, out var matchingModuleFile))
-            {
-                throw new CommonModulesManifestException(
-                    $"CommonModules selection contains duplicate flat moduleFile '{entry.InstalledModuleFile}': " +
-                    $"'{matchingModuleFile.ModuleFile}' and '{entry.ModuleFile}'.");
-            }
-
             var targetPath = Path.GetFullPath(Path.Combine(sourceSetPath, "common-modules", entry.InstalledModuleFile));
             if (byTargetPath.TryGetValue(targetPath, out var matchingTarget))
             {
@@ -404,8 +388,6 @@ public sealed class NewProjectCommand
                     $"resolve to the same target source file: {targetPath}");
             }
 
-            byName.Add(entry.Name, entry);
-            byModuleFile.Add(entry.InstalledModuleFile, entry);
             byTargetPath.Add(targetPath, entry);
         }
     }

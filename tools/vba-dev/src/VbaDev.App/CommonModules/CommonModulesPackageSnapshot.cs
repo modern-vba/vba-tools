@@ -129,9 +129,9 @@ public sealed class CommonModulesPackageSnapshotFactory
             }
 
             beforePackageLoad?.Invoke();
-            var package = FreezePackage(packageReader.LoadCaptured(
+            var package = packageReader.LoadCaptured(
                 staging.Path,
-                capturedBytes));
+                capturedBytes);
             beforeLiveStabilityProof?.Invoke();
             cancellationToken.ThrowIfCancellationRequested();
             ProveLiveInputsStable(repositoryPath, inventory, capturedBytes);
@@ -331,15 +331,6 @@ public sealed class CommonModulesPackageSnapshotFactory
             "CommonModules package changed while its immutable snapshot was being captured. "
             + "No source or manifest changes were made. Rerun the command.");
 
-    private static CommonModulesPackage FreezePackage(CommonModulesPackage package)
-        => new(Array.AsReadOnly(package.Entries
-            .Select(entry => new CommonModuleManifestEntry(
-                entry.ModuleFile,
-                Array.AsReadOnly(entry.Categories.ToArray()),
-                Array.AsReadOnly(entry.Dependencies.ToArray()),
-                Array.AsReadOnly(entry.RequiredReferences.ToArray())))
-            .ToArray()));
-
     private sealed class NoOpCommonModulesPackageSnapshotCleanupObserver
         : ICommonModulesPackageSnapshotCleanupObserver
     {
@@ -459,12 +450,14 @@ public sealed class CommonModulesPackageSnapshot : IDisposable
     /// <summary>
     /// Gets the canonical manifest entries parsed exclusively from the staged manifest bytes.
     /// </summary>
-    public IReadOnlyList<CommonModuleManifestEntry> Entries
+    public IReadOnlyList<CommonModuleManifestEntry> Entries => Package.Entries;
+
+    internal CommonModulesPackage Package
     {
         get
         {
             ThrowIfDisposed();
-            return package.Entries;
+            return package;
         }
     }
 
@@ -476,9 +469,7 @@ public sealed class CommonModulesPackageSnapshot : IDisposable
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(requestedModules);
-        return CommonModulesDependencyResolver.ResolveRequestedPlan(
-            package.Entries,
-            requestedModules);
+        return package.ResolveRequestedPlan(requestedModules);
     }
 
     /// <summary>

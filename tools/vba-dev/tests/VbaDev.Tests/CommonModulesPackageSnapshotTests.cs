@@ -11,6 +11,70 @@ namespace VbaDev.Tests;
 public sealed class CommonModulesPackageSnapshotTests
 {
     [Fact]
+    public void ReturnedSelectionPlanCannotBeRewrittenThroughPublishedCollections()
+    {
+        using var temp = TempDirectory.Create();
+        var repository = temp.CreateDirectory("common_modules_repo");
+        WriteManifest(repository,
+            ("Feature.bas", "optional", "Base.bas"),
+            ("Base.bas", "runtime-baseline", string.Empty));
+        WriteSource(repository, "Feature.bas", "feature");
+        WriteSource(repository, "Base.bas", "base");
+        using var snapshot = new CommonModulesPackageSnapshotFactory(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
+            new CommonModulesPackageReader(new CommonModulesManifestReader()),
+            temp.CreateDirectory("scratch"))
+            .Capture(repository, CancellationToken.None);
+        var plan = snapshot.ResolveRequestedPlan(["Feature"]);
+
+        TryReplaceOrAdd(plan.Entries, plan.Entries[1]);
+        TryReplaceOrAdd(plan.RequiredReferences, "Injected Library");
+        TryReplaceOrAdd(snapshot.Entries, plan.Entries[0]);
+        foreach (var entry in plan.Entries)
+        {
+            TryReplaceOrAdd(entry.Categories, "test-double");
+            TryReplaceOrAdd(entry.Dependencies, "Missing.bas");
+            TryReplaceOrAdd(entry.RequiredReferences, "Injected Library");
+        }
+
+        Assert.Equal(["Base.bas", "Feature.bas"], plan.Entries.Select(entry => entry.ModuleFile));
+        Assert.Empty(plan.RequiredReferences);
+        Assert.Equal(["Feature.bas", "Base.bas"], snapshot.Entries.Select(entry => entry.ModuleFile));
+        Assert.Equal(["runtime-baseline"], plan.Entries[0].Categories);
+        Assert.Empty(plan.Entries[0].Dependencies);
+        Assert.Equal(["optional"], plan.Entries[1].Categories);
+        Assert.Equal(["Base.bas"], plan.Entries[1].Dependencies);
+        Assert.All(plan.Entries, entry => Assert.Empty(entry.RequiredReferences));
+        var subsequent = snapshot.ResolveRequestedPlan(["Feature"]);
+        Assert.Equal(["Base.bas", "Feature.bas"], subsequent.Entries.Select(entry => entry.ModuleFile));
+        Assert.Empty(subsequent.RequiredReferences);
+    }
+
+    private static void TryReplaceOrAdd<T>(IReadOnlyList<T> values, T replacement)
+    {
+        if (values is not IList<T> writableView)
+        {
+            return;
+        }
+
+        try
+        {
+            if (writableView.Count == 0)
+            {
+                writableView.Add(replacement);
+            }
+            else
+            {
+                writableView[0] = replacement;
+            }
+        }
+        catch (NotSupportedException)
+        {
+            // Ordinary collection interfaces may reject writes to immutable views.
+        }
+    }
+
+    [Fact]
     public void CleanupRetriesOwnedFilesAndFinishesAfterCommandCancellation()
     {
         if (!OperatingSystem.IsWindows())

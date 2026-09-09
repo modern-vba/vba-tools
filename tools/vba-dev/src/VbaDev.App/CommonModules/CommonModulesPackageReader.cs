@@ -5,13 +5,6 @@ using VbaTools.Syntax;
 namespace VbaDev.App.CommonModules;
 
 /// <summary>
-/// Represents one completely validated canonical CommonModules package.
-/// </summary>
-/// <param name="Entries">The manifest entries in canonical declaration order.</param>
-public sealed record CommonModulesPackage(
-    IReadOnlyList<CommonModuleManifestEntry> Entries);
-
-/// <summary>
 /// Validates the closed, flat CommonModules package boundary before installation planning.
 /// </summary>
 public sealed class CommonModulesPackageReader
@@ -43,6 +36,10 @@ public sealed class CommonModulesPackageReader
     /// Reads and completely validates one canonical package root.
     /// </summary>
     public CommonModulesPackage Load(string commonModulesRepositoryPath)
+        => CommonModulesPackage.AdmitLive(this, commonModulesRepositoryPath);
+
+    internal IReadOnlyList<CommonModuleManifestEntry> ReadValidatedLiveEntries(
+        string commonModulesRepositoryPath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(commonModulesRepositoryPath);
         var repository = new DirectoryInfo(commonModulesRepositoryPath);
@@ -115,10 +112,15 @@ public sealed class CommonModulesPackageReader
             }
         }
 
-        return new CommonModulesPackage(manifestEntries);
+        return manifestEntries;
     }
 
     internal CommonModulesPackage LoadCaptured(
+        string displayRootPath,
+        IReadOnlyDictionary<string, byte[]> capturedFiles)
+        => CommonModulesPackage.AdmitCaptured(this, displayRootPath, capturedFiles);
+
+    internal IReadOnlyList<CommonModuleManifestEntry> ReadValidatedCapturedEntries(
         string displayRootPath,
         IReadOnlyDictionary<string, byte[]> capturedFiles)
     {
@@ -187,7 +189,7 @@ public sealed class CommonModulesPackageReader
             }
         }
 
-        return new CommonModulesPackage(manifestEntries);
+        return manifestEntries;
     }
 
     private static void ValidateSourceMetadata(

@@ -52,45 +52,43 @@ internal sealed class CommonModulesReconciliation
     internal ImmutableArray<string> OrphanedNames { get; }
 
     internal static CommonModulesReconciliation Create(
-        IReadOnlyList<CommonModuleManifestEntry> repository,
+        CommonModulesPackage package,
         IReadOnlyList<InstalledCommonModule> installedSelection)
     {
-        var entries = repository.Select(entry => entry with
-        {
-            Categories = entry.Categories.ToImmutableArray(),
-            Dependencies = entry.Dependencies.ToImmutableArray(),
-            RequiredReferences = entry.RequiredReferences.ToImmutableArray()
-        }).ToImmutableArray();
+        ArgumentNullException.ThrowIfNull(package);
         var installed = installedSelection.ToImmutableArray();
-        var entriesByName = entries.ToDictionary(entry => entry.Name, StringComparer.OrdinalIgnoreCase);
-        var entriesByFile = entries.ToDictionary(entry => entry.ModuleFile, StringComparer.OrdinalIgnoreCase);
         var installedNames = installed.Select(module => module.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var roots = installed.Where(module => module.Requested).ToArray();
-        var availableRoots = roots.Where(module => entriesByName.ContainsKey(module.Name)).ToArray();
-        var requestedClosure = CommonModulesDependencyResolver.ResolveRequestedEntries(
-            entries, availableRoots.Select(module => module.Name).ToArray()).ToImmutableArray();
-        var orderedEntries = CommonModulesDependencyResolver.MergeEntries(requestedClosure,
-            installed.Where(module => entriesByName.ContainsKey(module.Name))
-                .Select(module => entriesByName[module.Name]).ToArray()).ToImmutableArray();
-        var references = CommonModulesDependencyResolver.CreateSelectionPlan(orderedEntries)
-            .RequiredReferences.ToImmutableArray();
+        var availableRoots = roots.Where(module => package.TryGetEntryByName(module.Name, out _)).ToArray();
+        var requestedClosure = package.ResolveRequestedPlan(
+            availableRoots.Select(module => module.Name).ToArray()).Entries.ToImmutableArray();
+        var retainedEntries = installed
+            .Select(module => package.TryGetEntryByName(module.Name, out var entry) ? entry : null)
+            .OfType<CommonModuleManifestEntry>();
+        var orderedEntries = requestedClosure.Concat(retainedEntries)
+            .DistinctBy(entry => entry.ModuleFile, StringComparer.OrdinalIgnoreCase).ToImmutableArray();
+        var references = package.GetRequiredReferences(
+            orderedEntries.Select(entry => entry.ModuleFile).ToArray()).ToImmutableArray();
 
         // A reappeared root can be refreshed by Update, but its stored orphan marker
         // withholds current dependency authority from Doctor until refresh commits.
-        var allRootsCurrent = roots.All(module => !module.Orphaned && entriesByName.ContainsKey(module.Name));
+        var allRootsCurrent = roots.All(module => !module.Orphaned && package.TryGetEntryByName(module.Name, out _));
         var reachable = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var missing = ImmutableArray.CreateBuilder<MissingInstalledCommonModuleDependency>();
         foreach (var root in availableRoots.Where(module => !module.Orphaned))
         {
-            var entry = entriesByName[root.Name];
+            if (!package.TryGetEntryByName(root.Name, out var entry))
+            {
+                continue;
+            }
             reachable.Add(entry.Name);
-            CollectDependencyFacts(root.Name, entry, entriesByFile, installedNames, reachable,
+            CollectDependencyFacts(root.Name, entry, package, installedNames, reachable,
                 new HashSet<string>(StringComparer.OrdinalIgnoreCase), missing);
         }
 
         var reconciled = installed.Select(module =>
         {
-            entriesByName.TryGetValue(module.Name, out var entry);
+            package.TryGetEntryByName(module.Name, out var entry);
             var state = (entry is not null, module.Orphaned) switch
             {
                 (false, false) => CommonModuleRepositoryState.MissingOrphanMarker,
@@ -108,7 +106,7 @@ internal sealed class CommonModulesReconciliation
     private static void CollectDependencyFacts(
         string rootName,
         CommonModuleManifestEntry entry,
-        IReadOnlyDictionary<string, CommonModuleManifestEntry> entriesByFile,
+        CommonModulesPackage package,
         IReadOnlySet<string> installedNames,
         HashSet<string> reachable,
         HashSet<string> visited,
@@ -120,13 +118,13 @@ internal sealed class CommonModulesReconciliation
         }
         foreach (var dependency in entry.Dependencies)
         {
-            var dependencyEntry = entriesByFile[dependency];
+            var dependencyEntry = package.GetEntryByFileName(dependency);
             reachable.Add(dependencyEntry.Name);
             if (!visited.Contains(dependencyEntry.ModuleFile) && !installedNames.Contains(dependencyEntry.Name))
             {
                 missing.Add(new(rootName, dependencyEntry.Name));
             }
-            CollectDependencyFacts(rootName, dependencyEntry, entriesByFile, installedNames, reachable, visited, missing);
+            CollectDependencyFacts(rootName, dependencyEntry, package, installedNames, reachable, visited, missing);
         }
     }
 }
