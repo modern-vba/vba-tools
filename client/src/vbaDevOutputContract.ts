@@ -224,6 +224,21 @@ export function parseVbaDevDiagnostics(output: string): VbaDevDiagnostic[] {
   return diagnostics;
 }
 
+export interface VbaDevSourceAnalysisReport {
+  readonly complete: boolean;
+  readonly diagnostics: readonly VbaDevDiagnostic[];
+  readonly failures: readonly { readonly message: string }[];
+}
+
+export function parseVbaDevSourceAnalysisReports(output: string): VbaDevSourceAnalysisReport[] {
+  return parseJsonRecords(output).flatMap(value => {
+    if (!isRecord(value) || value.type !== 'sourceAnalysis') return [];
+    const diagnostics = parseSourceAnalysisDiagnostics(value);
+    return [{ complete: value.complete as boolean, diagnostics,
+      failures: (value.failures as { message: string }[]).map(failure => ({ message: failure.message })) }];
+  });
+}
+
 export function parseVbaDevTestEvents(stdout: string): VbaDevTestEvent[] {
   const events: VbaDevTestEvent[] = [];
   for (const value of parseJsonRecords(stdout)) {

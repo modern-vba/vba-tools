@@ -23,6 +23,11 @@ export interface VbaDevDiagnosticReporterLike {
   refresh(scopeKey: string, output: string): readonly VbaDevDiagnostic[];
 }
 
+export interface VbaDevSnapshotDiagnosticReporterLike extends VbaDevDiagnosticReporterLike {
+  refreshSnapshot(scopeKey: string, output: string, origins: readonly SnapshotDiagnosticOrigin[],
+    reportUnmapped: (message: string) => void): readonly VbaDevDiagnostic[];
+}
+
 export interface SnapshotDiagnosticOrigin {
   readonly snapshotUri: string;
   readonly sourceUri?: string | null;
@@ -45,7 +50,7 @@ export function combineVbaDevDiagnosticOutput(stdout: string, stderr: string): s
   return stdout.length > 0 ? stdout : stderr;
 }
 
-export class VbaDevDiagnosticReporter implements VbaDevDiagnosticReporterLike {
+export class VbaDevDiagnosticReporter implements VbaDevSnapshotDiagnosticReporterLike {
   private readonly diagnosticsByScope = new Map<string, Map<string, DiagnosticContribution>>();
   private readonly publishedUriPaths = new Map<string, string>();
 
