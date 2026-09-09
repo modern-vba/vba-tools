@@ -848,6 +848,30 @@ internal sealed class VbaProjectSnapshotProvider : IDisposable
         }
     }
 
+    internal bool IsCurrentRenameConfirmationAuthority(
+        ProjectSnapshotOwnership? ownership)
+    {
+        if (ownership is null)
+        {
+            return false;
+        }
+
+        lock (gate)
+        {
+            return !disposed
+                && manifestResolutionSource.CaptureScopeBarriers(
+                        new VbaIdentifiedDocument(
+                            ownership.ActiveDocumentIdentity,
+                            ownership.ActiveUri),
+                        ownership.Resolution)
+                    .Revision == ownership.ManifestVersion
+                && intrinsicHostEventCatalogStore.CaptureState().Revision
+                    == ownership.IntrinsicHostEventCatalogRevision
+                && CaptureReferenceCatalogRevision(ownership)
+                    == ownership.ReferenceCatalogRevision;
+        }
+    }
+
     public bool TryApplyIntrinsicHostEventCatalog(
         VbaIntrinsicHostEventCatalogUpdate update)
     {

@@ -665,7 +665,32 @@ language-client restart but is never persisted across extension activations.
 
 ---
 
-## Semantic Module Rename
+## Semantic Rename
+
+Use F2 on a source-owned declaration or its resolved reference. When the new
+name collides, VBA Tools shows the old and new names, known conflicts and
+locations, and the consequences for references. Choose **Cancel** or **Continue
+once**. Escape, dismissal and cancellation make no edit. Each operation asks
+again; the choice is never saved as a preference.
+
+Continue once changes the original declaration and its established references,
+including supported Property/conditional families and linked Event or Implements
+names. It leaves the colliding declaration and implementation for you to
+consolidate manually. References can temporarily become ambiguous or change
+meaning, and duplicate-declaration diagnostics remain available. Invalid names,
+unrelated implicit-type changes and incomplete source evidence still prevent
+the operation. Changes to participating sources or destinations while the
+warning is open require a fresh Rename.
+
+If the module's destination filename already exists, the warning offers to keep
+the original filename. For example, changing the module in `A.bas` to `B` keeps
+`A.bas` when `B.bas` exists. For a form, a conflict with either destination keeps
+both original `.frm`/`.frx` paths and resource filename references. The warning
+states the resulting module name and retained paths; files are never overwritten
+or merged. Rename does not save files or start Excel. Explorer file Rename is
+unchanged.
+
+### Module and form identities
 
 Rename on an exported module identity starts from authoritative
 `Attribute VB_Name` metadata or another resolved use of that same module. A
@@ -684,8 +709,9 @@ or subsequently changed template content fails with `analysisIncomplete`, and a
 final whole-package content check
 runs before every resulting workspace edit, including a text-only edit.
 
-When the source basename matches the old module name, `.bas`, `.cls`, or `.frm`
-follows the semantic Rename. A source-owned UserForm is one `FormSourceUnit`:
+When the source basename matches the old module name and its destination is
+available, `.bas`, `.cls`, or `.frm` follows the semantic Rename. A source-owned
+UserForm is one `FormSourceUnit`:
 its `.frm`, optional matching `.frx`, paths, and participating semantic source
 snapshots share one mutation boundary. Rename changes the authoritative
 attribute, semantic occurrences, and single outermost designer identity. When

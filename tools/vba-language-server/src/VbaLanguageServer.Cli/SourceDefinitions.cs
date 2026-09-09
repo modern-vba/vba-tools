@@ -961,7 +961,102 @@ internal sealed record VbaRenameConflict(
 
 internal sealed record VbaRenameResult(
     VbaRenamePlan? Plan,
-    VbaRenameFailure? Failure);
+    VbaRenameFailure? Failure,
+    VbaRenameCollisionReview? CollisionReview = null);
+
+internal enum VbaRenameCollisionMode
+{
+    Reject,
+    PrepareConfirmation
+}
+
+internal enum VbaRenameImpactKind
+{
+    DeclarationCollision,
+    TargetBindingChanged,
+    NonTargetBindingChanged,
+    ClassificationChanged,
+    LogicalGroupingChanged,
+    TypeNameResolutionChanged,
+    DependentAssociationChanged
+}
+
+internal sealed record VbaRenameImpact(
+    VbaRenameImpactKind Kind,
+    string Message,
+    string? Uri = null,
+    VbaRange? Range = null)
+{
+    [JsonIgnore]
+    public VbaRenameImpactEvidence? Evidence { get; init; }
+
+    [JsonIgnore]
+    public VbaRenameDeclaredTypeImpactEvidence? DeclaredTypeEvidence { get; init; }
+
+    [JsonIgnore]
+    public VbaRenameGroupingImpactEvidence? GroupingEvidence { get; init; }
+
+    [JsonIgnore]
+    public VbaRenameWithEventsImpactEvidence? WithEventsEvidence { get; init; }
+
+    [JsonIgnore]
+    public VbaRenameInterfaceImpactEvidence? InterfaceEvidence { get; init; }
+
+    [JsonIgnore]
+    public VbaRenameReferenceProjectImpactEvidence? ReferenceProjectEvidence { get; init; }
+}
+
+internal sealed record VbaRenameReferenceProjectImpactEvidence(
+    string ReferenceName,
+    string ReferencedVbaProjectName,
+    VbaRenameCausalDefinitionCorrespondence SourceModule,
+    VbaResolvedNameTarget BeforeMemberTarget,
+    VbaResolvedNameTarget ControlMemberTarget,
+    VbaResolvedNameTarget AfterMemberTarget);
+
+internal sealed record VbaRenameInterfaceImpactEvidence(
+    VbaInterfaceImplementationAssociation Before,
+    VbaInterfaceImplementationAssociation Control,
+    IReadOnlyList<VbaInterfaceImplementationAssociation> After,
+    IReadOnlyList<VbaRenameCausalDefinitionCorrespondence> DeclarationCauses);
+
+internal sealed record VbaRenameWithEventsImpactEvidence(
+    VbaHandlerEventRenameConvergence Before,
+    VbaHandlerEventRenameConvergence Control,
+    VbaHandlerEventRenameConvergence? After,
+    IReadOnlyList<VbaRenameCausalDefinitionCorrespondence> DeclarationCauses);
+
+internal sealed record VbaRenameGroupingImpactEvidence(
+    VbaResolvedNameTarget BeforeTarget,
+    VbaResolvedNameTarget ControlTarget,
+    VbaResolvedNameTarget AfterTarget,
+    IReadOnlyList<VbaRenameCausalDefinitionCorrespondence> DeclarationCauses);
+
+internal sealed record VbaRenameDeclaredTypeImpactEvidence(
+    VbaRenameCausalDefinitionCorrespondence Declaration,
+    VbaEffectiveDeclaredType BeforeType,
+    VbaEffectiveDeclaredType ControlType,
+    VbaEffectiveDeclaredType AfterType,
+    IReadOnlyList<VbaRenameCausalDefinitionCorrespondence> TypeDeclarationCauses);
+
+internal sealed record VbaRenameCausalDefinitionCorrespondence(
+    VbaSourceDefinition BeforeDefinition,
+    VbaSourceDefinition ControlDefinition,
+    VbaSourceDefinition AfterDefinition);
+
+internal sealed record VbaRenameImpactEvidence(
+    VbaNameResolutionKind BeforeClassification,
+    VbaNameResolutionKind ControlClassification,
+    VbaNameResolutionKind AfterClassification,
+    VbaRange ControlRange,
+    VbaRange AfterRange,
+    IReadOnlyList<VbaRenameCausalDefinitionCorrespondence> DeclarationCauses);
+
+internal sealed record VbaRenameCollisionReview(
+    string OriginalName,
+    string RequestedName,
+    IReadOnlyList<VbaRenameConflict> Conflicts,
+    IReadOnlyList<VbaRenameImpact> Impacts);
 
 /// <summary>
 /// Represents a workspace symbol projected from a source definition.

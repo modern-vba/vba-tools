@@ -4,6 +4,15 @@ status: accepted
 
 # Make Rename meaning-preserving
 
+ADR 0050 revises this ADR's strict collision and post-edit preservation rules
+for an explicitly confirmed intentional-collision operation. The rules below
+remain the ordinary strict contract. An integrated client may present one
+complete, independently validated plan and permit its structured collision
+consequences after Continue once. Pre-edit identity and complete dependent
+coverage, independent effective-type checks from ADR 0045, ownership, and
+source/template/currentness evidence remain mandatory. Error reason codes alone
+never classify a failure as confirmable.
+
 ADR 0036 supersedes this ADR's acquisition of `VbaProjectName` through a host
 projection and its `HostManagedModuleIdentity` treatment of UserForms and
 intrinsic document modules. Containing project identity is read statically from
@@ -244,12 +253,16 @@ manifest exists.
 
 File-following `ModuleIdentity` Rename is available only when the LSP client
 advertises both ordered `documentChanges` and the `rename` resource operation.
-Otherwise the operation fails at Rename entry with `clientCapabilityMissing`;
+Otherwise an ordinary file-following operation fails with `clientCapabilityMissing`;
 the server never omits the required file operation and returns text edits alone.
 For a capable client, the server preflights source and destination existence,
 case-insensitive destination collisions, required form sidecars, and the complete
 semantic edit set before it returns one ordered `WorkspaceEdit`. File Rename
-does not overwrite an existing destination or ignore a collision.
+does not overwrite an existing destination. Under ADR 0050, an existing
+destination can instead produce an explicit path-retention confirmation. The
+final retained plan requires no omitted resource capability: it intentionally
+keeps the original module path, or both form paths and resource filenames, while
+retaining all source-unit evidence and final currentness checks.
 
 A preflight source-unit or destination conflict returns
 `resourceOperationConflict` and no edit. Its structured

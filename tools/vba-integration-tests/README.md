@@ -5,13 +5,18 @@ products. It is a test owner, not a shared production foundation. Product test
 projects do not reference it, and it neither links product test sources nor
 references or builds the language-server or debug-adapter projects.
 
-The UserForm rename roundtrip test sends public LSP `initialize`,
+The UserForm rename roundtrip tests send public LSP `initialize`,
 `textDocument/didOpen`, and `textDocument/rename` messages to an already-built
-language server. It applies the returned workspace edit and invokes the public
+language server. Each applies the returned workspace edit and invokes the public
 `vba-dev build` and `vba-dev export` process contracts. It preserves the original
 Excel assertions for renamed form identity, exact sidecar bytes during rename,
 nested controls and non-ASCII content after build, and matching exported `.frm`
-and `.frx` files. The neutral owner keeps its own process clients and native
+and `.frx` files. The retained-path case first confirms a destination conflict
+through `vba/confirmRename`, checks unchanged original filenames, resource
+references and bytes, then explicitly removes only the test-created conflict
+before build/import/re-export. This fixture cleanup models manual consolidation;
+the user Rename operation never saves source, repairs collisions or runs Excel.
+The neutral owner keeps its own process clients and native
 fixture helpers. Its only product assembly reference is `VbaDev.Infrastructure`
 for the owned Excel fixture and COM cleanup; the fixture's internal access is
 limited to this test assembly through `InternalsVisibleTo`.
@@ -22,7 +27,7 @@ limited to this test assembly through `InternalsVisibleTo`.
 npm run test:cross-product-integration
 ```
 
-The ordinary command compiles and discovers the suite, with the real Excel case
+The ordinary command compiles and discovers the suite, with the real Excel cases
 skipped by default. It does not require product executables or start Excel.
 
 The complete opted-in Windows suite builds the product executables explicitly
@@ -32,7 +37,7 @@ before running this neutral owner together with product-local Excel tests:
 npm run test:windows-excel-integration
 ```
 
-To run just this real Excel test, first build `VbaLanguageServer.Cli` and
+To run just these real Excel tests, first build `VbaLanguageServer.Cli` and
 `VbaDev.Cli`, then run:
 
 ```powershell

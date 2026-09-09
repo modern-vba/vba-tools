@@ -8,6 +8,229 @@ namespace VbaLanguageServer.Tests;
 
 public sealed class VbaSemanticInventoryTests
 {
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Collision_review_distinguishes_binding_capture_from_legal_same_named_declarations(bool capturesExistingUse)
+    {
+        const string uri = "file:///C:/work/ScopedConsolidation.bas";
+        var inventory = VbaSemanticInventory.Create(CreateSourceDocuments(new Dictionary<string, string>
+        {
+            [uri] =
+                $$"""
+                Attribute VB_Name = "ScopedConsolidation"
+                Public existing As Long
+                Public Sub Run()
+                    Dim original As Long
+                    original = 1
+                    {{(capturesExistingUse ? "existing = 2" : "Debug.Print original")}}
+                End Sub
+                Public Sub Outside()
+                    existing = 3
+                End Sub
+                """
+        }));
+
+        var result = inventory.CreateRenameResult(
+            uri, 3, "    Dim ".Length, "existing",
+            collisionMode: VbaRenameCollisionMode.PrepareConfirmation);
+
+        Assert.Null(result.Failure);
+        var plan = Assert.IsType<VbaRenamePlan>(result.Plan);
+        Assert.Equal(capturesExistingUse ? [3, 4] : [3, 4, 5],
+            Assert.Single(plan.Changes).Value.Select(edit => edit.Range.Start.Line));
+        if (capturesExistingUse)
+        {
+            var review = Assert.IsType<VbaRenameCollisionReview>(result.CollisionReview);
+            Assert.Equal(1, Assert.Single(review.Conflicts).Range?.Start.Line);
+            Assert.Contains(review.Impacts, impact => impact.Kind == VbaRenameImpactKind.NonTargetBindingChanged
+                && impact.Range?.Start.Line == 5);
+            Assert.Equal("resolutionChanged", inventory.CreateRenameResult(
+                uri, 3, "    Dim ".Length, "existing").Failure?.Reason);
+        }
+        else
+        {
+            Assert.Null(result.CollisionReview);
+        }
+    }
+
+    [Fact]
+    public void Collision_review_traces_member_binding_changes_through_the_original_receiver_type()
+    {
+        const string originalUri = "file:///C:/work/Original.cls";
+        const string existingUri = "file:///C:/work/Existing.cls";
+        const string callerUri = "file:///C:/work/Caller.bas";
+        var inventory = VbaSemanticInventory.Create(CreateSourceDocuments(new Dictionary<string, string>
+        {
+            [originalUri] = "Attribute VB_Name = \"Original\"\nPublic Sub Run()\nEnd Sub\n",
+            [existingUri] = "Attribute VB_Name = \"Existing\"\nPublic Sub Run()\nEnd Sub\n",
+            [callerUri] =
+                """
+                Attribute VB_Name = "Caller"
+                Public Sub Main()
+                    Dim value As Original
+                    value.Run
+                End Sub
+                """
+        }));
+        Assert.Equal(originalUri, inventory.ResolveSourceDefinition(callerUri, 3, "    value.".Length)?.Uri);
+
+        var result = inventory.CreateRenameResult(
+            originalUri, 0, "Attribute VB_Name = \"".Length, "Existing",
+            collisionMode: VbaRenameCollisionMode.PrepareConfirmation,
+            retainOriginalPaths: true);
+
+        Assert.Null(result.Failure);
+        var plan = Assert.IsType<VbaRenamePlan>(result.Plan);
+        var review = Assert.IsType<VbaRenameCollisionReview>(result.CollisionReview);
+        Assert.Equal([callerUri, originalUri], plan.Changes.Keys.Order(StringComparer.OrdinalIgnoreCase));
+        Assert.Equal(0, Assert.Single(plan.Changes[originalUri]).Range.Start.Line);
+        Assert.Equal(2, Assert.Single(plan.Changes[callerUri]).Range.Start.Line);
+        Assert.DoesNotContain(existingUri, plan.Changes.Keys);
+        Assert.Contains(review.Impacts, impact => impact.Kind == VbaRenameImpactKind.NonTargetBindingChanged
+            && impact.Uri == callerUri && impact.Range?.Start.Line == 3);
+    }
+
+    [Fact]
+    public void Collision_review_retains_source_type_correspondence_when_the_requested_class_name_becomes_ambiguous()
+    {
+        const string originalUri = "file:///C:/work/Original.cls";
+        const string existingUri = "file:///C:/work/Existing.cls";
+        const string callerUri = "file:///C:/work/Caller.bas";
+        var inventory = VbaSemanticInventory.Create(CreateSourceDocuments(new Dictionary<string, string>
+        {
+            [originalUri] = "Attribute VB_Name = \"Original\"\nPublic Value As Long\n",
+            [existingUri] = "Attribute VB_Name = \"Existing\"\nPublic OtherValue As Long\n",
+            [callerUri] =
+                """
+                Attribute VB_Name = "Caller"
+                Public Sub Run()
+                    Dim value As Original
+                End Sub
+                """
+        }));
+
+        var result = inventory.CreateRenameResult(
+            originalUri, 0, "Attribute VB_Name = \"".Length, "Existing",
+            collisionMode: VbaRenameCollisionMode.PrepareConfirmation,
+            retainOriginalPaths: true);
+
+        Assert.Null(result.Failure);
+        var plan = Assert.IsType<VbaRenamePlan>(result.Plan);
+        var review = Assert.IsType<VbaRenameCollisionReview>(result.CollisionReview);
+        Assert.Equal([callerUri, originalUri], plan.Changes.Keys.Order(StringComparer.OrdinalIgnoreCase));
+        Assert.Single(plan.Changes[originalUri]);
+        Assert.Single(plan.Changes[callerUri]);
+        Assert.Empty(plan.FileRenames);
+        Assert.DoesNotContain(existingUri, plan.Changes.Keys);
+        Assert.Contains(review.Impacts, impact => impact.Kind == VbaRenameImpactKind.TypeNameResolutionChanged);
+    }
+
+    [Fact]
+    public void Collision_review_proves_callable_impacts_without_editing_the_colliding_body()
+    {
+        const string uri = "file:///C:/work/CallableConsolidation.bas";
+        var inventory = VbaSemanticInventory.Create(CreateSourceDocuments(new Dictionary<string, string>
+        {
+            [uri] =
+                """
+                Attribute VB_Name = "CallableConsolidation"
+                Public Function Original() As Long
+                    Original = 1
+                End Function
+                Public Function Existing() As Long
+                    Existing = 2
+                End Function
+                Public Sub Run()
+                    Debug.Print Original(), Existing()
+                End Sub
+                """
+        }));
+
+        var result = inventory.CreateRenameResult(
+            uri, 1, "Public Function ".Length, "Existing",
+            collisionMode: VbaRenameCollisionMode.PrepareConfirmation);
+
+        Assert.Null(result.Failure);
+        var plan = Assert.IsType<VbaRenamePlan>(result.Plan);
+        var review = Assert.IsType<VbaRenameCollisionReview>(result.CollisionReview);
+        Assert.Equal([1, 2, 8], Assert.Single(plan.Changes).Value.Select(edit => edit.Range.Start.Line));
+        Assert.Contains(review.Impacts, impact => impact.Kind == VbaRenameImpactKind.TargetBindingChanged);
+        Assert.Contains(review.Impacts, impact => impact.Kind == VbaRenameImpactKind.NonTargetBindingChanged);
+        Assert.DoesNotContain(plan.Changes[uri], edit => edit.Range.Start.Line is 4 or 5);
+    }
+
+    [Theory]
+    [InlineData("", "resolutionChanged")]
+    [InlineData(" As MissingType", "analysisIncomplete")]
+    public void Collision_review_keeps_independent_effective_type_failures(string typeClause, string reason)
+    {
+        const string uri = "file:///C:/work/TypedConsolidation.bas";
+        var inventory = VbaSemanticInventory.Create(CreateSourceDocuments(new Dictionary<string, string>
+        {
+            [uri] =
+                $$"""
+                Attribute VB_Name = "TypedConsolidation"
+                DefInt O
+                DefLng E
+                Public Sub Run()
+                    Dim original{{typeClause}}
+                    Dim existing As Long
+                    original = 1
+                    Debug.Print original, existing
+                End Sub
+                """
+        }));
+
+        var result = inventory.CreateRenameResult(
+            uri, 4, "    Dim ".Length, "existing",
+            collisionMode: VbaRenameCollisionMode.PrepareConfirmation);
+
+        Assert.Null(result.Plan);
+        Assert.Null(result.CollisionReview);
+        Assert.Equal(reason, result.Failure?.Reason);
+    }
+
+    [Fact]
+    public void Collision_review_keeps_the_original_explicitly_typed_rename_closure()
+    {
+        const string uri = "file:///C:/work/Consolidation.bas";
+        var inventory = VbaSemanticInventory.Create(CreateSourceDocuments(new Dictionary<string, string>
+        {
+            [uri] =
+                """
+                Attribute VB_Name = "Consolidation"
+                Public Sub Run()
+                    Dim original As Long
+                    Dim existing As Long
+                    original = 1
+                    Debug.Print original, existing
+                End Sub
+                """
+        }));
+        var originalOccurrences = inventory.FindReferences(uri, 2, "    Dim ".Length);
+
+        var result = inventory.CreateRenameResult(
+            uri, 2, "    Dim ".Length, "existing",
+            collisionMode: VbaRenameCollisionMode.PrepareConfirmation);
+
+        Assert.Null(result.Failure);
+        var plan = Assert.IsType<VbaRenamePlan>(result.Plan);
+        var review = Assert.IsType<VbaRenameCollisionReview>(result.CollisionReview);
+        Assert.Equal("original", review.OriginalName);
+        Assert.Equal("existing", review.RequestedName);
+        var conflict = Assert.Single(review.Conflicts);
+        Assert.Equal("existing", conflict.Name);
+        Assert.Equal(3, conflict.Range!.Start.Line);
+        Assert.Contains(review.Impacts, impact => impact.Kind == VbaRenameImpactKind.DeclarationCollision);
+        var edits = Assert.Single(plan.Changes).Value;
+        Assert.Equal([2, 4, 5], edits.Select(edit => edit.Range.Start.Line));
+        Assert.Equal(originalOccurrences.Select(occurrence => occurrence.Range), edits.Select(edit => edit.Range));
+        Assert.All(edits, edit => Assert.Equal("existing", edit.NewText));
+        Assert.DoesNotContain(edits, edit => edit.Range.Start.Line == 3);
+        Assert.DoesNotContain(edits, edit => edit.Range.Start.Line == 5 && edit.Range.Start.Character >= "    Debug.Print original, ".Length);
+    }
+
     [Fact]
     public void Inventory_serves_definition_oriented_queries_from_project_source()
     {

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
 import * as path from 'node:path';
 import {
+  Location,
   Position,
   Range,
   Uri,
@@ -12,6 +13,7 @@ import {
   workspace
 } from 'vscode';
 import { CaseOnlyVbaFileRenameAdapter } from '../../caseOnlyVbaFileRename';
+import { useVbaRenameWarningHostForTest } from '../../rename';
 
 export async function runModuleRenameIntegrationTests(): Promise<void> {
   const fixtureRoot = process.env.VBA_TOOLS_EXTENSION_HOST_FIXTURE_ROOT;
@@ -49,6 +51,249 @@ export async function runModuleRenameIntegrationTests(): Promise<void> {
   await verifyProductionSidecarOnlyCaseRename(outsideRoot);
   await verifyMismatchedOldFormAndSidecarCasing(outsideRoot);
   await verifyProductionMismatchedOldFormAndSidecarCasing(outsideRoot);
+  await verifyConfirmedLocalRenamePreservesTheConflictingDeclaration(outsideRoot);
+  await verifyCancelledAndDismissedLocalRenamesLeaveSourceUnchanged(outsideRoot);
+  await verifySourceChangedDuringConfirmationKeepsOnlyTheUserEdit(outsideRoot);
+  await verifyDeletedDestinationDuringConfirmationDoesNotReplanTheRetainedRename(outsideRoot);
+}
+
+async function verifyConfirmedLocalRenamePreservesTheConflictingDeclaration(outsideRoot: string): Promise<void> {
+  const uri = Uri.file(path.join(outsideRoot, 'CollisionConfirmation.bas'));
+  const original = [
+    'Attribute VB_Name = "CollisionConfirmation"',
+    'Option Explicit',
+    'Public Sub RenameTarget()',
+    '    Dim OldValue As Long',
+    '    Dim ExistingValue As Long',
+    '    ExistingValue = 42',
+    '    OldValue = ExistingValue',
+    '    Debug.Print OldValue',
+    "    ' OldValue remains in this comment.",
+    'End Sub',
+    ''
+  ].join('\r\n');
+  await workspace.fs.writeFile(uri, Buffer.from(original, 'utf8'));
+  const document = await workspace.openTextDocument(uri);
+  await window.showTextDocument(document);
+  const position = new Position(3, 9);
+  await waitForRenameReferences(uri, position, [3, 6, 7]);
+
+  let promptCount = 0;
+  const warningHost = useVbaRenameWarningHostForTest(async (message, options, ...items) => {
+    promptCount += 1;
+    assert.match(message, /OldValue/);
+    assert.match(message, /ExistingValue/);
+    assert.equal(options.modal, true);
+    assert.match(options.detail, /CollisionConfirmation\.bas:5:/);
+    assert.match(options.detail, /manual/i);
+    return items.find(item => item.title === 'Continue once');
+  });
+  try {
+    const edit = await commands.executeCommand<WorkspaceEdit | undefined>(
+      'vscode.executeDocumentRenameProvider', uri, position, 'ExistingValue');
+    assert.ok(edit, 'Confirmed Rename must return the complete edit.');
+    assert.equal(promptCount, 1);
+    assert.equal(await workspace.applyEdit(edit, { isRefactoring: true }), true);
+    assert.equal(document.getText(), [
+      'Attribute VB_Name = "CollisionConfirmation"',
+      'Option Explicit',
+      'Public Sub RenameTarget()',
+      '    Dim ExistingValue As Long',
+      '    Dim ExistingValue As Long',
+      '    ExistingValue = 42',
+      '    ExistingValue = ExistingValue',
+      '    Debug.Print ExistingValue',
+      "    ' OldValue remains in this comment.",
+      'End Sub',
+      ''
+    ].join('\r\n'));
+    assert.deepEqual(Buffer.from(await workspace.fs.readFile(uri)), Buffer.from(original, 'utf8'));
+  } finally {
+    warningHost.dispose();
+    await window.showTextDocument(document);
+    await commands.executeCommand('workbench.action.files.revert');
+  }
+}
+
+async function waitForRenameReferences(uri: Uri, position: Position, expectedLines: readonly number[]): Promise<void> {
+  const deadline = Date.now() + 15_000;
+  let references: Location[] | undefined;
+  while (Date.now() < deadline) {
+    references = await commands.executeCommand<Location[]>(
+      'vscode.executeReferenceProvider', uri, position);
+    const lines = references?.filter(reference => reference.uri.toString() === uri.toString())
+      .map(reference => reference.range.start.line).sort((left, right) => left - right);
+    if (JSON.stringify(lines) === JSON.stringify(expectedLines)) {
+      return;
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.fail(`The VBA reference provider did not resolve the original Rename occurrences: ${JSON.stringify(references)}`);
+}
+
+async function verifyCancelledAndDismissedLocalRenamesLeaveSourceUnchanged(outsideRoot: string): Promise<void> {
+  const uri = Uri.file(path.join(outsideRoot, 'CancelledCollision.bas'));
+  const original = [
+    'Attribute VB_Name = "CancelledCollision"',
+    'Option Explicit',
+    'Public Sub RenameTarget()',
+    '    Dim OldValue As Long',
+    '    Dim ExistingValue As Long',
+    '    ExistingValue = 42',
+    '    OldValue = ExistingValue',
+    '    Debug.Print OldValue',
+    'End Sub',
+    ''
+  ].join('\r\n');
+  await workspace.fs.writeFile(uri, Buffer.from(original, 'utf8'));
+  const document = await workspace.openTextDocument(uri);
+  await window.showTextDocument(document);
+  const position = new Position(3, 9);
+  await waitForRenameReferences(uri, position, [3, 6, 7]);
+
+  for (const choice of ['Cancel', undefined]) {
+    const prompts: Array<{ message: string; modal: boolean; choices: string[] }> = [];
+    const warningHost = useVbaRenameWarningHostForTest(async (message, options, ...items) => {
+      prompts.push({ message, modal: options.modal, choices: items.map(item => item.title) });
+      return items.find(item => item.title === choice);
+    });
+    try {
+      // VS Code maps a provider's no-edit result to a rejected command.
+      const edit = await commands.executeCommand<WorkspaceEdit | undefined>(
+        'vscode.executeDocumentRenameProvider', uri, position, 'ExistingValue'
+      ).then(result => result, () => undefined);
+      assert.equal(edit, undefined, `${choice ?? 'Dismissal'} must not return an edit.`);
+      assert.equal(prompts.length, 1, 'Every operation must request its own consent.');
+      assert.match(prompts[0].message, /OldValue/);
+      assert.match(prompts[0].message, /ExistingValue/);
+      assert.equal(prompts[0].modal, true);
+      assert.deepEqual(prompts[0].choices, ['Cancel', 'Continue once']);
+      assert.equal(document.getText(), original);
+      assert.equal(document.isDirty, false);
+      assert.deepEqual(Buffer.from(await workspace.fs.readFile(uri)), Buffer.from(original, 'utf8'));
+    } finally {
+      warningHost.dispose();
+    }
+  }
+}
+
+async function verifySourceChangedDuringConfirmationKeepsOnlyTheUserEdit(outsideRoot: string): Promise<void> {
+  const uri = Uri.file(path.join(outsideRoot, 'ChangedCollision.bas'));
+  const original = [
+    'Attribute VB_Name = "ChangedCollision"',
+    'Option Explicit',
+    'Public Sub RenameTarget()',
+    '    Dim OldValue As Long',
+    '    Dim ExistingValue As Long',
+    '    ExistingValue = 42',
+    '    OldValue = ExistingValue',
+    '    Debug.Print OldValue',
+    'End Sub',
+    ''
+  ].join('\r\n');
+  const insertedText = '    Debug.Print OldValue\r\n';
+  const changed = original.replace('End Sub\r\n', `${insertedText}End Sub\r\n`);
+  await workspace.fs.writeFile(uri, Buffer.from(original, 'utf8'));
+  const document = await workspace.openTextDocument(uri);
+  await window.showTextDocument(document);
+  const position = new Position(3, 9);
+  await waitForRenameReferences(uri, position, [3, 6, 7]);
+
+  let promptCount = 0;
+  let userEditApplied = false;
+  let changedReferencesResolved = false;
+  const warningHost = useVbaRenameWarningHostForTest(async (_message, _options, ...items) => {
+    promptCount += 1;
+    if (promptCount > 1) {
+      return items.find(item => item.title === 'Cancel');
+    }
+    const userEdit = new WorkspaceEdit();
+    userEdit.insert(uri, new Position(8, 0), insertedText);
+    userEditApplied = await workspace.applyEdit(userEdit);
+    await waitForRenameReferences(uri, position, [3, 6, 7, 8]);
+    changedReferencesResolved = true;
+    return items.find(item => item.title === 'Continue once');
+  });
+  try {
+    let rejection: unknown;
+    const edit = await commands.executeCommand<WorkspaceEdit | undefined>(
+      'vscode.executeDocumentRenameProvider', uri, position, 'ExistingValue'
+    ).then(result => result, error => { rejection = error; return undefined; });
+    assert.equal(edit, undefined, 'Changed confirmation evidence must not return a Rename edit.');
+    assert.equal(promptCount, 1, 'A changed source must not trigger another Rename or confirmation.');
+    assert.equal(userEditApplied, true);
+    assert.equal(changedReferencesResolved, true, 'The server must observe the user edit before confirmation.');
+    assert.ok(rejection instanceof Error);
+    assert.match(rejection.message, /participating source changed/i);
+    assert.equal(document.getText(), changed);
+    assert.equal(document.isDirty, true);
+    assert.deepEqual(Buffer.from(await workspace.fs.readFile(uri)), Buffer.from(original, 'utf8'));
+  } finally {
+    warningHost.dispose();
+    await window.showTextDocument(document);
+    await commands.executeCommand('workbench.action.files.revert');
+  }
+}
+
+async function verifyDeletedDestinationDuringConfirmationDoesNotReplanTheRetainedRename(outsideRoot: string): Promise<void> {
+  const uri = Uri.file(path.join(outsideRoot, 'RetainedSource.bas'));
+  const destinationUri = Uri.file(path.join(outsideRoot, 'RetainedDestination.bas'));
+  const original = [
+    'Attribute VB_Name = "RetainedSource"',
+    'Option Explicit',
+    'Public Sub ProbeRetainedSource()',
+    '    Dim marker As Long',
+    '    marker = 1',
+    'End Sub',
+    ''
+  ].join('\r\n');
+  await workspace.fs.writeFile(uri, Buffer.from(original, 'utf8'));
+  await workspace.fs.writeFile(destinationUri, Buffer.from(
+    'Attribute VB_Name = "UnrelatedDestinationIdentity"\r\nOption Explicit\r\n', 'utf8'));
+  const document = await workspace.openTextDocument(uri);
+  await window.showTextDocument(document);
+  await waitForRenameReferences(uri, new Position(3, 9), [3, 4]);
+
+  let promptCount = 0;
+  let warningMessage = '';
+  let warningDetail = '';
+  let destinationDeleted = false;
+  const warningHost = useVbaRenameWarningHostForTest(async (message, options, ...items) => {
+    promptCount += 1;
+    if (promptCount > 1) {
+      return items.find(item => item.title === 'Cancel');
+    }
+    warningMessage = message;
+    warningDetail = options.detail;
+    await workspace.fs.delete(destinationUri, { recursive: false, useTrash: false });
+    destinationDeleted = true;
+    return items.find(item => item.title === 'Continue once');
+  });
+  try {
+    let rejection: unknown;
+    const edit = await commands.executeCommand<WorkspaceEdit | undefined>(
+      'vscode.executeDocumentRenameProvider', uri,
+      new Position(0, 'Attribute VB_Name = "'.length), 'RetainedDestination'
+    ).then(result => result, error => { rejection = error; return undefined; });
+    assert.equal(edit, undefined, 'A changed destination decision must not return a Rename edit.');
+    assert.equal(promptCount, 1, 'Removing the destination must require a new user action.');
+    assert.match(warningMessage, /RetainedSource/);
+    assert.match(warningMessage, /RetainedDestination/);
+    assert.match(warningDetail, /RetainedSource\.bas/);
+    assert.match(warningDetail, /retained/i);
+    assert.equal(destinationDeleted, true);
+    assert.ok(rejection instanceof Error);
+    assert.match(rejection.message, /destination.*changed/i);
+    assert.equal(document.uri.toString(), uri.toString());
+    assert.equal(document.getText(), original);
+    assert.equal(document.isDirty, false);
+    assert.deepEqual(Buffer.from(await workspace.fs.readFile(uri)), Buffer.from(original, 'utf8'));
+    const entries = await readEntryNames(outsideRoot);
+    assert.ok(entries.includes('RetainedSource.bas'));
+    assert.ok(!entries.includes('RetainedDestination.bas'));
+  } finally {
+    warningHost.dispose();
+  }
 }
 
 async function verifyFormOnlyPlanIgnoresStaleSidecarBatch(

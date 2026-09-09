@@ -1481,7 +1481,20 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                         ? () => GetSourceTemplateChangeFailure(
                             sourceTemplatePath,
                             sourceTemplateEvidence)
-                        : null);
+                        : null,
+                    plan => PrepareRenamePathDecision(
+                        plan,
+                        fileEvidence,
+                        snapshot.Resolution),
+                    getConfirmationAuthorityChangeFailure: () =>
+                        snapshotProvider.IsCurrentRenameConfirmationAuthority(
+                            snapshot.DiagnosticsOwnership)
+                            ? null
+                            : new VbaRenameFailure(
+                                "analysisIncomplete",
+                                "The captured Rename project or catalog authority changed while Rename was being prepared.",
+                                Condition: "projectSnapshotChanged",
+                                Guidance: "Start Rename again against the current project and catalog state."));
             }
         }
         catch
@@ -1916,15 +1929,88 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
         }
     }
 
-    private VbaRenameFilePreflightResult PreflightRenameFileOperations(
+    private VbaRenamePathDecisionResult PrepareRenamePathDecision(
         VbaRenamePlan plan,
         IReadOnlyDictionary<string, VbaRenameFileEvidence> requestStartEvidence,
         VbaProjectResolution resolution)
     {
+        var conflicts = new List<VbaRenameConflict>();
+        var preflight = PreflightRenameFileOperations(
+            plan, requestStartEvidence, resolution, conflicts);
+        if (preflight.Failure is not null)
+        {
+            return new VbaRenamePathDecisionResult(null, preflight.Failure);
+        }
+
+        var destinationEvidence = plan.FileRenames.Select(operation => operation.NewUri)
+            .Concat(plan.FormSourceUnits.Select(participant => participant.SidecarDestinationUri))
+            .Select(VbaProjectResolver.TryGetLocalPath)
+            .OfType<string>()
+            .Select(Path.GetFullPath)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(path => path, path => CaptureRenameFileEvidence(path),
+                StringComparer.OrdinalIgnoreCase);
+        var approvedConflicts = conflicts.ToArray();
+        var retainedPaths = conflicts.Count == 0
+            ? []
+            : plan.FileRenames.Select(operation => operation.OldUri)
+                .Concat(plan.FormSourceUnits.SelectMany(participant =>
+                    new[] { participant.FormUri, participant.SidecarUri }))
+                .Select(VbaProjectResolver.TryGetLocalPath)
+                .OfType<string>()
+                .Select(Path.GetFullPath)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+        VbaRenameFailure? GetChangeFailure()
+        {
+            foreach (var expected in requestStartEvidence.Values.Concat(destinationEvidence.Values))
+            {
+                if (!EvidenceMatches(expected, CaptureRenameFileEvidence(expected.FullPath)))
+                {
+                    return new VbaRenameFailure(
+                        "resourceOperationConflict",
+                        "A captured Rename source or destination changed or could not be verified.",
+                        Condition: "renamePathEvidenceChanged",
+                        Path: expected.FullPath,
+                        Guidance: "Review the current sources and destinations, then start Rename again.");
+                }
+            }
+
+            var currentConflicts = new List<VbaRenameConflict>();
+            var current = PreflightRenameFileOperations(
+                plan, requestStartEvidence, resolution, currentConflicts);
+            if (current.Failure is not null)
+            {
+                return current.Failure;
+            }
+            return approvedConflicts.SequenceEqual(currentConflicts)
+                ? null
+                : new VbaRenameFailure(
+                    "resourceOperationConflict",
+                    "The destination decision changed after Rename captured its paths.",
+                    Condition: "renamePathEvidenceChanged",
+                    Guidance: "Review the current destinations, then start Rename again.");
+        }
+
+        var initialFailure = GetChangeFailure();
+        return initialFailure is null
+            ? new VbaRenamePathDecisionResult(new VbaRenamePathDecision(
+                conflicts.Count > 0, approvedConflicts, retainedPaths, GetChangeFailure), null)
+            : new VbaRenamePathDecisionResult(null, initialFailure);
+    }
+
+    private VbaRenameFilePreflightResult PreflightRenameFileOperations(
+        VbaRenamePlan plan,
+        IReadOnlyDictionary<string, VbaRenameFileEvidence> requestStartEvidence,
+        VbaProjectResolution resolution,
+        List<VbaRenameConflict>? destinationConflicts = null)
+    {
         var formSourceUnitPreflight = PreflightFormSourceUnits(
             plan.FormSourceUnits,
             requestStartEvidence,
-            resolution);
+            resolution,
+            destinationConflicts);
         if (formSourceUnitPreflight.Failure is not null)
         {
             return new VbaRenameFilePreflightResult(
@@ -2006,6 +2092,15 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                         StringComparison.OrdinalIgnoreCase));
             if (conflictingPath is not null)
             {
+                if (destinationConflicts is not null)
+                {
+                    destinationConflicts.Add(new VbaRenameConflict(
+                        "moduleDestination",
+                        Path.GetFileName(destinationPath),
+                        new Uri(conflictingPath).AbsoluteUri,
+                        Range: null));
+                    continue;
+                }
                 return new VbaRenameFilePreflightResult(
                     plan,
                     new VbaRenameFailure(
@@ -2035,7 +2130,8 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
     private VbaFormSourceUnitPreflightResult PreflightFormSourceUnits(
         IReadOnlyList<VbaFormSourceUnit> participants,
         IReadOnlyDictionary<string, VbaRenameFileEvidence> requestStartEvidence,
-        VbaProjectResolution resolution)
+        VbaProjectResolution resolution,
+        List<VbaRenameConflict>? destinationConflicts = null)
     {
         var completedFileRenames = new List<VbaRenameFileOperation>();
         foreach (var participant in participants)
@@ -2169,6 +2265,15 @@ public sealed partial class VbaLanguageWorkspace : IVbaInteractiveWorkspaceCaptu
                             StringComparison.OrdinalIgnoreCase));
                 if (sidecarConflictPath is not null)
                 {
+                    if (destinationConflicts is not null)
+                    {
+                        destinationConflicts.Add(new VbaRenameConflict(
+                            "formSidecarDestination",
+                            Path.GetFileName(effectiveSidecarDestinationPath),
+                            new Uri(sidecarConflictPath).AbsoluteUri,
+                            Range: null));
+                        continue;
+                    }
                     return new VbaFormSourceUnitPreflightResult(
                         completedFileRenames,
                         new VbaRenameFailure(

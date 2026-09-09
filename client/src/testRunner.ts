@@ -3,6 +3,7 @@ import './debugAdapter.test';
 import './distributionManifest.test';
 import './languageServer.test';
 import './documentFormatting.test';
+import './rename.test';
 import './extensionContributions.test';
 import './projectManifest.test';
 import './projectManifestBytes.test';

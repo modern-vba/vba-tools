@@ -4,6 +4,13 @@ status: accepted
 
 # Replace template host projections with an environment-scoped UserForm Event catalog
 
+ADR 0050 narrowly revises the form basename-following rule below: after explicit
+confirmation, an existing destination for either participating .frm/.frx path
+retains both original paths and resource filename references. Module metadata,
+the outer designer identity and established semantic occurrences still change
+together. Structure, sidecar, template, ownership and currentness validation
+remain required even for a final plan without resource operations.
+
 VBA Tools no longer inspects every project document's source template to obtain
 intrinsic host Events. In a trusted workspace, extension activation starts one
 asynchronous environment-scoped discovery in an owned Excel process on an

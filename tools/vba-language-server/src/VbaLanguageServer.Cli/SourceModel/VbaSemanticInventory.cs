@@ -1556,7 +1556,9 @@ public sealed class VbaSemanticInventory
         int character,
         string newName,
         CancellationToken cancellationToken = default,
-        VbaProjectIdentityReadResult? projectIdentityRead = null)
+        VbaProjectIdentityReadResult? projectIdentityRead = null,
+        VbaRenameCollisionMode collisionMode = VbaRenameCollisionMode.Reject,
+        bool retainOriginalPaths = false)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var nameFailure = ValidateRenameName(newName);
@@ -1903,7 +1905,7 @@ public sealed class VbaSemanticInventory
             .Concat(FindWithEventsDependentRenameCollisions(target, newName))
             .Distinct()
             .ToArray();
-        if (collisions.Length > 0)
+        if (collisions.Length > 0 && collisionMode == VbaRenameCollisionMode.Reject)
         {
             var locations = string.Join(
                 ", ",
@@ -1952,7 +1954,8 @@ public sealed class VbaSemanticInventory
             target,
             newName,
             out var formSourceUnitEdits,
-            out var formSourceUnit);
+            out var formSourceUnit,
+            retainOriginalPaths);
         if (formSourceUnitFailure is not null)
         {
             return new VbaRenameResult(Plan: null, formSourceUnitFailure);
@@ -1980,13 +1983,31 @@ public sealed class VbaSemanticInventory
         }
 
         cancellationToken.ThrowIfCancellationRequested();
+        if (collisionMode == VbaRenameCollisionMode.PrepareConfirmation)
+        {
+            collisions = collisions.Concat(FindBindingCaptureCollisions(
+                target, newName, changes, cancellationToken)).Distinct().ToArray();
+        }
+        VbaRenameCollisionProof? collisionProof = null;
+        if (collisions.Length > 0)
+        {
+            var controlFailure = TryCreateCollisionControlProof(
+                uri, line, character, target, newName, changes, collisions,
+                projectIdentityRead, retainOriginalPaths, cancellationToken,
+                out collisionProof);
+            if (controlFailure is not null)
+            {
+                return new VbaRenameResult(Plan: null, controlFailure);
+            }
+        }
         var proofFailure = ProveBindingsArePreserved(
             target,
             targetOccurrences,
             changes,
             newName,
             cancellationToken,
-            out var targetCorrespondence);
+            out var targetCorrespondence,
+            collisionProof);
         if (proofFailure is not null)
         {
             return new VbaRenameResult(Plan: null, proofFailure);
@@ -1997,7 +2018,7 @@ public sealed class VbaSemanticInventory
                 ? null
                 : new VbaRenamePlan(target.Range, changes)
                 {
-                    FileRenames = CreateModuleIdentityFileRenames(
+                    FileRenames = retainOriginalPaths ? [] : CreateModuleIdentityFileRenames(
                         target,
                         newName),
                     FormSourceUnits = formSourceUnit is null
@@ -2005,14 +2026,22 @@ public sealed class VbaSemanticInventory
                         : [formSourceUnit],
                     TargetCorrespondence = targetCorrespondence
                 },
-            Failure: null);
+            Failure: null,
+            CollisionReview: collisionProof is null
+                ? null
+                : new VbaRenameCollisionReview(
+                    target.Name,
+                    newName,
+                    collisions,
+                    Array.AsReadOnly(collisionProof.Impacts.ToArray())));
     }
 
     private VbaRenameFailure? TryCreateFormSourceUnitRenameEdits(
         VbaSourceDefinition target,
         string newName,
         out IReadOnlyList<KeyValuePair<string, VbaTextEdit>> edits,
-        out VbaFormSourceUnit? sourceUnit)
+        out VbaFormSourceUnit? sourceUnit,
+        bool retainOriginalPaths)
     {
         edits = [];
         sourceUnit = null;
@@ -2104,7 +2133,7 @@ public sealed class VbaSemanticInventory
                 target.Uri,
                 new VbaTextEdit(ToRange(root.NameRange), newName))
         };
-        var sidecarPathFollowsIdentity = sourceBaseName.Equals(
+        var sidecarPathFollowsIdentity = !retainOriginalPaths && sourceBaseName.Equals(
             target.Name,
             StringComparison.OrdinalIgnoreCase);
         if (sidecarPathFollowsIdentity)
@@ -3530,7 +3559,8 @@ public sealed class VbaSemanticInventory
         IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
         string newName,
         CancellationToken cancellationToken,
-        out VbaRenameTargetCorrespondence? targetCorrespondence)
+        out VbaRenameTargetCorrespondence? targetCorrespondence,
+        VbaRenameCollisionProof? collisionProof = null)
     {
         targetCorrespondence = null;
         cancellationToken.ThrowIfCancellationRequested();
@@ -3544,7 +3574,8 @@ public sealed class VbaSemanticInventory
         var interfaceAssociationFailure =
             ProveSourceInterfaceAssociationsArePreserved(
                 hypothetical,
-                changes);
+                changes,
+                collisionProof);
         if (interfaceAssociationFailure is not null)
         {
             return interfaceAssociationFailure;
@@ -3553,7 +3584,8 @@ public sealed class VbaSemanticInventory
         var withEventsAssociationFailure =
             ProveWithEventsAssociationsArePreserved(
                 hypothetical,
-                changes);
+                changes,
+                collisionProof);
         if (withEventsAssociationFailure is not null)
         {
             return withEventsAssociationFailure;
@@ -3576,7 +3608,8 @@ public sealed class VbaSemanticInventory
             hypotheticalTarget,
             changes,
             newName,
-            out targetCorrespondence);
+            out targetCorrespondence,
+            collisionProof);
         if (correspondenceFailure is not null)
         {
             return correspondenceFailure;
@@ -3623,6 +3656,18 @@ public sealed class VbaSemanticInventory
                 postTarget?.SelectedDefinition,
                 hypotheticalTarget))
             {
+                if (TryRecordCollisionBindingImpact(
+                    hypothetical, target, occurrence, mappedRange, changes,
+                    collisionProof, VbaRenameImpactKind.TargetBindingChanged)
+                    || TryRecordSourceModuleQualifierCollisionImpact(
+                        hypothetical, target, occurrence, mappedRange, changes,
+                        collisionProof, VbaRenameImpactKind.TargetBindingChanged)
+                    || TryRecordDirectMemberCollisionImpact(
+                        hypothetical, target, occurrence, mappedRange, changes,
+                        collisionProof, VbaRenameImpactKind.TargetBindingChanged))
+                {
+                    continue;
+                }
                 return ResolutionChanged(
                     "Rename would change the binding of a target occurrence.");
             }
@@ -3643,6 +3688,12 @@ public sealed class VbaSemanticInventory
                     out var occurrenceTargetCorrespondence);
             if (occurrenceCorrespondenceFailure is not null)
             {
+                if (TryRecordCollisionBindingImpact(
+                    hypothetical, target, occurrence, mappedRange, changes,
+                    collisionProof, VbaRenameImpactKind.TargetBindingChanged))
+                {
+                    continue;
+                }
                 return occurrenceCorrespondenceFailure;
             }
 
@@ -3727,6 +3778,26 @@ public sealed class VbaSemanticInventory
                 postDefinition,
                 expectedDefinition))
             {
+                if (TryRecordCollisionBindingImpact(
+                    hypothetical, target, occurrence, mappedOccurrenceRange, changes,
+                    collisionProof, VbaRenameImpactKind.NonTargetBindingChanged)
+                    || TryRecordDependentCollisionBindingImpact(
+                        hypothetical, occurrence, mappedOccurrenceRange, changes, collisionProof)
+                    || TryRecordReceiverTypeCollisionImpact(
+                        hypothetical, occurrence, mappedOccurrenceRange, changes, collisionProof)
+                    || TryRecordSourceModuleQualifierCollisionImpact(
+                        hypothetical, target, occurrence, mappedOccurrenceRange, changes,
+                        collisionProof, VbaRenameImpactKind.NonTargetBindingChanged)
+                    || TryRecordReferencedProjectQualifierCollisionImpact(
+                        hypothetical, target, occurrence.Uri, occurrence.Range, mappedOccurrenceRange,
+                        VbaNameResolutionOutcome.Resolved(occurrence.Target), changes,
+                        collisionProof, VbaRenameImpactKind.NonTargetBindingChanged)
+                    || TryRecordDirectMemberCollisionImpact(
+                        hypothetical, target, occurrence, mappedOccurrenceRange, changes,
+                        collisionProof, VbaRenameImpactKind.NonTargetBindingChanged))
+                {
+                    continue;
+                }
                 return ResolutionChanged(
                     "Rename would change an existing non-target binding.");
             }
@@ -3772,6 +3843,15 @@ public sealed class VbaSemanticInventory
 
             if (occurrence.Classification != postClassification.Kind)
             {
+                if (TryRecordCollisionClassificationImpact(
+                    hypothetical, target, occurrence, mappedRange, postClassification, changes, collisionProof)
+                    || TryRecordReferencedProjectQualifierCollisionImpact(
+                        hypothetical, target, occurrence.Uri, occurrence.Range, mappedRange,
+                        new VbaNameResolutionOutcome(occurrence.Classification, Target: null), changes,
+                        collisionProof, VbaRenameImpactKind.ClassificationChanged))
+                {
+                    continue;
+                }
                 return ResolutionChanged(
                     "Rename would change the unresolved or ambiguous "
                     + "classification of a non-target occurrence.");
@@ -3779,7 +3859,7 @@ public sealed class VbaSemanticInventory
         }
 
         var declaredTypeFailure = ProveEffectiveDeclaredTypesArePreserved(
-            hypothetical, changes, cancellationToken);
+            hypothetical, changes, cancellationToken, collisionProof);
         if (declaredTypeFailure is not null)
         {
             return declaredTypeFailure;
@@ -3808,10 +3888,788 @@ public sealed class VbaSemanticInventory
         return null;
     }
 
+    private bool TryRecordCollisionClassificationImpact(
+        VbaSemanticInventory hypothetical,
+        VbaSourceDefinition target,
+        VbaSemanticOccurrence occurrence,
+        VbaRange mappedRange,
+        VbaNameResolutionOutcome after,
+        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameCollisionProof? proof)
+    {
+        if (proof is null || occurrence.Classification is not (VbaNameResolutionKind.Unresolved or VbaNameResolutionKind.Ambiguous)
+            || after.Kind != VbaNameResolutionKind.Resolved || after.Target is null
+            || after.Target.PhysicalDefinitions.Count == 0)
+        {
+            return false;
+        }
+
+        var controlRange = MapRange(occurrence.Uri, occurrence.Range, proof.ControlPlan.Changes);
+        var control = proof.ControlInventory.semanticResolution.ClassifySourceDefinition(
+            occurrence.Uri, controlRange.Start.Line, controlRange.Start.Character);
+        if (control.Kind != occurrence.Classification)
+        {
+            return false;
+        }
+
+        var causes = CreateCollisionDeclarationCorrespondences(hypothetical, target, changes, proof);
+        if (causes is null || !after.Target.PhysicalDefinitions.All(definition =>
+                causes.Any(cause => cause.AfterDefinition.Identity == definition.Identity))
+            || !after.Target.PhysicalDefinitions.Any(definition => causes.Any(cause =>
+                cause.AfterDefinition.Identity == definition.Identity
+                && !cause.BeforeDefinition.Name.Equals(cause.AfterDefinition.Name, StringComparison.OrdinalIgnoreCase))))
+        {
+            return false;
+        }
+
+        if (occurrence.Classification == VbaNameResolutionKind.Ambiguous)
+        {
+            var before = semanticResolution.ClassifySourceDefinition(
+                occurrence.Uri, occurrence.Range.Start.Line, occurrence.Range.Start.Character);
+            var beforeDefinitions = before.AmbiguousCandidates.SelectMany(candidate => candidate.PhysicalDefinitions)
+                .Select(definition => definition.Identity).ToHashSet();
+            var controlDefinitions = control.AmbiguousCandidates.SelectMany(candidate => candidate.PhysicalDefinitions)
+                .Select(definition => definition.Identity).ToHashSet();
+            var candidateCauses = causes.Where(cause => beforeDefinitions.Contains(cause.BeforeDefinition.Identity)).ToArray();
+            if (before.Kind != VbaNameResolutionKind.Ambiguous
+                || before.AmbiguousCandidates.Count < 2 || control.AmbiguousCandidates.Count < 2
+                || candidateCauses.Length != beforeDefinitions.Count
+                || !controlDefinitions.SetEquals(candidateCauses.Select(cause => cause.ControlDefinition.Identity)))
+            {
+                return false;
+            }
+        }
+
+        proof.Impacts.Add(new VbaRenameImpact(
+            VbaRenameImpactKind.ClassificationChanged,
+            "The confirmed declaration collision resolves this previously unresolved or ambiguous reference; manual consolidation may be required.",
+            occurrence.Uri, occurrence.Range)
+        {
+            Evidence = new VbaRenameImpactEvidence(
+                occurrence.Classification, control.Kind, after.Kind,
+                controlRange, mappedRange, causes)
+        });
+        return true;
+    }
+
+    private IEnumerable<VbaRenameConflict> FindBindingCaptureCollisions(
+        VbaSourceDefinition target,
+        string newName,
+        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        CancellationToken cancellationToken)
+    {
+        var targets = GetLogicalRenameTargetDefinitions(target);
+        var candidates = sourceDocuments.SelectMany(document => document.Definitions)
+            .Where(definition => definition.Name.Equals(newName, StringComparison.OrdinalIgnoreCase)
+                && targets.All(original => original.Identity != definition.Identity
+                    && !IsSameDeclarationScope(original, definition)))
+            .ToArray();
+        if (candidates.Length == 0)
+        {
+            yield break;
+        }
+        var hypothetical = CreateHypotheticalInventory(changes, cancellationToken);
+        var mappedTargets = targets.Select(definition => FindHypotheticalDefinition(hypothetical, definition, changes))
+            .Where(definition => definition is not null).Select(definition => definition!.Identity).ToHashSet();
+        var candidateMappings = candidates.Select(definition => new
+        {
+            Before = definition,
+            After = FindHypotheticalDefinition(hypothetical, definition, changes)
+        }).Where(pair => pair.After is not null).ToArray();
+        foreach (var occurrence in resolvedOccurrences.GetAll(cancellationToken))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (IsDeclarationOccurrence(occurrence))
+            {
+                continue;
+            }
+            var mappedRange = MapRange(occurrence.Uri, occurrence.Range, changes);
+            var after = hypothetical.ResolveSourceDefinition(
+                occurrence.Uri, mappedRange.Start.Line, mappedRange.Start.Character);
+            if (after is null)
+            {
+                var classification = hypothetical.semanticResolution.ClassifySourceDefinition(
+                    occurrence.Uri, mappedRange.Start.Line, mappedRange.Start.Character);
+                var originalBindings = occurrence.Target.PhysicalDefinitions
+                    .Select(definition => definition.Identity).ToHashSet();
+                var capturedCandidates = candidateMappings
+                    .Where(pair => originalBindings.Contains(pair.Before.Identity)).ToArray();
+                if (classification.Kind == VbaNameResolutionKind.Ambiguous
+                    && mappedTargets.Count == targets.Count
+                    && capturedCandidates.Length > 0
+                    && capturedCandidates.Length == originalBindings.Count
+                    && capturedCandidates.All(pair => pair.After!.Name.Equals(newName, StringComparison.OrdinalIgnoreCase)))
+                {
+                    foreach (var candidate in capturedCandidates)
+                    {
+                        yield return new VbaRenameConflict(
+                            "bindingCapture", candidate.Before.Name, candidate.Before.Uri, candidate.Before.Range);
+                    }
+                }
+                continue;
+            }
+            var before = occurrence.Target.SelectedDefinition;
+            var collision = mappedTargets.Contains(after.Identity)
+                ? candidateMappings.FirstOrDefault(pair => pair.Before.Identity == before.Identity)?.Before
+                : targets.Any(definition => definition.Identity == before.Identity)
+                    ? candidateMappings.FirstOrDefault(pair => pair.After!.Identity == after.Identity)?.Before
+                    : null;
+            if (collision is not null)
+            {
+                yield return new VbaRenameConflict("bindingCapture", collision.Name, collision.Uri, collision.Range);
+            }
+        }
+
+        foreach (var occurrence in GetUnresolvedSemanticOccurrences(cancellationToken))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (occurrence.Classification != VbaNameResolutionKind.Ambiguous
+                || !occurrence.Name.Equals(newName, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+            var mappedRange = MapRange(occurrence.Uri, occurrence.Range, changes);
+            var after = hypothetical.semanticResolution.ClassifySourceDefinition(
+                occurrence.Uri, mappedRange.Start.Line, mappedRange.Start.Character);
+            if (after.Kind != VbaNameResolutionKind.Resolved || after.Target is null
+                || after.Target.PhysicalDefinitions.Count == 0 || mappedTargets.Count != targets.Count
+                || !after.Target.PhysicalDefinitions.All(definition => mappedTargets.Contains(definition.Identity)))
+            {
+                continue;
+            }
+
+            var before = semanticResolution.ClassifySourceDefinition(
+                occurrence.Uri, occurrence.Range.Start.Line, occurrence.Range.Start.Character);
+            var originalBindings = before.AmbiguousCandidates.SelectMany(candidate => candidate.PhysicalDefinitions)
+                .Select(definition => definition.Identity).ToHashSet();
+            var capturedCandidates = candidateMappings.Where(pair => originalBindings.Contains(pair.Before.Identity)).ToArray();
+            if (before.Kind != VbaNameResolutionKind.Ambiguous || before.AmbiguousCandidates.Count < 2
+                || capturedCandidates.Length != originalBindings.Count)
+            {
+                continue;
+            }
+            foreach (var candidate in capturedCandidates)
+            {
+                yield return new VbaRenameConflict(
+                    "bindingCapture", candidate.Before.Name, candidate.Before.Uri, candidate.Before.Range);
+            }
+        }
+    }
+
+    private VbaRenameFailure? TryCreateCollisionControlProof(
+        string uri,
+        int line,
+        int character,
+        VbaSourceDefinition target,
+        string newName,
+        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        IReadOnlyList<VbaRenameConflict> conflicts,
+        VbaProjectIdentityReadResult? projectIdentityRead,
+        bool retainOriginalPaths,
+        CancellationToken cancellationToken,
+        out VbaRenameCollisionProof? proof)
+    {
+        proof = null;
+        var sourceNames = sourceDocuments.SelectMany(document =>
+                (document.SyntaxTree ?? VbaSyntaxTree.ParseModule(document.Uri, document.Text))
+                    .TokenStream.Tokens.Select(token => token.Text))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var initial = newName.EnumerateRunes().First().ToString();
+        string controlName;
+        for (var suffix = 0; ; suffix++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            controlName = initial + "RenameProof" + suffix.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (!sourceNames.Contains(controlName)
+                && ValidateRenameName(controlName) is null
+                && ValidateRenameTargetName(target, controlName) is null
+                && FindSameScopeCollisions(target, controlName, projectIdentityRead).Count == 0
+                && !FindInterfaceDependentRenameCollisions(target, controlName).Any()
+                && !FindWithEventsDependentRenameCollisions(target, controlName).Any())
+            {
+                break;
+            }
+        }
+
+        var control = CreateRenameResult(
+            uri, line, character, controlName, cancellationToken, projectIdentityRead,
+            VbaRenameCollisionMode.Reject, retainOriginalPaths);
+        if (control.Failure is not null)
+        {
+            return control.Failure;
+        }
+        if (control.Plan?.TargetCorrespondence is null)
+        {
+            return AnalysisIncomplete("Rename could not establish an independent declaration correspondence before collision review.");
+        }
+
+        var originalClosure = changes.SelectMany(pair => pair.Value.Select(edit => CreateOccurrenceKey(pair.Key, edit.Range)))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var controlClosure = control.Plan.Changes.SelectMany(pair => pair.Value.Select(edit => CreateOccurrenceKey(pair.Key, edit.Range)))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (!originalClosure.SetEquals(controlClosure))
+        {
+            return AnalysisIncomplete("Rename could not retain the same complete pre-edit closure for its independent collision proof.");
+        }
+
+        proof = new VbaRenameCollisionProof(
+            conflicts,
+            CreateHypotheticalInventory(control.Plan.Changes, cancellationToken),
+            control.Plan);
+        return null;
+    }
+
+    private sealed class VbaRenameCollisionProof(
+        IReadOnlyList<VbaRenameConflict> conflicts,
+        VbaSemanticInventory controlInventory,
+        VbaRenamePlan controlPlan)
+    {
+        public IReadOnlyList<VbaRenameConflict> Conflicts { get; } = conflicts;
+        public VbaSemanticInventory ControlInventory { get; } = controlInventory;
+        public VbaRenamePlan ControlPlan { get; } = controlPlan;
+
+        public List<VbaRenameImpact> Impacts { get; } = conflicts.Select(conflict => new VbaRenameImpact(
+            VbaRenameImpactKind.DeclarationCollision,
+            $"The requested name collides with {CreateRenameConflictDescription(conflict)}; manual consolidation may be required.",
+            conflict.Uri,
+            conflict.Range)).ToList();
+    }
+
+    private IReadOnlyList<VbaRenameCausalDefinitionCorrespondence>? CreateCollisionDeclarationCorrespondences(
+        VbaSemanticInventory hypothetical,
+        VbaSourceDefinition target,
+        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameCollisionProof? proof)
+    {
+        if (proof is null)
+        {
+            return null;
+        }
+        var originalDefinitions = GetLogicalRenameTargetDefinitions(target);
+        var actualTarget = FindHypotheticalDefinition(hypothetical, target, changes);
+        if (actualTarget is null)
+        {
+            return null;
+        }
+        var collidingDefinitions = sourceDocuments.SelectMany(document => document.Definitions)
+            .Where(definition => proof.Conflicts.Any(conflict => conflict.Range == definition.Range
+                && VbaProjectIdentityModel.SameDocument(conflict.Uri ?? string.Empty, definition.Uri)))
+            .SelectMany(GetLogicalRenameTargetDefinitions)
+            .Where(definition => definition.Name.Equals(actualTarget.Name, StringComparison.OrdinalIgnoreCase))
+            .Where(definition => originalDefinitions.Any(original => IsSameDeclarationScope(original, definition))
+                || proof.Conflicts.Any(conflict => conflict.CollisionKind == "bindingCapture"
+                    && VbaProjectIdentityModel.SameDocument(conflict.Uri ?? string.Empty, definition.Uri)
+                    && conflict.Range == definition.Range))
+            .Where(definition => originalDefinitions.All(original => original.Identity != definition.Identity))
+            .ToArray();
+        if (collidingDefinitions.Length == 0)
+        {
+            return null;
+        }
+        var results = new List<VbaRenameCausalDefinitionCorrespondence>();
+        foreach (var before in originalDefinitions.Concat(collidingDefinitions).DistinctBy(definition => definition.Identity))
+        {
+            var control = FindHypotheticalDefinition(proof.ControlInventory, before, proof.ControlPlan.Changes);
+            var after = FindHypotheticalDefinition(hypothetical, before, changes);
+            if (control is null || after is null
+                || before.Kind != after.Kind || before.PropertyAccessorKind != after.PropertyAccessorKind
+                || before.Visibility != after.Visibility
+                || !AreConditionalCompilationPathsCorrespondent(before, after, changes)
+                || !AreConditionalCompilationPathsCorrespondent(before, control, proof.ControlPlan.Changes)
+                || results.Count > 0 && !results[0].AfterDefinition.Name.Equals(after.Name, StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+            results.Add(new VbaRenameCausalDefinitionCorrespondence(before, control, after));
+        }
+        return Array.AsReadOnly(results.ToArray());
+    }
+
+    private bool TryRecordCollisionBindingImpact(
+        VbaSemanticInventory hypothetical,
+        VbaSourceDefinition target,
+        VbaResolvedIdentifierOccurrence occurrence,
+        VbaRange mappedRange,
+        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameCollisionProof? proof,
+        VbaRenameImpactKind impactKind)
+    {
+        var causes = CreateCollisionDeclarationCorrespondences(hypothetical, target, changes, proof);
+        if (proof is null || causes is null || occurrence.Target.PhysicalDefinitions.Count == 0)
+        {
+            return false;
+        }
+        var beforeBindings = occurrence.Target.PhysicalDefinitions.Select(definition => definition.Identity).ToHashSet();
+        if (beforeBindings.Any(identity => !causes.Any(cause => cause.BeforeDefinition.Identity == identity)))
+        {
+            return false;
+        }
+        var selectedCause = causes.Single(cause => cause.BeforeDefinition.Identity == occurrence.Target.SelectedDefinition.Identity);
+        var controlRange = MapRange(occurrence.Uri, occurrence.Range, proof.ControlPlan.Changes);
+        var controlClassification = IsDeclarationOccurrence(occurrence)
+            ? VbaNameResolutionOutcome.Resolved(proof.ControlInventory.resolutionPolicy.CreateNameTarget(selectedCause.ControlDefinition))
+            : proof.ControlInventory.semanticResolution.ClassifySourceDefinition(
+                occurrence.Uri, controlRange.Start.Line, controlRange.Start.Character);
+        var expectedControlBindings = causes.Where(cause => beforeBindings.Contains(cause.BeforeDefinition.Identity))
+            .Select(cause => cause.ControlDefinition.Identity).ToHashSet();
+        if (controlClassification.Kind != VbaNameResolutionKind.Resolved
+            || !expectedControlBindings.SetEquals(controlClassification.Target!.PhysicalDefinitions.Select(definition => definition.Identity)))
+        {
+            return false;
+        }
+
+        var after = IsDeclarationOccurrence(occurrence)
+            ? VbaNameResolutionOutcome.Resolved(hypothetical.resolutionPolicy.CreateNameTarget(selectedCause.AfterDefinition))
+            : hypothetical.semanticResolution.ClassifySourceDefinition(
+                occurrence.Uri, mappedRange.Start.Line, mappedRange.Start.Character);
+        if (after.Kind != VbaNameResolutionKind.Ambiguous
+            && (after.Kind != VbaNameResolutionKind.Resolved
+                || !after.Target!.PhysicalDefinitions.All(definition => causes.Any(cause =>
+                    cause.AfterDefinition.Identity == definition.Identity))))
+        {
+            return TryRecordWithEventsSegmentCollisionImpact(
+                hypothetical, occurrence, controlRange, mappedRange, controlClassification, after, changes, proof, impactKind)
+                || TryRecordInterfacePrefixCollisionImpact(
+                    occurrence, controlRange, mappedRange, controlClassification, after, proof, impactKind);
+        }
+
+        proof.Impacts.Add(new VbaRenameImpact(
+            impactKind,
+            "The declaration collision changes this previously resolved binding; manual consolidation may be required.",
+            occurrence.Uri,
+            occurrence.Range)
+        {
+            Evidence = new VbaRenameImpactEvidence(
+                VbaNameResolutionKind.Resolved,
+                controlClassification.Kind,
+                after.Kind,
+                controlRange,
+                mappedRange,
+                causes)
+        });
+        return true;
+    }
+
+    private bool TryRecordDirectMemberCollisionImpact(
+        VbaSemanticInventory hypothetical,
+        VbaSourceDefinition target,
+        VbaResolvedIdentifierOccurrence occurrence,
+        VbaRange mappedRange,
+        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameCollisionProof? proof,
+        VbaRenameImpactKind impactKind)
+    {
+        if (proof is null || IsDeclarationOccurrence(occurrence) || occurrence.Target.PhysicalDefinitions.Count == 0
+            || definitionCandidates.FindDocument(occurrence.Uri) is not { } document)
+        {
+            return false;
+        }
+        var syntax = (document.SyntaxTree ?? VbaSyntaxTree.ParseModule(document.Uri, document.Text))
+            .GetPositionSyntax(occurrence.Range.Start.Line, occurrence.Range.Start.Character);
+        if (syntax.MemberAccess is not { IsLeadingDot: false, IsIncomplete: false, TargetSegmentIndex: 1 } access
+            || access.Segments.Count != 2)
+        {
+            return false;
+        }
+        var causes = CreateCollisionDeclarationCorrespondences(hypothetical, target, changes, proof);
+        var controlRange = MapRange(occurrence.Uri, occurrence.Range, proof.ControlPlan.Changes);
+        var before = semanticResolution.ResolveMemberChainAt(
+            occurrence.Uri, occurrence.Range.Start.Line, occurrence.Range.Start.Character);
+        var control = proof.ControlInventory.semanticResolution.ResolveMemberChainAt(
+            occurrence.Uri, controlRange.Start.Line, controlRange.Start.Character);
+        var after = hypothetical.semanticResolution.ResolveMemberChainAt(
+            occurrence.Uri, mappedRange.Start.Line, mappedRange.Start.Character);
+        if (causes is null || causes.Count < 2
+            || before?.StopReason != VbaMemberChainResolutionStopReason.Resolved || before.Member is null
+            || before.ReceiverType?.SourceDefinition is not { } beforeType
+            || control?.StopReason != VbaMemberChainResolutionStopReason.Resolved || control.Member is null
+            || control.ReceiverType?.SourceDefinition is not { } controlType
+            || after?.StopReason != VbaMemberChainResolutionStopReason.UnresolvedMember || after.Member is not null
+            || after.ReceiverType?.SourceDefinition is not { } afterType
+            || FindHypotheticalDefinition(proof.ControlInventory, beforeType, proof.ControlPlan.Changes)?.Identity != controlType.Identity
+            || FindHypotheticalDefinition(hypothetical, beforeType, changes)?.Identity != afterType.Identity
+            || causes.Any(cause => !IsMemberOwnedByType(cause.BeforeDefinition, beforeType)
+                || !IsMemberOwnedByType(cause.ControlDefinition, controlType)
+                || !IsMemberOwnedByType(cause.AfterDefinition, afterType)
+                || !cause.AfterDefinition.Name.Equals(after.Segments[^1], StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+        var beforeBindings = occurrence.Target.PhysicalDefinitions.Select(definition => definition.Identity).ToHashSet();
+        var originalCauses = causes.Where(cause => beforeBindings.Contains(cause.BeforeDefinition.Identity)).ToArray();
+        if (originalCauses.Length != beforeBindings.Count
+            || !beforeBindings.SetEquals(resolutionPolicy.CreateNameTarget(before.Member).PhysicalDefinitions
+                .Select(definition => definition.Identity))
+            || !originalCauses.Select(cause => cause.ControlDefinition.Identity).ToHashSet()
+                .SetEquals(proof.ControlInventory.resolutionPolicy.CreateNameTarget(control.Member).PhysicalDefinitions
+                    .Select(definition => definition.Identity)))
+        {
+            return false;
+        }
+        proof.Impacts.Add(new VbaRenameImpact(impactKind,
+            "The confirmed member-name collision makes this established member binding ambiguous within its unchanged receiver type; manual consolidation may be required.",
+            occurrence.Uri, occurrence.Range)
+        {
+            Evidence = new VbaRenameImpactEvidence(
+                VbaNameResolutionKind.Resolved, VbaNameResolutionKind.Resolved, VbaNameResolutionKind.Unresolved,
+                controlRange, mappedRange,
+                Array.AsReadOnly(causes.Append(new VbaRenameCausalDefinitionCorrespondence(beforeType, controlType, afterType)).ToArray()))
+        });
+        return true;
+    }
+
+    private bool TryRecordReferencedProjectQualifierCollisionImpact(
+        VbaSemanticInventory hypothetical,
+        VbaSourceDefinition target,
+        string uri,
+        VbaRange range,
+        VbaRange mappedRange,
+        VbaNameResolutionOutcome before,
+        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameCollisionProof? proof,
+        VbaRenameImpactKind impactKind)
+    {
+        if (proof is null || !IsModuleIdentity(target)
+            || target.Identity.Origin != VbaDefinitionOrigin.Source
+            || proof.ControlPlan.TargetCorrespondence!.BeforeTarget.PhysicalDefinitions.Count != 1
+            || definitionCandidates.FindDocument(uri) is not { } document)
+        {
+            return false;
+        }
+        var syntax = (document.SyntaxTree ?? VbaSyntaxTree.ParseModule(uri, document.Text))
+            .GetPositionSyntax(range.Start.Line, range.Start.Character);
+        if (syntax.MemberAccess is not { IsLeadingDot: false, IsIncomplete: false } access
+            || access.Segments.Count != 2 || access.TargetSegmentIndex is < 0 or > 1)
+        {
+            return false;
+        }
+        var moduleControl = FindHypotheticalDefinition(proof.ControlInventory, target, proof.ControlPlan.Changes);
+        var moduleAfter = FindHypotheticalDefinition(hypothetical, target, changes);
+        if (moduleControl is null || moduleAfter is null
+            || !access.Segments[0].Name.Equals(moduleAfter.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+        var qualifierRange = ToRange(access.Segments[0].Range);
+        var memberRange = ToRange(access.Segments[1].Range);
+        var controlQualifierRange = MapRange(uri, qualifierRange, proof.ControlPlan.Changes);
+        var afterQualifierRange = MapRange(uri, qualifierRange, changes);
+        var controlMemberRange = MapRange(uri, memberRange, proof.ControlPlan.Changes);
+        var afterMemberRange = MapRange(uri, memberRange, changes);
+        var beforeQualifier = semanticResolution.ClassifySourceDefinition(uri, qualifierRange.Start.Line, qualifierRange.Start.Character);
+        var controlQualifier = proof.ControlInventory.semanticResolution.ClassifySourceDefinition(
+            uri, controlQualifierRange.Start.Line, controlQualifierRange.Start.Character);
+        var afterQualifier = hypothetical.semanticResolution.ClassifySourceModuleValueQualifier(
+            uri, afterQualifierRange.Start.Line, afterQualifierRange.Start.Character);
+        var beforeMember = semanticResolution.ClassifySourceDefinition(uri, memberRange.Start.Line, memberRange.Start.Character);
+        var controlMember = proof.ControlInventory.semanticResolution.ClassifySourceDefinition(
+            uri, controlMemberRange.Start.Line, controlMemberRange.Start.Character);
+        var afterMember = hypothetical.semanticResolution.ClassifySourceDefinition(
+            uri, afterMemberRange.Start.Line, afterMemberRange.Start.Character);
+        if (beforeQualifier.Kind != VbaNameResolutionKind.Unresolved || controlQualifier.Kind != VbaNameResolutionKind.Unresolved
+            || afterQualifier.Kind != VbaNameResolutionKind.Resolved || afterQualifier.Target is null
+            || afterQualifier.Target.PhysicalDefinitions.Count != 1
+            || afterQualifier.Target.SelectedDefinition.Identity != moduleAfter.Identity
+            || beforeMember.Kind != VbaNameResolutionKind.Resolved || beforeMember.Target is null
+            || controlMember.Kind != VbaNameResolutionKind.Resolved || controlMember.Target is null
+            || afterMember.Kind != VbaNameResolutionKind.Resolved || afterMember.Target is null
+            || beforeMember.Target.PhysicalDefinitions.Count == 0 || afterMember.Target.PhysicalDefinitions.Count == 0)
+        {
+            return false;
+        }
+        var referenceName = beforeMember.Target.SelectedDefinition.ModuleName;
+        if (beforeMember.Target.PhysicalDefinitions.Any(definition => definition.Identity.Origin != VbaDefinitionOrigin.ProjectReference
+                || !VbaProjectReferenceName.AreEquivalent(definition.ModuleName, referenceName))
+            || !beforeMember.Target.PhysicalDefinitions.Select(definition => definition.Identity).ToHashSet()
+                .SetEquals(controlMember.Target.PhysicalDefinitions.Select(definition => definition.Identity))
+            || !GetActiveReferenceNamesInSelectionOrder().Any(name => VbaProjectReferenceName.AreEquivalent(name, referenceName))
+            || !TryGetCurrentReferencedProjectName(referenceName, out var projectName)
+            || !projectName.Equals(moduleAfter.Name, StringComparison.OrdinalIgnoreCase)
+            || !proof.ControlInventory.TryGetCurrentReferencedProjectName(referenceName, out var controlProjectName)
+            || !projectName.Equals(controlProjectName, StringComparison.OrdinalIgnoreCase)
+            || !hypothetical.TryGetCurrentReferencedProjectName(referenceName, out var afterProjectName)
+            || !projectName.Equals(afterProjectName, StringComparison.OrdinalIgnoreCase)
+            || !proof.Conflicts.Any(conflict => conflict.CollisionKind == "referencedProject"
+                && conflict.ReferenceName is not null && VbaProjectReferenceName.AreEquivalent(conflict.ReferenceName, referenceName)
+                && conflict.Name.Equals(projectName, StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+        if (access.TargetSegmentIndex == 0
+            ? before.Kind != VbaNameResolutionKind.Unresolved
+            : before.Kind != VbaNameResolutionKind.Resolved || before.Target is null
+                || !before.Target.PhysicalDefinitions.Select(definition => definition.Identity).ToHashSet()
+                    .SetEquals(beforeMember.Target.PhysicalDefinitions.Select(definition => definition.Identity)))
+        {
+            return false;
+        }
+        var actualMembers = afterMember.Target.PhysicalDefinitions.Select(definition => definition.Identity).ToHashSet();
+        var memberCauses = GetDocumentDefinitions(target.Uri).Where(definition => IsMemberOwnedByType(definition, target))
+            .Select(definition => new
+            {
+                Before = definition,
+                Control = FindHypotheticalDefinition(proof.ControlInventory, definition, proof.ControlPlan.Changes),
+                After = FindHypotheticalDefinition(hypothetical, definition, changes)
+            }).Where(cause => cause.After is not null && actualMembers.Contains(cause.After.Identity)).ToArray();
+        if (memberCauses.Any(cause => cause.Control is null)
+            || !actualMembers.SetEquals(memberCauses.Select(cause => cause.After!.Identity))
+            || afterMember.Target.PhysicalDefinitions.Any(definition => !IsMemberOwnedByType(definition, moduleAfter)))
+        {
+            return false;
+        }
+        var moduleCause = new VbaRenameCausalDefinitionCorrespondence(target, moduleControl, moduleAfter);
+        var controlRange = MapRange(uri, range, proof.ControlPlan.Changes);
+        proof.Impacts.Add(new VbaRenameImpact(impactKind,
+            "The confirmed project-name collision captures this established library-qualified reference through the renamed source module; its text is retained.",
+            uri, range)
+        {
+            ReferenceProjectEvidence = new VbaRenameReferenceProjectImpactEvidence(
+                referenceName, projectName, moduleCause, beforeMember.Target, controlMember.Target, afterMember.Target),
+            Evidence = new VbaRenameImpactEvidence(before.Kind,
+                access.TargetSegmentIndex == 0 ? controlQualifier.Kind : controlMember.Kind,
+                access.TargetSegmentIndex == 0 ? afterQualifier.Kind : afterMember.Kind,
+                controlRange, mappedRange, Array.AsReadOnly(memberCauses.Select(cause =>
+                    new VbaRenameCausalDefinitionCorrespondence(cause.Before, cause.Control!, cause.After!))
+                    .Prepend(moduleCause).ToArray()))
+        });
+        return true;
+    }
+
+    private bool TryRecordSourceModuleQualifierCollisionImpact(
+        VbaSemanticInventory hypothetical,
+        VbaSourceDefinition target,
+        VbaResolvedIdentifierOccurrence occurrence,
+        VbaRange mappedRange,
+        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameCollisionProof? proof,
+        VbaRenameImpactKind impactKind)
+    {
+        if (proof is null || !IsModuleIdentity(target) || IsDeclarationOccurrence(occurrence)
+            || occurrence.Target.PhysicalDefinitions.Count == 0
+            || definitionCandidates.FindDocument(occurrence.Uri) is not { } document)
+        {
+            return false;
+        }
+        var syntax = (document.SyntaxTree ?? VbaSyntaxTree.ParseModule(document.Uri, document.Text))
+            .GetPositionSyntax(occurrence.Range.Start.Line, occurrence.Range.Start.Character);
+        if (syntax.MemberAccess is not { IsLeadingDot: false, IsIncomplete: false } access
+            || access.Segments.Count != 2 || access.TargetSegmentIndex is < 0 or > 1)
+        {
+            return false;
+        }
+        var causes = CreateCollisionDeclarationCorrespondences(hypothetical, target, changes, proof);
+        if (causes is null || causes.Count < 2
+            || causes.Any(cause => !IsModuleIdentity(cause.BeforeDefinition)))
+        {
+            return false;
+        }
+        var qualifierRange = ToRange(access.Segments[0].Range);
+        var controlQualifierRange = MapRange(occurrence.Uri, qualifierRange, proof.ControlPlan.Changes);
+        var afterQualifierRange = MapRange(occurrence.Uri, qualifierRange, changes);
+        var beforeQualifier = semanticResolution.ClassifySourceModuleValueQualifier(
+            occurrence.Uri, qualifierRange.Start.Line, qualifierRange.Start.Character);
+        var controlQualifier = proof.ControlInventory.semanticResolution.ClassifySourceModuleValueQualifier(
+            occurrence.Uri, controlQualifierRange.Start.Line, controlQualifierRange.Start.Character);
+        var afterQualifier = hypothetical.semanticResolution.ClassifySourceModuleValueQualifier(
+            occurrence.Uri, afterQualifierRange.Start.Line, afterQualifierRange.Start.Character);
+        if (beforeQualifier.Kind != VbaNameResolutionKind.Resolved || beforeQualifier.Target is null
+            || controlQualifier.Kind != VbaNameResolutionKind.Resolved || controlQualifier.Target is null
+            || afterQualifier.Kind != VbaNameResolutionKind.Ambiguous
+            || afterQualifier.AmbiguousCandidates.Count == 0)
+        {
+            return false;
+        }
+        var beforeRoots = beforeQualifier.Target.PhysicalDefinitions.Select(definition => definition.Identity).ToHashSet();
+        var qualifierCauses = causes.Where(cause => beforeRoots.Contains(cause.BeforeDefinition.Identity)).ToArray();
+        if (qualifierCauses.Length != beforeRoots.Count
+            || !qualifierCauses.Select(cause => cause.ControlDefinition.Identity).ToHashSet()
+                .SetEquals(controlQualifier.Target.PhysicalDefinitions.Select(definition => definition.Identity))
+            || !causes.Select(cause => cause.AfterDefinition.Identity).ToHashSet()
+                .SetEquals(afterQualifier.AmbiguousCandidates.SelectMany(candidate => candidate.PhysicalDefinitions)
+                    .Select(definition => definition.Identity)))
+        {
+            return false;
+        }
+        var controlRange = MapRange(occurrence.Uri, occurrence.Range, proof.ControlPlan.Changes);
+        var control = proof.ControlInventory.semanticResolution.ClassifySourceDefinition(
+            occurrence.Uri, controlRange.Start.Line, controlRange.Start.Character);
+        var after = hypothetical.semanticResolution.ClassifySourceDefinition(
+            occurrence.Uri, mappedRange.Start.Line, mappedRange.Start.Character);
+        var occurrenceCauses = occurrence.Target.PhysicalDefinitions.Select(before => new
+        {
+            Before = before,
+            Control = FindHypotheticalDefinition(proof.ControlInventory, before, proof.ControlPlan.Changes),
+            After = FindHypotheticalDefinition(hypothetical, before, changes)
+        }).ToArray();
+        if (occurrenceCauses.Any(cause => cause.Control is null || cause.After is null)
+            || control.Kind != VbaNameResolutionKind.Resolved || control.Target is null
+            || !occurrenceCauses.Select(cause => cause.Control!.Identity).ToHashSet()
+                .SetEquals(control.Target.PhysicalDefinitions.Select(definition => definition.Identity)))
+        {
+            return false;
+        }
+        if (access.TargetSegmentIndex == 0)
+        {
+            if (!beforeRoots.SetEquals(occurrence.Target.PhysicalDefinitions.Select(definition => definition.Identity))
+                || after.Kind is not (VbaNameResolutionKind.Unresolved or VbaNameResolutionKind.Ambiguous))
+            {
+                return false;
+            }
+        }
+        else
+        {
+            IReadOnlyList<VbaResolvedNameTarget> afterTargets = after.Kind switch
+            {
+                VbaNameResolutionKind.Resolved when after.Target is not null => [after.Target],
+                VbaNameResolutionKind.Ambiguous => after.AmbiguousCandidates,
+                _ => Array.Empty<VbaResolvedNameTarget>()
+            };
+            if (afterTargets.Count == 0
+                || !occurrenceCauses.All(member => qualifierCauses.Any(root =>
+                    IsMemberOwnedByType(member.Before, root.BeforeDefinition)))
+                || !afterTargets.SelectMany(candidate => candidate.PhysicalDefinitions).All(member =>
+                    member.Name.Equals(occurrence.Target.SelectedDefinition.Name, StringComparison.OrdinalIgnoreCase)
+                    && causes.Any(root => IsMemberOwnedByType(member, root.AfterDefinition))))
+            {
+                return false;
+            }
+        }
+        proof.Impacts.Add(new VbaRenameImpact(
+            impactKind,
+            "The confirmed module-name collision makes this source qualifier ambiguous and changes its binding; manual consolidation may be required.",
+            occurrence.Uri, occurrence.Range)
+        {
+            Evidence = new VbaRenameImpactEvidence(
+                VbaNameResolutionKind.Resolved, control.Kind, after.Kind, controlRange, mappedRange,
+                Array.AsReadOnly(causes.Concat(occurrenceCauses.Select(cause =>
+                    new VbaRenameCausalDefinitionCorrespondence(cause.Before, cause.Control!, cause.After!)))
+                    .DistinctBy(cause => cause.BeforeDefinition.Identity).ToArray()))
+        });
+        return true;
+    }
+
+    private bool TryRecordReceiverTypeCollisionImpact(
+        VbaSemanticInventory hypothetical,
+        VbaResolvedIdentifierOccurrence occurrence,
+        VbaRange mappedRange,
+        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameCollisionProof? proof)
+    {
+        if (proof is null || IsDeclarationOccurrence(occurrence)
+            || occurrence.Target.PhysicalDefinitions.Count != 1
+            || definitionCandidates.FindDocument(occurrence.Uri) is not { } document)
+        {
+            return false;
+        }
+        var syntax = (document.SyntaxTree ?? VbaSyntaxTree.ParseModule(document.Uri, document.Text))
+            .GetPositionSyntax(occurrence.Range.Start.Line, occurrence.Range.Start.Character);
+        if (syntax.MemberAccess is not { } access)
+        {
+            return false;
+        }
+        VbaRange receiverRange;
+        if (access.IsLeadingDot)
+        {
+            if (access.ReceiverSegments.Count != 0 || syntax.EnclosingWithScopes.Count != 1
+                || syntax.EnclosingWithScopes[0].Receiver is not { IsLeadingDot: false } withReceiver
+                || withReceiver.Segments.Count != 1)
+            {
+                return false;
+            }
+            receiverRange = ToRange(withReceiver.Segments[0].Range);
+        }
+        else
+        {
+            if (access.ReceiverSegments.Count == 0)
+            {
+                return false;
+            }
+            receiverRange = ToRange(access.ReceiverSegments[^1].Range);
+        }
+        var beforeReceiver = ResolveSourceDefinition(
+            occurrence.Uri, receiverRange.Start.Line, receiverRange.Start.Character);
+        if (beforeReceiver is null)
+        {
+            return false;
+        }
+        var controlReceiver = FindHypotheticalDefinition(proof.ControlInventory, beforeReceiver, proof.ControlPlan.Changes);
+        var afterReceiver = FindHypotheticalDefinition(hypothetical, beforeReceiver, changes);
+        var controlReceiverRange = MapRange(occurrence.Uri, receiverRange, proof.ControlPlan.Changes);
+        var afterReceiverRange = MapRange(occurrence.Uri, receiverRange, changes);
+        if (controlReceiver is null || afterReceiver is null
+            || proof.ControlInventory.ResolveSourceDefinition(occurrence.Uri,
+                controlReceiverRange.Start.Line, controlReceiverRange.Start.Character)?.Identity != controlReceiver.Identity
+            || hypothetical.ResolveSourceDefinition(occurrence.Uri,
+                afterReceiverRange.Start.Line, afterReceiverRange.Start.Character)?.Identity != afterReceiver.Identity)
+        {
+            return false;
+        }
+
+        var beforeType = semanticResolution.GetEffectiveDeclaredType(beforeReceiver);
+        var afterType = hypothetical.semanticResolution.GetEffectiveDeclaredType(afterReceiver);
+        var beforeMember = occurrence.Target.SelectedDefinition;
+        var controlMember = FindHypotheticalDefinition(proof.ControlInventory, beforeMember, proof.ControlPlan.Changes);
+        var afterMember = FindHypotheticalDefinition(hypothetical, beforeMember, changes);
+        var controlRange = MapRange(occurrence.Uri, occurrence.Range, proof.ControlPlan.Changes);
+        var beforeChain = semanticResolution.ResolveMemberChainAt(
+            occurrence.Uri, occurrence.Range.Start.Line, occurrence.Range.Start.Character);
+        var controlChain = proof.ControlInventory.semanticResolution.ResolveMemberChainAt(
+            occurrence.Uri, controlRange.Start.Line, controlRange.Start.Character);
+        var afterChain = hypothetical.semanticResolution.ResolveMemberChainAt(
+            occurrence.Uri, mappedRange.Start.Line, mappedRange.Start.Character);
+        if (beforeChain?.StopReason != VbaMemberChainResolutionStopReason.Resolved
+            || beforeChain.Member?.Identity != beforeMember.Identity
+            || controlChain?.StopReason != VbaMemberChainResolutionStopReason.Resolved
+            || controlMember is null || controlChain.Member?.Identity != controlMember.Identity || afterChain is null)
+        {
+            return false;
+        }
+        var controlOutcome = VbaNameResolutionOutcome.Resolved(
+            proof.ControlInventory.resolutionPolicy.CreateNameTarget(controlChain.Member!));
+        var afterOutcome = afterChain.Member is { } resolvedAfterMember
+            ? VbaNameResolutionOutcome.Resolved(hypothetical.resolutionPolicy.CreateNameTarget(resolvedAfterMember))
+            : VbaNameResolutionOutcome.Unresolved;
+        if (beforeType.Target is null || controlMember is null || afterMember is null
+            || !beforeType.Target.PhysicalDefinitions.Any(type => IsMemberOwnedByType(beforeMember, type))
+            || afterOutcome.Kind == VbaNameResolutionKind.Resolved
+                && (afterType.Target is null || !afterOutcome.Target!.PhysicalDefinitions.All(member =>
+                    afterType.Target.PhysicalDefinitions.Any(type => IsMemberOwnedByType(member, type))))
+            || !TryRecordTypeNameCollisionImpact(
+                hypothetical, beforeReceiver, afterReceiver, beforeType, afterType, changes, proof))
+        {
+            return false;
+        }
+
+        var typeEvidence = proof.Impacts[^1].DeclaredTypeEvidence!;
+        proof.Impacts.Add(new VbaRenameImpact(
+            VbaRenameImpactKind.NonTargetBindingChanged,
+            "The confirmed type-name collision changes this member binding through its original receiver type; manual consolidation may be required.",
+            occurrence.Uri, occurrence.Range)
+        {
+            DeclaredTypeEvidence = typeEvidence,
+            Evidence = new VbaRenameImpactEvidence(
+                VbaNameResolutionKind.Resolved, controlOutcome.Kind, afterOutcome.Kind,
+                controlRange, mappedRange,
+                Array.AsReadOnly(typeEvidence.TypeDeclarationCauses
+                    .Append(new VbaRenameCausalDefinitionCorrespondence(beforeMember, controlMember, afterMember))
+                    .ToArray()))
+        });
+        return true;
+    }
+
+    private static bool IsMemberOwnedByType(VbaSourceDefinition member, VbaSourceDefinition type)
+        => VbaProjectIdentityModel.SameDocument(member.Uri, type.Uri)
+            && (IsModuleIdentity(type)
+                && member.ModuleName.Equals(type.Name, StringComparison.OrdinalIgnoreCase)
+                || type.Kind == VbaSourceDefinitionKind.Type
+                    && member.ModuleName.Equals(type.ModuleName, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(member.ParentTypeName, type.Name, StringComparison.OrdinalIgnoreCase));
+
     private VbaRenameFailure? ProveEffectiveDeclaredTypesArePreserved(
         VbaSemanticInventory hypothetical,
         IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        VbaRenameCollisionProof? collisionProof = null)
     {
         foreach (var before in sourceDocuments.SelectMany(document => document.Definitions)
                      .Where(definition => definition.Kind is VbaSourceDefinitionKind.Variable
@@ -3840,6 +4698,11 @@ public sealed class VbaSemanticInventory
             if (beforeType.State != VbaEffectiveDeclaredTypeState.Known
                 || afterType.State != VbaEffectiveDeclaredTypeState.Known)
             {
+                if (TryRecordTypeNameCollisionImpact(
+                    hypothetical, before, after, beforeType, afterType, changes, collisionProof))
+                {
+                    continue;
+                }
                 return AnalysisIncomplete($"Rename could not prove the effective type of '{before.Name}' is preserved.");
             }
 
@@ -3862,6 +4725,11 @@ public sealed class VbaSemanticInventory
             }
             if (!sameType)
             {
+                if (TryRecordTypeNameCollisionImpact(
+                    hypothetical, before, after, beforeType, afterType, changes, collisionProof))
+                {
+                    continue;
+                }
                 return ResolutionChanged($"Rename would change the effective type of '{before.Name}' "
                     + $"from {beforeType.DisplayName} to {afterType.DisplayName}. Choose a name that preserves its declared type.");
             }
@@ -3869,9 +4737,98 @@ public sealed class VbaSemanticInventory
         return null;
     }
 
+    private bool TryRecordTypeNameCollisionImpact(
+        VbaSemanticInventory hypothetical,
+        VbaSourceDefinition before,
+        VbaSourceDefinition after,
+        VbaEffectiveDeclaredType beforeType,
+        VbaEffectiveDeclaredType afterType,
+        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameCollisionProof? proof)
+    {
+        if (proof is null
+            || beforeType.State != VbaEffectiveDeclaredTypeState.Known
+            || beforeType.Target is null
+            || before.TypeReference is null
+            || after.TypeReference is null
+            || afterType.State is not (VbaEffectiveDeclaredTypeState.Known or VbaEffectiveDeclaredTypeState.ExplicitlyUnresolved))
+        {
+            return false;
+        }
+
+        var roots = proof.ControlPlan.TargetCorrespondence!.BeforeTarget.PhysicalDefinitions
+            .Concat(sourceDocuments.SelectMany(document => document.Definitions)
+                .Where(definition => proof.Conflicts.Any(conflict => conflict.Uri is not null
+                    && VbaProjectIdentityModel.SameDocument(conflict.Uri, definition.Uri)
+                    && conflict.Range == definition.Range)))
+            .Where(definition => IsModuleIdentity(definition)
+                || definition.Kind is VbaSourceDefinitionKind.Type or VbaSourceDefinitionKind.Enum)
+            .DistinctBy(definition => definition.Identity)
+            .ToArray();
+        bool IsOwnedType(VbaSourceDefinition definition, VbaSourceDefinition root)
+            => definition.Identity == root.Identity
+                || IsModuleIdentity(root)
+                    && VbaProjectIdentityModel.SameDocument(definition.Uri, root.Uri)
+                    && definition.ModuleName.Equals(root.Name, StringComparison.OrdinalIgnoreCase);
+        if (roots.Length == 0
+            || !beforeType.Target.PhysicalDefinitions.All(definition => roots.Any(root => IsOwnedType(definition, root))))
+        {
+            return false;
+        }
+
+        var controlDeclaration = FindHypotheticalDefinition(proof.ControlInventory, before, proof.ControlPlan.Changes);
+        if (controlDeclaration is null)
+        {
+            return false;
+        }
+        var controlType = proof.ControlInventory.semanticResolution.GetEffectiveDeclaredType(controlDeclaration);
+        if (controlType.State != VbaEffectiveDeclaredTypeState.Known || controlType.Target is null)
+        {
+            return false;
+        }
+        var expectedControlTypes = beforeType.Target.PhysicalDefinitions.Select(definition =>
+            FindHypotheticalDefinition(proof.ControlInventory, definition, proof.ControlPlan.Changes)).ToArray();
+        if (expectedControlTypes.Any(definition => definition is null)
+            || !expectedControlTypes.Select(definition => definition!.Identity).ToHashSet()
+                .SetEquals(controlType.Target.PhysicalDefinitions.Select(definition => definition.Identity)))
+        {
+            return false;
+        }
+
+        var controlRoots = roots.Select(definition =>
+            FindHypotheticalDefinition(proof.ControlInventory, definition, proof.ControlPlan.Changes)).ToArray();
+        var actualRoots = roots.Select(definition => FindHypotheticalDefinition(hypothetical, definition, changes)).ToArray();
+        if (controlRoots.Any(definition => definition is null)
+            || actualRoots.Any(definition => definition is null)
+            || !actualRoots.Any(root => after.TypeReference.Name.Equals(root!.Name, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(after.TypeReference.Qualifier, root!.Name, StringComparison.OrdinalIgnoreCase))
+            || afterType.Target is not null
+                && !afterType.Target.PhysicalDefinitions.All(definition => actualRoots.Any(root => IsOwnedType(definition, root!))))
+        {
+            return false;
+        }
+
+        proof.Impacts.Add(new VbaRenameImpact(
+            VbaRenameImpactKind.TypeNameResolutionChanged,
+            $"The confirmed type-name collision changes the source type resolution of '{before.Name}'; manual consolidation may be required.",
+            before.Uri,
+            before.TypeReferenceRange ?? before.Range)
+        {
+            DeclaredTypeEvidence = new VbaRenameDeclaredTypeImpactEvidence(
+                new VbaRenameCausalDefinitionCorrespondence(before, controlDeclaration, after),
+                beforeType,
+                controlType,
+                afterType,
+                Array.AsReadOnly(roots.Select((definition, index) => new VbaRenameCausalDefinitionCorrespondence(
+                    definition, controlRoots[index]!, actualRoots[index]!)).ToArray()))
+        });
+        return true;
+    }
+
     private VbaRenameFailure? ProveSourceInterfaceAssociationsArePreserved(
         VbaSemanticInventory hypothetical,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes)
+        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameCollisionProof? collisionProof = null)
     {
         var beforeAnalyses = sourceDocuments
             .Select(document => new
@@ -3889,11 +4846,20 @@ public sealed class VbaSemanticInventory
                     .AnalyzeSourceInterfaceImplementationAssociations(document)
             })
             .ToArray();
+        var permittedAssociations = collisionProof is null
+            ? new HashSet<VbaInterfaceAssociationProofKey>()
+            : RecordInterfaceCollisionImpacts(
+                hypothetical,
+                beforeAnalyses.SelectMany(item => item.Analysis.Associations).ToArray(),
+                afterAnalyses.SelectMany(item => item.Analysis.Associations).ToArray(),
+                changes,
+                collisionProof);
         var beforeCounts = beforeAnalyses
             .SelectMany(item => item.Analysis.Associations)
             .Select(association => CreateInterfaceAssociationProofKey(
                 association,
                 changes))
+            .Where(key => !permittedAssociations.Contains(key))
             .GroupBy(key => key)
             .ToDictionary(group => group.Key, group => group.Count());
         var afterCounts = afterAnalyses
@@ -3902,6 +4868,7 @@ public sealed class VbaSemanticInventory
                 .CreateInterfaceAssociationProofKey(
                     association,
                     changes: null))
+            .Where(key => !permittedAssociations.Contains(key))
             .GroupBy(key => key)
             .ToDictionary(group => group.Key, group => group.Count());
         if (beforeCounts.Count != afterCounts.Count
@@ -3958,12 +4925,677 @@ public sealed class VbaSemanticInventory
         return null;
     }
 
+    private IReadOnlySet<VbaInterfaceAssociationProofKey> RecordInterfaceCollisionImpacts(
+        VbaSemanticInventory hypothetical,
+        IReadOnlyList<VbaInterfaceImplementationAssociation> before,
+        IReadOnlyList<VbaInterfaceImplementationAssociation> after,
+        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameCollisionProof proof)
+    {
+        var permitted = new HashSet<VbaInterfaceAssociationProofKey>();
+        var root = proof.ControlPlan.TargetCorrespondence!.BeforeTarget.SelectedDefinition;
+        var causes = CreateCollisionDeclarationCorrespondences(hypothetical, root, changes, proof);
+        if (causes is null)
+        {
+            return permitted;
+        }
+        var control = proof.ControlInventory.sourceDocuments.SelectMany(document =>
+            proof.ControlInventory.semanticResolution.GetConclusiveSourceInterfaceImplementationAssociations(document)).ToArray();
+        foreach (var original in before)
+        {
+            if (root.Kind == VbaSourceDefinitionKind.Class
+                && TryRecordInterfaceTypeCollisionImpact(hypothetical, original, control, after, changes, causes, proof))
+            {
+                permitted.Add(CreateInterfaceAssociationProofKey(original, changes));
+                continue;
+            }
+            if (original.MemberTarget.PhysicalDefinitions.Count == 0
+                || original.MemberTarget.PhysicalDefinitions.Any(definition =>
+                    !causes.Any(cause => cause.BeforeDefinition.Identity == definition.Identity)))
+            {
+                continue;
+            }
+            var actualImplementation = FindHypotheticalDefinition(hypothetical, original.Implementation, changes);
+            var controlImplementation = FindHypotheticalDefinition(proof.ControlInventory, original.Implementation, proof.ControlPlan.Changes);
+            var actualMember = FindHypotheticalDefinition(hypothetical, original.Contract.OriginDefinition, changes);
+            var controlKey = CreateInterfaceAssociationProofKey(original, proof.ControlPlan.Changes);
+            var controlMatches = control.Where(candidate =>
+                proof.ControlInventory.CreateInterfaceAssociationProofKey(candidate, changes: null) == controlKey).ToArray();
+            if (actualImplementation is null || controlImplementation is null || actualMember is null || controlMatches.Length != 1)
+            {
+                continue;
+            }
+            var implementingUri = original.Relationship.ImplementingDocument.Uri;
+            var relationshipRange = MapRange(implementingUri, original.Relationship.InterfaceTypeRange, changes);
+            var actual = after.Where(candidate => candidate.Implementation.Identity == actualImplementation.Identity
+                && candidate.Relationship.ImplementingDocument.Uri.Equals(implementingUri, StringComparison.OrdinalIgnoreCase)
+                && candidate.Relationship.InterfaceTypeRange == relationshipRange).ToArray();
+            if (!actual.Any(candidate => candidate.Contract.OriginDefinition.Identity == actualMember.Identity)
+                || actual.Any(candidate =>
+                    !causes.Any(cause => cause.AfterDefinition.Identity == candidate.Contract.OriginDefinition.Identity)
+                    || candidate.MemberTarget.PhysicalDefinitions.Any(definition =>
+                        !causes.Any(cause => cause.AfterDefinition.Identity == definition.Identity))
+                    || CreateInterfaceTargetProofKey(original.Relationship.InterfaceTarget, changes)
+                        != hypothetical.CreateInterfaceTargetProofKey(candidate.Relationship.InterfaceTarget, changes: null)
+                    || CreateInterfaceTargetProofKey(original.ImplementationTarget, changes)
+                        != hypothetical.CreateInterfaceTargetProofKey(candidate.ImplementationTarget, changes: null)
+                    || candidate.Contract.Kind != original.Contract.Kind
+                    || candidate.Contract.IsDerivedVariableAccessor != original.Contract.IsDerivedVariableAccessor
+                    || candidate.CompatibilityState != original.CompatibilityState
+                    || candidate.InterfacePrefixRange != MapRange(original.Implementation.Uri, original.InterfacePrefixRange, changes)
+                    || candidate.SeparatorRange != MapRange(original.Implementation.Uri, original.SeparatorRange, changes)
+                    || candidate.MemberSuffixRange != MapRange(original.Implementation.Uri, original.MemberSuffixRange, changes)))
+            {
+                continue;
+            }
+            var originalKey = CreateInterfaceAssociationProofKey(original, changes);
+            var actualKeys = actual.Select(candidate => hypothetical.CreateInterfaceAssociationProofKey(candidate, changes: null)).ToArray();
+            if (actualKeys.Length == 1 && actualKeys[0] == originalKey)
+            {
+                continue;
+            }
+            var evidence = Array.AsReadOnly(causes.Append(new VbaRenameCausalDefinitionCorrespondence(
+                original.Implementation, controlImplementation, actualImplementation)).ToArray());
+            proof.Impacts.Add(new VbaRenameImpact(
+                VbaRenameImpactKind.DependentAssociationChanged,
+                "The confirmed member collision changes this established Implements association; its original implementation edit closure is retained.",
+                original.Implementation.Uri, original.Implementation.Range)
+            {
+                InterfaceEvidence = new VbaRenameInterfaceImpactEvidence(
+                    original, controlMatches[0], Array.AsReadOnly(actual), evidence)
+            });
+            permitted.Add(originalKey);
+            permitted.UnionWith(actualKeys);
+        }
+        return permitted;
+    }
+
+    private bool TryRecordInterfaceTypeCollisionImpact(
+        VbaSemanticInventory hypothetical,
+        VbaInterfaceImplementationAssociation original,
+        IReadOnlyList<VbaInterfaceImplementationAssociation> control,
+        IReadOnlyList<VbaInterfaceImplementationAssociation> after,
+        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        IReadOnlyList<VbaRenameCausalDefinitionCorrespondence> causes,
+        VbaRenameCollisionProof proof)
+    {
+        var interfaceDefinitions = original.Relationship.InterfaceTarget.PhysicalDefinitions;
+        if (interfaceDefinitions.Count == 0 || interfaceDefinitions.Any(definition =>
+                definition.Kind != VbaSourceDefinitionKind.Class
+                || !causes.Any(cause => cause.BeforeDefinition.Identity == definition.Identity)))
+        {
+            return false;
+        }
+        var controlKey = CreateInterfaceAssociationProofKey(original, proof.ControlPlan.Changes);
+        var controlMatches = control.Where(candidate =>
+            proof.ControlInventory.CreateInterfaceAssociationProofKey(candidate, changes: null) == controlKey).ToArray();
+        if (controlMatches.Length != 1)
+        {
+            return false;
+        }
+        var uri = original.Relationship.ImplementingDocument.Uri;
+        var originalRange = original.Relationship.InterfaceTypeRange;
+        var nameRange = new VbaRange(new VbaPosition(originalRange.End.Line,
+            originalRange.End.Character - original.Relationship.InterfaceType.Name.Length), originalRange.End);
+        var controlRange = MapRange(uri, nameRange, proof.ControlPlan.Changes);
+        var actualRange = MapRange(uri, nameRange, changes);
+        var beforeBinding = semanticResolution.ClassifySourceDefinition(uri, nameRange.Start.Line, nameRange.Start.Character);
+        var controlBinding = proof.ControlInventory.semanticResolution.ClassifySourceDefinition(
+            uri, controlRange.Start.Line, controlRange.Start.Character);
+        var actualBinding = hypothetical.semanticResolution.ClassifySourceDefinition(
+            uri, actualRange.Start.Line, actualRange.Start.Character);
+        var expectedControl = causes.Where(cause => interfaceDefinitions.Any(definition =>
+            cause.BeforeDefinition.Identity == definition.Identity)).Select(cause => cause.ControlDefinition.Identity).ToHashSet();
+        if (beforeBinding.Kind != VbaNameResolutionKind.Resolved
+            || !interfaceDefinitions.Select(definition => definition.Identity).ToHashSet()
+                .SetEquals(beforeBinding.Target!.PhysicalDefinitions.Select(definition => definition.Identity))
+            || controlBinding.Kind != VbaNameResolutionKind.Resolved
+            || !expectedControl.SetEquals(controlBinding.Target!.PhysicalDefinitions.Select(definition => definition.Identity))
+            || actualBinding.Kind != VbaNameResolutionKind.Ambiguous
+            || actualBinding.AmbiguousCandidates.Count < 2
+            || actualBinding.AmbiguousCandidates.SelectMany(candidate => candidate.PhysicalDefinitions).Any(definition =>
+                definition.Kind != VbaSourceDefinitionKind.Class
+                || !causes.Any(cause => cause.AfterDefinition.Identity == definition.Identity)))
+        {
+            return false;
+        }
+        var actualImplementation = FindHypotheticalDefinition(hypothetical, original.Implementation, changes);
+        var controlImplementation = FindHypotheticalDefinition(proof.ControlInventory, original.Implementation, proof.ControlPlan.Changes);
+        var actualMember = FindHypotheticalDefinition(hypothetical, original.Contract.OriginDefinition, changes);
+        var controlMember = FindHypotheticalDefinition(proof.ControlInventory, original.Contract.OriginDefinition, proof.ControlPlan.Changes);
+        if (actualImplementation is null || controlImplementation is null || actualMember is null || controlMember is null
+            || after.Any(candidate => candidate.Relationship.ImplementingDocument.Uri.Equals(uri, StringComparison.OrdinalIgnoreCase)
+                && candidate.Relationship.InterfaceTypeRange == MapRange(uri, originalRange, changes)))
+        {
+            return false;
+        }
+        var evidence = Array.AsReadOnly(causes.Concat([
+            new VbaRenameCausalDefinitionCorrespondence(original.Implementation, controlImplementation, actualImplementation),
+            new VbaRenameCausalDefinitionCorrespondence(original.Contract.OriginDefinition, controlMember, actualMember)
+        ]).DistinctBy(cause => cause.BeforeDefinition.Identity).ToArray());
+        proof.Impacts.Add(new VbaRenameImpact(
+            VbaRenameImpactKind.DependentAssociationChanged,
+            "The confirmed source-interface type collision makes this established Implements relationship ambiguous; its original implementation edit closure is retained.",
+            uri, originalRange)
+        {
+            Evidence = new VbaRenameImpactEvidence(beforeBinding.Kind, controlBinding.Kind, actualBinding.Kind,
+                controlRange, actualRange, evidence),
+            InterfaceEvidence = new VbaRenameInterfaceImpactEvidence(original, controlMatches[0], [], evidence)
+        });
+        return true;
+    }
+
+    private static bool TryRecordInterfacePrefixCollisionImpact(
+        VbaResolvedIdentifierOccurrence occurrence,
+        VbaRange controlRange,
+        VbaRange mappedRange,
+        VbaNameResolutionOutcome controlClassification,
+        VbaNameResolutionOutcome after,
+        VbaRenameCollisionProof proof,
+        VbaRenameImpactKind impactKind)
+    {
+        if (controlClassification.Kind != VbaNameResolutionKind.Resolved || after.Kind != VbaNameResolutionKind.Resolved)
+        {
+            return false;
+        }
+        var associations = proof.Impacts.Where(impact => impact.InterfaceEvidence is { After.Count: 0 })
+            .Select(impact => impact.InterfaceEvidence!).ToArray();
+        foreach (var association in associations)
+        {
+            var original = association.Before;
+            var implementation = association.DeclarationCauses.Single(cause =>
+                cause.BeforeDefinition.Identity == original.Implementation.Identity);
+            if (!occurrence.Uri.Equals(original.Implementation.Uri, StringComparison.OrdinalIgnoreCase)
+                || occurrence.Range != original.InterfacePrefixRange
+                || !occurrence.Target.PhysicalDefinitions.Select(definition => definition.Identity).ToHashSet()
+                    .SetEquals(original.Relationship.InterfaceTarget.PhysicalDefinitions.Select(definition => definition.Identity))
+                || !controlClassification.Target!.PhysicalDefinitions.Select(definition => definition.Identity).ToHashSet()
+                    .SetEquals(association.Control.Relationship.InterfaceTarget.PhysicalDefinitions.Select(definition => definition.Identity))
+                || after.Target!.PhysicalDefinitions.Count != 1
+                || after.Target.SelectedDefinition.Identity != implementation.AfterDefinition.Identity)
+            {
+                continue;
+            }
+            proof.Impacts.Add(new VbaRenameImpact(
+                impactKind,
+                "The confirmed source-interface type collision removes this established implementation-prefix binding; its original edit is retained.",
+                occurrence.Uri, occurrence.Range)
+            {
+                Evidence = new VbaRenameImpactEvidence(VbaNameResolutionKind.Resolved, controlClassification.Kind, after.Kind,
+                    controlRange, mappedRange, association.DeclarationCauses),
+                InterfaceEvidence = association
+            });
+            return true;
+        }
+        return false;
+    }
+
+    private IReadOnlySet<string> RecordWithEventsCollisionImpacts(
+        VbaSemanticInventory hypothetical,
+        IReadOnlyList<VbaHandlerEventRenameConvergence> before,
+        IReadOnlyList<VbaHandlerEventRenameConvergence> after,
+        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameCollisionProof proof)
+    {
+        var permitted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var root = proof.ControlPlan.TargetCorrespondence!.BeforeTarget.SelectedDefinition;
+        var causes = CreateCollisionDeclarationCorrespondences(hypothetical, root, changes, proof);
+        if (causes is null)
+        {
+            return permitted;
+        }
+        var control = proof.ControlInventory.GetHandlerEventRenameConvergences();
+        foreach (var original in before)
+        {
+            var handler = original.HandlerAnalysis.Handler;
+            var actualHandler = FindHypotheticalDefinition(hypothetical, handler, changes);
+            var controlHandler = FindHypotheticalDefinition(proof.ControlInventory, handler, proof.ControlPlan.Changes);
+            var actualMatches = after.Where(candidate => candidate.HandlerAnalysis.Handler.Identity == actualHandler?.Identity).ToArray();
+            var controlMatches = control.Where(candidate => candidate.HandlerAnalysis.Handler.Identity == controlHandler?.Identity).ToArray();
+            if (actualHandler is null || controlHandler is null || actualMatches.Length > 1 || controlMatches.Length != 1)
+            {
+                continue;
+            }
+            var actual = actualMatches.SingleOrDefault();
+            var independent = controlMatches[0];
+            if (actual is not null && CreateWithEventsAssociationProofKey(original, changes)
+                    == hypothetical.CreateWithEventsAssociationProofKey(actual, changes: null)
+                || original.Kind == VbaHandlerEventRenameConvergenceKind.Indeterminate
+                || original.HandlerAnalysis.Recognition == VbaWithEventsHandlerRecognition.IndeterminateCandidate
+                || original.HandlerAnalysis.BindingSet.Entries.Any(entry => entry.HasRecoveredEventEvidence)
+                || CreateWithEventsAssociationProofKey(original, proof.ControlPlan.Changes)
+                    != proof.ControlInventory.CreateWithEventsAssociationProofKey(independent, changes: null))
+            {
+                continue;
+            }
+            var variableCause = original.HandlerAnalysis.BindingSet.VariableTarget.PhysicalDefinitions.Any(definition =>
+                causes.Any(cause => cause.BeforeDefinition.Identity == definition.Identity));
+            var eventCause = original.HandlerAnalysis.BindingSet.Entries.SelectMany(entry => entry.ResolvedEventTargets)
+                .SelectMany(target => target.PhysicalDefinitions).Any(definition =>
+                    causes.Any(cause => cause.BeforeDefinition.Identity == definition.Identity));
+            if (!variableCause && !eventCause)
+            {
+                if (TryRecordWithEventsSourceTypeCollisionImpact(
+                    hypothetical, original, independent, actual, controlHandler, actualHandler, causes, changes, proof))
+                {
+                    permitted.Add(CreateOccurrenceKey(actualHandler.Uri, actualHandler.Range));
+                }
+                continue;
+            }
+            if (actual is null)
+            {
+                var variableAmbiguity = variableCause && causes.Count(cause =>
+                    cause.AfterDefinition.Kind == VbaSourceDefinitionKind.Variable
+                    && actualHandler.Name.Equals(cause.AfterDefinition.Name + "_" + original.HandlerAnalysis.Decomposition.EventName,
+                        StringComparison.OrdinalIgnoreCase)) > 1;
+                var eventAmbiguity = eventCause && causes.Count(cause =>
+                    cause.AfterDefinition.Kind == VbaSourceDefinitionKind.Event
+                    && actualHandler.Name.Equals(original.HandlerAnalysis.Decomposition.VariableName + "_" + cause.AfterDefinition.Name,
+                        StringComparison.OrdinalIgnoreCase)) > 1;
+                if (!variableAmbiguity && !eventAmbiguity)
+                {
+                    continue;
+                }
+            }
+            if (actual is not null && variableCause && actual.HandlerAnalysis.BindingSet.VariableTarget.PhysicalDefinitions.Any(definition =>
+                    !causes.Any(cause => cause.AfterDefinition.Identity == definition.Identity)))
+            {
+                continue;
+            }
+            if (actual is not null && eventCause && actual.HandlerAnalysis.BindingSet.Entries.SelectMany(entry => entry.ResolvedEventTargets)
+                    .SelectMany(target => target.PhysicalDefinitions).Any(definition =>
+                        !causes.Any(cause => cause.AfterDefinition.Identity == definition.Identity)))
+            {
+                continue;
+            }
+
+            var evidence = Array.AsReadOnly(causes.Append(new VbaRenameCausalDefinitionCorrespondence(
+                handler, controlHandler, actualHandler)).ToArray());
+            proof.Impacts.Add(new VbaRenameImpact(
+                VbaRenameImpactKind.DependentAssociationChanged,
+                "The confirmed collision changes this established WithEvents association; its original dependent edit closure is retained.",
+                handler.Uri, handler.Range)
+            {
+                WithEventsEvidence = new VbaRenameWithEventsImpactEvidence(original, independent, actual, evidence)
+            });
+            permitted.Add(CreateOccurrenceKey(actualHandler.Uri, actualHandler.Range));
+        }
+        return permitted;
+    }
+
+    private bool TryRecordWithEventsSourceTypeCollisionImpact(
+        VbaSemanticInventory hypothetical,
+        VbaHandlerEventRenameConvergence before,
+        VbaHandlerEventRenameConvergence control,
+        VbaHandlerEventRenameConvergence? after,
+        VbaSourceDefinition controlHandler,
+        VbaSourceDefinition afterHandler,
+        IReadOnlyList<VbaRenameCausalDefinitionCorrespondence> causes,
+        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameCollisionProof proof)
+    {
+        var handler = before.HandlerAnalysis.Handler;
+        if (after is null || after.Kind != VbaHandlerEventRenameConvergenceKind.Indeterminate
+            || causes.Count < 2 || causes.Any(cause => cause.BeforeDefinition.Kind != VbaSourceDefinitionKind.Class)
+            || !handler.Name.Equals(controlHandler.Name, StringComparison.Ordinal)
+            || !handler.Name.Equals(afterHandler.Name, StringComparison.Ordinal)
+            || before.HandlerAnalysis.BindingSet.Entries.Count == 0
+            || before.HandlerAnalysis.BindingSet.Entries.Any(entry =>
+                entry.Status != VbaWithEventsEventBindingStatus.Resolved || entry.HasRecoveredEventEvidence)
+            || after.HandlerAnalysis.BindingSet.Entries.Count != before.HandlerAnalysis.BindingSet.Entries.Count
+            || after.HandlerAnalysis.BindingSet.Entries.Any(entry =>
+                entry.Status != VbaWithEventsEventBindingStatus.Indeterminate || entry.HasRecoveredEventEvidence
+                || entry.ResolvedEventTargets.Count != 0))
+        {
+            return false;
+        }
+        var variables = before.HandlerAnalysis.BindingSet.Entries.Select(entry => new
+        {
+            Entry = entry,
+            Before = entry.Variable,
+            Control = FindHypotheticalDefinition(proof.ControlInventory, entry.Variable, proof.ControlPlan.Changes),
+            After = FindHypotheticalDefinition(hypothetical, entry.Variable, changes)
+        }).ToArray();
+        if (variables.Any(variable => variable.Control is null || variable.After is null)
+            || !variables.Select(variable => variable.After!.Identity).ToHashSet().SetEquals(
+                after.HandlerAnalysis.BindingSet.VariableTarget.PhysicalDefinitions.Select(definition => definition.Identity))
+            || !variables.Select(variable => variable.After!.Identity).ToHashSet().SetEquals(
+                after.HandlerAnalysis.BindingSet.Entries.Select(entry => entry.Variable.Identity)))
+        {
+            return false;
+        }
+        var typeEvidence = new List<VbaRenameDeclaredTypeImpactEvidence>();
+        foreach (var variable in variables)
+        {
+            var beforeType = semanticResolution.GetEffectiveDeclaredType(variable.Before);
+            var afterType = hypothetical.semanticResolution.GetEffectiveDeclaredType(variable.After!);
+            if (beforeType.State != VbaEffectiveDeclaredTypeState.Known || beforeType.Target is null
+                || afterType.State != VbaEffectiveDeclaredTypeState.ExplicitlyUnresolved
+                || variable.After!.TypeReferenceRange is not { } typeRange
+                || variable.Entry.ResolvedEventTargets.Count == 0
+                || !variable.Entry.ResolvedEventTargets.SelectMany(target => target.PhysicalDefinitions).All(eventDefinition =>
+                    beforeType.Target.PhysicalDefinitions.Any(type => IsMemberOwnedByType(eventDefinition, type))))
+            {
+                return false;
+            }
+            var typeOutcome = hypothetical.semanticResolution.ClassifySourceDefinition(
+                variable.After.Uri, typeRange.Start.Line, typeRange.Start.Character);
+            if (typeOutcome.Kind != VbaNameResolutionKind.Ambiguous || typeOutcome.AmbiguousCandidates.Count == 0
+                || !causes.Select(cause => cause.AfterDefinition.Identity).ToHashSet().SetEquals(
+                    typeOutcome.AmbiguousCandidates.SelectMany(candidate => candidate.PhysicalDefinitions)
+                        .Select(definition => definition.Identity))
+                || !TryRecordTypeNameCollisionImpact(
+                    hypothetical, variable.Before, variable.After, beforeType, afterType, changes, proof))
+            {
+                return false;
+            }
+            typeEvidence.Add(proof.Impacts[^1].DeclaredTypeEvidence!);
+        }
+        var evidence = Array.AsReadOnly(causes
+            .Concat(variables.Select(variable => new VbaRenameCausalDefinitionCorrespondence(
+                variable.Before, variable.Control!, variable.After!)))
+            .Append(new VbaRenameCausalDefinitionCorrespondence(handler, controlHandler, afterHandler)).ToArray());
+        foreach (var declaredType in typeEvidence)
+        {
+            proof.Impacts.Add(new VbaRenameImpact(
+                VbaRenameImpactKind.DependentAssociationChanged,
+                "The confirmed event-source type collision makes this established WithEvents association indeterminate; its handler text is retained.",
+                handler.Uri, handler.Range)
+            {
+                DeclaredTypeEvidence = declaredType,
+                WithEventsEvidence = new VbaRenameWithEventsImpactEvidence(before, control, after, evidence)
+            });
+        }
+        return true;
+    }
+
+    private bool TryRecordWithEventsSegmentCollisionImpact(
+        VbaSemanticInventory hypothetical,
+        VbaResolvedIdentifierOccurrence occurrence,
+        VbaRange controlRange,
+        VbaRange mappedRange,
+        VbaNameResolutionOutcome controlClassification,
+        VbaNameResolutionOutcome after,
+        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameCollisionProof proof,
+        VbaRenameImpactKind impactKind)
+    {
+        if (TryRecordWithEventsEventNameCollisionImpact(
+            hypothetical, occurrence, controlRange, mappedRange, controlClassification, after, changes, proof, impactKind))
+        {
+            return true;
+        }
+        if (controlClassification.Kind == VbaNameResolutionKind.Resolved
+            && after.Kind == VbaNameResolutionKind.AnalysisIncomplete)
+        {
+            var typeAssociations = proof.Impacts.Where(impact => impact.DeclaredTypeEvidence is not null
+                && impact.WithEventsEvidence?.After?.Kind == VbaHandlerEventRenameConvergenceKind.Indeterminate).ToArray();
+            foreach (var impact in typeAssociations)
+            {
+                var association = impact.WithEventsEvidence!;
+                var handler = association.Before.HandlerAnalysis.Handler;
+                var suffixRange = new VbaRange(new VbaPosition(handler.Range.Start.Line,
+                    handler.Range.Start.Character + association.Before.HandlerAnalysis.Decomposition.VariableName.Length + 1),
+                    handler.Range.End);
+                if (!VbaProjectIdentityModel.SameDocument(occurrence.Uri, handler.Uri)
+                    || occurrence.Range != suffixRange || association.After!.HandlerAnalysis.EventTarget is not null)
+                {
+                    continue;
+                }
+                var beforeBindings = association.Before.HandlerAnalysis.BindingSet.Entries
+                    .SelectMany(entry => entry.ResolvedEventTargets).SelectMany(target => target.PhysicalDefinitions)
+                    .DistinctBy(definition => definition.Identity).ToArray();
+                var controlBindings = association.Control.HandlerAnalysis.BindingSet.Entries
+                    .SelectMany(entry => entry.ResolvedEventTargets).SelectMany(target => target.PhysicalDefinitions)
+                    .Select(definition => definition.Identity).ToHashSet();
+                var bindingCauses = beforeBindings.Select(definition => new
+                {
+                    Before = definition,
+                    Control = FindHypotheticalDefinition(proof.ControlInventory, definition, proof.ControlPlan.Changes),
+                    After = FindHypotheticalDefinition(hypothetical, definition, changes)
+                }).ToArray();
+                if (beforeBindings.Length == 0
+                    || !beforeBindings.Select(definition => definition.Identity).ToHashSet()
+                        .SetEquals(occurrence.Target.PhysicalDefinitions.Select(definition => definition.Identity))
+                    || !controlBindings.SetEquals(controlClassification.Target!.PhysicalDefinitions.Select(definition => definition.Identity))
+                    || bindingCauses.Any(cause => cause.Control is null || cause.After is null)
+                    || !controlBindings.SetEquals(bindingCauses.Select(cause => cause.Control!.Identity)))
+                {
+                    continue;
+                }
+                proof.Impacts.Add(new VbaRenameImpact(
+                    impactKind,
+                    "The confirmed event-source type collision makes this established handler Event binding indeterminate; its text is retained.",
+                    occurrence.Uri, occurrence.Range)
+                {
+                    DeclaredTypeEvidence = impact.DeclaredTypeEvidence,
+                    WithEventsEvidence = association,
+                    Evidence = new VbaRenameImpactEvidence(
+                        VbaNameResolutionKind.Resolved, controlClassification.Kind, after.Kind, controlRange, mappedRange,
+                        Array.AsReadOnly(association.DeclarationCauses.Concat(bindingCauses.Select(cause =>
+                            new VbaRenameCausalDefinitionCorrespondence(cause.Before, cause.Control!, cause.After!)))
+                            .DistinctBy(cause => cause.BeforeDefinition.Identity).ToArray()))
+                });
+                return true;
+            }
+        }
+        if (controlClassification.Kind != VbaNameResolutionKind.Resolved
+            || after.Kind != VbaNameResolutionKind.Resolved)
+        {
+            return false;
+        }
+        var associations = proof.Impacts.Where(impact => impact.WithEventsEvidence is not null)
+            .Select(impact => impact.WithEventsEvidence!).ToArray();
+        foreach (var association in associations)
+        {
+            var handler = association.Before.HandlerAnalysis.Handler;
+            var prefixRange = new VbaRange(handler.Range.Start, new VbaPosition(
+                handler.Range.Start.Line,
+                handler.Range.Start.Character + association.Before.HandlerAnalysis.Decomposition.VariableName.Length));
+            var suffixRange = new VbaRange(new VbaPosition(prefixRange.End.Line, prefixRange.End.Character + 1), handler.Range.End);
+            var isPrefix = occurrence.Range == prefixRange;
+            static IEnumerable<VbaSourceDefinition> SegmentDefinitions(VbaWithEventsHandlerAnalysis analysis, bool prefix)
+                => prefix
+                    ? analysis.BindingSet.VariableTarget.PhysicalDefinitions
+                    : analysis.BindingSet.Entries.SelectMany(entry => entry.ResolvedEventTargets)
+                        .SelectMany(target => target.PhysicalDefinitions).DistinctBy(definition => definition.Identity);
+            var beforeBindings = SegmentDefinitions(association.Before.HandlerAnalysis, isPrefix).ToArray();
+            var controlBindings = SegmentDefinitions(association.Control.HandlerAnalysis, isPrefix).ToArray();
+            var handlerCause = association.DeclarationCauses.Single(cause =>
+                cause.BeforeDefinition.Identity == handler.Identity);
+            if (association.After is not null
+                || !occurrence.Uri.Equals(handler.Uri, StringComparison.OrdinalIgnoreCase)
+                || !isPrefix && occurrence.Range != suffixRange
+                || !occurrence.Target.PhysicalDefinitions.Select(definition => definition.Identity).ToHashSet()
+                    .SetEquals(beforeBindings.Select(definition => definition.Identity))
+                || !controlClassification.Target!.PhysicalDefinitions.Select(definition => definition.Identity).ToHashSet()
+                    .SetEquals(controlBindings.Select(definition => definition.Identity))
+                || after.Target!.PhysicalDefinitions.Count != 1
+                || after.Target.SelectedDefinition.Identity != handlerCause.AfterDefinition.Identity)
+            {
+                continue;
+            }
+            var bindingCauses = beforeBindings.Select(definition => new
+            {
+                Before = definition,
+                Control = FindHypotheticalDefinition(proof.ControlInventory, definition, proof.ControlPlan.Changes),
+                After = FindHypotheticalDefinition(hypothetical, definition, changes)
+            }).ToArray();
+            if (bindingCauses.Any(cause => cause.Control is null || cause.After is null
+                || !controlBindings.Any(binding => binding.Identity == cause.Control.Identity)))
+            {
+                continue;
+            }
+            var evidence = Array.AsReadOnly(association.DeclarationCauses.Concat(bindingCauses.Select(cause =>
+                new VbaRenameCausalDefinitionCorrespondence(cause.Before, cause.Control!, cause.After!)))
+                .DistinctBy(cause => cause.BeforeDefinition.Identity).ToArray());
+            proof.Impacts.Add(new VbaRenameImpact(
+                impactKind,
+                "The confirmed WithEvents collision removes this established handler-segment binding; the original dependent edit closure is retained.",
+                occurrence.Uri, occurrence.Range)
+            {
+                Evidence = new VbaRenameImpactEvidence(
+                    VbaNameResolutionKind.Resolved, controlClassification.Kind, after.Kind,
+                    controlRange, mappedRange, evidence),
+                WithEventsEvidence = association
+            });
+            return true;
+        }
+        return false;
+    }
+
+    private bool TryRecordWithEventsEventNameCollisionImpact(
+        VbaSemanticInventory hypothetical,
+        VbaResolvedIdentifierOccurrence occurrence,
+        VbaRange controlRange,
+        VbaRange mappedRange,
+        VbaNameResolutionOutcome controlClassification,
+        VbaNameResolutionOutcome after,
+        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameCollisionProof proof,
+        VbaRenameImpactKind impactKind)
+    {
+        if (controlClassification.Kind != VbaNameResolutionKind.Resolved
+            || after.Kind != VbaNameResolutionKind.AnalysisIncomplete)
+        {
+            return false;
+        }
+        var associations = proof.Impacts.Where(impact => impact.WithEventsEvidence?.After?.Kind
+                == VbaHandlerEventRenameConvergenceKind.Indeterminate)
+            .Select(impact => impact.WithEventsEvidence!).ToArray();
+        foreach (var association in associations)
+        {
+            var original = association.Before.HandlerAnalysis;
+            var actual = association.After!.HandlerAnalysis;
+            var suffixRange = new VbaRange(new VbaPosition(original.Handler.Range.Start.Line,
+                original.Handler.Range.Start.Character + original.Decomposition.VariableName.Length + 1), original.Handler.Range.End);
+            var events = association.DeclarationCauses.Where(cause => cause.BeforeDefinition.Kind == VbaSourceDefinitionKind.Event).ToArray();
+            var originalEvents = original.BindingSet.Entries.SelectMany(entry => entry.ResolvedEventTargets)
+                .SelectMany(target => target.PhysicalDefinitions).Select(definition => definition.Identity).ToHashSet();
+            var controlEvents = association.Control.HandlerAnalysis.BindingSet.Entries.SelectMany(entry => entry.ResolvedEventTargets)
+                .SelectMany(target => target.PhysicalDefinitions).Select(definition => definition.Identity).ToHashSet();
+            if (!VbaProjectIdentityModel.SameDocument(occurrence.Uri, original.Handler.Uri)
+                || occurrence.Range != suffixRange || events.Length < 2 || actual.EventTarget is not null
+                || !originalEvents.SetEquals(occurrence.Target.PhysicalDefinitions.Select(definition => definition.Identity))
+                || !controlEvents.SetEquals(controlClassification.Target!.PhysicalDefinitions.Select(definition => definition.Identity))
+                || !originalEvents.All(identity => events.Any(cause => cause.BeforeDefinition.Identity == identity))
+                || original.BindingSet.Entries.Count == 0
+                || original.BindingSet.Entries.Any(entry => entry.Status != VbaWithEventsEventBindingStatus.Resolved || entry.HasRecoveredEventEvidence)
+                || actual.BindingSet.Entries.Count != original.BindingSet.Entries.Count
+                || actual.BindingSet.Entries.Any(entry => entry.Status != VbaWithEventsEventBindingStatus.Indeterminate
+                    || entry.HasRecoveredEventEvidence || entry.ResolvedEventTargets.Count != 0))
+            {
+                continue;
+            }
+            var evidence = association.DeclarationCauses.ToList();
+            var allVariablesProved = true;
+            foreach (var entry in original.BindingSet.Entries)
+            {
+                var controlVariable = FindHypotheticalDefinition(proof.ControlInventory, entry.Variable, proof.ControlPlan.Changes);
+                var actualVariable = FindHypotheticalDefinition(hypothetical, entry.Variable, changes);
+                if (controlVariable is null || actualVariable is null
+                    || !actual.BindingSet.Entries.Any(candidate => candidate.Variable.Identity == actualVariable.Identity))
+                {
+                    allVariablesProved = false;
+                    break;
+                }
+                var beforeType = semanticResolution.GetEffectiveDeclaredType(entry.Variable);
+                var controlType = proof.ControlInventory.semanticResolution.GetEffectiveDeclaredType(controlVariable);
+                var actualType = hypothetical.semanticResolution.GetEffectiveDeclaredType(actualVariable);
+                if (beforeType.State != VbaEffectiveDeclaredTypeState.Known || beforeType.Target is null
+                    || controlType.State != VbaEffectiveDeclaredTypeState.Known || controlType.Target is null
+                    || actualType.State != VbaEffectiveDeclaredTypeState.Known || actualType.Target is null)
+                {
+                    allVariablesProved = false;
+                    break;
+                }
+                var typeCauses = beforeType.Target.PhysicalDefinitions.Select(definition => new
+                {
+                    Before = definition,
+                    Control = FindHypotheticalDefinition(proof.ControlInventory, definition, proof.ControlPlan.Changes),
+                    After = FindHypotheticalDefinition(hypothetical, definition, changes)
+                }).ToArray();
+                if (typeCauses.Any(cause => cause.Control is null || cause.After is null)
+                    || !typeCauses.Select(cause => cause.Control!.Identity).ToHashSet()
+                        .SetEquals(controlType.Target.PhysicalDefinitions.Select(definition => definition.Identity))
+                    || !typeCauses.Select(cause => cause.After!.Identity).ToHashSet()
+                        .SetEquals(actualType.Target.PhysicalDefinitions.Select(definition => definition.Identity))
+                    || !entry.ResolvedEventTargets.SelectMany(target => target.PhysicalDefinitions).All(definition =>
+                        beforeType.Target.PhysicalDefinitions.Any(type => IsMemberOwnedByType(definition, type)))
+                    || events.Count(cause => cause.AfterDefinition.Name.Equals(actual.Decomposition.EventName, StringComparison.OrdinalIgnoreCase)
+                        && actualType.Target.PhysicalDefinitions.Any(type => IsMemberOwnedByType(cause.AfterDefinition, type))) < 2)
+                {
+                    allVariablesProved = false;
+                    break;
+                }
+                evidence.Add(new VbaRenameCausalDefinitionCorrespondence(entry.Variable, controlVariable, actualVariable));
+                evidence.AddRange(typeCauses.Select(cause => new VbaRenameCausalDefinitionCorrespondence(cause.Before, cause.Control!, cause.After!)));
+            }
+            if (!allVariablesProved)
+            {
+                continue;
+            }
+            proof.Impacts.Add(new VbaRenameImpact(
+                impactKind,
+                "The confirmed Event-name collision makes this established handler suffix ambiguous within the same source Event type; its original edit is retained.",
+                occurrence.Uri, occurrence.Range)
+            {
+                Evidence = new VbaRenameImpactEvidence(VbaNameResolutionKind.Resolved, controlClassification.Kind, after.Kind,
+                    controlRange, mappedRange, Array.AsReadOnly(evidence.DistinctBy(cause => cause.BeforeDefinition.Identity).ToArray())),
+                WithEventsEvidence = association
+            });
+            return true;
+        }
+        return false;
+    }
+
+    private bool TryRecordDependentCollisionBindingImpact(
+        VbaSemanticInventory hypothetical,
+        VbaResolvedIdentifierOccurrence occurrence,
+        VbaRange mappedRange,
+        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameCollisionProof? proof)
+    {
+        if (proof is null)
+        {
+            return false;
+        }
+        var controlRange = MapRange(occurrence.Uri, occurrence.Range, proof.ControlPlan.Changes);
+        if (TryRecordWithEventsSegmentCollisionImpact(
+            hypothetical, occurrence, controlRange, mappedRange,
+            proof.ControlInventory.semanticResolution.ClassifySourceDefinition(
+                occurrence.Uri, controlRange.Start.Line, controlRange.Start.Character),
+            hypothetical.semanticResolution.ClassifySourceDefinition(
+                occurrence.Uri, mappedRange.Start.Line, mappedRange.Start.Character),
+            changes, proof, VbaRenameImpactKind.NonTargetBindingChanged))
+        {
+            return true;
+        }
+        var dependents = proof.Impacts.Where(impact => impact.WithEventsEvidence is not null)
+            .Select(impact => impact.WithEventsEvidence!.Before.HandlerAnalysis.Handler)
+            .Concat(proof.Impacts.Where(impact => impact.InterfaceEvidence is not null)
+                .Select(impact => impact.InterfaceEvidence!.Before.Implementation))
+            .DistinctBy(definition => definition.Identity).ToArray();
+        return dependents.Any(dependent => TryRecordCollisionBindingImpact(
+            hypothetical, dependent, occurrence, mappedRange, changes, proof, VbaRenameImpactKind.NonTargetBindingChanged));
+    }
+
     private VbaRenameFailure? ProveWithEventsAssociationsArePreserved(
         VbaSemanticInventory hypothetical,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes)
+        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameCollisionProof? collisionProof = null)
     {
         var before = GetHandlerEventRenameConvergences();
         var after = hypothetical.GetHandlerEventRenameConvergences();
+        if (collisionProof is not null)
+        {
+            var permittedHandlers = RecordWithEventsCollisionImpacts(hypothetical, before, after, changes, collisionProof);
+            before = before.Where(convergence => !permittedHandlers.Contains(CreateOccurrenceKey(
+                convergence.HandlerAnalysis.Handler.Uri,
+                MapRange(convergence.HandlerAnalysis.Handler.Uri, convergence.HandlerAnalysis.Handler.Range, changes)))).ToArray();
+            after = after.Where(convergence => !permittedHandlers.Contains(CreateOccurrenceKey(
+                convergence.HandlerAnalysis.Handler.Uri, convergence.HandlerAnalysis.Handler.Range))).ToArray();
+        }
         var beforeIncompleteCounts = before
             .Where(convergence => convergence.Kind
                 == VbaHandlerEventRenameConvergenceKind.Indeterminate)
@@ -4522,7 +6154,8 @@ public sealed class VbaSemanticInventory
         VbaSourceDefinition afterDefinition,
         IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
         string newName,
-        out VbaRenameTargetCorrespondence? correspondence)
+        out VbaRenameTargetCorrespondence? correspondence,
+        VbaRenameCollisionProof? collisionProof = null)
     {
         correspondence = null;
         var beforeTarget = resolutionPolicy.CreateNameTarget(beforeDefinition);
@@ -4592,9 +6225,27 @@ public sealed class VbaSemanticInventory
                 newName,
                 StringComparison.Ordinal))
         {
-            return ResolutionChanged(
-                "Rename would change the target's physical declaration set "
-                + "or logical-family meaning.");
+            var causes = CreateCollisionDeclarationCorrespondences(
+                hypothetical, beforeDefinition, changes, collisionProof);
+            if (collisionProof is null || causes is null || !afterTarget.CanonicalName.Equals(newName, StringComparison.OrdinalIgnoreCase)
+                || afterPhysicalDefinitions.Any(definition => !causes.Any(cause =>
+                    cause.AfterDefinition.Identity == definition.Identity)))
+            {
+                return ResolutionChanged(
+                    "Rename would change the target's physical declaration set "
+                    + "or logical-family meaning.");
+            }
+            var controlDefinition = causes.Single(cause => cause.BeforeDefinition.Identity == beforeDefinition.Identity)
+                .ControlDefinition;
+            collisionProof.Impacts.Add(new VbaRenameImpact(
+                VbaRenameImpactKind.LogicalGroupingChanged,
+                "The confirmed collision changes the logical declaration group; only the original physical declarations are renamed.",
+                beforeDefinition.Uri, beforeDefinition.Range)
+            {
+                GroupingEvidence = new VbaRenameGroupingImpactEvidence(
+                    beforeTarget, collisionProof.ControlInventory.resolutionPolicy.CreateNameTarget(controlDefinition),
+                    afterTarget, causes)
+            });
         }
 
         correspondence = new VbaRenameTargetCorrespondence(

@@ -29,7 +29,8 @@ import {
   DocumentFormattingRequest,
   LanguageClient,
   RenameRequest,
-  State
+  State,
+  type WorkspaceEdit as ProtocolWorkspaceEdit
 } from 'vscode-languageclient/node';
 import {
   promptForFirstRunDoctor,
@@ -87,7 +88,7 @@ import {
   createVbaSignatureHelpClientCapabilitiesFeature
 } from './languageServer';
 import { CaseOnlyVbaFileRenameAdapter } from './caseOnlyVbaFileRename';
-import { createVbaRenameMiddleware } from './rename';
+import { createVbaRenameClientCapabilitiesFeature, createVbaRenameMiddleware } from './rename';
 import {
   ProjectManifestLanguageServerSync,
   registerProjectManifestLanguageServerSync
@@ -646,6 +647,15 @@ export async function activate(
                     token
                   )
                 ),
+                sendConfirmationRequest: (parameters, token) => (
+                  token === undefined
+                    ? languageClient.sendRequest<ProtocolWorkspaceEdit | null>(
+                      'vba/confirmRename', parameters
+                    )
+                    : languageClient.sendRequest<ProtocolWorkspaceEdit | null>(
+                      'vba/confirmRename', parameters, token
+                    )
+                ),
                 asWorkspaceEdit: (edit, token) => (
                   languageClient.protocol2CodeConverter.asWorkspaceEdit(edit, token)
                 ),
@@ -661,6 +671,9 @@ export async function activate(
         },
         captureCaseOnlyFileRenames: renames => (
           caseOnlyVbaFileRenameAdapter.capture(renames)
+        ),
+        showWarningMessage: (message, options, ...items) => (
+          window.showWarningMessage(message, options, ...items)
         )
       })
     );
@@ -683,6 +696,7 @@ export async function activate(
       clientOptions
     );
     client.registerFeature(createVbaSignatureHelpClientCapabilitiesFeature());
+    client.registerFeature(createVbaRenameClientCapabilitiesFeature());
 
     context.subscriptions.push(client);
     const languageClient = client;

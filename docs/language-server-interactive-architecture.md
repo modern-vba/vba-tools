@@ -408,8 +408,12 @@ metadata remains filename-only fallback; malformed, misplaced, duplicate, or
 overlength metadata is invalid. Neither state authorizes mutation.
 
 A basename that case-insensitively equals the old identity follows a semantic
-Rename for `.bas`, `.cls`, and `.frm`; a matching `.frx` follows its form. A
-deliberately different basename remains unchanged.
+Rename for `.bas`, `.cls`, and `.frm` when its destination is available; a
+matching `.frx` follows its form. A deliberately different basename remains
+unchanged. An existing destination instead permits explicit confirmation to
+retain the original module path. If either form destination conflicts, both
+original `.frm`/`.frx` paths and resource filename references remain unchanged.
+Case-only references to the same file are not distinct destination conflicts.
 
 For a manifest-backed module identity, Rename statically captures the exact
 selected source-template package bytes into one request-scoped
@@ -429,18 +433,40 @@ For a source-owned form, `VbaFormDesignerBlock` supplies the candidate
 outermost root, ordered resource-reference ranges, and evidence problems without
 creating designer `VbaDefinition`s. `VbaSemanticInventory` converts only
 complete evidence into one `FormSourceUnitRename`, adding the root edit and
-every matching `.frx` filename edit independently of the designer property
-name. Nested controls, unrelated text, offsets, and binary sidecar content do
-not become edits.
+every matching `.frx` filename edit independently of the designer property name
+when the final paths follow the identity. Confirmed path retention keeps the
+root edit and omits those filename edits. Nested controls, unrelated text,
+offsets, and binary sidecar content do not become edits.
 
 `VbaLanguageWorkspace` fences the `.frm`, optional `.frx`, their paths, and
 every participating request-start source snapshot as one `FormSourceUnit`, even
-when a deliberate basename produces no file operation. It verifies exact
-current bytes and rejects malformed, unsafe, missing, displaced, conflicting,
-multiply identified, or changed evidence before returning a plan. When paths
-follow the identity, the client must advertise ordered `documentChanges` and
-the `rename` resource operation. `resourceOperationConflict` carries the
-specific condition, path, and repair guidance.
+when a deliberate basename or confirmed retention produces no file operation.
+It verifies exact current bytes and rejects malformed, unsafe, missing, displaced, conflicting,
+multiply identified, or changed evidence before returning a plan, except for
+the explicitly approved destination-retention decision. The client must
+advertise ordered `documentChanges` and the `rename` resource operation only
+when the final plan contains those operations. `resourceOperationConflict`
+carries the specific condition, path, and repair guidance.
+
+As specified in [ADR 0050](adr/0050-confirm-intentional-rename-collisions.md),
+the existing VS Code Rename middleware advertises confirmation protocol version
+1 and presents Cancel or Continue once. The server first establishes the complete
+original source-owned target, references and dependent closure, then proves
+permitted impacts through structured original/control/requested evidence.
+Independent type, ownership, source and dependency failures still reject the
+entire operation. The colliding declaration and its source text never enter the
+edit set, and the warning explains the user's manual consolidation responsibility.
+
+One opaque identifier owns the pending final plan and capture. Continue or cancel
+consumes it once; another Rename invalidates it and shutdown releases it. Before
+returning the stored complete edit, the server revalidates participating source
+revisions, template bytes, catalog authority, complete source units and captured
+destination evidence. Confirmation authority checks compare scoped manifest and
+catalog revisions; participating source checks retain the Rename-specific
+nested-project boundaries rather than borrowing diagnostics-cache invalidation.
+A change aborts the operation and requires a fresh user
+action without replanning, retrying, or switching the path decision. Clients
+without explicit confirmation integration retain strict collision rejection.
 
 Containing and referenced project names participate only when current
 authoritative evidence is complete. Containing authority comes only from the

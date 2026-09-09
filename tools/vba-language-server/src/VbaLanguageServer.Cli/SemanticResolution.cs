@@ -686,29 +686,10 @@ internal sealed class VbaSemanticResolution
                 : memberTarget;
         }
 
-        if (positionSyntax.MemberAccess is { IsLeadingDot: false } moduleAccess
-            && moduleAccess.TargetSegmentIndex == 0
-            && moduleAccess.Segments.Count > 1)
+        var moduleOutcome = ClassifySourceModuleValueQualifier(uri, line, character);
+        if (moduleOutcome.Target is not null)
         {
-            if (!nameResolution.HasLocalSourceQualifierShadow(
-                    currentDocument,
-                    new VbaPosition(line, character),
-                    identifier.Name))
-            {
-                var moduleOutcome = resolutionPolicy.ResolveRankedCandidatesOutcome(
-                    definitionCandidates
-                        .GetSourceCandidates(identifier.Name)
-                        .Select(candidate => candidate.Definition)
-                        .Where(CanUseAsSourceModuleValueQualifier)
-                        .Select(definition => new VbaRankedDefinition(
-                            definition,
-                            VbaResolutionPolicy.ProjectRank)),
-                    referenceSelection: null);
-                if (moduleOutcome.Target is not null)
-                {
-                    return moduleOutcome.Target;
-                }
-            }
+            return moduleOutcome.Target;
         }
 
         var outcome = qualifier is null
@@ -737,6 +718,36 @@ internal sealed class VbaSemanticResolution
         => definition.Kind is VbaSourceDefinitionKind.Module
             or VbaSourceDefinitionKind.Class
             or VbaSourceDefinitionKind.Form;
+
+    internal VbaNameResolutionOutcome ClassifySourceModuleValueQualifier(
+        string uri,
+        int line,
+        int character)
+    {
+        var document = definitionCandidates.FindDocument(uri);
+        if (document is null)
+        {
+            return VbaNameResolutionOutcome.AnalysisIncomplete;
+        }
+        var syntax = GetSyntaxTree(document).GetPositionSyntax(line, character);
+        if (syntax.Region != VbaPositionRegion.Code || syntax.Identifier is not { } identifier
+            || syntax.MemberAccess is not { IsLeadingDot: false, TargetSegmentIndex: 0 } access
+            || access.Segments.Count <= 1)
+        {
+            return VbaNameResolutionOutcome.NonSemantic;
+        }
+        if (nameResolution.HasLocalSourceQualifierShadow(
+                document, new VbaPosition(line, character), identifier.Name))
+        {
+            return VbaNameResolutionOutcome.Unresolved;
+        }
+        return resolutionPolicy.ResolveRankedCandidatesOutcome(
+            definitionCandidates.GetSourceCandidates(identifier.Name)
+                .Select(candidate => candidate.Definition)
+                .Where(CanUseAsSourceModuleValueQualifier)
+                .Select(definition => new VbaRankedDefinition(definition, VbaResolutionPolicy.ProjectRank)),
+            referenceSelection: null);
+    }
 
     private bool CanUseAsSourceModuleValueQualifier(
         VbaSourceDefinition definition)
@@ -2536,6 +2547,20 @@ internal sealed class VbaSemanticResolution
         }
 
         return true;
+    }
+
+    internal VbaMemberChainResolutionResult? ResolveMemberChainAt(string uri, int line, int character)
+    {
+        var document = definitionCandidates.FindDocument(uri);
+        if (document is null)
+        {
+            return null;
+        }
+        var syntax = GetSyntaxTree(document).GetPositionSyntax(line, character);
+        return syntax.MemberAccess is { } access
+            ? memberChainResolution.ResolveMemberChain(
+                document, line, character, access, syntax.EnclosingWithScopes)
+            : null;
     }
 
     private bool TryResolveWithEventsHandler(
