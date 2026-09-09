@@ -1211,10 +1211,12 @@ order through four purpose-specific operations: `AdmitProjectBuild`,
 `AdmitProjectPublish`, `AdmitSourceSnapshotBuild`, and `AdmitExplicitImport`.
 Doctor's captured Build and Publish profiles use the corresponding project
 operations. Callers do not compose a mode, callback, strategy, decoder, or
-ordering policy.
+ordering policy. Live and captured input Adapters invoke one private selection
+policy for duplicate-name precedence, CommonModules classification, Publish
+exclusions, selected admission, and complete-success final ordering.
 
-One invocation fixes `GetACP` and one recursive inventory. Duplicate exported
-filenames fail before source-byte reads or Excel work. Selected text sources
+For live admission, one invocation fixes `GetACP` and one recursive inventory.
+Duplicate exported filenames fail before source-byte reads or Excel work. Selected text sources
 and matching `.frx` bytes are read at most once, in the established filename
 encounter order, without retries or a closing stability check. Recognized UTF-8,
 UTF-16 LE, and UTF-16 BE BOMs select strict decoders; BOM-less source uses only
@@ -1249,8 +1251,14 @@ error first. A template failure still releases captured generation input and
 retains any cleanup failure. The shallow `WorkbookSourcePlanner` and its
 order reconstruction are removed. Consumers preserve final admission directly;
 raw source lists and `ExpectedUnicodeText` bridges cannot supply generation
-facts. Live and captured project-profile selection implementations remain
-separate; this boundary does not imply their later policy consolidation.
+facts. The private live Adapter obtains decoded text lazily from original bytes,
+then admits only a selected source and its sidecar. The private captured Adapter
+returns retained decoded text or its decode failure, then retained admission or
+its admission failure. These two demands preserve whole-file decoding before a
+local marker and keep later kind/sidecar failures behind that marker decision.
+Adapter construction does not read source. Empty decoded text is a valid cached
+value, and project manifest order is applied only after every selected source
+has passed admission, preserving filename-ordered failure traversal.
 
 Issue #350 pairs a successful ordinary or snapshot test materialization with its
 exact admission and copies immutable navigation facts into an `ExecutedSourceIndex`.
@@ -1258,6 +1266,10 @@ Result resolution neither rereads source nor reacquires ACP. Doctor captures
 each document once under one run ACP; layout, installed CommonModules drift,
 and both materialization profiles reuse those facts without one profile's
 failure contaminating the other. External repository authority stays separate.
+Doctor's one capture still reads test-only evidence needed by Build; projecting
+Publish neither demands that excluded evidence nor rereads it. Static layout
+and CommonModules consistency diagnostics retain their independent evidence
+requirements, so a profile exclusion does not hide a failure in those checks.
 No-build test location resolution has no admission or index and always omits
 optional locations. Language-server source admission remains independently
 owned. Snapshot feature versions remain `2.0`; ADR 0037 records the staged

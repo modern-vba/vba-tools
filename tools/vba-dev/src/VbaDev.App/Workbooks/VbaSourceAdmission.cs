@@ -213,35 +213,76 @@ internal sealed class VbaSourceAdmission
         var paths = inventory(root).Select(Path.GetFullPath).ToArray();
         cancellationToken.ThrowIfCancellationRequested();
         var sources = ResolveSourceFiles(paths);
+        return SelectSources(root, activeCodePage,
+            sources.Select(source => (SourceSelectionInput)new LiveSourceInput(
+                this, source, encoding, activeCodePage)).ToArray(),
+            purpose, commonModules, cancellationToken);
+    }
+
+    internal static AdmittedVbaSourceData ReadCapturedProjectBuild(
+        string sourceDirectory,
+        int activeCodePage,
+        ImmutableArray<CapturedDoctorSource> sources,
+        IReadOnlyList<InstalledCommonModule> commonModules,
+        CancellationToken cancellationToken)
+        => ReadCapturedProject(sourceDirectory, activeCodePage, sources,
+            AdmissionPurpose.ProjectBuild, commonModules, cancellationToken);
+
+    internal static AdmittedVbaSourceData ReadCapturedProjectPublish(
+        string sourceDirectory,
+        int activeCodePage,
+        ImmutableArray<CapturedDoctorSource> sources,
+        IReadOnlyList<InstalledCommonModule> commonModules,
+        CancellationToken cancellationToken)
+        => ReadCapturedProject(sourceDirectory, activeCodePage, sources,
+            AdmissionPurpose.ProjectPublish, commonModules, cancellationToken);
+
+    private static AdmittedVbaSourceData ReadCapturedProject(
+        string sourceDirectory,
+        int activeCodePage,
+        ImmutableArray<CapturedDoctorSource> sources,
+        AdmissionPurpose purpose,
+        IReadOnlyList<InstalledCommonModule> commonModules,
+        CancellationToken cancellationToken)
+        => SelectSources(sourceDirectory, activeCodePage,
+            sources.Select(source => (SourceSelectionInput)new CapturedSourceInput(source)).ToArray(),
+            purpose, commonModules, cancellationToken);
+
+    private static AdmittedVbaSourceData SelectSources(
+        string root,
+        int activeCodePage,
+        SourceSelectionInput[] sources,
+        AdmissionPurpose purpose,
+        IReadOnlyList<InstalledCommonModule> commonModules,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
         if (sources.Length == 0 && purpose == AdmissionPurpose.ExplicitImport)
         {
             throw new InvalidOperationException($"No importable VBA source files were found in: {root}");
         }
 
-        DocumentSourceSetLayout.ThrowIfDuplicateSourceFileNames(root, sources);
+        DocumentSourceSetLayout.ThrowIfDuplicateSourceFileNames(root,
+            sources.Select(source => source.SourceFile).ToArray());
         var commonNames = commonModules.Select(entry => entry.ModuleFile).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var includedCommonNames = commonModules.Where(entry => !entry.TestOnly)
             .Select(entry => entry.ModuleFile).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var admitted = new List<AdmittedVbaSource>(sources.Length);
-        foreach (var source in sources.OrderBy(source => source.FileName, StringComparer.OrdinalIgnoreCase))
+        foreach (var source in sources.OrderBy(source => source.SourceFile.FileName, StringComparer.OrdinalIgnoreCase))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var isCommonModule = commonNames.Contains(source.FileName);
+            var isCommonModule = commonNames.Contains(source.SourceFile.FileName);
             if (purpose == AdmissionPurpose.ProjectPublish
-                && isCommonModule && !includedCommonNames.Contains(source.FileName))
+                && isCommonModule && !includedCommonNames.Contains(source.SourceFile.FileName))
             {
                 continue;
             }
-            var bytes = ImmutableArray.CreateRange(readAllBytes(source.SourcePath));
-            cancellationToken.ThrowIfCancellationRequested();
-            var decoded = Decode(bytes, encoding, activeCodePage, source.SourcePath);
-            var text = decoded.Text;
+            var text = source.ReadDecodedText(cancellationToken);
             if (purpose == AdmissionPurpose.ProjectPublish && !isCommonModule && VbaPublishExclusionMarker.IsPresent(text))
             {
                 continue;
             }
-            admitted.Add(AdmitSource(source, bytes, decoded,
-                path => ImmutableArray.CreateRange(readAllBytes(path)), cancellationToken));
+            admitted.Add(source.AdmitSelectedSource(cancellationToken));
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -251,7 +292,7 @@ internal sealed class VbaSourceAdmission
         return new AdmittedVbaSourceData(activeCodePage, ordered.ToImmutableArray());
     }
 
-    internal static IReadOnlyList<AdmittedVbaSource> OrderProjectSources(
+    private static IReadOnlyList<AdmittedVbaSource> OrderProjectSources(
         IReadOnlyList<AdmittedVbaSource> sources,
         IReadOnlyList<InstalledCommonModule> commonModules)
     {
@@ -456,6 +497,67 @@ internal sealed class VbaSourceAdmission
             _ => throw new InvalidOperationException($"Unsupported exported VBA module kind '{kind}'.")
         };
 
+    // Decoding and selected admission are separate demands: a proved local marker
+    // can exclude kind/sidecar failures, but never a whole-file decoding failure.
+    private abstract class SourceSelectionInput(VbaSourceFile sourceFile)
+    {
+        internal VbaSourceFile SourceFile { get; } = sourceFile;
+        internal abstract string ReadDecodedText(CancellationToken cancellationToken);
+        internal abstract AdmittedVbaSource AdmitSelectedSource(CancellationToken cancellationToken);
+    }
+
+    private sealed class LiveSourceInput(
+        VbaSourceAdmission admission,
+        VbaSourceFile sourceFile,
+        Encoding encoding,
+        int activeCodePage) : SourceSelectionInput(sourceFile)
+    {
+        private ImmutableArray<byte> bytes;
+        private DecodedSource? decoded;
+
+        internal override string ReadDecodedText(CancellationToken cancellationToken)
+            => GetDecoded(cancellationToken).Text;
+
+        internal override AdmittedVbaSource AdmitSelectedSource(CancellationToken cancellationToken)
+        {
+            var decodedSource = GetDecoded(cancellationToken);
+            return AdmitSource(SourceFile, bytes, decodedSource,
+                path => ImmutableArray.CreateRange(admission.readAllBytes(path)), cancellationToken);
+        }
+
+        private DecodedSource GetDecoded(CancellationToken cancellationToken)
+        {
+            if (decoded is null)
+            {
+                bytes = ImmutableArray.CreateRange(admission.readAllBytes(SourceFile.SourcePath));
+                cancellationToken.ThrowIfCancellationRequested();
+                decoded = Decode(bytes, encoding, activeCodePage, SourceFile.SourcePath);
+            }
+            return decoded;
+        }
+    }
+
+    private sealed class CapturedSourceInput(CapturedDoctorSource source) : SourceSelectionInput(source.SourceFile)
+    {
+        internal override string ReadDecodedText(CancellationToken cancellationToken)
+        {
+            if (source.DecodeFailure is not null)
+            {
+                throw source.DecodeFailure;
+            }
+            return source.DecodedText!;
+        }
+
+        internal override AdmittedVbaSource AdmitSelectedSource(CancellationToken cancellationToken)
+        {
+            if (source.AdmissionFailure is not null)
+            {
+                throw source.AdmissionFailure;
+            }
+            return source.Admission!;
+        }
+    }
+
     private sealed record DecodedSource(string Text, string EncodingToken);
 }
 
@@ -494,12 +596,6 @@ internal sealed class DoctorSourceAdmissionRun
 
 internal sealed class CapturedDoctorSourceSet
 {
-    private enum ProjectPurpose
-    {
-        Build,
-        Publish
-    }
-
     private readonly ImmutableDictionary<string, CapturedDoctorFile> capturedFiles;
     private readonly ImmutableArray<CapturedDoctorSource> sources;
 
@@ -552,53 +648,21 @@ internal sealed class CapturedDoctorSourceSet
     internal AdmittedVbaSourceData ReadProjectBuild(
         IReadOnlyList<InstalledCommonModule> commonModules,
         CancellationToken cancellationToken)
-        => Admit(ProjectPurpose.Build, commonModules, cancellationToken);
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfCaptureFailed();
+        return VbaSourceAdmission.ReadCapturedProjectBuild(
+            SourceDirectory, ActiveCodePage, sources, commonModules, cancellationToken);
+    }
 
     internal AdmittedVbaSourceData ReadProjectPublish(
-        IReadOnlyList<InstalledCommonModule> commonModules,
-        CancellationToken cancellationToken)
-        => Admit(ProjectPurpose.Publish, commonModules, cancellationToken);
-
-    private AdmittedVbaSourceData Admit(
-        ProjectPurpose purpose,
         IReadOnlyList<InstalledCommonModule> commonModules,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfCaptureFailed();
-        DocumentSourceSetLayout.ThrowIfDuplicateSourceFileNames(SourceDirectory,
-            sources.Select(source => source.SourceFile).ToArray());
-        var commonNames = commonModules.Select(entry => entry.ModuleFile).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var includedCommonNames = commonModules.Where(entry => !entry.TestOnly)
-            .Select(entry => entry.ModuleFile).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var admitted = new List<AdmittedVbaSource>(sources.Length);
-        foreach (var source in sources)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var isCommonModule = commonNames.Contains(source.SourceFile.FileName);
-            if (purpose == ProjectPurpose.Publish
-                && isCommonModule && !includedCommonNames.Contains(source.SourceFile.FileName))
-            {
-                continue;
-            }
-            if (source.DecodeFailure is not null)
-            {
-                throw source.DecodeFailure;
-            }
-            if (purpose == ProjectPurpose.Publish && !isCommonModule
-                && VbaPublishExclusionMarker.IsPresent(source.DecodedText!))
-            {
-                continue;
-            }
-            if (source.AdmissionFailure is not null)
-            {
-                throw source.AdmissionFailure;
-            }
-            admitted.Add(source.Admission!);
-        }
-        cancellationToken.ThrowIfCancellationRequested();
-        return new AdmittedVbaSourceData(ActiveCodePage,
-            VbaSourceAdmission.OrderProjectSources(admitted, commonModules).ToImmutableArray());
+        return VbaSourceAdmission.ReadCapturedProjectPublish(
+            SourceDirectory, ActiveCodePage, sources, commonModules, cancellationToken);
     }
 
     private void ThrowIfCaptureFailed()
