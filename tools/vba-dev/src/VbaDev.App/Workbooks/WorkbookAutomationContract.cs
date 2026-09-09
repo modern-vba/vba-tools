@@ -221,12 +221,3 @@ public sealed class WorkbookAutomationReleasedProcessCleanupException : Exceptio
     {
     }
 }
-
-internal static partial class WorkbookAutomationFailureClassifier
-{
-    public static bool ContainsCleanupProofFailure(Exception error)
-    {
-        TryClassify(error, out var facts);
-        return !facts.ProcessReleaseProven || !facts.DispatcherRetired;
-    }
-}

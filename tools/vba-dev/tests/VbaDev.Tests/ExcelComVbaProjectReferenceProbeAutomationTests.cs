@@ -352,7 +352,7 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomationTests
                 CancellationToken.None));
 
         Assert.Equal("cleanupFailure", error.ReasonCode);
-        Assert.False(WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error));
+        Assert.False(WorkbookAutomationTerminalFacts.Analyze(error).HasUnprovedLifecycle);
         var cleanup = Assert.IsType<WorkbookAutomationReleasedProcessCleanupException>(
             error.InnerException);
         var failures = Assert.IsType<AggregateException>(cleanup.InnerException)
@@ -385,7 +385,7 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomationTests
                 CancellationToken.None));
 
         Assert.Equal("cleanupFailure", error.ReasonCode);
-        Assert.True(WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error));
+        Assert.True(WorkbookAutomationTerminalFacts.Analyze(error).HasUnprovedLifecycle);
         var cleanup = Assert.IsType<WorkbookAutomationCleanupException>(error.InnerException);
         var failures = Assert.IsType<AggregateException>(cleanup.InnerException)
             .InnerExceptions;
@@ -429,7 +429,7 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomationTests
                     CancellationToken.None));
 
             Assert.Equal("cleanupFailure", error.ReasonCode);
-            Assert.False(WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error));
+            Assert.False(WorkbookAutomationTerminalFacts.Analyze(error).HasUnprovedLifecycle);
             var cleanup = Assert.IsType<WorkbookAutomationReleasedProcessCleanupException>(
                 error.InnerException);
             var failures = Assert.IsType<AggregateException>(cleanup.InnerException)
@@ -483,15 +483,14 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomationTests
                         cancellationToken),
                     CancellationToken.None));
 
-            Assert.True(WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error));
+            Assert.True(WorkbookAutomationTerminalFacts.Analyze(error).HasUnprovedLifecycle);
             var cleanup = Assert.IsType<WorkbookAutomationCleanupException>(
                 error.InnerException);
             var failures = Assert.IsType<AggregateException>(cleanup.InnerException)
                 .InnerExceptions;
             Assert.Contains(
                 failures,
-                failure => WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(
-                    failure));
+                failure => WorkbookAutomationTerminalFacts.Analyze(failure).HasUnprovedLifecycle);
             Assert.Contains(failures, failure => failure is IOException);
         }
         finally
@@ -531,7 +530,7 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomationTests
         Assert.Equal("cleanupFailure", error.ReasonCode);
         Assert.False(error.ProcessTrusted);
         Assert.Same(releasedCleanup, error.InnerException);
-        Assert.False(WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error));
+        Assert.False(WorkbookAutomationTerminalFacts.Analyze(error).HasUnprovedLifecycle);
     }
 
     [Fact]

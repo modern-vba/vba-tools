@@ -72,51 +72,44 @@ public sealed class ImportCommand
         {
             return await RunImportAsync(request, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception ex) when (WorkbookAutomationFailureClassifier.TryClassify(
-            ex, out var facts, cancellationToken.IsCancellationRequested))
+        catch (Exception ex)
         {
-            if (!facts.ProcessReleaseProven)
+            var facts = WorkbookAutomationTerminalFacts.Analyze(ex, cancellationToken.IsCancellationRequested);
+            CommandResult result;
+            if (facts.Disposition == WorkbookAutomationDisposition.Cancelled)
             {
-                var message = facts.CancellationObserved
-                    ? $"{ex.Message} The owned Excel process release could not be verified."
-                    : ex.Message;
-                return CommandResult.UsageError(message).MarkOwnedProcessReleaseUnproven();
-            }
-
-            if (!facts.DispatcherRetired)
-            {
-                return CommandResult.UsageError(ex.Message);
-            }
-
-            if (facts.PrimaryFailure!.Category != WorkbookAutomationFailureCategory.Cancellation)
-            {
-                return CommandResult.UsageError(
-                    facts.PrimaryFailure.Category == WorkbookAutomationFailureCategory.ComFailure
-                        ? CommandErrorMessages.ExcelComAutomationFailed("import", ex)
+                var cancellationStage = (facts.TypedCancellation ?? facts.PrimaryFailure!).Stage;
+                result = CommandResult.Cancelled(
+                    cancellationStage is null || cancellationStage.Kind == WorkbookAutomationStageKind.OutputCommit
+                        ? "Workbook import was cancelled."
                         : ex.Message);
             }
-
-            var cancellation = facts.Failures.FirstOrDefault(failure =>
-                failure.Error is WorkbookAutomationCanceledException) ?? facts.PrimaryFailure;
-            if (cancellation.Error is not WorkbookAutomationCanceledException
-                && !cancellationToken.IsCancellationRequested)
+            else if (facts.Disposition == WorkbookAutomationDisposition.Failed)
+            {
+                var message = !facts.ProcessReleaseProven && facts.CancellationObserved
+                    ? $"{ex.Message} The owned Excel process release could not be verified."
+                    : facts.PrimaryFailure!.Category == WorkbookAutomationFailureCategory.ComFailure
+                        ? CommandErrorMessages.ExcelComAutomationFailed("import", ex)
+                        : ex.Message;
+                result = CommandResult.UsageError(message);
+            }
+            else if (facts.IsUntrustedCancellation)
+            {
+                throw;
+            }
+            else if (ex is InvalidOperationException or BuildCommandException
+                or IOException or UnauthorizedAccessException)
+            {
+                var message = ex is WorkbookVerificationReportMissingException
+                    ? "Workbook import verification returned no verification report."
+                    : ex.Message;
+                result = CommandResult.UsageError(message);
+            }
+            else
             {
                 throw;
             }
 
-            return CommandResult.Cancelled(
-                cancellation.Stage is null || cancellation.Stage.Kind == WorkbookAutomationStageKind.OutputCommit
-                    ? "Workbook import was cancelled."
-                    : ex.Message);
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or BuildCommandException
-            or IOException or UnauthorizedAccessException)
-        {
-            var message = ex is WorkbookVerificationReportMissingException
-                ? "Workbook import verification returned no verification report."
-                : ex.Message;
-            WorkbookAutomationFailureClassifier.TryClassify(ex, out var facts);
-            var result = CommandResult.UsageError(message);
             return facts.ProcessReleaseProven ? result : result.MarkOwnedProcessReleaseUnproven();
         }
     }

@@ -32,6 +32,10 @@ user Excel process or workbook. A catalog is publishable only after process and
 dispatcher release are both proved; timeout, cancellation, catalog failure,
 cooperative cleanup failure, and lifecycle uncertainty keep separate terminal
 classification.
+Host Event's command consumes the shell-neutral disposition in ADR 0055, keeps
+its text/JSON failure output and secondary-message rendering, and uses friendly
+`host-event list` COM guidance when COM is the recognized primary evidence.
+No catalog is published by a failed or unclassified discovery.
 
 Worksheet and `ThisWorkbook` code-behind are outside the supported source and
 intrinsic Event model, while `.frm`/`.frx` import, export, build, and debug

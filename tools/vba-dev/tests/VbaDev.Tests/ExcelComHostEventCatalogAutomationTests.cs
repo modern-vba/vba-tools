@@ -157,7 +157,7 @@ public sealed class ExcelComHostEventCatalogAutomationTests
         var error = await Assert.ThrowsAsync<WorkbookAutomationCleanupException>(
             () => automation.ReadAsync(CancellationToken.None));
 
-        Assert.True(WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error));
+        Assert.True(WorkbookAutomationTerminalFacts.Analyze(error).HasUnprovedLifecycle);
         var failures = EnumerateFailures(error);
         Assert.Contains(failures, failure => ReferenceEquals(failure, cooperativeError));
         Assert.Contains(failures, failure => ReferenceEquals(failure, proofError));

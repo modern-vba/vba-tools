@@ -418,7 +418,8 @@ is exposed before both release proofs succeed.
 _Avoid_: public automation framework, DebugExcelProcess owner, command transaction
 
 **WorkbookAutomationTerminalFacts**:
-The shell-neutral classification of one automation failure tree. It retains
+The shell-neutral immutable analysis of one automation failure tree, issued by
+`Analyze(error, callerCancellationRequested)` through a private constructor. It retains
 cancellation observation, active stages, timeout, process loss, COM failure,
 unproved exact-process release, unproved STA retirement, and secondary cleanup
 failure after proved process release. Nested and aggregate evidence is traversed
@@ -426,11 +427,26 @@ in source order; a stable priority selects lifecycle uncertainty before other
 failure categories and cancellation without discarding the remaining evidence.
 An enclosing runtime release observation applies only to its own failure subtree;
 proved release can supersede an earlier cleanup attempt's uncertainty without
-hiding that attempt's cancellation or operation failure. Unknown independent
-program defects remain unclassified and cannot become ordinary cancellation.
+hiding that attempt's cancellation or operation failure. Analysis fixes the
+primary candidate and ordered secondary evidence once; secondary removes only
+the selected occurrence, preserving another category from the same exception.
+Known evidence and a primary candidate can exist in an unclassified mixed tree,
+so callers use the nullable `Disposition`, whose recognized values are only
+`Cancelled` and `Failed`. Either unproved lifecycle fact always means Failed,
+even with unknown independent defects or cancellation. Without that uncertainty,
+unknown independent defects remain unclassified. Cancellation requires both
+proofs, cancellation as primary and a typed workbook cancellation or an actually
+requested caller token. Observation alone and `CanBeCanceled` are not authority.
+The untrusted-cancellation fact excludes unknown mixtures so adapters preserve
+their existing fallback or rethrow behavior. Results fix evidence at analysis
+time without deeply freezing exception objects or caching future analyses.
 Absent lifecycle uncertainty means released or not started under the existing
 automation adapter contract, rather than authority to inspect or terminate a PID.
-The classifier owns no commitment, public wording, exit code, or command result.
+The analysis owns no commitment, public wording, exit code, or command result.
+Recognized primary COM failure uses each command's established friendly guidance
+with its operation name and whole terminal exception, retaining wrapper/stage
+context even for nested or aggregate COM. ADR 0055 defines this disposition and
+the boundary between shared decisions and adapter-owned rendering.
 Import projects pre-commit cancellation to `130` only after both release proofs,
 and lifecycle uncertainty to `1` even when cancellation was observed. It keeps
 process release separate from STA retirement in its result evidence. Saved

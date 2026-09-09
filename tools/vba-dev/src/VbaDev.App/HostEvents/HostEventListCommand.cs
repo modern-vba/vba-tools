@@ -29,26 +29,30 @@ public sealed class HostEventListCommand(IHostEventCatalogAutomation catalogAuto
         {
             catalog = await catalogAutomation.ReadAsync(cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception exception) when (WorkbookAutomationFailureClassifier.TryClassify(
-            exception, out var facts, cancellationToken.IsCancellationRequested))
-        {
-            var typedCancellation = facts.Failures.Any(failure =>
-                failure.Error is WorkbookAutomationCanceledException);
-            var cancelled = facts.PrimaryFailure!.Category == WorkbookAutomationFailureCategory.Cancellation &&
-                (typedCancellation || cancellationToken.IsCancellationRequested);
-            var message = cancelled && !typedCancellation
-                ? "Host Event catalog acquisition was cancelled."
-                : string.Join(Environment.NewLine,
-                    new[] { exception.Message }
-                        .Concat(facts.Failures.Select(failure => failure.Error.Message))
-                        .Distinct(StringComparer.Ordinal));
-            var result = new CommandResult(cancelled ? 130 : 1, string.Empty, message + Environment.NewLine);
-            return facts.ProcessReleaseProven ? result : result.MarkOwnedProcessReleaseUnproven();
-        }
         catch (Exception exception)
         {
-            WorkbookAutomationFailureClassifier.TryClassify(exception, out var facts);
-            var result = new CommandResult(1, string.Empty, exception.Message + Environment.NewLine);
+            var facts = WorkbookAutomationTerminalFacts.Analyze(exception, cancellationToken.IsCancellationRequested);
+            var cancelled = facts.Disposition == WorkbookAutomationDisposition.Cancelled;
+            string message;
+            if (cancelled && facts.TypedCancellation is null)
+            {
+                message = "Host Event catalog acquisition was cancelled.";
+            }
+            else if (facts.IsRecognized || facts.IsUntrustedCancellation)
+            {
+                message = string.Join(Environment.NewLine,
+                    new[] { facts.Disposition == WorkbookAutomationDisposition.Failed
+                        && facts.PrimaryFailure!.Category == WorkbookAutomationFailureCategory.ComFailure
+                        ? CommandErrorMessages.ExcelComAutomationFailed("host-event list", exception)
+                        : exception.Message }
+                        .Concat(facts.Failures.Select(failure => failure.Error.Message))
+                        .Distinct(StringComparer.Ordinal));
+            }
+            else
+            {
+                message = exception.Message;
+            }
+            var result = new CommandResult(cancelled ? 130 : 1, string.Empty, message + Environment.NewLine);
             return facts.ProcessReleaseProven ? result : result.MarkOwnedProcessReleaseUnproven();
         }
 

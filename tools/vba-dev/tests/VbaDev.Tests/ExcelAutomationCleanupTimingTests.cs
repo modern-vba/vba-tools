@@ -56,7 +56,7 @@ public sealed class ExcelAutomationCleanupTimingTests
         var error = await Assert.ThrowsAsync<WorkbookAutomationReleasedProcessCleanupException>(
             () => control.DisposeAsync().AsTask());
 
-        Assert.False(WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error));
+        Assert.False(WorkbookAutomationTerminalFacts.Analyze(error).HasUnprovedLifecycle);
         Assert.Same(observationError, error.InnerException);
         Assert.True(process.HasExited);
         Assert.True(process.Disposed);

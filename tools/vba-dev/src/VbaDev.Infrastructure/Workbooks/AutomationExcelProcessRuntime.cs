@@ -629,7 +629,7 @@ internal sealed class AutomationExcelProcessRuntime
     }
 
     private static bool ContainsReleaseProofFailure(Exception error)
-        => WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error);
+        => WorkbookAutomationTerminalFacts.Analyze(error).HasUnprovedLifecycle;
 
     private static IOwnedExcelSessionStartFailure? FindOwnedSessionStartFailure(
         Exception error)
