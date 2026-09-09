@@ -664,7 +664,8 @@ public sealed class WorkbookOutputFailureTests
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),
             transactionFactory ?? new WorkbookOutputTransactionFactory(new WindowsExactFileSystemObjectOwnershipFactory()),
-            importSourceSetFactory ?? new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory()));
+            importSourceSetFactory ?? new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory()),
+            semanticInputProvider: FakeProjectSemanticInputProvider.Empty);
         return new WorkbookOutputCommand(pipeline);
     }
 
@@ -893,6 +894,11 @@ public sealed class WorkbookOutputFailureTests
         CancellationTokenSource cancellation) : IWorkbookOutputTransactionFactory
     {
         public IWorkbookOutputTransaction Create(string templateWorkbookPath, string targetWorkbookPath)
+            => new CancelAfterCommitTransaction(
+                WorkbookOutputTransaction.Create(new WindowsExactFileSystemObjectOwnershipFactory(), templateWorkbookPath, targetWorkbookPath),
+                cancellation);
+
+        public IWorkbookOutputTransaction Create(CapturedWorkbookTemplate templateWorkbookPath, string targetWorkbookPath)
             => new CancelAfterCommitTransaction(
                 WorkbookOutputTransaction.Create(new WindowsExactFileSystemObjectOwnershipFactory(), templateWorkbookPath, targetWorkbookPath),
                 cancellation);

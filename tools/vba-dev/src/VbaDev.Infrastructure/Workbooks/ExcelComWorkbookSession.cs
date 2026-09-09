@@ -74,6 +74,10 @@ internal sealed class ExcelComWorkbookSession
     /// </summary>
     public object WorkbookObject { get; }
 
+    internal IReadOnlyList<string> CaptureLoadedModulePaths()
+        => terminationController?.CaptureLoadedModulePaths()
+            ?? throw new InvalidOperationException("The workbook has no owned process for library-path inspection.");
+
     /// <summary>
     /// Starts a hidden Excel application and establishes exact process ownership before workbook open.
     /// </summary>

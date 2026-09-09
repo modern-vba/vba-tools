@@ -1,4 +1,5 @@
 using System.Text;
+using System.Runtime.ExceptionServices;
 using VbaDev.App.Cli;
 using VbaDev.App.CommonModules;
 using VbaDev.App.Projects;
@@ -187,12 +188,14 @@ internal sealed class WorkbookOutputCommand
                         + VbeImportWarningRenderer.Render(result.VerificationReport)),
                 result);
         }
-        catch (VbaSourceAnalysisException ex)
+        catch (VbaSourceAnalysisException ex) when (ex.OperationalFailure is null)
         {
             return Failed(new CommandResult(1, string.Empty, VbaSourceAnalysisOutput.Render(ex.Report)));
         }
-        catch (Exception ex)
+        catch (Exception caught)
         {
+            var sourceAnalysis = caught as VbaSourceAnalysisException;
+            var ex = sourceAnalysis?.OperationalFailure ?? caught;
             var facts = WorkbookAutomationTerminalFacts.Analyze(ex, cancellationToken.IsCancellationRequested);
             CommandResult result;
             if (facts.Disposition == WorkbookAutomationDisposition.Cancelled)
@@ -207,8 +210,15 @@ internal sealed class WorkbookOutputCommand
                     ? CommandErrorMessages.ExcelComAutomationFailed(operationName, ex)
                     : ex.Message);
             }
+            else if (sourceAnalysis is not null)
+            {
+                // Required-input failure must retain its incomplete report even
+                // when the cause is unknown or has no trusted cancellation authority.
+                result = CommandResult.UsageError(ex.Message);
+            }
             else if (facts.IsUntrustedCancellation)
             {
+                ExceptionDispatchInfo.Capture(ex).Throw();
                 throw;
             }
             else if (ex is BuildCommandException or CommonModulesManifestException
@@ -218,9 +228,14 @@ internal sealed class WorkbookOutputCommand
             }
             else
             {
+                ExceptionDispatchInfo.Capture(ex).Throw();
                 throw;
             }
 
+            if (sourceAnalysis is not null)
+            {
+                result = result with { StandardError = VbaSourceAnalysisOutput.Render(sourceAnalysis.Report) + result.StandardError };
+            }
             return Failed(PreserveReleaseProof(facts, result));
         }
     }

@@ -140,7 +140,7 @@ public sealed class VbaPropertyAccessResolutionTests
             [currentDocument],
             VbaProjectReferenceSelection.Create(
                 ProjectDocument.ExcelKind,
-                [new VbaProjectReference(referenceName)]),
+                [new VbaProjectReference(referenceName)]).ToSemanticSelection(),
             VbaProjectReferenceCatalogSet.Empty,
             [
                 ReferenceDefinition(referenceName, "Value", "GeneratedType", VbaPropertyAccess.Readable),

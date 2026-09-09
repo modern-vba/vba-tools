@@ -2,6 +2,7 @@ import {
   CancellationToken,
   Diagnostic,
   DiagnosticCollection,
+  DiagnosticRelatedInformation,
   DiagnosticSeverity,
   Location,
   Range,
@@ -86,6 +87,13 @@ function toVscodeDiagnostic(diagnostic: VbaDevDiagnostic): Diagnostic {
   );
   vscodeDiagnostic.source = diagnostic.owner;
   vscodeDiagnostic.code = diagnostic.code;
+  if (diagnostic.relatedInformation !== undefined) {
+    vscodeDiagnostic.relatedInformation = diagnostic.relatedInformation.map(related =>
+      new DiagnosticRelatedInformation(new Location(Uri.file(related.location.uriPath), new Range(
+        related.location.range.start.line, related.location.range.start.character,
+        related.location.range.end.line, related.location.range.end.character
+      )), related.message));
+  }
   return vscodeDiagnostic;
 }
 

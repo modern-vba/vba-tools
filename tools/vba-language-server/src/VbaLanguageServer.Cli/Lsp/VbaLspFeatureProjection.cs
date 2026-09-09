@@ -60,28 +60,19 @@ internal static class VbaLspFeatureProjection
         => diagnostics
             .Select(diagnostic =>
             {
-                var details = diagnostic.Details ?? [];
-                var fallbackDetails = supportsRelatedInformation
-                    ? details.Where(detail => detail.Location is null)
-                    : details;
-                var fallbackText = fallbackDetails
-                    .Select(detail => detail.FallbackText)
-                    .Distinct(StringComparer.Ordinal)
-                    .ToArray();
+                var presentation = VbaDiagnosticPresentation.Create(
+                    diagnostic.Message, diagnostic.Details, supportsRelatedInformation);
                 var projected = new Dictionary<string, object?>
                 {
                     ["code"] = diagnostic.Code,
-                    ["message"] = fallbackText.Length == 0
-                        ? diagnostic.Message
-                        : $"{diagnostic.Message}\n{string.Join('\n', fallbackText)}",
+                    ["message"] = presentation.Message,
                     ["range"] = diagnostic.Range,
                     ["severity"] = 1,
                     ["source"] = diagnostic.Source
                 };
                 if (supportsRelatedInformation)
                 {
-                    var relatedInformation = details
-                        .Where(detail => detail.Location is not null)
+                    var relatedInformation = presentation.RelatedInformation
                         .Select(detail => new
                         {
                             location = new
@@ -89,7 +80,7 @@ internal static class VbaLspFeatureProjection
                                 uri = detail.Location!.Uri,
                                 range = detail.Location.Range
                             },
-                            message = detail.RelatedMessage
+                            message = detail.Message
                         })
                         .ToArray();
                     if (relatedInformation.Length > 0)

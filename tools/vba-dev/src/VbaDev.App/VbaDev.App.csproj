@@ -1,6 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <ProjectReference Include="../../../vba-project-metadata/src/VbaTools.ProjectMetadata/VbaTools.ProjectMetadata.csproj" />
+    <ProjectReference Include="../../../vba-semantics/src/VbaTools.Semantics/VbaTools.Semantics.csproj" />
     <ProjectReference Include="..\VbaDev.Domain\VbaDev.Domain.csproj" />
     <ProjectReference Include="..\VbaTools.TypeLibRegistry\VbaTools.TypeLibRegistry.csproj" />
     <ProjectReference Include="..\..\..\vba-syntax\src\VbaTools.Syntax\VbaTools.Syntax.csproj" />

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import {
@@ -23,6 +25,7 @@ import { runWorkbookBackedProjectCommand } from '../../projectCommand';
 import { VbaDevDiagnosticReporter } from '../../toolDiagnostics';
 import { createVscodeDiagnosticCollectionAdapter } from '../../vscodeAdapters';
 import { windowsPathKey } from '../../windowsPathIdentity';
+import { decodeProjectManifestBytes } from '../../projectManifestBytes';
 
 const invalidFirst = [
   'Attribute VB_Name = "AFirst"',
@@ -45,6 +48,21 @@ const invalidLater = [
   'End Sub',
   ''
 ].join('\n');
+const invalidCaller = [
+  'Attribute VB_Name = "Caller"',
+  'Public Sub CallTarget()',
+  '    Dim item As Integer',
+  '    AcceptValue item',
+  '    Dim values As Scripting.Dictionary',
+  '    Dim key As String',
+  '    Set values = New Scripting.Dictionary',
+  '    values.Exists key',
+  'End Sub',
+  ''
+].join('\n');
+const correctedCaller = invalidCaller.replace('item As Integer', 'item As Long');
+const targetSource = 'Attribute VB_Name = "Target"\nPublic Sub AcceptValue(ByRef value As Long)\nEnd Sub\n';
+const correctedLater = 'Attribute VB_Name = "ZLater"\nPublic Sub LaterRun()\nEnd Sub\n';
 
 export async function runBuildProblemsIntegrationTests(): Promise<void> {
   assert.equal(process.platform, 'win32', 'This is a native Windows vba-dev integration.');
@@ -55,16 +73,21 @@ export async function runBuildProblemsIntegrationTests(): Promise<void> {
   assert.equal((await stat(executablePath)).isFile(), true, 'Publish the current vba-dev first.');
   const provider = await resolveCompatibleVbaDev({ extensionRoot, configuredPath: executablePath });
   assert.equal(provider.executablePath, executablePath);
-  assert.equal(provider.capabilities.commands.build?.outputSchemaVersion, '2.0');
+  assert.equal(provider.capabilities.commands.build?.outputSchemaVersion, '3.0');
 
   const fixtureRoot = await mkdtemp(path.join(fixtureParent, 'build-problems-'));
   const sourceRoot = path.join(fixtureRoot, 'src', 'Book1');
   const manifestPath = path.join(fixtureRoot, 'vba-project.json');
   const aPath = path.join(sourceRoot, 'AFirst.bas');
   const zPath = path.join(sourceRoot, 'ZLater.bas');
+  const callerPath = path.join(sourceRoot, 'Caller.bas');
+  const targetPath = path.join(sourceRoot, 'Target.bas');
+  const templatePath = path.join(fixtureRoot, 'templates', 'Book1.xlsm');
   const aUri = Uri.file(aPath);
   const zUri = Uri.file(zPath);
-  const ownedUriKeys = new Set([windowsPathKey(aPath), windowsPathKey(zPath)]);
+  const callerUri = Uri.file(callerPath);
+  const targetUri = Uri.file(targetPath);
+  const ownedUriKeys = new Set([aPath, zPath, callerPath, targetPath].map(windowsPathKey));
   const binPath = path.join(fixtureRoot, 'bin', 'Book1.xlsm');
   const priorOutputBytes = Buffer.from('previous completed output sentinel', 'ascii');
   const toolCollection = languages.createDiagnosticCollection(`vba-dev-native-${randomUUID()}`);
@@ -83,6 +106,16 @@ export async function runBuildProblemsIntegrationTests(): Promise<void> {
     await configuration.update('colorTheme', 'Default Dark Modern', ConfigurationTarget.Workspace);
     await mkdir(sourceRoot, { recursive: true });
     await mkdir(path.dirname(binPath), { recursive: true });
+    const seedRoot = path.join(fixtureRoot, 'initial-project');
+    await promisify(execFile)(executablePath,
+      ['new', 'excel', '--name', 'Book1', '--output', seedRoot, '--format', 'json'],
+      { cwd: fixtureRoot, windowsHide: true });
+    const seedManifest = JSON.parse(decodeProjectManifestBytes(
+      await readFile(path.join(seedRoot, 'vba-project.json'))));
+    const seedDocument = seedManifest.documents.Book1;
+    const templateBytes = await readFile(path.resolve(seedRoot, seedDocument.templatePath));
+    await mkdir(path.dirname(templatePath), { recursive: true });
+    await writeFile(templatePath, templateBytes);
     const manifestText = `${JSON.stringify({
       schemaVersion: 1,
       projectName: 'BuildProblemsNative',
@@ -95,7 +128,8 @@ export async function runBuildProblemsIntegrationTests(): Promise<void> {
           binPath: 'bin/Book1.xlsm',
           publishPath: 'publish/Book1.xlsm',
           commonModules: [],
-          references: []
+          references: [...seedDocument.references.filter((reference: { name: string }) =>
+            reference.name.toLowerCase() !== 'microsoft scripting runtime'), { name: 'Microsoft Scripting Runtime', requested: true }]
         }
       }
     }, undefined, 2)}\n`;
@@ -103,9 +137,11 @@ export async function runBuildProblemsIntegrationTests(): Promise<void> {
     // ASCII fixture bytes are identical in every supported ACP; no encoding guess.
     await writeFile(aPath, invalidFirst, 'ascii');
     await writeFile(zPath, invalidLater, 'ascii');
+    await writeFile(callerPath, invalidCaller, 'ascii');
+    await writeFile(targetPath, targetSource, 'ascii');
     await writeFile(binPath, priorOutputBytes);
-    // The template is deliberately absent. Source analysis must win first;
-    // a gate regression still stops at template validation before Excel startup.
+    // An actual owned Excel creation supplies project identity and baseline references.
+    // Invalid builds must preserve this exact template and the previous output.
     const project = await resolveCommandPaletteProjectTargetFromManifestText(
       manifestPath, manifestText, resolveCommandPalettePathIdentity
     );
@@ -151,11 +187,11 @@ export async function runBuildProblemsIntegrationTests(): Promise<void> {
     assert.equal(first.cancelled, false);
     assert.equal(first.cancellationRequested, false);
     const firstReports = analysisRecords(output.join(''));
-    assert.equal(firstReports.length, 1);
-    assert.equal(firstReports[0].schemaVersion, '2.0');
-    assert.equal(firstReports[0].complete, true);
+    assert.equal(firstReports.length, 1, output.join(''));
+    assert.equal(firstReports[0].schemaVersion, '3.0');
+    assert.equal(firstReports[0].complete, true, output.join(''));
     assert.deepEqual(firstReports[0].failures, []);
-    assert.equal(firstReports[0].diagnostics.length, 3);
+    assert.equal(firstReports[0].diagnostics.length, 6);
     assertSourcesClosed(ownedUriKeys);
 
     const aDiagnostics = toolCollection.get(aUri) ?? [];
@@ -166,6 +202,12 @@ export async function runBuildProblemsIntegrationTests(): Promise<void> {
         range: [2, 12, 2, 25] },
       { source: 'vba-dev', code: 'validation.duplicateCallableParameterName',
         message: "Duplicate callable parameter name 'name'.", severity: DiagnosticSeverity.Error,
+        range: [1, 43, 1, 47] },
+      { source: 'vba-dev', code: 'validation.duplicateDeclaration',
+        message: "Declaration 'name' conflicts with another declaration in this scope.", severity: DiagnosticSeverity.Error,
+        range: [1, 21, 1, 25] },
+      { source: 'vba-dev', code: 'validation.duplicateDeclaration',
+        message: "Declaration 'name' conflicts with another declaration in this scope.", severity: DiagnosticSeverity.Error,
         range: [1, 43, 1, 47] }
     ]);
     assert.deepEqual(zDiagnostics.map(diagnosticFact), [
@@ -173,8 +215,20 @@ export async function runBuildProblemsIntegrationTests(): Promise<void> {
         message: "Duplicate named call argument 'ARG1'.", severity: DiagnosticSeverity.Error,
         range: [2, 21, 2, 25] }
     ]);
+    const callerDiagnostic = toolCollection.get(callerUri) ?? [];
+    assert.deepEqual(callerDiagnostic.map(diagnosticFact), [{
+      source: 'vba-dev', code: 'validation.incompatibleCallArgumentList',
+      message: 'No available callable signature accepts this argument list.',
+      severity: DiagnosticSeverity.Error, range: [3, 16, 3, 20]
+    }]);
+    const related = callerDiagnostic[0].relatedInformation ?? [];
+    assert.equal(related.length, 1);
+    assert.equal(windowsPathKey(related[0].location.uri.fsPath), windowsPathKey(targetPath));
+    assert.deepEqual(related[0].location.range, new Range(1, 11, 1, 22));
+    assert.equal(related[0].message,
+      "Candidate signature: Sub AcceptValue(ByRef value As Long). Mismatches: argument 1 for parameter 'value' ByRef type: expected Long, found Integer.");
     await waitFor(() => languages.getDiagnostics(aUri).some(item => item.source === 'other-tool-native')
-      && languages.getDiagnostics(aUri).filter(item => item.source === 'vba-dev').length === 2
+      && languages.getDiagnostics(aUri).filter(item => item.source === 'vba-dev').length === 4
       && languages.getDiagnostics(zUri).filter(item => item.source === 'vba-dev').length === 1);
 
     for (const [uri, diagnostics] of [[aUri, aDiagnostics], [zUri, zDiagnostics]] as const) {
@@ -189,9 +243,16 @@ export async function runBuildProblemsIntegrationTests(): Promise<void> {
         assert.deepEqual(editor.selection.end, diagnostic.range.end);
       }
     }
+    await commands.executeCommand('vscode.open', related[0].location.uri, {
+      selection: related[0].location.range, preserveFocus: false, preview: false
+    });
+    assert.equal(windowsPathKey(window.activeTextEditor!.document.uri.fsPath), windowsPathKey(targetUri.fsPath));
+    assert.deepEqual(window.activeTextEditor!.selection.start, related[0].location.range.start);
+    assert.deepEqual(window.activeTextEditor!.selection.end, related[0].location.range.end);
     assert.deepEqual(await readFile(aPath), Buffer.from(invalidFirst, 'ascii'));
     assert.deepEqual(await readFile(zPath), Buffer.from(invalidLater, 'ascii'));
     assert.deepEqual(await readFile(binPath), priorOutputBytes);
+    assert.deepEqual(await readFile(templatePath), templateBytes);
 
     const sourceDocument = await workspace.openTextDocument(aUri);
     const correction = new WorkspaceEdit();
@@ -200,6 +261,12 @@ export async function runBuildProblemsIntegrationTests(): Promise<void> {
     assert.equal(await workspace.applyEdit(correction), true);
     assert.equal(await sourceDocument.save(), true);
     assert.equal(sourceDocument.isDirty, false);
+    const callerDocument = await workspace.openTextDocument(callerUri);
+    const callerCorrection = new WorkspaceEdit();
+    callerCorrection.replace(callerUri, new Range(callerDocument.positionAt(0),
+      callerDocument.positionAt(callerDocument.getText().length)), correctedCaller);
+    assert.equal(await workspace.applyEdit(callerCorrection), true);
+    assert.equal(await callerDocument.save(), true);
     await closeOwnedEditors(ownedUriKeys);
     // Closed editor tabs may retain cached document models; the correction is saved.
 
@@ -209,11 +276,12 @@ export async function runBuildProblemsIntegrationTests(): Promise<void> {
     assert.equal(second.cancelled, false);
     const reports = analysisRecords(output.join(''));
     assert.equal(reports.length, 2);
-    assert.equal(reports[1].schemaVersion, '2.0');
-    assert.equal(reports[1].complete, true);
+    assert.equal(reports[1].schemaVersion, '3.0');
+    assert.equal(reports[1].complete, true, output.join(''));
     assert.deepEqual(reports[1].failures, []);
     assert.equal(reports[1].diagnostics.length, 1);
     assert.deepEqual(toolCollection.get(aUri) ?? [], []);
+    assert.deepEqual(toolCollection.get(callerUri) ?? [], []);
     assert.deepEqual((toolCollection.get(zUri) ?? []).map(diagnosticFact), zDiagnostics.map(diagnosticFact));
     assert.deepEqual((otherCollection.get(aUri) ?? []).map(diagnosticFact), [diagnosticFact(foreign)]);
     await waitFor(() => languages.getDiagnostics(aUri).every(item => item.source !== 'vba-dev')
@@ -221,13 +289,28 @@ export async function runBuildProblemsIntegrationTests(): Promise<void> {
     assert.deepEqual(await readFile(aPath), Buffer.from(correctedFirst, 'ascii'));
     assert.deepEqual(await readFile(zPath), Buffer.from(invalidLater, 'ascii'));
     assert.deepEqual(await readFile(binPath), priorOutputBytes);
+    assert.deepEqual(await readFile(templatePath), templateBytes);
+    await writeFile(zPath, correctedLater, 'ascii');
+    const third = await runWorkbookBackedProjectCommand(options);
+    assert.ok(third);
+    assert.equal(third.exitCode, 0, output.join(''));
+    assert.equal(third.cancelled, false);
+    assert.deepEqual(toolCollection.get(zUri) ?? [], []);
+    assert.deepEqual(toolCollection.get(aUri) ?? [], []);
+    assert.deepEqual(toolCollection.get(callerUri) ?? [], []);
+    assert.deepEqual((otherCollection.get(aUri) ?? []).map(diagnosticFact), [diagnosticFact(foreign)]);
+    assert.notDeepEqual(await readFile(binPath), priorOutputBytes);
+    assert.equal((await readFile(binPath)).subarray(0, 2).toString('ascii'), 'PK');
+    assert.deepEqual(await readFile(templatePath), templateBytes);
+    assert.deepEqual(await readFile(callerPath), Buffer.from(correctedCaller, 'ascii'));
+    assert.deepEqual(await readFile(targetPath), Buffer.from(targetSource, 'ascii'));
     assert.equal(await readFile(manifestPath, 'utf8'), manifestText);
     assert.deepEqual(errors, [
       'Build failed. See the VBA Tools output for details.',
       'Build failed. See the VBA Tools output for details.'
     ]);
     assert.deepEqual(warnings, []);
-    console.log('PASS real Build reports closed saved sources, navigates original ranges, and refreshes only its Problems contribution');
+    console.log('PASS real Build preserves semantic related navigation and artifacts, accepts Dictionary inputs, and clears Problems after successful generation');
   } finally {
     toolCollection.dispose();
     otherCollection.dispose();

@@ -258,6 +258,16 @@ public sealed partial class VbaProjectPackageMetadataReader
                 : null;
         }
 
+        if (!archive.Entries.Any(entry => entry.Name.Equals("vbaProject.bin", StringComparison.OrdinalIgnoreCase))
+            && !elements.Any(element => string.Equals((string?)element.Attribute("ContentType"),
+                VbaProjectContentType, StringComparison.OrdinalIgnoreCase)))
+        {
+            // Excel can save an initial xlsm without materializing any VBA project.
+            // Only a valid macro-enabled workbook with no VBA claims grants this fact.
+            ValidateWorkbookVbaProjectRelationship(archive, ResolveContentType, cancellationToken,
+                allowAbsentProject: true);
+        }
+
         if (!string.Equals(
                 ResolveContentType(VbaProjectPartName),
                 VbaProjectContentType,
@@ -309,7 +319,8 @@ public sealed partial class VbaProjectPackageMetadataReader
     private static void ValidateWorkbookVbaProjectRelationship(
         ZipArchive archive,
         Func<string, string?> resolveContentType,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool allowAbsentProject = false)
     {
         var workbookParts = archive.Entries
             .Where(entry => entry.FullName.Equals(
@@ -398,6 +409,12 @@ public sealed partial class VbaProjectPackageMetadataReader
                 VbaProjectRelationshipType,
                 StringComparison.Ordinal))
             .ToArray();
+        if (allowAbsentProject && vbaRelationships.Length == 0)
+        {
+            throw new PackageMetadataFormatException(
+                VbaProjectPackageMetadataReadFailureKind.VbaProjectAbsent,
+                "The macro-enabled workbook contains no persisted VBA project; its runtime project identity requires owned workbook inspection.");
+        }
         if (vbaRelationships.Length != 1)
         {
             throw new PackageMetadataFormatException(

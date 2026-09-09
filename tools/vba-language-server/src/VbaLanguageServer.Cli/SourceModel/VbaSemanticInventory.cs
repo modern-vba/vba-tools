@@ -16,7 +16,7 @@ public sealed class VbaSemanticInventory
     private readonly VbaSemanticResolution semanticResolution;
     private readonly VbaResolvedIdentifierOccurrenceIndex resolvedOccurrences;
     private readonly object projectValidationGate = new();
-    private VbaProjectValidationDiagnosticIndex? projectValidationDiagnostics;
+    private VbaSemanticDiagnosticIndex? projectValidationDiagnostics;
     private readonly VbaSourceFormatter sourceFormatter;
     private readonly VbaProjectReferenceSelection? referenceSelection;
     private readonly VbaProjectReferenceCatalogSet referenceCatalogs;
@@ -355,19 +355,12 @@ public sealed class VbaSemanticInventory
         var documents = FreezeList(
             sourceDocuments.Values.Select(CaptureDocument));
         var capturedReferenceSelection = CaptureReferenceSelection(referenceSelection);
-        var catalogs = referenceCatalogs ?? VbaProjectReferenceCatalogSet.Empty;
-        var capturedCatalogSources = referenceCatalogSources is null
-            ? new Dictionary<string, VbaProjectReferenceCatalogSource>(
-                VbaProjectReferenceName.Comparer)
-            : new Dictionary<string, VbaProjectReferenceCatalogSource>(
-                referenceCatalogSources,
-                VbaProjectReferenceName.Comparer);
-        var capturedCatalogIdentities = referenceCatalogIdentities is null
-            ? new Dictionary<string, VbaProjectReferenceCatalogIdentity>(
-                VbaProjectReferenceName.Comparer)
-            : new Dictionary<string, VbaProjectReferenceCatalogIdentity>(
-                referenceCatalogIdentities,
-                VbaProjectReferenceName.Comparer);
+        var semanticInputs = VbaProjectSemanticInputs.Capture(capturedReferenceSelection.ToSemanticSelection(),
+            referenceCatalogs ?? VbaProjectReferenceCatalogSet.Empty, intrinsicHostEventCatalog,
+            referenceCatalogIdentities, referenceCatalogSources);
+        var catalogs = semanticInputs.ReferenceCatalogs;
+        var capturedCatalogSources = semanticInputs.ReferenceCatalogSources;
+        var capturedCatalogIdentities = semanticInputs.ReferenceCatalogIdentities;
         var capturedProjectResolution = projectResolution is null
             ? null
             : projectResolution with
@@ -384,11 +377,11 @@ public sealed class VbaSemanticInventory
                     VbaProjectReferenceName.Comparer);
         var activeReferenceDefinitions = FreezeList(
             catalogs
-                .GetActiveDefinitions(capturedReferenceSelection)
+                .GetActiveDefinitions(capturedReferenceSelection.ToSemanticSelection())
                 .Select(CaptureDefinition));
         var definitionCandidates = new VbaNameCandidateInventory(
             documents,
-            capturedReferenceSelection,
+            capturedReferenceSelection.ToSemanticSelection(),
             catalogs,
             activeReferenceDefinitions,
             capturedCatalogSources);
@@ -401,7 +394,7 @@ public sealed class VbaSemanticInventory
             capturedCatalogIdentities,
             capturedProjectResolution,
             capturedAuthoritativeReferencedProjectNames,
-            intrinsicHostEventCatalog,
+            semanticInputs.IntrinsicHostEvents,
             validationActiveUri,
             validationBuildObserver,
             cancellationToken);
@@ -427,7 +420,9 @@ public sealed class VbaSemanticInventory
     {
         var diagnostics = GetOrCreateProjectValidationDiagnostics(
                 cancellationToken)
-            .GetDiagnostics(uri);
+            .GetDiagnostics(uri)
+            .Select(diagnostic => new VbaProjectValidationDiagnostic(diagnostic.Code, diagnostic.Message,
+                diagnostic.Range, diagnostic.Severity, Details: diagnostic.Details)).ToArray();
         var moduleIdentityDiagnostics =
             CreateModuleIdentityNameConflictDiagnostics(
                 uri,
@@ -438,7 +433,7 @@ public sealed class VbaSemanticInventory
             : diagnostics.Concat(moduleIdentityDiagnostics).ToArray();
     }
 
-    private VbaProjectValidationDiagnosticIndex
+    private VbaSemanticDiagnosticIndex
         GetOrCreateProjectValidationDiagnostics(
             CancellationToken cancellationToken)
     {
@@ -460,9 +455,9 @@ public sealed class VbaSemanticInventory
             try
             {
                 projectValidationDiagnostics =
-                    new VbaProjectValidationDiagnosticIndex(
+                    new VbaSemanticDiagnosticIndex(
                         sourceDocuments,
-                        semanticResolution,
+                        semanticResolution.Core,
                         cancellationToken);
                 return projectValidationDiagnostics;
             }
@@ -484,103 +479,39 @@ public sealed class VbaSemanticInventory
             VbaProjectIdentityReadResult? projectIdentityRead,
             CancellationToken cancellationToken)
     {
-        if (projectResolution is null)
+        if (projectResolution is null
+            || projectResolution.Kind == VbaProjectResolutionKind.ManifestDocument
+                && projectIdentityRead?.Identity is null)
         {
             return [];
         }
 
-        var diagnostics = new List<VbaProjectValidationDiagnostic>();
-        foreach (var target in sourceDocuments
-            .Where(document => VbaProjectIdentityModel.SameDocument(
-                document.Uri,
-                uri))
-            .SelectMany(document => document.Definitions)
-            .Where(IsModuleIdentity)
-            .Where(IsExplicitModuleIdentityTarget))
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (GetModuleIdentityMutationAuthorityFailure(
-                    target,
-                    projectIdentityRead) is not null)
-            {
-                continue;
-            }
-
-            var conflicts = FindExternalModuleIdentityNameConflicts(
-                target.Name,
-                projectIdentityRead,
-                cancellationToken);
-            if (conflicts.Count == 0)
-            {
-                continue;
-            }
-
-            diagnostics.Add(new VbaProjectValidationDiagnostic(
-                "validation.moduleIdentityNameConflict",
-                CreateRenameCollisionMessage(
-                    target,
-                    target.Name,
-                    conflicts,
-                    locations: ""),
-                target.Range,
-                Data: new Dictionary<string, object?>
-                {
-                    ["conflicts"] = conflicts
-                        .Select(CreateModuleIdentityConflictData)
-                        .ToArray()
-                }));
-        }
-
-        return diagnostics;
-    }
-
-    private IReadOnlyList<VbaRenameConflict>
-        FindExternalModuleIdentityNameConflicts(
-            string moduleName,
-            VbaProjectIdentityReadResult? projectIdentityRead,
-            CancellationToken cancellationToken)
-    {
-        var conflicts = new List<VbaRenameConflict>();
-        if (projectResolution?.Kind
-                == VbaProjectResolutionKind.ManifestDocument
-            && projectIdentityRead?.Identity?.VbaProjectName is { } projectName
-            && projectName.Equals(
-                moduleName,
-                StringComparison.OrdinalIgnoreCase))
-        {
-            conflicts.Add(new VbaRenameConflict(
-                "containingProject",
-                projectName,
-                Uri: null,
-                Range: null));
-        }
-
+        var references = new List<VbaReferencedProjectNamespace>();
         foreach (var referenceName in GetActiveReferenceNamesInSelectionOrder())
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!TryGetCurrentReferencedProjectName(
-                    referenceName,
-                    out var referencedProjectName)
-                || !referencedProjectName.Equals(
-                    moduleName,
-                    StringComparison.OrdinalIgnoreCase))
+            if (!TryGetCurrentReferencedProjectName(referenceName, out var projectName))
             {
-                continue;
+                return [];
             }
-
-            conflicts.Add(new VbaRenameConflict(
-                "referencedProject",
-                referencedProjectName,
-                Uri: null,
-                Range: null,
-                ReferenceName: referenceName));
+            references.Add(new(referenceName, projectName));
         }
-
-        return conflicts;
+        var namespaces = VbaProjectNamespaceIdentity.Capture(
+            projectResolution.Kind == VbaProjectResolutionKind.ManifestDocument
+                ? projectIdentityRead?.Identity?.VbaProjectName : null, references);
+        return sourceDocuments.Where(document => VbaProjectIdentityModel.SameDocument(document.Uri, uri))
+            .SelectMany(document => VbaModuleIdentityDiagnostics.Collect(document, namespaces, cancellationToken))
+            .Select(diagnostic => new VbaProjectValidationDiagnostic(
+                diagnostic.Code, diagnostic.Message, diagnostic.Range, diagnostic.Severity,
+                Data: new Dictionary<string, object?>
+                {
+                    ["conflicts"] = diagnostic.NamespaceConflicts!.Select(CreateModuleIdentityConflictData).ToArray()
+                }, Details: diagnostic.Details))
+            .ToArray();
     }
 
     private static IReadOnlyDictionary<string, object?>
-        CreateModuleIdentityConflictData(VbaRenameConflict conflict)
+        CreateModuleIdentityConflictData(VbaModuleNamespaceConflict conflict)
     {
         var data = new Dictionary<string, object?>
         {
@@ -3064,29 +2995,8 @@ public sealed class VbaSemanticInventory
     }
 
     private bool IsExplicitModuleIdentityTarget(VbaSourceDefinition target)
-    {
-        if (!IsModuleIdentity(target))
-        {
-            return false;
-        }
-
-        var document = definitionCandidates.FindDocument(target.Uri);
-        if (document is null)
-        {
-            return false;
-        }
-
-        var syntaxTree = document.SyntaxTree
-            ?? VbaSyntaxTree.ParseModule(document.Uri, document.Text);
-        var metadata = syntaxTree.Module.Identity.Metadata
-            ?? ReadModuleIdentityMetadata(document, syntaxTree);
-        return metadata.IsAuthoritative
-            && metadata.Name!.Equals(target.Name, StringComparison.Ordinal)
-            && target.Range.Start.Line == syntaxTree.Module.Identity.Range.Start.Line
-            && target.Range.Start.Character == syntaxTree.Module.Identity.Range.Start.Character
-            && target.Range.End.Line == syntaxTree.Module.Identity.Range.End.Line
-            && target.Range.End.Character == syntaxTree.Module.Identity.Range.End.Character;
-    }
+        => definitionCandidates.FindDocument(target.Uri) is { } document
+            && VbaModuleIdentityDiagnostics.IsExplicitModuleIdentity(document, target);
 
     private VbaModuleIdentityMetadata? GetModuleIdentityMetadata(
         VbaSourceDefinition target)
@@ -6711,15 +6621,7 @@ public sealed class VbaSemanticInventory
             document.SyntaxTree);
 
     internal static VbaSourceDefinition CaptureDefinition(VbaSourceDefinition definition)
-        => definition.Signature is null
-            ? definition
-            : definition with
-            {
-                Signature = definition.Signature with
-                {
-                    Parameters = FreezeList(definition.Signature.Parameters)
-                }
-            };
+        => VbaSemanticFacts.CaptureDefinition(definition);
 
     private static VbaProjectReferenceSelection? CaptureReferenceSelection(
         VbaProjectReferenceSelection? referenceSelection)

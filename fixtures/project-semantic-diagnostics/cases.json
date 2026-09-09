@@ -1,0 +1,1862 @@
+{
+  "schemaVersion": "1.0",
+  "cases": [
+    {
+      "id": "duplicate-procedure-declarations",
+      "sources": [
+        {
+          "fileName": "Duplicates.bas",
+          "source": "Attribute VB_Name = \"Duplicates\"\nPublic Sub Work()\nEnd Sub\nPublic Sub Work()\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "Duplicates.bas",
+          "code": "validation.duplicateDeclaration",
+          "message": "Declaration 'Work' conflicts with another declaration in this scope.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 1,
+              "character": 11
+            },
+            "end": {
+              "line": 1,
+              "character": 15
+            }
+          },
+          "details": null,
+          "cliMessage": "Declaration 'Work' conflicts with another declaration in this scope.",
+          "relatedInformation": []
+        },
+        {
+          "fileName": "Duplicates.bas",
+          "code": "validation.duplicateDeclaration",
+          "message": "Declaration 'Work' conflicts with another declaration in this scope.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 3,
+              "character": 11
+            },
+            "end": {
+              "line": 3,
+              "character": 15
+            }
+          },
+          "details": null,
+          "cliMessage": "Declaration 'Work' conflicts with another declaration in this scope.",
+          "relatedInformation": []
+        }
+      ]
+    },
+    {
+      "id": "source-byref-integer-to-long",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim item As Integer\n    AcceptValue item\nEnd Sub\n"
+        },
+        {
+          "fileName": "Target.bas",
+          "source": "Attribute VB_Name = \"Target\"\nPublic Sub AcceptValue(ByRef value As Long)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "Caller.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 3,
+              "character": 16
+            },
+            "end": {
+              "line": 3,
+              "character": 20
+            }
+          },
+          "details": [
+            {
+              "location": {
+                "fileName": "Target.bas",
+                "range": {
+                  "start": {
+                    "line": 1,
+                    "character": 11
+                  },
+                  "end": {
+                    "line": 1,
+                    "character": 22
+                  }
+                }
+              },
+              "relatedMessage": "Candidate signature: Sub AcceptValue(ByRef value As Long). Mismatches: argument 1 for parameter 'value' ByRef type: expected Long, found Integer.",
+              "fallbackText": "Candidate signature: Sub AcceptValue(ByRef value As Long).\nMismatches: argument 1 for parameter 'value' ByRef type: expected Long, found Integer."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.",
+          "relatedInformation": [
+            {
+              "fileName": "Target.bas",
+              "range": {
+                "start": {
+                  "line": 1,
+                  "character": 11
+                },
+                "end": {
+                  "line": 1,
+                  "character": 22
+                }
+              },
+              "message": "Candidate signature: Sub AcceptValue(ByRef value As Long). Mismatches: argument 1 for parameter 'value' ByRef type: expected Long, found Integer."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "source-byref-variant-accepts-string",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim text As String\n    AcceptValue text\nEnd Sub\n"
+        },
+        {
+          "fileName": "Target.bas",
+          "source": "Attribute VB_Name = \"Target\"\nPublic Sub AcceptValue(ByRef value As Variant)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": []
+    },
+    {
+      "id": "source-byref-object-accepts-class",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim item As Payload\n    AcceptValue item\nEnd Sub\n"
+        },
+        {
+          "fileName": "Target.bas",
+          "source": "Attribute VB_Name = \"Target\"\nPublic Sub AcceptValue(ByRef value As Object)\nEnd Sub\n"
+        },
+        {
+          "fileName": "Payload.cls",
+          "source": "VERSION 1.0 CLASS\nBEGIN\n  MultiUse = -1\nEND\nAttribute VB_Name = \"Payload\"\nAttribute VB_Exposed = False\n"
+        }
+      ],
+      "diagnostics": []
+    },
+    {
+      "id": "source-byref-value-temporary",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim item As Integer\n    AcceptValue (item)\nEnd Sub\n"
+        },
+        {
+          "fileName": "Target.bas",
+          "source": "Attribute VB_Name = \"Target\"\nPublic Sub AcceptValue(ByRef value As Long)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": []
+    },
+    {
+      "id": "late-bound-object-call-is-indeterminate",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim value As Object\n    value.UnknownMethod 1, 2\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": []
+    },
+    {
+      "id": "conditional-call-alternative-can-accept",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim item As Integer\n    AcceptValue item\nEnd Sub\n"
+        },
+        {
+          "fileName": "Target.bas",
+          "source": "Attribute VB_Name = \"Target\"\n#If Win64 Then\nPublic Sub AcceptValue(ByRef value As Long)\nEnd Sub\n#Else\nPublic Sub AcceptValue(ByRef value As Variant)\nEnd Sub\n#End If\n"
+        }
+      ],
+      "diagnostics": []
+    },
+    {
+      "id": "source-call-wrong-count",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    AcceptValue 1, 2\nEnd Sub\n"
+        },
+        {
+          "fileName": "Target.bas",
+          "source": "Attribute VB_Name = \"Target\"\nPublic Sub AcceptValue(ByVal value As Long)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "Caller.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 2,
+              "character": 16
+            },
+            "end": {
+              "line": 2,
+              "character": 20
+            }
+          },
+          "details": [
+            {
+              "location": {
+                "fileName": "Target.bas",
+                "range": {
+                  "start": {
+                    "line": 1,
+                    "character": 11
+                  },
+                  "end": {
+                    "line": 1,
+                    "character": 22
+                  }
+                }
+              },
+              "relatedMessage": "Candidate signature: Sub AcceptValue(value As Long). Mismatches: argument 2 mapping: no parameter accepts this argument.",
+              "fallbackText": "Candidate signature: Sub AcceptValue(value As Long).\nMismatches: argument 2 mapping: no parameter accepts this argument."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.",
+          "relatedInformation": [
+            {
+              "fileName": "Target.bas",
+              "range": {
+                "start": {
+                  "line": 1,
+                  "character": 11
+                },
+                "end": {
+                  "line": 1,
+                  "character": 22
+                }
+              },
+              "message": "Candidate signature: Sub AcceptValue(value As Long). Mismatches: argument 2 mapping: no parameter accepts this argument."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "source-call-array-to-scalar",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim items() As Long\n    AcceptValue items\nEnd Sub\n"
+        },
+        {
+          "fileName": "Target.bas",
+          "source": "Attribute VB_Name = \"Target\"\nPublic Sub AcceptValue(ByRef value As Long)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "Caller.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 3,
+              "character": 16
+            },
+            "end": {
+              "line": 3,
+              "character": 21
+            }
+          },
+          "details": [
+            {
+              "location": {
+                "fileName": "Target.bas",
+                "range": {
+                  "start": {
+                    "line": 1,
+                    "character": 11
+                  },
+                  "end": {
+                    "line": 1,
+                    "character": 22
+                  }
+                }
+              },
+              "relatedMessage": "Candidate signature: Sub AcceptValue(ByRef value As Long). Mismatches: argument 1 for parameter 'value' ByRef array shape: expected scalar, found array.",
+              "fallbackText": "Candidate signature: Sub AcceptValue(ByRef value As Long).\nMismatches: argument 1 for parameter 'value' ByRef array shape: expected scalar, found array."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.",
+          "relatedInformation": [
+            {
+              "fileName": "Target.bas",
+              "range": {
+                "start": {
+                  "line": 1,
+                  "character": 11
+                },
+                "end": {
+                  "line": 1,
+                  "character": 22
+                }
+              },
+              "message": "Candidate signature: Sub AcceptValue(ByRef value As Long). Mismatches: argument 1 for parameter 'value' ByRef array shape: expected scalar, found array."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "source-call-scalar-to-array",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim item As Long\n    AcceptValue item\nEnd Sub\n"
+        },
+        {
+          "fileName": "Target.bas",
+          "source": "Attribute VB_Name = \"Target\"\nPublic Sub AcceptValue(ByRef values() As Long)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "Caller.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 3,
+              "character": 16
+            },
+            "end": {
+              "line": 3,
+              "character": 20
+            }
+          },
+          "details": [
+            {
+              "location": {
+                "fileName": "Target.bas",
+                "range": {
+                  "start": {
+                    "line": 1,
+                    "character": 11
+                  },
+                  "end": {
+                    "line": 1,
+                    "character": 22
+                  }
+                }
+              },
+              "relatedMessage": "Candidate signature: Sub AcceptValue(ByRef values() As Long). Mismatches: argument 1 for parameter 'values' ByRef array shape: expected array, found scalar.",
+              "fallbackText": "Candidate signature: Sub AcceptValue(ByRef values() As Long).\nMismatches: argument 1 for parameter 'values' ByRef array shape: expected array, found scalar."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.",
+          "relatedInformation": [
+            {
+              "fileName": "Target.bas",
+              "range": {
+                "start": {
+                  "line": 1,
+                  "character": 11
+                },
+                "end": {
+                  "line": 1,
+                  "character": 22
+                }
+              },
+              "message": "Candidate signature: Sub AcceptValue(ByRef values() As Long). Mismatches: argument 1 for parameter 'values' ByRef array shape: expected array, found scalar."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "withevents-enclosing-class",
+      "sources": [
+        {
+          "fileName": "Worker.cls",
+          "source": "Attribute VB_Name = \"Worker\"\nPrivate WithEvents self As Worker\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "Worker.cls",
+          "code": "validation.withEventsTypeCannotBeEnclosingClass",
+          "message": "A WithEvents variable cannot use its enclosing class as its declared type.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 1,
+              "character": 27
+            },
+            "end": {
+              "line": 1,
+              "character": 33
+            }
+          },
+          "details": null,
+          "cliMessage": "A WithEvents variable cannot use its enclosing class as its declared type.",
+          "relatedInformation": []
+        }
+      ]
+    },
+    {
+      "id": "withevents-nonclass",
+      "sources": [
+        {
+          "fileName": "Worker.cls",
+          "source": "Attribute VB_Name = \"Worker\"\nPrivate WithEvents value As Long\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "Worker.cls",
+          "code": "validation.withEventsTypeMustBeClass",
+          "message": "WithEvents variables must use a specific class type.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 1,
+              "character": 28
+            },
+            "end": {
+              "line": 1,
+              "character": 32
+            }
+          },
+          "details": null,
+          "cliMessage": "WithEvents variables must use a specific class type.",
+          "relatedInformation": []
+        }
+      ]
+    },
+    {
+      "id": "withevents-no-events",
+      "sources": [
+        {
+          "fileName": "Publisher.cls",
+          "source": "Attribute VB_Name = \"Publisher\"\nPublic Sub Run()\nEnd Sub\n"
+        },
+        {
+          "fileName": "Worker.cls",
+          "source": "Attribute VB_Name = \"Worker\"\nPrivate WithEvents publisher As Publisher\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "Worker.cls",
+          "code": "validation.withEventsTypeMustExposeEvents",
+          "message": "The declared WithEvents class must expose at least one Event.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 1,
+              "character": 32
+            },
+            "end": {
+              "line": 1,
+              "character": 41
+            }
+          },
+          "details": null,
+          "cliMessage": "The declared WithEvents class must expose at least one Event.",
+          "relatedInformation": []
+        }
+      ]
+    },
+    {
+      "id": "source-event-handler-kind",
+      "sources": [
+        {
+          "fileName": "Publisher.cls",
+          "source": "Attribute VB_Name = \"Publisher\"\nPublic Event Changed(ByVal value As Long)\n"
+        },
+        {
+          "fileName": "Worker.cls",
+          "source": "Attribute VB_Name = \"Worker\"\nPrivate WithEvents publisher As Publisher\nPrivate Function publisher_Changed(ByVal value As Long) As Long\nEnd Function\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "Worker.cls",
+          "code": "validation.eventHandlerMustBeSub",
+          "message": "Event handlers must be declared as Sub procedures.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 2,
+              "character": 8
+            },
+            "end": {
+              "line": 2,
+              "character": 16
+            }
+          },
+          "details": null,
+          "cliMessage": "Event handlers must be declared as Sub procedures.",
+          "relatedInformation": []
+        }
+      ]
+    },
+    {
+      "id": "source-event-handler-signature",
+      "sources": [
+        {
+          "fileName": "Publisher.cls",
+          "source": "Attribute VB_Name = \"Publisher\"\nPublic Event Changed(ByVal value As Long)\n"
+        },
+        {
+          "fileName": "Worker.cls",
+          "source": "Attribute VB_Name = \"Worker\"\nPrivate WithEvents publisher As Publisher\nPrivate Sub publisher_Changed(ByVal value As String)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "Worker.cls",
+          "code": "validation.incompatibleEventHandlerSignature",
+          "message": "Event handler signature does not match any available Event signature.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 2,
+              "character": 29
+            },
+            "end": {
+              "line": 2,
+              "character": 52
+            }
+          },
+          "details": [
+            {
+              "location": {
+                "fileName": "Publisher.cls",
+                "range": {
+                  "start": {
+                    "line": 1,
+                    "character": 13
+                  },
+                  "end": {
+                    "line": 1,
+                    "character": 20
+                  }
+                }
+              },
+              "relatedMessage": "Required contract: Event Changed(value As Long). Mismatches: parameter 1 type: expected Long, found String.",
+              "fallbackText": "Expected signature: Event Changed(value As Long).\nMismatches: parameter 1 type: expected Long, found String."
+            }
+          ],
+          "cliMessage": "Event handler signature does not match any available Event signature.",
+          "relatedInformation": [
+            {
+              "fileName": "Publisher.cls",
+              "range": {
+                "start": {
+                  "line": 1,
+                  "character": 13
+                },
+                "end": {
+                  "line": 1,
+                  "character": 20
+                }
+              },
+              "message": "Required contract: Event Changed(value As Long). Mismatches: parameter 1 type: expected Long, found String."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "raiseevent-unknown-target",
+      "sources": [
+        {
+          "fileName": "Publisher.cls",
+          "source": "Attribute VB_Name = \"Publisher\"\nPublic Sub Run()\n    RaiseEvent Missing(1)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "Publisher.cls",
+          "code": "validation.raiseEventTargetNotDeclaredInEnclosingModule",
+          "message": "RaiseEvent target must be an Event declared in the enclosing class module.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 2,
+              "character": 15
+            },
+            "end": {
+              "line": 2,
+              "character": 22
+            }
+          },
+          "details": null,
+          "cliMessage": "RaiseEvent target must be an Event declared in the enclosing class module.",
+          "relatedInformation": []
+        }
+      ]
+    },
+    {
+      "id": "interface-wrong-kind",
+      "sources": [
+        {
+          "fileName": "IWorker.cls",
+          "source": "Attribute VB_Name = \"IWorker\"\nPublic Sub Run()\nEnd Sub\n"
+        },
+        {
+          "fileName": "Worker.cls",
+          "source": "Attribute VB_Name = \"Worker\"\nImplements IWorker\nPrivate Function IWorker_Run() As Long\nEnd Function\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "Worker.cls",
+          "code": "validation.interfaceMemberKindMismatch",
+          "message": "Interface member 'IWorker_Run' requires Sub, not Function.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 2,
+              "character": 8
+            },
+            "end": {
+              "line": 2,
+              "character": 16
+            }
+          },
+          "details": [
+            {
+              "location": {
+                "fileName": "IWorker.cls",
+                "range": {
+                  "start": {
+                    "line": 1,
+                    "character": 11
+                  },
+                  "end": {
+                    "line": 1,
+                    "character": 14
+                  }
+                }
+              },
+              "relatedMessage": "Required contract: Sub IWorker_Run().",
+              "fallbackText": "Required contract: Sub IWorker_Run()."
+            }
+          ],
+          "cliMessage": "Interface member 'IWorker_Run' requires Sub, not Function.",
+          "relatedInformation": [
+            {
+              "fileName": "IWorker.cls",
+              "range": {
+                "start": {
+                  "line": 1,
+                  "character": 11
+                },
+                "end": {
+                  "line": 1,
+                  "character": 14
+                }
+              },
+              "message": "Required contract: Sub IWorker_Run()."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "interface-wrong-signature",
+      "sources": [
+        {
+          "fileName": "IWorker.cls",
+          "source": "Attribute VB_Name = \"IWorker\"\nPublic Sub Run(ByVal value As Long)\nEnd Sub\n"
+        },
+        {
+          "fileName": "Worker.cls",
+          "source": "Attribute VB_Name = \"Worker\"\nImplements IWorker\nPrivate Sub IWorker_Run(ByVal value As String)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "Worker.cls",
+          "code": "validation.incompatibleInterfaceMemberSignature",
+          "message": "Interface member 'IWorker_Run' signature does not match any required Sub contract.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 2,
+              "character": 12
+            },
+            "end": {
+              "line": 2,
+              "character": 46
+            }
+          },
+          "details": [
+            {
+              "location": {
+                "fileName": "IWorker.cls",
+                "range": {
+                  "start": {
+                    "line": 1,
+                    "character": 11
+                  },
+                  "end": {
+                    "line": 1,
+                    "character": 14
+                  }
+                }
+              },
+              "relatedMessage": "Required contract: Sub IWorker_Run(value As Long). Mismatches: parameter 1 type: expected Long, found String.",
+              "fallbackText": "Expected signature: Sub IWorker_Run(value As Long).\nMismatches: parameter 1 type: expected Long, found String."
+            }
+          ],
+          "cliMessage": "Interface member 'IWorker_Run' signature does not match any required Sub contract.",
+          "relatedInformation": [
+            {
+              "fileName": "IWorker.cls",
+              "range": {
+                "start": {
+                  "line": 1,
+                  "character": 11
+                },
+                "end": {
+                  "line": 1,
+                  "character": 14
+                }
+              },
+              "message": "Required contract: Sub IWorker_Run(value As Long). Mismatches: parameter 1 type: expected Long, found String."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "interface-missing-member",
+      "sources": [
+        {
+          "fileName": "IWorker.cls",
+          "source": "Attribute VB_Name = \"IWorker\"\nPublic Sub Run()\nEnd Sub\n"
+        },
+        {
+          "fileName": "Worker.cls",
+          "source": "Attribute VB_Name = \"Worker\"\nImplements IWorker\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "Worker.cls",
+          "code": "validation.interfaceMemberNotImplemented",
+          "message": "Interface member 'IWorker_Run' requires a Sub implementation.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 1,
+              "character": 11
+            },
+            "end": {
+              "line": 1,
+              "character": 18
+            }
+          },
+          "details": [
+            {
+              "location": {
+                "fileName": "IWorker.cls",
+                "range": {
+                  "start": {
+                    "line": 1,
+                    "character": 11
+                  },
+                  "end": {
+                    "line": 1,
+                    "character": 14
+                  }
+                }
+              },
+              "relatedMessage": "Required contract: Sub IWorker_Run().",
+              "fallbackText": "Required contract: Sub IWorker_Run()."
+            }
+          ],
+          "cliMessage": "Interface member 'IWorker_Run' requires a Sub implementation.",
+          "relatedInformation": [
+            {
+              "fileName": "IWorker.cls",
+              "range": {
+                "start": {
+                  "line": 1,
+                  "character": 11
+                },
+                "end": {
+                  "line": 1,
+                  "character": 14
+                }
+              },
+              "message": "Required contract: Sub IWorker_Run()."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "interface-partial-conditional-contract",
+      "sources": [
+        {
+          "fileName": "IWorker.cls",
+          "source": "Attribute VB_Name = \"IWorker\"\n#If Win64 Then\nPublic Sub Run(ByVal value As Long)\nEnd Sub\n#Else\nPublic Sub Run(ByVal value As String)\nEnd Sub\n#End If\n"
+        },
+        {
+          "fileName": "Worker.cls",
+          "source": "Attribute VB_Name = \"Worker\"\nImplements IWorker\nPrivate Sub IWorker_Run(ByVal value As Long)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "Worker.cls",
+          "code": "validation.interfaceMemberContractNotFullyImplemented",
+          "message": "Interface member 'IWorker_Run' does not implement every required Sub contract.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 1,
+              "character": 11
+            },
+            "end": {
+              "line": 1,
+              "character": 18
+            }
+          },
+          "details": [
+            {
+              "location": {
+                "fileName": "IWorker.cls",
+                "range": {
+                  "start": {
+                    "line": 5,
+                    "character": 11
+                  },
+                  "end": {
+                    "line": 5,
+                    "character": 14
+                  }
+                }
+              },
+              "relatedMessage": "Required contract: Sub IWorker_Run(value As String) [#If].",
+              "fallbackText": "Required contract: Sub IWorker_Run(value As String) [#If]."
+            }
+          ],
+          "cliMessage": "Interface member 'IWorker_Run' does not implement every required Sub contract.",
+          "relatedInformation": [
+            {
+              "fileName": "IWorker.cls",
+              "range": {
+                "start": {
+                  "line": 5,
+                  "character": 11
+                },
+                "end": {
+                  "line": 5,
+                  "character": 14
+                }
+              },
+              "message": "Required contract: Sub IWorker_Run(value As String) [#If]."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "withevents-inaccessible-external-class",
+      "sources": [
+        {
+          "fileName": "Worker.cls",
+          "source": "Attribute VB_Name = \"Worker\"\nPrivate WithEvents publisher As RestrictedPublisher\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "Worker.cls",
+          "code": "validation.withEventsTypeMustBeAccessible",
+          "message": "The declared WithEvents class must be accessible to VBA.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 1,
+              "character": 32
+            },
+            "end": {
+              "line": 1,
+              "character": 51
+            }
+          },
+          "details": null,
+          "cliMessage": "The declared WithEvents class must be accessible to VBA.",
+          "relatedInformation": []
+        }
+      ],
+      "referenceCatalogs": [
+        {
+          "referenceName": "Fixture Library",
+          "qualifierAliases": [
+            "Fixture",
+            "FixtureLibrary"
+          ],
+          "definitions": [
+            {
+              "referenceName": "Fixture Library",
+              "name": "RestrictedPublisher",
+              "kind": 1,
+              "documentation": null,
+              "signature": null,
+              "parentTypeName": null,
+              "typeReference": null,
+              "propertyAccess": 0,
+              "isCreatable": true,
+              "globalExposure": 0,
+              "isAuthoringAvailable": false,
+              "isCallableMetadataComplete": true,
+              "propertyAccessorKind": null,
+              "isReturnArray": null,
+              "callableKind": null
+            },
+            {
+              "referenceName": "Fixture Library",
+              "name": "Changed",
+              "kind": 12,
+              "documentation": null,
+              "signature": {
+                "label": "Event Changed()",
+                "parameters": [],
+                "documentation": null,
+                "callableKind": 3,
+                "supportsNamedArguments": true,
+                "passingConvention": 0
+              },
+              "parentTypeName": "RestrictedPublisher",
+              "typeReference": null,
+              "propertyAccess": 0,
+              "isCreatable": false,
+              "globalExposure": 0,
+              "isAuthoringAvailable": true,
+              "isCallableMetadataComplete": true,
+              "propertyAccessorKind": null,
+              "isReturnArray": null,
+              "callableKind": 3
+            }
+          ],
+          "typeLibTypes": [
+            {
+              "name": "RestrictedPublisher",
+              "kind": 1,
+              "documentation": null,
+              "members": [
+                {
+                  "name": "Changed",
+                  "kind": 12,
+                  "documentation": null,
+                  "signature": {
+                    "label": "Event Changed()",
+                    "parameters": [],
+                    "documentation": null,
+                    "callableKind": 3,
+                    "supportsNamedArguments": null,
+                    "passingConvention": 0
+                  },
+                  "typeReference": null,
+                  "propertyAccess": 0,
+                  "metadata": {
+                    "memberId": 1,
+                    "functionFlags": 0,
+                    "isComplete": true,
+                    "propertyAccessorKind": null,
+                    "isReturnArray": null
+                  }
+                }
+              ],
+              "isCreatable": true,
+              "isApplicationObject": false,
+              "isBrowsable": false,
+              "metadata": {
+                "rawTypeKind": 1,
+                "typeFlags": 512,
+                "implementedInterfaces": [
+                  {
+                    "name": "_Events",
+                    "typeFlags": 0,
+                    "implementationFlags": 3,
+                    "callableMembers": [
+                      {
+                        "name": "Changed",
+                        "kind": 12,
+                        "documentation": null,
+                        "signature": {
+                          "label": "Event Changed()",
+                          "parameters": [],
+                          "documentation": null,
+                          "callableKind": 3,
+                          "supportsNamedArguments": null,
+                          "passingConvention": 0
+                        },
+                        "typeReference": null,
+                        "propertyAccess": 0,
+                        "metadata": {
+                          "memberId": 1,
+                          "functionFlags": 0,
+                          "isComplete": true,
+                          "propertyAccessorKind": null,
+                          "isReturnArray": null
+                        }
+                      }
+                    ],
+                    "rawTypeKind": 3,
+                    "isComplete": true
+                  }
+                ],
+                "isComplete": true
+              }
+            }
+          ],
+          "referencedVbaProjectName": null
+        }
+      ]
+    },
+    {
+      "id": "intrinsic-host-handler-kind",
+      "sources": [
+        {
+          "fileName": "Dialog.frm",
+          "source": "VERSION 5.00\nBegin VB.Form Dialog\nEnd\nAttribute VB_Name = \"Dialog\"\nPrivate Function UserForm_Initialize() As Long\nEnd Function\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "Dialog.frm",
+          "code": "validation.eventHandlerMustBeSub",
+          "message": "Event handlers must be declared as Sub procedures.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 4,
+              "character": 8
+            },
+            "end": {
+              "line": 4,
+              "character": 16
+            }
+          },
+          "details": null,
+          "cliMessage": "Event handlers must be declared as Sub procedures.",
+          "relatedInformation": []
+        }
+      ],
+      "hostEvents": {
+        "sourceKind": 0,
+        "intrinsicEventSourceName": "UserForm",
+        "events": [
+          {
+            "identity": {
+              "sourceName": "UserForm",
+              "name": "Initialize"
+            },
+            "signature": {
+              "parameters": [],
+              "documentation": null
+            },
+            "authoringAvailable": true,
+            "existingHandlerRecognizable": true,
+            "name": "Initialize",
+            "parameters": [],
+            "documentation": null
+          }
+        ],
+        "baseTypeProvenance": null
+      }
+    },
+    {
+      "id": "intrinsic-host-handler-signature",
+      "sources": [
+        {
+          "fileName": "Dialog.frm",
+          "source": "VERSION 5.00\nBegin VB.Form Dialog\nEnd\nAttribute VB_Name = \"Dialog\"\nPrivate Sub UserForm_Initialize(ByVal value As Long)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "Dialog.frm",
+          "code": "validation.incompatibleEventHandlerSignature",
+          "message": "Event handler signature does not match any available Event signature.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 4,
+              "character": 31
+            },
+            "end": {
+              "line": 4,
+              "character": 52
+            }
+          },
+          "details": [
+            {
+              "location": null,
+              "relatedMessage": "Required contract: Event Initialize(). Mismatches: parameter count: expected 0, found 1.",
+              "fallbackText": "Expected signature: Event Initialize().\nMismatches: parameter count: expected 0, found 1."
+            }
+          ],
+          "cliMessage": "Event handler signature does not match any available Event signature.\nExpected signature: Event Initialize().\nMismatches: parameter count: expected 0, found 1.",
+          "relatedInformation": []
+        }
+      ],
+      "hostEvents": {
+        "sourceKind": 0,
+        "intrinsicEventSourceName": "UserForm",
+        "events": [
+          {
+            "identity": {
+              "sourceName": "UserForm",
+              "name": "Initialize"
+            },
+            "signature": {
+              "parameters": [],
+              "documentation": null
+            },
+            "authoringAvailable": true,
+            "existingHandlerRecognizable": true,
+            "name": "Initialize",
+            "parameters": [],
+            "documentation": null
+          }
+        ],
+        "baseTypeProvenance": null
+      }
+    },
+    {
+      "id": "intrinsic-host-compatible",
+      "sources": [
+        {
+          "fileName": "Dialog.frm",
+          "source": "VERSION 5.00\nBegin VB.Form Dialog\nEnd\nAttribute VB_Name = \"Dialog\"\nPrivate Sub UserForm_Initialize()\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [],
+      "hostEvents": {
+        "sourceKind": 0,
+        "intrinsicEventSourceName": "UserForm",
+        "events": [
+          {
+            "identity": {
+              "sourceName": "UserForm",
+              "name": "Initialize"
+            },
+            "signature": {
+              "parameters": [],
+              "documentation": null
+            },
+            "authoringAvailable": true,
+            "existingHandlerRecognizable": true,
+            "name": "Initialize",
+            "parameters": [],
+            "documentation": null
+          }
+        ],
+        "baseTypeProvenance": null
+      }
+    },
+    {
+      "id": "external-dictionary-string-input",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim values As Scripting.Dictionary\n    Dim key As String\n    values.Exists key\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [],
+      "referenceCatalogs": [
+        {
+          "referenceName": "Microsoft Scripting Runtime",
+          "qualifierAliases": [
+            "Scripting"
+          ],
+          "definitions": [
+            {
+              "referenceName": "Microsoft Scripting Runtime",
+              "name": "Dictionary",
+              "kind": 1,
+              "documentation": null,
+              "signature": null,
+              "parentTypeName": null,
+              "typeReference": null,
+              "propertyAccess": 0,
+              "isCreatable": false,
+              "globalExposure": 0,
+              "isAuthoringAvailable": true,
+              "isCallableMetadataComplete": true,
+              "propertyAccessorKind": null,
+              "isReturnArray": null,
+              "callableKind": null
+            },
+            {
+              "referenceName": "Microsoft Scripting Runtime",
+              "name": "Exists",
+              "kind": 3,
+              "documentation": null,
+              "signature": {
+                "label": "Function Exists(ByRef Key As Variant)",
+                "parameters": [
+                  {
+                    "name": "Key",
+                    "documentation": null,
+                    "isOptional": false,
+                    "displayLabel": null,
+                    "typeReference": {
+                      "name": "Variant",
+                      "qualifier": null
+                    },
+                    "isByRef": true,
+                    "isParamArray": false,
+                    "isArray": false,
+                    "defaultExpression": null,
+                    "typeLibPassing": {
+                      "direction": 1,
+                      "abiPointerDepth": 1
+                    }
+                  }
+                ],
+                "documentation": null,
+                "callableKind": 1,
+                "supportsNamedArguments": true,
+                "passingConvention": 1
+              },
+              "parentTypeName": "Dictionary",
+              "typeReference": {
+                "name": "Boolean",
+                "qualifier": null
+              },
+              "propertyAccess": 0,
+              "isCreatable": false,
+              "globalExposure": 0,
+              "isAuthoringAvailable": true,
+              "isCallableMetadataComplete": true,
+              "propertyAccessorKind": null,
+              "isReturnArray": null,
+              "callableKind": null
+            }
+          ],
+          "typeLibTypes": null,
+          "referencedVbaProjectName": null
+        }
+      ]
+    },
+    {
+      "id": "external-dictionary-variant-input",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim values As Scripting.Dictionary\n    Dim key As Variant\n    values.Exists key\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [],
+      "referenceCatalogs": [
+        {
+          "referenceName": "Microsoft Scripting Runtime",
+          "qualifierAliases": [
+            "Scripting"
+          ],
+          "definitions": [
+            {
+              "referenceName": "Microsoft Scripting Runtime",
+              "name": "Dictionary",
+              "kind": 1,
+              "documentation": null,
+              "signature": null,
+              "parentTypeName": null,
+              "typeReference": null,
+              "propertyAccess": 0,
+              "isCreatable": false,
+              "globalExposure": 0,
+              "isAuthoringAvailable": true,
+              "isCallableMetadataComplete": true,
+              "propertyAccessorKind": null,
+              "isReturnArray": null,
+              "callableKind": null
+            },
+            {
+              "referenceName": "Microsoft Scripting Runtime",
+              "name": "Exists",
+              "kind": 3,
+              "documentation": null,
+              "signature": {
+                "label": "Function Exists(ByRef Key As Variant)",
+                "parameters": [
+                  {
+                    "name": "Key",
+                    "documentation": null,
+                    "isOptional": false,
+                    "displayLabel": null,
+                    "typeReference": {
+                      "name": "Variant",
+                      "qualifier": null
+                    },
+                    "isByRef": true,
+                    "isParamArray": false,
+                    "isArray": false,
+                    "defaultExpression": null,
+                    "typeLibPassing": {
+                      "direction": 1,
+                      "abiPointerDepth": 1
+                    }
+                  }
+                ],
+                "documentation": null,
+                "callableKind": 1,
+                "supportsNamedArguments": true,
+                "passingConvention": 1
+              },
+              "parentTypeName": "Dictionary",
+              "typeReference": {
+                "name": "Boolean",
+                "qualifier": null
+              },
+              "propertyAccess": 0,
+              "isCreatable": false,
+              "globalExposure": 0,
+              "isAuthoringAvailable": true,
+              "isCallableMetadataComplete": true,
+              "propertyAccessorKind": null,
+              "isReturnArray": null,
+              "callableKind": null
+            }
+          ],
+          "typeLibTypes": null,
+          "referencedVbaProjectName": null
+        }
+      ]
+    },
+    {
+      "id": "external-dictionary-object-input",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim values As Scripting.Dictionary\n    Dim key As Object\n    values.Exists key\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [],
+      "referenceCatalogs": [
+        {
+          "referenceName": "Microsoft Scripting Runtime",
+          "qualifierAliases": [
+            "Scripting"
+          ],
+          "definitions": [
+            {
+              "referenceName": "Microsoft Scripting Runtime",
+              "name": "Dictionary",
+              "kind": 1,
+              "documentation": null,
+              "signature": null,
+              "parentTypeName": null,
+              "typeReference": null,
+              "propertyAccess": 0,
+              "isCreatable": false,
+              "globalExposure": 0,
+              "isAuthoringAvailable": true,
+              "isCallableMetadataComplete": true,
+              "propertyAccessorKind": null,
+              "isReturnArray": null,
+              "callableKind": null
+            },
+            {
+              "referenceName": "Microsoft Scripting Runtime",
+              "name": "Exists",
+              "kind": 3,
+              "documentation": null,
+              "signature": {
+                "label": "Function Exists(ByRef Key As Variant)",
+                "parameters": [
+                  {
+                    "name": "Key",
+                    "documentation": null,
+                    "isOptional": false,
+                    "displayLabel": null,
+                    "typeReference": {
+                      "name": "Variant",
+                      "qualifier": null
+                    },
+                    "isByRef": true,
+                    "isParamArray": false,
+                    "isArray": false,
+                    "defaultExpression": null,
+                    "typeLibPassing": {
+                      "direction": 1,
+                      "abiPointerDepth": 1
+                    }
+                  }
+                ],
+                "documentation": null,
+                "callableKind": 1,
+                "supportsNamedArguments": true,
+                "passingConvention": 1
+              },
+              "parentTypeName": "Dictionary",
+              "typeReference": {
+                "name": "Boolean",
+                "qualifier": null
+              },
+              "propertyAccess": 0,
+              "isCreatable": false,
+              "globalExposure": 0,
+              "isAuthoringAvailable": true,
+              "isCallableMetadataComplete": true,
+              "propertyAccessorKind": null,
+              "isReturnArray": null,
+              "callableKind": null
+            }
+          ],
+          "typeLibTypes": null,
+          "referencedVbaProjectName": null
+        }
+      ]
+    },
+    {
+      "id": "external-output-incompatible-storage-indeterminate",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim values As Scripting.Dictionary\n    Dim key As String\n    values.Exists key\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [],
+      "referenceCatalogs": [
+        {
+          "referenceName": "Microsoft Scripting Runtime",
+          "qualifierAliases": [
+            "Scripting"
+          ],
+          "definitions": [
+            {
+              "referenceName": "Microsoft Scripting Runtime",
+              "name": "Dictionary",
+              "kind": 1,
+              "documentation": null,
+              "signature": null,
+              "parentTypeName": null,
+              "typeReference": null,
+              "propertyAccess": 0,
+              "isCreatable": false,
+              "globalExposure": 0,
+              "isAuthoringAvailable": true,
+              "isCallableMetadataComplete": true,
+              "propertyAccessorKind": null,
+              "isReturnArray": null,
+              "callableKind": null
+            },
+            {
+              "referenceName": "Microsoft Scripting Runtime",
+              "name": "Exists",
+              "kind": 3,
+              "documentation": null,
+              "signature": {
+                "label": "Function Exists(ByRef Key As Variant)",
+                "parameters": [
+                  {
+                    "name": "Key",
+                    "documentation": null,
+                    "isOptional": false,
+                    "displayLabel": null,
+                    "typeReference": {
+                      "name": "Variant",
+                      "qualifier": null
+                    },
+                    "isByRef": true,
+                    "isParamArray": false,
+                    "isArray": false,
+                    "defaultExpression": null,
+                    "typeLibPassing": {
+                      "direction": 2,
+                      "abiPointerDepth": 1
+                    }
+                  }
+                ],
+                "documentation": null,
+                "callableKind": 1,
+                "supportsNamedArguments": true,
+                "passingConvention": 1
+              },
+              "parentTypeName": "Dictionary",
+              "typeReference": {
+                "name": "Boolean",
+                "qualifier": null
+              },
+              "propertyAccess": 0,
+              "isCreatable": false,
+              "globalExposure": 0,
+              "isAuthoringAvailable": true,
+              "isCallableMetadataComplete": true,
+              "propertyAccessorKind": null,
+              "isReturnArray": null,
+              "callableKind": null
+            }
+          ],
+          "typeLibTypes": null,
+          "referencedVbaProjectName": null
+        }
+      ]
+    },
+    {
+      "id": "external-input-output-temporary-indeterminate",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim values As Scripting.Dictionary\n    Dim key As Variant\n    values.Exists (key)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [],
+      "referenceCatalogs": [
+        {
+          "referenceName": "Microsoft Scripting Runtime",
+          "qualifierAliases": [
+            "Scripting"
+          ],
+          "definitions": [
+            {
+              "referenceName": "Microsoft Scripting Runtime",
+              "name": "Dictionary",
+              "kind": 1,
+              "documentation": null,
+              "signature": null,
+              "parentTypeName": null,
+              "typeReference": null,
+              "propertyAccess": 0,
+              "isCreatable": false,
+              "globalExposure": 0,
+              "isAuthoringAvailable": true,
+              "isCallableMetadataComplete": true,
+              "propertyAccessorKind": null,
+              "isReturnArray": null,
+              "callableKind": null
+            },
+            {
+              "referenceName": "Microsoft Scripting Runtime",
+              "name": "Exists",
+              "kind": 3,
+              "documentation": null,
+              "signature": {
+                "label": "Function Exists(ByRef Key As Variant)",
+                "parameters": [
+                  {
+                    "name": "Key",
+                    "documentation": null,
+                    "isOptional": false,
+                    "displayLabel": null,
+                    "typeReference": {
+                      "name": "Variant",
+                      "qualifier": null
+                    },
+                    "isByRef": true,
+                    "isParamArray": false,
+                    "isArray": false,
+                    "defaultExpression": null,
+                    "typeLibPassing": {
+                      "direction": 3,
+                      "abiPointerDepth": 1
+                    }
+                  }
+                ],
+                "documentation": null,
+                "callableKind": 1,
+                "supportsNamedArguments": true,
+                "passingConvention": 1
+              },
+              "parentTypeName": "Dictionary",
+              "typeReference": {
+                "name": "Boolean",
+                "qualifier": null
+              },
+              "propertyAccess": 0,
+              "isCreatable": false,
+              "globalExposure": 0,
+              "isAuthoringAvailable": true,
+              "isCallableMetadataComplete": true,
+              "propertyAccessorKind": null,
+              "isReturnArray": null,
+              "callableKind": null
+            }
+          ],
+          "typeLibTypes": null,
+          "referencedVbaProjectName": null
+        }
+      ]
+    },
+    {
+      "id": "external-unknown-direction-indeterminate",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim values As Scripting.Dictionary\n    Dim key As String\n    values.Exists key\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [],
+      "referenceCatalogs": [
+        {
+          "referenceName": "Microsoft Scripting Runtime",
+          "qualifierAliases": [
+            "Scripting"
+          ],
+          "definitions": [
+            {
+              "referenceName": "Microsoft Scripting Runtime",
+              "name": "Dictionary",
+              "kind": 1,
+              "documentation": null,
+              "signature": null,
+              "parentTypeName": null,
+              "typeReference": null,
+              "propertyAccess": 0,
+              "isCreatable": false,
+              "globalExposure": 0,
+              "isAuthoringAvailable": true,
+              "isCallableMetadataComplete": true,
+              "propertyAccessorKind": null,
+              "isReturnArray": null,
+              "callableKind": null
+            },
+            {
+              "referenceName": "Microsoft Scripting Runtime",
+              "name": "Exists",
+              "kind": 3,
+              "documentation": null,
+              "signature": {
+                "label": "Function Exists(ByRef Key As Variant)",
+                "parameters": [
+                  {
+                    "name": "Key",
+                    "documentation": null,
+                    "isOptional": false,
+                    "displayLabel": null,
+                    "typeReference": {
+                      "name": "Variant",
+                      "qualifier": null
+                    },
+                    "isByRef": true,
+                    "isParamArray": false,
+                    "isArray": false,
+                    "defaultExpression": null,
+                    "typeLibPassing": {
+                      "direction": 0,
+                      "abiPointerDepth": 1
+                    }
+                  }
+                ],
+                "documentation": null,
+                "callableKind": 1,
+                "supportsNamedArguments": true,
+                "passingConvention": 1
+              },
+              "parentTypeName": "Dictionary",
+              "typeReference": {
+                "name": "Boolean",
+                "qualifier": null
+              },
+              "propertyAccess": 0,
+              "isCreatable": false,
+              "globalExposure": 0,
+              "isAuthoringAvailable": true,
+              "isCallableMetadataComplete": true,
+              "propertyAccessorKind": null,
+              "isReturnArray": null,
+              "callableKind": null
+            }
+          ],
+          "typeLibTypes": null,
+          "referencedVbaProjectName": null
+        }
+      ]
+    },
+    {
+      "id": "external-unknown-pointer-indeterminate",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim values As Scripting.Dictionary\n    Dim key As String\n    values.Exists key\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [],
+      "referenceCatalogs": [
+        {
+          "referenceName": "Microsoft Scripting Runtime",
+          "qualifierAliases": [
+            "Scripting"
+          ],
+          "definitions": [
+            {
+              "referenceName": "Microsoft Scripting Runtime",
+              "name": "Dictionary",
+              "kind": 1,
+              "documentation": null,
+              "signature": null,
+              "parentTypeName": null,
+              "typeReference": null,
+              "propertyAccess": 0,
+              "isCreatable": false,
+              "globalExposure": 0,
+              "isAuthoringAvailable": true,
+              "isCallableMetadataComplete": true,
+              "propertyAccessorKind": null,
+              "isReturnArray": null,
+              "callableKind": null
+            },
+            {
+              "referenceName": "Microsoft Scripting Runtime",
+              "name": "Exists",
+              "kind": 3,
+              "documentation": null,
+              "signature": {
+                "label": "Function Exists(ByRef Key As Variant)",
+                "parameters": [
+                  {
+                    "name": "Key",
+                    "documentation": null,
+                    "isOptional": false,
+                    "displayLabel": null,
+                    "typeReference": {
+                      "name": "Variant",
+                      "qualifier": null
+                    },
+                    "isByRef": true,
+                    "isParamArray": false,
+                    "isArray": false,
+                    "defaultExpression": null,
+                    "typeLibPassing": {
+                      "direction": 1,
+                      "abiPointerDepth": null
+                    }
+                  }
+                ],
+                "documentation": null,
+                "callableKind": 1,
+                "supportsNamedArguments": true,
+                "passingConvention": 1
+              },
+              "parentTypeName": "Dictionary",
+              "typeReference": {
+                "name": "Boolean",
+                "qualifier": null
+              },
+              "propertyAccess": 0,
+              "isCreatable": false,
+              "globalExposure": 0,
+              "isAuthoringAvailable": true,
+              "isCallableMetadataComplete": true,
+              "propertyAccessorKind": null,
+              "isReturnArray": null,
+              "callableKind": null
+            }
+          ],
+          "typeLibTypes": null,
+          "referencedVbaProjectName": null
+        }
+      ]
+    },
+    {
+      "id": "external-nonautomation-indeterminate",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim values As Scripting.Dictionary\n    Dim key As String\n    values.Exists key\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [],
+      "referenceCatalogs": [
+        {
+          "referenceName": "Microsoft Scripting Runtime",
+          "qualifierAliases": [
+            "Scripting"
+          ],
+          "definitions": [
+            {
+              "referenceName": "Microsoft Scripting Runtime",
+              "name": "Dictionary",
+              "kind": 1,
+              "documentation": null,
+              "signature": null,
+              "parentTypeName": null,
+              "typeReference": null,
+              "propertyAccess": 0,
+              "isCreatable": false,
+              "globalExposure": 0,
+              "isAuthoringAvailable": true,
+              "isCallableMetadataComplete": true,
+              "propertyAccessorKind": null,
+              "isReturnArray": null,
+              "callableKind": null
+            },
+            {
+              "referenceName": "Microsoft Scripting Runtime",
+              "name": "Exists",
+              "kind": 3,
+              "documentation": null,
+              "signature": {
+                "label": "Function Exists(ByRef Key As Variant)",
+                "parameters": [
+                  {
+                    "name": "Key",
+                    "documentation": null,
+                    "isOptional": false,
+                    "displayLabel": null,
+                    "typeReference": {
+                      "name": "Variant",
+                      "qualifier": null
+                    },
+                    "isByRef": true,
+                    "isParamArray": false,
+                    "isArray": false,
+                    "defaultExpression": null,
+                    "typeLibPassing": {
+                      "direction": 1,
+                      "abiPointerDepth": 1
+                    }
+                  }
+                ],
+                "documentation": null,
+                "callableKind": 1,
+                "supportsNamedArguments": true,
+                "passingConvention": 2
+              },
+              "parentTypeName": "Dictionary",
+              "typeReference": {
+                "name": "Boolean",
+                "qualifier": null
+              },
+              "propertyAccess": 0,
+              "isCreatable": false,
+              "globalExposure": 0,
+              "isAuthoringAvailable": true,
+              "isCallableMetadataComplete": true,
+              "propertyAccessorKind": null,
+              "isReturnArray": null,
+              "callableKind": null
+            }
+          ],
+          "typeLibTypes": null,
+          "referencedVbaProjectName": null
+        }
+      ]
+    }
+  ]
+}

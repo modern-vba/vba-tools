@@ -202,7 +202,7 @@ test('malformed sourceAnalysis payloads reject the whole report without replacin
   };
   const completeReport = {
     type: 'sourceAnalysis',
-    schemaVersion: '2.0',
+    schemaVersion: '3.0',
     complete: true,
     diagnostics: [diagnostic],
     failures: []
@@ -343,7 +343,7 @@ test('valid sourceAnalysis reports preserve findings and accept failures without
     reporter.refresh('source-analysis-positive-scope', diagnosticJson(localPath, 'error', 'STALE'));
 
     const actual = reporter.refresh('source-analysis-positive-scope', JSON.stringify({
-      type: 'sourceAnalysis', schemaVersion: '2.0', complete: report.complete,
+      type: 'sourceAnalysis', schemaVersion: '3.0', complete: report.complete,
       diagnostics: report.diagnostics, failures: report.failures,
       futureReportMetadata: { producer: 'compatible-provider' }
     }));
@@ -356,6 +356,81 @@ test('valid sourceAnalysis reports preserve findings and accept failures without
     assert.equal(collection.entries.size, report.expected.length === 0 ? 0 : 2, report.name);
   }
 });
+
+test('sourceAnalysis 3.0 preserves related declaration navigation and replaces it on a clean rerun', () => {
+  const sourcePath = String.raw`C:\work\Caller.bas`;
+  const targetPath = String.raw`C:\work\Target.bas`;
+  const collection = new FakeDiagnosticCollection();
+  const reporter = new VbaDevDiagnosticReporter(collection);
+  const report = semanticReport();
+
+  const diagnostics = reporter.refresh('semantic-build', JSON.stringify(report));
+
+  assert.deepEqual(diagnostics, [{
+    owner: 'vba-dev', uriPath: sourcePath, severity: 'error',
+    code: 'validation.incompatibleCallArgumentList',
+    message: 'No available callable signature accepts this argument list.',
+    range: report.diagnostics[0]!.range,
+    relatedInformation: [{
+      location: { uriPath: targetPath, range: report.diagnostics[0]!.relatedInformation[0]!.location.range },
+      message: "Candidate signature: Sub AcceptValue(ByRef value As Long). Mismatches: argument 1 for parameter 'value' ByRef type: expected Long, found Integer."
+    }]
+  }]);
+  assert.deepEqual(collection.entries.get(sourcePath), diagnostics);
+  reporter.refresh('semantic-build', JSON.stringify({ ...report, diagnostics: [] }));
+  assert.equal(collection.entries.size, 0);
+  assert.deepEqual(collection.deleted, [sourcePath]);
+});
+
+test('sourceAnalysis 3.0 validates every related location before changing existing Problems', () => {
+  const report = semanticReport();
+  const original = report.diagnostics[0]!;
+  const related = original.relatedInformation[0]!;
+  const location = related.location;
+  const malformed: unknown[] = [
+    null, {}, '',
+    [null], [{ ...related, message: '' }], [{ ...related, message: undefined }],
+    [{ ...related, location: null }],
+    [{ ...related, location: { ...location, uri: 'Target.bas' } }],
+    [{ ...related, location: { ...location, uri: 'vba-reference://library/Target' } }],
+    [{ ...related, location: { ...location, range: null } }],
+    [{ ...related, location: { ...location, range: { ...location.range, start: { line: -1, character: 0 } } } }],
+    [{ ...related, location: { ...location, range: { ...location.range, end: { line: 1, character: 10 } } } }],
+    [{ ...related, location: { ...location, range: { ...location.range, end: { line: 1, character: 12.5 } } } }],
+    [{ ...related, location: { ...location, range: { ...location.range, end: { line: Number.MAX_SAFE_INTEGER + 1, character: 22 } } } }]
+  ];
+  for (const invalid of malformed) {
+    const collection = new FakeDiagnosticCollection();
+    const reporter = new VbaDevDiagnosticReporter(collection);
+    const sourcePath = String.raw`C:\work\Caller.bas`;
+    reporter.refresh('semantic-build', diagnosticJson(sourcePath, 'error', 'PREVIOUS'));
+    const previous = collection.entries.get(sourcePath);
+    assert.throws(() => reporter.refresh('semantic-build', JSON.stringify({
+      ...report, diagnostics: [original, { ...original, relatedInformation: invalid }]
+    })), VbaDevOutputContractError);
+    assert.deepEqual(collection.entries.get(sourcePath), previous);
+    assert.deepEqual(collection.deleted, []);
+  }
+});
+
+function semanticReport() {
+  return {
+    type: 'sourceAnalysis', schemaVersion: '3.0', complete: true, failures: [],
+    diagnostics: [{
+      type: 'diagnostic', owner: 'vba-dev', uri: 'file:///C:/work/Caller.bas',
+      code: 'validation.incompatibleCallArgumentList', severity: 'error',
+      message: 'No available callable signature accepts this argument list.',
+      range: { start: { line: 3, character: 16 }, end: { line: 3, character: 20 } },
+      relatedInformation: [{
+        location: {
+          uri: 'file:///C:/work/Target.bas',
+          range: { start: { line: 1, character: 11 }, end: { line: 1, character: 22 } }
+        },
+        message: "Candidate signature: Sub AcceptValue(ByRef value As Long). Mismatches: argument 1 for parameter 'value' ByRef type: expected Long, found Integer."
+      }]
+    }]
+  };
+}
 
 function diagnosticJson(uriPath: string, severity: string, code: string): string {
   return JSON.stringify({

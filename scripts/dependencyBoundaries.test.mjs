@@ -46,6 +46,26 @@ test('project metadata remains a foundation even for build-order-only consumer r
     /VbaTools\.ProjectMetadata must not depend on VbaLanguageServer/);
 });
 
+test('shared semantic production and tests cannot acquire product dependencies', async (t) => {
+  for (const [source, contents, target] of [
+    ['tools/vba-semantics/src/VbaTools.Semantics/Semantics.csproj',
+      projectReference('tools/vba-semantics/src/VbaTools.Semantics/Semantics.csproj', devProject), devProject],
+    ['tools/vba-semantics/tests/VbaTools.Semantics.Tests/Tests.csproj',
+      projectReference('tools/vba-semantics/tests/VbaTools.Semantics.Tests/Tests.csproj', serverProject,
+        'ReferenceOutputAssembly="false"'), serverProject],
+    ['tools/vba-semantics/src/Illegal.cs', 'using VbaLanguageServer.SourceModel;', undefined],
+    ['tools/vba-semantics/tests/Illegal.cs', 'using VbaTools.TypeLibRegistry;', undefined]
+  ]) {
+    await t.test(source, async (t) => {
+      const files = { [source]: contents };
+      if (target) files[target] = '<Project />';
+      const root = await repository(t, files);
+      await assert.rejects(verifyDependencyBoundaries({ root }),
+        /VbaTools\.Semantics must not depend on (?:VbaDev|VbaLanguageServer)/);
+    });
+  }
+});
+
 test('production and test owners cannot restore reverse or foundation-to-consumer references', async (t) => {
   for (const [from, to] of [
     ['tools/vba-dev/tests/VbaDev.Tests/Test.csproj', 'tools/vba-debug-adapter/tests/VbaDebugAdapter.Tests/Test.csproj'],

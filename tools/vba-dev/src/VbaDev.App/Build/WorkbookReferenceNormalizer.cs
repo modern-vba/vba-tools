@@ -1,6 +1,7 @@
 using VbaDev.App.References;
 using VbaDev.App.Workbooks;
 using VbaDev.Domain;
+using VbaTools.Semantics;
 
 namespace VbaDev.App.Build;
 
@@ -67,11 +68,19 @@ public sealed class WorkbookReferenceNormalizer
     /// <summary>
     /// Removes and adds references through the bounded owned-generation session.
     /// </summary>
-    public async Task<IReadOnlyList<string>> NormalizeAsync(
+    public Task<IReadOnlyList<string>> NormalizeAsync(
         IWorkbookGenerationSession session,
         string documentName,
         IReadOnlyList<VbaProjectReference> desiredReferences,
         CancellationToken cancellationToken)
+        => NormalizeAsync(session, documentName, desiredReferences, cancellationToken, null);
+
+    internal async Task<IReadOnlyList<string>> NormalizeAsync(
+        IWorkbookGenerationSession session,
+        string documentName,
+        IReadOnlyList<VbaProjectReference> desiredReferences,
+        CancellationToken cancellationToken,
+        VbaProjectSemanticInputs? acceptedInputs)
     {
         var warnings = new List<string>();
         var desiredNames = desiredReferences
@@ -105,17 +114,24 @@ public sealed class WorkbookReferenceNormalizer
             .ToArray();
         if (missingNames.Length > 0)
         {
-            var resolutionBatch = await referencePlanner.ResolveReferencesAgainstSessionAsync(
-                    session,
-                    missingNames,
-                    cancellationToken)
-                .ConfigureAwait(false);
             IReadOnlyList<ResolvedVbaProjectReference> resolvedReferences;
             try
             {
-                resolvedReferences = referencePlanner.SelectManifestInputReferences(
-                    resolutionBatch,
-                    missingNames);
+                if (acceptedInputs is not null)
+                {
+                    resolvedReferences = missingNames.Select(name =>
+                    {
+                        if (!acceptedInputs.ReferenceCatalogIdentities.TryGetValue(name, out var identity))
+                            throw new InvalidOperationException($"No analyzed TypeLib identity was accepted for '{name}'.");
+                        return new ResolvedVbaProjectReference(name, identity.Guid, identity.MajorVersion, identity.MinorVersion);
+                    }).ToArray();
+                }
+                else
+                {
+                    var resolutionBatch = await referencePlanner.ResolveReferencesAgainstSessionAsync(
+                        session, missingNames, cancellationToken).ConfigureAwait(false);
+                    resolvedReferences = referencePlanner.SelectManifestInputReferences(resolutionBatch, missingNames);
+                }
             }
             catch (InvalidOperationException exception)
             {

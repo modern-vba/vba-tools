@@ -413,7 +413,7 @@ public sealed class VbaCallArgumentAvailabilityTests
         referenceCatalogs ??= VbaProjectReferenceCatalogSet.Empty;
         var nameResolution = new VbaNameResolutionService(
             [document],
-            referenceSelection,
+            referenceSelection.ToSemanticSelection(),
             referenceCatalogs);
         var typeResolution = new VbaTypeResolution(nameResolution);
         var callSiteResolution = new VbaCallSiteResolution(

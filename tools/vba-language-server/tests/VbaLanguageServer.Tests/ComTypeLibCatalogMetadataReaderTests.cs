@@ -64,7 +64,7 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
             inventory.ResolveSourceTarget(uri, 4, "    values.".Length));
         Assert.Equal("Put", target.CanonicalName);
         Assert.Equal(VbaDefinitionOrigin.ProjectReference, target.SelectedDefinition.Identity.Origin);
-        var nameResolution = new VbaNameResolutionService([document], selection, catalogs);
+        var nameResolution = new VbaNameResolutionService([document], selection.ToSemanticSelection(), catalogs);
         var callResolution = new VbaCallSiteResolution(
             nameResolution,
             new VbaMemberChainResolution(new VbaTypeResolution(nameResolution)),
@@ -156,7 +156,7 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
             inventory.ResolveSourceTarget(uri, 4, "    values.".Length));
         Assert.Equal("ReadValue", target.CanonicalName);
         Assert.Equal(VbaDefinitionOrigin.ProjectReference, target.SelectedDefinition.Identity.Origin);
-        var nameResolution = new VbaNameResolutionService([document], selection, catalogs);
+        var nameResolution = new VbaNameResolutionService([document], selection.ToSemanticSelection(), catalogs);
         var callResolution = new VbaCallSiteResolution(
             nameResolution,
             new VbaMemberChainResolution(new VbaTypeResolution(nameResolution)),

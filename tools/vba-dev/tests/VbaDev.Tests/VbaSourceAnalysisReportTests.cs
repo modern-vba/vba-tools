@@ -39,7 +39,7 @@ public sealed class VbaSourceAnalysisReportTests
         using var document = JsonDocument.Parse(output);
         var payload = document.RootElement;
         Assert.Equal("sourceAnalysis", payload.GetProperty("type").GetString());
-        Assert.Equal("2.0", payload.GetProperty("schemaVersion").GetString());
+        Assert.Equal("3.0", payload.GetProperty("schemaVersion").GetString());
         Assert.True(payload.GetProperty("complete").GetBoolean());
         Assert.Empty(payload.GetProperty("failures").EnumerateArray());
         Assert.Equal(

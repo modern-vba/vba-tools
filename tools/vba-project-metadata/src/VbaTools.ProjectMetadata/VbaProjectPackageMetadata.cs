@@ -61,7 +61,8 @@ public enum VbaProjectPackageMetadataReadFailureKind
     InvalidCompressedDirectory,
     InvalidProjectInformation,
     UnsupportedCodePage,
-    InvalidProjectName
+    InvalidProjectName,
+    VbaProjectAbsent
 }
 
 public sealed record VbaProjectPackageMetadataReadFailure(

@@ -14,6 +14,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="../../../vba-semantics/src/VbaTools.Semantics/VbaTools.Semantics.csproj" />
     <ProjectReference Include="..\..\..\vba-process-invocation\src\VbaTools.ProcessInvocation\VbaTools.ProcessInvocation.csproj" />
     <ProjectReference Include="..\..\..\vba-syntax\src\VbaTools.Syntax\VbaTools.Syntax.csproj" />
     <ProjectReference Include="..\..\..\vba-project-metadata\src\VbaTools.ProjectMetadata\VbaTools.ProjectMetadata.csproj" />

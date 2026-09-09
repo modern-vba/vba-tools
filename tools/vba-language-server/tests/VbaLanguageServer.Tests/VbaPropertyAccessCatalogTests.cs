@@ -112,7 +112,7 @@ public sealed class VbaPropertyAccessCatalogTests
             .WithCatalog(catalog)
             .GetActiveDefinitions(VbaProjectReferenceSelection.Create(
                 ProjectDocument.ExcelKind,
-                [new VbaProjectReference("Generated Library")]))
+                [new VbaProjectReference("Generated Library")]).ToSemanticSelection())
             .Where(definition => definition.Name == "Value"
                 && definition.ParentTypeName == "GeneratedType")
             .ToArray();
@@ -133,7 +133,7 @@ public sealed class VbaPropertyAccessCatalogTests
             ProjectDocument.ExcelKind,
             [new VbaProjectReference("Microsoft Excel 16.0 Object Library")]);
         var properties = VbaProjectReferenceCatalogSet.CreateBundled()
-            .GetActiveDefinitions(selection)
+            .GetActiveDefinitions(selection.ToSemanticSelection())
             .Where(definition => definition.Kind == VbaSourceDefinitionKind.Property)
             .ToArray();
 

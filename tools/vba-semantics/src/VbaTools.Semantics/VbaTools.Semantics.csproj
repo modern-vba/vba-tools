@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../../vba-syntax/src/VbaTools.Syntax/VbaTools.Syntax.csproj" />
+    <InternalsVisibleTo Include="VbaDev.Infrastructure" />
+    <InternalsVisibleTo Include="vba-language-server" />
+    <InternalsVisibleTo Include="VbaLanguageServer.Tests" />
+  </ItemGroup>
+</Project>

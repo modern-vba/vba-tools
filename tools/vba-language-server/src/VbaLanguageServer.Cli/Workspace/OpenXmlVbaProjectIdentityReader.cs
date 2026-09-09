@@ -150,7 +150,8 @@ internal sealed class OpenXmlVbaProjectIdentityReader : IVbaProjectIdentityReade
                 VbaProjectIdentityReadFailureKind.InvalidPackage,
             VbaProjectPackageMetadataReadFailureKind.InvalidPackageTopology =>
                 VbaProjectIdentityReadFailureKind.InvalidPackageTopology,
-            VbaProjectPackageMetadataReadFailureKind.InvalidVbaProjectPart =>
+            VbaProjectPackageMetadataReadFailureKind.InvalidVbaProjectPart or
+                VbaProjectPackageMetadataReadFailureKind.VbaProjectAbsent =>
                 VbaProjectIdentityReadFailureKind.InvalidVbaProjectPart,
             VbaProjectPackageMetadataReadFailureKind.InvalidCompoundFile =>
                 VbaProjectIdentityReadFailureKind.InvalidCompoundFile,

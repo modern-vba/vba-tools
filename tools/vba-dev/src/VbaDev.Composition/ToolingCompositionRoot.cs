@@ -12,6 +12,8 @@ using VbaDev.App.Workbooks;
 using VbaDev.Infrastructure.Diagnostics;
 using VbaDev.Infrastructure.Projects;
 using VbaDev.Infrastructure.Workbooks;
+using VbaDev.Infrastructure.References;
+using VbaTools.TypeLibRegistry;
 
 namespace VbaDev.Composition;
 
@@ -58,7 +60,11 @@ public static class ToolingCompositionRoot
         IProjectMaterializationDiagnosticPort? projectMaterializationDiagnosticPort = null,
         IProjectManifestMutationCoordinator? projectManifestMutationCoordinator = null,
         IProjectManifestMutationLeaseProvider? projectManifestMutationLeaseProvider = null,
-        IHostEventCatalogAutomation? hostEventCatalogAutomation = null)
+        IHostEventCatalogAutomation? hostEventCatalogAutomation = null,
+        IProjectSemanticInputProvider? projectSemanticInputProvider = null,
+        ITypeLibRegistryCatalogReader? typeLibRegistryCatalogReader = null,
+        ITypeLibCatalogMetadataReader? typeLibCatalogMetadataReader = null,
+        IWorkbookProjectIdentityProbe? workbookProjectIdentityProbe = null)
     {
         var ownershipFactory = new WindowsExactFileSystemObjectOwnershipFactory();
         var pathIdentityResolver = new FileSystemPathIdentityResolver();
@@ -72,7 +78,9 @@ public static class ToolingCompositionRoot
                                   ?? new ProjectManifestMutationCoordinator(
                                       atomicManifestWriter,
                                       mutationLeaseProvider);
-        var referenceResolver = vbaProjectReferenceResolver ?? new RegistryVbaProjectReferenceResolver();
+        var registrySnapshot = new TypeLibRegistryCatalogSnapshot(
+            typeLibRegistryCatalogReader ?? new RegistryTypeLibRegistryCatalogReader());
+        var referenceResolver = vbaProjectReferenceResolver ?? new RegistryVbaProjectReferenceResolver(registrySnapshot);
         var ambiguityProbe = vbaProjectReferenceAmbiguityProbe
                              ?? (vbaProjectReferenceResolver is null
                                  ? new VbaProjectReferenceAmbiguityProbe(
@@ -99,12 +107,18 @@ public static class ToolingCompositionRoot
             projectContextResolver,
             referencePlanner);
         var generationAutomation = workbookGenerationAutomation ?? new ExcelComWorkbookGenerationAutomation();
+        var hostEventAutomation = hostEventCatalogAutomation ?? new ExcelComHostEventCatalogAutomation();
         var sourceAdmission = new VbaSourceAdmission(ActiveWindowsAnsiCodePage.Get);
         var materializer = new WorkbookMaterializer(ownershipFactory,
             sourceAdmission,
             generationAutomation,
             new WorkbookReferenceNormalizer(referencePlanner),
-            new WorkbookOutputTransactionFactory(ownershipFactory));
+            new WorkbookOutputTransactionFactory(ownershipFactory),
+            new VbeImportSourceSetFactory(ownershipFactory),
+            semanticInputProvider: projectSemanticInputProvider ?? new ProjectSemanticInputProvider(
+                referencePlanner, registrySnapshot, typeLibCatalogMetadataReader ?? new ComTypeLibCatalogMetadataReader(),
+                hostEventAutomation, workbookProjectIdentityProbe ?? new WorkbookProjectIdentityProbe(
+                    ownershipFactory, new ExcelComWorkbookGenerationAutomation())));
         IReadOnlyList<IDoctorProjectDiagnosticProvider> staticProjectDiagnosticProviders =
         [
             new ProjectConfigurationDiagnosticProvider(),
@@ -148,8 +162,7 @@ public static class ToolingCompositionRoot
         var importCommand = new ImportCommand(
             materializer,
             sourceAdmission);
-        var hostEventListCommand = new HostEventListCommand(
-            hostEventCatalogAutomation ?? new ExcelComHostEventCatalogAutomation());
+        var hostEventListCommand = new HostEventListCommand(hostEventAutomation);
         return new ToolingApplicationComposition(
             doctorCommand,
             staticProjectCheckCommand,

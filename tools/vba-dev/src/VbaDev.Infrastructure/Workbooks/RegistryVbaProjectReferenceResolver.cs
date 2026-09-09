@@ -18,7 +18,7 @@ public sealed class RegistryVbaProjectReferenceResolver : IVbaProjectReferenceRe
     {
     }
 
-    internal RegistryVbaProjectReferenceResolver(ITypeLibRegistryCatalogReader catalogReader)
+    public RegistryVbaProjectReferenceResolver(ITypeLibRegistryCatalogReader catalogReader)
     {
         ArgumentNullException.ThrowIfNull(catalogReader);
         catalog = new Lazy<TypeLibRegistryCatalog>(

@@ -2,6 +2,7 @@ using System.Dynamic;
 using System.Runtime.InteropServices;
 using System.Text;
 using VbaDev.App.References;
+using VbaDev.App.Build;
 using VbaDev.App.Workbooks;
 using VbaDev.Infrastructure.Debugging;
 using VbaDev.Infrastructure.Workbooks;
@@ -44,12 +45,18 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomationTests
             "Widget Library", candidate, CancellationToken.None));
     }
 
-    [Fact]
-    public async Task UsesOneOwnedProcessAndAFreshBaselineCopyForEveryCandidateAttempt()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UsesOneOwnedProcessAndAFreshBaselineCopyForEveryCandidateAttempt(bool captured)
     {
         using var temp = TempDirectory.Create();
         var templatePath = Path.Combine(temp.Path, "Book1.xlsm");
         File.WriteAllText(templatePath, "source template", new UTF8Encoding(false));
+        var baseline = captured
+            ? VbaProjectReferenceProbeBaseline.SourceTemplate(CapturedWorkbookTemplate.Capture(templatePath))
+            : VbaProjectReferenceProbeBaseline.SourceTemplate(templatePath);
+        if (captured) File.Delete(templatePath);
         var lifecycle = new FakeReferenceProbeLifecycle();
         var automation = new ExcelComVbaProjectReferenceProbeAutomation(
             new ImmediateDispatcherFactory(),
@@ -79,7 +86,7 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomationTests
             ]);
 
         await probe.ResolveAsync(
-            templatePath,
+            baseline,
             registryResolution,
             CancellationToken.None);
 
@@ -89,7 +96,8 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomationTests
         Assert.Equal(2, lifecycle.OpenedWorkbookPaths.Distinct(StringComparer.OrdinalIgnoreCase).Count());
         Assert.All(lifecycle.ObservedBaselineContents, content => Assert.Equal("source template", content));
         Assert.All(lifecycle.OpenedWorkbookPaths, path => Assert.False(File.Exists(path)));
-        Assert.Equal("source template", File.ReadAllText(templatePath, Encoding.UTF8));
+        if (captured) Assert.False(File.Exists(templatePath));
+        else Assert.Equal("source template", File.ReadAllText(templatePath, Encoding.UTF8));
         Assert.Equal(2, lifecycle.CloseWithoutSaveCalls);
     }
 
@@ -451,12 +459,17 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomationTests
         }
     }
 
-    [Fact]
-    public async Task UnprovedProcessCleanupAndFinalWorkspaceFailureRemainProofFailure()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UnprovedProcessCleanupRetainsTheReferenceProbeWorkspace(bool captured)
     {
         using var temp = TempDirectory.Create();
         var templatePath = Path.Combine(temp.Path, "Book1.xlsm");
         File.WriteAllText(templatePath, "source template", new UTF8Encoding(false));
+        var baseline = captured
+            ? VbaProjectReferenceProbeBaseline.SourceTemplate(CapturedWorkbookTemplate.Capture(templatePath))
+            : VbaProjectReferenceProbeBaseline.SourceTemplate(templatePath);
         var ownershipError = new WorkbookAutomationCleanupException(
             "Exact owned-process release could not be proved.");
         var lifecycle = new FakeReferenceProbeLifecycle
@@ -471,7 +484,7 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomationTests
         {
             var error = await Assert.ThrowsAsync<VbaProjectReferenceProbeAttemptException>(() =>
                 automation.RunAsync(
-                    VbaProjectReferenceProbeBaseline.SourceTemplate(templatePath),
+                    baseline,
                     WorkbookAutomationTimeouts.Default,
                     (session, cancellationToken) => session.TryResolveAsync(
                         "Widget Library",
@@ -484,14 +497,14 @@ public sealed class ExcelComVbaProjectReferenceProbeAutomationTests
                     CancellationToken.None));
 
             Assert.True(WorkbookAutomationTerminalFacts.Analyze(error).HasUnprovedLifecycle);
+            var workspacePath = Path.GetDirectoryName(lifecycle.WorkspaceBlockerPath)!;
+            Assert.True(File.Exists(Path.Combine(workspacePath, "baseline.xlsm")));
+            Assert.True(File.Exists(lifecycle.WorkspaceBlockerPath));
+            Assert.Contains(workspacePath, error.Message, StringComparison.Ordinal);
             var cleanup = Assert.IsType<WorkbookAutomationCleanupException>(
                 error.InnerException);
-            var failures = Assert.IsType<AggregateException>(cleanup.InnerException)
-                .InnerExceptions;
-            Assert.Contains(
-                failures,
-                failure => WorkbookAutomationTerminalFacts.Analyze(failure).HasUnprovedLifecycle);
-            Assert.Contains(failures, failure => failure is IOException);
+            Assert.True(WorkbookAutomationTerminalFacts.Analyze(cleanup.InnerException!).HasUnprovedLifecycle);
+            Assert.Equal("source template", File.ReadAllText(templatePath, Encoding.UTF8));
         }
         finally
         {

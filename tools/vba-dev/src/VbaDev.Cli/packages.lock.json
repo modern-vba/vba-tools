@@ -14,10 +14,17 @@
         "resolved": "2.0.5",
         "contentHash": "2XtWAPk1G6arpe3OCFNrYYuf6iIboznxs2elJSGgd8e0euou7LfGYFon6hBEfDWNtOLr0M3+oUVgy1a5EGa41A=="
       },
+      "OpenMcdf": {
+        "type": "Transitive",
+        "resolved": "3.1.4",
+        "contentHash": "ncchtCh9YKqutHTlUCrr1llXA65ijGOCjXBM0mL1+WaGouApWDEACWbBHGzuYcAvB+rgW6IgO4AKgmZ2v1moNA=="
+      },
       "vbadev.app": {
         "type": "Project",
         "dependencies": {
           "VbaDev.Domain": "[0.1.0, )",
+          "VbaTools.ProjectMetadata": "[1.0.0, )",
+          "VbaTools.Semantics": "[1.0.0, )",
           "VbaTools.Syntax": "[1.0.0, )",
           "VbaTools.TypeLibRegistry": "[0.1.0, )"
         }
@@ -33,6 +40,7 @@
       "vbadev.domain": {
         "type": "Project",
         "dependencies": {
+          "VbaTools.Semantics": "[1.0.0, )",
           "VbaTools.Syntax": "[1.0.0, )"
         }
       },
@@ -43,6 +51,19 @@
           "VbaDev.Domain": "[0.1.0, )",
           "VbaTools.Syntax": "[1.0.0, )",
           "VbaTools.TypeLibRegistry": "[0.1.0, )"
+        }
+      },
+      "vbatools.projectmetadata": {
+        "type": "Project",
+        "dependencies": {
+          "OpenMcdf": "[3.1.4, )",
+          "VbaTools.Syntax": "[1.0.0, )"
+        }
+      },
+      "vbatools.semantics": {
+        "type": "Project",
+        "dependencies": {
+          "VbaTools.Syntax": "[1.0.0, )"
         }
       },
       "vbatools.syntax": {

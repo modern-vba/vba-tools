@@ -1,4 +1,5 @@
 using VbaDev.App.Cli;
+using VbaDev.App.Build;
 using VbaDev.App.Diagnostics;
 using VbaDev.App.Export;
 using VbaDev.App.HostEvents;
@@ -58,7 +59,8 @@ internal static class CommandLineTestFactory
         IProjectMaterializationDiagnosticPort? projectMaterializationDiagnosticPort = null,
         IProjectManifestMutationCoordinator? projectManifestMutationCoordinator = null,
         IProjectManifestMutationLeaseProvider? projectManifestMutationLeaseProvider = null,
-        IHostEventCatalogAutomation? hostEventCatalogAutomation = null)
+        IHostEventCatalogAutomation? hostEventCatalogAutomation = null,
+        IProjectSemanticInputProvider? projectSemanticInputProvider = null)
     {
         var composition = ToolingCompositionRoot.CreateApplicationComposition(
             workingDirectory,
@@ -75,7 +77,8 @@ internal static class CommandLineTestFactory
                 new DisabledProjectMaterializationDiagnosticPort(),
             projectManifestMutationCoordinator,
             projectManifestMutationLeaseProvider,
-            hostEventCatalogAutomation);
+            hostEventCatalogAutomation,
+            projectSemanticInputProvider: projectSemanticInputProvider ?? new FakeProjectSemanticInputProvider(vbaProjectReferenceResolver));
         return generatingExecutablePath is null
             ? VbaDevCommandLine.Create(composition)
             : VbaDevCommandLine.Create(composition, generatingExecutablePath);

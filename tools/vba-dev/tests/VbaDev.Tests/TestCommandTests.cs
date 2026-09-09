@@ -929,7 +929,11 @@ public sealed class TestCommandTests
         var result = application.Run(["test", "--format", "text"]);
 
         Assert.Equal(1, result.ExitCode);
-        Assert.Contains("Source identity", result.StandardError, StringComparison.Ordinal);
+        using var report = JsonDocument.Parse(result.StandardError.Split('\n')[0]);
+        Assert.True(report.RootElement.GetProperty("complete").GetBoolean());
+        var diagnostics = report.RootElement.GetProperty("diagnostics").EnumerateArray().ToArray();
+        Assert.Equal(2, diagnostics.Length);
+        Assert.All(diagnostics, diagnostic => Assert.Equal("validation.duplicateDeclaration", diagnostic.GetProperty("code").GetString()));
         Assert.Contains("Alpha.bas", result.StandardError, StringComparison.Ordinal);
         Assert.Contains("Zeta.bas", result.StandardError, StringComparison.Ordinal);
         Assert.Empty(buildAutomation.OpenedWorkbooks);

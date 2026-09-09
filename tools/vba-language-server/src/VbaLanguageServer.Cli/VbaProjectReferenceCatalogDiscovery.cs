@@ -5,23 +5,6 @@ using VbaTools.TypeLibRegistry;
 namespace VbaLanguageServer.SourceModel;
 
 /// <summary>
-/// Identifies a discovered TypeLib catalog identity for a VBA project reference.
-/// </summary>
-/// <param name="ReferenceName">The human-visible reference name.</param>
-/// <param name="Guid">The TypeLib GUID.</param>
-/// <param name="MajorVersion">The TypeLib major version.</param>
-/// <param name="MinorVersion">The TypeLib minor version.</param>
-/// <param name="Lcid">The TypeLib locale identifier.</param>
-/// <param name="Path">The registry-resolved TypeLib path.</param>
-public sealed record VbaProjectReferenceCatalogIdentity(
-    string ReferenceName,
-    string Guid,
-    int MajorVersion,
-    int MinorVersion,
-    int Lcid,
-    string Path);
-
-/// <summary>
 /// Represents the result of discovering catalog metadata for one reference name.
 /// </summary>
 /// <param name="ReferenceName">The reference name being discovered.</param>
@@ -676,17 +659,11 @@ public sealed class TypeLibReferenceCatalogDiscovery
         TypeLibRegistryLineage lineage,
         TypeLibRegistryVersion version)
     {
-        var locations = version.Locales
-            .SelectMany(
-                locale => locale.Paths,
-                (locale, path) => new { locale.Lcid, Path = path })
-            .OrderBy(candidate => candidate.Lcid)
-            .ThenBy(candidate => candidate.Path.Platform, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(candidate => candidate.Path.Path, StringComparer.OrdinalIgnoreCase)
+        var locations = version.GetOrderedLocations()
             .Select(candidate => new NeutralRegistryCatalogLocation(
                 candidate.Lcid,
-                candidate.Path.Platform,
-                candidate.Path.Path))
+                candidate.Platform,
+                candidate.Path))
             .ToArray();
         return locations is null || locations.Length == 0
             ? null
@@ -1463,37 +1440,6 @@ internal readonly record struct VbaProjectReferenceCatalogSelectionState(
     IReadOnlyDictionary<string, VbaProjectReferenceCatalogSource> Sources,
     IReadOnlyDictionary<string, VbaProjectReferenceCatalogIdentity> Identities,
     IReadOnlyDictionary<string, string> AuthoritativeProjectNames);
-
-/// <summary>
-/// Identifies where the active catalog for a reference came from.
-/// </summary>
-public enum VbaProjectReferenceCatalogSource
-{
-    /// <summary>
-    /// No editor metadata catalog is available for the reference.
-    /// </summary>
-    Unavailable,
-
-    /// <summary>
-    /// The catalog came from the bundled minimal metadata shipped with the language server.
-    /// </summary>
-    Bundled,
-
-    /// <summary>
-    /// The catalog came from a current persisted generated cache entry.
-    /// </summary>
-    Persisted,
-
-    /// <summary>
-    /// The catalog came from a stale persisted generated cache entry.
-    /// </summary>
-    StalePersisted,
-
-    /// <summary>
-    /// The catalog was generated from TypeLib metadata in the current session.
-    /// </summary>
-    Generated
-}
 
 /// <summary>
 /// Identifies how a reference catalog refresh request was handled.

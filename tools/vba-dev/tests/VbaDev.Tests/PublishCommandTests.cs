@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using System.Runtime.InteropServices;
 using VbaDev.App.Build;
 using VbaDev.App.Projects;
@@ -193,7 +194,11 @@ public sealed class PublishCommandTests
         var publish = application.Run(["publish"]);
 
         Assert.Equal(1, build.ExitCode);
-        Assert.Contains("Source identity 'collisionname'", build.StandardError, StringComparison.Ordinal);
+        using var report = JsonDocument.Parse(build.StandardError.Split('\n')[0]);
+        Assert.True(report.RootElement.GetProperty("complete").GetBoolean());
+        var diagnostics = report.RootElement.GetProperty("diagnostics").EnumerateArray().ToArray();
+        Assert.Equal(2, diagnostics.Length);
+        Assert.All(diagnostics, diagnostic => Assert.Equal("validation.duplicateDeclaration", diagnostic.GetProperty("code").GetString()));
         Assert.Contains("Runtime.bas", build.StandardError, StringComparison.Ordinal);
         Assert.Contains("TestOnly.bas", build.StandardError, StringComparison.Ordinal);
         Assert.Equal(0, publish.ExitCode);

@@ -379,7 +379,7 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
                 [new VbaProjectReference(referenceName)]);
             var state = cache.CaptureSelectionState(selection.References);
             var activeDefinitions = state.CatalogSet
-                .GetActiveDefinitions(selection);
+                .GetActiveDefinitions(selection.ToSemanticSelection());
             Assert.Contains(
                 activeDefinitions,
                 definition => definition.Name == "GeneratedType");
@@ -1149,7 +1149,7 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
             inventory.ResolveSourceTarget(uri, 4, "    values.".Length));
         Assert.Equal("Put", target.CanonicalName);
         Assert.Equal(VbaDefinitionOrigin.ProjectReference, target.SelectedDefinition.Identity.Origin);
-        var nameResolution = new VbaNameResolutionService([document], selection, catalogs);
+        var nameResolution = new VbaNameResolutionService([document], selection.ToSemanticSelection(), catalogs);
         var callResolution = new VbaCallSiteResolution(nameResolution,
             new VbaMemberChainResolution(new VbaTypeResolution(nameResolution)), new VbaResolutionPolicy());
         var call = Assert.Single(syntaxTree.Module.ArgumentLists, candidate =>

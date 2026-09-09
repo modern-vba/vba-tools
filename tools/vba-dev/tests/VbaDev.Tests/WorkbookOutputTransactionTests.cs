@@ -7,6 +7,29 @@ namespace VbaDev.Tests;
 
 public sealed class WorkbookOutputTransactionTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CapturedTemplateRemainsTheWholeGenerationInputAfterItsAuthoringFileChanges(bool remove)
+    {
+        using var temp = TempDirectory.Create();
+        var (template, target) = CreatePaths(temp);
+        var originalBytes = File.ReadAllBytes(template);
+        var capture = CapturedWorkbookTemplate.Capture(template);
+        if (remove) File.Delete(template);
+        else File.WriteAllText(template, "a different package with different non-VBA content");
+
+        using var transaction = WorkbookOutputTransaction.Create(
+            new WindowsExactFileSystemObjectOwnershipFactory(), capture, target);
+
+        Assert.Equal(originalBytes, File.ReadAllBytes(transaction.StagingWorkbookPath));
+        Assert.Equal("previous", File.ReadAllText(target));
+        transaction.Commit();
+        Assert.Equal(originalBytes, File.ReadAllBytes(target));
+        if (remove) Assert.False(File.Exists(template));
+        else Assert.Equal("a different package with different non-VBA content", File.ReadAllText(template));
+    }
+
     [Fact]
     public void CommitReplacesOnlyTheSelectedOutputAndSurvivesLaterDisposal()
     {

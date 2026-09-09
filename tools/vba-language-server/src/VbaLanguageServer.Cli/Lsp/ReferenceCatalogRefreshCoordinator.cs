@@ -1496,7 +1496,7 @@ internal sealed class ReferenceCatalogRefreshCoordinator
         var catalogState = catalogCache.CaptureSelectionState(
             context.Selection.References,
             scope);
-        foreach (var referenceName in catalogState.CatalogSet.GetMissingCatalogReferenceNames(context.Selection))
+        foreach (var referenceName in catalogState.CatalogSet.GetMissingCatalogReferenceNames(context.Selection.ToSemanticSelection()))
         {
             messages.Add(CreateDirectMessage(
                 3,

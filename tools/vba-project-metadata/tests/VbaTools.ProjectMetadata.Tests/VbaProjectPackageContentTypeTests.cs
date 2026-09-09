@@ -5,6 +5,17 @@ namespace VbaTools.ProjectMetadata.Tests;
 
 public sealed class VbaProjectPackageContentTypeTests
 {
+    [Fact]
+    public void ReportsConclusiveProjectAbsenceForAnInitialMacroEnabledWorkbook()
+    {
+        var bytes = PackageMetadataFixture.CreateWithoutVbaProject();
+
+        var result = new VbaProjectPackageMetadataReader().Read(bytes);
+
+        Assert.Null(result.Metadata);
+        Assert.Equal("VbaProjectAbsent", result.Failure?.Kind.ToString());
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

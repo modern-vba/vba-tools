@@ -26,6 +26,12 @@ public sealed class WorkbookOutputTransaction : IWorkbookOutputTransaction
     /// <summary>Creates an exact-owned sibling copy while leaving the selected output unchanged.</summary>
     public static WorkbookOutputTransaction Create(
         IExactFileSystemObjectOwnershipFactory ownershipFactory,
+        CapturedWorkbookTemplate template,
+        string targetWorkbookPath)
+        => Create(targetWorkbookPath, (directory, name) => template.CreateStage(ownershipFactory, directory, name));
+
+    public static WorkbookOutputTransaction Create(
+        IExactFileSystemObjectOwnershipFactory ownershipFactory,
         string templateWorkbookPath,
         string targetWorkbookPath)
         => Create(ownershipFactory, templateWorkbookPath, targetWorkbookPath, afterCreated: null);
@@ -35,14 +41,17 @@ public sealed class WorkbookOutputTransaction : IWorkbookOutputTransaction
         string templateWorkbookPath,
         string targetWorkbookPath,
         Action<string>? afterCreated)
+        => Create(targetWorkbookPath, (directory, name) => WorkbookStagingArtifact.CreateCopy(
+            ownershipFactory, templateWorkbookPath, directory, name, afterCreated: afterCreated));
+
+    private static WorkbookOutputTransaction Create(string targetWorkbookPath,
+        Func<string, string, WorkbookStagingArtifact> createStage)
     {
         var target = Path.GetFullPath(targetWorkbookPath);
         var directory = Path.GetDirectoryName(target)
             ?? throw new BuildCommandException($"Target workbook path is invalid: {target}");
         var name = $".{Path.GetFileNameWithoutExtension(target)}.{Guid.NewGuid():N}.tmp{Path.GetExtension(target)}";
-        return new WorkbookOutputTransaction(target,
-            WorkbookStagingArtifact.CreateCopy(ownershipFactory, templateWorkbookPath, directory, name,
-                afterCreated: afterCreated));
+        return new WorkbookOutputTransaction(target, createStage(directory, name));
     }
 
     /// <summary>Captures the candidate produced by a successful scenario Save.</summary>
@@ -92,6 +101,7 @@ public interface IWorkbookOutputTransaction : IDisposable
 public interface IWorkbookOutputTransactionFactory
 {
     IWorkbookOutputTransaction Create(string templateWorkbookPath, string targetWorkbookPath);
+    IWorkbookOutputTransaction Create(CapturedWorkbookTemplate template, string targetWorkbookPath);
 }
 
 /// <summary>Creates output transactions with invocation-scoped exact ownership.</summary>
@@ -100,4 +110,7 @@ public sealed class WorkbookOutputTransactionFactory(IExactFileSystemObjectOwner
 {
     public IWorkbookOutputTransaction Create(string templateWorkbookPath, string targetWorkbookPath)
         => WorkbookOutputTransaction.Create(ownershipFactory, templateWorkbookPath, targetWorkbookPath);
+
+    public IWorkbookOutputTransaction Create(CapturedWorkbookTemplate template, string targetWorkbookPath)
+        => WorkbookOutputTransaction.Create(ownershipFactory, template, targetWorkbookPath);
 }

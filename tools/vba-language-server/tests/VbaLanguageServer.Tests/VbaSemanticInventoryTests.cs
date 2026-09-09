@@ -1003,7 +1003,7 @@ public sealed class VbaSemanticInventoryTests
             VbaProjectReferenceCatalogSet.Empty);
         var writeOutcome = nameResolution.ResolvePreferredOutcome(
             uri,
-            new VbaLanguageServer.Diagnostics.VbaPosition(12, 4),
+            new VbaTools.Semantics.VbaPosition(12, 4),
             qualifier: null,
             "Value",
             definition => definition.Kind

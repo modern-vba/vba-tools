@@ -1,5 +1,6 @@
 using System.Text.Json;
 using VbaLanguageServer.Diagnostics;
+using VbaLanguageServer.SourceModel;
 using VbaTools.Syntax;
 using Xunit;
 
@@ -36,6 +37,13 @@ public sealed class DocumentDiagnosticConformanceTests
         Assert.All(syntax, diagnostic => Assert.Equal("vba-language-server", diagnostic.Source));
         Assert.All(validation, diagnostic => Assert.Equal("vba-language-server", diagnostic.Source));
         Assert.All(combined, diagnostic => Assert.Equal("vba-language-server", diagnostic.Source));
+
+        var inventory = VbaSemanticInventory.Create(
+            new Dictionary<string, VbaSourceDocument> { [uri] = VbaSourceDocumentProjector.Project(uri, tree) },
+            referenceSelection: null, referenceCatalogs: VbaProjectReferenceCatalogSet.Empty);
+        Assert.Equal(ReadDiagnostics(fixture, "projectValidationDiagnostics"),
+            inventory.GetProjectValidationDiagnostics(uri).Select(diagnostic =>
+                Snapshot(diagnostic.Code, diagnostic.Message, diagnostic.Severity, diagnostic.Range)).ToArray());
     }
 
     private static JsonElement[] ReadCases()
