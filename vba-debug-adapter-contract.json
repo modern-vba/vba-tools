@@ -13,9 +13,11 @@
     "doctor": "1.0"
   },
   "featureVersions": {
-    "doctor.stdinCancellation": "1.0"
+    "doctor.stdinCancellation": "1.0",
+    "snapshotBuild.diagnostics": "1.0"
   },
   "requiredVbaDevFeatureVersions": {
-    "build.sourceSnapshot": "2.0"
+    "build.sourceSnapshot": "2.0",
+    "build.sourceSnapshotAnalysis": "1.0"
   }
 }

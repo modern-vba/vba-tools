@@ -107,9 +107,14 @@ internal sealed class WorkbookMaterializer
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(intent);
-        var plan = intent is WorkbookMaterializationIntent.ProjectBuild build
-            ? await CreateAnalyzedBuildPlanAsync(build.Context, cancellationToken).ConfigureAwait(false)
-            : CreatePlan(intent, cancellationToken);
+        var plan = intent switch
+        {
+            WorkbookMaterializationIntent.ProjectBuild build =>
+                await CreateAnalyzedBuildPlanAsync(build.Context, cancellationToken).ConfigureAwait(false),
+            WorkbookMaterializationIntent.SourceSnapshotBuild snapshot =>
+                await CreateAnalyzedSnapshotPlanAsync(snapshot, cancellationToken).ConfigureAwait(false),
+            _ => CreatePlan(intent, cancellationToken)
+        };
         return await MaterializeCoreAsync(
             plan.DocumentName,
             plan.TemplateWorkbookPath,
@@ -145,6 +150,42 @@ internal sealed class WorkbookMaterializer
             CapturedTemplate = template,
             SemanticInputs = inputs
         };
+    }
+
+    private async Task<WorkbookMaterializationPlan> CreateAnalyzedSnapshotPlanAsync(
+        WorkbookMaterializationIntent.SourceSnapshotBuild snapshot, CancellationToken cancellationToken)
+    {
+        try
+        {
+            CapturedWorkbookTemplate? template = null;
+            VbaProjectSemanticInputs? inputs = null;
+            var admission = await snapshot.SourceCapture.AdmitAnalyzedAsync(async (sources, token) =>
+            {
+                var provider = semanticInputProvider
+                    ?? throw new InvalidOperationException("A required project semantic input provider was not configured for snapshot Build.");
+                template = CapturedWorkbookTemplate.Capture(snapshot.Context.TemplateDocumentPath, token);
+                inputs = await provider.AcquireAsync(snapshot.Context, template, sources, token).ConfigureAwait(false);
+                return inputs;
+            }, cancellationToken).ConfigureAwait(false);
+            return CreateProjectPlan(snapshot.Context, snapshot.TargetWorkbookPath, ResolveTimeouts(snapshot.Context),
+                new AdmittedWorkbookGenerationSourceInput(admission, snapshot.SourceCapture)) with
+            {
+                CapturedTemplate = template,
+                SemanticInputs = inputs
+            };
+        }
+        catch (Exception failure)
+        {
+            try { snapshot.SourceCapture.Dispose(); }
+            catch (Exception cleanup)
+            {
+                if (failure is VbaSourceAnalysisException analysis)
+                    throw new VbaSourceAnalysisException(analysis.Report.WithProjectFailure(cleanup),
+                        new AggregateException(analysis.OperationalFailure ?? failure, cleanup));
+                throw CombineFailures(failure, cleanup);
+            }
+            throw;
+        }
     }
 
     internal async Task<ProjectInspectionResult> InspectAsync(
@@ -391,11 +432,6 @@ internal sealed class WorkbookMaterializer
                     publish.Context.DocumentSourceSetPath,
                     publish.Context.Document.CommonModules,
                     cancellationToken))),
-            WorkbookMaterializationIntent.SourceSnapshotBuild snapshot => CreateProjectPlan(
-                snapshot.Context,
-                snapshot.TargetWorkbookPath,
-                ResolveTimeouts(snapshot.Context),
-                snapshot.SourceCapture),
             WorkbookMaterializationIntent.ExplicitImport import => new WorkbookMaterializationPlan(
                 Path.GetFileNameWithoutExtension(import.TargetWorkbookPath),
                 import.TargetWorkbookPath,

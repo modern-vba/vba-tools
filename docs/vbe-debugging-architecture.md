@@ -324,7 +324,8 @@ adapter `contractVersion: "1.0"`, `protocolVersion: "2.0"`,
 `transports: ["stdio"]`, `sessionIdFormat: "lowercase-hex-32"`,
 `commands: ["cleanup", "doctor"]`,
 `commandSchemaVersions: { "doctor": "1.0" }`, and
-`requiredVbaDevFeatureVersions: { "build.sourceSnapshot": "2.0" }`. The
+`requiredVbaDevFeatureVersions: { "build.sourceSnapshot": "2.0", "build.sourceSnapshotAnalysis": "1.0" }`.
+The adapter also advertises `snapshotBuild.diagnostics: 1.0`. The
 extension validates both providers before source capture, temporary artifacts,
 or starting
 `vba-debug-adapter --stdio --vba-dev <absolute-path> --session <session-id>`.
@@ -333,7 +334,8 @@ hexadecimal characters from 128 bits of cryptographically secure randomness.
 The adapter reads no VS Code setting and performs no CLI discovery. It validates
 the supplied
 `vba-dev capabilities --format json` once at startup and requires
-`featureVersions["build.sourceSnapshot"] == "2.0"`. This feature version covers
+`featureVersions["build.sourceSnapshot"] == "2.0"` and
+`featureVersions["build.sourceSnapshotAnalysis"] == "1.0"`. The first feature covers
 the paired snapshot input/output options, byte and inventory semantics,
 pre-Excel output safety, atomic replacement, cancellation, and owned-process
 release. The adapter does not require a particular CLI tool version or its
@@ -346,6 +348,16 @@ Snapshot test startup applies the same provider barrier, while ordinary
 non-snapshot commands retain their CLI-only dependency. Issue #344 updates the
 complete version matrix and package together; mixed old/new versions are not a
 supported intermediate release or main state.
+
+Snapshot Build now shares ordinary Build's complete source-analysis gate. The
+adapter forwards exact stdout/stderr, exit code, project/document, generation and
+its immutable snapshot-to-source association in the versioned `vba/snapshotBuild`
+event. It reports failed builds after retaining cleanup evidence, and successful
+builds before committing the prepared visible session. VS Code maps primary and
+related Problems locations to original exported-source coordinates and clears
+only the current scope on success. Missing origins are reported in Output without
+inventing navigation to a scratch file. See
+[ADR 0058](adr/0058-validate-snapshot-generations-and-retain-diagnostic-origins.md).
 
 The VSIX must contain the self-contained Windows x64 executables
 `bin/vba-dev/win-x64/vba-dev.exe` and

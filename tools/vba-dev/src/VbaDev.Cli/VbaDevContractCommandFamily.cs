@@ -100,6 +100,7 @@ internal sealed class VbaDevContractCommandFamily
                 new Dictionary<string, string>(StringComparer.Ordinal)
                 {
                     ["build.sourceSnapshot"] = "2.0",
+                    ["build.sourceSnapshotAnalysis"] = "1.0",
                     ["test.sourceSnapshot"] = "2.0",
                     ["invocation.stdinCancellation"] = "1.0",
                     ["sourceSnapshot.activeWindowsCodePage"] = "1.0",

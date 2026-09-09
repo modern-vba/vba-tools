@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { execFile } from 'node:child_process';
+import { VbaDevDiagnosticReporter, combineVbaDevDiagnosticOutput, vbaDevDiagnosticScope } from './toolDiagnostics';
 
 import {
   VbaDevCapabilities,
@@ -20,6 +21,67 @@ import {
   VbaDebugCancellationError,
   VbaDebugConfiguration
 } from './vscodeDebugConfiguration';
+
+test('debug build events publish original source Problems and a successful rerun clears them', async () => {
+  const published = new Map<string, readonly unknown[]>();
+  const reporter = new VbaDevDiagnosticReporter({
+    set: (uri, diagnostics) => { published.set(uri, diagnostics); },
+    delete: uri => { published.delete(uri); }
+  });
+  const warnings: string[] = [];
+  const integration = fixtureIntegration({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    getConfiguredDevToolPath: () => undefined,
+    vbaDevResolver: { resolve: async () => ({
+      executablePath: path.resolve('vba-dev.exe'), bundledPath: path.resolve('vba-dev.exe'),
+      source: 'bundled', capabilities: compatibleCapabilities()
+    }) },
+    vbaDebugAdapterResolver: { resolve: async () => ({
+      executablePath: path.resolve('vba-debug-adapter.exe'), capabilities: compatibleDebugAdapterCapabilities()
+    }) },
+    debugConfigurationHost: snapshotDebugHost(),
+    reportSnapshotBuild: report => {
+      reporter.refreshSnapshot(vbaDevDiagnosticScope('debug-build', report.projectRoot, report.documentName),
+        combineVbaDevDiagnosticOutput(report.stdout, report.stderr), report.origins, message => warnings.push(message));
+    },
+    reportSnapshotBuildWarning: message => warnings.push(message)
+  });
+  const configuration = integration.prepareDebugConfigurationForRestart(await integration.resolveDebugConfiguration({}));
+  await integration.createDebugAdapterExecutable({ id: 'diagnostic-session', configuration, stop: () => undefined });
+  const sourcePath = path.join(configuration.project as string, 'src', 'Book1', 'DebugModule.bas');
+  const report = {
+    schemaVersion: '1.0', projectRoot: configuration.project, documentName: configuration.document,
+    generation: 0, exitCode: 1, stdout: '',
+    stderr: JSON.stringify({ schemaVersion: '3.0', type: 'sourceAnalysis', complete: true, failures: [], diagnostics: [{
+      type: 'diagnostic', owner: 'vba-dev', uri: 'file:///C:/deleted/snapshot/DebugModule.bas',
+      severity: 'error', code: 'syntax.error', message: 'Invalid syntax.',
+      range: { start: { line: 2, character: 0 }, end: { line: 2, character: 4 } }
+    }] }),
+    origins: [{ snapshotUri: 'file:///C:/deleted/snapshot/DebugModule.bas', sourceUri: pathToFileURL(sourcePath).href }]
+  };
+  integration.observeDebugAdapterMessage(configuration, { type: 'event', event: 'vba/snapshotBuild', body: report });
+  assert.equal(published.get(sourcePath)?.length, 1);
+  for (const rejected of [
+    { ...report, generation: 1, stderr: '' },
+    { ...report, projectRoot: 'C:\\other-project', stderr: '' },
+    { ...report, documentName: 'OtherBook', stderr: '' },
+    { ...report, schemaVersion: 'future', stderr: '' },
+    { ...report, origins: [null], stderr: '' },
+    { ...report, stderr: JSON.stringify({ schemaVersion: '3.0', type: 'sourceAnalysis' }) }
+  ]) {
+    integration.observeDebugAdapterMessage(configuration, { type: 'event', event: 'vba/snapshotBuild', body: rejected });
+    assert.equal(published.get(sourcePath)?.length, 1, 'Stale or malformed reports must retain current Problems.');
+  }
+  assert.equal(warnings.length, 3);
+  integration.observeDebugAdapterMessage(configuration, {
+    type: 'event', event: 'vba/snapshotBuild', body: { ...report, exitCode: 0, stderr: '' }
+  });
+  assert.equal(published.size, 0);
+  assert.equal(warnings.length, 3);
+  integration.releaseSession('diagnostic-session');
+  integration.observeDebugAdapterMessage(configuration, { type: 'event', event: 'vba/snapshotBuild', body: report });
+  assert.equal(published.size, 0, 'Reports from a released session must not resurrect diagnostics.');
+});
 
 test('VBA debug provider normalizes an empty F5 configuration before variable substitution', () => {
   let hostWasTouched = false;
@@ -153,7 +215,8 @@ test('F5 cancellation aborts owned CLI capability inspection before source captu
   await assertCancelledProviderInspection('cli');
 });
 
-for (const mismatch of ['cliBuild', 'cliTest', 'cliAcp', 'adapterProtocol', 'adapterBuild'] as const) {
+for (const mismatch of ['cliBuild', 'cliTest', 'cliAcp', 'adapterProtocol', 'adapterBuild',
+  'cliAnalysis', 'adapterAnalysis', 'adapterDiagnostics'] as const) {
   test(`snapshot startup rejects the ${mismatch} mixed-version matrix row`, async () => {
     for (const alterRequirement of [false, true]) {
       let captures = 0;
@@ -168,6 +231,9 @@ for (const mismatch of ['cliBuild', 'cliTest', 'cliAcp', 'adapterProtocol', 'ada
       if (mismatch === 'cliAcp') { cliTarget.featureVersions!['sourceSnapshot.activeWindowsCodePage'] = '0.9'; }
       if (mismatch === 'adapterProtocol') { adapterTarget.protocolVersion = '1.1'; }
       if (mismatch === 'adapterBuild') { adapterTarget.requiredVbaDevFeatureVersions['build.sourceSnapshot'] = '1.0'; }
+      if (mismatch === 'cliAnalysis') { cliTarget.featureVersions!['build.sourceSnapshotAnalysis'] = '0.9'; }
+      if (mismatch === 'adapterAnalysis') { adapterTarget.requiredVbaDevFeatureVersions['build.sourceSnapshotAnalysis'] = '0.9'; }
+      if (mismatch === 'adapterDiagnostics') { adapterTarget.featureVersions['snapshotBuild.diagnostics'] = '0.9'; }
       const integration = fixtureIntegration({
         extensionRoot: path.resolve(__dirname, '..', '..'),
         getConfiguredDevToolPath: () => undefined,
@@ -1562,7 +1628,7 @@ function compatibleCapabilities(): VbaDevCapabilities {
     commands: {},
     activeWindowsCodePage: 65001,
     featureVersions: {
-      'build.sourceSnapshot': '2.0', 'test.sourceSnapshot': '2.0', 'sourceSnapshot.activeWindowsCodePage': '1.0'
+      'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0', 'test.sourceSnapshot': '2.0', 'sourceSnapshot.activeWindowsCodePage': '1.0'
     }
   };
 }
@@ -1576,8 +1642,8 @@ function compatibleDebugAdapterCapabilities() {
     sessionIdFormat: 'lowercase-hex-32',
     commands: ['cleanup', 'doctor'],
     commandSchemaVersions: { doctor: '1.0' },
-    featureVersions: { 'doctor.stdinCancellation': '1.0' },
-    requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0' }
+    featureVersions: { 'doctor.stdinCancellation': '1.0', 'snapshotBuild.diagnostics': '1.0' },
+    requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0' }
   };
 }
 
@@ -1590,7 +1656,7 @@ function requiredContract() {
   return {
     contractVersion: '1.0',
     featureVersions: {
-      'build.sourceSnapshot': '2.0', 'test.sourceSnapshot': '2.0', 'sourceSnapshot.activeWindowsCodePage': '1.0'
+      'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0', 'test.sourceSnapshot': '2.0', 'sourceSnapshot.activeWindowsCodePage': '1.0'
     },
     commandSchemaVersions: {}
   };
@@ -1631,18 +1697,18 @@ function fixtureIntegration(options: ConstructorParameters<typeof VscodeDebugInt
     requiredDebugAdapterContract: {
       contractVersion: '1.0', protocolVersion: '2.0', transports: ['stdio'],
       sessionIdFormat: 'lowercase-hex-32', commands: ['cleanup', 'doctor'],
-      commandSchemaVersions: { doctor: '1.0' }, featureVersions: { 'doctor.stdinCancellation': '1.0' },
-      requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0' }
+      commandSchemaVersions: { doctor: '1.0' }, featureVersions: { 'doctor.stdinCancellation': '1.0', 'snapshotBuild.diagnostics': '1.0' },
+      requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0' }
     },
     capabilitiesProcess: async file => ({
       stdout: JSON.stringify(file.endsWith('vba-dev.exe') ? {
         toolVersion: '0.1.0', contractVersion: '1.0', commands: {}, activeWindowsCodePage: 65001,
-        featureVersions: { 'build.sourceSnapshot': '2.0', 'test.sourceSnapshot': '2.0', 'sourceSnapshot.activeWindowsCodePage': '1.0' }
+        featureVersions: { 'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0', 'test.sourceSnapshot': '2.0', 'sourceSnapshot.activeWindowsCodePage': '1.0' }
       } : {
         toolVersion: '0.1.0', contractVersion: '1.0', protocolVersion: '2.0', transports: ['stdio'],
         sessionIdFormat: 'lowercase-hex-32', commands: ['cleanup', 'doctor'],
-        commandSchemaVersions: { doctor: '1.0' }, featureVersions: { 'doctor.stdinCancellation': '1.0' },
-        requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0' }
+        commandSchemaVersions: { doctor: '1.0' }, featureVersions: { 'doctor.stdinCancellation': '1.0', 'snapshotBuild.diagnostics': '1.0' },
+        requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0' }
       }),
       stderr: ''
     }),

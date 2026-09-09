@@ -5,6 +5,7 @@ import { runDebugConfigurationIntegrationTests } from './debugConfigurationInteg
 import { runModuleRenameIntegrationTests } from './moduleRenameIntegration';
 import { runCommandPaletteTargetIntegrationTests } from './commandPaletteTargetIntegration';
 import { runBuildProblemsIntegrationTests } from './buildProblemsIntegration';
+import { runSnapshotBuildProblemsIntegrationTests } from './snapshotBuildProblemsIntegration';
 import { runCommonModulesCommandIntegrationTests } from './commonModulesCommandIntegration';
 import { runProjectManifestMutationIntegrationTests } from './projectManifestMutationIntegration';
 import { runReferenceQuickPickIntegrationTests } from './referenceQuickPickIntegration';
@@ -14,6 +15,7 @@ export async function run(): Promise<void> {
   await runCommonModulesCommandIntegrationTests();
   await runCommandPaletteTargetIntegrationTests();
   await runBuildProblemsIntegrationTests();
+  await runSnapshotBuildProblemsIntegrationTests();
   await runDebugConfigurationIntegrationTests();
   await runTestExplorerNavigationIntegrationTests();
   await runGuardedEnterFeasibilityTests();

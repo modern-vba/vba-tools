@@ -1,5 +1,7 @@
 using VbaDev.App.FileSystem;
 using VbaDev.App.Workbooks;
+using VbaTools.Semantics;
+using VbaTools.Syntax;
 
 namespace VbaDev.App.Build;
 
@@ -39,8 +41,8 @@ internal sealed class BuildSourceSnapshotCaptureFactory
         cancellationToken.ThrowIfCancellationRequested();
         var snapshotPath = Path.GetFullPath(sourceSnapshotPath);
 
-        var admitted = admission.AdmitSourceSnapshotBuild(snapshotPath, cancellationToken);
-        var inventory = admitted.Sources.Select(source => new SnapshotSourceInventoryEntry(
+        var captured = CapturedVbaSourceAnalysis.CaptureSnapshot(admission, snapshotPath, cancellationToken);
+        var inventory = captured.Sources.Select(source => new SnapshotSourceInventoryEntry(
             source, GetSafeRelativePath(snapshotPath, source.SourcePath),
             source.BinaryPath is null ? null : GetSafeRelativePath(snapshotPath, source.BinaryPath))).ToArray();
         // The shared container is not invocation scratch and is never adopted for deletion.
@@ -72,7 +74,7 @@ internal sealed class BuildSourceSnapshotCaptureFactory
             cancellationToken.ThrowIfCancellationRequested();
             ReleaseFences();
             var capture = new BuildSourceSnapshotCapture(ownership, scratch, root.Route,
-                capturedSources.AsReadOnly(), admitted, snapshotPath);
+                capturedSources.AsReadOnly(), captured, snapshotPath);
             transferred = true;
             return capture;
         }
@@ -153,8 +155,8 @@ internal sealed class BuildSourceSnapshotCapture(
     InvocationScratch scratch,
     string stagingPath,
     IReadOnlyList<VbaSourceFile> sourceFiles,
-    AdmittedVbaSourceSet admission,
-    string sourceRootPath) : IAdmittedWorkbookGenerationSourceInput
+    CapturedVbaSourceAnalysis analysis,
+    string sourceRootPath) : IDisposable
 {
     private readonly object cleanupGate = new();
     private InvocationScratchCleanupEvidence? cleanupEvidence;
@@ -162,8 +164,13 @@ internal sealed class BuildSourceSnapshotCapture(
 
     public string StagingPath { get; } = stagingPath;
     public IReadOnlyList<VbaSourceFile> SourceFiles { get; } = sourceFiles;
-    public AdmittedVbaSourceSet Admission { get; } = admission;
+    internal IReadOnlyList<AdmittedVbaSource> CapturedSources => analysis.Sources;
     internal string SourceRootPath { get; } = sourceRootPath;
+
+    internal Task<AdmittedVbaSourceSet> AdmitAnalyzedAsync(
+        Func<IReadOnlyList<VbaSyntaxTree>, CancellationToken, Task<VbaProjectSemanticInputs>> acquireInputs,
+        CancellationToken cancellationToken)
+        => AdmittedVbaSourceSet.AdmitAnalyzedSnapshotAsync(analysis, acquireInputs, cancellationToken);
 
     internal InvocationScratchCleanupEvidence Cleanup(Action<string>? onProofComplete = null)
     {

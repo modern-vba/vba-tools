@@ -10,14 +10,18 @@ internal interface IAdmittedWorkbookGenerationSourceInput : IDisposable
 /// <summary>Retains admitted workbook-output authority and its ordered display provenance.</summary>
 internal sealed class AdmittedWorkbookGenerationSourceInput : IAdmittedWorkbookGenerationSourceInput
 {
-    internal AdmittedWorkbookGenerationSourceInput(AdmittedVbaSourceSet admission)
+    private readonly IDisposable? sourceOwner;
+
+    internal AdmittedWorkbookGenerationSourceInput(AdmittedVbaSourceSet admission, IDisposable? sourceOwner = null)
     {
         Admission = admission;
+        this.sourceOwner = sourceOwner;
     }
 
     public AdmittedVbaSourceSet Admission { get; }
 
     public void Dispose()
     {
+        sourceOwner?.Dispose();
     }
 }

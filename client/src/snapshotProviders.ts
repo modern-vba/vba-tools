@@ -151,7 +151,10 @@ function validateSnapshotVersions(
   if (cli.contractVersion !== '1.0' || adapter.contractVersion !== '1.0'
       || adapter.protocolVersion !== '2.0'
       || adapter.requiredVbaDevFeatureVersions['build.sourceSnapshot'] !== '2.0'
+      || adapter.requiredVbaDevFeatureVersions['build.sourceSnapshotAnalysis'] !== '1.0'
+      || adapter.featureVersions?.['snapshotBuild.diagnostics'] !== '1.0'
       || cli.featureVersions?.['build.sourceSnapshot'] !== '2.0'
+      || cli.featureVersions?.['build.sourceSnapshotAnalysis'] !== '1.0'
       || cli.featureVersions?.['test.sourceSnapshot'] !== '2.0'
       || cli.featureVersions?.['sourceSnapshot.activeWindowsCodePage'] !== '1.0') {
     throw new Error('Snapshot schema 2 requires the matching extension, CLI feature and adapter protocol matrix.');

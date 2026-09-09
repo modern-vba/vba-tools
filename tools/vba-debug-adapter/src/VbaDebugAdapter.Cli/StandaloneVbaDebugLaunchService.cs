@@ -85,6 +85,14 @@ internal sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunc
             }
             if (lifecycleSink is not null)
             {
+                if (buildResult.Report is not null)
+                {
+                    await lifecycleSink.WriteAsync(new DebugLifecycleMessage(
+                        "VBA snapshot build completed; source diagnostics were collected.")
+                    {
+                        SnapshotBuild = buildResult.Report
+                    }, cancellationToken).ConfigureAwait(false);
+                }
                 foreach (var output in buildResult.Output)
                 {
                     await lifecycleSink
@@ -122,6 +130,23 @@ internal sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunc
         catch (Exception exception)
         {
             var completion = new DebugFailureCompletion(exception);
+            var primary = exception is IDebugFailureEvidence evidence
+                ? evidence.FailureOutcome.PrimaryFailure : exception;
+            if (lifecycleSink is not null && primary is SnapshotBuildFailedException buildFailure)
+            {
+                try
+                {
+                    await lifecycleSink.WriteAsync(new DebugLifecycleMessage(
+                        "VBA snapshot build failed; source diagnostics were collected.")
+                    {
+                        SnapshotBuild = buildFailure.Report
+                    }, CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception reportFailure)
+                {
+                    completion.AddFailure("build-diagnostics", "snapshot build report", DebugResourceKind.Observation, reportFailure);
+                }
+            }
             if (buildResult is not null)
             {
                 await CompleteBuildFailureAsync(buildResult, completion).ConfigureAwait(false);

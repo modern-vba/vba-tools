@@ -189,6 +189,17 @@ internal sealed class VbaSourceAdmission
             projectFatal = true;
             analysis.FailProject(error);
         }
+        var report = await CompleteAnalysisAsync(analysis, projectFatal, acquireInputs, cancellationToken)
+            .ConfigureAwait(false);
+        return (data, report);
+    }
+
+    internal static async Task<VbaSourceAnalysisReport> CompleteAnalysisAsync(
+        VbaSourceAnalysisReport.Builder analysis,
+        bool projectFatal,
+        Func<IReadOnlyList<VbaSyntaxTree>, CancellationToken, Task<VbaProjectSemanticInputs>>? acquireInputs,
+        CancellationToken cancellationToken)
+    {
         VbaProjectSemanticInputs? inputs = null;
         Exception? operationalFailure = null;
         if (!projectFatal && acquireInputs is not null)
@@ -224,7 +235,7 @@ internal sealed class VbaSourceAdmission
         {
             throw new VbaSourceAnalysisException(report, operationalFailure);
         }
-        return (data, report);
+        return report;
     }
 
     internal AdmittedVbaSourceSet AdmitProjectPublish(
@@ -259,6 +270,21 @@ internal sealed class VbaSourceAdmission
         string sourceDirectory,
         CancellationToken cancellationToken)
         => AdmitCore(sourceDirectory, AdmissionPurpose.SourceSnapshotBuild, [], cancellationToken);
+
+    internal (AdmittedVbaSourceData Data, VbaSourceAnalysisReport.Builder Analysis, bool ProjectFatal) ReadSnapshotAnalysis(
+        string sourceDirectory, CancellationToken cancellationToken)
+    {
+        var analysis = new VbaSourceAnalysisReport.Builder();
+        try
+        {
+            return (AdmitCore(sourceDirectory, AdmissionPurpose.SourceSnapshotBuild, [], cancellationToken, analysis), analysis, false);
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            analysis.FailProject(error);
+            return (new(0, []), analysis, true);
+        }
+    }
 
     internal AdmittedVbaSourceData ReadExplicitImport(
         string sourceDirectory,
@@ -906,6 +932,48 @@ internal sealed class AdmittedVbaSourceSet
     internal int ActiveCodePage { get; }
     internal ImmutableArray<AdmittedVbaSource> Sources { get; }
     internal VbaSourceAnalysisReport? Analysis { get; }
+
+    internal static async Task<AdmittedVbaSourceSet> AdmitAnalyzedSnapshotAsync(
+        CapturedVbaSourceAnalysis capture,
+        Func<IReadOnlyList<VbaSyntaxTree>, CancellationToken, Task<VbaProjectSemanticInputs>> acquireInputs,
+        CancellationToken cancellationToken)
+    {
+        var result = await capture.ReadAnalyzedAsync(acquireInputs, cancellationToken).ConfigureAwait(false);
+        return new(result.Data, result.Report);
+    }
+}
+
+/// <summary>Retains recoverable admission findings without granting workbook-generation authority.</summary>
+internal sealed class CapturedVbaSourceAnalysis
+{
+    private readonly AdmittedVbaSourceData data;
+    private readonly VbaSourceAnalysisReport.Builder analysis;
+    private readonly bool projectFatal;
+
+    private CapturedVbaSourceAnalysis(AdmittedVbaSourceData data, VbaSourceAnalysisReport.Builder analysis, bool projectFatal)
+    {
+        this.data = data;
+        this.analysis = analysis;
+        this.projectFatal = projectFatal;
+    }
+
+    internal static CapturedVbaSourceAnalysis CaptureSnapshot(VbaSourceAdmission admission, string sourceDirectory,
+        CancellationToken cancellationToken)
+    {
+        var result = admission.ReadSnapshotAnalysis(sourceDirectory, cancellationToken);
+        return new(result.Data, result.Analysis, result.ProjectFatal);
+    }
+
+    internal ImmutableArray<AdmittedVbaSource> Sources => data.Sources;
+
+    internal async Task<(AdmittedVbaSourceData Data, VbaSourceAnalysisReport Report)> ReadAnalyzedAsync(
+        Func<IReadOnlyList<VbaSyntaxTree>, CancellationToken, Task<VbaProjectSemanticInputs>> acquireInputs,
+        CancellationToken cancellationToken)
+    {
+        var report = await VbaSourceAdmission.CompleteAnalysisAsync(analysis.Clone(), projectFatal, acquireInputs,
+            cancellationToken).ConfigureAwait(false);
+        return (data, report);
+    }
 }
 
 internal readonly record struct AdmittedVbaSourceData(

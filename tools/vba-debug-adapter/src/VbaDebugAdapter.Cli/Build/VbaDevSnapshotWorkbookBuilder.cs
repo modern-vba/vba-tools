@@ -32,6 +32,7 @@ internal sealed class VbaDevSnapshotWorkbookBuilder : IVbaDebugWorkbookBuilder
             var workbookPath = generationWorkspace.WorkbookPath;
             request.SourceSet.MaterializeInto(generationWorkspace);
             generationWorkspace.SealSourceSnapshot();
+            var sourceOrigins = request.SourceSet.CaptureOrigins(generationWorkspace);
             var arguments = new[]
             {
                 "build",
@@ -68,7 +69,8 @@ internal sealed class VbaDevSnapshotWorkbookBuilder : IVbaDebugWorkbookBuilder
                 {
                     diagnostics.Add($"stderr:{Environment.NewLine}{processResult.StandardError.TrimEnd()}");
                 }
-                throw new InvalidOperationException(
+                throw new SnapshotBuildFailedException(
+                    DebugSnapshotBuildReport.Capture(request, sourceOrigins, processResult),
                     string.Join(Environment.NewLine, diagnostics));
             }
             processCleanupOutcome = CompleteProcessEvidence(processCleanupOutcome);
@@ -84,6 +86,7 @@ internal sealed class VbaDevSnapshotWorkbookBuilder : IVbaDebugWorkbookBuilder
             var result = new VbaDevSnapshotBuildResult(
                 generationWorkspace, CompleteProcessEvidence(processCleanupOutcome))
             {
+                Report = DebugSnapshotBuildReport.Capture(request, sourceOrigins, processResult),
                 Output = SplitOutput(processResult.StandardOutput)
                     .Concat(SplitOutput(processResult.StandardError))
                     .ToArray()
@@ -279,6 +282,8 @@ public sealed class VbaDevSnapshotBuildResult : IAsyncDisposable, IDebugResource
     public string WorkbookPath { get; }
 
     public IReadOnlyList<string> Output { get; init; } = [];
+
+    public DebugSnapshotBuildReport? Report { get; init; }
 
     DebugFailureOutcome? IDebugResourceOwnerEvidence.CleanupOutcome => cleanupOutcome;
 

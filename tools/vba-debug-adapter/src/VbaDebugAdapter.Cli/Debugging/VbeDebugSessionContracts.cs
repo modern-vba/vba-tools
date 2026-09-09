@@ -1,4 +1,5 @@
 using VbaDebugAdapter.Infrastructure;
+using VbaDebugAdapter.Build;
 
 namespace VbaDebugAdapter.Debugging;
 
@@ -72,7 +73,10 @@ public sealed record DebugInputWait(
     }
 }
 
-public sealed record DebugLifecycleMessage(string Output);
+public sealed record DebugLifecycleMessage(string Output)
+{
+    public DebugSnapshotBuildReport? SnapshotBuild { get; init; }
+}
 
 public interface IDebugInputWaitSink
 {

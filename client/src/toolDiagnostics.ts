@@ -4,6 +4,7 @@ import {
 } from './vbaDevOutputContract';
 import { windowsPathKey } from './windowsPathIdentity';
 import { ordinalIgnoreCaseKey } from './ordinalIgnoreCase';
+import { fileURLToPath } from 'node:url';
 
 export {
   VbaDevDiagnostic,
@@ -20,6 +21,11 @@ export interface VbaDevDiagnosticCollection {
 
 export interface VbaDevDiagnosticReporterLike {
   refresh(scopeKey: string, output: string): readonly VbaDevDiagnostic[];
+}
+
+export interface SnapshotDiagnosticOrigin {
+  readonly snapshotUri: string;
+  readonly sourceUri?: string | null;
 }
 
 export function vbaDevDiagnosticScope(commandName: string, projectRoot: string, documentName?: string): string {
@@ -46,8 +52,50 @@ export class VbaDevDiagnosticReporter implements VbaDevDiagnosticReporterLike {
   public constructor(private readonly collection: VbaDevDiagnosticCollection) {
   }
 
+  public refreshSnapshot(
+    scopeKey: string,
+    output: string,
+    origins: readonly SnapshotDiagnosticOrigin[],
+    reportUnmapped: (message: string) => void
+  ): VbaDevDiagnostic[] {
+    const originPaths = new Map<string, string | undefined>();
+    for (const origin of origins) {
+      const key = windowsPathKey(fileURLToPath(origin.snapshotUri));
+      if (originPaths.has(key)) throw new Error(`Duplicate snapshot diagnostic origin '${origin.snapshotUri}'.`);
+      originPaths.set(key, originalFilePath(origin.sourceUri));
+    }
+    const warnings: string[] = [];
+    const originalPath = (snapshotPath: string): string | undefined => {
+      const original = originPaths.get(windowsPathKey(snapshotPath));
+      if (original === undefined) warnings.push(
+        `Snapshot diagnostic location '${snapshotPath}' has no supported captured source origin; navigation was omitted.`);
+      return original;
+    };
+    const diagnostics = parseVbaDevDiagnostics(output).flatMap(diagnostic => {
+      const uriPath = originalPath(diagnostic.uriPath);
+      if (uriPath === undefined) return [];
+      return [{
+        ...diagnostic, uriPath,
+        ...(diagnostic.relatedInformation === undefined ? {} : {
+          relatedInformation: diagnostic.relatedInformation.flatMap(related => {
+            const relatedPath = originalPath(related.location.uriPath);
+            return relatedPath === undefined ? [] : [{
+              ...related, location: { ...related.location, uriPath: relatedPath }
+            }];
+          })
+        })
+      }];
+    });
+    for (const warning of warnings) reportUnmapped(warning);
+    return this.replace(scopeKey, diagnostics);
+  }
+
   public refresh(scopeKey: string, output: string): VbaDevDiagnostic[] {
     const diagnostics = parseVbaDevDiagnostics(output);
+    return this.replace(scopeKey, diagnostics);
+  }
+
+  private replace(scopeKey: string, diagnostics: VbaDevDiagnostic[]): VbaDevDiagnostic[] {
     const diagnosticsByUri = groupByUriPath(diagnostics);
     const affectedUris = new Set([
       ...(this.diagnosticsByScope.get(scopeKey)?.keys() ?? []),
@@ -81,6 +129,11 @@ export class VbaDevDiagnosticReporter implements VbaDevDiagnosticReporterLike {
 
     return diagnostics;
   }
+}
+
+function originalFilePath(uri: string | null | undefined): string | undefined {
+  if (uri == null) return undefined;
+  try { return fileURLToPath(uri); } catch { return undefined; }
 }
 
 interface DiagnosticContribution {

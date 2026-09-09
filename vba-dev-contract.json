@@ -2,6 +2,7 @@
   "contractVersion": "1.0",
   "featureVersions": {
     "build.sourceSnapshot": "2.0",
+    "build.sourceSnapshotAnalysis": "1.0",
     "test.sourceSnapshot": "2.0",
     "invocation.stdinCancellation": "1.0",
     "sourceSnapshot.activeWindowsCodePage": "1.0",

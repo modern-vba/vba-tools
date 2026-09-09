@@ -1050,9 +1050,10 @@ public sealed class TestCommandTests
         ]);
 
         Assert.Equal(1, result.ExitCode);
-        Assert.Contains("Source identity", result.StandardError, StringComparison.Ordinal);
-        Assert.Contains(firstSourcePath, result.StandardError, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains(secondSourcePath, result.StandardError, StringComparison.OrdinalIgnoreCase);
+        using var analysis = JsonDocument.Parse(result.StandardError.Split('\n')[0]);
+        var diagnostics = analysis.RootElement.GetProperty("diagnostics").EnumerateArray().ToArray();
+        Assert.Contains(diagnostics, item => item.GetProperty("uri").GetString() == new Uri(firstSourcePath).AbsoluteUri);
+        Assert.Contains(diagnostics, item => item.GetProperty("uri").GetString() == new Uri(secondSourcePath).AbsoluteUri);
         Assert.Empty(buildAutomation.OpenedWorkbooks);
         Assert.Empty(runner.Workbooks);
         Assert.Equal(manifestBinBytes, File.ReadAllBytes(binPath));
@@ -1174,6 +1175,7 @@ public sealed class TestCommandTests
         var runner = new FakeWorkbookTestRunner();
         var composition = ToolingCompositionRoot.CreateApplicationComposition(
             root,
+            projectSemanticInputProvider: FakeProjectSemanticInputProvider.Empty,
             workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
             workbookTestRunner: runner);
         var testCommand = new TestCommand(
@@ -1321,7 +1323,7 @@ public sealed class TestCommandTests
     }
 
     [Fact]
-    public void AmbiguousSnapshotLocationRemainsACompletedNonFailingOutcome()
+    public void DuplicateSnapshotProceduresAreRejectedBeforeRunningTests()
     {
         using var temp = TempDirectory.Create();
         var root = temp.CreateDirectory("Project");
@@ -1352,17 +1354,10 @@ public sealed class TestCommandTests
             "ndjson"
         ]);
 
-        Assert.Equal(0, result.ExitCode);
-        var finishedLine = result.StandardOutput
-            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
-            .Single(line => line.Contains("\"type\":\"testFinished\"", StringComparison.Ordinal));
-        using var finished = JsonDocument.Parse(finishedLine);
-        Assert.Equal("passed", finished.RootElement.GetProperty("outcome").GetString());
-        Assert.False(finished.RootElement.TryGetProperty("location", out _));
-        Assert.Contains("\"type\":\"runFinished\"", result.StandardOutput, StringComparison.Ordinal);
-        Assert.Contains("Warning:", result.StandardError, StringComparison.Ordinal);
-        Assert.Contains("Test_Module.Test_Passes", result.StandardError, StringComparison.Ordinal);
-        Assert.Contains("safely or unambiguously", result.StandardError, StringComparison.Ordinal);
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Empty(runner.Workbooks);
+        Assert.Contains("validation.duplicateDeclaration", result.StandardError, StringComparison.Ordinal);
     }
 
     [Theory]
@@ -1392,6 +1387,7 @@ public sealed class TestCommandTests
                 workbookOutcome == "OK" ? "" : "synthetic assertion failure"));
         var composition = ToolingCompositionRoot.CreateApplicationComposition(
             root,
+            projectSemanticInputProvider: FakeProjectSemanticInputProvider.Empty,
             workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
             workbookTestRunner: runner);
         var fileSystem = new RetainingSnapshotWorkspaceObserver();
@@ -1444,6 +1440,7 @@ public sealed class TestCommandTests
         var runner = new FakeWorkbookTestRunner();
         var composition = ToolingCompositionRoot.CreateApplicationComposition(
             root,
+            projectSemanticInputProvider: FakeProjectSemanticInputProvider.Empty,
             workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
             workbookTestRunner: runner);
         var fileSystem = new RetainingSnapshotWorkspaceObserver();
@@ -1503,6 +1500,7 @@ public sealed class TestCommandTests
         var runner = new FakeWorkbookTestRunner();
         var composition = ToolingCompositionRoot.CreateApplicationComposition(
             root,
+            projectSemanticInputProvider: FakeProjectSemanticInputProvider.Empty,
             workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
             workbookTestRunner: runner);
         using var cancellation = new CancellationTokenSource();
@@ -1555,6 +1553,7 @@ public sealed class TestCommandTests
         var runner = new FakeWorkbookTestRunner();
         var composition = ToolingCompositionRoot.CreateApplicationComposition(
             root,
+            projectSemanticInputProvider: FakeProjectSemanticInputProvider.Empty,
             workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
             workbookTestRunner: runner);
         var testCommand = new TestCommand(
@@ -1607,6 +1606,7 @@ public sealed class TestCommandTests
         var captureFactory = new PathReportingFailingSnapshotSourceCaptureFactory();
         var composition = ToolingCompositionRoot.CreateApplicationComposition(
             root,
+            projectSemanticInputProvider: FakeProjectSemanticInputProvider.Empty,
             workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
             workbookTestRunner: runner);
         var testCommand = new TestCommand(
@@ -1667,6 +1667,7 @@ public sealed class TestCommandTests
             new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
         var composition = ToolingCompositionRoot.CreateApplicationComposition(
             root,
+            projectSemanticInputProvider: FakeProjectSemanticInputProvider.Empty,
             workbookGenerationAutomation: new CleanupFailingWorkbookGenerationAutomation(),
             workbookTestRunner: runner);
         var testCommand = new TestCommand(
@@ -1714,6 +1715,7 @@ public sealed class TestCommandTests
         var runner = new FakeWorkbookTestRunner();
         var composition = ToolingCompositionRoot.CreateApplicationComposition(
             root,
+            projectSemanticInputProvider: FakeProjectSemanticInputProvider.Empty,
             workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
             workbookTestRunner: runner);
         var testCommand = new TestCommand(
@@ -1735,7 +1737,9 @@ public sealed class TestCommandTests
 
         Assert.Equal(1, result.ExitCode);
         Assert.Empty(result.StandardOutput);
-        Assert.Contains(brokenSourcePath, result.StandardError, StringComparison.OrdinalIgnoreCase);
+        using var analysis = JsonDocument.Parse(result.StandardError.Split('\n')[0]);
+        Assert.Contains(analysis.RootElement.GetProperty("failures").EnumerateArray(), failure =>
+            failure.GetProperty("uri").GetString() == new Uri(brokenSourcePath).AbsoluteUri);
         Assert.DoesNotContain(scratchRoot, result.StandardError, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(
             "vba-dev-build-source-snapshot",
@@ -1768,6 +1772,7 @@ public sealed class TestCommandTests
             Guid.NewGuid().ToString("N"));
         var composition = ToolingCompositionRoot.CreateApplicationComposition(
             root,
+            projectSemanticInputProvider: FakeProjectSemanticInputProvider.Empty,
             workbookGenerationAutomation: new PathReportingFailingWorkbookGenerationAutomation(
                 privateVbePath),
             workbookTestRunner: runner);
@@ -1827,6 +1832,7 @@ public sealed class TestCommandTests
         };
         var composition = ToolingCompositionRoot.CreateApplicationComposition(
             root,
+            projectSemanticInputProvider: FakeProjectSemanticInputProvider.Empty,
             workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
             workbookTestRunner: runner);
         var testCommand = new TestCommand(
@@ -1878,6 +1884,7 @@ public sealed class TestCommandTests
         };
         var composition = ToolingCompositionRoot.CreateApplicationComposition(
             root,
+            projectSemanticInputProvider: FakeProjectSemanticInputProvider.Empty,
             workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
             workbookTestRunner: runner);
         var testCommand = new TestCommand(
@@ -1927,6 +1934,7 @@ public sealed class TestCommandTests
         };
         var composition = ToolingCompositionRoot.CreateApplicationComposition(
             root,
+            projectSemanticInputProvider: FakeProjectSemanticInputProvider.Empty,
             workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
             workbookTestRunner: runner);
         var testCommand = new TestCommand(
@@ -1971,6 +1979,7 @@ public sealed class TestCommandTests
         var runner = new PathReportingFailingWorkbookTestRunner();
         var composition = ToolingCompositionRoot.CreateApplicationComposition(
             root,
+            projectSemanticInputProvider: FakeProjectSemanticInputProvider.Empty,
             workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
             workbookTestRunner: runner);
         var testCommand = new TestCommand(
@@ -2022,6 +2031,7 @@ public sealed class TestCommandTests
         var runner = new PathMessageWorkbookTestRunner();
         var composition = ToolingCompositionRoot.CreateApplicationComposition(
             root,
+            projectSemanticInputProvider: FakeProjectSemanticInputProvider.Empty,
             workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
             workbookTestRunner: runner);
         var testCommand = new TestCommand(

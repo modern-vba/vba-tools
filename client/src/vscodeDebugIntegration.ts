@@ -2,6 +2,8 @@ import * as path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { SnapshotProviderCancellationError, SnapshotProviders, resolveSnapshotProviders, snapshotActiveWindowsCodePage } from './snapshotProviders';
 import { windowsPathKey } from './windowsPathIdentity';
+import { DebugSnapshotBuildReport, parseDebugSnapshotBuildReport } from './debugSnapshotBuildReport';
+import { ordinalIgnoreCaseKey } from './ordinalIgnoreCase';
 
 import {
   CompanionExecutableResolver,
@@ -176,6 +178,8 @@ export interface VscodeDebugIntegrationOptions {
   debugConfigurationHost?: VbaDebugConfigurationHost | undefined;
   debugAdapterCleanupProcess?: ProcessRunner | undefined;
   reportDebugAdapterCleanupWarning?: ((message: string) => unknown) | undefined;
+  reportSnapshotBuild?: ((report: DebugSnapshotBuildReport) => void) | undefined;
+  reportSnapshotBuildWarning?: ((message: string) => void) | undefined;
   requireTrustedWorkspace?: (() => Promise<boolean>) | undefined;
 }
 
@@ -761,9 +765,29 @@ export class VscodeDebugIntegration {
     }
     const response = message as {
       type?: unknown;
+      event?: unknown;
+      body?: unknown;
       command?: unknown;
       request_seq?: unknown;
     };
+    if (response.type === 'event' && response.event === 'vba/snapshotBuild') {
+      try {
+        const report = parseDebugSnapshotBuildReport(response.body);
+        const preparationId = this.restartPreparationId(configuration);
+        const preparation = preparationId === undefined ? undefined : this.restartPreparations.get(preparationId);
+        if (preparation?.adapterSessionId === undefined
+            || report.generation !== preparation.generation
+            || windowsPathKey(report.projectRoot) !== windowsPathKey(preparation.projectRoot)
+            || typeof preparation.configuration.document !== 'string'
+            || ordinalIgnoreCaseKey(report.documentName) !== ordinalIgnoreCaseKey(preparation.configuration.document)) {
+          return;
+        }
+        this.options.reportSnapshotBuild?.(report);
+      } catch (error) {
+        this.options.reportSnapshotBuildWarning?.(error instanceof Error ? error.message : String(error));
+      }
+      return;
+    }
     if (
       response.type !== 'response'
       || response.command !== 'restart'

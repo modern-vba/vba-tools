@@ -320,8 +320,10 @@ public sealed class BuildCommandTests
 
         Assert.Equal(1, result.ExitCode);
         Assert.Contains("Shared.bas", result.StandardError, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains(Path.Combine("feature", "Shared.bas"), result.StandardError, StringComparison.Ordinal);
-        Assert.Contains(Path.Combine("legacy", "shared.bas"), result.StandardError, StringComparison.Ordinal);
+        using var report = JsonDocument.Parse(result.StandardError);
+        var failure = Assert.Single(report.RootElement.GetProperty("failures").EnumerateArray()).GetProperty("message").GetString()!;
+        Assert.Contains(Path.Combine("feature", "Shared.bas"), failure, StringComparison.Ordinal);
+        Assert.Contains(Path.Combine("legacy", "shared.bas"), failure, StringComparison.Ordinal);
         Assert.Empty(automation.OpenedWorkbooks);
         Assert.False(File.Exists(outputPath));
     }
@@ -366,10 +368,13 @@ public sealed class BuildCommandTests
         ]);
 
         Assert.Equal(1, result.ExitCode);
-        var alphaIndex = result.StandardError.IndexOf(alphaPath, StringComparison.OrdinalIgnoreCase);
-        var zetaIndex = result.StandardError.IndexOf(zetaPath, StringComparison.OrdinalIgnoreCase);
-        Assert.True(alphaIndex >= 0);
-        Assert.True(zetaIndex > alphaIndex);
+        using var report = JsonDocument.Parse(result.StandardError);
+        Assert.True(report.RootElement.GetProperty("complete").GetBoolean());
+        Assert.Empty(report.RootElement.GetProperty("failures").EnumerateArray());
+        var sourcePaths = report.RootElement.GetProperty("diagnostics").EnumerateArray()
+            .Select(diagnostic => new Uri(diagnostic.GetProperty("uri").GetString()!).LocalPath)
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        Assert.Equal([alphaPath, zetaPath], sourcePaths);
         Assert.Empty(automation.OpenedWorkbooks);
         Assert.Equal("previous-output", File.ReadAllText(outputPath, Encoding.UTF8));
         Assert.Equal(alphaBytes, File.ReadAllBytes(alphaPath));
@@ -963,10 +968,15 @@ public sealed class BuildCommandTests
         {
             OnImport = cancellation.Cancel
         };
-        var pipeline = new WorkbookMaterializer(new WindowsExactFileSystemObjectOwnershipFactory(),
+        var ownership = new WindowsExactFileSystemObjectOwnershipFactory();
+        var pipeline = new WorkbookMaterializer(ownership,
+            new VbaSourceAdmission(ActiveWindowsAnsiCodePage.Get),
             automation,
             new WorkbookReferenceNormalizer(
-                new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())));
+                new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),
+            new WorkbookOutputTransactionFactory(ownership),
+            new VbeImportSourceSetFactory(ownership),
+            semanticInputProvider: FakeProjectSemanticInputProvider.Empty);
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             pipeline.MaterializeSourceSnapshotAsync(

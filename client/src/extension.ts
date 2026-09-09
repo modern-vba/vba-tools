@@ -76,7 +76,9 @@ import {
   registerWorkbookBackedTestExplorerSourceInvalidation
 } from './testExplorerInvalidation';
 import {
-  VbaDevDiagnosticReporter
+  VbaDevDiagnosticReporter,
+  combineVbaDevDiagnosticOutput,
+  vbaDevDiagnosticScope
 } from './toolDiagnostics';
 import {
   createVbaDocumentFormattingMiddleware
@@ -393,6 +395,13 @@ export async function activate(
     reportDebugAdapterCleanupWarning: (message) => {
       outputChannel?.appendLine(`[vba-debug-adapter] ${message}`);
     },
+    reportSnapshotBuild: report => {
+      toolDiagnosticReporter?.refreshSnapshot(
+        vbaDevDiagnosticScope('debug-build', report.projectRoot, report.documentName),
+        combineVbaDevDiagnosticOutput(report.stdout, report.stderr), report.origins,
+        message => outputChannel?.appendLine(`[vba-debug-adapter] ${message}`));
+    },
+    reportSnapshotBuildWarning: message => outputChannel?.appendLine(`[vba-debug-adapter] ${message}`),
     debugConfigurationHost: {
       get workspaceRoots() {
         return workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [];

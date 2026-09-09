@@ -52,7 +52,7 @@ public sealed class VbaDebugAdapterCommandLineFailureTests
     {
         public Task<VbaDevCapabilitiesProbeResult> ProbeAsync(string vbaDevPath, CancellationToken cancellationToken)
             => Task.FromResult(new VbaDevCapabilitiesProbeResult(0,
-                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}", string.Empty));
+                "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}", string.Empty));
     }
 
     private sealed class Manager(Lease lease) : IVbaDebugSessionWorkspaceManager

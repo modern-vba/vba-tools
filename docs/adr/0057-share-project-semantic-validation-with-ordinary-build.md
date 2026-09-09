@@ -119,4 +119,5 @@ its diagnostic scope. The extension and CLI share semantic rules without sharing
 product lifecycle or protocol DTOs. Static validation does not prove native VBE
 compilation and introduces no new compiler rules, active-branch-only policy,
 Project Health, progress stream or dirty-editor policy. Snapshot and Publish gates
-remain separate follow-up work; `test --no-build` continues to skip Build.
+were separate follow-up work; [ADR 0058](0058-validate-snapshot-generations-and-retain-diagnostic-origins.md)
+extends the gate to snapshots. `test --no-build` continues to skip Build.

@@ -17,8 +17,8 @@ const requiredContract: RequiredVbaDebugAdapterContract = {
   sessionIdFormat: 'lowercase-hex-32',
   commands: ['cleanup', 'doctor'],
   commandSchemaVersions: { doctor: '1.0' },
-  featureVersions: { 'doctor.stdinCancellation': '1.0' },
-  requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0' }
+  featureVersions: { 'doctor.stdinCancellation': '1.0', 'snapshotBuild.diagnostics': '1.0' },
+  requiredVbaDevFeatureVersions: { 'build.sourceSnapshot': '2.0', 'build.sourceSnapshotAnalysis': '1.0' }
 };
 
 test('the extension contract requires Doctor stdin cancellation 1.0', () => {
@@ -112,7 +112,7 @@ test('a debug adapter missing required Doctor stdin cancellation is incompatible
   const configuredPath = path.resolve('configured-vba-debug-adapter.exe');
   const requiredWithCancellation = {
     ...requiredContract,
-    featureVersions: { 'doctor.stdinCancellation': '1.0' }
+    featureVersions: { 'doctor.stdinCancellation': '1.0', 'snapshotBuild.diagnostics': '1.0' }
   };
 
   await assert.rejects(

@@ -228,7 +228,7 @@ returns `130` only with proved process and STA release. Unproved release returns
 commitment preserves success. These command-owned policies consume common
 `WorkbookAutomationTerminalFacts` rather than separate exception traversals.
 
-Ordinary Build exposes a nonempty source-analysis report as one schema `3.0`
+Ordinary and source-snapshot Build expose a nonempty source-analysis report as one schema `3.0`
 `sourceAnalysis` record on stderr, whether analysis blocks generation or Build
 succeeds with non-error findings. Absent or empty reports add no output.
 The record contains ordered diagnostics, optional related declaration locations
@@ -239,6 +239,17 @@ VS Code Build contribution is bound to the invocation's tool/command, project,
 and selected document; refresh replaces only that contribution. Shared URIs
 combine contributions from other scopes, so refreshing one scope cannot remove
 another scope's findings.
+Snapshot capture alone does not admit workbook generation. Both Build paths use
+the same complete analysis gate with their captured source authority and selected
+project evidence. `build.sourceSnapshotAnalysis: 1.0` advertises this behavior.
+The debug adapter owns an immutable snapshot-to-editor origin association and
+forwards exact Build output in `vba/snapshotBuild` events (`1.0`). VS Code projects
+primary and related locations through that association, retaining exported-source
+coordinates and omitting unsupported navigation with an Output explanation.
+Current-generation, project/document checks and atomic validation prevent stale
+or malformed reports from replacing Problems. Successful Build clears only the
+scoped debug contribution; cleanup does not invalidate original source locations.
+See [ADR 0058](docs/adr/0058-validate-snapshot-generations-and-retain-diagnostic-origins.md).
 _Avoid_: in-process command invocation, shared product DTO, product test helper
 
 **CrossProductConformanceFixture**:

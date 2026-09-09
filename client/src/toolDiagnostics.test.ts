@@ -413,6 +413,69 @@ test('sourceAnalysis 3.0 validates every related location before changing existi
   }
 });
 
+test('snapshot Problems project primary and related locations to captured origins and clear only their scope', () => {
+  const collection = new FakeDiagnosticCollection();
+  const reporter = new VbaDevDiagnosticReporter(collection);
+  const report = semanticReport();
+  const callerPath = 'C:\\project\\日本語\\nested\\Caller.bas';
+  const targetPath = 'C:\\project\\日本語\\Target.bas';
+  reporter.refresh('ordinary-build', diagnosticJson(callerPath, 'warning', 'other'));
+  const warnings: string[] = [];
+  const origins = [
+    { snapshotUri: report.diagnostics[0]!.uri, sourceUri: pathToFileURL(callerPath).href },
+    { snapshotUri: report.diagnostics[0]!.relatedInformation[0]!.location.uri,
+      sourceUri: pathToFileURL(targetPath).href }
+  ];
+
+  const actual = reporter.refreshSnapshot('debug-build', JSON.stringify(report), origins, message => warnings.push(message));
+
+  assert.equal(actual[0]?.uriPath, callerPath);
+  assert.equal(actual[0]?.relatedInformation?.[0]?.location.uriPath, targetPath);
+  assert.deepEqual(actual[0]?.range, report.diagnostics[0]!.range);
+  assert.deepEqual(actual[0]?.relatedInformation?.[0]?.location.range,
+    report.diagnostics[0]!.relatedInformation[0]!.location.range);
+  assert.equal(collection.entries.get(callerPath)?.length, 2);
+  assert.equal(warnings.length, 0);
+  reporter.refreshSnapshot('debug-build', '', origins, message => warnings.push(message));
+  assert.equal(collection.entries.get(callerPath)?.length, 1);
+  assert.equal(collection.entries.size, 1);
+});
+
+test('snapshot Problems never navigate to unmapped or unsupported origins and report every omitted location', () => {
+  const collection = new FakeDiagnosticCollection();
+  const reporter = new VbaDevDiagnosticReporter(collection);
+  const report = semanticReport();
+  const warnings: string[] = [];
+  const originalUri = 'file:///C:/authoring/nested/Caller.bas';
+  for (const sourceUri of [undefined, null, 'untitled:Caller.bas']) {
+    const actual = reporter.refreshSnapshot('debug-build', JSON.stringify(report), [
+      { snapshotUri: report.diagnostics[0]!.uri, sourceUri }
+    ], message => warnings.push(message));
+    assert.equal(actual.length, 0);
+    assert.equal(collection.entries.size, 0);
+    assert.match(warnings.at(-1)!, /Caller\.bas/);
+  }
+  const actual = reporter.refreshSnapshot('debug-build', JSON.stringify(report), [
+    { snapshotUri: report.diagnostics[0]!.uri, sourceUri: originalUri }
+  ], message => warnings.push(message));
+  assert.equal(actual[0]?.uriPath, 'C:\\authoring\\nested\\Caller.bas');
+  assert.deepEqual(actual[0]?.relatedInformation, []);
+  assert.match(warnings.at(-1)!, /Target\.bas/);
+  assert.equal(warnings.length, 4);
+});
+
+test('ambiguous snapshot origins cannot replace existing Problems even on a successful rerun', () => {
+  const collection = new FakeDiagnosticCollection();
+  const reporter = new VbaDevDiagnosticReporter(collection);
+  reporter.refresh('debug-build', diagnosticJson('C:\\authoring\\Caller.bas', 'error', 'existing'));
+  const before = [...collection.entries];
+  assert.throws(() => reporter.refreshSnapshot('debug-build', '', [
+    { snapshotUri: 'file:///C:/snapshot/Caller.bas', sourceUri: 'file:///C:/authoring/Caller.bas' },
+    { snapshotUri: 'file:///c:/SNAPSHOT/caller.bas', sourceUri: 'file:///C:/other/Caller.bas' }
+  ], () => undefined), /duplicate.*origin/i);
+  assert.deepEqual([...collection.entries], before);
+});
+
 function semanticReport() {
   return {
     type: 'sourceAnalysis', schemaVersion: '3.0', complete: true, failures: [],
