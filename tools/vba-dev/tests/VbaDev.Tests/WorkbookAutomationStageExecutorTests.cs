@@ -170,7 +170,8 @@ public sealed class WorkbookAutomationStageExecutorTests
 
         controller.Attach(owned);
         launch.Dispose();
-        Assert.True(await controller.WaitForExitOrTerminationAttemptAsync());
+        await controller.RequestCleanupAsync(TimeSpan.Zero);
+        Assert.True(owned.Completion.IsCompletedSuccessfully);
         Assert.Equal(1, owned.TerminationCalls);
     }
 
@@ -188,7 +189,7 @@ public sealed class WorkbookAutomationStageExecutorTests
         controller.Attach(owned);
         launch.Dispose();
         await launchSettlement.WaitAsync(TimeSpan.FromSeconds(1));
-        await controller.ObserveTerminationAsync().WaitAsync(TimeSpan.FromSeconds(1));
+        await controller.RequestCleanupAsync(TimeSpan.Zero).WaitAsync(TimeSpan.FromSeconds(1));
         await controller.DisposeAttachedProcessAsync().WaitAsync(TimeSpan.FromSeconds(1));
 
         Assert.Equal(1, owned.TerminationCalls);
@@ -256,7 +257,7 @@ public sealed class WorkbookAutomationStageExecutorTests
             Task.Delay(TimeSpan.FromSeconds(1))) == gateProbe;
         releaseTermination.Set();
         await request.WaitAsync(TimeSpan.FromSeconds(1));
-        await controller.ObserveTerminationAsync().WaitAsync(TimeSpan.FromSeconds(1));
+        await controller.RequestCleanupAsync(TimeSpan.Zero).WaitAsync(TimeSpan.FromSeconds(1));
 
         Assert.True(gateWasAvailable);
     }
@@ -270,11 +271,10 @@ public sealed class WorkbookAutomationStageExecutorTests
 
         controller.RequestForcedTermination(TimeSpan.Zero);
         var error = await Assert.ThrowsAnyAsync<Exception>(() => controller
-            .WaitForExitOrTerminationAttemptAsync()
+            .RequestCleanupAsync(TimeSpan.Zero)
             .WaitAsync(TimeSpan.FromSeconds(5)));
 
         Assert.Contains("denied", error.ToString(), StringComparison.Ordinal);
-        Assert.NotNull(controller.TerminationFailure);
         Assert.Equal(1, owned.DisposeCalls);
     }
 
@@ -290,7 +290,6 @@ public sealed class WorkbookAutomationStageExecutorTests
             controller.RequestCleanupAsync(TimeSpan.Zero));
 
         Assert.Contains("exit", error.ToString(), StringComparison.OrdinalIgnoreCase);
-        Assert.Same(error, controller.TerminationFailure);
         Assert.Equal(1, owned.TerminationCalls);
         Assert.Equal(1, owned.DisposeCalls);
     }
@@ -336,7 +335,6 @@ public sealed class WorkbookAutomationStageExecutorTests
             () => cleanup.WaitAsync(TimeSpan.FromSeconds(1)));
 
         Assert.Same(captureFailure, error.InnerException);
-        Assert.Same(error, controller.TerminationFailure);
         Assert.Equal(1, owned.TerminationCalls);
         Assert.Equal(1, owned.DisposeCalls);
         Assert.True(owned.HasExited);
@@ -364,7 +362,6 @@ public sealed class WorkbookAutomationStageExecutorTests
         Assert.Contains(captureFailure, aggregate.InnerExceptions);
         Assert.Contains(terminationFailure, aggregate.InnerExceptions);
         Assert.Contains(disposalFailure, aggregate.InnerExceptions);
-        Assert.Same(error, controller.TerminationFailure);
         Assert.Equal(1, owned.TerminationCalls);
         Assert.Equal(1, owned.DisposeCalls);
         Assert.False(owned.HasExited);

@@ -12,6 +12,16 @@ namespace VbaDev.Tests;
 
 public sealed class ExcelComWorkbookGenerationAutomationTests
 {
+    [Theory]
+    [InlineData(typeof(IWorkbookBuildSession))]
+    [InlineData(typeof(ExcelComWorkbookBuildSession))]
+    [InlineData(typeof(ExcelComWorkbookSession))]
+    public void BoundedWorkbookSessionDoesNotExposeIndependentDisposalAuthority(Type sessionType)
+    {
+        Assert.False(typeof(IDisposable).IsAssignableFrom(sessionType));
+        Assert.Null(sessionType.GetMethod(nameof(IDisposable.Dispose), Type.EmptyTypes));
+    }
+
     [Fact]
     public async Task RuntimePreservesComFailureStageForTerminalClassification()
     {

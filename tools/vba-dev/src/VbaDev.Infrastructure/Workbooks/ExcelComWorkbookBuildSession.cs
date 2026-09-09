@@ -690,12 +690,6 @@ internal sealed class ExcelComWorkbookBuildSession :
     public IReadOnlyList<WorkbookTestResultRow> RunTests(WorkbookTestSelector selector)
         => ExcelComWorkbookTestRunner.RunTests(session, selector);
 
-    /// <summary>
-    /// Closes the workbook, quits Excel, and releases collected COM references.
-    /// </summary>
-    public void Dispose()
-        => session.Dispose();
-
     internal void DisposeOwnedGeneration(TimeSpan cleanupGrace)
         => session.DisposeOwnedGeneration(cleanupGrace);
 

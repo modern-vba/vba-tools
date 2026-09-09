@@ -2180,10 +2180,8 @@ public sealed class PrivateDesktopExcelFeasibilityWindowsExcelIntegrationTests(
         var host = new ExcelComWorkbookSession.ExcelComHostObjects(
             application,
             workbooks,
-            ExcelProcess: null,
             StrongExcelProcess: owner,
-            TerminationController: null,
-            CancellationRegistration: default);
+            TerminationController: null);
         var hostEvents = new ExcelComHostEventCatalogAutomation
             .ExcelComHostEventCatalogLifecycle();
         var references = new ExcelComVbaProjectReferenceProbeAutomation

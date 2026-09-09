@@ -1,14 +1,33 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
-using VbaDev.Infrastructure.Workbooks;
 
 namespace VbaDev.Infrastructure.Debugging;
 
 internal sealed class WindowsDebugExcelProcessApi : IDebugExcelProcessApi
 {
     public IReadOnlyDictionary<int, DateTime> CaptureRunningExcelProcesses()
-        => ExcelComApplicationProcess.CaptureRunningExcelProcesses();
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return new Dictionary<int, DateTime>();
+        }
+
+        var processes = new Dictionary<int, DateTime>();
+        foreach (var process in Process.GetProcessesByName("EXCEL"))
+        {
+            using (process)
+            {
+                var startTime = TryGetProcessStartTime(process);
+                if (startTime is not null)
+                {
+                    processes[process.Id] = startTime.Value;
+                }
+            }
+        }
+
+        return processes;
+    }
 
     public int GetProcessId(nint windowHandle)
     {
@@ -71,6 +90,26 @@ internal sealed class WindowsDebugExcelProcessApi : IDebugExcelProcessApi
             throw new DebugSetupException(
                 "A kill-on-close Windows Job Object could not be created for owned Excel.",
                 exception);
+        }
+    }
+
+    private static DateTime? TryGetProcessStartTime(Process process)
+    {
+        try
+        {
+            return process.StartTime;
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
+        catch (Win32Exception)
+        {
+            return null;
         }
     }
 
