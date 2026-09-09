@@ -36,7 +36,7 @@ internal sealed class VbaDevReferenceCommandFamily
             "reference add",
             "1.0",
             capabilityRegistrations);
-        var addProjectOptions = VbaDevCommandGrammar.AddProjectDocumentOptions(AddCommand);
+        var addProjectOptions = VbaDevCommandGrammar.AddProjectDocumentOptions(AddCommand, grammarFailureRules);
         AddProjectOption = addProjectOptions.Project;
         AddDocumentOption = addProjectOptions.Document;
         AddReferencesArgument = new Argument<string[]>("references")
@@ -61,7 +61,7 @@ internal sealed class VbaDevReferenceCommandFamily
             "reference list",
             "1.0",
             capabilityRegistrations);
-        var listProjectOptions = VbaDevCommandGrammar.AddProjectDocumentOptions(ListCommand);
+        var listProjectOptions = VbaDevCommandGrammar.AddProjectDocumentOptions(ListCommand, grammarFailureRules);
         ListProjectOption = listProjectOptions.Project;
         ListDocumentOption = listProjectOptions.Document;
         ListAvailableOption = new Option<bool>("--available")
@@ -89,7 +89,7 @@ internal sealed class VbaDevReferenceCommandFamily
             "reference remove",
             "1.0",
             capabilityRegistrations);
-        var removeProjectOptions = VbaDevCommandGrammar.AddProjectDocumentOptions(RemoveCommand);
+        var removeProjectOptions = VbaDevCommandGrammar.AddProjectDocumentOptions(RemoveCommand, grammarFailureRules);
         RemoveProjectOption = removeProjectOptions.Project;
         RemoveDocumentOption = removeProjectOptions.Document;
         RemoveReferencesArgument = new Argument<string[]>("references")
@@ -384,16 +384,13 @@ internal sealed class VbaDevReferenceCommandFamily
 
     private IEnumerable<CompletionItem> CompleteAdd(CompletionContext completionContext)
     {
-        if (!ShouldEvaluateReferenceNameCompletion(completionContext))
+        if (GetCompletionRequest(completionContext, AddProjectOption, AddDocumentOption) is not { } request)
         {
             return [];
         }
 
         return composition.ReferenceCompletionService.CompleteAdd(
-                new ProjectResolutionRequest(
-                    completionContext.ParseResult.GetValue(AddProjectOption),
-                    completionContext.ParseResult.GetValue(AddDocumentOption),
-                    composition.WorkingDirectory),
+                request,
                 completionContext.ParseResult.GetResult(AddReferencesArgument)?.Tokens
                     .Select(token => token.Value)
                     .ToArray()
@@ -403,21 +400,42 @@ internal sealed class VbaDevReferenceCommandFamily
 
     private IEnumerable<CompletionItem> CompleteRemove(CompletionContext completionContext)
     {
-        if (!ShouldEvaluateReferenceNameCompletion(completionContext))
+        if (GetCompletionRequest(completionContext, RemoveProjectOption, RemoveDocumentOption) is not { } request)
         {
             return [];
         }
 
         return composition.ReferenceCompletionService.CompleteRemove(
-                new ProjectResolutionRequest(
-                    completionContext.ParseResult.GetValue(RemoveProjectOption),
-                    completionContext.ParseResult.GetValue(RemoveDocumentOption),
-                    composition.WorkingDirectory),
+                request,
                 completionContext.ParseResult.GetResult(RemoveReferencesArgument)?.Tokens
                     .Select(token => token.Value)
                     .ToArray()
                 ?? [])
             .Select(name => new CompletionItem(name));
+    }
+
+    private ProjectResolutionRequest? GetCompletionRequest(
+        CompletionContext completionContext,
+        Option<string> projectOption,
+        Option<string> documentOption)
+    {
+        if (!ShouldEvaluateReferenceNameCompletion(completionContext))
+        {
+            return null;
+        }
+
+        try
+        {
+            return new ProjectResolutionRequest(
+                completionContext.ParseResult.GetValue(projectOption),
+                completionContext.ParseResult.GetValue(documentOption),
+                composition.WorkingDirectory);
+        }
+        catch (ArgumentException)
+        {
+            // Completion stays quiet when incomplete input cannot form a valid request.
+            return null;
+        }
     }
 
     private bool ShouldEvaluateReferenceNameCompletion(

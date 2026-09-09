@@ -32,7 +32,7 @@ internal sealed class VbaDevCommonModuleCommandFamily
             "common-module add",
             "1.0",
             capabilityRegistrations);
-        var addProjectOptions = VbaDevCommandGrammar.AddProjectDocumentOptions(AddCommand);
+        var addProjectOptions = VbaDevCommandGrammar.AddProjectDocumentOptions(AddCommand, grammarFailureRules);
         AddProjectOption = addProjectOptions.Project;
         AddDocumentOption = addProjectOptions.Document;
         AddModulesArgument = new Argument<string[]>("modules")
@@ -61,7 +61,7 @@ internal sealed class VbaDevCommonModuleCommandFamily
             "common-module list",
             "1.0",
             capabilityRegistrations);
-        var listProjectOptions = VbaDevCommandGrammar.AddProjectDocumentOptions(ListCommand);
+        var listProjectOptions = VbaDevCommandGrammar.AddProjectDocumentOptions(ListCommand, grammarFailureRules);
         ListProjectOption = listProjectOptions.Project;
         ListDocumentOption = listProjectOptions.Document;
         ListFormatOption = VbaDevCommandGrammar.CreateStringOption(
@@ -79,7 +79,7 @@ internal sealed class VbaDevCommonModuleCommandFamily
             "common-module update",
             "1.0",
             capabilityRegistrations);
-        UpdateProjectOption = VbaDevCommandGrammar.AddProjectOption(UpdateCommand);
+        UpdateProjectOption = VbaDevCommandGrammar.AddProjectOption(UpdateCommand, grammarFailureRules);
         UpdateFormatOption = VbaDevCommandGrammar.CreateStringOption(
             "--format",
             "CommonModules mutation output format.",

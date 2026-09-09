@@ -73,6 +73,12 @@ The internal executable-facing Deep Module that constructs the one
 `System.CommandLine` root for a `VbaDevCommandLine`. It owns the composition
 root, help and version actions, the hidden cancellation transport, staged
 family registration in established root order, and completed-graph validation.
+Its project-only and project-plus-document entry points create and attach
+canonical selector symbols together with their nonblank value rules. Every
+family adopting those symbols therefore rejects supplied empty or whitespace-
+only values without a separate per-family registration. Only null means an
+omitted project or document selector. Nonblank spelling reaches binding
+unchanged, and relative project paths retain their invocation-directory basis.
 It declares no leaf command, command-specific symbol relationship, leaf-command
 accepted-value set, or typed command binding. It does not read a serialized command
 catalog or expose command-family interfaces to another product.
@@ -202,7 +208,11 @@ empty, and writes exactly one diagnostic line plus one command-local hint line,
 including the final platform newline. Valid help, standalone version,
 completion, and capabilities remain side-effect-free terminal successes. The
 router supplies shared primitives; each command family owns the declarations
-that use them rather than having behavior inferred by the router itself.
+that use them rather than having behavior inferred by the router itself. Shared
+project/document symbol creation registers its nonblank rule in the same graph.
+A blank selector is a value-phase failure, so existing parsing/cardinality
+precedence, token/display ordering, and canonical two-line rendering apply
+before relationships, binding, or domain access.
 _Avoid_: parse-error message matching, mutable runtime rule catalog, consumer-owned CLI validation
 
 **PublicToolProcessContract**:
@@ -1231,6 +1241,19 @@ Events nor `IntrinsicHostEventCatalogSnapshot` state. A project-local
 `ProjectManifest` for language-server project-boundary or reference-selection
 behavior.
 _Avoid_: package file, extension settings, workspace settings
+
+**ProjectResolutionRequest**:
+The VbaDev Application request that carries optional `ProjectRoot` and
+`DocumentName` selectors plus `StartDirectory`. Only null means omission:
+project omission retains upward manifest discovery, and document omission
+retains the selected manifest's primary document. Empty or whitespace-only
+selectors fail at the request boundary, including supported request updates,
+before any discovery or manifest access. Nonblank values are retained exactly;
+the request neither trims or recases them nor resolves their paths. Existing
+resolution uses the supplied `StartDirectory` basis. CLI families obtain the
+same invariant through canonical project/document symbol creation and its
+inseparable value rule, while direct managed callers cannot bypass it.
+_Avoid_: blank-as-omitted selector, implicit trimming, CLI option parsing in Application
 
 **ProjectManifestByteAdmission**:
 The disk-byte contract for `vba-project.json`: strict UTF-8 with or without a

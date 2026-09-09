@@ -30,7 +30,7 @@ internal sealed class VbaDevTestCommandFamily
             "test",
             "1.2",
             capabilityRegistrations);
-        var projectOptions = VbaDevCommandGrammar.AddProjectDocumentOptions(TestCommand);
+        var projectOptions = VbaDevCommandGrammar.AddProjectDocumentOptions(TestCommand, grammarFailureRules);
         ProjectOption = projectOptions.Project;
         DocumentOption = projectOptions.Document;
         FormatOption = VbaDevCommandGrammar.CreateStringOption(
@@ -66,8 +66,6 @@ internal sealed class VbaDevTestCommandFamily
         TestCommand.Add(TimeoutSecondsOption);
         TestCommand.Add(ModuleOption);
         TestCommand.Add(ProcedureOption);
-        grammarFailureRules.RequireNonEmpty(ProjectOption);
-        grammarFailureRules.RequireNonEmpty(DocumentOption);
         grammarFailureRules.RequireNonEmpty(SourceSnapshotOption);
         grammarFailureRules.RequirePositive(TimeoutSecondsOption);
         grammarFailureRules.Requires(TestCommand, ProcedureOption, ModuleOption);

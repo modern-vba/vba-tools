@@ -47,6 +47,40 @@ completion sources, and explicit capability registrations as applicable. The
 grammar stages those registrations only to preserve the established root order;
 families do not create independently invokable roots.
 
+The shared project-only and project-plus-document entry points,
+`AddProjectOption` and `AddProjectDocumentOptions`, create and attach the
+canonical option symbols together with their nonblank value rules. Families
+receive those exact symbols and cannot adopt selector creation without its
+validation or register a second copy of the same rule. Families retain their
+command-specific relationships, bindings, actions, completions, and capability
+registration.
+
+Project and document omission is null-only. Every project-aware leaf rejects an
+explicit empty or whitespace-only `--project`; every document-aware leaf does
+the same for `--document`, including its `-d` alias. The rule applies uniformly
+to CommonModules, Reference, Check, Doctor, Build, Publish, Test, and
+project-aware Export according to each leaf's existing selector surface. It
+adds no selectors to commands that do not support them. A supplied blank fails
+in the value phase before relationships, binding, project discovery, manifest
+or registry access, Excel automation, or mutation. Earlier parsing and
+cardinality failures retain their existing precedence.
+
+An omitted project retains the established upward-discovery behavior; an
+omitted document retains primary-document selection. Existing environment-only
+modes and available-reference fallback remain unchanged. Nonblank values reach
+binding unchanged, without trimming, recasing, or normalization. Relative
+project paths retain the invocation working-directory basis and subsequent
+domain resolution follows its existing rules.
+
+`ProjectResolutionRequest` enforces the same null-or-nonblank invariant for
+`ProjectRoot` and `DocumentName`, including supported request updates. Direct
+managed callers cannot use a blank selector to trigger discovery or
+primary-document selection. The request preserves nonblank spelling and
+`StartDirectory`; it neither resolves paths nor changes the caller's directory
+basis. This Application invariant is independent of CLI grammar rendering.
+Reference-name completion treats a selector rejected by that request boundary
+as unavailable context and retains its quiet, empty-candidate behavior.
+
 The completed graph carries a narrow family-ownership ledger. Each entry stores
 only the owning sealed internal family `Type` and an actual leaf `Command`
 reference. Completed-graph validation enumerates the runtime root and proves
@@ -101,16 +135,14 @@ parallel compatibility grammar:
 - Doctor and capabilities accept `-f` as the alias of `--format`;
 - snapshot Build accepts `-o` as the alias of `--output`;
 - Import `--from` and `--to` are required and nonempty;
-- supplied Export `--project`, `--document`, `--from`, and `--to` values are
-  nonempty, while omission retains the established defaults;
-- supplied Build `--project`, `--document`, `--source-snapshot`, and `--output`
-  values are nonempty, while omission retains the established selection and
-  persistent-build defaults;
-- supplied Publish `--project` and `--document` values are nonempty, while
-  omission retains the established selection defaults;
-- supplied Test `--project`, `--document`, and `--source-snapshot` values are
-  nonempty, while omission retains the established selection and persistent-
-  build defaults;
+- supplied project and document selectors use the shared null-only omission
+  contract for every leaf that exposes them;
+- supplied Export `--from` and `--to` values are nonempty, while omission
+  retains the established defaults;
+- supplied Build `--source-snapshot` and `--output` values are nonempty, while
+  omission retains the persistent-build default;
+- supplied Test `--source-snapshot` is nonempty, while omission retains the
+  persistent-build default;
 - an explicitly empty Test module or procedure does not collapse to an omitted
   selector, while exact nonempty VBA identifiers retain their existing
   Application validation;

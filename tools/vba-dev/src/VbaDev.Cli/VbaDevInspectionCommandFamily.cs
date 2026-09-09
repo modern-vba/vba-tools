@@ -26,7 +26,7 @@ internal sealed class VbaDevInspectionCommandFamily
             rootCommand,
             "check",
             "Validate deterministic project facts without starting Excel.");
-        CheckProjectOption = VbaDevCommandGrammar.AddProjectOption(CheckCommand);
+        CheckProjectOption = VbaDevCommandGrammar.AddProjectOption(CheckCommand, grammarFailureRules);
         CheckIntentBinding = grammarFailureRules.BindIntent<VbaDevCheckCommandIntent>(
             CheckCommand,
             parseResult => VbaDevGrammarIntentBindResult<VbaDevCheckCommandIntent>.Bound(
@@ -42,7 +42,7 @@ internal sealed class VbaDevInspectionCommandFamily
             "doctor",
             "1.0",
             capabilityRegistrations);
-        DoctorProjectOption = VbaDevCommandGrammar.AddProjectOption(DoctorCommand);
+        DoctorProjectOption = VbaDevCommandGrammar.AddProjectOption(DoctorCommand, grammarFailureRules);
         DoctorScopeOption = VbaDevCommandGrammar.CreateStringOption(
             "--scope",
             "Diagnostic scope.",

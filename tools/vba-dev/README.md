@@ -81,10 +81,32 @@ script after moving or replacing that executable.
 | `check` | project | Validate deterministic project facts without starting Excel. |
 | `doctor` | project or environment | Actively check project or ordinary Excel-environment readiness. |
 
-Document-scoped commands use the manifest `primaryDocument` when `--document` is omitted.
-For the Build and Publish family, supplied `--project` and `--document` values
-must be nonempty; omission retains their established selection defaults. Build
-and Publish are declared by one sealed internal command family, but remain
+Every command that supports `--project` rejects an explicitly supplied empty
+or whitespace-only value. The same rule applies to `--document` and its `-d`
+alias wherever document selection is supported. This includes CommonModules,
+Reference, Check, and Doctor as well as Build, Publish, Test, and project-aware
+Export; project-only commands still have no document selector.
+
+Omit the option to use its default. Project resolution retains upward discovery
+from the current working directory when `--project` is omitted, and
+document-scoped commands use the manifest `primaryDocument` when `--document`
+is omitted. Existing environment-only modes and the available-reference
+fallback retain their behavior. Nonblank values are passed through without
+trimming, recasing, or normalization; relative project paths keep their current
+working-directory basis.
+
+Blank selectors fail during grammar value validation, before option
+relationships, project discovery, manifest reads, registry access, Excel work,
+or mutation. Grammar errors retain exit code `1`, empty standard output, and
+exactly two standard-error lines, using the canonical option name and the
+selected command's help hint. For example:
+
+```text
+Error: Option '--project' requires a non-empty value.
+Hint: Run 'vba-dev common-module list --help' for usage.
+```
+
+Build and Publish are declared by one sealed internal command family, but remain
 separate materialization modes: Publish has no `--output` or `--format`
 override.
 Test is declared by its own sealed internal command family. Its source mode is
