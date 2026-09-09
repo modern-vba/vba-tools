@@ -228,14 +228,14 @@ returns `130` only with proved process and STA release. Unproved release returns
 commitment preserves success. These command-owned policies consume common
 `WorkbookAutomationTerminalFacts` rather than separate exception traversals.
 
-Ordinary and source-snapshot Build expose a nonempty source-analysis report as one schema `3.0`
-`sourceAnalysis` record on stderr, whether analysis blocks generation or Build
+Ordinary and source-snapshot Build and Publish expose a nonempty source-analysis report as one schema `3.0`
+`sourceAnalysis` record on stderr, whether analysis blocks generation or the command
 succeeds with non-error findings. Absent or empty reports add no output.
 The record contains ordered diagnostics, optional related declaration locations
 with expected/found explanations, and explicit processing failures.
 Consumers validate the public schema and use original
 file URIs and exported-source ranges without importing a provider DTO. The
-VS Code Build contribution is bound to the invocation's tool/command, project,
+VS Code Build or Publish contribution is bound to the invocation's tool/command, project,
 and selected document; refresh replaces only that contribution. Shared URIs
 combine contributions from other scopes, so refreshing one scope cannot remove
 another scope's findings.
@@ -1285,9 +1285,9 @@ admission. Later
 authoring changes belong to the next invocation, without new locks or retries.
 
 Source-directory validity belongs to admission. Template existence belongs to
-materialization input validation, after source admission. When both source and
-template are invalid, project Build and Publish report the source-admission
-error first. A template failure still releases captured generation input and
+materialization input validation, after source capture. Analyzed project Build
+and Publish retain source findings and append template/evidence acquisition
+failures to the incomplete report. A template failure still releases captured generation input and
 retains any cleanup failure. The shallow `WorkbookSourcePlanner` and its
 order reconstruction are removed. Consumers preserve final admission directly;
 raw source lists and `ExpectedUnicodeText` bridges cannot supply generation
@@ -1300,15 +1300,21 @@ Adapter construction does not read source. Empty decoded text is a valid cached
 value, and project manifest order is applied only after every selected source
 has passed admission, preserving filename-ordered failure traversal.
 
-Ordinary saved-source materialization additionally requests analyzed project
-Build admission. This retains the same private source-selection policy and
+Ordinary saved-source materialization requests analyzed project Build or Publish
+admission. Both retain the same private source-selection policy and
 source authority while collecting a `VbaSourceAnalysisReport` from each exact
 captured syntax tree. Known file-local source read, strict-decode, and sidecar
 read failures permit independent sources to continue; raw project admission,
-Doctor's captured profiles, Publish, snapshot admission, and explicit Import
-retain their existing contracts. Only complete, error-free analyzed admission
-can supply ordinary Build generation input. Successfully analyzed input is
-not reconstructed from paths after the gate. ADR 0056 records this scope.
+Doctor's captured profiles and explicit Import retain their existing contracts.
+Only complete, error-free analyzed admission can supply Build or Publish
+generation input. Successfully analyzed input is not reconstructed from paths
+after the gate. Publish validates only the post-exclusion collection: excluded
+syntax and declarations cannot add diagnostics or participate in semantic
+resolution. Equal source and metadata inputs produce equal diagnostics across
+Build, Publish, and the language server; different source sets need not agree.
+Existing indeterminacy is preserved without new unresolved-name rules.
+Both command output schemas are `3.0`; the global contract stays `1.0`.
+See ADR 0056 and [ADR 0060](docs/adr/0060-validate-the-effective-publish-source-set.md).
 
 Issue #350 pairs a successful ordinary or snapshot test materialization with its
 exact admission and copies immutable navigation facts into an `ExecutedSourceIndex`.

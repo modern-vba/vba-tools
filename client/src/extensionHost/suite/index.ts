@@ -4,7 +4,7 @@ import { runTestExplorerNavigationIntegrationTests } from './testExplorerNavigat
 import { runDebugConfigurationIntegrationTests } from './debugConfigurationIntegration';
 import { runModuleRenameIntegrationTests } from './moduleRenameIntegration';
 import { runCommandPaletteTargetIntegrationTests } from './commandPaletteTargetIntegration';
-import { runBuildProblemsIntegrationTests } from './buildProblemsIntegration';
+import { runBuildProblemsIntegrationTests, runPublishProblemsIntegrationTests } from './buildProblemsIntegration';
 import { runSnapshotBuildProblemsIntegrationTests } from './snapshotBuildProblemsIntegration';
 import { runTestBuildProblemsIntegrationTests } from './testBuildProblemsIntegration';
 import { runCommonModulesCommandIntegrationTests } from './commonModulesCommandIntegration';
@@ -16,6 +16,7 @@ export async function run(): Promise<void> {
   await runCommonModulesCommandIntegrationTests();
   await runCommandPaletteTargetIntegrationTests();
   await runBuildProblemsIntegrationTests();
+  await runPublishProblemsIntegrationTests();
   await runSnapshotBuildProblemsIntegrationTests();
   await runTestBuildProblemsIntegrationTests();
   await runDebugConfigurationIntegrationTests();

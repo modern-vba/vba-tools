@@ -260,10 +260,12 @@ public sealed class BuildSourceDiagnosticsTests
         fixture.AssertNoGenerationAndFilesUnchanged();
     }
 
-    [Fact]
-    public async Task OrdinaryBuildContinuesAfterSourceReadFailureAndReportsIncompleteAnalysis()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task BuildAndPublishContinuesAfterSourceReadFailureAndReportsIncompleteAnalysis(bool publish)
     {
-        using var fixture = new BuildFixture();
+        using var fixture = new BuildFixture(publish: publish);
         var firstSource = fixture.SourcePath("AFirst.bas");
         var laterSource = fixture.SourcePath("ZLater.bas");
         File.WriteAllText(firstSource, "Attribute VB_Name = \"AFirst\"\n", new UTF8Encoding(false));
@@ -311,10 +313,12 @@ public sealed class BuildSourceDiagnosticsTests
         fixture.AssertNoGenerationAndFilesUnchanged();
     }
 
-    [Fact]
-    public async Task OrdinaryBuildKeepsFormSyntaxFindingsAfterSidecarReadFailureAndAnalyzesLaterSources()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task BuildAndPublishKeepsFormSyntaxFindingsAfterSidecarReadFailureAndAnalyzesLaterSources(bool publish)
     {
-        using var fixture = new BuildFixture();
+        using var fixture = new BuildFixture(publish: publish);
         var formPath = fixture.SourcePath("ADialog.frm");
         var sidecarPath = fixture.SourcePath("ADialog.frx");
         var laterPath = fixture.SourcePath("ZLater.bas");
@@ -414,10 +418,12 @@ public sealed class BuildSourceDiagnosticsTests
         fixture.AssertNoGenerationAndFilesUnchanged();
     }
 
-    [Fact]
-    public async Task OrdinaryBuildContinuesAfterStrictSourceDecodeFailure()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task BuildAndPublishContinuesAfterStrictSourceDecodeFailure(bool publish)
     {
-        using var fixture = new BuildFixture();
+        using var fixture = new BuildFixture(publish: publish);
         var firstSource = fixture.SourcePath("AFirst.bas");
         var laterSource = fixture.SourcePath("ZLater.bas");
         File.WriteAllBytes(firstSource, [0xef, 0xbb, 0xbf, 0xff]);
@@ -458,10 +464,12 @@ public sealed class BuildSourceDiagnosticsTests
         fixture.AssertNoGenerationAndFilesUnchanged();
     }
 
-    [Fact]
-    public async Task OrdinaryBuildKeepsEarlierFindingsAndStopsAfterProjectFatalProcessingFailure()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task BuildAndPublishKeepsEarlierFindingsAndStopsAfterProjectFatalProcessingFailure(bool publish)
     {
-        using var fixture = new BuildFixture();
+        using var fixture = new BuildFixture(publish: publish);
         var firstSource = fixture.SourcePath("AFirst.bas");
         var failedSource = fixture.SourcePath("ZFailure.bas");
         var unreadSource = fixture.SourcePath("ZZAfter.bas");
@@ -598,10 +606,12 @@ public sealed class BuildSourceDiagnosticsTests
         fixture.AssertNoGenerationAndFilesUnchanged();
     }
 
-    [Fact]
-    public async Task OrdinaryBuildAnalyzesAndImportsCapturedBytesAfterAuthoringSourcesChangeOrDisappear()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task BuildAndPublishAnalyzesAndImportsCapturedBytesAfterAuthoringSourcesChangeOrDisappear(bool publish)
     {
-        using var fixture = new BuildFixture();
+        using var fixture = new BuildFixture(publish: publish);
         var formPath = fixture.SourcePath("ADialog.frm");
         var sidecarPath = fixture.SourcePath("ADialog.frx");
         var laterPath = fixture.SourcePath("ZLater.bas");
@@ -662,15 +672,16 @@ public sealed class BuildSourceDiagnosticsTests
     }
 
     public static IEnumerable<object[]> ProjectSemanticCases()
-        => ReadProjectSemanticCases().Select(fixture => new object[] { fixture.GetProperty("id").GetString()! });
+        => ReadProjectSemanticCases().SelectMany(fixture => new[] { false, true }
+            .Select(publish => new object[] { fixture.GetProperty("id").GetString()!, publish }));
 
     [Theory]
     [MemberData(nameof(ProjectSemanticCases))]
-    public async Task OrdinaryBuildSemanticDiagnosticsMatchTheNeutralLiteralCorpus(string caseId)
+    public async Task BuildAndPublishSemanticDiagnosticsMatchTheNeutralLiteralCorpus(string caseId, bool publish)
     {
         var corpus = ReadProjectSemanticCases().Single(item =>
             item.GetProperty("id").GetString() == caseId);
-        using var fixture = new BuildFixture();
+        using var fixture = new BuildFixture(publish: publish);
         foreach (var source in corpus.GetProperty("sources").EnumerateArray())
         {
             File.WriteAllText(fixture.SourcePath(source.GetProperty("fileName").GetString()!),
@@ -777,14 +788,15 @@ public sealed class BuildSourceDiagnosticsTests
     }
 
     public static IEnumerable<object[]> ConformanceCases()
-        => ReadConformanceCases().Select(fixture => new object[] { fixture.GetProperty("id").GetString()! });
+        => ReadConformanceCases().SelectMany(fixture => new[] { false, true }
+            .Select(publish => new object[] { fixture.GetProperty("id").GetString()!, publish }));
 
     [Theory]
     [MemberData(nameof(ConformanceCases))]
-    public async Task OrdinaryBuildDiagnosticsMatchTheNeutralLiteralCorpus(string caseId)
+    public async Task BuildAndPublishDiagnosticsMatchTheNeutralLiteralCorpus(string caseId, bool publish)
     {
         var corpus = ReadConformanceCases().Single(item => item.GetProperty("id").GetString() == caseId);
-        using var fixture = new BuildFixture();
+        using var fixture = new BuildFixture(publish: publish);
         var sourcePath = fixture.SourcePath(corpus.GetProperty("fileName").GetString()!);
         File.WriteAllText(sourcePath, corpus.GetProperty("source").GetString()!, new UTF8Encoding(false));
         var expected = corpus.GetProperty("syntaxDiagnostics").EnumerateArray()
@@ -839,9 +851,12 @@ public sealed class BuildSourceDiagnosticsTests
         private readonly List<string> mirrorPaths = [];
         private Dictionary<string, byte[]> originalFiles = [];
         private int mirrorCreations;
+        private readonly bool publish;
+        private string OutputPath => publish ? context.PublishDocumentPath : context.BinDocumentPath;
 
-        public BuildFixture(IReadOnlyList<VbaProjectReference>? references = null)
+        public BuildFixture(IReadOnlyList<VbaProjectReference>? references = null, bool publish = false)
         {
+            this.publish = publish;
             var root = temp.CreateDirectory("Project");
             new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null,
                 references: references));
@@ -850,8 +865,8 @@ public sealed class BuildSourceDiagnosticsTests
             File.WriteAllText(SourcePath("Book1.xlsm"), "source-template", new UTF8Encoding(false));
             context = new ProjectContextResolver(new JsonProjectManifestStore()).Resolve(
                 new ProjectResolutionRequest(root, null, root));
-            Directory.CreateDirectory(Path.GetDirectoryName(context.BinDocumentPath)!);
-            File.WriteAllText(context.BinDocumentPath, "previous-completed-build", new UTF8Encoding(false));
+            Directory.CreateDirectory(Path.GetDirectoryName(OutputPath)!);
+            File.WriteAllText(OutputPath, "previous-completed-build", new UTF8Encoding(false));
         }
 
         private string SourceDirectory { get; }
@@ -867,7 +882,7 @@ public sealed class BuildSourceDiagnosticsTests
             bool provideEmptyInputs = true)
         {
             originalFiles = Directory.GetFiles(SourceDirectory, "*", SearchOption.AllDirectories)
-                .Append(context.BinDocumentPath)
+                .Append(OutputPath)
                 .ToDictionary(path => path, File.ReadAllBytes, StringComparer.Ordinal);
             var ownership = new WindowsExactFileSystemObjectOwnershipFactory();
             var materializer = new WorkbookMaterializer(
@@ -881,6 +896,7 @@ public sealed class BuildSourceDiagnosticsTests
                     mirrorCreations++;
                     mirrorPaths.Add(sourceSet.StagingPath);
                 }), semanticInputProvider: semanticInputProvider ?? (provideEmptyInputs ? FakeProjectSemanticInputProvider.Empty : null));
+            if (publish) return new PublishCommand(new WorkbookOutputCommand(materializer)).RunAsync(context, cancellationToken);
             var command = new BuildCommand(
                 new WorkbookOutputCommand(materializer), new FileSystemPathIdentityResolver(), ownership);
             return command.RunAsync(context, cancellationToken);
@@ -897,14 +913,14 @@ public sealed class BuildSourceDiagnosticsTests
             {
                 Assert.Equal(bytes, File.ReadAllBytes(path));
             }
-            Assert.Equal(new[] { context.BinDocumentPath }, Directory.GetFiles(Path.GetDirectoryName(context.BinDocumentPath)!));
+            Assert.Equal(new[] { OutputPath }, Directory.GetFiles(Path.GetDirectoryName(OutputPath)!));
         }
 
         public void AssertSuccessfulBuild(CommandResult result, int importedSourceCount, bool sourcesUnchanged = true,
             bool templateUnchanged = true)
         {
             Assert.Equal(0, result.ExitCode);
-            Assert.Equal($"Built {context.BinDocumentPath}{Environment.NewLine}Imported {importedSourceCount} source files.{Environment.NewLine}",
+            Assert.Equal($"{(publish ? "Published" : "Built")} {OutputPath}{Environment.NewLine}Imported {importedSourceCount} source files.{Environment.NewLine}",
                 result.StandardOutput);
             Assert.Empty(result.StandardError);
             var stagingWorkbook = Assert.Single(Automation.OpenedWorkbooks);
@@ -920,13 +936,13 @@ public sealed class BuildSourceDiagnosticsTests
                 Assert.False(File.Exists(source.SourcePath));
                 if (source.BinaryPath is not null) Assert.False(File.Exists(source.BinaryPath));
             });
-            Assert.Equal(originalFiles[context.TemplateDocumentPath], File.ReadAllBytes(context.BinDocumentPath));
+            Assert.Equal(originalFiles[context.TemplateDocumentPath], File.ReadAllBytes(OutputPath));
             if (templateUnchanged)
                 Assert.Equal(originalFiles[context.TemplateDocumentPath], File.ReadAllBytes(context.TemplateDocumentPath));
-            Assert.Equal(new[] { context.BinDocumentPath }, Directory.GetFiles(Path.GetDirectoryName(context.BinDocumentPath)!));
+            Assert.Equal(new[] { OutputPath }, Directory.GetFiles(Path.GetDirectoryName(OutputPath)!));
             if (sourcesUnchanged)
             {
-                foreach (var (path, bytes) in originalFiles.Where(file => file.Key != context.BinDocumentPath
+                foreach (var (path, bytes) in originalFiles.Where(file => file.Key != OutputPath
                     && (templateUnchanged || file.Key != context.TemplateDocumentPath)))
                 {
                     Assert.Equal(bytes, File.ReadAllBytes(path));

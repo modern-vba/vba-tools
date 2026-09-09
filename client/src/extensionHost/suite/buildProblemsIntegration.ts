@@ -65,6 +65,15 @@ const targetSource = 'Attribute VB_Name = "Target"\nPublic Sub AcceptValue(ByRef
 const correctedLater = 'Attribute VB_Name = "ZLater"\nPublic Sub LaterRun()\nEnd Sub\n';
 
 export async function runBuildProblemsIntegrationTests(): Promise<void> {
+  await runOutputProblemsIntegrationTests('build');
+}
+
+export async function runPublishProblemsIntegrationTests(): Promise<void> {
+  await runOutputProblemsIntegrationTests('publish');
+}
+
+async function runOutputProblemsIntegrationTests(command: 'build' | 'publish'): Promise<void> {
+  const caption = command === 'build' ? 'Build' : 'Publish';
   assert.equal(process.platform, 'win32', 'This is a native Windows vba-dev integration.');
   const fixtureParent = process.env.VBA_TOOLS_EXTENSION_HOST_FIXTURE_ROOT;
   assert.ok(fixtureParent, 'Use the disposable extension-host workspace fixture.');
@@ -73,27 +82,29 @@ export async function runBuildProblemsIntegrationTests(): Promise<void> {
   assert.equal((await stat(executablePath)).isFile(), true, 'Publish the current vba-dev first.');
   const provider = await resolveCompatibleVbaDev({ extensionRoot, configuredPath: executablePath });
   assert.equal(provider.executablePath, executablePath);
-  assert.equal(provider.capabilities.commands.build?.outputSchemaVersion, '3.0');
+  assert.equal(provider.capabilities.commands[command]?.outputSchemaVersion, '3.0');
 
-  const fixtureRoot = await mkdtemp(path.join(fixtureParent, 'build-problems-'));
+  const fixtureRoot = await mkdtemp(path.join(fixtureParent, `${command}-problems-`));
   const sourceRoot = path.join(fixtureRoot, 'src', 'Book1');
   const manifestPath = path.join(fixtureRoot, 'vba-project.json');
   const aPath = path.join(sourceRoot, 'AFirst.bas');
   const zPath = path.join(sourceRoot, 'ZLater.bas');
   const callerPath = path.join(sourceRoot, 'Caller.bas');
   const targetPath = path.join(sourceRoot, 'Target.bas');
+  const excludedPath = path.join(sourceRoot, 'Excluded.bas');
+  const excludedBytes = Buffer.from(`'#ExcludePublish\n${invalidFirst}`, 'ascii');
   const templatePath = path.join(fixtureRoot, 'templates', 'Book1.xlsm');
   const aUri = Uri.file(aPath);
   const zUri = Uri.file(zPath);
   const callerUri = Uri.file(callerPath);
   const targetUri = Uri.file(targetPath);
   const ownedUriKeys = new Set([aPath, zPath, callerPath, targetPath].map(windowsPathKey));
-  const binPath = path.join(fixtureRoot, 'bin', 'Book1.xlsm');
+  const outputPath = path.join(fixtureRoot, command === 'build' ? 'bin' : 'publish', 'Book1.xlsm');
   const priorOutputBytes = Buffer.from('previous completed output sentinel', 'ascii');
   const toolCollection = languages.createDiagnosticCollection(`vba-dev-native-${randomUUID()}`);
   const otherCollection = languages.createDiagnosticCollection(`other-tool-native-${randomUUID()}`);
   const reporter = new VbaDevDiagnosticReporter(createVscodeDiagnosticCollectionAdapter(toolCollection));
-  const channel = window.createOutputChannel('VBA Tools Build Problems Native Integration');
+  const channel = window.createOutputChannel(`VBA Tools ${caption} Problems Native Integration`);
   const configuration = workspace.getConfiguration('workbench');
   const oldWorkspaceTheme = configuration.inspect<string>('colorTheme')?.workspaceValue;
   const oldEditor = window.activeTextEditor;
@@ -105,7 +116,7 @@ export async function runBuildProblemsIntegrationTests(): Promise<void> {
   try {
     await configuration.update('colorTheme', 'Default Dark Modern', ConfigurationTarget.Workspace);
     await mkdir(sourceRoot, { recursive: true });
-    await mkdir(path.dirname(binPath), { recursive: true });
+    await mkdir(path.dirname(outputPath), { recursive: true });
     const seedRoot = path.join(fixtureRoot, 'initial-project');
     await promisify(execFile)(executablePath,
       ['new', 'excel', '--name', 'Book1', '--output', seedRoot, '--format', 'json'],
@@ -118,7 +129,7 @@ export async function runBuildProblemsIntegrationTests(): Promise<void> {
     await writeFile(templatePath, templateBytes);
     const manifestText = `${JSON.stringify({
       schemaVersion: 1,
-      projectName: 'BuildProblemsNative',
+      projectName: `${caption}ProblemsNative`,
       primaryDocument: 'Book1',
       documents: {
         Book1: {
@@ -139,9 +150,10 @@ export async function runBuildProblemsIntegrationTests(): Promise<void> {
     await writeFile(zPath, invalidLater, 'ascii');
     await writeFile(callerPath, invalidCaller, 'ascii');
     await writeFile(targetPath, targetSource, 'ascii');
-    await writeFile(binPath, priorOutputBytes);
+    if (command === 'publish') await writeFile(excludedPath, excludedBytes);
+    await writeFile(outputPath, priorOutputBytes);
     // An actual owned Excel creation supplies project identity and baseline references.
-    // Invalid builds must preserve this exact template and the previous output.
+    // Invalid source sets must preserve this exact template and the previous output.
     const project = await resolveCommandPaletteProjectTargetFromManifestText(
       manifestPath, manifestText, resolveCommandPalettePathIdentity
     );
@@ -150,14 +162,14 @@ export async function runBuildProblemsIntegrationTests(): Promise<void> {
     assert.ok(document);
 
     const foreign = new Diagnostic(new Range(0, 0, 0, 9),
-      'Independent tool contribution survives Build refresh.', DiagnosticSeverity.Information);
+      `Independent tool contribution survives ${caption} refresh.`, DiagnosticSeverity.Information);
     foreign.source = 'other-tool-native';
     foreign.code = 'integration.independentFinding';
     otherCollection.set(aUri, [foreign]);
 
     const options = {
-      toolCommandName: 'build' as const,
-      title: 'VBA Tools: Build',
+      toolCommandName: command,
+      title: `VBA Tools: ${caption}`,
       extensionRoot,
       configuredDevToolPath: executablePath,
       workspaceRoots: [fixtureRoot],
@@ -251,7 +263,8 @@ export async function runBuildProblemsIntegrationTests(): Promise<void> {
     assert.deepEqual(window.activeTextEditor!.selection.end, related[0].location.range.end);
     assert.deepEqual(await readFile(aPath), Buffer.from(invalidFirst, 'ascii'));
     assert.deepEqual(await readFile(zPath), Buffer.from(invalidLater, 'ascii'));
-    assert.deepEqual(await readFile(binPath), priorOutputBytes);
+    assert.deepEqual(await readFile(outputPath), priorOutputBytes);
+    if (command === 'publish') assert.deepEqual(await readFile(excludedPath), excludedBytes);
     assert.deepEqual(await readFile(templatePath), templateBytes);
 
     const sourceDocument = await workspace.openTextDocument(aUri);
@@ -288,7 +301,8 @@ export async function runBuildProblemsIntegrationTests(): Promise<void> {
       && languages.getDiagnostics(aUri).some(item => item.source === 'other-tool-native'));
     assert.deepEqual(await readFile(aPath), Buffer.from(correctedFirst, 'ascii'));
     assert.deepEqual(await readFile(zPath), Buffer.from(invalidLater, 'ascii'));
-    assert.deepEqual(await readFile(binPath), priorOutputBytes);
+    assert.deepEqual(await readFile(outputPath), priorOutputBytes);
+    if (command === 'publish') assert.deepEqual(await readFile(excludedPath), excludedBytes);
     assert.deepEqual(await readFile(templatePath), templateBytes);
     await writeFile(zPath, correctedLater, 'ascii');
     const third = await runWorkbookBackedProjectCommand(options);
@@ -299,18 +313,19 @@ export async function runBuildProblemsIntegrationTests(): Promise<void> {
     assert.deepEqual(toolCollection.get(aUri) ?? [], []);
     assert.deepEqual(toolCollection.get(callerUri) ?? [], []);
     assert.deepEqual((otherCollection.get(aUri) ?? []).map(diagnosticFact), [diagnosticFact(foreign)]);
-    assert.notDeepEqual(await readFile(binPath), priorOutputBytes);
-    assert.equal((await readFile(binPath)).subarray(0, 2).toString('ascii'), 'PK');
+    assert.notDeepEqual(await readFile(outputPath), priorOutputBytes);
+    assert.equal((await readFile(outputPath)).subarray(0, 2).toString('ascii'), 'PK');
+    if (command === 'publish') assert.deepEqual(await readFile(excludedPath), excludedBytes);
     assert.deepEqual(await readFile(templatePath), templateBytes);
     assert.deepEqual(await readFile(callerPath), Buffer.from(correctedCaller, 'ascii'));
     assert.deepEqual(await readFile(targetPath), Buffer.from(targetSource, 'ascii'));
     assert.equal(await readFile(manifestPath, 'utf8'), manifestText);
     assert.deepEqual(errors, [
-      'Build failed. See the VBA Tools output for details.',
-      'Build failed. See the VBA Tools output for details.'
+      `${caption} failed. See the VBA Tools output for details.`,
+      `${caption} failed. See the VBA Tools output for details.`
     ]);
     assert.deepEqual(warnings, []);
-    console.log('PASS real Build preserves semantic related navigation and artifacts, accepts Dictionary inputs, and clears Problems after successful generation');
+    console.log(`PASS real ${caption} preserves semantic related navigation and artifacts, accepts Dictionary inputs, and clears Problems after successful generation`);
   } finally {
     toolCollection.dispose();
     otherCollection.dispose();

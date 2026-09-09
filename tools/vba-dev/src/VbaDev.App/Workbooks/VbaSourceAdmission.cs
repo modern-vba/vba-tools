@@ -171,8 +171,30 @@ internal sealed class VbaSourceAdmission
         => AdmittedVbaSourceSet.AdmitAnalyzedProjectBuildAsync(this, sourceDirectory, commonModules,
             acquireInputs, cancellationToken);
 
-    internal async Task<(AdmittedVbaSourceData Admission, VbaSourceAnalysisReport Report)> ReadAnalyzedProjectBuildAsync(
+    internal Task<(AdmittedVbaSourceData Admission, VbaSourceAnalysisReport Report)> ReadAnalyzedProjectBuildAsync(
         string sourceDirectory,
+        IReadOnlyList<InstalledCommonModule> commonModules,
+        Func<IReadOnlyList<VbaSyntaxTree>, CancellationToken, Task<VbaProjectSemanticInputs>>? acquireInputs,
+        CancellationToken cancellationToken)
+        => ReadAnalyzedProjectAsync(sourceDirectory, AdmissionPurpose.ProjectBuild, commonModules, acquireInputs, cancellationToken);
+
+    internal Task<AdmittedVbaSourceSet> AdmitAnalyzedProjectPublishAsync(
+        string sourceDirectory,
+        IReadOnlyList<InstalledCommonModule> commonModules,
+        Func<IReadOnlyList<VbaSyntaxTree>, CancellationToken, Task<VbaProjectSemanticInputs>> acquireInputs,
+        CancellationToken cancellationToken)
+        => AdmittedVbaSourceSet.AdmitAnalyzedProjectPublishAsync(this, sourceDirectory, commonModules, acquireInputs, cancellationToken);
+
+    internal Task<(AdmittedVbaSourceData Admission, VbaSourceAnalysisReport Report)> ReadAnalyzedProjectPublishAsync(
+        string sourceDirectory,
+        IReadOnlyList<InstalledCommonModule> commonModules,
+        Func<IReadOnlyList<VbaSyntaxTree>, CancellationToken, Task<VbaProjectSemanticInputs>> acquireInputs,
+        CancellationToken cancellationToken)
+        => ReadAnalyzedProjectAsync(sourceDirectory, AdmissionPurpose.ProjectPublish, commonModules, acquireInputs, cancellationToken);
+
+    private async Task<(AdmittedVbaSourceData Admission, VbaSourceAnalysisReport Report)> ReadAnalyzedProjectAsync(
+        string sourceDirectory,
+        AdmissionPurpose purpose,
         IReadOnlyList<InstalledCommonModule> commonModules,
         Func<IReadOnlyList<VbaSyntaxTree>, CancellationToken, Task<VbaProjectSemanticInputs>>? acquireInputs,
         CancellationToken cancellationToken)
@@ -182,7 +204,7 @@ internal sealed class VbaSourceAdmission
         var projectFatal = false;
         try
         {
-            data = AdmitCore(sourceDirectory, AdmissionPurpose.ProjectBuild, commonModules, cancellationToken, analysis);
+            data = AdmitCore(sourceDirectory, purpose, commonModules, cancellationToken, analysis);
         }
         catch (Exception error) when (error is not OperationCanceledException)
         {
@@ -897,6 +919,18 @@ internal sealed class AdmittedVbaSourceSet
         IReadOnlyList<InstalledCommonModule> commonModules,
         CancellationToken cancellationToken)
         => new(admission.ReadProjectBuild(sourceDirectory, commonModules, cancellationToken));
+
+    internal static async Task<AdmittedVbaSourceSet> AdmitAnalyzedProjectPublishAsync(
+        VbaSourceAdmission admission,
+        string sourceDirectory,
+        IReadOnlyList<InstalledCommonModule> commonModules,
+        Func<IReadOnlyList<VbaSyntaxTree>, CancellationToken, Task<VbaProjectSemanticInputs>> acquireInputs,
+        CancellationToken cancellationToken)
+    {
+        var result = await admission.ReadAnalyzedProjectPublishAsync(sourceDirectory, commonModules,
+            acquireInputs, cancellationToken).ConfigureAwait(false);
+        return new(result.Admission, result.Report);
+    }
 
     internal static AdmittedVbaSourceSet AdmitProjectPublish(
         VbaSourceAdmission admission,

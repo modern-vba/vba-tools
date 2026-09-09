@@ -452,8 +452,9 @@ or clearing other diagnostic scopes. Unsupported origin mappings are explained
 in Output rather than linked to a deleted temporary file.
 
 Test command and Test Explorer Build failures expose the same diagnostics and
-stop before test execution; see [Test Explorer](#test-explorer). Publish,
-standalone Import and Export, and `test --no-build` retain their existing behavior.
+stop before test execution; see [Test Explorer](#test-explorer). [Publish](#publish)
+applies this gate to its included source set. Standalone Import and Export, and
+`test --no-build` retain their existing behavior.
 
 Workbook open and save stages each use a 300-second timeout by default. A
 project can set positive whole-second overrides through
@@ -638,6 +639,29 @@ are not read; project-local sources must decode completely before their marker
 can exclude them. A proved marker exclusion does not require lossless ACP
 projection, but every included source does. Later source changes belong to the
 next publish invocation; the command does not lock or retry authoring files.
+
+After exclusion, Publish runs the full shared syntax and semantic analyzer on
+the included source set, with the selected reference, host Event, and project
+identity evidence. Excluded declarations do not participate in name or type
+resolution. An excluded syntax or semantic error does not block publication;
+an equivalent included error does. Results match Build and the language server
+when their source and metadata inputs match. An editor analysis that includes
+excluded files can therefore produce different findings. Modeled uncertainty,
+including unresolved calls, retains the analyzer's existing behavior.
+
+Recoverable errors accumulate across included files. Any Error or incomplete
+required analysis stops publication before generation and preserves source and
+template bytes and the last completed publish workbook. Successful generation
+uses the same captured included sources, template, and accepted metadata.
+Ordinary Build still validates its full source set, including publish exclusions.
+
+Publish command schema `3.0` exposes the shared `sourceAnalysis` schema `3.0`
+records on stderr. VS Code Publish shows primary and related declarations in
+Problems at original exported-source coordinates. After correcting and saving
+sources, rerun Publish to clear resolved findings for that project and document;
+other command, document, and tool contributions remain. Acquisition failures
+and incomplete-analysis reasons appear in VBA Tools Output. This does not add a
+dirty-editor snapshot policy or claim native VBE compile verification.
 
 ### Export
 

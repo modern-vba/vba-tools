@@ -28,7 +28,8 @@ public sealed class PublishCommandTests
             ToolingCompositionRoot.CreateApplicationComposition(
                 root,
                 workbookGenerationAutomation: automation,
-                workbookTestRunner: runner));
+                workbookTestRunner: runner,
+                projectSemanticInputProvider: FakeProjectSemanticInputProvider.Empty));
 
         var result = await application.RunAsync(
             ["publish", "--project", root, "--document", "SecondBook"]);
@@ -230,7 +231,12 @@ public sealed class PublishCommandTests
         var result = application.Run(["publish"]);
 
         Assert.Equal(1, result.ExitCode);
-        Assert.Contains("Source identity 'CollisionName'", result.StandardError, StringComparison.Ordinal);
+        using var report = JsonDocument.Parse(result.StandardError.Split('\n')[0]);
+        Assert.True(report.RootElement.GetProperty("complete").GetBoolean());
+        var diagnostics = report.RootElement.GetProperty("diagnostics").EnumerateArray().ToArray();
+        Assert.Equal(2, diagnostics.Length);
+        Assert.All(diagnostics, diagnostic =>
+            Assert.Equal("validation.duplicateDeclaration", diagnostic.GetProperty("code").GetString()));
         Assert.Contains("First.bas", result.StandardError, StringComparison.Ordinal);
         Assert.Contains("Second.bas", result.StandardError, StringComparison.Ordinal);
         Assert.Empty(automation.OpenedWorkbooks);
@@ -360,7 +366,10 @@ public sealed class PublishCommandTests
 
         Assert.Equal(1, result.ExitCode);
         Assert.Contains("strictly decoded", result.StandardError, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains(sourcePath, result.StandardError, StringComparison.OrdinalIgnoreCase);
+        using var report = JsonDocument.Parse(result.StandardError.Split('\n')[0]);
+        Assert.False(report.RootElement.GetProperty("complete").GetBoolean());
+        Assert.Contains(report.RootElement.GetProperty("failures").EnumerateArray(),
+            failure => failure.GetProperty("uri").GetString() == new Uri(sourcePath).AbsoluteUri);
         Assert.Empty(automation.OpenedWorkbooks);
         Assert.Empty(automation.Events);
     }
@@ -429,7 +438,7 @@ public sealed class PublishCommandTests
     }
 
     [Fact]
-    public void PublishTreatsExistingDesiredWorkbookReferencesAsSatisfiedBeforeRegistryResolution()
+    public void PublishRequiresUniqueAcceptedMetadataEvenWhenTheWorkbookAlreadyContainsTheReference()
     {
         using var temp = TempDirectory.Create();
         var root = temp.CreateDirectory("Project");
@@ -453,18 +462,16 @@ public sealed class PublishCommandTests
 
         var result = application.Run(["publish"]);
 
-        Assert.Equal(0, result.ExitCode);
-        Assert.DoesNotContain("OLE Automation", resolver.RequestedNames);
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("OLE Automation", resolver.RequestedNames);
         Assert.Contains("Microsoft Scripting Runtime", resolver.RequestedNames);
-        Assert.Equal(
-            [
-                "remove:OldModule",
-                "remove-ref:Unlisted Library",
-                "add-ref:Microsoft Scripting Runtime",
-                "import:Local.bas",
-                "save"
-            ],
-            automation.Events);
+        using var report = JsonDocument.Parse(result.StandardError.Split('\n')[0]);
+        Assert.False(report.RootElement.GetProperty("complete").GetBoolean());
+        Assert.Contains("ambiguous", Assert.Single(report.RootElement.GetProperty("failures").EnumerateArray())
+            .GetProperty("message").GetString(), StringComparison.Ordinal);
+        Assert.Empty(automation.Events);
+        Assert.Empty(automation.OpenedWorkbooks);
+        Assert.False(File.Exists(Path.Combine(root, "publish", "Book1.xlsm")));
     }
 
     [Fact]

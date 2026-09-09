@@ -115,7 +115,7 @@ internal sealed class VbaDevBuildPublishCommandFamily
             "publish",
             "Publish the selected document.",
             "publish",
-            "1.0",
+            "3.0",
             capabilityRegistrations);
         var projectOptions = VbaDevCommandGrammar.AddProjectDocumentOptions(PublishCommand, grammarFailureRules);
         PublishProjectOption = projectOptions.Project;
