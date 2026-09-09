@@ -1356,6 +1356,50 @@ public sealed class ReferenceCommandTests
     }
 
     [Fact]
+    public async Task SelectionListWalksUpToProjectAndUsesTheNonFirstPrimaryDocument()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        var nestedDirectory = Directory.CreateDirectory(
+            Path.Combine(root, "nested", "deeper")).FullName;
+        var manifest = ProjectManifestTestData.TwoDocumentManifest(root) with
+        {
+            PrimaryDocument = "SecondBook"
+        };
+        manifest.Documents["Book1"].References.Add(
+            new VbaProjectReference("First Document Library"));
+        manifest.Documents["SecondBook"].References.Add(
+            new VbaProjectReference("Primary Document Library"));
+        new JsonProjectManifestStore().Save(root, manifest);
+        var referenceResolver = new FakeVbaProjectReferenceResolver
+        {
+            ThrowOnResolve = true
+        };
+        var application = CommandLineTestFactory.Create(
+            nestedDirectory,
+            vbaProjectReferenceResolver: referenceResolver,
+            vbaProjectReferenceAmbiguityProbe: new DelegateReferenceAmbiguityProbe(_ =>
+                throw new InvalidOperationException(
+                    "Stored reference selection must not start Excel or VBE probing.")));
+
+        var result = await application.RunAsync(
+            ["reference", "list", "--no-resolve", "-f", "json"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.StandardError);
+        using var parsed = JsonDocument.Parse(result.StandardOutput);
+        var output = parsed.RootElement;
+        Assert.Equal("project", output.GetProperty("scope").GetString());
+        Assert.Equal(Path.GetFullPath(root), output.GetProperty("project").GetString());
+        Assert.Equal("SecondBook", output.GetProperty("document").GetString());
+        Assert.Equal("selection", output.GetProperty("mode").GetString());
+        Assert.True(output.GetProperty("complete").GetBoolean());
+        var reference = Assert.Single(output.GetProperty("references").EnumerateArray());
+        Assert.Equal("Primary Document Library", reference.GetProperty("name").GetString());
+        Assert.Empty(referenceResolver.RequestedNames);
+    }
+
+    [Fact]
     public async Task SelectionListUsesImplicitProjectAndPrimaryDocumentContext()
     {
         using var temp = TempDirectory.Create();

@@ -30,7 +30,7 @@ internal sealed class VbaDevImportExportCommandFamily
             "export",
             "1.0",
             capabilityRegistrations);
-        var exportProjectOptions = VbaDevCommandGrammar.AddProjectDocumentOptions(ExportCommand);
+        var exportProjectOptions = VbaDevCommandGrammar.AddProjectDocumentOptions(ExportCommand, grammarFailureRules);
         ExportProjectOption = exportProjectOptions.Project;
         ExportDocumentOption = exportProjectOptions.Document;
         ExportFromOption = VbaDevCommandGrammar.CreateStringOption(
@@ -43,8 +43,6 @@ internal sealed class VbaDevImportExportCommandFamily
             "dir");
         ExportCommand.Add(ExportFromOption);
         ExportCommand.Add(ExportToOption);
-        grammarFailureRules.RequireNonEmpty(ExportProjectOption);
-        grammarFailureRules.RequireNonEmpty(ExportDocumentOption);
         grammarFailureRules.RequireNonEmpty(ExportFromOption);
         grammarFailureRules.RequireNonEmpty(ExportToOption);
         grammarFailureRules.Conflicts(

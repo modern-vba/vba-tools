@@ -253,6 +253,31 @@ public sealed class VbaDevCommonModuleCommandFamilyTests
         Assert.Equal(initialEntries, Directory.GetFileSystemEntries(temp.Path));
     }
 
+    [Fact]
+    public void ExplicitBlankProjectForCommonModuleListFailsBeforeProjectAccess()
+    {
+        using var temp = TempDirectory.Create();
+        var manifestPath = Path.Combine(temp.Path, ProjectManifest.ManifestFileName);
+        File.WriteAllText(manifestPath, "{}");
+        var initialEntries = Directory.GetFileSystemEntries(temp.Path);
+        var manifestStore = new RejectingProjectManifestStore();
+        var commandLine = CommandLineTestFactory.Create(
+            temp.Path,
+            projectManifestStore: manifestStore);
+
+        var result = commandLine.Run(["common-module", "list", "--project", ""]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(
+            $"Error: Option '--project' requires a non-empty value.{Environment.NewLine}" +
+            $"Hint: Run 'vba-dev common-module list --help' for usage.{Environment.NewLine}",
+            result.StandardError);
+        Assert.Equal(0, manifestStore.LoadCount);
+        Assert.Equal(initialEntries, Directory.GetFileSystemEntries(temp.Path));
+        Assert.Equal("{}", File.ReadAllText(manifestPath));
+    }
+
     private static ParseResult ParseSuccessfully(
         RootCommand root,
         VbaDevGrammarFailureRouter router,

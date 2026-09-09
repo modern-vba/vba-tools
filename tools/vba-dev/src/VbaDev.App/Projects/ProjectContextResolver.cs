@@ -47,9 +47,7 @@ public sealed class ProjectContextResolver
     {
         var project = ResolveProject(request);
         var manifest = project.Manifest;
-        var requestedDocumentName = string.IsNullOrWhiteSpace(request.DocumentName)
-            ? manifest.PrimaryDocument
-            : request.DocumentName;
+        var requestedDocumentName = request.DocumentName ?? manifest.PrimaryDocument;
 
         if (!TryGetDocument(
                 manifest,
@@ -96,7 +94,7 @@ public sealed class ProjectContextResolver
 
     internal static string ResolveProjectRoot(ProjectResolutionRequest request)
     {
-        if (!string.IsNullOrWhiteSpace(request.ProjectRoot))
+        if (request.ProjectRoot is not null)
         {
             var explicitRoot = Path.GetFullPath(
                 request.ProjectRoot,

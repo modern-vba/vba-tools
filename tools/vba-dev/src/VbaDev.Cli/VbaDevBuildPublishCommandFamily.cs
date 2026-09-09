@@ -77,7 +77,7 @@ internal sealed class VbaDevBuildPublishCommandFamily
             "build",
             "1.0",
             capabilityRegistrations);
-        var projectOptions = VbaDevCommandGrammar.AddProjectDocumentOptions(BuildCommand);
+        var projectOptions = VbaDevCommandGrammar.AddProjectDocumentOptions(BuildCommand, grammarFailureRules);
         BuildProjectOption = projectOptions.Project;
         BuildDocumentOption = projectOptions.Document;
         BuildSourceSnapshotOption = VbaDevCommandGrammar.CreateStringOption(
@@ -91,8 +91,6 @@ internal sealed class VbaDevBuildPublishCommandFamily
             aliases: "-o");
         BuildCommand.Add(BuildSourceSnapshotOption);
         BuildCommand.Add(BuildOutputOption);
-        grammarFailureRules.RequireNonEmpty(BuildProjectOption);
-        grammarFailureRules.RequireNonEmpty(BuildDocumentOption);
         grammarFailureRules.RequireNonEmpty(BuildSourceSnapshotOption);
         grammarFailureRules.RequireNonEmpty(BuildOutputOption);
         grammarFailureRules.AllOrNone(
@@ -119,11 +117,9 @@ internal sealed class VbaDevBuildPublishCommandFamily
             "publish",
             "1.0",
             capabilityRegistrations);
-        var projectOptions = VbaDevCommandGrammar.AddProjectDocumentOptions(PublishCommand);
+        var projectOptions = VbaDevCommandGrammar.AddProjectDocumentOptions(PublishCommand, grammarFailureRules);
         PublishProjectOption = projectOptions.Project;
         PublishDocumentOption = projectOptions.Document;
-        grammarFailureRules.RequireNonEmpty(PublishProjectOption);
-        grammarFailureRules.RequireNonEmpty(PublishDocumentOption);
         PublishIntentBinding = grammarFailureRules.BindIntent<VbaDevPublishCommandIntent>(
             PublishCommand,
             BindPublishIntent);

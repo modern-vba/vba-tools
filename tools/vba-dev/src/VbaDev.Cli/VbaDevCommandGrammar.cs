@@ -205,25 +205,31 @@ internal static class VbaDevCommandGrammar
         }
     }
 
-    internal static ProjectDocumentOptions AddProjectDocumentOptions(Command command)
+    internal static ProjectDocumentOptions AddProjectDocumentOptions(
+        Command command,
+        VbaDevGrammarFailureRules grammarFailureRules)
     {
-        var projectOption = AddProjectOption(command);
+        var projectOption = AddProjectOption(command, grammarFailureRules);
         var documentOption = CreateStringOption(
             "--document",
             "Document name from the project manifest.",
             "name",
             aliases: "-d");
         command.Add(documentOption);
+        grammarFailureRules.RequireNonEmpty(documentOption);
         return new ProjectDocumentOptions(projectOption, documentOption);
     }
 
-    internal static Option<string> AddProjectOption(Command command)
+    internal static Option<string> AddProjectOption(
+        Command command,
+        VbaDevGrammarFailureRules grammarFailureRules)
     {
         var option = CreateStringOption(
             "--project",
             "Project root containing vba-project.json.",
             "path");
         command.Add(option);
+        grammarFailureRules.RequireNonEmpty(option);
         return option;
     }
 
