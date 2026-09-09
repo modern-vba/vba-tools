@@ -52,7 +52,8 @@ internal sealed class VbaSemanticResolution
         callSiteResolution = new VbaCallSiteResolution(
             nameResolution,
             memberChainResolution,
-            resolutionPolicy);
+            resolutionPolicy,
+            interfaceSemantics);
     }
 
     internal VbaWithEventsTypeEligibility? GetWithEventsTypeEligibility(

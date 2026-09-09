@@ -2,12 +2,186 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
 using VbaLanguageServer.SourceModel;
+using VbaTools.Syntax;
 using Xunit;
 
 namespace VbaLanguageServer.Tests;
 
 public sealed class ComTypeLibCatalogMetadataReaderTests
 {
+    [Theory]
+    [InlineData(TYPEKIND.TKIND_DISPATCH, (TYPEFLAGS)0, FUNCKIND.FUNC_DISPATCH, true)]
+    [InlineData(TYPEKIND.TKIND_INTERFACE, TYPEFLAGS.TYPEFLAG_FOLEAUTOMATION,
+        FUNCKIND.FUNC_PUREVIRTUAL, true)]
+    [InlineData(TYPEKIND.TKIND_INTERFACE,
+        TYPEFLAGS.TYPEFLAG_FDUAL | TYPEFLAGS.TYPEFLAG_FOLEAUTOMATION,
+        FUNCKIND.FUNC_VIRTUAL, true)]
+    [InlineData(TYPEKIND.TKIND_DISPATCH, TYPEFLAGS.TYPEFLAG_FDUAL,
+        FUNCKIND.FUNC_PUREVIRTUAL, true)]
+    [InlineData(TYPEKIND.TKIND_INTERFACE, (TYPEFLAGS)0, FUNCKIND.FUNC_PUREVIRTUAL, false)]
+    [InlineData(TYPEKIND.TKIND_INTERFACE, TYPEFLAGS.TYPEFLAG_FDISPATCHABLE,
+        FUNCKIND.FUNC_PUREVIRTUAL, false)]
+    public void InputOnlyPointerVariantDispatchParameterAcceptsDirectStringStorage(
+        TYPEKIND typeKind,
+        TYPEFLAGS typeFlags,
+        FUNCKIND functionKind,
+        bool isApplicable)
+    {
+        const string referenceName = "Fixture";
+        var reader = new ComTypeLibCatalogMetadataReader(_ => CreateTypeLib(
+            referenceName,
+            CreateTypeInfo(
+                "Collection",
+                typeKind,
+                functionNames: ["Put", "key"],
+                typeFlags: typeFlags,
+                functionParameterVarType: VarEnum.VT_PTR,
+                functionParameterElementVarType: VarEnum.VT_VARIANT,
+                functionParameterFlags: PARAMFLAG.PARAMFLAG_FIN,
+                functionKind: functionKind)));
+        var metadata = reader.ReadMetadata(new VbaProjectReferenceCatalogIdentity(
+            referenceName,
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            1, 0, 0, @"C:\TypeLibs\Fixture.tlb"));
+        var catalog = TypeLibReferenceCatalogBuilder.Build(referenceName, metadata);
+        var catalogs = VbaProjectReferenceCatalogSet.Empty.WithCatalog(catalog);
+        var selection = VbaProjectReferenceSelection.Create("word", [new VbaProjectReference(referenceName)]);
+        const string uri = "file:///C:/work/Caller.bas";
+        const string source = """
+            Attribute VB_Name = "Caller"
+            Public Sub Run()
+                Dim values As Fixture.Collection
+                Dim key As String
+                values.Put key
+            End Sub
+            """;
+        var syntaxTree = VbaSyntaxTree.ParseModule(uri, source);
+        var document = VbaSourceDocumentProjector.Project(uri, syntaxTree);
+        var inventory = VbaSemanticInventory.Create(
+            new Dictionary<string, VbaSourceDocument>(StringComparer.OrdinalIgnoreCase) { [uri] = document },
+            selection, catalogs);
+        var target = Assert.IsAssignableFrom<VbaResolvedNameTarget>(
+            inventory.ResolveSourceTarget(uri, 4, "    values.".Length));
+        Assert.Equal("Put", target.CanonicalName);
+        Assert.Equal(VbaDefinitionOrigin.ProjectReference, target.SelectedDefinition.Identity.Origin);
+        var nameResolution = new VbaNameResolutionService([document], selection, catalogs);
+        var callResolution = new VbaCallSiteResolution(
+            nameResolution,
+            new VbaMemberChainResolution(new VbaTypeResolution(nameResolution)),
+            new VbaResolutionPolicy());
+        var call = Assert.Single(syntaxTree.Module.ArgumentLists, candidate =>
+            candidate.CalleeRange?.Start.Line == 4 && candidate.Form == VbaCallSyntaxForm.Statement);
+
+        var compatibility = callResolution.AnalyzeCompleteCall(document, call, target);
+
+        var variant = Assert.Single(compatibility.Variants);
+        Assert.Equal(
+            isApplicable
+                ? VbaCallCompatibilityState.Applicable
+                : VbaCallCompatibilityState.Indeterminate,
+            variant.State);
+        Assert.Empty(Assert.IsType<VbaCompleteCallArgumentMapping>(variant.Mapping).TypeMismatchReasons);
+        Assert.DoesNotContain(inventory.GetProjectValidationDiagnostics(uri), diagnostic =>
+            diagnostic.Code == "validation.incompatibleCallArgumentList"
+            || diagnostic.Message.Contains("ByRef type", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(PARAMFLAG.PARAMFLAG_FOUT, VarEnum.VT_PTR, VarEnum.VT_I4, "Dim result As Long", "result", true)]
+    [InlineData(PARAMFLAG.PARAMFLAG_FIN | PARAMFLAG.PARAMFLAG_FOUT,
+        VarEnum.VT_PTR, VarEnum.VT_I4, "Dim result As Long", "result", true)]
+    [InlineData(PARAMFLAG.PARAMFLAG_FOUT, VarEnum.VT_PTR, VarEnum.VT_I4, "Dim result As Integer", "result", false)]
+    [InlineData(PARAMFLAG.PARAMFLAG_FIN | PARAMFLAG.PARAMFLAG_FOUT,
+        VarEnum.VT_PTR, VarEnum.VT_I4, "Dim result As Integer", "result", false)]
+    [InlineData(PARAMFLAG.PARAMFLAG_FOUT, VarEnum.VT_PTR, VarEnum.VT_I4, "Dim result As Long", "(result)", false)]
+    [InlineData(PARAMFLAG.PARAMFLAG_FIN | PARAMFLAG.PARAMFLAG_FOUT,
+        VarEnum.VT_PTR, VarEnum.VT_I4, "Dim result As Long", "(result)", false)]
+    [InlineData(PARAMFLAG.PARAMFLAG_FOUT, VarEnum.VT_PTR, VarEnum.VT_I4, "Dim result As Long", "1&", false)]
+    [InlineData(PARAMFLAG.PARAMFLAG_FIN | PARAMFLAG.PARAMFLAG_FOUT,
+        VarEnum.VT_PTR, VarEnum.VT_I4, "Dim result As Long", "1&", false)]
+    [InlineData(PARAMFLAG.PARAMFLAG_FOUT, VarEnum.VT_PTR, VarEnum.VT_VARIANT, "Dim result As String", "result", false)]
+    [InlineData(PARAMFLAG.PARAMFLAG_FIN | PARAMFLAG.PARAMFLAG_FOUT,
+        VarEnum.VT_PTR, VarEnum.VT_VARIANT, "Dim result As String", "result", false)]
+    [InlineData(PARAMFLAG.PARAMFLAG_FOUT, VarEnum.VT_I4, null, "Dim result As Long", "result", false)]
+    [InlineData(PARAMFLAG.PARAMFLAG_FIN | PARAMFLAG.PARAMFLAG_FOUT,
+        VarEnum.VT_I4, null, "Dim result As Long", "result", false)]
+    [InlineData(PARAMFLAG.PARAMFLAG_FOUT, VarEnum.VT_PTR, null, "Dim result As Long", "result", false)]
+    [InlineData(PARAMFLAG.PARAMFLAG_FIN | PARAMFLAG.PARAMFLAG_FOUT,
+        VarEnum.VT_PTR, null, "Dim result As Long", "result", false)]
+    [InlineData(PARAMFLAG.PARAMFLAG_NONE, VarEnum.VT_PTR, VarEnum.VT_I4, "Dim result As Long", "result", false)]
+    [InlineData(PARAMFLAG.PARAMFLAG_FOUT,
+        VarEnum.VT_PTR, VarEnum.VT_I4, "Dim result() As Long", "result", false)]
+    [InlineData(PARAMFLAG.PARAMFLAG_FIN | PARAMFLAG.PARAMFLAG_FOUT,
+        VarEnum.VT_PTR, VarEnum.VT_I4, "Dim result() As Long", "result", false)]
+    public void ExternalOutputCompatibilityRequiresProvenWritableStorage(
+        PARAMFLAG direction,
+        VarEnum parameterVarType,
+        VarEnum? parameterElementType,
+        string argumentDeclaration,
+        string argumentText,
+        bool isApplicable)
+    {
+        const string referenceName = "Fixture";
+        var reader = new ComTypeLibCatalogMetadataReader(_ => CreateTypeLib(
+            referenceName,
+            CreateTypeInfo(
+                "Collection",
+                TYPEKIND.TKIND_DISPATCH,
+                functionNames: ["ReadValue", "value"],
+                functionParameterVarType: parameterVarType,
+                functionParameterElementVarType: parameterElementType,
+                functionParameterFlags: direction)));
+        var metadata = reader.ReadMetadata(new VbaProjectReferenceCatalogIdentity(
+            referenceName,
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            1, 0, 0, @"C:\TypeLibs\Fixture.tlb"));
+        var catalogs = VbaProjectReferenceCatalogSet.Empty.WithCatalog(
+            TypeLibReferenceCatalogBuilder.Build(referenceName, metadata));
+        var selection = VbaProjectReferenceSelection.Create("word", [new VbaProjectReference(referenceName)]);
+        const string uri = "file:///C:/work/Caller.bas";
+        var source = $$"""
+            Attribute VB_Name = "Caller"
+            Public Sub Run()
+                Dim values As Fixture.Collection
+                {{argumentDeclaration}}
+                values.ReadValue {{argumentText}}
+            End Sub
+            """;
+        var syntaxTree = VbaSyntaxTree.ParseModule(uri, source);
+        var document = VbaSourceDocumentProjector.Project(uri, syntaxTree);
+        var inventory = VbaSemanticInventory.Create(
+            new Dictionary<string, VbaSourceDocument>(StringComparer.OrdinalIgnoreCase) { [uri] = document },
+            selection, catalogs);
+        var target = Assert.IsAssignableFrom<VbaResolvedNameTarget>(
+            inventory.ResolveSourceTarget(uri, 4, "    values.".Length));
+        Assert.Equal("ReadValue", target.CanonicalName);
+        Assert.Equal(VbaDefinitionOrigin.ProjectReference, target.SelectedDefinition.Identity.Origin);
+        var nameResolution = new VbaNameResolutionService([document], selection, catalogs);
+        var callResolution = new VbaCallSiteResolution(
+            nameResolution,
+            new VbaMemberChainResolution(new VbaTypeResolution(nameResolution)),
+            new VbaResolutionPolicy());
+        var call = Assert.Single(syntaxTree.Module.ArgumentLists, candidate =>
+            candidate.CalleeRange?.Start.Line == 4 && candidate.Form == VbaCallSyntaxForm.Statement);
+
+        var compatibility = callResolution.AnalyzeCompleteCall(document, call, target);
+
+        var variant = Assert.Single(compatibility.Variants);
+        Assert.Equal(isApplicable ? VbaCallCompatibilityState.Applicable
+            : VbaCallCompatibilityState.Indeterminate, variant.State);
+        if (parameterVarType == VarEnum.VT_PTR && parameterElementType is null)
+        {
+            Assert.Null(variant.Mapping);
+        }
+        else
+        {
+            Assert.Empty(Assert.IsType<VbaCompleteCallArgumentMapping>(variant.Mapping).TypeMismatchReasons);
+        }
+        Assert.DoesNotContain(inventory.GetProjectValidationDiagnostics(uri), diagnostic =>
+            diagnostic.Code == "validation.incompatibleCallArgumentList"
+            || diagnostic.Message.Contains("ByRef type", StringComparison.Ordinal));
+    }
+
     [Fact]
     public void GeneratedCatalogPreservesTheRawTypeLibProjectNameSeparatelyFromDisplayAndAliasNames()
     {
@@ -404,6 +578,60 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
                         TypeFlags: 0,
                         ImplementationFlags: 0x1 | 0x2,
                         CallableMembers: [longEvent, stringEvent],
+                        RawTypeKind: TypeLibCatalogRawTypeKind.Dispatch)
+                ]));
+
+        var surface = VbaProjectReferenceCatalogSet.Empty
+            .WithCatalog(catalog)
+            .GetTypeLibEventSurface("Library", "Publisher");
+
+        Assert.Equal(VbaTypeLibEventSurfaceState.Indeterminate, surface.State);
+        Assert.Empty(surface.StructuralEvents);
+        Assert.Empty(surface.ExistingHandlerRecognitionEvents);
+    }
+
+    [Fact]
+    public void ConflictingDefaultSourceParameterDirectionsMakeTheSurfaceIndeterminate()
+    {
+        TypeLibCatalogMember CreateEvent(VbaTypeLibParameterDirection direction)
+            => new(
+                "Changed",
+                VbaSourceDefinitionKind.Event,
+                Documentation: null,
+                new VbaCallableSignature(
+                    "Event Changed(ByRef value As Long)",
+                    [
+                        new VbaCallableParameter(
+                            "value",
+                            TypeReference: new VbaTypeReference("Long"),
+                            IsByRef: true)
+                        {
+                            TypeLibPassing = new VbaTypeLibParameterPassing(direction, AbiPointerDepth: 1)
+                        }
+                    ],
+                    CallableKind: VbaCallableKind.Event)
+                {
+                    PassingConvention = VbaCallablePassingConvention.AutomationDispatch
+                },
+                Metadata: new TypeLibCatalogCallableMetadata(
+                    MemberId: 1,
+                    FunctionFlags: 0));
+
+        var catalog = CreateCatalogWithTypeMetadata(
+            new TypeLibCatalogTypeMetadata(
+                TypeLibCatalogRawTypeKind.CoClass,
+                TypeFlags: 0,
+                ImplementedInterfaces:
+                [
+                    new TypeLibCatalogImplementedInterface(
+                        "PublisherEvents",
+                        TypeFlags: 0,
+                        ImplementationFlags: 0x1 | 0x2,
+                        CallableMembers:
+                        [
+                            CreateEvent(VbaTypeLibParameterDirection.Input),
+                            CreateEvent(VbaTypeLibParameterDirection.InputOutput)
+                        ],
                         RawTypeKind: TypeLibCatalogRawTypeKind.Dispatch)
                 ]));
 
@@ -1419,7 +1647,10 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
         bool hasMissingParameterDescriptors = false,
         VarEnum functionReturnVarType = VarEnum.VT_VOID,
         VarEnum? functionReturnElementVarType = null,
-        VarEnum functionParameterVarType = VarEnum.VT_I4)
+        VarEnum functionParameterVarType = VarEnum.VT_I4,
+        VarEnum? functionParameterElementVarType = null,
+        PARAMFLAG functionParameterFlags = PARAMFLAG.PARAMFLAG_FIN,
+        FUNCKIND functionKind = FUNCKIND.FUNC_DISPATCH)
     {
         var typeInfo = DispatchProxy.Create<ITypeInfo, TypeInfoProxy>();
         var proxy = (TypeInfoProxy)(object)typeInfo;
@@ -1438,6 +1669,9 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
         proxy.FunctionReturnVarType = functionReturnVarType;
         proxy.FunctionReturnElementVarType = functionReturnElementVarType;
         proxy.FunctionParameterVarType = functionParameterVarType;
+        proxy.FunctionParameterElementVarType = functionParameterElementVarType;
+        proxy.FunctionParameterFlags = functionParameterFlags;
+        proxy.FunctionKind = functionKind;
         return typeInfo;
     }
 
@@ -1495,6 +1729,8 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
 
         public FUNCFLAGS FunctionFlags { get; set; }
 
+        public FUNCKIND FunctionKind { get; set; } = FUNCKIND.FUNC_DISPATCH;
+
         public bool HasMissingParameterDescriptors { get; set; }
 
         public VarEnum FunctionReturnVarType { get; set; } = VarEnum.VT_VOID;
@@ -1502,6 +1738,10 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
         public VarEnum? FunctionReturnElementVarType { get; set; }
 
         public VarEnum FunctionParameterVarType { get; set; } = VarEnum.VT_I4;
+
+        public VarEnum? FunctionParameterElementVarType { get; set; }
+
+        public PARAMFLAG FunctionParameterFlags { get; set; } = PARAMFLAG.PARAMFLAG_FIN;
 
         protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
         {
@@ -1569,17 +1809,27 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
                         parameterPointer != IntPtr.Zero && index < parameterCount;
                         index++)
                     {
+                        var parameterType = new TYPEDESC
+                        {
+                            vt = unchecked((short)FunctionParameterVarType)
+                        };
+                        if (FunctionParameterElementVarType is { } parameterElementVarType)
+                        {
+                            var parameterTypePointer = Marshal.AllocHGlobal(Marshal.SizeOf<TYPEDESC>());
+                            Marshal.StructureToPtr(
+                                new TYPEDESC { vt = unchecked((short)parameterElementVarType) },
+                                parameterTypePointer,
+                                fDeleteOld: false);
+                            parameterType.lpValue = parameterTypePointer;
+                        }
                         var element = new ELEMDESC
                         {
-                            tdesc = new TYPEDESC
-                            {
-                                vt = unchecked((short)FunctionParameterVarType)
-                            },
+                            tdesc = parameterType,
                             desc = new ELEMDESC.DESCUNION
                             {
                                 paramdesc = new PARAMDESC
                                 {
-                                    wParamFlags = PARAMFLAG.PARAMFLAG_FIN
+                                    wParamFlags = FunctionParameterFlags
                                 }
                             }
                         };
@@ -1611,7 +1861,7 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
                     {
                         memid = FunctionMemberId,
                         lprgelemdescParam = parameterPointer,
-                        funckind = FUNCKIND.FUNC_DISPATCH,
+                        funckind = FunctionKind,
                         invkind = INVOKEKIND.INVOKE_FUNC,
                         cParams = unchecked((short)parameterCount),
                         wFuncFlags = unchecked((short)FunctionFlags),
@@ -1628,6 +1878,15 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
                     var releasedFunction = Marshal.PtrToStructure<FUNCDESC>((IntPtr)args[0]!);
                     if (releasedFunction.lprgelemdescParam != IntPtr.Zero)
                     {
+                        for (var index = 0; index < releasedFunction.cParams; index++)
+                        {
+                            var parameter = Marshal.PtrToStructure<ELEMDESC>(IntPtr.Add(
+                                releasedFunction.lprgelemdescParam, index * Marshal.SizeOf<ELEMDESC>()));
+                            if (parameter.tdesc.lpValue != IntPtr.Zero)
+                            {
+                                Marshal.FreeHGlobal(parameter.tdesc.lpValue);
+                            }
+                        }
                         Marshal.FreeHGlobal(releasedFunction.lprgelemdescParam);
                     }
 

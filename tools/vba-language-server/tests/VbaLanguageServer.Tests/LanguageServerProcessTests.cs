@@ -16055,7 +16055,8 @@ public sealed class LanguageServerProcessTests
         try
         {
             WriteReferenceCatalogProjectManifest(projectRoot, "Generated Library");
-            new VbaProjectReferenceCatalogPersistentStore(cacheRoot).Save(
+            var store = new VbaProjectReferenceCatalogPersistentStore(cacheRoot);
+            store.Save(
                 new VbaProjectReferenceCatalogPersistentEntry(
                     CreateGeneratedReferenceCatalogIdentity("Generated Library"),
                     new VbaProjectReferenceCatalog(
@@ -16084,7 +16085,8 @@ public sealed class LanguageServerProcessTests
                         ])));
 
             await using var process = await LanguageServerProcessHarness.StartAsync(
-                referenceCatalogCacheRoot: cacheRoot);
+                referenceCatalogCacheRoot: cacheRoot,
+                enableProjectDiagnosticsSynchronization: true);
             await process.InitializeAsync();
             var payloadUri = ToFileUri(Path.Combine(
                 projectRoot,
@@ -16107,6 +16109,16 @@ public sealed class LanguageServerProcessTests
                 "    Work value",
                 "End Sub"
             ]);
+            AssertCatalogParameterTypeOwnerWithUnknownPassing(
+                store,
+                ["Generated Library"],
+                new Dictionary<string, string>
+                {
+                    [payloadUri] = payloadText,
+                    [callerUri] = callerText
+                },
+                callerUri,
+                "Generated Library");
             await process.SendNotificationAsync(
                 "textDocument/didOpen",
                 CreateOpenDocument(payloadUri, payloadText));
@@ -16116,7 +16128,7 @@ public sealed class LanguageServerProcessTests
             await process.WaitForLogTextAsync(
                 "source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
 
-            var checkpoint = process.TranscriptCheckpoint;
+            var checkpoint = process.CaptureProjectDiagnosticsCheckpoint();
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -16124,24 +16136,16 @@ public sealed class LanguageServerProcessTests
                     textDocument = new { uri = callerUri, version = 2 },
                     contentChanges = new[] { new { text = callerText } }
                 });
-            var notification = await process.WaitForDiagnosticsMatchingAsync(
+            var notification = await process.WaitForProjectDiagnosticsSettledAsync(
                 callerUri,
-                diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
-                    diagnostic.GetProperty("code").GetString()
-                        == "validation.incompatibleCallArgumentList"),
-                "a diagnostic with code 'validation.incompatibleCallArgumentList'",
-                afterCheckpoint: checkpoint);
-            var diagnostic = Assert.Single(notification
-                .GetProperty("params")
-                .GetProperty("diagnostics")
-                .EnumerateArray(),
-                candidate => candidate.GetProperty("code").GetString()
-                    == "validation.incompatibleCallArgumentList");
-
-            Assert.Contains(
-                "argument 1 for parameter 'Value' ByRef type: expected Generated.Payload, found Payload.",
-                diagnostic.GetProperty("message").GetString(),
-                StringComparison.Ordinal);
+                expectedVersion: 2,
+                checkpoint);
+            Assert.DoesNotContain(
+                notification.GetProperty("params").GetProperty("diagnostics").EnumerateArray(),
+                diagnostic => diagnostic.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList"
+                    || diagnostic.GetProperty("message").GetString()
+                        ?.Contains("ByRef type", StringComparison.Ordinal) == true);
 
             await process.ShutdownAsync(3);
         }
@@ -16208,7 +16212,8 @@ public sealed class LanguageServerProcessTests
                     ])));
 
             await using var process = await LanguageServerProcessHarness.StartAsync(
-                referenceCatalogCacheRoot: cacheRoot);
+                referenceCatalogCacheRoot: cacheRoot,
+                enableProjectDiagnosticsSynchronization: true);
             await process.InitializeAsync(new
             {
                 textDocument = new
@@ -16231,13 +16236,19 @@ public sealed class LanguageServerProcessTests
                 "    Work value",
                 "End Sub"
             ]);
+            AssertCatalogParameterTypeOwnerWithUnknownPassing(
+                store,
+                ["Second Library", "First Library"],
+                new Dictionary<string, string> { [uri] = text },
+                uri,
+                "First Library");
             await process.SendNotificationAsync(
                 "textDocument/didOpen",
                 CreateOpenDocument(uri, text));
             await process.WaitForLogTextAsync(
                 "reference 'First Library' source=persisted outcome=skipped phase=persistent-load expensiveMetadata=false");
 
-            var checkpoint = process.TranscriptCheckpoint;
+            var checkpoint = process.CaptureProjectDiagnosticsCheckpoint();
             await process.SendNotificationAsync(
                 "textDocument/didChange",
                 new
@@ -16245,24 +16256,16 @@ public sealed class LanguageServerProcessTests
                     textDocument = new { uri, version = 2 },
                     contentChanges = new[] { new { text } }
                 });
-            var notification = await process.WaitForDiagnosticsMatchingAsync(
+            var notification = await process.WaitForProjectDiagnosticsSettledAsync(
                 uri,
-                diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
-                    diagnostic.GetProperty("code").GetString()
-                        == "validation.incompatibleCallArgumentList"),
-                "a diagnostic with code 'validation.incompatibleCallArgumentList'",
-                afterCheckpoint: checkpoint);
-            var diagnostic = Assert.Single(notification
-                .GetProperty("params")
-                .GetProperty("diagnostics")
-                .EnumerateArray(),
-                candidate => candidate.GetProperty("code").GetString()
-                    == "validation.incompatibleCallArgumentList");
-
-            Assert.Contains(
-                "argument 1 for parameter 'Value' ByRef type: expected First.Payload, found Second.Payload.",
-                diagnostic.GetProperty("message").GetString(),
-                StringComparison.Ordinal);
+                expectedVersion: 2,
+                checkpoint);
+            Assert.DoesNotContain(
+                notification.GetProperty("params").GetProperty("diagnostics").EnumerateArray(),
+                diagnostic => diagnostic.GetProperty("code").GetString()
+                    == "validation.incompatibleCallArgumentList"
+                    || diagnostic.GetProperty("message").GetString()
+                        ?.Contains("ByRef type", StringComparison.Ordinal) == true);
 
             await process.ShutdownAsync(3);
         }
@@ -26683,6 +26686,57 @@ public sealed class LanguageServerProcessTests
         {
             Directory.Delete(projectRoot, recursive: true);
         }
+    }
+
+    private static void AssertCatalogParameterTypeOwnerWithUnknownPassing(
+        VbaProjectReferenceCatalogPersistentStore store,
+        IReadOnlyList<string> referenceNames,
+        IReadOnlyDictionary<string, string> sourceTexts,
+        string callerUri,
+        string expectedReferenceName)
+    {
+        var catalogs = VbaProjectReferenceCatalogSet.Empty;
+        foreach (var referenceName in referenceNames)
+        {
+            var loaded = store.Load(referenceName);
+            Assert.Equal(VbaProjectReferenceCatalogPersistentLoadStatus.Current, loaded.Status);
+            catalogs = catalogs.WithCatalog(Assert.IsType<VbaProjectReferenceCatalogPersistentEntry>(
+                loaded.Entry).Catalog);
+        }
+        var selection = VbaProjectReferenceSelection.Create(
+            ProjectDocument.ExcelKind,
+            referenceNames.Select(name => new VbaProjectReference(name)).ToArray());
+        var documents = VbaSemanticInventoryFixture.ProjectSourceDocuments(sourceTexts);
+        var inventory = VbaSemanticInventory.Create(documents, selection, catalogs);
+        var names = new VbaNameResolutionService(documents.Values.ToArray(), selection, catalogs);
+        var target = Assert.IsAssignableFrom<VbaResolvedNameTarget>(
+            inventory.ResolveSourceTarget(callerUri, 3, "    ".Length));
+        Assert.Equal("Work", target.CanonicalName);
+        var parameterType = names.EffectiveDeclaredTypes.Get(target.SelectedDefinition, 0);
+        Assert.Equal(VbaEffectiveDeclaredTypeState.Known, parameterType.State);
+        var expectedTypeIdentity = VbaDefinitionIdentity.ForProjectReference(
+            expectedReferenceName, null, VbaSourceDefinitionKind.Class, "Payload");
+        Assert.Equal(expectedTypeIdentity, Assert.IsAssignableFrom<VbaResolvedNameTarget>(
+            parameterType.Target).SelectedDefinition.Identity);
+
+        var value = Assert.IsType<VbaSourceDefinition>(
+            inventory.ResolveSourceDefinition(callerUri, 2, "    Dim ".Length));
+        var argumentType = names.EffectiveDeclaredTypes.Get(value);
+        Assert.Equal(VbaEffectiveDeclaredTypeState.Known, argumentType.State);
+        Assert.NotEqual(expectedTypeIdentity, Assert.IsAssignableFrom<VbaResolvedNameTarget>(
+            argumentType.Target).SelectedDefinition.Identity);
+
+        var document = documents[callerUri];
+        var syntaxTree = Assert.IsType<VbaTools.Syntax.VbaSyntaxTree>(document.SyntaxTree);
+        var call = Assert.Single(syntaxTree.Module.ArgumentLists, candidate =>
+            candidate.CalleeRange?.Start.Line == 3
+            && candidate.Form == VbaTools.Syntax.VbaCallSyntaxForm.Statement);
+        var callResolution = new VbaCallSiteResolution(names,
+            new VbaMemberChainResolution(new VbaTypeResolution(names)), new VbaResolutionPolicy());
+        var compatibility = callResolution.AnalyzeCompleteCall(document, call, target);
+        var variant = Assert.Single(compatibility.Variants);
+        Assert.Equal(VbaCallCompatibilityState.Indeterminate, variant.State);
+        Assert.Empty(Assert.IsType<VbaCompleteCallArgumentMapping>(variant.Mapping).TypeMismatchReasons);
     }
 
     private static void AssertCatalogCompletionItem(

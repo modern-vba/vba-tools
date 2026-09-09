@@ -537,6 +537,48 @@ public sealed record VbaSourceDefinition(
 }
 
 /// <summary>
+/// Identifies the direction explicitly retained for a TypeLib parameter.
+/// </summary>
+public enum VbaTypeLibParameterDirection
+{
+    /// <summary>No conclusive input or output direction is available.</summary>
+    Unknown,
+
+    /// <summary>The parameter supplies input to the external callable.</summary>
+    Input,
+
+    /// <summary>The parameter receives output from the external callable.</summary>
+    Output,
+
+    /// <summary>The parameter supplies input and receives output.</summary>
+    InputOutput
+}
+
+/// <summary>
+/// Retains external parameter direction independently from ABI pointer shape.
+/// </summary>
+/// <param name="Direction">The direction established by TypeLib FIN and FOUT flags.</param>
+/// <param name="AbiPointerDepth">The number of enclosing VT_PTR descriptors, or null when unavailable.</param>
+public sealed record VbaTypeLibParameterPassing(
+    VbaTypeLibParameterDirection Direction,
+    int? AbiPointerDepth);
+
+/// <summary>
+/// Identifies external calling semantics independently from signature presentation.
+/// </summary>
+public enum VbaCallablePassingConvention
+{
+    /// <summary>No external calling convention is established.</summary>
+    Unknown,
+
+    /// <summary>The callable has a conclusive Automation-compatible dispatch or vtable contract.</summary>
+    AutomationDispatch,
+
+    /// <summary>The callable uses other external calling semantics.</summary>
+    OtherExternal
+}
+
+/// <summary>
 /// Represents one callable parameter in editor-facing signature metadata.
 /// </summary>
 /// <param name="Name">The parameter name.</param>
@@ -561,6 +603,11 @@ public sealed record VbaCallableParameter(
     /// Gets the written source Optional default expression, or null when absent.
     /// </summary>
     public string? DefaultExpression { get; init; }
+
+    /// <summary>
+    /// Gets retained TypeLib direction and ABI evidence, or null when unavailable.
+    /// </summary>
+    public VbaTypeLibParameterPassing? TypeLibPassing { get; init; }
 
     /// <summary>
     /// Gets the parameter segment shown inside its callable signature.
@@ -610,7 +657,13 @@ public sealed record VbaCallableSignature(
     IReadOnlyList<VbaCallableParameter> Parameters,
     string? Documentation = null,
     VbaCallableKind? CallableKind = null,
-    bool? SupportsNamedArguments = null);
+    bool? SupportsNamedArguments = null)
+{
+    /// <summary>
+    /// Gets the evidenced external calling convention, independently from displayed passing modes.
+    /// </summary>
+    public VbaCallablePassingConvention PassingConvention { get; init; }
+}
 
 public sealed record VbaSignaturePresentationIdentity(
     string Label,

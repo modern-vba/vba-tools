@@ -2970,7 +2970,52 @@ behavior makes an otherwise unproven mapping indeterminate. ByVal checking uses
 modeled Let-coercion semantics; ByRef checking preserves declared-type and
 expression-classification rules, including a parenthesized expression's
 value-temporary behavior. Unknown rules are never treated as incompatibility
-merely because the implementation lacks them. A signature containing
+merely because the implementation lacks them.
+
+Parameter provenance selects the passing contract independently of the displayed
+`ByRef` label. Source procedures, including source `Declare` declarations, use
+VBA parameter rules and the shared `EffectiveDeclaredType` authority. Ordinary
+direct-storage `ByRef` arguments require exact canonical type and array shape;
+numeric value widening does not allow `Integer` storage for `ByRef As Long`.
+A non-array `ByRef As Variant` formal accepts the modeled Variant-compatible
+types, including a whole typed array. A formal `ByRef values() As Variant`
+instead requires the exact array element type and shape. Non-array Object and
+specific-class formals accept proven object assignment compatibility, including
+a source class's established `Implements` relationship to the required interface.
+An unproved class relationship remains indeterminate. Direct Variant storage is
+incompatible with a source `ByRef As Object` or specific-class formal; the Variant
+exception applies to the formal's type, not the argument's type. Individually
+parenthesized arguments and other proven value temporaries use ordinary value
+compatibility rather than the direct-storage rule.
+
+For project-reference callables, TypeLib parameter direction (`Input`, `Output`,
+`InputOutput`, or `Unknown`), ABI pointer depth, and callable passing convention
+are separate evidence. A known `AutomationDispatch` input-only parameter with
+zero or one enclosing `VT_PTR` uses ordinary value compatibility for both direct
+storage and value temporaries. This convention includes positively identified
+Automation-compatible dispatch and vtable contracts. Neither an ABI pointer nor
+an editor-facing `ByRef` flag establishes source writable-reference semantics.
+Missing direction/convention, an unsupported ABI shape, or an unmodeled external
+contract remains indeterminate; it is not an invented type mismatch or permission
+to apply a source exception. Independent structural mapping failures remain
+conclusive. Pointer depth zero or one is the modeled input boundary, not a claim
+that deeper pointers are invalid Automation.
+
+For an explicit `AutomationDispatch` Output or InputOutput parameter with exactly
+one enclosing `VT_PTR`, the supported writable contract is limited to a scalar
+Long parameter and proven direct writable scalar Long storage. That exact case
+is applicable. Differing types, arrays, value temporaries, complex types, or
+missing evidence remain indeterminate; they do not produce an external ByRef
+type-mismatch error. Imported-library parameter passing can vary, and Automation
+coercion alone does not prove VBA temporary or copy-back behavior. Extending this
+writable profile requires additional evidence for the actual passing contract.
+
+The `typelib-catalog-v13` generator persists this evidence in raw and projected
+signatures. Older generator entries are stale, and missing evidence remains
+unknown even when a retained display label says `ByRef`. Callable presentation
+is unchanged and never supplies compatibility authority. See ADR 0051.
+
+A signature containing
 `ParamArray` rejects every named argument and contributes no named-argument
 completion candidates. An omitted positional slot mapped to the `ParamArray` is
 a valid placeholder, while one mapped to a required fixed parameter remains

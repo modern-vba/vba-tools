@@ -795,6 +795,7 @@ public sealed class VbaProjectReferenceCatalogSet
         }
 
         if (left.CallableKind != right.CallableKind
+            || left.PassingConvention != right.PassingConvention
             || left.Parameters is null
             || right.Parameters is null
             || left.Parameters.Count != right.Parameters.Count)
@@ -810,6 +811,7 @@ public sealed class VbaProjectReferenceCatalogSet
                 || rightParameter is null
                 || leftParameter.IsOptional != rightParameter.IsOptional
                 || leftParameter.IsByRef != rightParameter.IsByRef
+                || leftParameter.TypeLibPassing != rightParameter.TypeLibPassing
                 || leftParameter.IsParamArray != rightParameter.IsParamArray
                 || leftParameter.IsArray != rightParameter.IsArray
                 || !HaveEquivalentTypeReferences(

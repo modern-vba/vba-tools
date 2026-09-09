@@ -37,15 +37,18 @@ internal sealed class VbaCallSiteResolution
     private readonly VbaNameResolutionService nameResolution;
     private readonly VbaMemberChainResolution memberChainResolution;
     private readonly VbaResolutionPolicy resolutionPolicy;
+    private readonly VbaInterfaceSemanticModel interfaceSemantics;
 
     public VbaCallSiteResolution(
         VbaNameResolutionService nameResolution,
         VbaMemberChainResolution memberChainResolution,
-        VbaResolutionPolicy resolutionPolicy)
+        VbaResolutionPolicy resolutionPolicy,
+        VbaInterfaceSemanticModel? interfaceSemantics = null)
     {
         this.nameResolution = nameResolution;
         this.memberChainResolution = memberChainResolution;
         this.resolutionPolicy = resolutionPolicy;
+        this.interfaceSemantics = interfaceSemantics ?? new VbaInterfaceSemanticModel(nameResolution);
     }
 
     public VbaSignatureHelp? GetSignatureHelp(
@@ -401,9 +404,20 @@ internal sealed class VbaCallSiteResolution
                 hasIndeterminateEvidence = true;
             }
 
-            if (parameter.IsByRef is null)
+            var passing = GetArgumentPassing(callableDefinition, signature, parameter);
+            if (passing == VbaArgumentPassing.Unknown)
             {
                 hasIndeterminateEvidence = true;
+                continue;
+            }
+
+            if (passing == VbaArgumentPassing.ExternalWritableReference)
+            {
+                if (!HasSupportedExternalWritableStorage(parameter, parameterType, evidence))
+                {
+                    hasIndeterminateEvidence = true;
+                }
+
                 continue;
             }
 
@@ -413,21 +427,35 @@ internal sealed class VbaCallSiteResolution
             var parameterSubject = VbaCallDiagnosticText.GetParameterSubject(
                 parameter,
                 parameterIndex);
-            if (parameter.IsByRef == true
+            if (passing == VbaArgumentPassing.SourceReference
                 && evidence.Storage == VbaCallArgumentStorage.DirectStorage)
             {
-                if (parameterType is not null && evidence.Type is not null
-                    && !HasSameCanonicalType(parameterType, evidence.Type))
+                if (parameterType is not null && evidence.Type is not null)
                 {
-                    var (expectedType, foundType) = GetDiagnosticTypeNames(
-                        parameterType,
-                        evidence.Type);
-                    byRefMismatches.Add(
-                        $"{argumentSubject} for {parameterSubject} ByRef type: expected {expectedType}, found {foundType}");
+                    var compatibility = ClassifySourceReferenceCompatibility(
+                        parameterType, evidence.Type,
+                        parameter.IsArray, evidence.IsArray);
+                    if (compatibility == VbaValueTypeCompatibility.Incompatible)
+                    {
+                        var (expectedType, foundType) = GetDiagnosticTypeNames(
+                            parameterType,
+                            evidence.Type);
+                        byRefMismatches.Add(
+                            $"{argumentSubject} for {parameterSubject} ByRef type: expected {expectedType}, found {foundType}");
+                    }
+                    else if (compatibility == VbaValueTypeCompatibility.Indeterminate)
+                    {
+                        hasIndeterminateEvidence = true;
+                    }
                 }
                 else if (parameterType is null || evidence.Type is null)
                 {
                     hasIndeterminateEvidence = true;
+                }
+
+                if (!parameter.IsArray && parameterType?.Category == VbaCanonicalTypeCategory.Variant)
+                {
+                    continue;
                 }
 
                 if (evidence.IsArray is bool argumentIsArray)
@@ -1256,7 +1284,8 @@ internal sealed class VbaCallSiteResolution
         evidence = type.Target is null
             ? CreateIntrinsicTypeEvidence(type.Reference!.Name)
             : new VbaCanonicalTypeEvidence(type.DisplayName!, type.ReferenceQualifiedDisplayName,
-                IntrinsicName: null, type.Target.Identity, GetCanonicalTypeCategory(type.Target.SelectedDefinition.Kind));
+                IntrinsicName: null, type.Target.Identity, GetCanonicalTypeCategory(type.Target.SelectedDefinition.Kind),
+                type.Target);
         return true;
     }
 
@@ -1386,7 +1415,32 @@ internal sealed class VbaCallSiteResolution
     private static string GetArrayShape(bool isArray)
         => isArray ? "array" : "scalar";
 
-    private static VbaValueTypeCompatibility ClassifyValueCompatibility(
+    private VbaValueTypeCompatibility ClassifySourceReferenceCompatibility(
+        VbaCanonicalTypeEvidence expectedType,
+        VbaCanonicalTypeEvidence actualType,
+        bool parameterIsArray,
+        bool? argumentIsArray)
+    {
+        if (HasSameCanonicalType(expectedType, actualType))
+        {
+            return VbaValueTypeCompatibility.Exact;
+        }
+
+        if (expectedType.Category is VbaCanonicalTypeCategory.Object or VbaCanonicalTypeCategory.Class
+            && actualType.Category == VbaCanonicalTypeCategory.Variant)
+        {
+            return VbaValueTypeCompatibility.Incompatible;
+        }
+
+        return !parameterIsArray
+            && (expectedType.Category == VbaCanonicalTypeCategory.Variant
+                || argumentIsArray == false && expectedType.Category is
+                    VbaCanonicalTypeCategory.Object or VbaCanonicalTypeCategory.Class)
+            ? ClassifyValueCompatibility(expectedType, actualType)
+            : VbaValueTypeCompatibility.Incompatible;
+    }
+
+    private VbaValueTypeCompatibility ClassifyValueCompatibility(
         VbaCanonicalTypeEvidence expectedType,
         VbaCanonicalTypeEvidence actualType)
     {
@@ -1407,6 +1461,15 @@ internal sealed class VbaCallSiteResolution
 
         if (expectedType.Category == VbaCanonicalTypeCategory.Object
             && actualType.Category == VbaCanonicalTypeCategory.Class)
+        {
+            return VbaValueTypeCompatibility.Assignment;
+        }
+
+        if (expectedType.Category == VbaCanonicalTypeCategory.Class
+            && actualType.Category == VbaCanonicalTypeCategory.Class
+            && expectedType.Target is { } expectedTarget
+            && actualType.Target is { } actualTarget
+            && interfaceSemantics.CanProveSourceInterfaceAssignment(actualTarget, expectedTarget))
         {
             return VbaValueTypeCompatibility.Assignment;
         }
@@ -1471,6 +1534,14 @@ internal sealed class VbaCallSiteResolution
         ValueTemporary
     }
 
+    private enum VbaArgumentPassing
+    {
+        Unknown,
+        Value,
+        SourceReference,
+        ExternalWritableReference
+    }
+
     private sealed record VbaCallArgumentTypeEvidence(
         VbaCanonicalTypeEvidence? Type,
         bool? IsArray,
@@ -1481,7 +1552,8 @@ internal sealed class VbaCallSiteResolution
         string? ReferenceQualifiedDisplayName,
         string? IntrinsicName,
         VbaResolvedNameTargetIdentity? Identity,
-        VbaCanonicalTypeCategory Category);
+        VbaCanonicalTypeCategory Category,
+        VbaResolvedNameTarget? Target = null);
 
     private static VbaCallSiteSyntax CreateCompleteCallSite(
         VbaArgumentListSyntax argumentList)
@@ -1540,6 +1612,7 @@ internal sealed class VbaCallSiteResolution
                 && IsPreferredKnownTypeCompatibility(
                     currentDocument,
                     callableDefinition,
+                    signature,
                     argument,
                     signature.Parameters[parameterIndex], parameterIndex))
             {
@@ -1553,6 +1626,7 @@ internal sealed class VbaCallSiteResolution
             && IsPreferredKnownTypeCompatibility(
                 currentDocument,
                 callableDefinition,
+                signature,
                 activeArgument,
                 signature.Parameters[activeParameter], activeParameter))
         {
@@ -1565,11 +1639,13 @@ internal sealed class VbaCallSiteResolution
     private bool IsPreferredKnownTypeCompatibility(
         VbaSourceDocument currentDocument,
         VbaSourceDefinition callableDefinition,
+        VbaCallableSignature signature,
         VbaCallArgumentSyntax argument,
         VbaCallableParameter parameter,
         int parameterOrdinal)
     {
-        if (parameter.IsByRef is null
+        var passing = GetArgumentPassing(callableDefinition, signature, parameter);
+        if (passing == VbaArgumentPassing.Unknown
             || !TryGetDeclaredTypeEvidence(callableDefinition, parameterOrdinal, out var canonicalParameterType)
             || !TryGetArgumentTypeEvidence(
                 currentDocument,
@@ -1582,14 +1658,60 @@ internal sealed class VbaCallSiteResolution
             return false;
         }
 
+        if (passing == VbaArgumentPassing.ExternalWritableReference)
+        {
+            return HasSupportedExternalWritableStorage(parameter, canonicalParameterType, evidence);
+        }
+
         var compatibility = ClassifyValueCompatibility(
             canonicalParameterType,
             argumentType);
         return compatibility == VbaValueTypeCompatibility.Exact
             || (compatibility == VbaValueTypeCompatibility.Assignment
-                && (parameter.IsByRef == false
+                && (passing == VbaArgumentPassing.Value
                     || evidence.Storage == VbaCallArgumentStorage.ValueTemporary));
     }
+
+    private static VbaArgumentPassing GetArgumentPassing(
+        VbaSourceDefinition callableDefinition,
+        VbaCallableSignature signature,
+        VbaCallableParameter parameter)
+    {
+        if (callableDefinition.Identity.Origin == VbaDefinitionOrigin.Source)
+        {
+            return parameter.IsByRef switch
+            {
+                true => VbaArgumentPassing.SourceReference,
+                false => VbaArgumentPassing.Value,
+                null => VbaArgumentPassing.Unknown
+            };
+        }
+
+        if (callableDefinition.Identity.Origin != VbaDefinitionOrigin.ProjectReference
+            || signature.PassingConvention != VbaCallablePassingConvention.AutomationDispatch)
+        {
+            return VbaArgumentPassing.Unknown;
+        }
+
+        return parameter.TypeLibPassing switch
+        {
+            { Direction: VbaTypeLibParameterDirection.Input, AbiPointerDepth: 0 or 1 }
+                => VbaArgumentPassing.Value,
+            { Direction: VbaTypeLibParameterDirection.Output or VbaTypeLibParameterDirection.InputOutput,
+                AbiPointerDepth: 1 } => VbaArgumentPassing.ExternalWritableReference,
+            _ => VbaArgumentPassing.Unknown
+        };
+    }
+
+    private static bool HasSupportedExternalWritableStorage(
+        VbaCallableParameter parameter,
+        VbaCanonicalTypeEvidence? parameterType,
+        VbaCallArgumentTypeEvidence argument)
+        => !parameter.IsArray
+            && argument.IsArray == false
+            && argument.Storage == VbaCallArgumentStorage.DirectStorage
+            && parameterType is { Category: VbaCanonicalTypeCategory.IntrinsicScalar, IntrinsicName: "Long" }
+            && argument.Type is { Category: VbaCanonicalTypeCategory.IntrinsicScalar, IntrinsicName: "Long" };
 
     private static string? GetKnownLiteralType(string? valueText)
     {
