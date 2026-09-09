@@ -906,8 +906,14 @@ trimming or fuzzy lookup; missing or ambiguous requests remain manifest errors.
 Request order, first encounter, dependency-before-dependent component order,
 and manifest order inside a cycle determine selection order. Source bytes,
 staging lifetime, installed-state reconciliation, copying, and project mutation
-belong to separate owners. Live and captured admission currently remain
-separate validation implementations with the same complete-admission obligation.
+belong to separate owners. Live and captured input Adapters feed one internal
+logical package validator with the same complete-admission obligation. Live
+adaptation establishes ordinary filesystem objects, exact names, and readable
+bytes; captured adaptation uses only its fixed inventory and bytes. Physical
+inventory is sorted before defects are selected. Logical admission checks
+inventory/casing, the canonical manifest, manifest content, expected names,
+listed source metadata in manifest order, then unexpected entries in Ordinal
+order. Expected source spelling is determined after parsing the manifest.
 _Avoid_: release ZIP, raw manifest entries, mutable graph, empty placeholder authority
 
 **CommonModulesSelectionPlan**:
@@ -5941,7 +5947,7 @@ Dev: "Must dependency-first ordering reject a cycle such as `ObjectList` and `Ob
 Domain Expert: "No. Collapse every maximal mutually reachable set into one `CommonModuleDependencyComponent`. Order dependency components before their dependents, enumerate a component's outgoing dependencies by repository member order then each member's declaration order with first occurrence winning, and order members inside the component by repository row. A selected member brings in the whole component but keeps per-entry direct intent. Reject self-dependency; the runtime-to-test rule rejects a mixed-classification cycle. Existing installed positions remain stable when a mutation merges this canonical closure, while newly discovered entries follow the component order."
 
 Dev: "May a caller construct a CommonModulesPackage from manifest entries and run the dependency resolver directly?"
-Domain Expert: "No. Only complete package admission can issue CommonModulesPackage. Its entries, nested declarations, indexes, graph, and selection plans are deeply immutable. Resolve exact requests, dependency components, and ordered reference unions through that Package. Live and captured admission retain separate implementations for now; neither a release ZIP nor an empty entry list proves runtime package authority."
+Domain Expert: "No. Only complete package admission can issue CommonModulesPackage. Its entries, nested declarations, indexes, graph, and selection plans are deeply immutable. Resolve exact requests, dependency components, and ordered reference unions through that Package. Live and captured input Adapters now share one logical validator; neither a release ZIP nor an empty entry list proves runtime package authority. Snapshot alone owns stable captured bytes and their cleanup lifetime."
 
 Dev: "Should CommonModulesReconciliation treat every retained installed entry as another requested dependency root?"
 Domain Expert: "No. Expand the Package closure of available directly requested roots first, then append the remaining repository-backed installed entries in their stored order without expanding additional dependencies. These are Reconciliation facts, not a CommonModulesSelectionPlan; ask Package.GetRequiredReferences for their ordered reference union. Preserve existing manifest positions, orphan classifications, and Doctor's root-specific missing-dependency order. This comparison does not own byte capture, source copying, or mutation commitment."

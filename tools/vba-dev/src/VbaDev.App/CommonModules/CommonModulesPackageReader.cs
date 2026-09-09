@@ -42,77 +42,7 @@ public sealed class CommonModulesPackageReader
         string commonModulesRepositoryPath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(commonModulesRepositoryPath);
-        var repository = new DirectoryInfo(commonModulesRepositoryPath);
-        if (!repository.Exists)
-        {
-            throw new CommonModulesManifestException(
-                $"CommonModulesRepository was not found: {commonModulesRepositoryPath}");
-        }
-
-        if (repository.Attributes.HasFlag(FileAttributes.ReparsePoint))
-        {
-            throw new CommonModulesManifestException(
-                $"CommonModules package root must be an ordinary directory: {commonModulesRepositoryPath}");
-        }
-
-        var actualEntries = ReadFlatInventory(repository);
-        RequireExactOrdinaryFile(
-            actualEntries,
-            CommonModulesManifestReader.ManifestFileName,
-            commonModulesRepositoryPath);
-
-        var manifestEntries = manifestReader.Load(commonModulesRepositoryPath);
-        var expectedNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            [CommonModulesManifestReader.ManifestFileName] = CommonModulesManifestReader.ManifestFileName
-        };
-        var commonNames = new Dictionary<string, CommonModuleManifestEntry>(StringComparer.OrdinalIgnoreCase);
-        foreach (var manifestEntry in manifestEntries)
-        {
-            if (!commonNames.TryAdd(manifestEntry.Name, manifestEntry))
-            {
-                var prior = commonNames[manifestEntry.Name];
-                throw new CommonModulesManifestException(
-                    $"CommonModules package contains duplicate CommonModuleName '{manifestEntry.Name}': "
-                    + $"'{prior.ModuleFile}' and '{manifestEntry.ModuleFile}'.");
-            }
-
-            expectedNames.Add(manifestEntry.ModuleFile, manifestEntry.ModuleFile);
-            if (manifestEntry.ModuleFile.EndsWith(".frm", StringComparison.Ordinal))
-            {
-                var sidecarName = Path.ChangeExtension(manifestEntry.ModuleFile, ".frx");
-                if (actualEntries.ContainsKey(sidecarName))
-                {
-                    expectedNames.Add(sidecarName, sidecarName);
-                }
-            }
-        }
-
-        foreach (var expectedName in expectedNames.Values)
-        {
-            RequireExactOrdinaryFile(
-                actualEntries,
-                expectedName,
-                commonModulesRepositoryPath);
-        }
-
-        foreach (var manifestEntry in manifestEntries)
-        {
-            ValidateSourceMetadata(
-                manifestEntry,
-                (FileInfo)actualEntries[manifestEntry.ModuleFile]);
-        }
-
-        foreach (var actualEntry in actualEntries.Values)
-        {
-            if (!expectedNames.ContainsKey(actualEntry.Name))
-            {
-                throw new CommonModulesManifestException(
-                    $"CommonModules package contains unexpected package entry '{actualEntry.Name}'.");
-            }
-        }
-
-        return manifestEntries;
+        return ReadValidatedEntries(new LivePackageInput(commonModulesRepositoryPath));
     }
 
     internal CommonModulesPackage LoadCaptured(
@@ -126,21 +56,14 @@ public sealed class CommonModulesPackageReader
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(displayRootPath);
         ArgumentNullException.ThrowIfNull(capturedFiles);
-        var actualNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var fileName in capturedFiles.Keys)
-        {
-            if (!actualNames.TryAdd(fileName, fileName))
-            {
-                throw new CommonModulesManifestException(
-                    $"CommonModules package contains case-insensitive duplicate entry '{fileName}'.");
-            }
-        }
+        return ReadValidatedEntries(new CapturedPackageInput(displayRootPath, capturedFiles));
+    }
 
-        var manifestName = RequireExactCapturedFile(
-            actualNames,
-            CommonModulesManifestReader.ManifestFileName,
-            displayRootPath);
-        var manifestEntries = manifestReader.LoadCaptured(capturedFiles[manifestName]);
+    private IReadOnlyList<CommonModuleManifestEntry> ReadValidatedEntries(PackageInput input)
+    {
+        RequireExactFile(input, CommonModulesManifestReader.ManifestFileName);
+        var manifestEntries = manifestReader.LoadCaptured(
+            input.ReadBytes(CommonModulesManifestReader.ManifestFileName));
         var expectedNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             [CommonModulesManifestReader.ManifestFileName] = CommonModulesManifestReader.ManifestFileName
@@ -160,7 +83,7 @@ public sealed class CommonModulesPackageReader
             if (manifestEntry.ModuleFile.EndsWith(".frm", StringComparison.Ordinal))
             {
                 var sidecarName = Path.ChangeExtension(manifestEntry.ModuleFile, ".frx");
-                if (actualNames.ContainsKey(sidecarName))
+                if (input.ActualNames.ContainsKey(sidecarName))
                 {
                     expectedNames.Add(sidecarName, sidecarName);
                 }
@@ -169,18 +92,18 @@ public sealed class CommonModulesPackageReader
 
         foreach (var expectedName in expectedNames.Values)
         {
-            RequireExactCapturedFile(actualNames, expectedName, displayRootPath);
+            RequireExactFile(input, expectedName);
         }
 
         foreach (var manifestEntry in manifestEntries)
         {
             ValidateSourceMetadata(
                 manifestEntry,
-                capturedFiles[manifestEntry.ModuleFile],
-                Path.Combine(displayRootPath, manifestEntry.ModuleFile));
+                input.ReadBytes(manifestEntry.ModuleFile),
+                input.GetFilePath(manifestEntry.ModuleFile));
         }
 
-        foreach (var actualName in actualNames.Values)
+        foreach (var actualName in input.ActualNames.Values.Order(StringComparer.Ordinal))
         {
             if (!expectedNames.ContainsKey(actualName))
             {
@@ -190,24 +113,6 @@ public sealed class CommonModulesPackageReader
         }
 
         return manifestEntries;
-    }
-
-    private static void ValidateSourceMetadata(
-        CommonModuleManifestEntry manifestEntry,
-        FileInfo sourceFile)
-    {
-        byte[] sourceBytes;
-        try
-        {
-            sourceBytes = File.ReadAllBytes(sourceFile.FullName);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            throw new CommonModulesManifestException(
-                $"CommonModules source '{sourceFile.FullName}' must use strict Windows-932 text. {ex.Message}");
-        }
-
-        ValidateSourceMetadata(manifestEntry, sourceBytes, sourceFile.FullName);
     }
 
     private static void ValidateSourceMetadata(
@@ -234,9 +139,7 @@ public sealed class CommonModulesPackageReader
                     $"CommonModules source '{sourcePath}' cannot reproduce its canonical Windows-932 bytes.");
             }
         }
-        catch (Exception ex) when (ex is IOException
-                                   or UnauthorizedAccessException
-                                   or DecoderFallbackException
+        catch (Exception ex) when (ex is DecoderFallbackException
                                    or EncoderFallbackException
                                    or InvalidOperationException)
         {
@@ -312,82 +215,12 @@ public sealed class CommonModulesPackageReader
         return CanonicalSourceKind.StandardModule;
     }
 
-    private static IReadOnlyDictionary<string, FileSystemInfo> ReadFlatInventory(
-        DirectoryInfo repository)
+    private static void RequireExactFile(PackageInput input, string expectedName)
     {
-        try
-        {
-            var inventory = new Dictionary<string, FileSystemInfo>(StringComparer.OrdinalIgnoreCase);
-            foreach (var entry in repository.EnumerateFileSystemInfos(
-                "*",
-                new EnumerationOptions
-                {
-                    AttributesToSkip = 0,
-                    IgnoreInaccessible = false,
-                    RecurseSubdirectories = false,
-                    ReturnSpecialDirectories = false
-                }))
-            {
-                if (!inventory.TryAdd(entry.Name, entry))
-                {
-                    throw new CommonModulesManifestException(
-                        $"CommonModules package contains case-insensitive duplicate entry '{entry.Name}'.");
-                }
-            }
-
-            return inventory;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        if (!input.ActualNames.TryGetValue(expectedName, out var actualName))
         {
             throw new CommonModulesManifestException(
-                $"CommonModules package inventory could not be read: {repository.FullName}");
-        }
-    }
-
-    private static void RequireExactOrdinaryFile(
-        IReadOnlyDictionary<string, FileSystemInfo> inventory,
-        string expectedName,
-        string repositoryPath)
-    {
-        if (!inventory.TryGetValue(expectedName, out var entry))
-        {
-            throw new CommonModulesManifestException(
-                $"CommonModules package source file was not found: {Path.Combine(repositoryPath, expectedName)}");
-        }
-
-        if (!entry.Name.Equals(expectedName, StringComparison.Ordinal))
-        {
-            throw new CommonModulesManifestException(
-                $"CommonModules package entry '{entry.Name}' must use exact spelling '{expectedName}'.");
-        }
-
-        if (entry is not FileInfo || entry.Attributes.HasFlag(FileAttributes.ReparsePoint))
-        {
-            throw new CommonModulesManifestException(
-                $"CommonModules package entry must be an ordinary file: {entry.FullName}");
-        }
-
-        try
-        {
-            using var stream = File.OpenRead(entry.FullName);
-            stream.CopyTo(Stream.Null);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            throw new CommonModulesManifestException(
-                $"CommonModules package entry could not be read: {entry.FullName}");
-        }
-    }
-
-    private static string RequireExactCapturedFile(
-        IReadOnlyDictionary<string, string> inventory,
-        string expectedName,
-        string displayRootPath)
-    {
-        if (!inventory.TryGetValue(expectedName, out var actualName))
-        {
-            throw new CommonModulesManifestException(
-                $"CommonModules package source file was not found: {Path.Combine(displayRootPath, expectedName)}");
+                $"CommonModules package source file was not found: {Path.Combine(input.DisplayRootPath, expectedName)}");
         }
 
         if (!actualName.Equals(expectedName, StringComparison.Ordinal))
@@ -396,7 +229,99 @@ public sealed class CommonModulesPackageReader
                 $"CommonModules package entry '{actualName}' must use exact spelling '{expectedName}'.");
         }
 
-        return actualName;
+        input.EnsureReadable(actualName);
+    }
+
+    private abstract class PackageInput
+    {
+        protected PackageInput(string displayRootPath, IEnumerable<string> actualNames)
+        {
+            DisplayRootPath = displayRootPath;
+            ActualNames = actualNames.ToDictionary(
+                name => name,
+                name => name,
+                StringComparer.OrdinalIgnoreCase);
+        }
+
+        public string DisplayRootPath { get; }
+
+        public IReadOnlyDictionary<string, string> ActualNames { get; }
+
+        public virtual string GetFilePath(string fileName)
+            => Path.Combine(DisplayRootPath, fileName);
+
+        public abstract void EnsureReadable(string fileName);
+
+        public abstract byte[] ReadBytes(string fileName);
+    }
+
+    private sealed class LivePackageInput : PackageInput
+    {
+        private readonly string absoluteRepositoryPath;
+
+        public LivePackageInput(string repositoryPath)
+            : base(
+                repositoryPath,
+                CommonModulesPackageInventory.ReadLive(repositoryPath).Select(entry => entry.Name))
+        {
+            absoluteRepositoryPath = Path.GetFullPath(repositoryPath);
+        }
+
+        public override string GetFilePath(string fileName)
+            => Path.Combine(absoluteRepositoryPath, fileName);
+
+        public override void EnsureReadable(string fileName)
+        {
+            var path = GetFilePath(fileName);
+            try
+            {
+                using var stream = File.OpenRead(path);
+                stream.CopyTo(Stream.Null);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                throw ReadFailure(path);
+            }
+        }
+
+        public override byte[] ReadBytes(string fileName)
+        {
+            var path = GetFilePath(fileName);
+            try
+            {
+                return File.ReadAllBytes(path);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                throw ReadFailure(path);
+            }
+        }
+
+        private static CommonModulesManifestException ReadFailure(string path)
+            => new($"CommonModules package entry could not be read: {path}");
+    }
+
+    private sealed class CapturedPackageInput : PackageInput
+    {
+        private readonly IReadOnlyDictionary<string, byte[]> capturedFiles;
+
+        public CapturedPackageInput(
+            string displayRootPath,
+            IReadOnlyDictionary<string, byte[]> capturedFiles)
+            : base(
+                displayRootPath,
+                CommonModulesPackageInventory.NormalizeCapturedNames(capturedFiles.Keys))
+        {
+            this.capturedFiles = capturedFiles;
+        }
+
+        public override void EnsureReadable(string fileName)
+        {
+            // Snapshot capture has already obtained these bytes; never reopen its display path.
+        }
+
+        public override byte[] ReadBytes(string fileName)
+            => capturedFiles[fileName];
     }
 
     private enum CanonicalSourceKind

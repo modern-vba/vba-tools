@@ -114,7 +114,7 @@ public sealed class CommonModulesPackageSnapshotFactory
         var ownershipTransferred = false;
         try
         {
-            var inventory = ReadInventory(repositoryPath);
+            var inventory = CommonModulesPackageInventory.ReadLive(repositoryPath);
             staging = CreateStagingDirectory(ownership, scratchRoot);
             var capturedBytes = new Dictionary<string, byte[]>(StringComparer.Ordinal);
             foreach (var entry in inventory)
@@ -229,66 +229,6 @@ public sealed class CommonModulesPackageSnapshotFactory
         }
     }
 
-    private static IReadOnlyList<FileInfo> ReadInventory(string repositoryPath)
-    {
-        try
-        {
-            var repository = new DirectoryInfo(repositoryPath);
-            if (!repository.Exists)
-            {
-                throw new CommonModulesManifestException(
-                    $"CommonModulesRepository was not found: {repositoryPath}");
-            }
-
-            if (repository.Attributes.HasFlag(FileAttributes.ReparsePoint))
-            {
-                throw new CommonModulesManifestException(
-                    $"CommonModules package root must be an ordinary directory: {repositoryPath}");
-            }
-
-            var inventory = new List<FileInfo>();
-            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var entry in repository.EnumerateFileSystemInfos(
-                "*",
-                new EnumerationOptions
-                {
-                    AttributesToSkip = 0,
-                    IgnoreInaccessible = false,
-                    RecurseSubdirectories = false,
-                    ReturnSpecialDirectories = false
-                }))
-            {
-                if (!names.Add(entry.Name))
-                {
-                    throw new CommonModulesManifestException(
-                        $"CommonModules package contains case-insensitive duplicate entry '{entry.Name}'.");
-                }
-
-                if (entry is not FileInfo file
-                    || entry.Attributes.HasFlag(FileAttributes.ReparsePoint))
-                {
-                    throw new CommonModulesManifestException(
-                        $"CommonModules package entry must be an ordinary file: {entry.FullName}");
-                }
-
-                inventory.Add(file);
-            }
-
-            inventory.Sort((left, right) =>
-                StringComparer.Ordinal.Compare(left.Name, right.Name));
-            return inventory;
-        }
-        catch (CommonModulesManifestException)
-        {
-            throw;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            throw new CommonModulesManifestException(
-                $"CommonModules package inventory could not be read: {repositoryPath}");
-        }
-    }
-
     private static byte[] ReadExactBytes(string path)
     {
         try
@@ -307,7 +247,7 @@ public sealed class CommonModulesPackageSnapshotFactory
         IReadOnlyList<FileInfo> capturedInventory,
         IReadOnlyDictionary<string, byte[]> capturedBytes)
     {
-        var currentInventory = ReadInventory(repositoryPath);
+        var currentInventory = CommonModulesPackageInventory.ReadLive(repositoryPath);
         if (capturedInventory.Count != currentInventory.Count
             || !capturedInventory.Select(entry => entry.Name).SequenceEqual(
                 currentInventory.Select(entry => entry.Name),

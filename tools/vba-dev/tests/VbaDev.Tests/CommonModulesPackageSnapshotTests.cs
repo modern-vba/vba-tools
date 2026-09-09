@@ -11,6 +11,216 @@ namespace VbaDev.Tests;
 public sealed class CommonModulesPackageSnapshotTests
 {
     [Fact]
+    public void PhysicalInventoryPermutationsSelectTheSameNonOrdinaryEntry()
+    {
+        using var temp = TempDirectory.Create();
+        var repository = temp.CreateDirectory("common_modules_repo");
+        FileSystemInfo[] entries =
+        [
+            Directory.CreateDirectory(Path.Combine(repository, "z-directory")),
+            Directory.CreateDirectory(Path.Combine(repository, "A-directory"))
+        ];
+        var expectedPath = Path.Combine(repository, "A-directory");
+        foreach (var permutation in new[] { entries, entries.Reverse().ToArray() })
+        {
+            var error = Assert.Throws<CommonModulesManifestException>(() =>
+                CommonModulesPackageInventory.NormalizeLive(permutation));
+            Assert.Equal($"CommonModules package entry must be an ordinary file: {expectedPath}", error.Message);
+        }
+
+        AssertBothInputsReject(repository, temp.CreateDirectory("scratch"), expectedPath);
+    }
+
+    [Theory]
+    [InlineData("missing-root", "CommonModulesRepository was not found")]
+    [InlineData("missing-manifest", "source file was not found")]
+    [InlineData("manifest-casing", "must use exact spelling")]
+    [InlineData("duplicate-common-name", "duplicate CommonModuleName 'Feature'")]
+    [InlineData("missing-before-invalid-source", "A.bas")]
+    [InlineData("manifest-source-order", "source 'Z.bas' has invalid ModuleIdentity metadata")]
+    [InlineData("source-before-unexpected", "source 'Z.bas' has invalid ModuleIdentity metadata")]
+    public void BothPackageInputsPreserveValidationPrecedence(string scenario, string expectedDetail)
+    {
+        using var temp = TempDirectory.Create();
+        var repository = Path.Combine(temp.Path, "common_modules_repo");
+        if (scenario != "missing-root")
+        {
+            Directory.CreateDirectory(repository);
+        }
+
+        switch (scenario)
+        {
+            case "missing-root":
+                break;
+            case "missing-manifest":
+                File.WriteAllBytes(Path.Combine(repository, "A-extra.txt"), []);
+                break;
+            case "manifest-casing":
+                File.WriteAllBytes(Path.Combine(repository, "COMMON-MODULES-MANIFEST.TSV"), []);
+                break;
+            case "duplicate-common-name":
+                WriteManifest(repository,
+                    ("Feature.bas", "optional", string.Empty),
+                    ("Feature.cls", "optional", string.Empty));
+                break;
+            case "missing-before-invalid-source":
+            case "manifest-source-order":
+                WriteManifest(repository,
+                    ("Z.bas", "optional", string.Empty),
+                    ("A.bas", "optional", string.Empty));
+                File.WriteAllBytes(Path.Combine(repository, "Z.bas"), []);
+                if (scenario == "manifest-source-order")
+                {
+                    File.WriteAllBytes(Path.Combine(repository, "A.bas"), []);
+                }
+                break;
+            case "source-before-unexpected":
+                WriteManifest(repository, ("Z.bas", "optional", string.Empty));
+                File.WriteAllBytes(Path.Combine(repository, "Z.bas"), []);
+                File.WriteAllBytes(Path.Combine(repository, "A-extra.txt"), []);
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(scenario));
+        }
+
+        AssertBothInputsReject(repository, temp.CreateDirectory("scratch"), expectedDetail);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void BothPackageInputsRejectReparseObjectsWithoutChangingTheirTargets(bool linkedRoot)
+    {
+        using var temp = TempDirectory.Create();
+        var target = temp.CreateDirectory("target");
+        WriteManifest(target, ("Feature.bas", "optional", string.Empty));
+        WriteSource(target, "Feature.bas", "original target");
+        var targetSource = Path.Combine(target, "Feature.bas");
+        var originalBytes = File.ReadAllBytes(targetSource);
+        var repository = Path.Combine(temp.Path, "common_modules_repo");
+        string linkPath;
+        if (linkedRoot)
+        {
+            linkPath = repository;
+            Directory.CreateSymbolicLink(linkPath, target);
+        }
+        else
+        {
+            Directory.CreateDirectory(repository);
+            WriteManifest(repository, ("Feature.bas", "optional", string.Empty));
+            linkPath = Path.Combine(repository, "Feature.bas");
+            File.CreateSymbolicLink(linkPath, targetSource);
+        }
+
+        try
+        {
+            AssertBothInputsReject(
+                repository,
+                temp.CreateDirectory("scratch"),
+                linkedRoot ? "root must be an ordinary directory" : "entry must be an ordinary file");
+            Assert.Equal(originalBytes, File.ReadAllBytes(targetSource));
+        }
+        finally
+        {
+            if (linkedRoot)
+            {
+                Directory.Delete(linkPath, recursive: false);
+            }
+            else
+            {
+                File.Delete(linkPath);
+            }
+        }
+    }
+
+    private static void AssertBothInputsReject(string repository, string scratchRoot, string expectedDetail)
+    {
+        var reader = new CommonModulesPackageReader(new CommonModulesManifestReader());
+        var liveError = Assert.Throws<CommonModulesManifestException>(() => reader.Load(repository));
+        var capturedError = Assert.Throws<CommonModulesManifestException>(() =>
+            new CommonModulesPackageSnapshotFactory(
+                new WindowsExactFileSystemObjectOwnershipFactory(), reader, scratchRoot)
+                .Capture(repository, CancellationToken.None));
+        Assert.Contains(expectedDetail, liveError.Message);
+        var capturedMessage = System.Text.RegularExpressions.Regex.Replace(
+            capturedError.Message,
+            System.Text.RegularExpressions.Regex.Escape(scratchRoot) + @"[\\/][0-9a-f]{32}",
+            _ => repository);
+        Assert.Equal(liveError.Message, capturedMessage);
+        Assert.Empty(Directory.EnumerateFileSystemEntries(scratchRoot));
+    }
+
+    [Fact]
+    public void CapturedDuplicateInventoryPrecedesMissingManifestInStableOrdinalOrder()
+    {
+        var reader = new CommonModulesPackageReader(new CommonModulesManifestReader());
+        string[] names = ["a-extra.txt", "A-extra.txt"];
+        foreach (var orderedNames in new[] { names, names.Reverse().ToArray() })
+        {
+            var capturedFiles = orderedNames.ToDictionary(
+                name => name,
+                _ => Array.Empty<byte>(),
+                StringComparer.Ordinal);
+
+            var error = Assert.Throws<CommonModulesManifestException>(() =>
+                reader.LoadCaptured("captured-package", capturedFiles));
+
+            Assert.Equal(
+                "CommonModules package contains case-insensitive duplicate entry 'a-extra.txt'.",
+                error.Message);
+        }
+    }
+
+    [Fact]
+    public void UnexpectedPackageEntryIsSelectedInOrdinalOrderForBothInputs()
+    {
+        using var temp = TempDirectory.Create();
+        var repository = temp.CreateDirectory("common_modules_repo");
+        WriteManifest(repository, ("Feature.bas", "optional", string.Empty));
+        WriteSource(repository, "Feature.bas", "feature");
+        File.WriteAllBytes(Path.Combine(repository, "z-extra.txt"), []);
+        File.WriteAllBytes(Path.Combine(repository, "A-extra.txt"), []);
+        var reader = new CommonModulesPackageReader(new CommonModulesManifestReader());
+        const string expected = "CommonModules package contains unexpected package entry 'A-extra.txt'.";
+        var paths = Directory.GetFiles(repository).Order(StringComparer.Ordinal).ToArray();
+
+        foreach (var orderedPaths in new[] { paths, paths.Reverse().ToArray() })
+        {
+            var capturedFiles = orderedPaths.ToDictionary(
+                path => Path.GetFileName(path)!,
+                File.ReadAllBytes,
+                StringComparer.Ordinal);
+            var capturedError = Assert.Throws<CommonModulesManifestException>(() =>
+                reader.LoadCaptured(repository, capturedFiles));
+            Assert.Equal(expected, capturedError.Message);
+        }
+
+        var liveError = Assert.Throws<CommonModulesManifestException>(() => reader.Load(repository));
+        Assert.Equal(expected, liveError.Message);
+    }
+
+    [Fact]
+    public void FlatInventoryFailurePrecedesMissingManifestForBothPackageInputs()
+    {
+        using var temp = TempDirectory.Create();
+        var repository = temp.CreateDirectory("common_modules_repo");
+        var child = Directory.CreateDirectory(Path.Combine(repository, "not-flat"));
+        var reader = new CommonModulesPackageReader(new CommonModulesManifestReader());
+        var factory = new CommonModulesPackageSnapshotFactory(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
+            reader,
+            temp.CreateDirectory("scratch"));
+
+        var liveError = Assert.Throws<CommonModulesManifestException>(() => reader.Load(repository));
+        var capturedError = Assert.Throws<CommonModulesManifestException>(() =>
+            factory.Capture(repository, CancellationToken.None));
+
+        Assert.Contains("must be an ordinary file", capturedError.Message);
+        Assert.Contains(child.FullName, capturedError.Message);
+        Assert.Equal(capturedError.Message, liveError.Message);
+    }
+
+    [Fact]
     public void ReturnedSelectionPlanCannotBeRewrittenThroughPublishedCollections()
     {
         using var temp = TempDirectory.Create();
@@ -317,8 +527,11 @@ public sealed class CommonModulesPackageSnapshotTests
 
         var error = Assert.Throws<CommonModulesManifestException>(() =>
             factory.Capture(repository, CancellationToken.None));
+        var liveError = Assert.Throws<CommonModulesManifestException>(() =>
+            new CommonModulesPackageReader(new CommonModulesManifestReader()).Load(repository));
 
         Assert.Contains("package entry could not be read", error.Message);
+        Assert.Equal(error.Message, liveError.Message);
         sourceLock.Position = 0;
         var actualBytes = new byte[sourceLock.Length];
         sourceLock.ReadExactly(actualBytes);
