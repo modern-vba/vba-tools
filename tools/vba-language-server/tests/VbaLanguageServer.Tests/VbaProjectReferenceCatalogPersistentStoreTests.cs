@@ -2,6 +2,7 @@ using System.Text.RegularExpressions;
 using System.Text.Json.Nodes;
 using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.SourceModel;
+using VbaTools.Syntax;
 using Xunit;
 
 namespace VbaLanguageServer.Tests;
@@ -12,7 +13,7 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
     public void TypeLibContractEvidenceUsesANewGeneratorVersion()
     {
         Assert.Equal(
-            "typelib-catalog-v12",
+            "typelib-catalog-v13",
             VbaProjectReferenceCatalogPersistentStore.CurrentGeneratorVersion);
     }
 
@@ -47,6 +48,104 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
                 definition.Name == "GeneratedMethod"
                 && definition.Signature?.CallableKind == VbaCallableKind.Function
                 && definition.Signature.SupportsNamedArguments == true);
+        }
+        finally
+        {
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void PersistentStoreRoundTripsInputOnlyPointerDispatchCallCompatibility()
+    {
+        var cacheRoot = Directory.CreateTempSubdirectory("vba-ls-catalog-passing-").FullName;
+        try
+        {
+            const string referenceName = "Fixture";
+            var passing = new VbaTypeLibParameterPassing(VbaTypeLibParameterDirection.Input, 1);
+            var catalog = CreateInputOnlyPointerDispatchCatalog(referenceName);
+            var store = new VbaProjectReferenceCatalogPersistentStore(cacheRoot);
+            store.Save(new VbaProjectReferenceCatalogPersistentEntry(CreateIdentity(referenceName), catalog));
+
+            var load = store.Load(referenceName);
+
+            Assert.Equal(VbaProjectReferenceCatalogPersistentLoadStatus.Current, load.Status);
+            Assert.Null(load.WarningMessage);
+            var entry = Assert.IsType<VbaProjectReferenceCatalogPersistentEntry>(load.Entry);
+            var definition = Assert.Single(entry.Catalog.Definitions, candidate => candidate.Name == "Put");
+            var rawMember = Assert.Single(Assert.Single(entry.Catalog.TypeLibTypes!).Members);
+            foreach (var loadedSignature in new[] { definition.Signature, rawMember.Signature })
+            {
+                Assert.NotNull(loadedSignature);
+                Assert.Equal(VbaCallablePassingConvention.AutomationDispatch, loadedSignature.PassingConvention);
+                Assert.Equal(passing, Assert.Single(loadedSignature.Parameters).TypeLibPassing);
+            }
+
+            AssertPointerDispatchCallCompatibility(entry.Catalog, VbaCallCompatibilityState.Applicable);
+        }
+        finally
+        {
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void PersistentStoreKeepsCallsIndeterminateWhenPassingEvidenceIsMissing(
+        bool legacyGenerator,
+        bool keepPassingConvention)
+    {
+        var cacheRoot = Directory.CreateTempSubdirectory("vba-ls-catalog-missing-passing-").FullName;
+        try
+        {
+            const string referenceName = "Fixture";
+            var identity = CreateIdentity(referenceName);
+            var store = new VbaProjectReferenceCatalogPersistentStore(cacheRoot);
+            store.Save(new VbaProjectReferenceCatalogPersistentEntry(
+                identity, CreateInputOnlyPointerDispatchCatalog(referenceName)));
+            var entryPath = Path.Combine(cacheRoot, "catalogs",
+                VbaProjectReferenceCatalogPersistentStore.CreateCatalogEntryKey(identity));
+            var entryJson = JsonNode.Parse(File.ReadAllText(entryPath))!.AsObject();
+            var catalogJson = entryJson["catalog"]!;
+            var projectedSignature = catalogJson["definitions"]!.AsArray()
+                .Single(candidate => candidate!["name"]!.GetValue<string>() == "Put")!["signature"]!.AsObject();
+            var rawSignature = catalogJson["typeLibTypes"]![0]!["members"]![0]!["signature"]!.AsObject();
+            foreach (var signatureJson in new[] { projectedSignature, rawSignature })
+            {
+                Assert.True(signatureJson["parameters"]![0]!.AsObject().Remove("typeLibPassing"));
+                if (!keepPassingConvention)
+                {
+                    Assert.True(signatureJson.Remove("passingConvention"));
+                }
+            }
+            var generatorVersion = legacyGenerator ? "typelib-catalog-v12"
+                : VbaProjectReferenceCatalogPersistentStore.CurrentGeneratorVersion;
+            entryJson["generatorVersion"] = generatorVersion;
+            File.WriteAllText(entryPath, entryJson.ToJsonString());
+            var indexPath = store.GetReferenceIndexPath(referenceName);
+            var indexJson = JsonNode.Parse(File.ReadAllText(indexPath))!.AsObject();
+            indexJson["generatorVersion"] = generatorVersion;
+            File.WriteAllText(indexPath, indexJson.ToJsonString());
+
+            var load = store.Load(referenceName);
+
+            Assert.Equal(generatorVersion == VbaProjectReferenceCatalogPersistentStore.CurrentGeneratorVersion
+                ? VbaProjectReferenceCatalogPersistentLoadStatus.Current
+                : VbaProjectReferenceCatalogPersistentLoadStatus.Stale, load.Status);
+            var entry = Assert.IsType<VbaProjectReferenceCatalogPersistentEntry>(load.Entry);
+            var definition = Assert.Single(entry.Catalog.Definitions, candidate => candidate.Name == "Put");
+            var rawMember = Assert.Single(Assert.Single(entry.Catalog.TypeLibTypes!).Members);
+            foreach (var loadedSignature in new[] { definition.Signature, rawMember.Signature })
+            {
+                Assert.NotNull(loadedSignature);
+                Assert.Null(Assert.Single(loadedSignature.Parameters).TypeLibPassing);
+                Assert.Equal(keepPassingConvention ? VbaCallablePassingConvention.AutomationDispatch
+                    : VbaCallablePassingConvention.Unknown, loadedSignature.PassingConvention);
+            }
+            AssertPointerDispatchCallCompatibility(entry.Catalog, VbaCallCompatibilityState.Indeterminate);
         }
         finally
         {
@@ -997,6 +1096,73 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
         {
             Directory.Delete(tempRoot, recursive: true);
         }
+    }
+
+    private static VbaProjectReferenceCatalog CreateInputOnlyPointerDispatchCatalog(string referenceName)
+    {
+        var signature = new VbaCallableSignature(
+            "Sub Put(ByRef key As Variant)",
+            [new VbaCallableParameter("key", TypeReference: new VbaTypeReference("Variant"), IsByRef: true)
+            {
+                TypeLibPassing = new VbaTypeLibParameterPassing(VbaTypeLibParameterDirection.Input, 1)
+            }],
+            CallableKind: VbaCallableKind.Sub)
+        {
+            PassingConvention = VbaCallablePassingConvention.AutomationDispatch
+        };
+        return TypeLibReferenceCatalogBuilder.Build(referenceName,
+            new TypeLibCatalogMetadata(referenceName,
+            [
+                new TypeLibCatalogType("Store", VbaSourceDefinitionKind.Class, Documentation: null,
+                    Members:
+                    [
+                        new TypeLibCatalogMember("Put", VbaSourceDefinitionKind.Procedure,
+                            Documentation: null, Signature: signature,
+                            Metadata: new TypeLibCatalogCallableMetadata(MemberId: 1, FunctionFlags: 0))
+                    ],
+                    Metadata: new TypeLibCatalogTypeMetadata(TypeLibCatalogRawTypeKind.Dispatch,
+                        TypeFlags: 0, ImplementedInterfaces: []))
+            ]));
+    }
+
+    private static void AssertPointerDispatchCallCompatibility(
+        VbaProjectReferenceCatalog catalog,
+        VbaCallCompatibilityState expectedState)
+    {
+        var catalogs = VbaProjectReferenceCatalogSet.Empty.WithCatalog(catalog);
+        var selection = VbaProjectReferenceSelection.Create("word", [new VbaProjectReference(catalog.ReferenceName)]);
+        const string uri = "file:///C:/work/Caller.bas";
+        const string source = """
+            Attribute VB_Name = "Caller"
+            Public Sub Run()
+                Dim values As Fixture.Store
+                Dim key As String
+                values.Put key
+            End Sub
+            """;
+        var syntaxTree = VbaSyntaxTree.ParseModule(uri, source);
+        var document = VbaSourceDocumentProjector.Project(uri, syntaxTree);
+        var inventory = VbaSemanticInventory.Create(
+            new Dictionary<string, VbaSourceDocument>(StringComparer.OrdinalIgnoreCase) { [uri] = document },
+            selection, catalogs);
+        var target = Assert.IsAssignableFrom<VbaResolvedNameTarget>(
+            inventory.ResolveSourceTarget(uri, 4, "    values.".Length));
+        Assert.Equal("Put", target.CanonicalName);
+        Assert.Equal(VbaDefinitionOrigin.ProjectReference, target.SelectedDefinition.Identity.Origin);
+        var nameResolution = new VbaNameResolutionService([document], selection, catalogs);
+        var callResolution = new VbaCallSiteResolution(nameResolution,
+            new VbaMemberChainResolution(new VbaTypeResolution(nameResolution)), new VbaResolutionPolicy());
+        var call = Assert.Single(syntaxTree.Module.ArgumentLists, candidate =>
+            candidate.CalleeRange?.Start.Line == 4 && candidate.Form == VbaCallSyntaxForm.Statement);
+
+        var compatibility = callResolution.AnalyzeCompleteCall(document, call, target);
+
+        var variant = Assert.Single(compatibility.Variants);
+        Assert.Equal(expectedState, variant.State);
+        Assert.Empty(Assert.IsType<VbaCompleteCallArgumentMapping>(variant.Mapping).TypeMismatchReasons);
+        Assert.DoesNotContain(inventory.GetProjectValidationDiagnostics(uri), diagnostic =>
+            diagnostic.Code == "validation.incompatibleCallArgumentList"
+            || diagnostic.Message.Contains("ByRef type", StringComparison.Ordinal));
     }
 
     private static VbaProjectReferenceCatalogIdentity CreateIdentity(string referenceName)

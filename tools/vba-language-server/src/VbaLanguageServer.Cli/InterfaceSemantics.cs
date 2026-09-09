@@ -183,6 +183,36 @@ internal sealed class VbaInterfaceSemanticModel
         this.nameResolution = nameResolution;
     }
 
+    internal bool CanProveSourceInterfaceAssignment(
+        VbaResolvedNameTarget actualTarget,
+        VbaResolvedNameTarget expectedTarget)
+    {
+        if (actualTarget.PhysicalDefinitions.Count != 1
+            || expectedTarget.PhysicalDefinitions.Count != 1)
+        {
+            return false;
+        }
+
+        var actualDefinition = actualTarget.PhysicalDefinitions[0];
+        var expectedDefinition = expectedTarget.PhysicalDefinitions[0];
+        if (actualDefinition.Identity.Origin != VbaDefinitionOrigin.Source
+            || expectedDefinition.Identity.Origin != VbaDefinitionOrigin.Source
+            || actualDefinition.Kind != VbaSourceDefinitionKind.Class
+            || expectedDefinition.Kind != VbaSourceDefinitionKind.Class
+            || nameResolution.HasIndeterminateConditionalCompilationOwnership(
+                actualDefinition)
+            || nameResolution.HasIndeterminateConditionalCompilationOwnership(
+                expectedDefinition)
+            || nameResolution.FindDocument(actualDefinition.Uri) is not { } document)
+        {
+            return false;
+        }
+
+        return GetRelationships(document).Any(relationship =>
+            relationship.ConditionalCompilationPath is { IsEmpty: true }
+            && relationship.InterfaceTarget.Identity.Equals(expectedTarget.Identity));
+    }
+
     internal IReadOnlyList<VbaContractPrefixCompletionOrigin>
         GetDeclarationNameCompletionOrigins(
             VbaSourceDocument implementingDocument,

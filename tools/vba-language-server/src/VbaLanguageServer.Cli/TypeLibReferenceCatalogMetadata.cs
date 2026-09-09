@@ -749,7 +749,9 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
                     hasResolvedReturnType: returnType is not null,
                     hasReturnValueParameter);
                 var signature = memberKind == VbaSourceDefinitionKind.Procedure || parameters.Count > 0
-                    ? CreateSignature(memberName, parameters, returnType, EmptyToNull(documentation), callableKind)
+                    ? CreateSignature(
+                        memberName, parameters, returnType, EmptyToNull(documentation), callableKind,
+                        GetCallablePassingConvention(attr, funcDesc.funckind))
                     : null;
 
                 members.Add(new TypeLibCatalogMember(
@@ -843,7 +845,12 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
                 TypeReference: ToTypeReference(typeInfo, element.tdesc),
                 IsByRef: GetParameterPassing(element),
                 IsParamArray: isParamArray,
-                IsArray: isParamArray || isArray == true));
+                IsArray: isParamArray || isArray == true)
+            {
+                TypeLibPassing = new VbaTypeLibParameterPassing(
+                    GetParameterDirection(element.desc.paramdesc.wParamFlags),
+                    GetAbiPointerDepth(element.tdesc))
+            });
         }
 
         return parameters;
@@ -861,7 +868,8 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         IReadOnlyList<VbaCallableParameter> parameters,
         VbaTypeReference? returnType,
         string? documentation,
-        VbaCallableKind callableKind)
+        VbaCallableKind callableKind,
+        VbaCallablePassingConvention passingConvention)
     {
         var label = $"{memberName}({string.Join(", ", parameters.Select(CreateParameterLabel))})";
         if (returnType is not null)
@@ -874,7 +882,10 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
             parameters,
             documentation,
             CallableKind: callableKind,
-            SupportsNamedArguments: true);
+            SupportsNamedArguments: true)
+        {
+            PassingConvention = passingConvention
+        };
     }
 
     internal static VbaCallableKind GetCallableKind(
@@ -967,6 +978,42 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         }
 
         return null;
+    }
+
+    private static VbaCallablePassingConvention GetCallablePassingConvention(
+        TYPEATTR type, FUNCKIND functionKind)
+    {
+        var supportsAutomation = functionKind == FUNCKIND.FUNC_DISPATCH
+            || functionKind is FUNCKIND.FUNC_VIRTUAL or FUNCKIND.FUNC_PUREVIRTUAL
+                && (type.typekind == TYPEKIND.TKIND_DISPATCH
+                    || type.typekind == TYPEKIND.TKIND_INTERFACE
+                        && (type.wTypeFlags & (TYPEFLAGS.TYPEFLAG_FOLEAUTOMATION | TYPEFLAGS.TYPEFLAG_FDUAL)) != 0);
+        return supportsAutomation
+            ? VbaCallablePassingConvention.AutomationDispatch
+            : VbaCallablePassingConvention.OtherExternal;
+    }
+
+    private static VbaTypeLibParameterDirection GetParameterDirection(PARAMFLAG flags)
+        => ((flags & PARAMFLAG.PARAMFLAG_FIN) != 0, (flags & PARAMFLAG.PARAMFLAG_FOUT) != 0) switch
+        {
+            (true, false) => VbaTypeLibParameterDirection.Input,
+            (false, true) => VbaTypeLibParameterDirection.Output,
+            (true, true) => VbaTypeLibParameterDirection.InputOutput,
+            _ => VbaTypeLibParameterDirection.Unknown
+        };
+
+    private static int? GetAbiPointerDepth(TYPEDESC typeDesc)
+    {
+        var depth = 0;
+        while ((VarEnum)typeDesc.vt == VarEnum.VT_PTR)
+        {
+            if (!TryGetNestedTypeDescription(typeDesc, out typeDesc))
+            {
+                return null;
+            }
+            depth++;
+        }
+        return depth;
     }
 
     private static bool? GetArrayTypeEvidence(TYPEDESC typeDesc)
