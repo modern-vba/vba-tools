@@ -39,11 +39,11 @@ input collection, retaining an entry, or obtaining a collection through another
 interface cannot alter the admitted facts. Immutable entry facts may be shared
 by plans without reconstructing or weakening their authority.
 
-Live filesystem validation and captured-byte validation retain their separate
-implementations in this decision. Both must establish complete admission before
-issuing the same trusted value. Consolidating those validators is a separate
-change; introducing the Package boundary does not imply that consolidation has
-already happened.
+This decision originally retained separate live and captured validation bodies.
+Both must establish complete admission before issuing the same trusted value.
+The subsequent [shared validation decision](0053-share-commonmodules-package-validation.md)
+consolidates those bodies behind two internal input Adapters without changing
+the controlled issuance boundary.
 
 ### Request and dependency selection
 
@@ -145,5 +145,6 @@ fixtures for trusted selection tests.
 
 This decision changes the internal authority boundary rather than the manifest
 grammar, CLI result schemas, release format, or existing mutation guarantees.
-It introduces no package version pinning, automatic pruning, live/captured
-validator consolidation, or new snapshot cleanup policy.
+It introduces no package version pinning, automatic pruning, or new snapshot
+cleanup policy. The later validator consolidation is recorded separately in
+ADR 0053.

@@ -744,13 +744,14 @@ public sealed class CommonModulesCommandTests
         {
             WriteModule(repository, moduleFile, "canonical module");
         }
-        var package = new CommonModulesPackageReader(new CommonModulesManifestReader()).Load(repository);
+        AssertSelectionForLiveAndCapturedPackages(temp, repository, package =>
+        {
+            var plan = package.ResolveRequestedPlan(["beta", "ALPHA.BAS", "Beta.bas", "Alpha"]);
 
-        var plan = package.ResolveRequestedPlan(["beta", "ALPHA.BAS", "Beta.bas", "Alpha"]);
-
-        Assert.Equal(["Base.bas", "Beta.bas", "Alpha.bas"], plan.Entries.Select(entry => entry.ModuleFile));
-        Assert.Equal(["Shared", "Base Library", "Beta Library", "Alpha Library"], plan.RequiredReferences);
-        Assert.Equal(["Alpha.bas", "Beta.bas", "Base.bas"], package.Entries.Select(entry => entry.ModuleFile));
+            Assert.Equal(["Base.bas", "Beta.bas", "Alpha.bas"], plan.Entries.Select(entry => entry.ModuleFile));
+            Assert.Equal(["Shared", "Base Library", "Beta Library", "Alpha Library"], plan.RequiredReferences);
+            Assert.Equal(["Alpha.bas", "Beta.bas", "Base.bas"], package.Entries.Select(entry => entry.ModuleFile));
+        });
     }
 
     [Fact]
@@ -766,16 +767,17 @@ public sealed class CommonModulesCommandTests
         WriteModule(repo, "Root.bas", "root");
         WriteModule(repo, "Alpha.cls", "alpha");
         WriteModule(repo, "Beta.cls", "beta");
-        var package = new CommonModulesPackageReader(new CommonModulesManifestReader()).Load(repo);
+        AssertSelectionForLiveAndCapturedPackages(temp, repo, package =>
+        {
+            var plan = package.ResolveRequestedPlan(["Root"]);
 
-        var plan = package.ResolveRequestedPlan(["Root"]);
-
-        Assert.Equal(
-            ["Alpha.cls", "Beta.cls", "Root.bas"],
-            plan.Entries.Select(entry => entry.ModuleFile));
-        Assert.Equal(
-            ["AlphaRef", "shared", "BetaRef", "RootRef"],
-            plan.RequiredReferences);
+            Assert.Equal(
+                ["Alpha.cls", "Beta.cls", "Root.bas"],
+                plan.Entries.Select(entry => entry.ModuleFile));
+            Assert.Equal(
+                ["AlphaRef", "shared", "BetaRef", "RootRef"],
+                plan.RequiredReferences);
+        });
     }
 
     [Fact]
@@ -793,16 +795,35 @@ public sealed class CommonModulesCommandTests
         {
             WriteModule(repo, moduleFile, "canonical class");
         }
-        var package = new CommonModulesPackageReader(new CommonModulesManifestReader()).Load(repo);
+        AssertSelectionForLiveAndCapturedPackages(temp, repo, package =>
+        {
+            var plan = package.ResolveRequestedPlan(["A"]);
 
-        var plan = package.ResolveRequestedPlan(["A"]);
+            Assert.Equal(
+                ["X.cls", "Y.cls", "A.cls", "B.cls"],
+                plan.Entries.Select(entry => entry.ModuleFile));
+            Assert.Equal(
+                ["XRef", "Shared", "YRef", "ARef", "BRef"],
+                plan.RequiredReferences);
+        });
+    }
 
-        Assert.Equal(
-            ["X.cls", "Y.cls", "A.cls", "B.cls"],
-            plan.Entries.Select(entry => entry.ModuleFile));
-        Assert.Equal(
-            ["XRef", "Shared", "YRef", "ARef", "BRef"],
-            plan.RequiredReferences);
+    private static void AssertSelectionForLiveAndCapturedPackages(
+        TempDirectory temp,
+        string repositoryPath,
+        Action<CommonModulesPackage> assertions)
+    {
+        var reader = new CommonModulesPackageReader(new CommonModulesManifestReader());
+        assertions(reader.Load(repositoryPath));
+        var scratchRoot = temp.CreateDirectory("selection-scratch");
+        using (var snapshot = new CommonModulesPackageSnapshotFactory(
+                   new WindowsExactFileSystemObjectOwnershipFactory(), reader, scratchRoot)
+                   .Capture(repositoryPath, CancellationToken.None))
+        {
+            assertions(snapshot.Package);
+        }
+
+        Assert.Empty(Directory.EnumerateFileSystemEntries(scratchRoot));
     }
 
     [Fact]
