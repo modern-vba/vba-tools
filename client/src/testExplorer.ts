@@ -1,4 +1,6 @@
 import * as path from 'node:path';
+import { parseVbaDevSourceAnalysisReports } from './vbaDevOutputContract';
+import { SnapshotDiagnosticOrigin, VbaDevSnapshotDiagnosticReporterLike, combineVbaDevDiagnosticOutput, vbaDevDiagnosticScope } from './toolDiagnostics';
 import { SnapshotProviderOptions, resolveSnapshotProviders, snapshotActiveWindowsCodePage } from './snapshotProviders';
 
 import {
@@ -97,6 +99,7 @@ export interface WorkbookBackedTestExplorerOptions extends SnapshotProviderOptio
   outputChannel: VbaToolsOutputChannel;
   showErrorMessage: (message: string) => Thenable<unknown> | Promise<unknown>;
   requiredContract?: RequiredVbaDevContract | undefined;
+  diagnosticReporter?: VbaDevSnapshotDiagnosticReporterLike | undefined;
 }
 
 export interface OpenTextDocumentState {
@@ -106,6 +109,7 @@ export interface OpenTextDocumentState {
 
 export interface CallerOwnedSourceSnapshot {
   readonly directoryPath: string;
+  readonly origins?: readonly SnapshotDiagnosticOrigin[];
   cleanup(): Promise<{ readonly retainedPath?: string | undefined }>;
 }
 
@@ -358,6 +362,7 @@ async function runTestItem(
     }, {
       projectRoot: metadata.projectRoot,
       argsBeforeProject: ['test'],
+      refreshDiagnostics: false,
       argsAfterProject: createTestSelectorArgs(
         metadata,
         runOptions.noBuild,
@@ -369,6 +374,26 @@ async function runTestItem(
     }
     testRun.appendOutput(result.stdout);
     testRun.appendOutput(result.stderr);
+
+    if (!result.cancelled && result.exitCode !== null && sourceSnapshot !== undefined) {
+      try {
+        const output = combineVbaDevDiagnosticOutput(result.stdout, result.stderr);
+        const reports = parseVbaDevSourceAnalysisReports(output);
+        options.diagnosticReporter?.refreshSnapshot(
+          vbaDevDiagnosticScope('test', metadata.projectRoot, metadata.documentName),
+          output, sourceSnapshot.origins ?? [],
+          message => { testRun.appendOutput(`${message}\n`); options.outputChannel.appendLine(message); });
+        if (reports.some(report => !report.complete || report.diagnostics.some(diagnostic => diagnostic.severity === 'error'))) {
+          const reasons = reports.flatMap(report => report.failures.map(failure => failure.message));
+          testRun.errored(item, ['VBA source validation failed; tests were not run. See Problems and VBA Tools output.', ...reasons].join(' '));
+          await options.showErrorMessage('VBA Tools: Test build validation failed. See Problems and VBA Tools output.');
+          return;
+        }
+      } catch (error) {
+        testRun.errored(item, error instanceof Error ? error.message : String(error));
+        return;
+      }
+    }
 
     const eventState = nodeIndex.applyTestOutput(
       options.controller,

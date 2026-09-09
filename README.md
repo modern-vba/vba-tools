@@ -451,8 +451,9 @@ A successful rerun removes resolved debug Build findings without saving editors
 or clearing other diagnostic scopes. Unsupported origin mappings are explained
 in Output rather than linked to a deleted temporary file.
 
-Publish, standalone Import and Export, `test --no-build`, and Test Explorer
-result integration retain their existing behavior at this stage.
+Test command and Test Explorer Build failures expose the same diagnostics and
+stop before test execution; see [Test Explorer](#test-explorer). Publish,
+standalone Import and Export, and `test --no-build` retain their existing behavior.
 
 Workbook open and save stages each use a 300-second timeout by default. A
 project can set positive whole-second overrides through
@@ -827,6 +828,26 @@ contains a readable `vba-project.json` manifest.
 | --- | --- |
 | `Run Tests` | Captures a caller-owned source snapshot, including dirty editors without saving them, then invokes `vba-dev test --source-snapshot <temporary-directory> --format ndjson`. |
 | `Run Tests Without Build` | Skips saving and snapshot capture, then invokes `vba-dev test --no-build --format ndjson` against existing generated output. |
+
+Build-before-test validates the complete generated document source set, even
+when one module or procedure is selected. A source error or incomplete required
+analysis stops the invocation before any test macro runs, without falling back
+to an older workbook. Test Explorer reports a source-validation execution error;
+it does not create passing or failing assertion results for unexecuted tests.
+Processing failures explain the incomplete analysis in the Test Run and output.
+
+The Test command diagnoses saved sources. Test Explorer diagnoses its captured
+source generation and maps both primary and related Problems locations to the
+original exported documents, including dirty editors. Locations remain usable
+after snapshot cleanup. Correcting the sources and running again clears only
+the selected Test contribution and executes the selected tests normally.
+No-build runs neither refresh nor clear these source-validation findings.
+
+CLI test output remains schema `1.2`: its NDJSON records describe actual test
+results. Build diagnostics remain separate `sourceAnalysis` schema `3.0` records
+on stderr, with the existing provider capability checks. Validation failure
+returns nonzero and emits no successful empty test run. Saved-source policy,
+source/template preservation, cancellation, and owned cleanup are unchanged.
 
 Missing or unusable generated output is reported as a test run error in the
 no-build profile. When selected source is dirty, no-build results remain

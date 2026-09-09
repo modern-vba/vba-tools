@@ -5275,6 +5275,9 @@ Domain Expert: "No. Keep outcomes for the immutable source that ran, but do not 
 Dev: "Should a Test Explorer run use unsaved exported VBA source?"
 Domain Expert: "Yes, for the normal build-before-test profile. Capture a caller-owned complete `BuildSourceSnapshot` without saving source and invoke `vba-dev test --source-snapshot`; `VbaDev` owns only its internal test workspace. A no-build run intentionally executes the existing bin workbook and cannot accept a snapshot."
 
+Dev: "How does a build-validation failure affect Test command and Test Explorer?"
+Domain Expert: "Ordinary and snapshot build-before-test already share complete source analysis. A validation Error or incomplete analysis returns nonzero before the test runner, even if an old bin exists. Preserve collected sourceAnalysis 3.0 records on stderr, separate from Test 1.2 NDJSON results. Test Explorer projects both primary and related locations using origins frozen with the exact caller-owned snapshot bytes, reports a source-validation execution error and its incomplete reasons, and creates no assertion outcomes for unexecuted procedures. Corrected build reruns refresh only the same Test scope; no-build has no new source authority and must not clear that scope. See ADR 0059."
+
 Dev: "Should the no-build Test Explorer profile save dirty source before running the existing bin workbook?"
 Domain Expert: "No. Run the existing bin unchanged and retain its outcomes and test identities. Because that artifact has no proved source capture, `VbaDev` must inspect no project source for navigation, omit every optional location regardless of current source state, and emit exactly one fixed non-failing warning for a completed run. Never save, build, or rerun implicitly."
 

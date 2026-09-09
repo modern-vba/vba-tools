@@ -820,6 +820,7 @@ export async function activate(
         isDirty: document.isDirty
       })),
     captureSourceSnapshot: captureTestSourceSnapshot,
+    diagnosticReporter: toolDiagnosticReporter,
     requireTrustedWorkspace: () => (
       workspaceTrustGate.requireTrusted('managed-tooling')
     ),

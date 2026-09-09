@@ -849,6 +849,41 @@ test('the snapshot capture port returns a materialized caller-owned lease', asyn
   assert.deepEqual([...writes.get(path.join(snapshotPath, 'Module.bas'))!], [0x41]);
 });
 
+test('caller-owned snapshot retains exact immutable module and form origins beyond cleanup', async () => {
+  const directoryPath = path.resolve('C:/temp/test-snapshot');
+  const entries = [
+    { relativePath: 'nested/日本語/Caller.bas', sourceUri: 'file:///C:/authoring/nested/日本語/Caller.bas', bytes: new Uint8Array([65]) },
+    { relativePath: 'Dialog.frm', sourceUri: 'file:///C:/authoring/Dialog.frm', bytes: new Uint8Array([66]) },
+    { relativePath: 'Dialog.frx', bytes: new Uint8Array([67]) }
+  ];
+  const writes: number[][] = [];
+  let removed = false;
+  const lease = await materializeSnapshotSourceInventory({
+    sourceSetPath: path.resolve('C:/authoring'), activeWindowsCodePage: 932, entries
+  }, {
+    createTemporaryDirectory: async () => {
+      entries[0]!.sourceUri = 'file:///C:/later/Caller.bas';
+      entries[0]!.bytes[0] = 90;
+      return directoryPath;
+    },
+    createDirectory: async () => undefined,
+    writeFile: async (_file, bytes) => { writes.push([...bytes]); },
+    removeDirectory: async () => { removed = true; }, wait: async () => undefined
+  });
+  await lease.cleanup();
+  assert.equal(removed, true);
+  assert.deepEqual(writes, [[65], [66], [67]]);
+  const origins = Reflect.get(lease, 'origins');
+  assert.deepEqual(origins, [
+    { snapshotUri: pathToFileURL(path.join(directoryPath, 'nested/日本語/Caller.bas')).href,
+      sourceUri: 'file:///C:/authoring/nested/日本語/Caller.bas' },
+    { snapshotUri: pathToFileURL(path.join(directoryPath, 'Dialog.frm')).href, sourceUri: 'file:///C:/authoring/Dialog.frm' },
+    { snapshotUri: pathToFileURL(path.join(directoryPath, 'Dialog.frx')).href, sourceUri: undefined }
+  ]);
+  assert.ok(Object.isFrozen(origins));
+  assert.ok(origins.every(Object.isFrozen));
+});
+
 test('duplicate snapshot materialization fails with both paths and preserves retained-directory cleanup', async () => {
   const snapshotPath = path.resolve('temporary-snapshot');
   const relativePaths = [path.join('Nested', 'Σ.bas'), path.join('nested', 'ς.BAS')];

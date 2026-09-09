@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { VbaDevDiagnosticReporter, VbaDevDiagnostic } from './toolDiagnostics';
 
 import { VbaDevCompatibilityError, noCompatibleVbaDevMessage } from './devtool';
 import { CommandCancellationToken } from './devtoolCommand';
@@ -60,6 +61,83 @@ test('snapshot Test rejects an old adapter before capture or CLI invocation', as
   assert.equal(captures, 0);
   assert.equal(calls.some(call => call.args[0] === 'test'), false);
   assert.ok(controller.runs[0].events.some(event => event.startsWith('errored:')));
+});
+
+test('Test Explorer reports snapshot build errors at original sources and clears only a corrected build run', async () => {
+  const projectRoot = path.resolve('C:/work/BookProject');
+  const snapshot = path.resolve('C:/temp/explorer-snapshot');
+  const caller = path.join(projectRoot, 'src/Book1/nested/日本語/Caller.bas');
+  const target = path.join(projectRoot, 'src/Book1/Target.bas');
+  const entries = new Map<string, readonly VbaDevDiagnostic[]>();
+  const reporter = new VbaDevDiagnosticReporter({
+    set: (uri, diagnostics) => { entries.set(uri, diagnostics); }, delete: uri => { entries.delete(uri); }
+  });
+  let failed = true;
+  let cleanups = 0;
+  const range = { start: { line: 3, character: 16 }, end: { line: 3, character: 20 } };
+  const relatedRange = { start: { line: 1, character: 11 }, end: { line: 1, character: 22 } };
+  const report = JSON.stringify({ type: 'sourceAnalysis', schemaVersion: '3.0', complete: true, failures: [], diagnostics: [{
+    type: 'diagnostic', owner: 'vba-dev', code: 'validation.incompatibleCallArgumentList', severity: 'error',
+    uri: pathToFileURL(path.join(snapshot, 'nested/日本語/Caller.bas')).href, range, message: 'ByRef type mismatch',
+    relatedInformation: [{ message: 'Target signature', location: {
+      uri: pathToFileURL(path.join(snapshot, 'Target.bas')).href, range: relatedRange
+    } }]
+  }] });
+  const controller = new FakeTestController();
+  const explorer = createExplorer(controller, {
+    manifests: new Map([[path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]]),
+    diagnosticReporter: reporter,
+    captureSourceSnapshot: async () => ({ directoryPath: snapshot, origins: [
+      { snapshotUri: pathToFileURL(path.join(snapshot, 'nested/日本語/Caller.bas')).href, sourceUri: pathToFileURL(caller).href },
+      { snapshotUri: pathToFileURL(path.join(snapshot, 'Target.bas')).href, sourceUri: pathToFileURL(target).href }
+    ], cleanup: async () => { cleanups++; return {}; } }),
+    startProcess: () => ({
+      onStdout: listener => listener(failed ? '' : ndjson(testFinishedWithLocation(projectRoot, 'Book1', 'Test_Module', 'Test_Passes'))),
+      onStderr: listener => listener(failed ? report : ''), onExit: listener => listener(failed ? 1 : 0, null), kill: () => undefined
+    })
+  });
+  await explorer.refresh();
+  const item = controller.items[0].children.items[0];
+  await explorer.run({ include: [item] }, uncancelledToken());
+  assert.equal(cleanups, 1);
+  assert.equal(entries.size, 1);
+  const diagnostic = entries.get(caller)![0]!;
+  assert.deepEqual(diagnostic.range, range);
+  assert.equal(diagnostic.relatedInformation![0]!.location.uriPath, target);
+  assert.deepEqual(diagnostic.relatedInformation![0]!.location.range, relatedRange);
+  assert.ok(controller.runs[0].events.some(event => event.startsWith('errored:')));
+  assert.equal(controller.runs[0].events.some(event => /^(passed|failed):/.test(event)), false);
+  assert.equal(item.children.items.length, 0, 'Validation cannot invent executed test cases.');
+
+  // A no-build run cannot clear source diagnostics or claim a new origin map.
+  failed = false;
+  await controller.runProfiles[1].runHandler({ include: [item] }, uncancelledToken());
+  assert.equal(cleanups, 1);
+  assert.equal(entries.size, 1);
+  reporter.refresh('independent', JSON.stringify({ type: 'diagnostic', owner: 'vba-dev', uri: caller,
+    code: 'independent', severity: 'warning', message: 'Other contribution', range }));
+  await explorer.run({ include: [item] }, uncancelledToken());
+  assert.equal(cleanups, 2);
+  assert.ok(controller.runs[2].events.some(event => event.startsWith('passed:')));
+  assert.deepEqual(entries.get(caller)!.map(item => item.code), ['independent']);
+});
+
+test('Test Explorer identifies incomplete build analysis without inventing a test result', async () => {
+  const projectRoot = path.resolve('C:/work/BookProject');
+  const controller = new FakeTestController();
+  const errors: string[] = [];
+  const explorer = createExplorer(controller, {
+    manifests: new Map([[path.join(projectRoot, 'vba-project.json'), manifestJson('BookProject', ['Book1'])]]),
+    stderr: JSON.stringify({ type: 'sourceAnalysis', schemaVersion: '3.0', complete: false, diagnostics: [],
+      failures: [{ scope: 'project', uri: null, message: 'Required reference unavailable.' }] }), stdout: '', exitCode: 1,
+    errorMessages: errors
+  });
+  await explorer.refresh();
+  await explorer.run({ include: [controller.items[0]] }, uncancelledToken());
+  assert.ok(controller.runs[0].events.some(event => /errored:.*source validation.*tests were not run/i.test(event)));
+  assert.ok(controller.runs[0].events.some(event => /Required reference unavailable/.test(event)));
+  assert.equal(controller.runs[0].events.some(event => /^(passed|failed):/.test(event)), false);
+  assert.equal(controller.runs[0].events.at(-1), 'end');
 });
 
 test('Running a project node invokes vba-dev test ndjson with explicit project root', async () => {
@@ -2159,6 +2237,7 @@ function createExplorer(
     vbaDevResolver?: Parameters<typeof createWorkbookBackedTestExplorer>[0]['vbaDevResolver'];
     requireTrustedWorkspace?: () => Promise<boolean>;
     adapterProtocol?: string;
+    diagnosticReporter?: VbaDevDiagnosticReporter;
   }
 ) {
   const calls = options.calls ?? [];
@@ -2167,6 +2246,7 @@ function createExplorer(
     captureSourceSnapshot?: TestCaptureSourceSnapshot;
   } = {
     controller,
+    diagnosticReporter: options.diagnosticReporter,
     extensionRoot: path.resolve(__dirname, '..', '..'),
     configuredDevToolPath: path.join('D:', 'tools', 'vba-dev.exe'),
     configuredDebugAdapterPath: path.join('D:', 'tools', 'vba-debug-adapter.exe'),

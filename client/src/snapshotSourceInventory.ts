@@ -1,5 +1,6 @@
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { SnapshotDiagnosticOrigin } from './toolDiagnostics';
 import { relativeWindowsDescendantPath, windowsPathKey } from './windowsPathIdentity';
 
 export interface SnapshotSourceTextDocument {
@@ -51,6 +52,7 @@ export interface CallerOwnedSourceSnapshotCleanupResult {
 
 export interface MaterializedCallerOwnedSourceSnapshot {
   readonly directoryPath: string;
+  readonly origins: readonly SnapshotDiagnosticOrigin[];
   cleanup(): Promise<CallerOwnedSourceSnapshotCleanupResult>;
 }
 
@@ -184,7 +186,11 @@ export async function materializeSnapshotSourceInventory(
   cancellationToken: SnapshotCaptureCancellationToken = uncancelledSnapshotCaptureToken
 ): Promise<MaterializedCallerOwnedSourceSnapshot> {
   throwIfSnapshotCaptureCancelled(cancellationToken);
+  const entries = inventory.entries.map(entry => ({
+    relativePath: entry.relativePath, sourceUri: entry.sourceUri, bytes: Uint8Array.from(entry.bytes)
+  }));
   const directoryPath = path.resolve(await host.createTemporaryDirectory());
+  const origins: SnapshotDiagnosticOrigin[] = [];
   let cleanupResult: CallerOwnedSourceSnapshotCleanupResult | undefined;
   const cleanup = async (): Promise<CallerOwnedSourceSnapshotCleanupResult> => {
     cleanupResult ??= await removeSnapshotDirectoryWithRetries(directoryPath, host);
@@ -197,7 +203,7 @@ export async function materializeSnapshotSourceInventory(
     const entryPathsByIdentity = new Map<string, string>();
     await createDirectoryOnce(directoryPath, host, createdDirectories);
     throwIfSnapshotCaptureCancelled(cancellationToken);
-    for (const entry of inventory.entries) {
+    for (const entry of entries) {
       throwIfSnapshotCaptureCancelled(cancellationToken);
       const filePath = resolveSnapshotEntryPath(directoryPath, entry.relativePath);
       const key = canonicalPath(filePath);
@@ -207,6 +213,7 @@ export async function materializeSnapshotSourceInventory(
           `Snapshot source inventory contains duplicate entry paths: ${existingPath} and ${entry.relativePath}`);
       }
       entryPathsByIdentity.set(key, entry.relativePath);
+      origins.push(Object.freeze({ snapshotUri: pathToFileURL(filePath).href, sourceUri: entry.sourceUri }));
       await createDirectoryOnce(path.dirname(filePath), host, createdDirectories);
       throwIfSnapshotCaptureCancelled(cancellationToken);
       await host.writeFile(filePath, Uint8Array.from(entry.bytes));
@@ -223,6 +230,7 @@ export async function materializeSnapshotSourceInventory(
 
   return Object.freeze({
     directoryPath,
+    origins: Object.freeze(origins),
     cleanup
   });
 }
