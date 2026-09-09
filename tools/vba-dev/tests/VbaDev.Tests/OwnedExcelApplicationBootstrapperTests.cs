@@ -473,7 +473,7 @@ public sealed class OwnedExcelApplicationBootstrapperTests
             () => terminationController.RequestCleanupAsync(TimeSpan.Zero));
 
         var evidence = error.ToString();
-        Assert.False(WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error));
+        Assert.False(WorkbookAutomationTerminalFacts.Analyze(error).HasUnprovedLifecycle);
         Assert.Contains(process.Id.ToString(), evidence, StringComparison.Ordinal);
         Assert.Contains("0x84", evidence, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("WinSta0\\Default", evidence, StringComparison.Ordinal);
@@ -805,7 +805,7 @@ public sealed class OwnedExcelApplicationBootstrapperTests
                 CancellationToken.None));
 
         Assert.Contains(observationError.Message, error.ToString(), StringComparison.Ordinal);
-        Assert.False(WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error));
+        Assert.False(WorkbookAutomationTerminalFacts.Analyze(error).HasUnprovedLifecycle);
         await terminationController.RequestCleanupAsync(TimeSpan.Zero);
         Assert.True(process.HasExited);
         Assert.Equal(1, isolation.DisposeCalls);
@@ -844,7 +844,7 @@ public sealed class OwnedExcelApplicationBootstrapperTests
 
         Assert.Contains(createError.Message, error.ToString(), StringComparison.Ordinal);
         Assert.Contains(deleteError.Message, error.ToString(), StringComparison.Ordinal);
-        Assert.False(WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error));
+        Assert.False(WorkbookAutomationTerminalFacts.Analyze(error).HasUnprovedLifecycle);
         await terminationController.RequestCleanupAsync(TimeSpan.Zero);
         Assert.Equal(1, isolation.DisposeCalls);
     }

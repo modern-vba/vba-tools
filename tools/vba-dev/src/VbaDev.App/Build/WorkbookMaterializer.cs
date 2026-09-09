@@ -480,7 +480,7 @@ internal sealed class WorkbookMaterializer
         var processReleaseProven = true;
         if (operationError is not null)
         {
-            WorkbookAutomationFailureClassifier.TryClassify(operationError, out var facts);
+            var facts = WorkbookAutomationTerminalFacts.Analyze(operationError);
             processReleaseProven = facts.ProcessReleaseProven;
         }
         var sharedCleanupEvidence = new List<string>();
@@ -773,7 +773,7 @@ internal sealed class WorkbookMaterializer
         catch (Exception operationError)
         {
             var failure = operationError;
-            WorkbookAutomationFailureClassifier.TryClassify(operationError, out var terminalFacts);
+            var terminalFacts = WorkbookAutomationTerminalFacts.Analyze(operationError);
             if (terminalFacts.ProcessReleaseProven)
             {
                 if (transaction is not null)

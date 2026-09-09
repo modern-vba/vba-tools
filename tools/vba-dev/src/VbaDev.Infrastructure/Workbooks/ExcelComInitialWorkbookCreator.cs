@@ -209,8 +209,7 @@ public sealed class ExcelComInitialWorkbookCreator : IReceiptInitialWorkbookCrea
             var combinedError = operationError is null
                 ? cleanupError
                 : new AggregateException(operationError, cleanupError);
-            if (WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(
-                cleanupError))
+            if (WorkbookAutomationTerminalFacts.Analyze(cleanupError).HasUnprovedLifecycle)
             {
                 throw new WorkbookAutomationCleanupException(
                     "The initial workbook could not prove release of its exactly owned Excel process.",

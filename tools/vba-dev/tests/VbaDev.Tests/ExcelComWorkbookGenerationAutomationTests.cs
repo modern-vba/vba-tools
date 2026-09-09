@@ -34,7 +34,8 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
             static (_, _) => Task.FromResult(true), CancellationToken.None);
         var error = Assert.ThrowsAny<Exception>(() => outcome.GetReleasedResult());
 
-        Assert.True(WorkbookAutomationFailureClassifier.TryClassify(error, out var facts));
+        var facts = WorkbookAutomationTerminalFacts.Analyze(error);
+        Assert.True(facts.IsRecognized);
         Assert.Contains(facts.Failures, failure => ReferenceEquals(failure.Error, comFailure)
             && failure.Stage!.Kind == WorkbookAutomationStageKind.WorkbookOpen);
         Assert.True(facts.ProcessReleaseProven);
@@ -422,7 +423,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
                 static (_, _) => Task.FromResult(true),
                 CancellationToken.None));
 
-        Assert.False(WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error));
+        Assert.False(WorkbookAutomationTerminalFacts.Analyze(error).HasUnprovedLifecycle);
         var failures = Assert.IsType<AggregateException>(error.InnerException).InnerExceptions;
         Assert.Contains(
             failures,
@@ -454,7 +455,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
                 static (_, _) => Task.FromResult(true),
                 CancellationToken.None));
 
-        Assert.True(WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error));
+        Assert.True(WorkbookAutomationTerminalFacts.Analyze(error).HasUnprovedLifecycle);
         var failures = Assert.IsType<AggregateException>(error.InnerException).InnerExceptions;
         Assert.Contains(failures, failure =>
             failure is WorkbookAutomationReleasedProcessCleanupException cleanup &&
@@ -761,7 +762,8 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
         Assert.Null(outcome.Evidence.OperationFailure);
         Assert.NotNull(outcome.Evidence.DispatcherFailure);
         var failure = Assert.Throws<WorkbookAutomationCleanupException>(() => outcome.GetReleasedResult());
-        Assert.True(WorkbookAutomationFailureClassifier.TryClassify(failure, out var facts));
+        var facts = WorkbookAutomationTerminalFacts.Analyze(failure);
+        Assert.True(facts.IsRecognized);
         Assert.True(facts.ProcessReleaseProven);
     }
 
@@ -853,7 +855,7 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
                 static (_, _) => Task.FromResult(true),
                 CancellationToken.None));
 
-        Assert.False(WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(error));
+        Assert.False(WorkbookAutomationTerminalFacts.Analyze(error).HasUnprovedLifecycle);
         Assert.Contains("Excel startup", error.Message, StringComparison.OrdinalIgnoreCase);
         var aggregate = Assert.IsType<AggregateException>(error.InnerException);
         Assert.Contains(startError, aggregate.InnerExceptions);

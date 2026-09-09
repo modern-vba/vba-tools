@@ -147,7 +147,7 @@ internal sealed class SnapshotTestExecutionWorkspaceFactory
         catch (Exception error)
         {
             ReleaseFences();
-            WorkbookAutomationFailureClassifier.TryClassify(error, out var facts);
+            var facts = WorkbookAutomationTerminalFacts.Analyze(error);
             if (!facts.ProcessReleaseProven)
                 throw new SnapshotTestWorkspacePreparationException(error, workspacePath,
                     $"Snapshot test workspace was retained because owned Excel process release could not be proved: {workspacePath}{Environment.NewLine}");

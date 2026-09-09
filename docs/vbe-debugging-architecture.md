@@ -121,6 +121,13 @@ process adapter; it cannot use that snapshot to adopt a generic workbook owner.
 Startup cleanup and intrinsic UserForm Event inspection retain their exact
 strong process owner.
 
+VbaDev command adapters consume the immutable terminal disposition described in
+[ADR 0055](adr/0055-centralize-workbook-terminal-disposition.md). Analysis fixes
+failure priority, trusted cancellation and the separate process/dispatcher
+proofs without owning cleanup or command commitment. Recognized primary nested COM receives
+the command's friendly guidance with its original stage context. This does not
+change the visible debug process's independent failure-completion policy.
+
 The subsequent `DebugExcelProcess` deliberately does not use this path. Excel,
 the VBE, selected code pane, modal prompts, and breakpoint interaction remain
 visible on the caller's desktop and under the debug session's separate exact

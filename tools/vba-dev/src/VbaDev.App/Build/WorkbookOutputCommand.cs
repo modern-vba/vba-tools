@@ -1,4 +1,3 @@
-using System.Runtime.InteropServices;
 using System.Text;
 using VbaDev.App.Cli;
 using VbaDev.App.CommonModules;
@@ -187,37 +186,37 @@ internal sealed class WorkbookOutputCommand
                     VbeImportWarningRenderer.Render(result.VerificationReport)),
                 result);
         }
-        catch (Exception ex) when (WorkbookAutomationFailureClassifier.TryClassify(
-            ex, out var facts, cancellationToken.IsCancellationRequested))
+        catch (Exception ex)
         {
+            var facts = WorkbookAutomationTerminalFacts.Analyze(ex, cancellationToken.IsCancellationRequested);
             CommandResult result;
-            if (facts.PrimaryFailure!.Category == WorkbookAutomationFailureCategory.Cancellation)
+            if (facts.Disposition == WorkbookAutomationDisposition.Cancelled)
             {
-                var typedCancellation = facts.Failures.FirstOrDefault(failure =>
-                    failure.Error is WorkbookAutomationCanceledException);
-                if (typedCancellation is null && !cancellationToken.IsCancellationRequested)
-                {
-                    throw;
-                }
-
-                result = CommandResult.Cancelled(typedCancellation is null
+                result = CommandResult.Cancelled(facts.TypedCancellation is null
                     ? "Workbook automation was cancelled during the active generation stage."
                     : ex.Message);
             }
-            else
+            else if (facts.Disposition == WorkbookAutomationDisposition.Failed)
             {
-                result = CommandResult.UsageError(ex is COMException
+                result = CommandResult.UsageError(facts.PrimaryFailure!.Category == WorkbookAutomationFailureCategory.ComFailure
                     ? CommandErrorMessages.ExcelComAutomationFailed(operationName, ex)
                     : ex.Message);
             }
+            else if (facts.IsUntrustedCancellation)
+            {
+                throw;
+            }
+            else if (ex is BuildCommandException or CommonModulesManifestException
+                or InvalidOperationException or IOException or UnauthorizedAccessException)
+            {
+                result = CommandResult.UsageError(ex.Message);
+            }
+            else
+            {
+                throw;
+            }
 
             return Failed(PreserveReleaseProof(facts, result));
-        }
-        catch (Exception ex) when (ex is BuildCommandException or CommonModulesManifestException
-            or InvalidOperationException or IOException or UnauthorizedAccessException)
-        {
-            WorkbookAutomationFailureClassifier.TryClassify(ex, out var facts);
-            return Failed(PreserveReleaseProof(facts, CommandResult.UsageError(ex.Message)));
         }
     }
 

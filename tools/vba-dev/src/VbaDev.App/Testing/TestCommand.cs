@@ -1,4 +1,3 @@
-using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using VbaDev.App.Build;
 using VbaDev.App.Cli;
@@ -246,24 +245,20 @@ public sealed class TestCommand
         CancellationToken cancellationToken,
         bool preparation = false)
     {
-        WorkbookAutomationFailureClassifier.TryClassify(
-            error, out var facts, cancellationToken.IsCancellationRequested);
-        var typedCancellation = facts.Failures.FirstOrDefault(failure =>
-            failure.Error is WorkbookAutomationCanceledException);
+        var facts = WorkbookAutomationTerminalFacts.Analyze(error, cancellationToken.IsCancellationRequested);
         CommandResult result;
-        if (facts.IsRecognized
-            && facts.PrimaryFailure!.Category == WorkbookAutomationFailureCategory.Cancellation
-            && (typedCancellation is not null || cancellationToken.IsCancellationRequested))
+        if (facts.Disposition == WorkbookAutomationDisposition.Cancelled)
         {
             var message = preparation
                 ? "Workbook automation was cancelled during snapshot test preparation."
-                : typedCancellation is not null ? error.Message
+                : facts.TypedCancellation is not null ? error.Message
                 : "Workbook automation was cancelled during the active test stage.";
             result = CommandResult.Cancelled(message);
         }
         else
         {
-            result = CommandResult.UsageError(error is COMException
+            result = CommandResult.UsageError(facts.Disposition == WorkbookAutomationDisposition.Failed
+                && facts.PrimaryFailure!.Category == WorkbookAutomationFailureCategory.ComFailure
                 ? CommandErrorMessages.ExcelComAutomationFailed("test", error)
                 : error.Message);
         }

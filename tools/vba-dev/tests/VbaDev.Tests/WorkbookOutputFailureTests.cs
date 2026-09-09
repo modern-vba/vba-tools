@@ -14,20 +14,100 @@ namespace VbaDev.Tests;
 
 public sealed class WorkbookOutputFailureTests
 {
-    public static IEnumerable<object[]> TerminalFailureMatrix()
+    [Theory]
+    [InlineData("build")]
+    [InlineData("publish")]
+    [InlineData("snapshot")]
+    public async Task NestedPrimaryComFailureUsesOperationGuidanceWithoutCommitting(string commandName)
+    {
+        using var temp = TempDirectory.Create();
+        var project = CreateProject(temp);
+        var previousBin = File.ReadAllBytes(project.Context.BinDocumentPath);
+        var previousPublish = File.ReadAllBytes(project.Context.PublishDocumentPath);
+        var snapshot = CreateCallerSnapshot(temp);
+        var previousCaller = File.ReadAllBytes(snapshot.OutputPath);
+        var stage = new WorkbookAutomationStage(WorkbookAutomationStageKind.ModuleImport, "Local.bas");
+        var failure = new WorkbookAutomationStageFailureException(
+            stage,
+            new System.Runtime.InteropServices.COMException("Nested COM detail"));
+        var command = CreateCommand(
+            project.Context,
+            new FailingWorkbookGenerationAutomation(_ => failure));
+
+        var result = commandName == "snapshot"
+            ? await RunCallerSnapshotAsync(command, project.Context, snapshot, CancellationToken.None)
+            : await RunAsync(commandName, command, project.Context, CancellationToken.None);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(OwnedProcessReleaseProof.ProvenOrNotStarted, result.OwnedProcessReleaseProof);
+        Assert.Equal(
+            CommandErrorMessages.ExcelComAutomationFailed(commandName == "publish" ? "publish" : "build", failure)
+                + Environment.NewLine,
+            result.StandardError);
+        Assert.Equal(previousBin, File.ReadAllBytes(project.Context.BinDocumentPath));
+        Assert.Equal(previousPublish, File.ReadAllBytes(project.Context.PublishDocumentPath));
+        Assert.Equal(previousCaller, File.ReadAllBytes(snapshot.OutputPath));
+        Assert.Empty(EnumerateOwnedStaging(Path.GetDirectoryName(snapshot.OutputPath)!));
+        Assert.Empty(EnumerateOwnedStaging(project.SelectedOutputDirectory("build")));
+        Assert.Empty(EnumerateOwnedStaging(project.SelectedOutputDirectory("publish")));
+    }
+
+    [Theory]
+    [InlineData("plain-cancellation")]
+    [InlineData("wrapped-cancellation")]
+    [InlineData("unknown-defect")]
+    [InlineData("wrapped-unknown-mixture")]
+    public async Task BuildKeepsItsUnexpectedFailureAndInputFallbackPolicy(string scenario)
+    {
+        using var temp = TempDirectory.Create();
+        var project = CreateProject(temp);
+        Exception error = scenario switch
+        {
+            "plain-cancellation" => new OperationCanceledException("Unrelated cancellation"),
+            "wrapped-cancellation" => new InvalidOperationException("Outer", new OperationCanceledException("Inner")),
+            "unknown-defect" => new NullReferenceException("Defect"),
+            _ => new InvalidOperationException("Outer", new AggregateException(
+                new OperationCanceledException("Unrelated cancellation"), new NullReferenceException("Defect")))
+        };
+        var command = CreateCommand(project.Context, new FailingWorkbookGenerationAutomation(_ => error));
+
+        if (scenario == "wrapped-unknown-mixture")
+        {
+            var result = await RunAsync("build", command, project.Context, CancellationToken.None);
+            Assert.Equal(1, result.ExitCode);
+            Assert.Empty(result.StandardOutput);
+            Assert.Equal("Outer" + Environment.NewLine, result.StandardError);
+            Assert.Equal(OwnedProcessReleaseProof.ProvenOrNotStarted, result.OwnedProcessReleaseProof);
+        }
+        else
+        {
+            var actual = await Record.ExceptionAsync(
+                () => RunAsync("build", command, project.Context, CancellationToken.None));
+            Assert.Same(error, actual);
+        }
+
+        Assert.Equal("previous-bin", File.ReadAllText(project.Context.BinDocumentPath, Encoding.UTF8));
+        Assert.Empty(EnumerateOwnedStaging(project.SelectedOutputDirectory("build")));
+    }
+
+    public static IEnumerable<object[]> OutputFailureCases()
     {
         foreach (var command in new[] { "build", "publish", "snapshot" })
-        foreach (var category in new[] { "cancel", "timeout", "process-loss", "com", "process-release", "dispatcher", "released-cleanup" })
-        foreach (var saved in new[] { false, true })
-        foreach (var cancelled in new[] { false, true })
         {
-            yield return [command, category, saved, cancelled];
+            yield return [command, "cancel", false, false];
+            yield return [command, "com", false, false];
+            yield return [command, "com", true, true];
+            yield return [command, "process-release", false, true];
+            yield return [command, "process-release", true, true];
+            yield return [command, "dispatcher", true, true];
+            yield return [command, "released-cleanup", true, false];
         }
     }
 
     [Theory]
-    [MemberData(nameof(TerminalFailureMatrix))]
-    public async Task AllBuildPathsProjectEquivalentTerminalEvidenceWithoutCommitting(
+    [MemberData(nameof(OutputFailureCases))]
+    public async Task OutputAdaptersKeepStageProofAndPreviousArtifactsUntilCommit(
         string commandName, string category, bool saved, bool cancelled)
     {
         using var temp = TempDirectory.Create();

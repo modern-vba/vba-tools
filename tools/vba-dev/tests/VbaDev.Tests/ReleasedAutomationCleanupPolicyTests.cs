@@ -51,8 +51,7 @@ public sealed class ReleasedAutomationCleanupPolicyTests
             historicalProofFailure);
 
         var containsProofFailure =
-            WorkbookAutomationFailureClassifier.ContainsCleanupProofFailure(
-                releasedCleanup);
+            WorkbookAutomationTerminalFacts.Analyze(releasedCleanup).HasUnprovedLifecycle;
 
         Assert.False(containsProofFailure);
     }

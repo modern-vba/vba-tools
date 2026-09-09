@@ -50,7 +50,11 @@ children once in order, and selects process-release uncertainty, STA-retirement
 uncertainty, secondary cleanup failure, process loss, timeout, COM failure, then
 cancellation as its stable category precedence. Confirmed release overrides only
 earlier uncertainty in that subtree; it does not erase cancellation or process
-loss. The existing cleanup-proof predicate delegates to this classification.
+loss. Issue #398 deepens this classification into the immutable, shell-neutral
+disposition defined in [ADR 0055](0055-centralize-workbook-terminal-disposition.md).
+Its analysis fixes primary/secondary evidence, trusted cancellation authority
+and both proofs once. Proof-only consumers use those facts; command adapters
+own commitment, fallback behavior and operation-specific COM guidance.
 
 Import is the first complete command consumer. The classifier produces no exit
 codes, rendered text, commitment decisions, or `CommandResult`. Import returns

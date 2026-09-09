@@ -9,7 +9,7 @@ public static class CommandErrorMessages
     /// Formats a failure from Excel COM automation with environment guidance.
     /// </summary>
     /// <param name="operation">The command operation that was using Excel automation.</param>
-    /// <param name="exception">The COM exception reported by the automation layer.</param>
+    /// <param name="exception">The complete terminal exception whose primary recognized failure is COM automation.</param>
     /// <returns>A multi-line user-facing error message.</returns>
     public static string ExcelComAutomationFailed(string operation, Exception exception)
         => string.Join(

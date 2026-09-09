@@ -232,6 +232,29 @@ public sealed class HostEventCommandTests
     }
 
     [Fact]
+    public async Task NestedPrimaryComFailureUsesFriendlyHostEventGuidanceAndKeepsSecondaryEvidence()
+    {
+        var stage = new WorkbookAutomationStage(WorkbookAutomationStageKind.HostEventInspection);
+        var com = new System.Runtime.InteropServices.COMException("Nested Host Event COM detail");
+        var cancellation = new WorkbookAutomationCanceledException(stage, CancellationToken.None);
+        var failure = new WorkbookAutomationStageFailureException(stage, new AggregateException(com, cancellation));
+        ((IWorkbookAutomationLifecycleFailure)failure).LifecycleEvidence = new(stage, true, true, false);
+        var command = new HostEventListCommand(new FailingHostEventCatalogAutomation(failure));
+
+        var result = await command.RunAsync("json", CancellationToken.None);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(OwnedProcessReleaseProof.ProvenOrNotStarted, result.OwnedProcessReleaseProof);
+        Assert.Equal(
+            string.Join(Environment.NewLine,
+                CommandErrorMessages.ExcelComAutomationFailed("host-event list", failure),
+                com.Message,
+                cancellation.Message) + Environment.NewLine,
+            result.StandardError);
+    }
+
+    [Fact]
     public async Task InspectionTimeoutPublishesNoCatalogAndRetainsItsStage()
     {
         var command = new HostEventListCommand(
@@ -275,45 +298,102 @@ public sealed class HostEventCommandTests
     public static IEnumerable<object[]> TerminalFailures()
     {
         foreach (var format in new[] { "json", "text" })
-        foreach (var category in new[] { "cancel", "timeout", "process-loss", "com", "process-release", "dispatcher", "secondary-cleanup" })
-        foreach (var cancelled in new[] { false, true })
-        foreach (var nested in new[] { false, true })
-            yield return [format, category, cancelled, nested];
+        {
+            yield return [format, "typed-cancellation"];
+            yield return [format, "caller-cancellation"];
+            yield return [format, "com"];
+            yield return [format, "process-release"];
+            yield return [format, "dispatcher"];
+            yield return [format, "released-cleanup"];
+        }
     }
 
     [Theory]
     [MemberData(nameof(TerminalFailures))]
-    public async Task TerminalEvidenceWithholdsCatalogAndRetainsDiagnostics(string format, string category, bool cancelled, bool nested)
+    public async Task TerminalAdapterKeepsExactWordingOrderedEvidenceAndReleaseMarking(string format, string category)
     {
         using var cancellation = new CancellationTokenSource();
-        if (cancelled) cancellation.Cancel();
+        if (category != "typed-cancellation") cancellation.Cancel();
         var stage = new WorkbookAutomationStage(WorkbookAutomationStageKind.HostEventInspection);
-        Exception error = category switch
+        var typed = new WorkbookAutomationCanceledException(stage, CancellationToken.None);
+        Exception detail = category switch
         {
-            "cancel" => new WorkbookAutomationCanceledException(stage, cancellation.Token),
-            "timeout" => new WorkbookAutomationTimeoutException(stage, TimeSpan.FromSeconds(1)),
-            "process-loss" => new WorkbookAutomationProcessLostException(stage),
+            "typed-cancellation" => typed,
+            "caller-cancellation" => new OperationCanceledException("Caller cancellation detail", cancellation.Token),
             "com" => new System.Runtime.InteropServices.COMException("COM detail"),
             "process-release" or "dispatcher" => new WorkbookAutomationCleanupException(category + " detail"),
             _ => new WorkbookAutomationReleasedProcessCleanupException("Secondary cleanup detail")
         };
-        if (error is IWorkbookAutomationLifecycleFailure lifecycle)
-            lifecycle.LifecycleEvidence = new(stage, category != "process-release", category != "dispatcher", cancelled);
-        var primaryMessage = error.Message;
-        if (nested)
-            error = new AggregateException(new InvalidOperationException("Nested evidence", error),
-                new WorkbookAutomationCanceledException(stage, cancellation.Token));
-        error = new WorkbookAutomationStageFailureException(stage, error);
+        if (detail is IWorkbookAutomationLifecycleFailure lifecycle)
+            lifecycle.LifecycleEvidence = new(stage, category != "process-release", category != "dispatcher",
+                cancellation.IsCancellationRequested);
+        Exception nested = category switch
+        {
+            "typed-cancellation" or "caller-cancellation" => detail,
+            "com" => new AggregateException(typed, detail, new InvalidOperationException("Repeated COM context", detail)),
+            _ => new AggregateException(typed, detail)
+        };
+        var error = new WorkbookAutomationStageFailureException(stage, nested);
         var command = new HostEventListCommand(new FailingHostEventCatalogAutomation(error));
 
         var result = await command.RunAsync(format, cancellation.Token);
 
-        Assert.Equal(category == "cancel" ? 130 : 1, result.ExitCode);
+        Assert.Equal(category is "typed-cancellation" or "caller-cancellation" ? 130 : 1, result.ExitCode);
         Assert.Empty(result.StandardOutput);
-        Assert.Contains("Host Event inspection", result.StandardError);
-        Assert.Contains(primaryMessage, result.StandardError);
+        var expectedMessage = category switch
+        {
+            "caller-cancellation" => "Host Event catalog acquisition was cancelled.",
+            "typed-cancellation" => string.Join(Environment.NewLine, error.Message, typed.Message),
+            "com" => string.Join(Environment.NewLine,
+                CommandErrorMessages.ExcelComAutomationFailed("host-event list", error), typed.Message, detail.Message),
+            _ => string.Join(Environment.NewLine, error.Message, typed.Message, detail.Message)
+        };
+        Assert.Equal(expectedMessage + Environment.NewLine, result.StandardError);
         Assert.Equal(category == "process-release" ? OwnedProcessReleaseProof.Unproven : OwnedProcessReleaseProof.ProvenOrNotStarted,
             result.OwnedProcessReleaseProof);
+    }
+
+    [Fact]
+    public async Task TimeoutWithComCauseKeepsTimeoutRenderingAndOrderedSecondaryEvidence()
+    {
+        var stage = new WorkbookAutomationStage(WorkbookAutomationStageKind.HostEventInspection);
+        var com = new System.Runtime.InteropServices.COMException("Secondary COM detail");
+        var timeout = new WorkbookAutomationTimeoutException(stage, TimeSpan.FromSeconds(1), com);
+        var error = new WorkbookAutomationStageFailureException(stage, timeout);
+        var command = new HostEventListCommand(new FailingHostEventCatalogAutomation(error));
+
+        var result = await command.RunAsync("json", CancellationToken.None);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(OwnedProcessReleaseProof.ProvenOrNotStarted, result.OwnedProcessReleaseProof);
+        Assert.Equal(string.Join(Environment.NewLine, error.Message, timeout.Message, com.Message) + Environment.NewLine,
+            result.StandardError);
+    }
+
+    [Theory]
+    [InlineData("plain-cancellation")]
+    [InlineData("wrapped-cancellation")]
+    [InlineData("wrapped-unknown")]
+    public async Task UnclassifiedFailuresKeepTheExistingRawFallback(string shape)
+    {
+        var cancellation = new OperationCanceledException("Untrusted cancellation");
+        Exception error = shape switch
+        {
+            "plain-cancellation" => cancellation,
+            "wrapped-cancellation" => new InvalidOperationException("Outer context", cancellation),
+            _ => new InvalidOperationException("Unknown outer context", new NullReferenceException("Unknown inner defect"))
+        };
+        var command = new HostEventListCommand(new FailingHostEventCatalogAutomation(error));
+
+        var result = await command.RunAsync("text", CancellationToken.None);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(OwnedProcessReleaseProof.ProvenOrNotStarted, result.OwnedProcessReleaseProof);
+        Assert.Equal((shape == "wrapped-cancellation"
+            ? string.Join(Environment.NewLine, error.Message, cancellation.Message)
+            : error.Message) + Environment.NewLine, result.StandardError);
     }
 
     [Theory]

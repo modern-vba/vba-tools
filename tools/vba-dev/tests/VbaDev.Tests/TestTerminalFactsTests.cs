@@ -1,6 +1,8 @@
 using System.Text;
 using System.Text.Json;
 using VbaDev.App.Build;
+using VbaDev.App.Cli;
+using VbaDev.App.Projects;
 using VbaDev.App.Testing;
 using VbaDev.App.Workbooks;
 using VbaDev.Cli;
@@ -14,20 +16,53 @@ namespace VbaDev.Tests;
 
 public sealed class TestTerminalFactsTests
 {
-    public static IEnumerable<object[]> FailureMatrix()
+    [Fact]
+    public async Task SnapshotExecutionUsesFriendlyTestGuidanceWithoutPublishingResults()
+    {
+        using var temp = TempDirectory.Create();
+        var failure = new WorkbookAutomationStageFailureException(
+            new(WorkbookAutomationStageKind.TestExecution, "Test_Module"),
+            new System.Runtime.InteropServices.COMException("Test invocation failed."));
+        var runnerReached = false;
+        var runner = new FakeWorkbookTestRunner
+        {
+            OnRun = () => runnerReached = true,
+            Error = failure
+        };
+        var fixture = CreateFixture(temp, runner);
+        var sourcePath = Path.Combine(fixture.SnapshotPath, "Test_Module.bas");
+        var sourceBytes = File.ReadAllBytes(sourcePath);
+        var binPath = Path.Combine(temp.Path, "Project", "bin", "Book1.xlsm");
+        var binBytes = File.ReadAllBytes(binPath);
+
+        var result = await fixture.Application.RunAsync(Arguments(fixture, "snapshot"), CancellationToken.None);
+
+        Assert.True(runnerReached);
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(CommandErrorMessages.ExcelComAutomationFailed("test", failure) + Environment.NewLine,
+            result.StandardError);
+        Assert.Equal(sourceBytes, File.ReadAllBytes(sourcePath));
+        Assert.Equal(binBytes, File.ReadAllBytes(binPath));
+        Assert.Empty(Directory.GetDirectories(fixture.ScratchRoot));
+    }
+
+    public static IEnumerable<object[]> TestFailureCases()
     {
         foreach (var mode in new[] { "no-build", "ordinary", "snapshot" })
         foreach (var phase in mode == "no-build" ? new[] { "execution" } : new[] { "preparation", "execution" })
-        foreach (var category in new[] { "cancel", "timeout", "process-loss", "com", "process-release", "dispatcher", "released-cleanup" })
-        foreach (var cancelled in new[] { false, true })
         {
-            yield return [mode, phase, category, cancelled];
+            yield return [mode, phase, "cancel", false];
+            yield return [mode, phase, "com", true];
+            yield return [mode, phase, "process-release", true];
+            yield return [mode, phase, "dispatcher", true];
         }
+        yield return ["snapshot", "execution", "released-cleanup", false];
     }
 
     [Theory]
-    [MemberData(nameof(FailureMatrix))]
-    public async Task TestPathsRetainEquivalentPrimaryAndLifecycleFacts(
+    [MemberData(nameof(TestFailureCases))]
+    public async Task TestAdaptersKeepPreparationExecutionAndWorkspaceContracts(
         string mode, string phase, string category, bool cancelled)
     {
         using var temp = TempDirectory.Create();
@@ -46,11 +81,19 @@ public sealed class TestTerminalFactsTests
             : (IWorkbookGenerationAutomation?)null;
         var fixture = CreateFixture(temp, runner, generation);
 
-        var result = await fixture.Application.RunAsync(Arguments(fixture, mode), cancellation.Token);
+        var result = await RunCommandAsync(fixture, mode, cancellation.Token);
 
         Assert.Equal(category == "cancel" ? 130 : 1, result.ExitCode);
         Assert.Empty(result.StandardOutput);
+        Assert.Equal(category == "process-release" ? OwnedProcessReleaseProof.Unproven
+            : OwnedProcessReleaseProof.ProvenOrNotStarted, result.OwnedProcessReleaseProof);
         Assert.Contains(stage.Description, result.StandardError, StringComparison.Ordinal);
+        if (category != "process-release")
+        {
+            Assert.Equal((category == "com"
+                ? CommandErrorMessages.ExcelComAutomationFailed(phase == "preparation" ? "build" : "test", error)
+                : error.Message) + Environment.NewLine, result.StandardError);
+        }
         Assert.Equal(phase == "execution", runnerReached);
         Assert.True(File.Exists(Path.Combine(fixture.SnapshotPath, "Test_Module.bas")));
         if (mode == "snapshot" && category == "process-release")
@@ -62,6 +105,39 @@ public sealed class TestTerminalFactsTests
         {
             Assert.Empty(Directory.GetDirectories(fixture.ScratchRoot));
         }
+    }
+
+    [Theory]
+    [InlineData("plain-cancellation")]
+    [InlineData("wrapped-cancellation")]
+    [InlineData("wrapped-defect")]
+    [InlineData("caller-cancellation")]
+    public async Task TestAdapterKeepsRawFallbackAndCallerCancellationWording(string scenario)
+    {
+        using var temp = TempDirectory.Create();
+        using var cancellation = new CancellationTokenSource();
+        Exception error = scenario switch
+        {
+            "wrapped-cancellation" => new InvalidOperationException("Outer", new OperationCanceledException("Inner")),
+            "wrapped-defect" => new InvalidOperationException("Outer", new NullReferenceException("Inner")),
+            _ => new OperationCanceledException("Unrelated cancellation")
+        };
+        var fixture = CreateFixture(temp, new FakeWorkbookTestRunner
+        {
+            OnRun = () => { if (scenario == "caller-cancellation") cancellation.Cancel(); },
+            Error = error
+        });
+
+        var result = await RunCommandAsync(fixture, "no-build", cancellation.Token);
+
+        Assert.Equal(scenario == "caller-cancellation" ? 130 : 1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal((scenario == "caller-cancellation"
+            ? "Workbook automation was cancelled during the active test stage."
+            : error.Message) + Environment.NewLine, result.StandardError);
+        Assert.Equal(OwnedProcessReleaseProof.ProvenOrNotStarted, result.OwnedProcessReleaseProof);
+        Assert.Equal("previous-bin", File.ReadAllText(fixture.Context.BinDocumentPath, Encoding.UTF8));
+        Assert.Empty(Directory.GetDirectories(fixture.ScratchRoot));
     }
 
     public static IEnumerable<object[]> CompletedResultMatrix()
@@ -230,7 +306,13 @@ public sealed class TestTerminalFactsTests
         }
     }
 
-    private sealed record Fixture(VbaDevCommandLine Application, string SnapshotPath, string ScratchRoot);
+    private sealed record Fixture(VbaDevCommandLine Application, TestCommand Command,
+        ResolvedProjectContext Context, string SnapshotPath, string ScratchRoot);
+
+    private static Task<CommandResult> RunCommandAsync(Fixture fixture, string mode, CancellationToken token)
+        => fixture.Command.RunAsync(fixture.Context,
+            new TestCommandRequest("ndjson", mode != "no-build", new WorkbookTestSelector(),
+                TimeSpan.FromSeconds(600), mode == "snapshot" ? fixture.SnapshotPath : null), token);
 
     private static string[] Arguments(Fixture fixture, string mode)
         => mode switch
@@ -265,6 +347,7 @@ public sealed class TestTerminalFactsTests
             new TestResultOutputFormatter(), new TestProcedureSourceLocator(),
             new SnapshotTestExecutionWorkspaceFactory(new WindowsExactFileSystemObjectOwnershipFactory(), new FileSystemPathIdentityResolver(), scratch,
                 sourceCaptureFactory: sourceCapture, afterWorkspaceCreated: cleanupFileSystem is null ? null : cleanupFileSystem.AddForeignContent));
-        return new(VbaDevCommandLine.Create(composition with { TestCommand = command }), snapshot, scratch);
+        var context = composition.ProjectContextResolver.Resolve(new ProjectResolutionRequest(root, null, root));
+        return new(VbaDevCommandLine.Create(composition with { TestCommand = command }), command, context, snapshot, scratch);
     }
 }

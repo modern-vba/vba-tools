@@ -170,7 +170,7 @@ public sealed class ExportCommand
 
         if (failure is not null)
         {
-            WorkbookAutomationFailureClassifier.TryClassify(failure, out var facts);
+            var facts = WorkbookAutomationTerminalFacts.Analyze(failure);
             if (!facts.ProcessReleaseProven)
                 throw new ExportScratchFailureException(failure,
                     $"Export staging was retained because owned Excel process release could not be proved: {staging.Path}{Environment.NewLine}");
@@ -223,25 +223,33 @@ public sealed class ExportCommand
                 () => Task.FromException<CommandResult>(ex.PrimaryError), cancellationToken).ConfigureAwait(false);
             return result with { StandardError = result.StandardError + ex.CleanupEvidence };
         }
-        catch (Exception ex) when (WorkbookAutomationFailureClassifier.TryClassify(
-            ex, out var facts, cancellationToken.IsCancellationRequested))
+        catch (Exception ex)
         {
-            var cancellation = facts.Failures.FirstOrDefault(failure =>
-                failure.Error is WorkbookAutomationCanceledException);
-            if (facts.PrimaryFailure!.Category == WorkbookAutomationFailureCategory.Cancellation &&
-                cancellation is null && !cancellationToken.IsCancellationRequested)
+            var facts = WorkbookAutomationTerminalFacts.Analyze(ex, cancellationToken.IsCancellationRequested);
+            CommandResult result;
+            if (facts.Disposition == WorkbookAutomationDisposition.Cancelled)
+            {
+                result = CommandResult.Cancelled(ex.Message);
+            }
+            else if (facts.Disposition == WorkbookAutomationDisposition.Failed)
+            {
+                result = CommandResult.UsageError(facts.PrimaryFailure!.Category == WorkbookAutomationFailureCategory.ComFailure
+                    ? CommandErrorMessages.ExcelComAutomationFailed("export", ex)
+                    : ex.Message);
+            }
+            else if (facts.IsUntrustedCancellation)
             {
                 throw;
             }
-            var result = facts.PrimaryFailure!.Category == WorkbookAutomationFailureCategory.Cancellation
-                ? CommandResult.Cancelled(ex.Message)
-                : CommandResult.UsageError(ex.Message);
-            return facts.ProcessReleaseProven ? result : result.MarkOwnedProcessReleaseUnproven();
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException)
-        {
-            WorkbookAutomationFailureClassifier.TryClassify(ex, out var facts);
-            var result = CommandResult.UsageError(ex.Message);
+            else if (ex is InvalidOperationException or IOException or UnauthorizedAccessException)
+            {
+                result = CommandResult.UsageError(ex.Message);
+            }
+            else
+            {
+                throw;
+            }
+
             return facts.ProcessReleaseProven ? result : result.MarkOwnedProcessReleaseUnproven();
         }
     }

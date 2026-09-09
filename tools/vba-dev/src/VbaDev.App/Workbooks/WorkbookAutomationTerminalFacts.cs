@@ -42,18 +42,82 @@ internal sealed record WorkbookAutomationFailure(
     Exception Error,
     WorkbookAutomationStage? Stage);
 
-/// <summary>
-/// Describes terminal evidence only; commitment, exit codes, and wording belong to the caller.
-/// </summary>
-internal sealed record WorkbookAutomationTerminalFacts(
-    ImmutableArray<WorkbookAutomationFailure> Failures,
-    ImmutableArray<Exception> UnknownFailures,
-    bool CancellationObserved)
+internal enum WorkbookAutomationDisposition
 {
-    internal bool IsRecognized => Failures.Length > 0 && UnknownFailures.IsEmpty;
+    Cancelled,
+    Failed
+}
 
-    internal WorkbookAutomationFailure? PrimaryFailure => Failures
-        .OrderBy(failure => failure.Category switch
+/// <summary>
+/// Fixes one failure tree's evidence and disposition; commitment, exit codes, and wording belong to callers.
+/// </summary>
+internal sealed class WorkbookAutomationTerminalFacts
+{
+    private WorkbookAutomationTerminalFacts(
+        ImmutableArray<WorkbookAutomationFailure> failures,
+        ImmutableArray<Exception> unknownFailures,
+        bool cancellationObserved,
+        bool callerCancellationRequested)
+    {
+        Failures = failures;
+        UnknownFailures = unknownFailures;
+        CancellationObserved = cancellationObserved;
+        CallerCancellationRequested = callerCancellationRequested;
+        ProcessReleaseProven = !failures.Any(failure =>
+            failure.Category == WorkbookAutomationFailureCategory.UnprovedProcessRelease);
+        DispatcherRetired = !failures.Any(failure =>
+            failure.Category == WorkbookAutomationFailureCategory.UnprovedDispatcherRetirement);
+        HasUnprovedLifecycle = !ProcessReleaseProven || !DispatcherRetired;
+        TypedCancellation = failures.FirstOrDefault(failure => failure.Error is WorkbookAutomationCanceledException);
+        HasTrustedCancellationAuthority = TypedCancellation is not null || callerCancellationRequested;
+
+        var primaryIndex = -1;
+        var primaryPriority = int.MaxValue;
+        for (var index = 0; index < failures.Length; index++)
+        {
+            var priority = Priority(failures[index].Category);
+            if (priority < primaryPriority)
+            {
+                primaryIndex = index;
+                primaryPriority = priority;
+            }
+        }
+        PrimaryFailure = primaryIndex < 0 ? null : failures[primaryIndex];
+        SecondaryFailures = failures.Where((_, index) => index != primaryIndex).ToImmutableArray();
+        IsUntrustedCancellation = unknownFailures.IsEmpty
+            && PrimaryFailure?.Category == WorkbookAutomationFailureCategory.Cancellation
+            && !HasTrustedCancellationAuthority;
+
+        Disposition = HasUnprovedLifecycle
+            ? WorkbookAutomationDisposition.Failed
+            : !unknownFailures.IsEmpty || PrimaryFailure is null
+                ? null
+                : PrimaryFailure.Category != WorkbookAutomationFailureCategory.Cancellation
+                    ? WorkbookAutomationDisposition.Failed
+                    : HasTrustedCancellationAuthority
+                        ? WorkbookAutomationDisposition.Cancelled
+                        : null;
+    }
+
+    internal ImmutableArray<WorkbookAutomationFailure> Failures { get; }
+    internal ImmutableArray<Exception> UnknownFailures { get; }
+    // Highest-priority known evidence can also exist in an unclassified mixed tree.
+    // Disposition, not this candidate alone, authorizes a recognized command decision.
+    internal WorkbookAutomationFailure? PrimaryFailure { get; }
+    internal ImmutableArray<WorkbookAutomationFailure> SecondaryFailures { get; }
+    internal WorkbookAutomationFailure? TypedCancellation { get; }
+    internal bool CancellationObserved { get; }
+    internal bool CallerCancellationRequested { get; }
+    internal bool HasTrustedCancellationAuthority { get; }
+    internal bool IsUntrustedCancellation { get; }
+    internal bool ProcessReleaseProven { get; }
+    internal bool DispatcherRetired { get; }
+    internal bool HasUnprovedLifecycle { get; }
+    internal WorkbookAutomationDisposition? Disposition { get; }
+    internal bool IsRecognized => Disposition is not null;
+
+    private static int Priority(WorkbookAutomationFailureCategory category)
+        => category switch
         {
             WorkbookAutomationFailureCategory.UnprovedProcessRelease => 0,
             WorkbookAutomationFailureCategory.UnprovedDispatcherRetirement => 1,
@@ -61,28 +125,19 @@ internal sealed record WorkbookAutomationTerminalFacts(
             WorkbookAutomationFailureCategory.ProcessLoss => 3,
             WorkbookAutomationFailureCategory.Timeout => 4,
             WorkbookAutomationFailureCategory.ComFailure => 5,
-            _ => 6
-        })
-        .FirstOrDefault();
+            WorkbookAutomationFailureCategory.Cancellation => 6,
+            _ => throw new ArgumentOutOfRangeException(nameof(category))
+        };
 
-    internal bool ProcessReleaseProven => !Failures.Any(failure =>
-        failure.Category == WorkbookAutomationFailureCategory.UnprovedProcessRelease);
-
-    internal bool DispatcherRetired => !Failures.Any(failure =>
-        failure.Category == WorkbookAutomationFailureCategory.UnprovedDispatcherRetirement);
-}
-
-internal static partial class WorkbookAutomationFailureClassifier
-{
-    internal static bool TryClassify(Exception error, out WorkbookAutomationTerminalFacts facts,
-        bool cancellationObserved = false)
+    internal static WorkbookAutomationTerminalFacts Analyze(Exception error, bool callerCancellationRequested = false)
     {
         ArgumentNullException.ThrowIfNull(error);
         var failures = ImmutableArray.CreateBuilder<WorkbookAutomationFailure>();
         var unknown = ImmutableArray.CreateBuilder<Exception>();
+        var cancellationObserved = callerCancellationRequested;
         Visit(error, false, null, null);
-        facts = new(failures.ToImmutable(), unknown.ToImmutable(), cancellationObserved);
-        return facts.IsRecognized;
+        return new WorkbookAutomationTerminalFacts(
+            failures.ToImmutable(), unknown.ToImmutable(), cancellationObserved, callerCancellationRequested);
 
         void Visit(Exception current, bool supportingCause, WorkbookAutomationLifecycleEvidence? lifecycle,
             WorkbookAutomationStage? stage)
