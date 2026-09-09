@@ -46,9 +46,8 @@ public sealed class ImportCommand
         var sourceDirectory = ResolvePath(request.WorkingDirectory, request.SourceDirectory);
         var targetWorkbookPath = ResolvePath(request.WorkingDirectory, request.TargetWorkbook);
         ValidateTargetWorkbook(targetWorkbookPath);
-        var admission = sourceAdmission.Admit(
+        var admission = sourceAdmission.AdmitExplicitImport(
             sourceDirectory,
-            VbaSourceAdmissionIntent.ExplicitImport,
             cancellationToken);
         var materialization = await materializer.MaterializeAsync(
                 new WorkbookMaterializationIntent.ExplicitImport(

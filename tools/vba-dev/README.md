@@ -169,7 +169,16 @@ adapter opens a new visible `DebugExcelProcess` for VBE interaction.
 
 A `DocumentSourceSet` is recursive, but exported VBA source identity is flat. `.bas`, `.cls`, and `.frm` files may live in nested organization directories under `sourcePath`, but their extension-including file names must be unique case-insensitively within that one source set.
 
-Read-side commands such as `build`, `publish`, and `import` discover `.bas`, `.cls`, and `.frm` files recursively and sort them by exported file name. `.frx` files are not independent source inputs and are not preflighted separately; same-directory form sidecar handling is delegated to the underlying form import/export behavior. Write-side commands that place form files, such as `export` and `common-module add/update`, colocate `.frx` sidecars beside the selected `.frm` path.
+Read-side commands discover `.bas`, `.cls`, and `.frm` files recursively and
+validate their complete selected source set before Excel starts. Successful
+source admission fixes the order used for import: project Build and Publish
+place included installed CommonModules first in stored manifest order, then
+local sources in case-insensitive exported-filename order. Caller-owned source
+snapshots and explicit Import use flat exported-filename order without project
+CommonModules classification. Later stages preserve that order. `.frx` files
+are opaque sidecars paired with their same-directory forms, not independent
+source inputs. Commands that write forms, such as `export` and
+`common-module add/update`, place sidecars beside the selected `.frm` path.
 
 ## Help
 
@@ -413,7 +422,17 @@ Options:
   --output <workbook>, -o <workbook>  Caller-owned workbook output path for snapshot builds.
 ```
 
-`build` creates the bin workbook from the source template, normalizes manifest-defined VBA project references, recursively imports source files, and writes the selected document's bin output. Project-local source files are imported after CommonModules dependency ordering, sorted by extension-including exported file name. Duplicate `.bas`, `.cls`, or `.frm` file names fail before source import. `.frx` files are not imported or validated independently.
+`build` creates the bin workbook from the source template, normalizes
+manifest-defined VBA project references, recursively imports source files, and
+writes the selected document's bin output. Present installed CommonModules are
+imported in stored manifest order, including test-only and orphaned entries,
+followed by project-local sources in case-insensitive, extension-including
+exported-filename order. Build does not resolve CommonModules dependencies or
+read the external CommonModules repository. An absent manifest-listed module
+does not add a Build failure; use `doctor` for consistency checks. Duplicate
+`.bas`, `.cls`, or `.frm` exported filenames fail before source-byte reads or
+Excel work. `.frx` files are captured with their selected forms and are not
+independent imports.
 
 An ordinary saved-source build fixes the active Windows ANSI code page and one
 recursive source inventory, then captures each selected source and matching
@@ -429,7 +448,13 @@ encoding provenance, and sidecar bytes without reopening authoring files.
 Changes after capture cannot affect the current build. This does not guarantee
 an atomic snapshot of concurrent authoring changes: an unreadable selected file
 fails capture, and build neither retries nor rewrites source files. Empty source
-sets remain valid. The ordinary build stage of `test` uses these same rules;
+sets remain valid. Source validation finishes before the final manifest-first
+import order is fixed; that ordering preserves read and failure order within
+source admission. Build and Publish complete source admission before checking
+template existence, so a source-admission error is reported first when both
+inputs are invalid. A missing
+template still releases captured input and reports any cleanup failure.
+The ordinary build stage of `test` uses these same rules;
 Publish shares this admission with its own exclusion rules. Snapshot Build/Test
 uses the same BOM-or-ACP admission for the complete caller-owned inventory and
 advertises both snapshot features as `2.0`; the command contract and
@@ -447,7 +472,17 @@ cancellation before commitment preserves the previous output. VbaDev does not
 lock, compare-and-swap, retry, or roll back concurrent external destination
 changes; keep the destination closed while the command runs.
 
-Supplying `--source-snapshot` and `--output` (or `-o`) together instead builds from that complete recursive source inventory without reading the persistent document source set. Snapshot builds preserve caller bytes in invocation scratch, reject filesystem-canonical output aliases to caller or manifest-owned inputs and outputs, and atomically replace only the selected caller output. Both values must be nonempty, and neither option is valid by itself.
+Supplying `--source-snapshot` and `--output` (or `-o`) together instead builds
+from that complete recursive source inventory without reading the persistent
+document source set. Snapshot sources use flat, case-insensitive exported
+filename order. They do not inherit the selected project's installed
+CommonModules classification or order, and Publish markers do not exclude
+them. An empty snapshot remains valid. The selected project still supplies the
+template and reference configuration. Snapshot builds preserve caller bytes in
+invocation scratch, reject filesystem-canonical output aliases to caller or
+manifest-owned inputs and outputs, and atomically replace only the selected
+caller output. Both values must be nonempty, and neither option is valid by
+itself.
 
 ### test
 
@@ -481,7 +516,20 @@ their existing code-page-sensitive spelling.
 
 Supplying `--source-snapshot` builds and tests a same-filename workbook inside a unique command-owned workspace without reading persistent source or touching the manifest bin workbook. It cannot be combined with `--no-build`, and `test` does not accept `--output`. Snapshot declaration ranges come from the fixed snapshot bytes while emitted locations use the corresponding persistent source URIs. The command releases its owned Excel processes before removing the workspace; a post-release deletion failure is warning-only and reports the retained absolute path without changing test outcomes, exit status, or the complete NDJSON 1.2 batch.
 
-The snapshot supplies only the complete VBA source inventory. The selected project and document, template, references, test selector, and output format still come from the project manifest and the ordinary `test` options. For ordinary and snapshot build-before-test runs, locations come only from an immutable index copied from the exact admitted source that produced the committed workbook; later source changes cannot alter that run's locations, and lookup does not reread, decode, or parse source. Missing or ambiguous mappings omit only the optional location and emit a non-failing warning without changing test identity or outcome. `--no-build` has no proved source capture, never inspects project source for navigation, always omits locations, and emits exactly one fixed non-failing warning after each completed run. The optional location shape and NDJSON schema `1.2` are unchanged.
+The snapshot supplies only the complete VBA source inventory. Its build stage
+uses the same flat exported-filename order and caller-neutral classification as
+snapshot Build, independently of the project's installed CommonModules list;
+Publish markers do not filter it. The selected project and document, template,
+references, test selector, and output format still come from the project manifest
+and the ordinary `test` options. For ordinary and snapshot build-before-test runs,
+locations come only from an immutable index copied from the exact admitted source
+that produced the committed workbook; later source changes cannot alter that
+run's locations, and lookup does not reread, decode, or parse source. Missing or
+ambiguous mappings omit only the optional location and emit a non-failing warning
+without changing test identity or outcome. `--no-build` has no proved source
+capture, never inspects project source for navigation, always omits locations,
+and emits exactly one fixed non-failing warning after each completed run. The
+optional location shape and NDJSON schema `1.2` are unchanged.
 
 Preparation and execution failures use the shared Excel lifecycle evidence.
 Before a completed result, pure cancellation exits `130` only after process
@@ -509,7 +557,17 @@ Options:
   --document <name>, -d <name>   Document name from the project manifest.
 ```
 
-`publish` creates the publish workbook from the source template, normalizes manifest-defined VBA project references, recursively imports publishable source files, and writes the selected document's publish output. It uses the same flat file-name ordering and duplicate-source failure behavior as `build`. Publish excludes installed CommonModules whose project-manifest entries record `testOnly: true` and project-local source files whose first scanned lines contain `'#ExcludePublish`. Build and publish do not read the current CommonModules repository; they continue to trust retained manifest entries and sources when `orphaned` is `true`, while `doctor` owns repository consistency checks.
+`publish` creates the publish workbook from the source template, normalizes
+manifest-defined VBA project references, recursively imports publishable source
+files, and writes the selected document's publish output. Successful admission
+fixes included installed CommonModules in stored manifest order, followed by
+included local sources in case-insensitive exported-filename order. Duplicate
+exported filenames fail before source bytes are read or exclusions are applied.
+Publish excludes installed CommonModules whose project-manifest entries record
+`testOnly: true` and project-local source files whose first scanned lines contain
+`'#ExcludePublish`. Build and publish do not read the current CommonModules
+repository; they continue to trust retained manifest entries and sources when
+`orphaned` is `true`, while `doctor` owns repository consistency checks.
 
 Publish runs the same source and repeated live-authority checks as build over only that publishable source profile, including the post-import authority and released saved-staging gates. Identity defects confined to excluded `testOnly` or `'#ExcludePublish` source do not block publish, while duplicate flat file names and other structural profile-selection failures still do.
 
@@ -525,10 +583,11 @@ trimming. A marker cannot excuse invalid bytes later in the source.
 A proved marker exclusion bypasses import eligibility, lossless ACP projection,
 and sidecar reads, so excluded BOM-marked Unicode need not be representable in
 ACP. Included sources and sidecars are captured at most once; selection,
-preflight, import, and verification share those admitted facts. Included
-CommonModules retain manifest order, then remaining sources use case-insensitive
-filename order. An empty effective source set remains valid. Later authoring
-changes cannot alter the admitted publication; an unreadable selected file
+preflight, import, and verification share those admitted facts. Only after
+complete source admission is the final manifest-first import order applied.
+Preflight, import, and verification preserve that order directly. An empty
+effective source set remains valid. Later authoring changes cannot alter the
+admitted publication; an unreadable selected file
 fails without a retry, closing stability check, or authoring lock. Existing
 warnings and output commitment, including cancellation handling, are unchanged.
 
@@ -574,7 +633,17 @@ Options:
   --to <path>                    Existing workbook file to update in place.
 ```
 
-`import` updates the existing workbook at the requested target path. It requires both `--from` and `--to`, resolves relative paths from the current directory, and does not accept `--project` or `--document`. The source directory is inventoried once recursively for `.bas`, `.cls`, and `.frm` files and treated as one flat source file set ordered by extension-including exported file name. Relative paths are not ordering tie-breakers because duplicate exported file names fail before Excel starts. The command also fails before Excel starts when no importable source files exist.
+`import` updates the existing workbook at the requested target path. It requires
+both `--from` and `--to`, resolves relative paths from the current directory,
+and does not accept `--project` or `--document`. The source directory is
+inventoried once recursively for `.bas`, `.cls`, and `.frm` files and treated as
+one flat source file set ordered case-insensitively by extension-including
+exported filename. Relative paths are not ordering tie-breakers because duplicate
+exported filenames fail before source-byte reads or Excel work.
+
+Import does not classify sources from any project's installed CommonModules
+list or apply Publish markers. Unlike project Build, Publish, and snapshot
+Build, it rejects an empty importable source set before Excel starts.
 
 Each selected source and matching same-directory `.frx` sidecar is captured once. A read failure stops import; later edits to source files do not change the captured input. `.frx` files remain opaque binary content associated with their `.frm`, and orphan sidecars are ignored.
 
@@ -584,7 +653,9 @@ Close the target workbook before import and keep it closed until the command fin
 
 These encoding rules apply to explicit `import`, ordinary and snapshot `build` and `test`, included `publish` sources, and project Doctor's source inspection. Snapshot Build/Test capabilities are version `2.0`; the command contract, active-code-page capability, and Doctor schema remain `1.0`.
 
-Unlike `build`, `import` does not add, remove, or normalize manifest-defined references, does not resolve CommonModules dependencies, does not interpret `'#ExcludePublish`, and does not validate whether the workbook compiles.
+`import` does not resolve a project context, add, remove, or normalize
+manifest-defined references, use project CommonModules classification, interpret
+`'#ExcludePublish`, or validate whether the workbook compiles.
 
 ### check
 

@@ -106,7 +106,11 @@ public sealed class BuildCommandTests
             Path.GetRelativePath(root, templatePath),
             Path.GetRelativePath(root, binPath),
             Path.GetRelativePath(root, publishPath),
-            commonModules: [],
+            commonModules:
+            [
+                new InstalledCommonModule("Zeta", "Zeta.bas", Requested: true, TestOnly: true, Orphaned: true),
+                new InstalledCommonModule("Snapshot", "Snapshot.bas", Requested: false, TestOnly: false, Orphaned: true)
+            ],
             references: [new VbaProjectReference("Snapshot Reference")]);
         new JsonProjectManifestStore().Save(root, manifest);
         var manifestPath = Path.Combine(root, ProjectManifest.ManifestFileName);
@@ -121,10 +125,17 @@ public sealed class BuildCommandTests
         var snapshotPath = temp.CreateDirectory("snapshot");
         var snapshotSourcePath = Path.Combine(snapshotPath, "nested", "Snapshot.bas");
         Directory.CreateDirectory(Path.GetDirectoryName(snapshotSourcePath)!);
+        const string snapshotText = "Attribute VB_Name = \"Snapshot\"\n'#ExcludePublish\n";
         File.WriteAllText(
             snapshotSourcePath,
-            "Attribute VB_Name = \"Snapshot\"",
+            snapshotText,
             Encoding.UTF8);
+        var alphaPath = Path.Combine(snapshotPath, "Alpha.bas");
+        File.WriteAllText(alphaPath, "Attribute VB_Name = \"Alpha\"\n'#ExcludePublish\n", Encoding.UTF8);
+        var zetaPath = Path.Combine(snapshotPath, "Zeta.bas");
+        File.WriteAllText(zetaPath, "Attribute VB_Name = \"Zeta\"\n", Encoding.UTF8);
+        var snapshotBytes = new[] { alphaPath, snapshotSourcePath, zetaPath }
+            .ToDictionary(path => path, File.ReadAllBytes);
         var outputPath = Path.Combine(temp.CreateDirectory("session"), "Book1.xlsm");
         File.WriteAllText(outputPath, "previous-output", Encoding.UTF8);
         var automation = new FakeWorkbookGenerationAutomation();
@@ -151,7 +162,7 @@ public sealed class BuildCommandTests
         Assert.Equal(0, result.ExitCode);
         Assert.Equal(
             $"Built {outputPath}{Environment.NewLine}" +
-            $"Imported 1 source files.{Environment.NewLine}",
+            $"Imported 3 source files.{Environment.NewLine}",
             result.StandardOutput);
         Assert.Empty(result.StandardError);
         Assert.Equal("snapshot-template", File.ReadAllText(outputPath, Encoding.UTF8));
@@ -160,19 +171,29 @@ public sealed class BuildCommandTests
         Assert.Equal(templateBytes, File.ReadAllBytes(templatePath));
         Assert.False(Directory.Exists(persistentSourcePath));
         Assert.Equal(
-            "Attribute VB_Name = \"Snapshot\"",
+            snapshotText,
             File.ReadAllText(snapshotSourcePath, Encoding.UTF8));
+        foreach (var (path, bytes) in snapshotBytes)
+        {
+            Assert.Equal(bytes, File.ReadAllBytes(path));
+        }
         Assert.Equal(manifestBytes, File.ReadAllBytes(manifestPath));
         Assert.Equal(
             [
                 "add-ref:Snapshot Reference",
+                "import:Alpha.bas",
                 "import:Snapshot.bas",
+                "import:Zeta.bas",
                 "save"
             ],
             automation.Events);
-        var importedSource = Assert.Single(automation.ImportedSources);
-        Assert.DoesNotContain(snapshotPath, importedSource.SourcePath, StringComparison.OrdinalIgnoreCase);
-        Assert.False(File.Exists(importedSource.SourcePath));
+        Assert.Equal(["Alpha.bas", "Snapshot.bas", "Zeta.bas"],
+            automation.ImportedSources.Select(source => source.FileName));
+        Assert.All(automation.ImportedSources, importedSource =>
+        {
+            Assert.DoesNotContain(snapshotPath, importedSource.SourcePath, StringComparison.OrdinalIgnoreCase);
+            Assert.False(File.Exists(importedSource.SourcePath));
+        });
         Assert.Empty(Directory.EnumerateFiles(
             Path.GetDirectoryName(outputPath)!,
             ".Book1.*.tmp.xlsm",

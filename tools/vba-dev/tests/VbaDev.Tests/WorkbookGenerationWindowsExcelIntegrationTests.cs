@@ -376,8 +376,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
 
         using (var importSourceSet = VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(),
             new VbaSourceAdmission(() => activeCodePage)
-                .Admit(Path.GetDirectoryName(standardSourcePath)!,
-                    VbaSourceAdmissionIntent.ExplicitImport, CancellationToken.None)))
+                .AdmitExplicitImport(Path.GetDirectoryName(standardSourcePath)!, CancellationToken.None)))
         {
             var directImportExcelVersion = ImportAndAssertImmediatelyAndAfterReopen(
                 targetWorkbookPath,
@@ -786,7 +785,6 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
             {
                 Assert.Equal(activeCodePage, sourceSet.ActiveCodePage);
                 Assert.NotNull(sourceSet.Admission);
-                Assert.Equal(VbaSourceAdmissionIntent.Publish, sourceSet.Admission.Intent);
                 admittedSources = sourceSet.SourceFiles.ToArray();
                 stagingPath = sourceSet.StagingPath;
             });
@@ -865,7 +863,6 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
                 {
                     Assert.Equal(activeCodePage, sourceSet.ActiveCodePage);
                     Assert.NotNull(sourceSet.Admission);
-                    Assert.Equal(VbaSourceAdmissionIntent.Publish, sourceSet.Admission.Intent);
                     admittedSources = sourceSet.SourceFiles.ToArray();
                     stagingPath = sourceSet.StagingPath;
                     foreach (var change in changes)
@@ -1218,11 +1215,14 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
 
         string stagingDirectory;
         var admission = new VbaSourceAdmission(() => activeCodePage)
-            .Admit(temp.Path, VbaSourceAdmissionIntent.ExplicitImport, cancellation.Token);
-        var orderedAdmission = new AdmittedVbaSourceSet(admission.Intent, admission.ActiveCodePage,
-            new[] { firstClassSourcePath, secondClassSourcePath }
-                .Select(path => admission.Sources.Single(source => source.SourcePath == path)));
-        using (var sourceSet = VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(), orderedAdmission))
+            .AdmitProjectBuild(temp.Path,
+                [
+                    new InstalledCommonModule("FileNameProvider", Path.GetFileName(firstClassSourcePath), Requested: true, TestOnly: false),
+                    new InstalledCommonModule("FilenameAuthority", Path.GetFileName(secondClassSourcePath), Requested: true, TestOnly: false)
+                ],
+                cancellation.Token);
+        Assert.Equal([firstClassSourcePath, secondClassSourcePath], admission.Sources.Select(source => source.SourcePath));
+        using (var sourceSet = VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(), admission))
         {
             stagingDirectory = Path.GetDirectoryName(sourceSet.SourceFiles[0].SourcePath)!;
             IReadOnlyList<VbeIdentifierRecasingPair>? immediatePairs = null;
@@ -1315,7 +1315,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         string verificationStagingDirectory;
 
         var admission = new VbaSourceAdmission(() => activeCodePage)
-            .Admit(temp.Path, VbaSourceAdmissionIntent.ExplicitImport, cancellation.Token);
+            .AdmitExplicitImport(temp.Path, cancellation.Token);
         using (var verificationSourceSet = VbeImportSourceSet.Create(new WindowsExactFileSystemObjectOwnershipFactory(), admission))
         {
             verificationStagingDirectory = Path.GetDirectoryName(
@@ -1726,7 +1726,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         IWorkbookOutputTransactionFactory? transactionFactory)
         => new(
             new WorkbookMaterializer(new WindowsExactFileSystemObjectOwnershipFactory(),
-                new WorkbookSourcePlanner(),
+                new VbaSourceAdmission(ActiveWindowsAnsiCodePage.Get),
                 automation ?? new ExcelComWorkbookGenerationAutomation(),
                 new WorkbookReferenceNormalizer(new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),
                 transactionFactory ?? new WorkbookOutputTransactionFactory(new WindowsExactFileSystemObjectOwnershipFactory()),
@@ -1942,7 +1942,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
         WorkbookAutomationTimeouts? baseTimeouts = null)
         => new(
             new WindowsExactFileSystemObjectOwnershipFactory(),
-            new WorkbookSourcePlanner(),
+            new VbaSourceAdmission(ActiveWindowsAnsiCodePage.Get),
             (IWorkbookGenerationAutomation)new ExcelComWorkbookGenerationAutomation(),
             new WorkbookReferenceNormalizer(
                 new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),

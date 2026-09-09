@@ -99,9 +99,9 @@ public static class ToolingCompositionRoot
             projectContextResolver,
             referencePlanner);
         var generationAutomation = workbookGenerationAutomation ?? new ExcelComWorkbookGenerationAutomation();
-        var sourcePlanner = new WorkbookSourcePlanner();
+        var sourceAdmission = new VbaSourceAdmission(ActiveWindowsAnsiCodePage.Get);
         var materializer = new WorkbookMaterializer(ownershipFactory,
-            sourcePlanner,
+            sourceAdmission,
             generationAutomation,
             new WorkbookReferenceNormalizer(referencePlanner),
             new WorkbookOutputTransactionFactory(ownershipFactory));
@@ -147,7 +147,7 @@ public static class ToolingCompositionRoot
             exportDestinationFileOperations ?? new ExportDestinationFileOperations());
         var importCommand = new ImportCommand(
             materializer,
-            new VbaSourceAdmission(ActiveWindowsAnsiCodePage.Get));
+            sourceAdmission);
         var hostEventListCommand = new HostEventListCommand(
             hostEventCatalogAutomation ?? new ExcelComHostEventCatalogAutomation());
         return new ToolingApplicationComposition(

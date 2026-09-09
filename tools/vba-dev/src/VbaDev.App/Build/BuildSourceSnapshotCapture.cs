@@ -38,10 +38,8 @@ internal sealed class BuildSourceSnapshotCaptureFactory
         ArgumentException.ThrowIfNullOrWhiteSpace(sourceSnapshotPath);
         cancellationToken.ThrowIfCancellationRequested();
         var snapshotPath = Path.GetFullPath(sourceSnapshotPath);
-        if (!Directory.Exists(snapshotPath))
-            throw new InvalidOperationException($"Build source snapshot directory was not found: {snapshotPath}");
 
-        var admitted = admission.Admit(snapshotPath, VbaSourceAdmissionIntent.Build, cancellationToken);
+        var admitted = admission.AdmitSourceSnapshotBuild(snapshotPath, cancellationToken);
         var inventory = admitted.Sources.Select(source => new SnapshotSourceInventoryEntry(
             source, GetSafeRelativePath(snapshotPath, source.SourcePath),
             source.BinaryPath is null ? null : GetSafeRelativePath(snapshotPath, source.BinaryPath))).ToArray();

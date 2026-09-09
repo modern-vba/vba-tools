@@ -11,7 +11,7 @@ namespace VbaDev.App.Build;
 /// </summary>
 internal sealed class WorkbookMaterializer
 {
-    private readonly WorkbookSourcePlanner sourcePlanner;
+    private readonly VbaSourceAdmission sourceAdmission;
     private readonly IExactFileSystemObjectOwnershipFactory ownershipFactory;
     private readonly IWorkbookGenerationAutomation workbookGenerationAutomation;
     private readonly WorkbookReferenceNormalizer referenceNormalizer;
@@ -33,7 +33,7 @@ internal sealed class WorkbookMaterializer
         WorkbookReferenceNormalizer referenceNormalizer)
         : this(
             ownershipFactory,
-            new WorkbookSourcePlanner(),
+            new VbaSourceAdmission(ActiveWindowsAnsiCodePage.Get),
             workbookGenerationAutomation,
             referenceNormalizer,
             new WorkbookOutputTransactionFactory(ownershipFactory),
@@ -46,13 +46,13 @@ internal sealed class WorkbookMaterializer
     /// </summary>
     internal WorkbookMaterializer(
         IExactFileSystemObjectOwnershipFactory ownershipFactory,
-        WorkbookSourcePlanner sourcePlanner,
+        VbaSourceAdmission sourceAdmission,
         IWorkbookGenerationAutomation workbookGenerationAutomation,
         WorkbookReferenceNormalizer referenceNormalizer,
         IWorkbookOutputTransactionFactory transactionFactory)
         : this(
             ownershipFactory,
-            sourcePlanner,
+            sourceAdmission,
             workbookGenerationAutomation,
             referenceNormalizer,
             transactionFactory,
@@ -68,7 +68,7 @@ internal sealed class WorkbookMaterializer
         VbeImportSourceSetFactory importSourceSetFactory)
         : this(
             ownershipFactory,
-            new WorkbookSourcePlanner(),
+            new VbaSourceAdmission(ActiveWindowsAnsiCodePage.Get),
             workbookGenerationAutomation,
             referenceNormalizer,
             transactionFactory,
@@ -78,7 +78,7 @@ internal sealed class WorkbookMaterializer
 
     internal WorkbookMaterializer(
         IExactFileSystemObjectOwnershipFactory ownershipFactory,
-        WorkbookSourcePlanner sourcePlanner,
+        VbaSourceAdmission sourceAdmission,
         IWorkbookGenerationAutomation workbookGenerationAutomation,
         WorkbookReferenceNormalizer referenceNormalizer,
         IWorkbookOutputTransactionFactory transactionFactory,
@@ -88,7 +88,7 @@ internal sealed class WorkbookMaterializer
         WorkbookMaterializationNamePreflight? namePreflight = null)
     {
         this.ownershipFactory = ownershipFactory;
-        this.sourcePlanner = sourcePlanner;
+        this.sourceAdmission = sourceAdmission;
         this.workbookGenerationAutomation = workbookGenerationAutomation;
         this.referenceNormalizer = referenceNormalizer;
         this.transactionFactory = transactionFactory;
@@ -123,14 +123,14 @@ internal sealed class WorkbookMaterializer
         ArgumentNullException.ThrowIfNull(intent);
         var context = intent.Context;
         using var buildProfile = PrepareInspectionProfile(
-            context,
             ProjectInspectionProfile.Build,
-            () => intent.SourceCapture.AdmitBuild(cancellationToken),
+            () => intent.SourceCapture.AdmitProjectBuild(
+                context.Document.CommonModules,
+                cancellationToken),
             cancellationToken);
         using var publishProfile = PrepareInspectionProfile(
-            context,
             ProjectInspectionProfile.Publish,
-            () => intent.SourceCapture.AdmitPublish(
+            () => intent.SourceCapture.AdmitProjectPublish(
                 context.Document.CommonModules,
                 cancellationToken),
             cancellationToken);
@@ -356,12 +356,18 @@ internal sealed class WorkbookMaterializer
                 build.Context,
                 build.Context.BinDocumentPath,
                 ResolveTimeouts(build.Context),
-                sourcePlanner.CaptureBuildSourceInput(build.Context, cancellationToken)),
+                new AdmittedWorkbookGenerationSourceInput(sourceAdmission.AdmitProjectBuild(
+                    build.Context.DocumentSourceSetPath,
+                    build.Context.Document.CommonModules,
+                    cancellationToken))),
             WorkbookMaterializationIntent.Publish publish => CreateProjectPlan(
                 publish.Context,
                 publish.Context.PublishDocumentPath,
                 ResolveTimeouts(publish.Context),
-                sourcePlanner.CapturePublishSourceInput(publish.Context, cancellationToken)),
+                new AdmittedWorkbookGenerationSourceInput(sourceAdmission.AdmitProjectPublish(
+                    publish.Context.DocumentSourceSetPath,
+                    publish.Context.Document.CommonModules,
+                    cancellationToken))),
             WorkbookMaterializationIntent.SourceSnapshotBuild snapshot => CreateProjectPlan(
                 snapshot.Context,
                 snapshot.TargetWorkbookPath,
@@ -409,7 +415,6 @@ internal sealed class WorkbookMaterializer
     }
 
     private InspectionProfile PrepareInspectionProfile(
-        ResolvedProjectContext context,
         ProjectInspectionProfile profile,
         Func<AdmittedVbaSourceSet> admitSources,
         CancellationToken cancellationToken)
@@ -418,10 +423,7 @@ internal sealed class WorkbookMaterializer
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var ordered = WorkbookSourcePlanner.OrderAdmittedSources(
-                context,
-                admitSources());
-            result.SourceSet = importSourceSetFactory.Create(ordered.Admission);
+            result.SourceSet = importSourceSetFactory.Create(admitSources());
             result.SourcePreflight = namePreflight.InspectSourcePhase(
                 result.SourceSet.SourceFiles);
             namePreflight.ThrowIfFailed(result.SourcePreflight);
@@ -600,6 +602,7 @@ internal sealed class WorkbookMaterializer
     {
         var sourceAdmission = sourceInput.Admission;
         var preparedSource = CreateImportSourceSetAndReleaseInput(
+            guardExistingTarget ? null : templateWorkbookPath,
             sourceInput,
             cancellationToken);
         VbeImportSourceSet? importSourceSet = preparedSource.SourceSet;
@@ -840,6 +843,7 @@ internal sealed class WorkbookMaterializer
     }
 
     private PreparedImportSource CreateImportSourceSetAndReleaseInput(
+        string? templateWorkbookPath,
         IAdmittedWorkbookGenerationSourceInput sourceInput,
         CancellationToken cancellationToken)
     {
@@ -851,6 +855,10 @@ internal sealed class WorkbookMaterializer
             ThrowIfCanceled(
                 cancellationToken,
                 new WorkbookAutomationStage(WorkbookAutomationStageKind.ExcelStartup));
+            if (templateWorkbookPath is not null && !File.Exists(templateWorkbookPath))
+            {
+                throw new BuildCommandException($"Template workbook was not found: {templateWorkbookPath}");
+            }
             importSourceSet = importSourceSetFactory.Create(sourceInput.Admission);
             sourcePreflight = namePreflight.InspectSourcePhase(importSourceSet.SourceFiles);
             if (sourcePreflight.HasFailures)

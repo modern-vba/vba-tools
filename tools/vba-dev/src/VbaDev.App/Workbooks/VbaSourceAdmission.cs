@@ -5,18 +5,19 @@ using VbaTools.Syntax;
 
 namespace VbaDev.App.Workbooks;
 
-internal enum VbaSourceAdmissionIntent
-{
-    ExplicitImport,
-    Build,
-    Publish
-}
-
 /// <summary>
 /// Captures one operation's authoring bytes and immutable source facts.
 /// </summary>
 internal sealed class VbaSourceAdmission
 {
+    private enum AdmissionPurpose
+    {
+        ProjectBuild,
+        ProjectPublish,
+        SourceSnapshotBuild,
+        ExplicitImport
+    }
+
     private static readonly UTF8Encoding Utf8Strict = new(false, true);
     private static readonly UnicodeEncoding Utf16LeStrict = new(false, false, true);
     private static readonly UnicodeEncoding Utf16BeStrict = new(true, false, true);
@@ -51,15 +52,18 @@ internal sealed class VbaSourceAdmission
     }
 
     internal DoctorSourceAdmissionRun BeginDoctorRun(CancellationToken cancellationToken = default)
+        => DoctorSourceAdmissionRun.Begin(this, cancellationToken);
+
+    internal (int ActiveCodePage, Encoding Encoding) ReadDoctorEncoding(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var activeCodePage = getActiveCodePage();
         cancellationToken.ThrowIfCancellationRequested();
         var encoding = CreateStrictActiveEncoding(activeCodePage);
-        return new DoctorSourceAdmissionRun(this, activeCodePage, encoding);
+        return (activeCodePage, encoding);
     }
 
-    internal CapturedDoctorSourceSet CaptureDoctorDocument(
+    internal DoctorSourceCaptureData ReadDoctorDocumentCapture(
         string sourceDirectory,
         int activeCodePage,
         Encoding encoding,
@@ -84,7 +88,7 @@ internal sealed class VbaSourceAdmission
         }
         catch (Exception error) when (error is not OperationCanceledException)
         {
-            return new CapturedDoctorSourceSet(root, activeCodePage, exists, [], [], [], error);
+            return new DoctorSourceCaptureData(root, activeCodePage, exists, [], [], [], error);
         }
 
         var sources = ResolveSourceFiles(paths);
@@ -137,31 +141,56 @@ internal sealed class VbaSourceAdmission
         }
 
         cancellationToken.ThrowIfCancellationRequested();
-        return new CapturedDoctorSourceSet(root, activeCodePage, exists, paths, capturedFiles, facts);
+        return new DoctorSourceCaptureData(root, activeCodePage, exists, paths, capturedFiles, facts);
     }
 
-    internal AdmittedVbaSourceSet Admit(
-        string sourceDirectory,
-        VbaSourceAdmissionIntent intent,
-        CancellationToken cancellationToken = default)
-    {
-        if (intent is not VbaSourceAdmissionIntent.ExplicitImport and not VbaSourceAdmissionIntent.Build)
-        {
-            throw new ArgumentOutOfRangeException(nameof(intent));
-        }
-
-        return AdmitCore(sourceDirectory, intent, [], cancellationToken);
-    }
-
-    internal AdmittedVbaSourceSet AdmitPublish(
+    internal AdmittedVbaSourceSet AdmitProjectBuild(
         string sourceDirectory,
         IReadOnlyList<InstalledCommonModule> commonModules,
         CancellationToken cancellationToken = default)
-        => AdmitCore(sourceDirectory, VbaSourceAdmissionIntent.Publish, commonModules, cancellationToken);
+        => AdmittedVbaSourceSet.AdmitProjectBuild(this, sourceDirectory, commonModules, cancellationToken);
 
-    private AdmittedVbaSourceSet AdmitCore(
+    internal AdmittedVbaSourceSet AdmitProjectPublish(
         string sourceDirectory,
-        VbaSourceAdmissionIntent intent,
+        IReadOnlyList<InstalledCommonModule> commonModules,
+        CancellationToken cancellationToken = default)
+        => AdmittedVbaSourceSet.AdmitProjectPublish(this, sourceDirectory, commonModules, cancellationToken);
+
+    internal AdmittedVbaSourceSet AdmitSourceSnapshotBuild(
+        string sourceDirectory,
+        CancellationToken cancellationToken = default)
+        => AdmittedVbaSourceSet.AdmitSourceSnapshotBuild(this, sourceDirectory, cancellationToken);
+
+    internal AdmittedVbaSourceSet AdmitExplicitImport(
+        string sourceDirectory,
+        CancellationToken cancellationToken = default)
+        => AdmittedVbaSourceSet.AdmitExplicitImport(this, sourceDirectory, cancellationToken);
+
+    internal AdmittedVbaSourceData ReadProjectBuild(
+        string sourceDirectory,
+        IReadOnlyList<InstalledCommonModule> commonModules,
+        CancellationToken cancellationToken)
+        => AdmitCore(sourceDirectory, AdmissionPurpose.ProjectBuild, commonModules, cancellationToken);
+
+    internal AdmittedVbaSourceData ReadProjectPublish(
+        string sourceDirectory,
+        IReadOnlyList<InstalledCommonModule> commonModules,
+        CancellationToken cancellationToken)
+        => AdmitCore(sourceDirectory, AdmissionPurpose.ProjectPublish, commonModules, cancellationToken);
+
+    internal AdmittedVbaSourceData ReadSourceSnapshotBuild(
+        string sourceDirectory,
+        CancellationToken cancellationToken)
+        => AdmitCore(sourceDirectory, AdmissionPurpose.SourceSnapshotBuild, [], cancellationToken);
+
+    internal AdmittedVbaSourceData ReadExplicitImport(
+        string sourceDirectory,
+        CancellationToken cancellationToken)
+        => AdmitCore(sourceDirectory, AdmissionPurpose.ExplicitImport, [], cancellationToken);
+
+    private AdmittedVbaSourceData AdmitCore(
+        string sourceDirectory,
+        AdmissionPurpose purpose,
         IReadOnlyList<InstalledCommonModule> commonModules,
         CancellationToken cancellationToken)
     {
@@ -184,7 +213,7 @@ internal sealed class VbaSourceAdmission
         var paths = inventory(root).Select(Path.GetFullPath).ToArray();
         cancellationToken.ThrowIfCancellationRequested();
         var sources = ResolveSourceFiles(paths);
-        if (sources.Length == 0 && intent == VbaSourceAdmissionIntent.ExplicitImport)
+        if (sources.Length == 0 && purpose == AdmissionPurpose.ExplicitImport)
         {
             throw new InvalidOperationException($"No importable VBA source files were found in: {root}");
         }
@@ -198,7 +227,8 @@ internal sealed class VbaSourceAdmission
         {
             cancellationToken.ThrowIfCancellationRequested();
             var isCommonModule = commonNames.Contains(source.FileName);
-            if (isCommonModule && !includedCommonNames.Contains(source.FileName))
+            if (purpose == AdmissionPurpose.ProjectPublish
+                && isCommonModule && !includedCommonNames.Contains(source.FileName))
             {
                 continue;
             }
@@ -206,7 +236,7 @@ internal sealed class VbaSourceAdmission
             cancellationToken.ThrowIfCancellationRequested();
             var decoded = Decode(bytes, encoding, activeCodePage, source.SourcePath);
             var text = decoded.Text;
-            if (intent == VbaSourceAdmissionIntent.Publish && !isCommonModule && VbaPublishExclusionMarker.IsPresent(text))
+            if (purpose == AdmissionPurpose.ProjectPublish && !isCommonModule && VbaPublishExclusionMarker.IsPresent(text))
             {
                 continue;
             }
@@ -215,7 +245,29 @@ internal sealed class VbaSourceAdmission
         }
 
         cancellationToken.ThrowIfCancellationRequested();
-        return new AdmittedVbaSourceSet(intent, activeCodePage, admitted);
+        var ordered = purpose is AdmissionPurpose.ProjectBuild or AdmissionPurpose.ProjectPublish
+            ? OrderProjectSources(admitted, commonModules)
+            : admitted;
+        return new AdmittedVbaSourceData(activeCodePage, ordered.ToImmutableArray());
+    }
+
+    internal static IReadOnlyList<AdmittedVbaSource> OrderProjectSources(
+        IReadOnlyList<AdmittedVbaSource> sources,
+        IReadOnlyList<InstalledCommonModule> commonModules)
+    {
+        var byName = sources.ToDictionary(source => source.FileName, StringComparer.OrdinalIgnoreCase);
+        var commonNames = commonModules.Select(entry => entry.ModuleFile).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var ordered = new List<AdmittedVbaSource>(sources.Count);
+        foreach (var entry in commonModules)
+        {
+            if (byName.TryGetValue(entry.ModuleFile, out var source))
+            {
+                ordered.Add(source);
+            }
+        }
+        ordered.AddRange(sources.Where(source => !commonNames.Contains(source.FileName))
+            .OrderBy(source => source.FileName, StringComparer.OrdinalIgnoreCase));
+        return ordered;
     }
 
     private static VbaSourceFile[] ResolveSourceFiles(IReadOnlyList<string> paths)
@@ -407,41 +459,66 @@ internal sealed class VbaSourceAdmission
     private sealed record DecodedSource(string Text, string EncodingToken);
 }
 
-internal sealed class DoctorSourceAdmissionRun(
-    VbaSourceAdmission admission,
-    int activeCodePage,
-    Encoding encoding)
+internal sealed class DoctorSourceAdmissionRun
 {
-    internal int ActiveCodePage { get; } = activeCodePage;
+    private readonly VbaSourceAdmission admission;
+    private readonly Encoding encoding;
+
+    private DoctorSourceAdmissionRun(VbaSourceAdmission admission, int activeCodePage, Encoding encoding)
+    {
+        this.admission = admission;
+        ActiveCodePage = activeCodePage;
+        this.encoding = encoding;
+    }
+
+    internal int ActiveCodePage { get; }
+
+    internal static DoctorSourceAdmissionRun Begin(
+        VbaSourceAdmission admission,
+        CancellationToken cancellationToken)
+    {
+        var (activeCodePage, encoding) = admission.ReadDoctorEncoding(cancellationToken);
+        return new DoctorSourceAdmissionRun(admission, activeCodePage, encoding);
+    }
 
     internal CapturedDoctorSourceSet CaptureDocument(
         string sourceDirectory,
         CancellationToken cancellationToken = default)
-        => admission.CaptureDoctorDocument(sourceDirectory, ActiveCodePage, encoding, cancellationToken);
+        => CapturedDoctorSourceSet.Capture(this, sourceDirectory, cancellationToken);
+
+    internal DoctorSourceCaptureData ReadDocumentCapture(
+        string sourceDirectory,
+        CancellationToken cancellationToken)
+        => admission.ReadDoctorDocumentCapture(sourceDirectory, ActiveCodePage, encoding, cancellationToken);
 }
 
 internal sealed class CapturedDoctorSourceSet
 {
+    private enum ProjectPurpose
+    {
+        Build,
+        Publish
+    }
+
     private readonly ImmutableDictionary<string, CapturedDoctorFile> capturedFiles;
     private readonly ImmutableArray<CapturedDoctorSource> sources;
 
-    internal CapturedDoctorSourceSet(
-        string sourceDirectory,
-        int activeCodePage,
-        bool sourceDirectoryExists,
-        ImmutableArray<string> inventoryPaths,
-        IEnumerable<KeyValuePair<string, CapturedDoctorFile>> capturedFiles,
-        IEnumerable<CapturedDoctorSource> sources,
-        Exception? captureFailure = null)
+    private CapturedDoctorSourceSet(DoctorSourceCaptureData capture)
     {
-        SourceDirectory = sourceDirectory;
-        ActiveCodePage = activeCodePage;
-        SourceDirectoryExists = sourceDirectoryExists;
-        InventoryPaths = inventoryPaths;
-        CaptureFailure = captureFailure;
-        this.capturedFiles = capturedFiles.ToImmutableDictionary(StringComparer.OrdinalIgnoreCase);
-        this.sources = sources.ToImmutableArray();
+        SourceDirectory = capture.SourceDirectory;
+        ActiveCodePage = capture.ActiveCodePage;
+        SourceDirectoryExists = capture.SourceDirectoryExists;
+        InventoryPaths = capture.InventoryPaths;
+        CaptureFailure = capture.Failure;
+        capturedFiles = capture.Files.ToImmutableDictionary(StringComparer.OrdinalIgnoreCase);
+        sources = capture.Sources.ToImmutableArray();
     }
+
+    internal static CapturedDoctorSourceSet Capture(
+        DoctorSourceAdmissionRun run,
+        string sourceDirectory,
+        CancellationToken cancellationToken)
+        => new(run.ReadDocumentCapture(sourceDirectory, cancellationToken));
 
     internal string SourceDirectory { get; }
     internal int ActiveCodePage { get; }
@@ -462,16 +539,28 @@ internal sealed class CapturedDoctorSourceSet
         return file.GetBytes();
     }
 
-    internal AdmittedVbaSourceSet AdmitBuild(CancellationToken cancellationToken = default)
-        => Admit(VbaSourceAdmissionIntent.Build, [], cancellationToken);
-
-    internal AdmittedVbaSourceSet AdmitPublish(
+    internal AdmittedVbaSourceSet AdmitProjectBuild(
         IReadOnlyList<InstalledCommonModule> commonModules,
         CancellationToken cancellationToken = default)
-        => Admit(VbaSourceAdmissionIntent.Publish, commonModules, cancellationToken);
+        => AdmittedVbaSourceSet.AdmitProjectBuild(this, commonModules, cancellationToken);
 
-    private AdmittedVbaSourceSet Admit(
-        VbaSourceAdmissionIntent intent,
+    internal AdmittedVbaSourceSet AdmitProjectPublish(
+        IReadOnlyList<InstalledCommonModule> commonModules,
+        CancellationToken cancellationToken = default)
+        => AdmittedVbaSourceSet.AdmitProjectPublish(this, commonModules, cancellationToken);
+
+    internal AdmittedVbaSourceData ReadProjectBuild(
+        IReadOnlyList<InstalledCommonModule> commonModules,
+        CancellationToken cancellationToken)
+        => Admit(ProjectPurpose.Build, commonModules, cancellationToken);
+
+    internal AdmittedVbaSourceData ReadProjectPublish(
+        IReadOnlyList<InstalledCommonModule> commonModules,
+        CancellationToken cancellationToken)
+        => Admit(ProjectPurpose.Publish, commonModules, cancellationToken);
+
+    private AdmittedVbaSourceData Admit(
+        ProjectPurpose purpose,
         IReadOnlyList<InstalledCommonModule> commonModules,
         CancellationToken cancellationToken)
     {
@@ -487,7 +576,8 @@ internal sealed class CapturedDoctorSourceSet
         {
             cancellationToken.ThrowIfCancellationRequested();
             var isCommonModule = commonNames.Contains(source.SourceFile.FileName);
-            if (isCommonModule && !includedCommonNames.Contains(source.SourceFile.FileName))
+            if (purpose == ProjectPurpose.Publish
+                && isCommonModule && !includedCommonNames.Contains(source.SourceFile.FileName))
             {
                 continue;
             }
@@ -495,7 +585,7 @@ internal sealed class CapturedDoctorSourceSet
             {
                 throw source.DecodeFailure;
             }
-            if (intent == VbaSourceAdmissionIntent.Publish && !isCommonModule
+            if (purpose == ProjectPurpose.Publish && !isCommonModule
                 && VbaPublishExclusionMarker.IsPresent(source.DecodedText!))
             {
                 continue;
@@ -507,7 +597,8 @@ internal sealed class CapturedDoctorSourceSet
             admitted.Add(source.Admission!);
         }
         cancellationToken.ThrowIfCancellationRequested();
-        return new AdmittedVbaSourceSet(intent, ActiveCodePage, admitted);
+        return new AdmittedVbaSourceData(ActiveCodePage,
+            VbaSourceAdmission.OrderProjectSources(admitted, commonModules).ToImmutableArray());
     }
 
     private void ThrowIfCaptureFailed()
@@ -518,6 +609,15 @@ internal sealed class CapturedDoctorSourceSet
         }
     }
 }
+
+internal sealed record DoctorSourceCaptureData(
+    string SourceDirectory,
+    int ActiveCodePage,
+    bool SourceDirectoryExists,
+    ImmutableArray<string> InventoryPaths,
+    IEnumerable<KeyValuePair<string, CapturedDoctorFile>> Files,
+    IEnumerable<CapturedDoctorSource> Sources,
+    Exception? Failure = null);
 
 internal sealed record CapturedDoctorFile(ImmutableArray<byte> Bytes, Exception? Failure)
 {
@@ -540,20 +640,57 @@ internal sealed record CapturedDoctorSource(
 
 internal sealed class AdmittedVbaSourceSet
 {
-    internal AdmittedVbaSourceSet(
-        VbaSourceAdmissionIntent intent,
-        int activeCodePage,
-        IEnumerable<AdmittedVbaSource> sources)
+    private AdmittedVbaSourceSet(AdmittedVbaSourceData admission)
     {
-        Intent = intent;
-        ActiveCodePage = activeCodePage;
-        Sources = sources.ToImmutableArray();
+        ActiveCodePage = admission.ActiveCodePage;
+        Sources = admission.Sources;
     }
 
-    internal VbaSourceAdmissionIntent Intent { get; }
+    internal static AdmittedVbaSourceSet AdmitProjectBuild(
+        VbaSourceAdmission admission,
+        string sourceDirectory,
+        IReadOnlyList<InstalledCommonModule> commonModules,
+        CancellationToken cancellationToken)
+        => new(admission.ReadProjectBuild(sourceDirectory, commonModules, cancellationToken));
+
+    internal static AdmittedVbaSourceSet AdmitProjectPublish(
+        VbaSourceAdmission admission,
+        string sourceDirectory,
+        IReadOnlyList<InstalledCommonModule> commonModules,
+        CancellationToken cancellationToken)
+        => new(admission.ReadProjectPublish(sourceDirectory, commonModules, cancellationToken));
+
+    internal static AdmittedVbaSourceSet AdmitSourceSnapshotBuild(
+        VbaSourceAdmission admission,
+        string sourceDirectory,
+        CancellationToken cancellationToken)
+        => new(admission.ReadSourceSnapshotBuild(sourceDirectory, cancellationToken));
+
+    internal static AdmittedVbaSourceSet AdmitExplicitImport(
+        VbaSourceAdmission admission,
+        string sourceDirectory,
+        CancellationToken cancellationToken)
+        => new(admission.ReadExplicitImport(sourceDirectory, cancellationToken));
+
+    internal static AdmittedVbaSourceSet AdmitProjectBuild(
+        CapturedDoctorSourceSet capture,
+        IReadOnlyList<InstalledCommonModule> commonModules,
+        CancellationToken cancellationToken)
+        => new(capture.ReadProjectBuild(commonModules, cancellationToken));
+
+    internal static AdmittedVbaSourceSet AdmitProjectPublish(
+        CapturedDoctorSourceSet capture,
+        IReadOnlyList<InstalledCommonModule> commonModules,
+        CancellationToken cancellationToken)
+        => new(capture.ReadProjectPublish(commonModules, cancellationToken));
+
     internal int ActiveCodePage { get; }
     internal ImmutableArray<AdmittedVbaSource> Sources { get; }
 }
+
+internal readonly record struct AdmittedVbaSourceData(
+    int ActiveCodePage,
+    ImmutableArray<AdmittedVbaSource> Sources);
 
 internal sealed class AdmittedVbaSource
 {

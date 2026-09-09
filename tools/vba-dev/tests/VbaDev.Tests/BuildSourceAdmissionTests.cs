@@ -139,7 +139,7 @@ public sealed class BuildSourceAdmissionTests
                 Assert.Equal(new byte[] { 0, 1, 127, 255 }, File.ReadAllBytes(form.BinaryPath!));
             });
 
-        var result = await CreateCommand(automation, 1252, new WorkbookSourcePlanner(admission), mirrorFactory)
+        var result = await CreateCommand(automation, 1252, admission, mirrorFactory)
             .RunAsync(context, CancellationToken.None);
 
         Assert.Equal(0, result.ExitCode);
@@ -147,7 +147,6 @@ public sealed class BuildSourceAdmissionTests
         Assert.Equal(1, inventoryCalls);
         Assert.Equal(3, reads.Count);
         Assert.NotNull(captured);
-        Assert.Equal(VbaSourceAdmissionIntent.Build, captured.Intent);
         Assert.Equal(1252, captured.ActiveCodePage);
         Assert.Equal(["Greeting.bas", "Dialog.frm"], automation.ImportedSources.Select(source => source.FileName));
         foreach (var source in captured.Sources)
@@ -183,7 +182,7 @@ public sealed class BuildSourceAdmissionTests
         });
         var automation = new FakeWorkbookGenerationAutomation();
 
-        var result = await CreateCommand(automation, 1252, new WorkbookSourcePlanner(admission))
+        var result = await CreateCommand(automation, 1252, admission)
             .RunAsync(context, cancellation.Token);
 
         Assert.Equal(130, result.ExitCode);
@@ -383,7 +382,7 @@ public sealed class BuildSourceAdmissionTests
         var automation = new FakeWorkbookGenerationAutomation();
         var runner = new FakeWorkbookTestRunner();
         var test = new TestCommand(
-            CreateCommand(automation, 1252, new WorkbookSourcePlanner(admission)),
+            CreateCommand(automation, 1252, admission),
             runner,
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
@@ -462,7 +461,7 @@ public sealed class BuildSourceAdmissionTests
             CreateCommand(
                 automation,
                 65001,
-                new WorkbookSourcePlanner(admission)),
+                admission),
             runner,
             new TestResultOutputFormatter(),
             new TestProcedureSourceLocator(),
@@ -562,18 +561,18 @@ public sealed class BuildSourceAdmissionTests
     private static BuildCommand CreateCommand(
         FakeWorkbookGenerationAutomation automation,
         int activeCodePage,
-        WorkbookSourcePlanner? planner = null,
+        VbaSourceAdmission? admission = null,
         VbeImportSourceSetFactory? mirrorFactory = null)
-        => new(CreateOutputCommand(automation, activeCodePage, planner, mirrorFactory), new FileSystemPathIdentityResolver(), new WindowsExactFileSystemObjectOwnershipFactory());
+        => new(CreateOutputCommand(automation, activeCodePage, admission, mirrorFactory), new FileSystemPathIdentityResolver(), new WindowsExactFileSystemObjectOwnershipFactory());
 
     private static WorkbookOutputCommand CreateOutputCommand(
         FakeWorkbookGenerationAutomation automation,
         int activeCodePage,
-        WorkbookSourcePlanner? planner = null,
+        VbaSourceAdmission? admission = null,
         VbeImportSourceSetFactory? mirrorFactory = null)
         => new(
             new WorkbookMaterializer(new WindowsExactFileSystemObjectOwnershipFactory(),
-                planner ?? new WorkbookSourcePlanner(() => activeCodePage),
+                admission ?? new VbaSourceAdmission(() => activeCodePage),
                 automation,
                 new WorkbookReferenceNormalizer(new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),
                 new WorkbookOutputTransactionFactory(new WindowsExactFileSystemObjectOwnershipFactory()),
