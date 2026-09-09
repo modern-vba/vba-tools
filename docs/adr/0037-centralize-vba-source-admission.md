@@ -14,6 +14,8 @@ successfully materialized test workbook the sole authority for built-test
 source locations. Issue #351 routes Doctor's observational workbook inspection
 through `WorkbookMaterializer` without changing source admission. Issue #393
 establishes purpose-specific admission as the final selection and order authority.
+Issue #397 consolidates live and captured selection into one private policy
+while retaining their separate input acquisition and evidence ownership.
 Source ownership, VBE import verification, and owned Excel-process lifecycle
 contracts remain accepted.
 
@@ -46,8 +48,8 @@ snapshot Test's build stage. The selected project still supplies the applicable
 template and reference configuration; that does not give it authority to
 reclassify snapshot source files.
 
-ACP remains fixed once per invocation. Admission checks the recursive inventory
-for duplicate exported filenames before source bytes or Excel work, retaining
+For live admission, ACP remains fixed once per invocation. It checks the
+recursive inventory for duplicate exported filenames before source bytes or Excel work, retaining
 the established case-insensitive filename encounter order for reads and
 failures. Each selected source and matching sidecar is read at most once.
 Manifest-first final ordering happens only after complete successful admission.
@@ -71,11 +73,52 @@ expose final-order admission without transferring or erasing cleanup ownership.
 Existing failure paths still release owned generation input before output or
 Excel work; moving template validation does not bypass that release.
 
-This change does not consolidate the live and captured Build/Publish selection
-implementations. Both return final-order admission while preserving their
-existing capture and exclusion responsibilities. That policy consolidation is
-reserved for issue #397. This change also introduces no new source diagnostic
-gate, compile check, editor fence, output schema, or capability version.
+The #393 ordering change left live and captured selection implementations
+separate. Issue #397 subsequently consolidates their policy as described below.
+Neither change introduces a new source diagnostic gate, compile check, editor
+fence, output schema, or capability version.
+
+## Shared live and captured selection policy
+
+One private selection operation now owns duplicate exported-name precedence,
+installed CommonModules classification, Build/Publish membership, exclusion
+decisions, selected admission, and final successful ordering. The four
+purpose-specific entry points and private-constructor admitted result issuers
+remain the boundary for callers. No public selection interface, caller-composed
+policy callback, or strategy catalog is introduced.
+
+Two private input Adapters supply facts to that operation in separate stages:
+
+| Demand | Live input | Captured Doctor input |
+| --- | --- | --- |
+| Source identity from inventory | Already resolved source and matching sidecar paths; no content read | Already captured source-file identity |
+| Decoded text | Read source once, check cancellation, strictly decode once, retain exact bytes and decoded facts | Return retained decoded text or rethrow its source-read/decode failure |
+| Selected admission | Reuse those exact bytes and decoded facts, derive admission and read the selected sidecar | Return retained admission or rethrow its admission/sidecar failure |
+
+Constructing either Adapter reads nothing. The live decoded-state cache
+distinguishes an unread source from successfully decoded empty text. The shared
+policy visits candidates by case-insensitive filename and excludes installed
+test-only CommonModules for Publish before demanding either content stage.
+Other candidates must pass whole-file decoding before a local marker can
+exclude them; installed CommonModules ignore local markers. Only included
+candidates demand selected admission. A source that fails cannot produce a
+partial successful admitted set. Final manifest-first project ordering reuses
+the existing rule only after complete admission; it does not change the order
+in which failures are encountered. The two flat purposes retain their existing
+ordering, no CommonModules classification, and ExplicitImport-only empty rule.
+
+Input acquisition remains Adapter-specific. Live admission fixes ACP and
+inventory once and fails fast before reading later candidates. Installed
+test-only sources and sidecars are unread for Publish; local-marker candidates
+are fully decoded before exclusion and do not read their sidecars. Doctor
+still captures each document's bytes and per-file stage failures once under its
+run-wide ACP. Its capture failure is reported before profile selection, while
+retained per-file failures are exposed only when the shared policy demands
+their stage. Build and Publish can therefore be evaluated independently in
+either order without source rereads or one failed profile changing the other.
+Static Doctor layout and installed-state consistency diagnostics retain their
+independent evidence requirements. This extraction does not make a profile's
+exclusion suppress those diagnostics or turn inspection into a write workflow.
 
 ## Explicit import admission
 
@@ -261,8 +304,9 @@ encoding decision.
 
 Both captured project admissions already contain their final manifest-first
 order. `InspectAsync` consumes them without reconstructing or reordering an
-admitted set. Its existing live/captured selection adapters and independent
-profile-failure behavior remain unchanged by this ordering migration.
+admitted set. Since #397, the captured input Adapter uses the same private
+selection operation as live admission, preserving independent profile failures
+and the separate capture lifetime established before the ordering migration.
 
 Build includes every source. Publish keeps ordinary Publish's filename-collision,
 manifest test-only, and local-marker ordering. Doctor captures test-only bytes
