@@ -158,12 +158,37 @@ Events receive no catalog-derived semantics.
 
 ### Semantic module-identity Rename protocol
 
-`textDocument/prepareRename` selects only the unquoted payload of the
-authoritative valid `Attribute VB_Name`. `textDocument/rename` returns one
-ordered `documentChanges` edit containing every required text edit and
-non-overwriting `RenameFile` operation, or returns no edit. Matching `.bas`,
-`.cls`, and `.frm` basenames follow the identity, and a matching `.frx` follows
-its form; a deliberately different basename is preserved.
+For a module identity, `textDocument/prepareRename` selects only the unquoted
+payload of the authoritative valid `Attribute VB_Name`. `textDocument/rename`
+returns a complete WorkspaceEdit or no edit. Plans with file operations use
+ordered `documentChanges` and non-overwriting `RenameFile` operations. Matching
+`.bas`, `.cls`, and `.frm` basenames normally follow the identity, and a matching
+`.frx` follows its form; a deliberately different basename is preserved.
+
+The VS Code middleware advertises
+`capabilities.experimental.vbaRenameConfirmation: { protocolVersion: 1 }`.
+A fully planned intentional collision returns Request Failed (`-32803`) with
+`reason: "confirmationRequired"`, `kind: "vbaRenameConfirmationRequired"`,
+`protocolVersion: 1`, an opaque `confirmationId`, `originalName`, `newName`, and
+structured `conflicts`, `concerns`, and `retainedPaths`. The warning offers
+Cancel and Continue once and explains manual consolidation. Only this explicit
+exchange permits collision-caused binding or grouping changes; independent
+source, ownership, effective-type and dependency proofs remain mandatory.
+Clients without this capability retain strict collision rejection.
+
+`vba/confirmRename` accepts `{ confirmationId, decision: "continue" | "cancel" }`
+and consumes that captured operation once. Cancel returns null; Continue
+revalidates source revisions, template content, catalog authority and source
+and destination evidence before returning the stored complete edit. A change
+requires a fresh user action, never silent replanning. A new Rename invalidates
+previous consent; an unavailable identifier fails with `confirmationExpired`.
+
+An existing destination is confirmable by retaining the original module path.
+For a form, either destination conflict retains both `.frm`/`.frx` paths and
+resource filename references. The semantic name and outer designer identity
+still change together. Full source-unit validation remains required. A retained
+plan can contain only text edits and needs resource-operation capabilities only
+when its final operations actually use them.
 
 For a manifest-backed module, Rename captures the exact selected source-template
 package bytes and obtains the containing VBA project name through a
@@ -189,7 +214,7 @@ A recognized rejection uses Request Failed (`-32803`) with
 `sameScopeCollision`, and
 `resourceOperationConflict`. Invalid metadata may add `condition: "duplicate"`
 or `"malformed"`. Resource conflicts add `condition`, `path`, and `guidance`;
-conditions are `sourceMissing`, `sourceChanged`, `destinationExists`, and
+conditions include `sourceMissing`, `sourceChanged`, `destinationExists`, `renamePathEvidenceChanged`, and
 `sidecarConflict`. A scope collision carries its complete deterministic
 `conflicts` array.
 

@@ -26,7 +26,8 @@ internal sealed record VbaWorkspaceEditClientCapabilities(
 internal sealed record VbaLspClientCapabilities(
     VbaSignatureHelpClientCapabilities SignatureHelp,
     bool DiagnosticRelatedInformation,
-    VbaWorkspaceEditClientCapabilities WorkspaceEdit)
+    VbaWorkspaceEditClientCapabilities WorkspaceEdit,
+    bool RenameConfirmation = false)
 {
     public static VbaLspClientCapabilities None { get; } = new(
         VbaSignatureHelpClientCapabilities.None,
@@ -64,7 +65,13 @@ internal sealed class VbaLspClientCapabilityState
                 new VbaWorkspaceEditClientCapabilities(
                     DocumentChanges: IsTrue(workspaceEdit?["documentChanges"]),
                     ResourceOperations: ReadStringArray(
-                        workspaceEdit?["resourceOperations"]))));
+                        workspaceEdit?["resourceOperations"])),
+                RenameConfirmation: initializeParameters["capabilities"]?
+                    ["experimental"] is JsonObject experimental
+                    && experimental["vbaRenameConfirmation"] is JsonObject confirmation
+                    && confirmation["protocolVersion"] is JsonValue version
+                    && version.TryGetValue<int>(out var protocolVersion)
+                    && protocolVersion == 1));
     }
 
     private static bool IsTrue(JsonNode? value)

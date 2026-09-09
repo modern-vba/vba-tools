@@ -47,8 +47,12 @@ public sealed class VbaRenameProjectSnapshotCapture : IDisposable
         getParticipatingSourceChangeFailure;
     private readonly Func<VbaRenameFailure?>
         getSourceTemplateChangeFailure;
+    private readonly Func<VbaRenameFailure?>
+        getConfirmationAuthorityChangeFailure;
     private readonly Func<VbaRenamePlan, VbaRenameFilePreflightResult>
         preflightFileRenames;
+    private readonly Func<VbaRenamePlan, VbaRenamePathDecisionResult>
+        prepareRenamePathDecision;
     private IDisposable? revisionLease;
 
     internal VbaRenameProjectSnapshotCapture(
@@ -59,7 +63,10 @@ public sealed class VbaRenameProjectSnapshotCapture : IDisposable
             preflightFileRenames = null,
         string? analysisFailureMessage = null,
         VbaProjectIdentityReadResult? projectIdentityRead = null,
-        Func<VbaRenameFailure?>? getSourceTemplateChangeFailure = null)
+        Func<VbaRenameFailure?>? getSourceTemplateChangeFailure = null,
+        Func<VbaRenamePlan, VbaRenamePathDecisionResult>?
+            prepareRenamePathDecision = null,
+        Func<VbaRenameFailure?>? getConfirmationAuthorityChangeFailure = null)
     {
         SemanticInventory = semanticInventory;
         this.getParticipatingSourceChangeFailure =
@@ -70,6 +77,13 @@ public sealed class VbaRenameProjectSnapshotCapture : IDisposable
                 Failure: null));
         this.getSourceTemplateChangeFailure =
             getSourceTemplateChangeFailure ?? (static () => null);
+        this.getConfirmationAuthorityChangeFailure =
+            getConfirmationAuthorityChangeFailure ?? (static () => null);
+        this.prepareRenamePathDecision = prepareRenamePathDecision
+            ?? (plan => this.preflightFileRenames(plan).Failure is { } failure
+                ? new VbaRenamePathDecisionResult(null, failure)
+                : new VbaRenamePathDecisionResult(
+                    VbaRenamePathDecision.FollowingWithoutFileEvidence(), null));
         this.revisionLease = revisionLease;
         AnalysisFailureMessage = analysisFailureMessage;
         ProjectIdentityRead = projectIdentityRead;
@@ -89,6 +103,13 @@ public sealed class VbaRenameProjectSnapshotCapture : IDisposable
 
     internal VbaRenameFailure? GetSourceTemplateChangeFailure()
         => getSourceTemplateChangeFailure();
+
+    internal VbaRenameFailure? GetConfirmationAuthorityChangeFailure()
+        => getConfirmationAuthorityChangeFailure();
+
+    internal VbaRenamePathDecisionResult PrepareRenamePathDecision(
+        VbaRenamePlan plan)
+        => prepareRenamePathDecision(plan);
 
     internal VbaRenameFilePreflightResult PreflightFileRenames(
         VbaRenamePlan plan)

@@ -10,7 +10,7 @@ namespace VbaLanguageServer.Lsp;
 /// <summary>
 /// Validates, executes, and responds to one JSON-RPC language-server request.
 /// </summary>
-internal sealed class VbaLspRequestExecution
+internal sealed class VbaLspRequestExecution : IDisposable
 {
     private static readonly VbaLspCapabilityContract CapabilityContract = new(
         TextDocumentSync: 1,
@@ -39,6 +39,9 @@ internal sealed class VbaLspRequestExecution
     private readonly IVbaLspRequestExecutionGate executionGate;
     private readonly VbaLspClientCapabilityState clientCapabilities;
     private int shutdownRequested;
+    private readonly object renameConfirmationSync = new();
+    private long renameGeneration;
+    private PendingRename? pendingRename;
 
     /// <summary>
     /// Creates a request executor over the transport and workspace boundaries.
@@ -211,6 +214,7 @@ internal sealed class VbaLspRequestExecution
                 ? Captured(_ =>
                 {
                     Interlocked.Exchange(ref shutdownRequested, 1);
+                    Dispose();
                     return RequestOutcome.Success(null);
                 })
                 : Direct(RequestOutcome.InvalidParams()),
@@ -301,6 +305,8 @@ internal sealed class VbaLspRequestExecution
                     cancellationToken,
                     Captured,
                     Direct),
+            "vba/confirmRename" =>
+                CaptureRenameConfirmation(parameters, Captured, Direct),
             "textDocument/formatting" =>
                 CaptureFormattingRequest(
                     parameters,
@@ -498,6 +504,7 @@ internal sealed class VbaLspRequestExecution
         Func<Func<CancellationToken, RequestOutcome>, CapturedRequest> captured,
         Func<RequestOutcome, CapturedRequest> direct)
     {
+        var generation = BeginRename();
         if (!TryCreateRenameRequest(parameters, out var request))
         {
             return direct(RequestOutcome.InvalidParams());
@@ -516,9 +523,12 @@ internal sealed class VbaLspRequestExecution
         var renameCapture = workspace.CaptureRenameProjectSnapshot(
             request.Uri,
             cancellationToken);
+        var captureOwner = new RenameCaptureOwner(renameCapture);
+        var canConfirm = clientCapabilities.Snapshot.RenameConfirmation;
+        string? offeredConfirmationId = null;
         return captured(executionToken =>
         {
-            using (renameCapture)
+            using (captureOwner)
             {
                 executionToken.ThrowIfCancellationRequested();
                 var requiresSourceTemplateIdentityFence =
@@ -545,7 +555,7 @@ internal sealed class VbaLspRequestExecution
                         CreateRenameFailureData(failure));
                 }
 
-                if (renameCapture.SemanticInventory
+                if (!canConfirm && renameCapture.SemanticInventory
                         .RequiresFileFollowingModuleRename(
                             request.Uri,
                             request.Line,
@@ -577,7 +587,10 @@ internal sealed class VbaLspRequestExecution
                     request.Character,
                     request.NewName,
                     executionToken,
-                    renameCapture.ProjectIdentityRead);
+                    renameCapture.ProjectIdentityRead,
+                    canConfirm
+                        ? VbaRenameCollisionMode.PrepareConfirmation
+                        : VbaRenameCollisionMode.Reject);
                 executionToken.ThrowIfCancellationRequested();
                 var sourceChangeFailure =
                     renameCapture.GetParticipatingSourceChangeFailure();
@@ -615,6 +628,35 @@ internal sealed class VbaLspRequestExecution
                         -32803,
                         rename.Failure.Message,
                         CreateRenameFailureData(rename.Failure));
+                }
+
+                VbaRenamePathDecision? pathDecision = null;
+                if (canConfirm)
+                {
+                    var decision = renameCapture.PrepareRenamePathDecision(rename.Plan!);
+                    if (decision.Failure is { } pathFailure)
+                    {
+                        return RenameFailed(pathFailure);
+                    }
+                    pathDecision = decision.Decision;
+                    if (pathDecision?.RetainOriginalPaths == true)
+                    {
+                        rename = renameCapture.SemanticInventory.CreateRenameResult(
+                            request.Uri, request.Line, request.Character,
+                            request.NewName, executionToken,
+                            renameCapture.ProjectIdentityRead,
+                            VbaRenameCollisionMode.PrepareConfirmation,
+                            retainOriginalPaths: true);
+                        if (rename.Failure is { } retainedFailure)
+                        {
+                            return RenameFailed(retainedFailure);
+                        }
+                        if (rename.Plan is null)
+                        {
+                            return RenameFailed(new VbaRenameFailure(
+                                "analysisIncomplete", "The captured Rename target is unavailable."));
+                        }
+                    }
                 }
 
                 if (rename.Plan!.FileRenames.Count > 0
@@ -699,14 +741,227 @@ internal sealed class VbaLspRequestExecution
                     return finalSourceTemplateChangeOutcome;
                 }
 
+                if (pathDecision?.GetChangeFailure() is { } pathChangeFailure)
+                {
+                    return RenameFailed(pathChangeFailure);
+                }
+
+                if (canConfirm && (rename.CollisionReview is not null
+                    || pathDecision?.RetainOriginalPaths == true))
+                {
+                    if (renameCapture.GetConfirmationAuthorityChangeFailure()
+                        is { } authorityFailure)
+                    {
+                        return RenameFailed(authorityFailure);
+                    }
+
+                    var finalPlan = fileRenamePreflight.Plan;
+                    var originalName = rename.CollisionReview?.OriginalName
+                        ?? renameCapture.SemanticInventory.PrepareRename(
+                            request.Uri, request.Line, request.Character)?.Placeholder;
+                    if (originalName is null)
+                    {
+                        return RenameFailed(new VbaRenameFailure(
+                            "analysisIncomplete", "The original Rename identity is unavailable."));
+                    }
+
+                    VbaRenameFailure? ValidateConfirmedEvidence()
+                        => renameCapture.GetParticipatingSourceChangeFailure()
+                            ?? renameCapture.GetConfirmationAuthorityChangeFailure()
+                            ?? (requiresSourceTemplateIdentityFence
+                                ? renameCapture.GetSourceTemplateChangeFailure() : null)
+                            ?? pathDecision?.GetChangeFailure()
+                            ?? renameCapture.PreflightFileRenames(finalPlan).Failure
+                            ?? renameCapture.GetParticipatingSourceChangeFailure()
+                            ?? renameCapture.GetConfirmationAuthorityChangeFailure()
+                            ?? (requiresSourceTemplateIdentityFence
+                                ? renameCapture.GetSourceTemplateChangeFailure() : null);
+
+                    var pending = new PendingRename(
+                        Guid.NewGuid().ToString("N"), finalPlan,
+                        captureOwner.Take(), ValidateConfirmedEvidence);
+                    if (!TryOfferRename(generation, pending))
+                    {
+                        pending.Dispose();
+                        return ExpiredRenameConfirmation();
+                    }
+                    offeredConfirmationId = pending.Id;
+                    var conflicts = (rename.CollisionReview?.Conflicts ?? [])
+                        .Concat(pathDecision?.Conflicts ?? []).ToArray();
+                    var data = new Dictionary<string, object?>(CreateRenameFailureData(
+                        new VbaRenameFailure("confirmationRequired", "", conflicts)))
+                    {
+                        ["kind"] = "vbaRenameConfirmationRequired",
+                        ["protocolVersion"] = 1,
+                        ["confirmationId"] = pending.Id,
+                        ["originalName"] = originalName,
+                        ["newName"] = request.NewName,
+                        ["concerns"] = (rename.CollisionReview?.Impacts ?? [])
+                            .Select(DescribeRenameImpact)
+                            .OfType<string>()
+                            .Distinct(StringComparer.Ordinal).ToArray(),
+                        ["retainedPaths"] = pathDecision?.RetainedPaths ?? []
+                    };
+                    return RequestOutcome.Error(-32803,
+                        "This Rename requires explicit confirmation for this operation.", data);
+                }
+
                 return RequestOutcome.Success(
                     VbaLspFeatureProjection.CreateWorkspaceEdit(
                         fileRenamePreflight.Plan));
             }
         }) with
         {
-            Cleanup = renameCapture.Dispose
+            Cleanup = () =>
+            {
+                captureOwner.Dispose();
+                if (cancellationToken.IsCancellationRequested
+                    && offeredConfirmationId is not null)
+                {
+                    DiscardRename(offeredConfirmationId);
+                }
+            }
         };
+    }
+
+    private static RequestOutcome RenameFailed(VbaRenameFailure failure)
+        => RequestOutcome.Error(-32803, failure.Message, CreateRenameFailureData(failure));
+
+    private static string? DescribeRenameImpact(VbaRenameImpact impact)
+        => impact.Kind switch
+        {
+            VbaRenameImpactKind.DeclarationCollision => null,
+            VbaRenameImpactKind.TargetBindingChanged
+                or VbaRenameImpactKind.NonTargetBindingChanged
+                or VbaRenameImpactKind.ClassificationChanged =>
+                "References may become ambiguous or resolve to a different declaration.",
+            VbaRenameImpactKind.LogicalGroupingChanged =>
+                "Declarations with the same name may form an ambiguous group.",
+            VbaRenameImpactKind.TypeNameResolutionChanged =>
+                "Type names may become ambiguous or refer to a different type.",
+            VbaRenameImpactKind.DependentAssociationChanged =>
+                "Event handler or interface implementation associations may become ambiguous.",
+            _ => throw new ArgumentOutOfRangeException(nameof(impact), impact.Kind,
+                "Unsupported Rename impact kind.")
+        };
+
+    private CapturedRequest CaptureRenameConfirmation(
+        JsonNode? parameters,
+        Func<Func<CancellationToken, RequestOutcome>, CapturedRequest> captured,
+        Func<RequestOutcome, CapturedRequest> direct)
+    {
+        if (!clientCapabilities.Snapshot.RenameConfirmation
+            || parameters is not JsonObject confirmationParameters
+            || confirmationParameters["confirmationId"] is not JsonValue idValue
+            || !idValue.TryGetValue<string>(out var id)
+            || confirmationParameters["decision"] is not JsonValue decisionValue
+            || !decisionValue.TryGetValue<string>(out var decision)
+            || decision is not ("continue" or "cancel"))
+        {
+            return direct(RequestOutcome.InvalidParams());
+        }
+        PendingRename? approved;
+        lock (renameConfirmationSync)
+        {
+            approved = pendingRename?.Id == id ? pendingRename : null;
+            if (approved is not null)
+            {
+                pendingRename = null;
+            }
+        }
+        if (approved is null)
+        {
+            return direct(ExpiredRenameConfirmation());
+        }
+        return captured(token =>
+        {
+            using (approved)
+            {
+                token.ThrowIfCancellationRequested();
+                if (decision == "cancel")
+                {
+                    return RequestOutcome.Success(null);
+                }
+                if (approved.GetChangeFailure() is { } failure)
+                {
+                    return RenameFailed(failure);
+                }
+                token.ThrowIfCancellationRequested();
+                return RequestOutcome.Success(
+                    VbaLspFeatureProjection.CreateWorkspaceEdit(approved.Plan));
+            }
+        }) with { Cleanup = approved.Dispose };
+    }
+
+    private static RequestOutcome ExpiredRenameConfirmation()
+        => RenameFailed(new VbaRenameFailure("confirmationExpired",
+            "This Rename confirmation is no longer current. Start a fresh Rename operation."));
+
+    private long BeginRename()
+    {
+        PendingRename? previous;
+        long generation;
+        lock (renameConfirmationSync)
+        {
+            generation = ++renameGeneration;
+            previous = pendingRename;
+            pendingRename = null;
+        }
+        previous?.Dispose();
+        return generation;
+    }
+
+    private bool TryOfferRename(long generation, PendingRename pending)
+    {
+        lock (renameConfirmationSync)
+        {
+            if (generation != renameGeneration)
+            {
+                return false;
+            }
+            pendingRename = pending;
+            return true;
+        }
+    }
+
+    private void DiscardRename(string confirmationId)
+    {
+        PendingRename? discarded;
+        lock (renameConfirmationSync)
+        {
+            discarded = pendingRename?.Id == confirmationId ? pendingRename : null;
+            if (discarded is not null)
+            {
+                pendingRename = null;
+            }
+        }
+        discarded?.Dispose();
+    }
+
+    public void Dispose() => BeginRename();
+
+    private sealed class RenameCaptureOwner(VbaRenameProjectSnapshotCapture capture) : IDisposable
+    {
+        private VbaRenameProjectSnapshotCapture? ownedCapture = capture;
+
+        public VbaRenameProjectSnapshotCapture Take()
+            => Interlocked.Exchange(ref ownedCapture, null)
+                ?? throw new InvalidOperationException("Rename capture has already been transferred.");
+
+        public void Dispose() => Interlocked.Exchange(ref ownedCapture, null)?.Dispose();
+    }
+
+    private sealed class PendingRename(
+        string id,
+        VbaRenamePlan plan,
+        VbaRenameProjectSnapshotCapture capture,
+        Func<VbaRenameFailure?> getChangeFailure) : IDisposable
+    {
+        private VbaRenameProjectSnapshotCapture? ownedCapture = capture;
+        public string Id { get; } = id;
+        public VbaRenamePlan Plan { get; } = plan;
+        public VbaRenameFailure? GetChangeFailure() => getChangeFailure();
+        public void Dispose() => Interlocked.Exchange(ref ownedCapture, null)?.Dispose();
     }
 
     private static IReadOnlyDictionary<string, object?> CreateRenameFailureData(

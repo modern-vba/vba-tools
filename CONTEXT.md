@@ -4385,13 +4385,14 @@ Rename that rewrites the declaration and every resolved target occurrence.
 _Avoid_: display label, trimmed name, ASCII identifier, foreign name
 
 **RenamePlan**:
-A complete meaning-preserving workspace edit proven against one immutable `VbaProject`
+A complete workspace edit proven against one immutable `VbaProject`
 snapshot for a `RenameTarget` and `RenameName`. Its atomicity is a planning guarantee: the server returns every required text and resource operation or no plan, but does not promise that an LSP client can roll back a filesystem failure after application begins. Complementary Property Get,
 Let, and Set accessors and all variants of a
 `ConditionalDeclarationFamily` form their respective logical target
 relationships and rename atomically. The plan records explicit correspondence
 between the pre-edit target and its hypothetical post-edit target instead of
-requiring raw snapshot identities to remain equal. A plan rejects a
+requiring raw snapshot identities to remain equal. Ordinary strict Rename is
+meaning-preserving and rejects a
 case-insensitive collision with a distinct declaration in the same VBA
 declaration scope or namespace, and a `ModuleIdentity` plan also rejects a
 collision with the containing `VbaProjectName` or an active
@@ -4450,7 +4451,45 @@ the type itself does not look like a change to another type. Required unresolved
 or insufficient evidence fails with `analysisIncomplete`, including an affected
 unfinished `As` declaration; unrelated unchanged errors remain neutral. Rename
 never inserts qualifiers or `As` clauses to compensate for a meaning change.
+The post-edit preservation rules above are the ordinary strict contract.
+`IntentionalRenameConfirmation` can permit only proven collision consequences;
+it never weakens the original target, dependency coverage or independent type
+and source-authority requirements.
 _Avoid_: text replacement, project-wide name reservation, compile-after-edit
+
+**IntentionalRenameConfirmation**:
+One explicit approval of a complete captured RenamePlan for consolidation. The
+VS Code F2 middleware presents the original and requested names, structured
+conflicts with available locations, binding/ambiguity concerns, and any retained
+filenames. Cancel, dismissal or cancellation returns no edit. Continue once
+permits the recognized collision and its causal target/non-target binding,
+classification, grouping or type-name-resolution impacts, while retaining the
+original source-owned target and complete Property/conditional/WithEvents/
+Implements edit closure. The colliding declaration and source text are never
+added to that closure. The user manually reconciles temporary invalid source;
+diagnostics remain available. Invalid names, independent incomplete evidence,
+managed identities and unrelated EffectiveDeclaredType changes still reject.
+
+The server validates a one-use opaque confirmation identifier, retains the
+captured participating sources, dependent coverage, impacts and path decision,
+and rechecks source revisions, source-template content, catalog authority and
+filesystem evidence before returning the stored complete edit. A new Rename
+invalidates a pending confirmation; changes while waiting require a fresh user
+action. No target or path replanning occurs after approval. Clients without
+experimental vbaRenameConfirmation protocol version 1 retain strict rejection.
+Classification uses structured semantic evidence, never blanket failure-code
+exemptions or message parsing. Native preview selection is not confirmation.
+
+If an otherwise file-following destination exists, the confirmed plan keeps the
+original module path. Either participating form destination conflict retains
+the complete .frm/.frx pair and its resource filenames, offsets and binary bytes.
+Metadata, the outer designer name and established semantic occurrences still
+change. Retention preserves all source-unit/template/ownership/currentness
+checks, including when the final plan has no resource operation. Resource
+capabilities are required only for actual final operations; case-only access to
+the same entry is not a destination collision. No automatic save, Excel launch,
+workbook mutation, declaration merge or background retry is part of this mode.
+_Avoid_: always-ignore setting, unchecked retry flag, merged-target edit discovery
 
 **RenameFailure**:
 An actionable LSP `RequestFailed` response with code `-32803` for a
@@ -4458,7 +4497,10 @@ well-formed Prepare Rename or Rename request whose recognized semantic occurrenc
 `error.data.reason` values distinguish `invalidName`, `notRenameTarget`,
 `sameScopeCollision`, `resolutionChanged`, `analysisIncomplete`,
 `moduleIdentityNotExplicit`, `moduleIdentityInvalid`, `managedModuleIdentity`,
-`clientCapabilityMissing`, and `resourceOperationConflict`. Protocol shape
+`clientCapabilityMissing`, and `resourceOperationConflict`. The explicit
+confirmation exchange additionally uses `confirmationRequired` for a structured
+challenge and `confirmationExpired` when approval cannot consume its original
+captured operation. Changed project or catalog authority fails with `analysisIncomplete` and `condition: "projectSnapshotChanged"`. Neither response contains an applicable partial edit. Protocol shape
 errors remain `InvalidParams`;
 Prepare Rename on an occurrence with no semantic target and an ordinally
 unchanged `RenameName` use successful `null` results rather than a
@@ -4470,7 +4512,7 @@ location or reference identity when available.
 _Avoid_: invalid params, no-change result, empty workspace edit
 
 **RenameResourceConflict**:
-The pre-plan state in which a required file-following Rename or `FormSourceUnitRename` cannot be safely described. General conditions are `sourceMissing`, `sourceChanged`, `destinationExists`, and `sidecarConflict`. Form-specific conditions are `designerRootMissing`, `designerRootAmbiguous`, `designerStructureMalformed`, `designerIdentityConflict`, `sidecarReferenceMalformed`, `sidecarReferenceUnsafe`, `sidecarReferenceConflict`, and `sidecarMissing`. Each failure identifies the affected path and repair guidance and emits no edit.
+The pre-plan state in which a required file-following Rename or `FormSourceUnitRename` cannot be safely described. General conditions are `sourceMissing`, `sourceChanged`, `destinationExists`, `sidecarConflict`, and `renamePathEvidenceChanged` (the captured path decision no longer holds). Form-specific conditions are `designerRootMissing`, `designerRootAmbiguous`, `designerStructureMalformed`, `designerIdentityConflict`, `sidecarReferenceMalformed`, `sidecarReferenceUnsafe`, `sidecarReferenceConflict`, and `sidecarMissing`. Each failure identifies the affected path and repair guidance and emits no edit.
 _Avoid_: DeclarationCollision, WorkspaceEditApplicationFailure, partial file Rename
 
 **WorkspaceEditApplicationFailure**:
@@ -4661,7 +4703,7 @@ The complete mutation boundary for one source-owned UserForm: its `.frm` text an
 _Avoid_: `.frm` file alone, designer block, workbook component
 
 **FormSourceUnitRename**:
-The form-specific part of one `RenamePlan`. It changes the authoritative `ModuleIdentityMetadata`, resolved semantic occurrences, and the single outermost designer identity. When the source basename follows the old identity, it also changes every valid matching `.frx` filename reference and the `.frm`/`.frx` paths; a deliberately different basename preserves those paths and references. It preserves resource offsets, nested controls, unrelated designer text, and exact `.frx` bytes, and returns no edit unless every source, designer, sidecar, and snapshot participant is proven current and unambiguous.
+The form-specific part of one `RenamePlan`. It changes the authoritative `ModuleIdentityMetadata`, resolved semantic occurrences, and the single outermost designer identity. When the source basename follows the old identity, it also changes every valid matching `.frx` filename reference and the `.frm`/`.frx` paths; a deliberately different basename preserves those paths and references. Confirmed `IntentionalRenameConfirmation` also retains both original paths and resource filenames when either destination conflicts. It preserves resource offsets, nested controls, unrelated designer text, and exact `.frx` bytes, and returns no edit unless every source, designer, sidecar, and snapshot participant is proven current and unambiguous.
 _Avoid_: form-text Rename, binary resource rewrite, workbook-backed component Rename
 
 **ModuleMember**:
@@ -5327,10 +5369,10 @@ Dev: "Where can I start Rename for a source module, class, or form?"
 Domain Expert: "From any resolved source-owned `ModuleIdentityOccurrence`: the name inside `Attribute VB_Name`, a type occurrence such as `Implements IFoo`, `As IFoo`, or `New Customer`, a standard-module qualifier such as `Module1.Run`, a predeclared/default-instance qualifier such as `UserForm1.Show`, or the conclusive `IFoo` prefix of an implementation declaration. `foo.Member` instead contains a variable occurrence and a member occurrence; it does not contain the `IFoo` identity merely because `foo` has that type."
 
 Dev: "Does renaming `ModuleIdentity` `Customer` to `CustomerRecord` also rename `Customer.cls`?"
-Domain Expert: "For project-local source, yes when the old basename and old identity match case-insensitively: keep the directory and extension and rename the basename, including the matching `.frx` with a form. This includes a case-only identity change, for which the final file-name casing follows the requested identity even on a case-insensitive filesystem. Preserve an already-different basename because it may be deliberate. Explorer F2 changes only the path and is not a semantic Rename entry point."
+Domain Expert: "For project-local source, yes when the old basename and old identity match case-insensitively: keep the directory and extension and rename the basename, including the matching `.frx` with a form. This includes a case-only identity change, for which the final file-name casing follows the requested identity even on a case-insensitive filesystem. Preserve an already-different basename because it may be deliberate. An existing destination can instead use IntentionalRenameConfirmation to retain the original path; a form retains both paths if either conflicts. Explorer F2 changes only the path and is not a semantic Rename entry point."
 
 Dev: "What does Rename change when that source-owned module is a UserForm?"
-Domain Expert: "Treat it as one `FormSourceUnitRename`. Change the authoritative `Attribute VB_Name`, every resolved semantic occurrence, and the name in the single outermost `Begin <designer-class> <name>` declaration. If the source basename follows the old identity, also change every valid property reference to the matching `.frx` basename and rename the `.frm` and `.frx` paths. Preserve every resource offset, nested control name, unrelated quoted string, and exact `.frx` byte. A deliberately different basename keeps its paths and sidecar-reference spelling while the semantic and designer-root identities change."
+Domain Expert: "Treat it as one `FormSourceUnitRename`. Change the authoritative `Attribute VB_Name`, every resolved semantic occurrence, and the name in the single outermost `Begin <designer-class> <name>` declaration. If the source basename follows the old identity, also change every valid property reference to the matching `.frx` basename and rename the `.frm` and `.frx` paths. Preserve every resource offset, nested control name, unrelated quoted string, and exact `.frx` byte. A deliberately different basename, or confirmed retention when either destination conflicts, keeps both paths and sidecar-reference spelling while the semantic and designer-root identities change."
 
 Dev: "Does that file-following rule require a `ProjectManifest`?"
 Domain Expert: "No. An `AdHocVbaProject` applies the same rule within its one-folder project boundary when the source has an explicit `ModuleIdentity`. It neither invents CommonModules ownership nor containing `VbaProjectName` authority; its collisions, form sidecar, client-capability, and resource-conflict rules otherwise match ordinary workbook-backed project-local source."

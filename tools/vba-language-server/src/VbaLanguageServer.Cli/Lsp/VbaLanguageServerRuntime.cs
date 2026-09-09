@@ -433,7 +433,14 @@ internal sealed class VbaLanguageServerRuntime
                     }
                     finally
                     {
-                        OwnedWorkspace?.Dispose();
+                        try
+                        {
+                            requestExecution.Dispose();
+                        }
+                        finally
+                        {
+                            OwnedWorkspace?.Dispose();
+                        }
                     }
                 }
             }

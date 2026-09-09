@@ -15,7 +15,16 @@ public sealed class UserFormRenameWindowsExcelIntegrationTests
 {
     [WindowsExcelIntegrationFact]
     [Trait("Category", "WindowsExcelIntegration")]
-    public async Task RenamedUserFormSourceUnitBuildsAndRoundTripsThroughExcel()
+    public Task RenamedUserFormSourceUnitBuildsAndRoundTripsThroughExcel()
+        => VerifyRenamedUserFormSourceUnitBuildsAndRoundTripsThroughExcelAsync(retainOriginalPaths: false);
+
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
+    public Task ConfirmedUserFormWithRetainedFilenamesBuildsAndRoundTripsThroughExcel()
+        => VerifyRenamedUserFormSourceUnitBuildsAndRoundTripsThroughExcelAsync(retainOriginalPaths: true);
+
+    private static async Task VerifyRenamedUserFormSourceUnitBuildsAndRoundTripsThroughExcelAsync(
+        bool retainOriginalPaths)
     {
         var languageServerPath = PrebuiltTools.LanguageServerPath();
         var vbaDevPath = PrebuiltTools.VbaDevPath();
@@ -38,6 +47,11 @@ public sealed class UserFormRenameWindowsExcelIntegrationTests
 
         var renamedFormSourcePath = Path.Combine(sourceDirectory, "DialogView.frm");
         var renamedFormSidecarPath = Path.Combine(sourceDirectory, "DialogView.frx");
+        byte[] collisionBytes = [0x91, 0x92, 0x93];
+        if (retainOriginalPaths)
+        {
+            File.WriteAllBytes(renamedFormSidecarPath, collisionBytes);
+        }
         await ApplyProductionFormSourceUnitRenameAsync(
             languageServerPath,
             formSourcePath,
@@ -47,12 +61,23 @@ public sealed class UserFormRenameWindowsExcelIntegrationTests
             activeCodePage,
             "Dialog",
             "DialogView",
+            retainOriginalPaths,
             cancellation.Token);
-        Assert.False(File.Exists(formSourcePath));
-        Assert.False(File.Exists(formSidecarPath));
+        Assert.Equal(retainOriginalPaths, File.Exists(formSourcePath));
+        Assert.Equal(retainOriginalPaths, File.Exists(formSidecarPath));
         Assert.Equal(
             originalSidecarBytes,
-            File.ReadAllBytes(renamedFormSidecarPath));
+            File.ReadAllBytes(retainOriginalPaths ? formSidecarPath : renamedFormSidecarPath));
+        if (retainOriginalPaths)
+        {
+            Assert.False(File.Exists(renamedFormSourcePath));
+            Assert.Equal(collisionBytes, File.ReadAllBytes(renamedFormSidecarPath));
+            var retainedSource = DecodeActiveCodePageFile(formSourcePath, activeCodePage);
+            Assert.Contains("\"Dialog.frx\"", retainedSource, StringComparison.Ordinal);
+            Assert.DoesNotContain("\"DialogView.frx\"", retainedSource, StringComparison.Ordinal);
+            // Consolidate only the controlled conflicting fixture before importing the retained pair.
+            File.Delete(renamedFormSidecarPath);
+        }
 
         var templatePath = Path.Combine(temp.Path, "Template.xlsm");
         var targetPath = Path.Combine(temp.Path, "bin", "RenamedForm.xlsm");
@@ -412,6 +437,7 @@ public sealed class UserFormRenameWindowsExcelIntegrationTests
         int activeCodePage,
         string oldName,
         string newName,
+        bool retainOriginalPaths,
         CancellationToken cancellationToken)
     {
         var encoding = StrictEncoding(activeCodePage);
@@ -425,6 +451,7 @@ public sealed class UserFormRenameWindowsExcelIntegrationTests
         await server.InitializeAsync(
             new
             {
+                experimental = new { vbaRenameConfirmation = new { protocolVersion = 1 } },
                 workspace = new
                 {
                     workspaceEdit = new
@@ -463,6 +490,37 @@ public sealed class UserFormRenameWindowsExcelIntegrationTests
             },
             timeout: TimeSpan.FromMinutes(1),
             cancellationToken: cancellationToken);
+        if (retainOriginalPaths)
+        {
+            Assert.False(rename.TryGetProperty("result", out _), rename.ToString());
+            var challenge = rename.GetProperty("error").GetProperty("data");
+            Assert.Equal("vbaRenameConfirmationRequired", challenge.GetProperty("kind").GetString());
+            Assert.Equal(new[] { sourcePath, sidecarPath },
+                challenge.GetProperty("retainedPaths").EnumerateArray().Select(value => value.GetString()));
+            var confirmed = await server.SendRequestAsync(
+                3,
+                "vba/confirmRename",
+                new
+                {
+                    confirmationId = challenge.GetProperty("confirmationId").GetString(),
+                    decision = "continue"
+                },
+                timeout: TimeSpan.FromMinutes(1),
+                cancellationToken: cancellationToken);
+            Assert.False(confirmed.TryGetProperty("error", out var confirmationError), confirmationError.ToString());
+            var confirmedEdit = confirmed.GetProperty("result");
+            Assert.False(confirmedEdit.TryGetProperty("documentChanges", out _), confirmedEdit.ToString());
+            var changedDocument = Assert.Single(confirmedEdit.GetProperty("changes").EnumerateObject());
+            Assert.Equal(uri, changedDocument.Name);
+            var retainedSource = ApplyTextEdits(source, changedDocument.Value);
+            Assert.Contains($"Attribute VB_Name = \"{newName}\"", retainedSource, StringComparison.Ordinal);
+            Assert.DoesNotContain(attribute, retainedSource, StringComparison.Ordinal);
+            Assert.Contains($"\"{oldName}.frx\"", retainedSource, StringComparison.Ordinal);
+            Assert.DoesNotContain($"\"{newName}.frx\"", retainedSource, StringComparison.Ordinal);
+            File.WriteAllBytes(sourcePath, encoding.GetBytes(retainedSource));
+            await server.ShutdownAsync(4, cancellationToken);
+            return;
+        }
         Assert.False(
             rename.TryGetProperty("error", out var renameError),
             renameError.ToString());

@@ -102,7 +102,10 @@ internal sealed class VbaResolutionPolicy
             }
         }
 
-        return VbaNameResolutionOutcome.Ambiguous;
+        return VbaNameResolutionOutcome.Ambiguous with
+        {
+            AmbiguousCandidates = Array.AsReadOnly(bestTargets.ToArray())
+        };
     }
 
     public VbaSourceDefinition? ResolveReferenceCandidates(
@@ -355,6 +358,8 @@ internal sealed record VbaNameResolutionOutcome(
     VbaNameResolutionKind Kind,
     VbaResolvedNameTarget? Target)
 {
+    public IReadOnlyList<VbaResolvedNameTarget> AmbiguousCandidates { get; init; } = [];
+
     public static VbaNameResolutionOutcome Unresolved { get; } =
         new(VbaNameResolutionKind.Unresolved, Target: null);
 

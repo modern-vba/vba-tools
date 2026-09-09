@@ -120,6 +120,7 @@ internal readonly record struct VbaInteractiveReadPolicy(
                 => new(VbaInteractiveWorkClass.Normal, Concurrent: true),
             "textDocument/references"
                 or "textDocument/rename"
+                or "vba/confirmRename"
                 or "textDocument/formatting"
                 or "vba/moduleIdentityMetadata"
                 => new(VbaInteractiveWorkClass.Bulk, Concurrent: true),
