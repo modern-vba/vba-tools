@@ -926,6 +926,28 @@ authority, or permission to commit a project mutation. A Package may issue an
 empty selection; an empty raw list does not establish Package authority.
 _Avoid_: raw-list dependency result, reconciliation result, source copy plan, mutation commitment
 
+**CommonModulesCapturedSelection**:
+An immutable ordered view of captured source units and their Package-established
+RequiredReferences, obtained from one successfully admitted PackageSnapshot.
+Ordinary module requests use the Package's dependency selection. Update instead
+materializes the existing order of a Reconciliation from that exact Package,
+without expanding dependencies of retained entries. A different Package's
+Reconciliation cannot authorize bytes even when its filenames and contents match.
+The selection remains bound to the snapshot's lifetime; it is not a provisional
+metadata plan that may be used after cleanup.
+_Avoid_: raw file list, caller-paired entries and bytes, recomputed update closure
+
+**CommonModulesCapturedSourceUnit**:
+One selected canonical manifest Entry together with its exact original source
+bytes and optional matching form sidecar filename/bytes. Only the snapshot and
+its admitted Package establish this pairing. Public callers select modules, not
+arbitrary manifest or sidecar filenames. Byte getters return independent copies;
+all unit and captured-selection getters use the snapshot disposal guard. An
+absent sidecar is null, while a captured empty sidecar remains present. Already
+returned byte copies and immutable Entry values remain detached usable values.
+The unit has no disposal or target-mutation authority of its own.
+_Avoid_: live file handle, mutable byte pair, filesystem reread, cleanup owner
+
 **CommonModulesPackageSnapshot**:
 The invocation-owned complete stable capture of package bytes, its admitted
 CommonModulesPackage, and staging cleanup responsibility. Metadata selection
@@ -934,6 +956,11 @@ return independent copies. Already captured immutable metadata and plans may
 outlive cleanup without enabling reads from a disposed snapshot. A Package
 obtained from a live reader does not substitute for stable byte capture before
 repository-backed source mutation.
+Installation and new-project generation consume captured selections directly;
+arbitrary-filename byte reads are internal snapshot operations. Provisional
+metadata-only plans and Packages still outlive cleanup, and rebased mutation
+still captures fresh bytes. Destination path collisions, installed target
+identity, source mutation preconditions and recovery remain caller-owned.
 _Avoid_: release artifact, mutable repository view, project mutation transaction
 
 **Collection Search Root**:

@@ -14,6 +14,46 @@ namespace VbaDev.Tests;
 
 public sealed class CommonModulesReconciliationTests
 {
+    [Fact]
+    public void CapturedReconciliationRequiresTheSamePackageAndPreservesItsRetainedEntryOrder()
+    {
+        using var temp = TempDirectory.Create();
+        var repository = temp.CreateDirectory("common_modules_repo");
+        File.WriteAllText(Path.Combine(repository, CommonModulesManifestReader.ManifestFileName),
+            "ModuleFile\tCategories\tDependencies\tRequiredReferences\r\n"
+            + "Feature.bas\toptional\tBase.bas\t[\"Root Library\",\"shared\"]\r\n"
+            + "Extra.bas\toptional\tAnother.bas\t[\"SHARED\",\"Extra Library\"]\r\n"
+            + "Base.bas\toptional\t\t[\"Shared\"]\r\n"
+            + "Another.bas\toptional\t\t[\"Unrequested Library\"]\r\n",
+            new UnicodeEncoding(false, true, true));
+        foreach (var name in new[] { "Feature", "Extra", "Base", "Another" })
+        {
+            WritePackageModule(repository, name + ".bas", "' canonical " + name);
+        }
+        var factory = new CommonModulesPackageSnapshotFactory(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
+            new CommonModulesPackageReader(new CommonModulesManifestReader()),
+            temp.CreateDirectory("scratch"));
+        using var snapshot = factory.Capture(repository, CancellationToken.None);
+        using var otherSnapshot = factory.Capture(repository, CancellationToken.None);
+        InstalledCommonModule[] installed =
+        [
+            new("Feature", "Feature.bas", true, false),
+            new("Extra", "Extra.bas", false, false)
+        ];
+        var foreign = CommonModulesReconciliation.Create(otherSnapshot.Package, installed);
+
+        var error = Assert.Throws<CommonModulesManifestException>(() => snapshot.SelectReconciledSources(foreign));
+        Assert.Contains("same captured package", error.Message);
+
+        var own = CommonModulesReconciliation.Create(snapshot.Package, installed);
+        var selection = snapshot.SelectReconciledSources(own);
+        Assert.Equal(["Base.bas", "Feature.bas", "Extra.bas"], selection.Units.Select(unit => unit.Entry.ModuleFile));
+        Assert.Equal(["Shared", "Root Library", "Extra Library"], selection.RequiredReferences);
+        Assert.All(selection.Units, unit =>
+            Assert.Equal(File.ReadAllBytes(Path.Combine(repository, unit.Entry.ModuleFile)), unit.SourceBytes));
+    }
+
     [Theory]
     [InlineData("missing-cycle")]
     [InlineData("reachable")]

@@ -335,24 +335,21 @@ public sealed class NewProjectCommand
             .ToArray();
         var requested = requestedModuleFiles.ToHashSet(
             StringComparer.OrdinalIgnoreCase);
-        var selection = snapshot.ResolveRequestedPlan(requestedModuleFiles);
-        ValidateSelectedTargetPaths(selection.Entries, sourceSetPath);
+        var selection = snapshot.SelectCapturedSources(requestedModuleFiles);
+        var selectedEntries = selection.Units.Select(unit => unit.Entry).ToArray();
+        ValidateSelectedTargetPaths(selectedEntries, sourceSetPath);
         var commonModulesDirectory = Path.Combine(
             sourceSetPath,
             "common-modules");
         var copyArtifacts = new List<NewProjectCopyArtifact>();
-        foreach (var entry in selection.Entries)
+        foreach (var unit in selection.Units)
         {
+            var entry = unit.Entry;
             copyArtifacts.Add(new NewProjectCopyArtifact(
                 Path.Combine(commonModulesDirectory, entry.InstalledModuleFile),
-                snapshot.ReadFileBytes(entry.ModuleFile)));
-            if (!entry.ModuleFile.EndsWith(".frm", StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            var sidecarName = Path.ChangeExtension(entry.ModuleFile, ".frx");
-            if (snapshot.TryReadFileBytes(sidecarName, out var sidecarBytes))
+                unit.SourceBytes));
+            if (unit.SidecarFileName is { } sidecarName
+                && unit.SidecarBytes is { } sidecarBytes)
             {
                 copyArtifacts.Add(new NewProjectCopyArtifact(
                     Path.Combine(commonModulesDirectory, sidecarName),
@@ -360,7 +357,7 @@ public sealed class NewProjectCommand
             }
         }
 
-        var installedModules = selection.Entries
+        var installedModules = selectedEntries
             .Select(entry => new InstalledCommonModule(
                 entry.Name,
                 entry.InstalledModuleFile,

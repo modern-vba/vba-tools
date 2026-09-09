@@ -325,7 +325,7 @@ public sealed class CommonModulesInstallationTransaction
         CommonModulesPackageSnapshotCleanupResult? cleanup = null;
         try
         {
-            CommonModulesSelectionPlan? selectionPlan = null;
+            CommonModulesCapturedSelection? capturedSelection = null;
             if (repositoryBackedRequests.Count > 0)
             {
                 var repositoryPath = GetRepositoryPath(
@@ -334,10 +334,11 @@ public sealed class CommonModulesInstallationTransaction
                 packageSnapshot = packageSnapshotFactory.Capture(
                     repositoryPath,
                     cancellationToken);
-                selectionPlan = packageSnapshot.ResolveRequestedPlan(repositoryBackedRequests);
+                capturedSelection = packageSnapshot.SelectCapturedSources(repositoryBackedRequests);
             }
 
-            IReadOnlyList<CommonModuleManifestEntry> orderedEntries = selectionPlan?.Entries ?? [];
+            IReadOnlyList<CommonModulesCapturedSourceUnit> selectedUnits = capturedSelection?.Units ?? [];
+            var orderedEntries = selectedUnits.Select(unit => unit.Entry).ToArray();
             var requestedNames = normalizedRequestedModules
                 .Select(GetCommonModuleName)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -345,23 +346,20 @@ public sealed class CommonModulesInstallationTransaction
                 snapshot.ProjectRoot,
                 documentName,
                 document,
-                selectionPlan?.RequiredReferences ?? [],
+                capturedSelection?.RequiredReferences ?? [],
                 referenceEvidence);
             ValidateInstalledSourceIdentities(orderedEntries, installedByName);
-            var entriesToCopy = orderedEntries
-                .Where(entry => !installedByName.ContainsKey(entry.Name))
+            var unitsToCopy = selectedUnits
+                .Where(unit => !installedByName.ContainsKey(unit.Entry.Name))
                 .ToArray();
             var documentSourceSetPath = ResolveManifestPath(
                 snapshot.ProjectRoot,
                 document.SourcePath);
-            var copyPlan = packageSnapshot is null
-                ? []
-                : PlanCopyEntries(
-                    packageSnapshot,
-                    documentSourceSetPath,
-                    entriesToCopy,
-                    force,
-                    documentName);
+            var copyPlan = PlanCopyEntries(
+                documentSourceSetPath,
+                unitsToCopy,
+                force,
+                documentName);
             var priorModules = document.CommonModules.ToArray();
             var changed = ApplyAddEntries(
                     document,
@@ -794,11 +792,12 @@ public sealed class CommonModulesInstallationTransaction
             {
                 priorModulesByDocument.Add(documentName, document.CommonModules.ToArray());
                 var updatePlan = CommonModulesReconciliation.Create(packageSnapshot!.Package, document.CommonModules);
+                var capturedSelection = packageSnapshot.SelectReconciledSources(updatePlan);
                 var referenceChanges = AppendRequiredReferencesFromEvidence(
                     snapshot.ProjectRoot,
                     documentName,
                     document,
-                    updatePlan.RequiredReferences,
+                    capturedSelection.RequiredReferences,
                     referenceEvidenceByDocument[documentName]);
                 referenceChangesByDocument.Add(documentName, referenceChanges);
                 manifestChanged |= referenceChanges.Count > 0;
@@ -810,9 +809,8 @@ public sealed class CommonModulesInstallationTransaction
                     snapshot.ProjectRoot,
                     document.SourcePath);
                 copyPlans.AddRange(PlanCopyEntries(
-                    packageSnapshot!,
                     documentSourceSetPath,
-                    updatePlan.Entries,
+                    capturedSelection.Units,
                     overwrite: true,
                     documentName));
                 manifestChanged |= ApplyUpdateEntries(
@@ -878,16 +876,16 @@ public sealed class CommonModulesInstallationTransaction
     }
 
     private static IReadOnlyList<CommonModuleCopyPlan> PlanCopyEntries(
-        CommonModulesPackageSnapshot packageSnapshot,
         string documentSourceSetPath,
-        IReadOnlyList<CommonModuleManifestEntry> entries,
+        IReadOnlyList<CommonModulesCapturedSourceUnit> units,
         bool overwrite,
         string documentName)
     {
         var plans = new List<CommonModuleCopyPlan>();
         var plannedTargets = new Dictionary<string, CommonModuleManifestEntry>(StringComparer.OrdinalIgnoreCase);
-        foreach (var entry in entries)
+        foreach (var unit in units)
         {
+            var entry = unit.Entry;
             var observedTargetPath = ResolveTargetPath(
                 documentSourceSetPath,
                 entry.InstalledModuleFile,
@@ -908,13 +906,12 @@ public sealed class CommonModulesInstallationTransaction
                 mutations,
                 observedTargetPath,
                 targetPath,
-                packageSnapshot.ReadFileBytes(entry.ModuleFile));
+                unit.SourceBytes);
             if (DocumentSourceSetLayout.IsFormFile(entry.ModuleFile))
             {
                 PlanFormSidecarMutations(
-                    packageSnapshot,
                     documentSourceSetPath,
-                    entry,
+                    unit,
                     observedTargetPath,
                     targetPath,
                     mutations);
@@ -937,13 +934,13 @@ public sealed class CommonModulesInstallationTransaction
     }
 
     private static void PlanFormSidecarMutations(
-        CommonModulesPackageSnapshot packageSnapshot,
         string documentSourceSetPath,
-        CommonModuleManifestEntry entry,
+        CommonModulesCapturedSourceUnit unit,
         string observedFormPath,
         string canonicalFormPath,
         ICollection<CommonModulesSourceFileMutation> mutations)
     {
+        var entry = unit.Entry;
         var existingSidecars = DocumentSourceSetLayout.FindFormSidecars(
             documentSourceSetPath,
             entry.ModuleFile);
@@ -962,8 +959,7 @@ public sealed class CommonModulesInstallationTransaction
             AddDeleteMutation(mutations, existingSidecar);
         }
 
-        var packageSidecarName = Path.ChangeExtension(entry.ModuleFile, ".frx");
-        if (packageSnapshot.TryReadFileBytes(packageSidecarName, out var desiredSidecarBytes))
+        if (unit.SidecarBytes is { } desiredSidecarBytes)
         {
             var canonicalTargetSidecar = Path.ChangeExtension(canonicalFormPath, ".frx");
             AddWriteMutation(

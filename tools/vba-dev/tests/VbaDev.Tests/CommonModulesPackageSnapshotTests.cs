@@ -11,6 +11,223 @@ namespace VbaDev.Tests;
 public sealed class CommonModulesPackageSnapshotTests
 {
     [Fact]
+    public void CapturedSelectionKeepsTheSelectedFormWithItsOriginalSourceAndMatchingSidecar()
+    {
+        using var temp = TempDirectory.Create();
+        var repository = temp.CreateDirectory("common_modules_repo");
+        WriteManifest(repository,
+            ("Dialog.frm", "optional", string.Empty),
+            ("Other.frm", "optional", string.Empty));
+        WriteSource(repository, "Dialog.frm", "original dialog");
+        WriteSource(repository, "Other.frm", "other form");
+        var originalSource = File.ReadAllBytes(Path.Combine(repository, "Dialog.frm"));
+        byte[] originalSidecar = [0, 1, 2, 255];
+        File.WriteAllBytes(Path.Combine(repository, "Dialog.frx"), originalSidecar);
+        File.WriteAllBytes(Path.Combine(repository, "Other.frx"), [7, 8, 9]);
+        using var snapshot = new CommonModulesPackageSnapshotFactory(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
+            new CommonModulesPackageReader(new CommonModulesManifestReader()),
+            temp.CreateDirectory("scratch"))
+            .Capture(repository, CancellationToken.None);
+        WriteSource(repository, "Dialog.frm", "changed after capture");
+        File.Delete(Path.Combine(repository, "Dialog.frx"));
+
+        var unit = Assert.Single(snapshot.SelectCapturedSources(["Dialog"]).Units);
+
+        Assert.Equal("Dialog.frm", unit.Entry.ModuleFile);
+        Assert.Equal(originalSource, unit.SourceBytes);
+        Assert.Equal("Dialog.frx", unit.SidecarFileName);
+        Assert.Equal(originalSidecar, unit.SidecarBytes);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void CapturedFormUnitDistinguishesAnEmptySidecarFromAnAbsentSidecar(bool sidecarPresent)
+    {
+        using var temp = TempDirectory.Create();
+        var repository = temp.CreateDirectory("common_modules_repo");
+        WriteManifest(repository, ("Dialog.frm", "optional", string.Empty));
+        WriteSource(repository, "Dialog.frm", "dialog");
+        if (sidecarPresent)
+        {
+            File.WriteAllBytes(Path.Combine(repository, "Dialog.frx"), []);
+        }
+        using var snapshot = new CommonModulesPackageSnapshotFactory(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
+            new CommonModulesPackageReader(new CommonModulesManifestReader()),
+            temp.CreateDirectory("scratch"))
+            .Capture(repository, CancellationToken.None);
+
+        var unit = Assert.Single(snapshot.SelectCapturedSources(["Dialog"]).Units);
+
+        Assert.Equal(File.ReadAllBytes(Path.Combine(repository, "Dialog.frm")), unit.SourceBytes);
+        if (sidecarPresent)
+        {
+            Assert.Equal("Dialog.frx", unit.SidecarFileName);
+            var sidecarBytes = unit.SidecarBytes;
+            Assert.NotNull(sidecarBytes);
+            Assert.Empty(sidecarBytes);
+        }
+        else
+        {
+            Assert.Null(unit.SidecarFileName);
+            Assert.Null(unit.SidecarBytes);
+        }
+    }
+
+    [Fact]
+    public void CapturedSelectionViewsAndReturnedByteCopiesCannotRewriteCapturedUnits()
+    {
+        using var temp = TempDirectory.Create();
+        var repository = temp.CreateDirectory("common_modules_repo");
+        File.WriteAllText(
+            Path.Combine(repository, CommonModulesManifestReader.ManifestFileName),
+            "ModuleFile\tCategories\tDependencies\tRequiredReferences\r\n"
+                + "Dialog.frm\toptional\tBase.bas\t[\"Dialog Library\",\"Shared\"]\r\n"
+                + "Base.bas\truntime-baseline\t\t[\"Base Library\",\"shared\"]\r\n",
+            new UnicodeEncoding(bigEndian: false, byteOrderMark: true, throwOnInvalidBytes: true));
+        WriteSource(repository, "Dialog.frm", "dialog");
+        WriteSource(repository, "Base.bas", "base");
+        var originalSource = File.ReadAllBytes(Path.Combine(repository, "Dialog.frm"));
+        byte[] originalSidecar = [0, 1, 2, 255];
+        File.WriteAllBytes(Path.Combine(repository, "Dialog.frx"), originalSidecar);
+        using var snapshot = new CommonModulesPackageSnapshotFactory(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
+            new CommonModulesPackageReader(new CommonModulesManifestReader()),
+            temp.CreateDirectory("scratch"))
+            .Capture(repository, CancellationToken.None);
+        var selection = snapshot.SelectCapturedSources(["Dialog"]);
+        var dialog = selection.Units[1];
+        var sourceCopy = dialog.SourceBytes;
+        var sidecarCopy = dialog.SidecarBytes;
+        Assert.NotNull(sidecarCopy);
+
+        sourceCopy[0] ^= 0xff;
+        sidecarCopy[0] ^= 0xff;
+        TryReplaceOrAdd(selection.Units, dialog);
+        TryReplaceOrAdd(selection.RequiredReferences, "Injected Library");
+        TryReplaceOrAdd(dialog.Entry.Dependencies, "Missing.bas");
+
+        Assert.Equal(["Base.bas", "Dialog.frm"], selection.Units.Select(unit => unit.Entry.ModuleFile));
+        Assert.Equal(["Base Library", "shared", "Dialog Library"], selection.RequiredReferences);
+        Assert.Equal(["Base.bas"], dialog.Entry.Dependencies);
+        Assert.Equal(originalSource, dialog.SourceBytes);
+        Assert.Equal(originalSidecar, dialog.SidecarBytes);
+        Assert.NotSame(sourceCopy, dialog.SourceBytes);
+        Assert.NotSame(sidecarCopy, dialog.SidecarBytes);
+        var subsequent = snapshot.SelectCapturedSources(["Dialog"]);
+        Assert.Equal(["Base.bas", "Dialog.frm"], subsequent.Units.Select(unit => unit.Entry.ModuleFile));
+        Assert.Equal(["Base Library", "shared", "Dialog Library"], subsequent.RequiredReferences);
+        Assert.Equal(originalSource, subsequent.Units[1].SourceBytes);
+        Assert.Equal(originalSidecar, subsequent.Units[1].SidecarBytes);
+    }
+
+    [Theory]
+    [InlineData("common-modules-manifest.tsv")]
+    [InlineData("Dialog.frx")]
+    [InlineData("Unknown")]
+    public void CapturedSelectionRejectsNonModuleRequestsWithoutReturningPartialUnits(string request)
+    {
+        using var temp = TempDirectory.Create();
+        var repository = temp.CreateDirectory("common_modules_repo");
+        WriteManifest(repository, ("Dialog.frm", "optional", string.Empty));
+        WriteSource(repository, "Dialog.frm", "dialog");
+        File.WriteAllBytes(Path.Combine(repository, "Dialog.frx"), [1, 2, 3]);
+        using var snapshot = new CommonModulesPackageSnapshotFactory(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
+            new CommonModulesPackageReader(new CommonModulesManifestReader()),
+            temp.CreateDirectory("scratch"))
+            .Capture(repository, CancellationToken.None);
+        CommonModulesCapturedSelection? selection = null;
+
+        var error = Assert.Throws<CommonModulesManifestException>(() =>
+            selection = snapshot.SelectCapturedSources(["Dialog", request]));
+
+        Assert.Equal($"CommonModules entry was not found: {request}", error.Message);
+        Assert.Null(selection);
+        Assert.Equal("Dialog.frm", Assert.Single(snapshot.SelectCapturedSources(["Dialog"]).Units).Entry.ModuleFile);
+    }
+
+    [Theory]
+    [InlineData("cleanup")]
+    [InlineData("dispose")]
+    [InlineData("retained-cleanup")]
+    public void CapturedSelectionAndRetainedUnitsRespectSnapshotCleanupLifetime(string completion)
+    {
+        using var temp = TempDirectory.Create();
+        var repository = temp.CreateDirectory("common_modules_repo");
+        WriteManifest(repository,
+            ("Dialog.frm", "optional", string.Empty),
+            ("Feature.bas", "optional", string.Empty));
+        WriteSource(repository, "Dialog.frm", "dialog");
+        WriteSource(repository, "Feature.bas", "feature");
+        byte[] originalSidecar = [0, 1, 2, 255];
+        File.WriteAllBytes(Path.Combine(repository, "Dialog.frx"), originalSidecar);
+        using var snapshot = new CommonModulesPackageSnapshotFactory(
+            new WindowsExactFileSystemObjectOwnershipFactory(),
+            new CommonModulesPackageReader(new CommonModulesManifestReader()),
+            temp.CreateDirectory("scratch"))
+            .Capture(repository, CancellationToken.None);
+        var selection = snapshot.SelectCapturedSources(["Dialog", "Feature"]);
+        var units = selection.Units.ToArray();
+        var entries = units.Select(unit => unit.Entry).ToArray();
+        var sourceCopies = units.Select(unit => unit.SourceBytes).ToArray();
+        var sidecarCopy = units[0].SidecarBytes;
+        var metadataPlan = snapshot.ResolveRequestedPlan(["Dialog", "Feature"]);
+        var referenceCopy = selection.RequiredReferences;
+        var foreignPath = Path.Combine(snapshot.StagingPath, "foreign.txt");
+        byte[] foreignBytes = [9, 8, 7];
+
+        if (completion == "retained-cleanup")
+        {
+            File.WriteAllBytes(foreignPath, foreignBytes);
+        }
+        if (completion == "dispose")
+        {
+            snapshot.Dispose();
+        }
+        var cleanup = snapshot.Cleanup();
+
+        Assert.Same(cleanup, snapshot.Cleanup());
+        Assert.True(cleanup.IsConclusive);
+        if (completion == "retained-cleanup")
+        {
+            Assert.False(cleanup.Deleted);
+            Assert.Equal(snapshot.StagingPath, cleanup.RetainedPath);
+            Assert.Contains(foreignPath, cleanup.RetainedEntryPaths);
+            Assert.Equal(foreignBytes, File.ReadAllBytes(foreignPath));
+            Assert.False(File.Exists(Path.Combine(snapshot.StagingPath, "Dialog.frm")));
+        }
+        else
+        {
+            Assert.True(cleanup.Deleted);
+            Assert.Null(cleanup.RetainedPath);
+            Assert.False(Directory.Exists(snapshot.StagingPath));
+        }
+
+        Assert.Throws<ObjectDisposedException>(() => snapshot.SelectCapturedSources(["Dialog"]));
+        Assert.Throws<ObjectDisposedException>(() => selection.Units);
+        Assert.Throws<ObjectDisposedException>(() => selection.RequiredReferences);
+        foreach (var unit in units)
+        {
+            Assert.Throws<ObjectDisposedException>(() => unit.Entry);
+            Assert.Throws<ObjectDisposedException>(() => unit.SourceBytes);
+            Assert.Throws<ObjectDisposedException>(() => unit.SidecarFileName);
+            Assert.Throws<ObjectDisposedException>(() => unit.SidecarBytes);
+        }
+        Assert.Equal(["Dialog.frm", "Feature.bas"], entries.Select(entry => entry.ModuleFile));
+        Assert.Equal(["Dialog.frm", "Feature.bas"], metadataPlan.Entries.Select(entry => entry.ModuleFile));
+        Assert.Empty(metadataPlan.RequiredReferences);
+        Assert.Empty(referenceCopy);
+        for (var index = 0; index < entries.Length; index++)
+        {
+            Assert.Equal(File.ReadAllBytes(Path.Combine(repository, entries[index].ModuleFile)), sourceCopies[index]);
+        }
+        Assert.Equal(originalSidecar, sidecarCopy);
+    }
+
+    [Fact]
     public void PhysicalInventoryPermutationsSelectTheSameNonOrdinaryEntry()
     {
         using var temp = TempDirectory.Create();
@@ -493,9 +710,15 @@ public sealed class CommonModulesPackageSnapshotTests
             new CommonModulesPackageReader(new CommonModulesManifestReader()),
             scratchRoot);
 
-        Assert.Throws<CommonModulesManifestException>(() =>
-            factory.Capture(repository, CancellationToken.None));
+        CommonModulesCapturedSelection? selection = null;
 
+        Assert.Throws<CommonModulesManifestException>(() =>
+        {
+            using var snapshot = factory.Capture(repository, CancellationToken.None);
+            selection = snapshot.SelectCapturedSources(["Feature"]);
+        });
+
+        Assert.Null(selection);
         Assert.Equal(invalidBytes, File.ReadAllBytes(sourcePath));
         Assert.Empty(Directory.EnumerateDirectories(scratchRoot));
     }

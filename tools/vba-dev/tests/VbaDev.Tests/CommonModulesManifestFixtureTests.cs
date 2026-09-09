@@ -147,6 +147,7 @@ public sealed class CommonModulesManifestFixtureTests
             {
                 var liveFailure = Assert.IsType<CommonModulesManifestException>(liveError);
                 var capturedFailure = Assert.IsType<CommonModulesManifestException>(capturedError);
+                Assert.Null(snapshot);
                 Assert.Equal(
                     NormalizePackagePathContext(liveFailure.Message, repositoryPath, scratchRoot),
                     NormalizePackagePathContext(capturedFailure.Message, repositoryPath, scratchRoot));
@@ -170,6 +171,30 @@ public sealed class CommonModulesManifestFixtureTests
                     var capturedPlan = snapshot.ResolveRequestedPlan([request]);
                     AssertEquivalentEntries(livePlan.Entries, capturedPlan.Entries);
                     Assert.Equal(livePlan.RequiredReferences, capturedPlan.RequiredReferences);
+                    var sources = snapshot.SelectCapturedSources([request]);
+                    AssertEquivalentEntries(livePlan.Entries, sources.Units.Select(unit => unit.Entry).ToArray());
+                    Assert.Equal(livePlan.RequiredReferences, sources.RequiredReferences);
+                    foreach (var unit in sources.Units)
+                    {
+                        Assert.Equal(
+                            File.ReadAllBytes(Path.Combine(repositoryPath, unit.Entry.ModuleFile)),
+                            unit.SourceBytes);
+                        var sidecarName = unit.Entry.ModuleFile.EndsWith(".frm", StringComparison.Ordinal)
+                            ? Path.ChangeExtension(unit.Entry.ModuleFile, ".frx")
+                            : null;
+                        if (sidecarName is not null && File.Exists(Path.Combine(repositoryPath, sidecarName)))
+                        {
+                            Assert.Equal(sidecarName, unit.SidecarFileName);
+                            Assert.Equal(
+                                File.ReadAllBytes(Path.Combine(repositoryPath, sidecarName)),
+                                unit.SidecarBytes);
+                        }
+                        else
+                        {
+                            Assert.Null(unit.SidecarFileName);
+                            Assert.Null(unit.SidecarBytes);
+                        }
+                    }
                 }
             }
 

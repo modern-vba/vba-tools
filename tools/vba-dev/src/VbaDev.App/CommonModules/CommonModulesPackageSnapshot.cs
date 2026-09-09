@@ -388,7 +388,7 @@ public sealed class CommonModulesPackageSnapshot : IDisposable
     public string StagingPath => staging.Path;
 
     /// <summary>
-    /// Gets the canonical manifest entries parsed exclusively from the staged manifest bytes.
+    /// Gets the canonical manifest entries parsed exclusively from the original captured bytes.
     /// </summary>
     public IReadOnlyList<CommonModuleManifestEntry> Entries => Package.Entries;
 
@@ -402,7 +402,7 @@ public sealed class CommonModulesPackageSnapshot : IDisposable
     }
 
     /// <summary>
-    /// Resolves a dependency and reference plan using only the manifest parsed from staged bytes.
+    /// Resolves a dependency and reference plan using only the original captured manifest bytes.
     /// </summary>
     public CommonModulesSelectionPlan ResolveRequestedPlan(
         IReadOnlyList<string> requestedModules)
@@ -412,10 +412,23 @@ public sealed class CommonModulesPackageSnapshot : IDisposable
         return package.ResolveRequestedPlan(requestedModules);
     }
 
+    /// <summary>Resolves module requests to their exact captured source units.</summary>
+    public CommonModulesCapturedSelection SelectCapturedSources(IReadOnlyList<string> requestedModules)
+        => CommonModulesCapturedSelection.Create(this, requestedModules);
+
+    internal CommonModulesCapturedSelection SelectReconciledSources(CommonModulesReconciliation reconciliation)
+        => CommonModulesCapturedSelection.CreateReconciled(this, reconciliation);
+
+    internal bool ContainsCapturedFile(string fileName)
+    {
+        ThrowIfDisposed();
+        return capturedBytes.ContainsKey(fileName);
+    }
+
     /// <summary>
-    /// Returns a copy of one exact package file captured in staging.
+    /// Returns a copy of one exact file from the original captured inventory.
     /// </summary>
-    public byte[] ReadFileBytes(string fileName)
+    internal byte[] ReadFileBytes(string fileName)
     {
         if (!TryReadFileBytes(fileName, out var content))
         {
@@ -427,9 +440,9 @@ public sealed class CommonModulesPackageSnapshot : IDisposable
     }
 
     /// <summary>
-    /// Tries to return a copy of one exact package file captured in staging.
+    /// Tries to return a copy of one exact file from the original captured inventory.
     /// </summary>
-    public bool TryReadFileBytes(string fileName, out byte[] content)
+    internal bool TryReadFileBytes(string fileName, out byte[] content)
     {
         ThrowIfDisposed();
         ArgumentException.ThrowIfNullOrWhiteSpace(fileName);

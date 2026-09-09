@@ -84,3 +84,7 @@ issuance remain covered through complete real admission.
 This decision changes diagnostic precedence where it was inconsistent. It does
 not change manifest grammar, CLI result schemas, release artifacts, selection
 authority, captured source-unit selection APIs, or snapshot cleanup ownership.
+
+The subsequent [captured source-unit decision](0054-return-owned-commonmodules-source-units.md)
+uses this complete admission to pair selected declarations with snapshot bytes;
+it does not introduce another logical validator.
