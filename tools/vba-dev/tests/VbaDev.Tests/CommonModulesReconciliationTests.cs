@@ -121,35 +121,90 @@ public sealed class CommonModulesReconciliationTests
     [Fact]
     public void ReconciliationFactsRetainTheirCapturedSelectionAndDirectDeclarations()
     {
-        var categories = new List<string> { "optional" };
-        var dependencies = new List<string> { "Base.bas" };
-        var baseReferences = new List<string> { "Shared" };
-        var repository = new List<CommonModuleManifestEntry>
-        {
-            new("Root.bas", ["optional"], dependencies, ["shared", "Root Library"]),
-            new("Base.bas", categories, [], baseReferences)
-        };
+        using var temp = TempDirectory.Create();
+        var repository = temp.CreateDirectory("common_modules_repo");
+        var manifestPath = Path.Combine(repository, CommonModulesManifestReader.ManifestFileName);
+        File.WriteAllText(manifestPath,
+            "ModuleFile\tCategories\tDependencies\tRequiredReferences\r\n"
+            + "Root.bas\toptional\tBase.bas\t[\"shared\",\"Root Library\"]\r\n"
+            + "Base.bas\toptional\t\t[\"Shared\"]\r\n",
+            new UnicodeEncoding(false, true, true));
+        WritePackageModule(repository, "Root.bas", "' canonical root");
+        WritePackageModule(repository, "Base.bas", "' canonical base");
+        var package = new CommonModulesPackageReader(new CommonModulesManifestReader()).Load(repository);
         var installed = new List<InstalledCommonModule> { new("root", "root.bas", true, false) };
-        var facts = CommonModulesReconciliation.Create(repository, installed);
 
-        categories.Clear();
-        categories.Add("test-foundation");
-        dependencies.Clear();
-        baseReferences.Clear();
-        baseReferences.Add("Replacement Library");
-        repository.Clear();
+        var facts = CommonModulesReconciliation.Create(package, installed);
+
+        File.WriteAllText(manifestPath,
+            "ModuleFile\tCategories\tDependencies\tRequiredReferences\r\n"
+            + "Root.bas\ttest-double\t\t[]\r\n"
+            + "Base.bas\ttest-foundation\t\t[\"Replacement Library\"]\r\n",
+            new UnicodeEncoding(false, true, true));
         installed.Clear();
 
         Assert.Equal(["Base", "Root"], facts.RequestedClosure.Select(entry => entry.Name));
         Assert.Equal(["Base", "Root"], facts.Entries.Select(entry => entry.Name));
         Assert.Equal(["Shared", "Root Library"], facts.RequiredReferences.AsEnumerable());
         Assert.False(facts.Entries[0].TestOnly);
+        Assert.Equal(["optional"], facts.Entries[0].Categories);
         Assert.Equal(["Base.bas"], facts.Entries[1].Dependencies);
         Assert.Equal("Root", Assert.Single(facts.Installed).RepositoryEntry!.Name);
         Assert.Equal(new MissingInstalledCommonModuleDependency("root", "Base"), Assert.Single(facts.MissingDependencies));
         Assert.True(facts.AllRequestedRootsCurrent);
         Assert.Equal(["Base", "Root"], facts.ReachableNames.Order(StringComparer.OrdinalIgnoreCase));
-        Assert.Empty(CommonModulesReconciliation.Create(repository, installed).Entries);
+        Assert.Empty(CommonModulesReconciliation.Create(package, installed).Entries);
+    }
+
+    [Fact]
+    public void UpdateRefreshesRetainedModulesWithoutExpandingTheirUnrequestedDependencies()
+    {
+        using var temp = TempDirectory.Create();
+        var (root, repository) = CreateProject(temp);
+        File.WriteAllText(Path.Combine(repository, CommonModulesManifestReader.ManifestFileName),
+            "ModuleFile\tCategories\tDependencies\tRequiredReferences\r\n"
+            + "Feature.bas\toptional\tBase.bas\t[\"Root Library\",\"shared\"]\r\n"
+            + "Extra.bas\toptional\tAnother.bas\t[\"SHARED\",\"Extra Library\"]\r\n"
+            + "Base.bas\toptional\t\t[\"Shared\"]\r\n"
+            + "Another.bas\toptional\t\t[\"Unrequested Library\"]\r\n",
+            new UnicodeEncoding(false, true, true));
+        foreach (var name in new[] { "Feature", "Extra", "Base", "Another" })
+        {
+            WritePackageModule(repository, name + ".bas", "' canonical " + name);
+        }
+        var sourceSet = Path.Combine(root, "src", "Book1");
+        WriteModule(Path.Combine(sourceSet, "Feature.bas"), "Feature", "' previous Feature");
+        WriteModule(Path.Combine(sourceSet, "Extra.bas"), "Extra", "' previous Extra");
+        SetInstalled(root,
+            new InstalledCommonModule("Feature", "Feature.bas", true, false),
+            new InstalledCommonModule("Extra", "Extra.bas", false, false));
+        var requiredReferences = new[] { "Shared", "Root Library", "Extra Library" };
+        var resolver = new FakeVbaProjectReferenceResolver(requiredReferences.Select((reference, index) =>
+            new ResolvedVbaProjectReference(reference, $"{{00000000-0000-0000-0000-{index + 1:000000000000}}}", 1, 0)).ToArray());
+        Assert.Equal(["Feature.dependency.Base", "Extra.reachability"], ReconciliationDiagnostics(root));
+
+        var result = CommandLineTestFactory.Create(root, vbaProjectReferenceResolver: resolver)
+            .Run(["common-module", "update", "--format", "json"]);
+
+        Assert.True(result.ExitCode == 0, result.StandardError);
+        Assert.Equal("' canonical Feature", ReadBody(Path.Combine(sourceSet, "Feature.bas")));
+        Assert.Equal("' canonical Extra", ReadBody(Path.Combine(sourceSet, "Extra.bas")));
+        Assert.Equal("' canonical Base", ReadBody(Path.Combine(sourceSet, "common-modules", "Base.bas")));
+        Assert.DoesNotContain(Directory.EnumerateFiles(sourceSet, "*", SearchOption.AllDirectories),
+            path => Path.GetFileName(path).Equals("Another.bas", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(
+            [new InstalledCommonModule("Feature", "Feature.bas", true, false),
+                new InstalledCommonModule("Extra", "Extra.bas", false, false),
+                new InstalledCommonModule("Base", "Base.bas", false, false)],
+            LoadInstalled(root));
+        Assert.Equal(requiredReferences, resolver.RequestedNames);
+        Assert.Equal(requiredReferences, new JsonProjectManifestStore().Load(ProjectManifestPath(root))
+            .Documents["Book1"].References.Select(reference => reference.Name));
+        Assert.Equal(["Extra.reachability"], ReconciliationDiagnostics(root));
+        using var output = JsonDocument.Parse(result.StandardOutput);
+        Assert.True(output.RootElement.GetProperty("complete").GetBoolean());
+        Assert.Equal(["Feature", "Extra", "Base"], Assert.Single(output.RootElement.GetProperty("documents").EnumerateArray())
+            .GetProperty("modules").EnumerateArray().Select(module => module.GetProperty("name").GetString()));
     }
 
     [Fact]

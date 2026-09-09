@@ -16,6 +16,44 @@ public sealed class CommonModulesCommandTests
 {
     private const string TestModuleBodyMarker = "' vba-tools test body\r\n";
 
+    [Theory]
+    [InlineData(typeof(CommonModulesPackage))]
+    [InlineData(typeof(CommonModulesSelectionPlan))]
+    public void PackageAdmissionCannotBeBypassedThroughPublicConstructionOrEntryReplacement(Type authorityType)
+    {
+        Assert.Empty(authorityType.GetConstructors());
+        Assert.Null(authorityType.GetProperty(nameof(CommonModulesPackage.Entries))!.GetSetMethod());
+    }
+
+    [Fact]
+    public void AdmittedPackageDependenciesCannotBeChangedThroughPublishedEntries()
+    {
+        using var temp = TempDirectory.Create();
+        var repository = temp.CreateDirectory("common_modules_repo");
+        WriteManifest(repository,
+            ("Feature.bas", "optional", "Base.bas"),
+            ("Base.bas", "runtime-baseline", ""));
+        WriteModule(repository, "Feature.bas", "feature");
+        WriteModule(repository, "Base.bas", "base");
+        var package = new CommonModulesPackageReader(new CommonModulesManifestReader()).Load(repository);
+        var dependencies = Assert.Single(package.Entries, entry => entry.Name == "Feature").Dependencies;
+
+        if (dependencies is IList<string> writableView)
+        {
+            try
+            {
+                writableView[0] = "Missing.bas";
+            }
+            catch (NotSupportedException)
+            {
+                // Read-only views may reject an attempted mutation.
+            }
+        }
+
+        Assert.Equal(["Base.bas"], dependencies);
+        Assert.Equal(["Base.bas"], Assert.Single(package.Entries, entry => entry.Name == "Feature").Dependencies);
+    }
+
     [Fact]
     public void AddRejectsUtf8ManifestBeforeProjectStateChanges()
     {
@@ -42,6 +80,37 @@ public sealed class CommonModulesCommandTests
             "Book1",
             "common-modules",
             "Feature.bas")));
+    }
+
+    [Theory]
+    [InlineData("FEATURE.BAS", true)]
+    [InlineData("feature", true)]
+    [InlineData("Feature.bas", true)]
+    [InlineData("Feat", false)]
+    [InlineData("Feature.cls", false)]
+    [InlineData(" Feature", false)]
+    [InlineData("Feature ", false)]
+    [InlineData("Feature.bas ", false)]
+    [InlineData("Missing", false)]
+    [InlineData("", false)]
+    public void AdmittedPackageMatchesOnlyExactCaseInsensitiveFilenamesOrModuleNames(string request, bool found)
+    {
+        using var temp = TempDirectory.Create();
+        var repository = temp.CreateDirectory("common_modules_repo");
+        WriteManifest(repository, ("Feature.bas", "optional", ""));
+        WriteModule(repository, "Feature.bas", "feature");
+        var package = new CommonModulesPackageReader(new CommonModulesManifestReader()).Load(repository);
+
+        if (found)
+        {
+            var plan = package.ResolveRequestedPlan([request]);
+            Assert.Equal("Feature.bas", Assert.Single(plan.Entries).ModuleFile);
+        }
+        else
+        {
+            var error = Assert.Throws<CommonModulesManifestException>(() => package.ResolveRequestedPlan([request]));
+            Assert.Equal($"CommonModules entry was not found: {request}", error.Message);
+        }
     }
 
     [Fact]
@@ -663,6 +732,28 @@ public sealed class CommonModulesCommandTests
     }
 
     [Fact]
+    public void SelectionPreservesRequestOrderAndFirstEncounterAcrossSharedDependencies()
+    {
+        using var temp = TempDirectory.Create();
+        var repository = temp.CreateDirectory("common_modules_repo");
+        WriteManifestWithReferences(repository,
+            ("Alpha.bas", "optional", "Base.bas", "[\"Alpha Library\",\"shared\"]"),
+            ("Beta.bas", "optional", "Base.bas", "[\"Beta Library\",\"SHARED\"]"),
+            ("Base.bas", "runtime-baseline", "", "[\"Shared\",\"Base Library\"]"));
+        foreach (var moduleFile in new[] { "Alpha.bas", "Beta.bas", "Base.bas" })
+        {
+            WriteModule(repository, moduleFile, "canonical module");
+        }
+        var package = new CommonModulesPackageReader(new CommonModulesManifestReader()).Load(repository);
+
+        var plan = package.ResolveRequestedPlan(["beta", "ALPHA.BAS", "Beta.bas", "Alpha"]);
+
+        Assert.Equal(["Base.bas", "Beta.bas", "Alpha.bas"], plan.Entries.Select(entry => entry.ModuleFile));
+        Assert.Equal(["Shared", "Base Library", "Beta Library", "Alpha Library"], plan.RequiredReferences);
+        Assert.Equal(["Alpha.bas", "Beta.bas", "Base.bas"], package.Entries.Select(entry => entry.ModuleFile));
+    }
+
+    [Fact]
     public void SelectionPlanOrdersCyclicClosureAndRequiredReferenceUnion()
     {
         using var temp = TempDirectory.Create();
@@ -672,11 +763,12 @@ public sealed class CommonModulesCommandTests
             ("Root.bas", "optional", "Alpha.cls", "[\"RootRef\",\"Shared\"]"),
             ("Alpha.cls", "optional", "Beta.cls", "[\"AlphaRef\",\"shared\"]"),
             ("Beta.cls", "optional", "Alpha.cls", "[\"BetaRef\"]"));
-        var entries = new CommonModulesManifestReader().Load(repo);
+        WriteModule(repo, "Root.bas", "root");
+        WriteModule(repo, "Alpha.cls", "alpha");
+        WriteModule(repo, "Beta.cls", "beta");
+        var package = new CommonModulesPackageReader(new CommonModulesManifestReader()).Load(repo);
 
-        var plan = CommonModulesDependencyResolver.ResolveRequestedPlan(
-            entries,
-            ["Root"]);
+        var plan = package.ResolveRequestedPlan(["Root"]);
 
         Assert.Equal(
             ["Alpha.cls", "Beta.cls", "Root.bas"],
@@ -697,11 +789,13 @@ public sealed class CommonModulesCommandTests
             ("B.cls", "optional", "A.cls,Y.cls", "[\"BRef\"]"),
             ("X.cls", "optional", "", "[\"XRef\",\"Shared\"]"),
             ("Y.cls", "optional", "", "[\"YRef\"]"));
-        var entries = new CommonModulesManifestReader().Load(repo);
+        foreach (var moduleFile in new[] { "A.cls", "B.cls", "X.cls", "Y.cls" })
+        {
+            WriteModule(repo, moduleFile, "canonical class");
+        }
+        var package = new CommonModulesPackageReader(new CommonModulesManifestReader()).Load(repo);
 
-        var plan = CommonModulesDependencyResolver.ResolveRequestedPlan(
-            entries,
-            ["A"]);
+        var plan = package.ResolveRequestedPlan(["A"]);
 
         Assert.Equal(
             ["X.cls", "Y.cls", "A.cls", "B.cls"],

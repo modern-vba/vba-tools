@@ -49,10 +49,10 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
             return;
         }
 
-        IReadOnlyList<CommonModuleManifestEntry> entries;
+        CommonModulesPackage package;
         try
         {
-            entries = commonModulesPackageReader.Load(project.CommonModulesRepositoryPath).Entries;
+            package = commonModulesPackageReader.Load(project.CommonModulesRepositoryPath);
         }
         catch (CommonModulesManifestException ex)
         {
@@ -73,7 +73,7 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
 
         foreach (var (documentName, document) in project.Manifest.Documents.OrderBy(item => item.Key, StringComparer.OrdinalIgnoreCase))
         {
-            AddDocumentRepositoryDiagnostics(results, project, documentName, document, entries,
+            AddDocumentRepositoryDiagnostics(results, project, documentName, document, package,
                 sources?.GetDocument(documentName));
         }
     }
@@ -111,10 +111,10 @@ public sealed class CommonModulesDiagnosticProvider : IDoctorProjectDiagnosticPr
         ResolvedProject project,
         string documentName,
         ProjectDocument document,
-        IReadOnlyList<CommonModuleManifestEntry> entries,
+        CommonModulesPackage package,
         CapturedDoctorSourceSet? sources)
     {
-        var reconciliation = CommonModulesReconciliation.Create(entries, document.CommonModules);
+        var reconciliation = CommonModulesReconciliation.Create(package, document.CommonModules);
         foreach (var fact in reconciliation.Installed.Where(fact => fact.RepositoryEntry is null))
         {
             var module = fact.Installed;

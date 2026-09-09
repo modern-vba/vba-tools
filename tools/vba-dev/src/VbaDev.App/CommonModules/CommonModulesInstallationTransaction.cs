@@ -122,7 +122,6 @@ public sealed class CommonModulesInstallationTransaction
                 repositoryPath,
                 repositoryBackedRequests,
                 cancellationToken);
-            ValidateSelectedEntryIdentities(selectionPlan.Entries);
             requiredReferences = selectionPlan.RequiredReferences;
         }
 
@@ -203,7 +202,7 @@ public sealed class CommonModulesInstallationTransaction
         }
     }
 
-    private IReadOnlyList<CommonModuleManifestEntry> CaptureProvisionalEntries(
+    private CommonModulesPackage CaptureProvisionalPackage(
         string repositoryPath,
         CancellationToken cancellationToken)
     {
@@ -211,14 +210,14 @@ public sealed class CommonModulesInstallationTransaction
         try
         {
             snapshot = packageSnapshotFactory.Capture(repositoryPath, cancellationToken);
-            var entries = snapshot.Entries;
+            var package = snapshot.Package;
             var cleanup = snapshot.Cleanup();
             if (!cleanup.Deleted)
             {
                 throw SnapshotCleanupFailure(cleanup.RetainedPath!);
             }
 
-            return entries;
+            return package;
         }
         catch (ExactFileSystemObjectOwnership.RollbackException)
         {
@@ -326,12 +325,8 @@ public sealed class CommonModulesInstallationTransaction
         CommonModulesPackageSnapshotCleanupResult? cleanup = null;
         try
         {
-            CommonModulesSelectionPlan selectionPlan;
-            if (repositoryBackedRequests.Count == 0)
-            {
-                selectionPlan = new CommonModulesSelectionPlan([], []);
-            }
-            else
+            CommonModulesSelectionPlan? selectionPlan = null;
+            if (repositoryBackedRequests.Count > 0)
             {
                 var repositoryPath = GetRepositoryPath(
                     snapshot.ProjectRoot,
@@ -342,8 +337,7 @@ public sealed class CommonModulesInstallationTransaction
                 selectionPlan = packageSnapshot.ResolveRequestedPlan(repositoryBackedRequests);
             }
 
-            var orderedEntries = selectionPlan.Entries;
-            ValidateSelectedEntryIdentities(orderedEntries);
+            IReadOnlyList<CommonModuleManifestEntry> orderedEntries = selectionPlan?.Entries ?? [];
             var requestedNames = normalizedRequestedModules
                 .Select(GetCommonModuleName)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -351,7 +345,7 @@ public sealed class CommonModulesInstallationTransaction
                 snapshot.ProjectRoot,
                 documentName,
                 document,
-                selectionPlan.RequiredReferences,
+                selectionPlan?.RequiredReferences ?? [],
                 referenceEvidence);
             ValidateInstalledSourceIdentities(orderedEntries, installedByName);
             var entriesToCopy = orderedEntries
@@ -528,7 +522,7 @@ public sealed class CommonModulesInstallationTransaction
         if (project.Manifest.Documents.Values.Any(document => document.CommonModules.Count > 0))
         {
             var repositoryPath = GetRepositoryPath(project);
-            var entries = CaptureProvisionalEntries(repositoryPath, cancellationToken);
+            var package = CaptureProvisionalPackage(repositoryPath, cancellationToken);
             foreach (var (documentName, document) in project.Manifest.Documents.OrderBy(
                          item => item.Key,
                          StringComparer.OrdinalIgnoreCase))
@@ -538,8 +532,7 @@ public sealed class CommonModulesInstallationTransaction
                     continue;
                 }
 
-                var updatePlan = CommonModulesReconciliation.Create(entries, document.CommonModules);
-                ValidateSelectedEntryIdentities(updatePlan.Entries);
+                var updatePlan = CommonModulesReconciliation.Create(package, document.CommonModules);
                 referenceEvidenceByDocument.Add(
                     documentName,
                     await ResolveRequiredReferenceEvidenceAsync(
@@ -780,7 +773,6 @@ public sealed class CommonModulesInstallationTransaction
         CommonModulesPackageSnapshotCleanupResult? cleanup = null;
         try
         {
-            IReadOnlyList<CommonModuleManifestEntry> entries = [];
             if (targetDocuments.Length > 0)
             {
                 var repositoryPath = GetRepositoryPath(
@@ -789,7 +781,6 @@ public sealed class CommonModulesInstallationTransaction
                 packageSnapshot = packageSnapshotFactory.Capture(
                     repositoryPath,
                     cancellationToken);
-                entries = packageSnapshot.Entries;
             }
 
             var copyPlans = new List<CommonModuleCopyPlan>();
@@ -802,8 +793,7 @@ public sealed class CommonModulesInstallationTransaction
             foreach (var (documentName, document) in targetDocuments)
             {
                 priorModulesByDocument.Add(documentName, document.CommonModules.ToArray());
-                var updatePlan = CommonModulesReconciliation.Create(entries, document.CommonModules);
-                ValidateSelectedEntryIdentities(updatePlan.Entries);
+                var updatePlan = CommonModulesReconciliation.Create(packageSnapshot!.Package, document.CommonModules);
                 var referenceChanges = AppendRequiredReferencesFromEvidence(
                     snapshot.ProjectRoot,
                     documentName,
@@ -1312,31 +1302,6 @@ public sealed class CommonModulesInstallationTransaction
             prior.Name,
             StringComparison.OrdinalIgnoreCase));
         document.CommonModules[index] = replacement;
-    }
-
-    private static void ValidateSelectedEntryIdentities(IReadOnlyList<CommonModuleManifestEntry> entries)
-    {
-        var byName = new Dictionary<string, CommonModuleManifestEntry>(StringComparer.OrdinalIgnoreCase);
-        var byModuleFile = new Dictionary<string, CommonModuleManifestEntry>(StringComparer.OrdinalIgnoreCase);
-        foreach (var entry in entries)
-        {
-            if (byName.TryGetValue(entry.Name, out var matchingName))
-            {
-                throw new CommonModulesManifestException(
-                    $"CommonModules selection contains duplicate CommonModules name '{entry.Name}': " +
-                    $"'{matchingName.ModuleFile}' and '{entry.ModuleFile}'.");
-            }
-
-            if (byModuleFile.TryGetValue(entry.InstalledModuleFile, out var matchingModuleFile))
-            {
-                throw new CommonModulesManifestException(
-                    $"CommonModules selection contains duplicate flat moduleFile '{entry.InstalledModuleFile}': " +
-                    $"'{matchingModuleFile.ModuleFile}' and '{entry.ModuleFile}'.");
-            }
-
-            byName.Add(entry.Name, entry);
-            byModuleFile.Add(entry.InstalledModuleFile, entry);
-        }
     }
 
     private static void ValidatePlannedManifest(ProjectManifest manifest)

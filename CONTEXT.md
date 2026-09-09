@@ -867,17 +867,56 @@ A .NET project that builds `VbaDev`, its tests, or shared implementation
 code in this repository.
 _Avoid_: workbook project, npm package
 
-**CommonModulesPackage**:
+**CommonModulesReleaseArtifact**:
 A versioned release artifact produced by `xls-common-devtools`, normally as
 `common_modules_repo.zip`, that provides shared VBA source files and a
-machine-readable CommonModules manifest consumed by `VbaDev`.
-_Avoid_: vendored source, submodule, built-in library
+machine-readable CommonModules manifest consumed by `VbaDev`. It is a
+distribution artifact, independently of runtime package admission or the
+currently configured repository. It does not pin a project's package version.
+_Avoid_: admitted Package, byte snapshot, vendored source, submodule, built-in library
 
 ## CommonModules
 
 **CommonModulesRepository**:
 A generated closed flat package directory named `common_modules_repo`. It contains the canonical manifest, exactly one root-level source unit for every manifest row, and only each listed form's optional matching `.frx`; every other entry is outside the package. COLLECT writes this output, while mandatory baseline and fallback candidates come only from `CommonModules Authoring Source Set`.
 _Avoid_: authoring source set, transaction workspace, package cache
+
+**CommonModulesPackage**:
+The deeply immutable runtime authority issued only after complete admission of
+a CommonModulesRepository or its captured package bytes. A private constructor
+and controlled complete-admission factories prevent arbitrary entry lists,
+initializers, and record copies from creating or replacing that authority.
+The Package owns canonical entries, their nested declarations, identity indexes,
+dependency state, exact request resolution, dependency-component ordering, and
+the first-seen case-insensitive required-reference union. Filenames and
+extensionless CommonModuleNames use exact OrdinalIgnoreCase matching without
+trimming or fuzzy lookup; missing or ambiguous requests remain manifest errors.
+Request order, first encounter, dependency-before-dependent component order,
+and manifest order inside a cycle determine selection order. Source bytes,
+staging lifetime, installed-state reconciliation, copying, and project mutation
+belong to separate owners. Live and captured admission currently remain
+separate validation implementations with the same complete-admission obligation.
+_Avoid_: release ZIP, raw manifest entries, mutable graph, empty placeholder authority
+
+**CommonModulesSelectionPlan**:
+An immutable dependency-closed selection issued by one admitted
+CommonModulesPackage, containing canonical entries and their OrdinalIgnoreCase
+first-seen union of RequiredReferences. It represents ordinary requested-root
+resolution; Reconciliation's separately ordered retained-entry facts are not a
+selection plan. The plan does not confer source-byte access, installed-state
+authority, or permission to commit a project mutation. A Package may issue an
+empty selection; an empty raw list does not establish Package authority.
+_Avoid_: raw-list dependency result, reconciliation result, source copy plan, mutation commitment
+
+**CommonModulesPackageSnapshot**:
+The invocation-owned complete stable capture of package bytes, its admitted
+CommonModulesPackage, and staging cleanup responsibility. Metadata selection
+delegates to the Package; byte reads retain the snapshot lifetime guard and
+return independent copies. Already captured immutable metadata and plans may
+outlive cleanup without enabling reads from a disposed snapshot. A Package
+obtained from a live reader does not substitute for stable byte capture before
+repository-backed source mutation.
+_Avoid_: release artifact, mutable repository view, project mutation transaction
 
 **Collection Search Root**:
 The workspace directory explicitly supplied to COLLECT. COLLECT recursively discovers `vba-project.json` files without descending into reparse child directories; the explicit root itself may be a reparse path, while neither the script location nor a discovered package repository substitutes for this input.
@@ -991,25 +1030,37 @@ fully revalidated purge rather than proof of retirement, rename, or a successor.
 _Avoid_: retired module, renamed CommonModule, disabled module
 
 **CommonModulesReconciliation**:
-The pure, request-scoped immutable facts derived from a validated complete
-CommonModules repository inventory and the latest installed selection of one
-ProjectDocument. It fixes canonical identity matches, requested dependency
-closure in CommonModuleDependencyComponent order, repository-backed installed
-entries, retained/missing/stale orphan state, provable reachability, missing
-installed dependencies, and the first-seen case-insensitive required-reference
-union. Update projects these facts into its source/manifest plan; Doctor
-projects them into warnings and dependency diagnostics without traversing the
-graph or reclassifying orphan state independently.
+The pure, request-scoped immutable facts derived from one admitted
+CommonModulesPackage and the latest installed selection of one ProjectDocument.
+It fixes canonical identity matches, requested dependency closure in
+CommonModuleDependencyComponent order, repository-backed installed entries,
+retained/missing/stale orphan state, provable reachability, and missing installed
+dependencies. Update projects these facts into its source/manifest plan; Doctor
+projects them into warnings and dependency diagnostics without independently
+reconstructing package identity, dependency selection, or orphan classification.
+
+The ordered selection starts with the Package closure of repository-backed
+directly requested roots in installed order, then appends remaining
+repository-backed installed entries in installed order. The append does not
+expand additional dependencies from retained entries. These are Reconciliation's
+own facts, not a CommonModulesSelectionPlan.
+`Package.GetRequiredReferences(ordered names)` derives the required-reference
+union over that exact final order without issuing another plan. Existing
+installed positions remain stable; newly installed entries follow the resulting
+order.
+
 Reappeared requested orphans are included in Update's refresh closure, while
 their stored orphan markers withhold current dependency/reachability authority
 from Doctor until refresh commits. An unreachable-dependency warning requires
 every requested root to have complete current authority. Diagnostic missing
-dependencies retain root order and first dependency encounter order; newly
-installed entries retain canonical dependency-component order.
-The result owns copies of the declarations and selection, so later caller
-mutations cannot alter it. Repository I/O and stable capture, source drift,
-mutation, leases, cancellation, manifest-last commitment, recovery, and message
-rendering remain outside this authority.
+dependencies retain root order and first dependency encounter order.
+
+The result retains immutable Package declarations and owns its installed-state
+capture, so later caller mutations cannot alter it. Repository admission and
+stable capture, source drift, mutation, leases, cancellation, manifest-last
+commitment, recovery, and message rendering remain outside this comparison.
+Installed-only Add and zero-target Update require no Package or Reconciliation;
+they preserve their existing behavior without creating empty package authority.
 
 **CommonModulesMutationIntent**:
 The request to add named CommonModules to one document or update every currently
@@ -5837,6 +5888,12 @@ Domain Expert: "No. Reject every direct dependency from `testOnly: false` to `te
 
 Dev: "Must dependency-first ordering reject a cycle such as `ObjectList` and `ObjectSet`?"
 Domain Expert: "No. Collapse every maximal mutually reachable set into one `CommonModuleDependencyComponent`. Order dependency components before their dependents, enumerate a component's outgoing dependencies by repository member order then each member's declaration order with first occurrence winning, and order members inside the component by repository row. A selected member brings in the whole component but keeps per-entry direct intent. Reject self-dependency; the runtime-to-test rule rejects a mixed-classification cycle. Existing installed positions remain stable when a mutation merges this canonical closure, while newly discovered entries follow the component order."
+
+Dev: "May a caller construct a CommonModulesPackage from manifest entries and run the dependency resolver directly?"
+Domain Expert: "No. Only complete package admission can issue CommonModulesPackage. Its entries, nested declarations, indexes, graph, and selection plans are deeply immutable. Resolve exact requests, dependency components, and ordered reference unions through that Package. Live and captured admission retain separate implementations for now; neither a release ZIP nor an empty entry list proves runtime package authority."
+
+Dev: "Should CommonModulesReconciliation treat every retained installed entry as another requested dependency root?"
+Domain Expert: "No. Expand the Package closure of available directly requested roots first, then append the remaining repository-backed installed entries in their stored order without expanding additional dependencies. These are Reconciliation facts, not a CommonModulesSelectionPlan; ask Package.GetRequiredReferences for their ordered reference union. Preserve existing manifest positions, orphan classifications, and Doctor's root-specific missing-dependency order. This comparison does not own byte capture, source copying, or mutation commitment."
 
 Dev: "Should `new excel` alphabetize its initial CommonModules roots?"
 Domain Expert: "No. Traverse direct roots in repository row order and expand the `CommonModuleDependencyComponent` graph depth-first in its canonical outgoing-dependency order, placing dependency components first and each component's members in repository row order. Keep only the first position for each case-insensitive identity; a later direct-root encounter updates final requested intent without moving it. Use that same order for source copy, manifest, text, and JSON."
