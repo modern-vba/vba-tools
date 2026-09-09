@@ -450,10 +450,10 @@ an atomic snapshot of concurrent authoring changes: an unreadable selected file
 fails capture, and build neither retries nor rewrites source files. Empty source
 sets remain valid. Source validation finishes before the final manifest-first
 import order is fixed; that ordering preserves read and failure order within
-source admission. Build and Publish complete source admission before checking
-template existence, so a source-admission error is reported first when both
-inputs are invalid. A missing
-template still releases captured input and reports any cleanup failure.
+source admission. Build and Publish capture sources before acquiring template
+evidence. Their analyzed admission retains source findings and appends required
+template/evidence failures to an incomplete report. A missing template still
+releases captured input and reports any cleanup failure.
 The ordinary build stage of `test` uses these same rules;
 Publish shares these capture rules with its own exclusions. Snapshot Build/Test
 uses the same BOM-or-ACP admission for the complete caller-owned inventory.
@@ -528,13 +528,15 @@ report still blocks Build and occupies one output line:
 {"type":"sourceAnalysis","schemaVersion":"3.0","complete":true,"diagnostics":[{"type":"diagnostic","owner":"vba-dev","uri":"file:///C:/Example/src/Main.bas","code":"validation.duplicateCallableParameterName","message":"Duplicate callable parameter name 'name'.","severity":"error","range":{"start":{"line":1,"character":43},"end":{"line":1,"character":47}}}],"failures":[]}
 ```
 
-The ordinary saved-source build stage of `test` inherits this gate. It does not
-apply to Publish, snapshot Build/Test, standalone Import or Export, or
-`test --no-build`, and does not change Test Explorer result events. Doctor's raw
-admission and Build/Publish readiness profiles retain their existing scope.
-Source editing and native VBE compilation remain separate.
+The ordinary and snapshot build stages of `test`, including debug snapshot
+Build, inherit the complete shared analysis gate. Publish applies it to its
+post-exclusion source set, as described below. Test Explorer reports source
+validation failure before test execution without inventing assertion outcomes.
+Standalone Import/Export, `test --no-build`, and Doctor's raw admission and
+Build/Publish readiness profiles retain their existing scope. Source editing
+and native VBE compilation remain separate.
 
-Before Excel starts, build stages every selected source, requires its authoritative exported module identity, and reports all case-insensitive source conflicts. In the disposable workbook it checks the actual project, retained-component, and active-reference namespaces, removes replaceable components, normalizes references, then checks the prepared protected and VBE-adopted reference identities before import. After imported components are verified, it re-enumerates the actual project, retained-component, and active-reference authority. A gap or conflict introduced by import fails before save or output commitment and preserves the source template and previous output. Build-before-test uses this same profile and preflight.
+Before the generation session starts, build stages every selected source, requires its authoritative exported module identity, and reports all case-insensitive source conflicts. Required semantic evidence can use an earlier owned read-only Excel inspection. In the disposable generation workbook it checks the actual project, retained-component, and active-reference namespaces, removes replaceable components, normalizes references, then checks the prepared protected and VBE-adopted reference identities before import. After imported components are verified, it re-enumerates the actual project, retained-component, and active-reference authority. A gap or conflict introduced by import fails before save or output commitment and preserves the source template and previous output. Build-before-test uses this same profile and preflight.
 
 After the owned Excel process has been released, the saved staging workbook must
 be readable and non-empty before the destination is replaced. This is not an
@@ -661,6 +663,30 @@ effective source set remains valid. Later authoring changes cannot alter the
 admitted publication; an unreadable selected file
 fails without a retry, closing stability check, or authoring lock. Existing
 warnings and output commitment, including cancellation handling, are unchanged.
+
+After selection, Publish validates included captured sources with the same
+syntax, declaration, call/ByRef, Event, Implements, and namespace analyzer used
+by Build and the language server. It acquires the same selected reference, host
+Event, and project identity evidence. Excluded syntax and semantic errors do
+not participate, and excluded declarations cannot bind names or calls. Equal
+source and metadata inputs give equal diagnostics; full editor or Build inputs
+that contain excluded files need not match. Existing static indeterminacy is
+preserved, with no new unresolved-name rule. Ordinary Build continues to validate
+its full source set, including publish exclusions.
+
+Recoverable included-file errors accumulate; a project-fatal stop retains
+earlier findings. Any Error or incomplete required analysis returns nonzero
+before publish generation and preserves sources, the template, and the previous
+publication. Generation consumes the captured template and admitted sources
+that were analyzed, with accepted reference identities checked again before
+import and save. A required metadata failure cannot be treated as empty success.
+
+The Publish command advertises output schema `3.0` and emits the same
+`sourceAnalysis` schema `3.0` stderr record described under Build. Its success
+stdout remains unchanged. VS Code Publish displays original-source primary and
+related locations, and a corrected saved-source rerun replaces only that
+Publish/project/document Problems contribution. Other contributions survive;
+incomplete reasons remain in Output. No dirty-editor policy is introduced.
 
 ### export
 

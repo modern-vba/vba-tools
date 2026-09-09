@@ -4,6 +4,7 @@ using VbaDev.App.Projects;
 using VbaDev.App.Workbooks;
 using VbaDev.Domain;
 using VbaTools.Semantics;
+using VbaTools.Syntax;
 
 namespace VbaDev.App.Build;
 
@@ -109,8 +110,8 @@ internal sealed class WorkbookMaterializer
         ArgumentNullException.ThrowIfNull(intent);
         var plan = intent switch
         {
-            WorkbookMaterializationIntent.ProjectBuild build =>
-                await CreateAnalyzedBuildPlanAsync(build.Context, cancellationToken).ConfigureAwait(false),
+            WorkbookMaterializationIntent.ProjectBuild or WorkbookMaterializationIntent.Publish =>
+                await CreateAnalyzedProjectPlanAsync(intent, cancellationToken).ConfigureAwait(false),
             WorkbookMaterializationIntent.SourceSnapshotBuild snapshot =>
                 await CreateAnalyzedSnapshotPlanAsync(snapshot, cancellationToken).ConfigureAwait(false),
             _ => CreatePlan(intent, cancellationToken)
@@ -129,22 +130,34 @@ internal sealed class WorkbookMaterializer
             cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task<WorkbookMaterializationPlan> CreateAnalyzedBuildPlanAsync(
-        ResolvedProjectContext context, CancellationToken cancellationToken)
+    private async Task<WorkbookMaterializationPlan> CreateAnalyzedProjectPlanAsync(
+        WorkbookMaterializationIntent intent, CancellationToken cancellationToken)
     {
+        var (context, targetPath, operationName) = intent switch
+        {
+            WorkbookMaterializationIntent.ProjectBuild build => (build.Context, build.Context.BinDocumentPath, "ordinary Build"),
+            WorkbookMaterializationIntent.Publish publish => (publish.Context, publish.Context.PublishDocumentPath, "Publish"),
+            _ => throw new ArgumentOutOfRangeException(nameof(intent), intent, null)
+        };
         CapturedWorkbookTemplate? template = null;
         VbaProjectSemanticInputs? inputs = null;
-        var admission = await sourceAdmission.AdmitAnalyzedProjectBuildAsync(
-            context.DocumentSourceSetPath, context.Document.CommonModules,
-            async (sources, token) =>
-            {
-                var provider = semanticInputProvider
-                    ?? throw new InvalidOperationException("A required project semantic input provider was not configured for ordinary Build.");
-                template = CapturedWorkbookTemplate.Capture(context.TemplateDocumentPath, token);
-                inputs = await provider.AcquireAsync(context, template, sources, token).ConfigureAwait(false);
-                return inputs;
-            }, cancellationToken).ConfigureAwait(false);
-        return CreateProjectPlan(context, context.BinDocumentPath, ResolveTimeouts(context),
+        async Task<VbaProjectSemanticInputs> AcquireInputs(IReadOnlyList<VbaSyntaxTree> sources, CancellationToken token)
+        {
+            var provider = semanticInputProvider
+                ?? throw new InvalidOperationException($"A required project semantic input provider was not configured for {operationName}.");
+            template = CapturedWorkbookTemplate.Capture(context.TemplateDocumentPath, token);
+            inputs = await provider.AcquireAsync(context, template, sources, token).ConfigureAwait(false);
+            return inputs;
+        }
+        var admission = intent switch
+        {
+            WorkbookMaterializationIntent.ProjectBuild => await sourceAdmission.AdmitAnalyzedProjectBuildAsync(
+                context.DocumentSourceSetPath, context.Document.CommonModules, AcquireInputs, cancellationToken).ConfigureAwait(false),
+            WorkbookMaterializationIntent.Publish => await sourceAdmission.AdmitAnalyzedProjectPublishAsync(
+                context.DocumentSourceSetPath, context.Document.CommonModules, AcquireInputs, cancellationToken).ConfigureAwait(false),
+            _ => throw new ArgumentOutOfRangeException(nameof(intent), intent, null)
+        };
+        return CreateProjectPlan(context, targetPath, ResolveTimeouts(context),
             new AdmittedWorkbookGenerationSourceInput(admission)) with
         {
             CapturedTemplate = template,
@@ -424,14 +437,6 @@ internal sealed class WorkbookMaterializer
         CancellationToken cancellationToken)
         => intent switch
         {
-            WorkbookMaterializationIntent.Publish publish => CreateProjectPlan(
-                publish.Context,
-                publish.Context.PublishDocumentPath,
-                ResolveTimeouts(publish.Context),
-                new AdmittedWorkbookGenerationSourceInput(sourceAdmission.AdmitProjectPublish(
-                    publish.Context.DocumentSourceSetPath,
-                    publish.Context.Document.CommonModules,
-                    cancellationToken))),
             WorkbookMaterializationIntent.ExplicitImport import => new WorkbookMaterializationPlan(
                 Path.GetFileNameWithoutExtension(import.TargetWorkbookPath),
                 import.TargetWorkbookPath,

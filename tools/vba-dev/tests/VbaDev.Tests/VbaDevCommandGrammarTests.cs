@@ -92,7 +92,7 @@ public sealed class VbaDevCommandGrammarTests
             ["host-event list"] = "1.0",
             ["import"] = "1.0",
             ["new excel"] = "1.0",
-            ["publish"] = "1.0",
+            ["publish"] = "3.0",
             ["reference add"] = "1.0",
             ["reference list"] = "1.0",
             ["reference remove"] = "1.0",

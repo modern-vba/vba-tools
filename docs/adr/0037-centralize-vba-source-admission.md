@@ -18,7 +18,10 @@ Issue #397 consolidates live and captured selection into one private policy
 while retaining their separate input acquisition and evidence ownership.
 Issue #399 adds analyzed admission for ordinary saved-source Build in
 [ADR 0056](0056-validate-captured-saved-sources-before-workbook-generation.md).
-That gate reuses this source authority; raw Doctor, Publish, snapshot, and
+That gate reuses this source authority. Issues #401 and #403 extend complete
+analysis to snapshot Build/Test and Publish in
+[ADR 0058](0058-validate-snapshot-generations-and-retain-diagnostic-origins.md) and
+[ADR 0060](0060-validate-the-effective-publish-source-set.md). Raw Doctor and
 explicit Import profiles retain their existing scope.
 Source ownership, VBE import verification, and owned Excel-process lifecycle
 contracts remain accepted.

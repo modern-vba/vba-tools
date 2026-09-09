@@ -715,6 +715,11 @@ test('bundled CLI capabilities must satisfy the packaged extension contract surf
 
   assert.doesNotThrow(() => assertBundledCliCapabilities(JSON.stringify(compatibleCapabilities)));
 
+  assert.throws(() => assertBundledCliCapabilities(JSON.stringify({
+    ...compatibleCapabilities,
+    commands: { ...commands, publish: { outputSchemaVersion: '1.0' } }
+  })), /publish/);
+
   const missingActiveCodePageFeature = { ...contract.featureVersions };
   delete missingActiveCodePageFeature['sourceSnapshot.activeWindowsCodePage'];
   assert.throws(

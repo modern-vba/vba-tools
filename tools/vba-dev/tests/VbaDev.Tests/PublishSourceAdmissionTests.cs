@@ -89,8 +89,10 @@ public sealed class PublishSourceAdmissionTests
 
         Assert.Equal(1, result.ExitCode);
         Assert.Contains("Duplicate VBA source file names", result.StandardError, StringComparison.Ordinal);
-        Assert.Contains(first, result.StandardError, StringComparison.Ordinal);
-        Assert.Contains(second, result.StandardError, StringComparison.Ordinal);
+        using var report = JsonDocument.Parse(result.StandardError.Split('\n')[0]);
+        var failure = Assert.Single(report.RootElement.GetProperty("failures").EnumerateArray());
+        Assert.Contains(first, failure.GetProperty("message").GetString(), StringComparison.Ordinal);
+        Assert.Contains(second, failure.GetProperty("message").GetString(), StringComparison.Ordinal);
         Assert.Equal(0, reads);
         Assert.Empty(automation.OpenedWorkbooks);
         Assert.False(Directory.Exists(Path.GetDirectoryName(context.PublishDocumentPath)));
@@ -169,7 +171,7 @@ public sealed class PublishSourceAdmissionTests
         var result = await CreateCommand(automation, activeCodePage).RunAsync(context, CancellationToken.None);
 
         Assert.Equal(1, result.ExitCode);
-        Assert.Contains(path, result.StandardError, StringComparison.Ordinal);
+        AssertFailureSource(result.StandardError, path);
         Assert.Empty(automation.OpenedWorkbooks);
         Assert.Equal("previous-output", File.ReadAllText(context.PublishDocumentPath));
         Assert.Equal(bytes, File.ReadAllBytes(path));
@@ -289,7 +291,11 @@ public sealed class PublishSourceAdmissionTests
         Assert.Equal(!shouldFail, mirrorObserved);
         if (shouldFail)
         {
-            Assert.Contains(sourcePath, result.StandardError, StringComparison.Ordinal);
+            if (item.TryGetProperty("expectedProjectionFailure", out var expectedProjectionFailure)
+                && expectedProjectionFailure.GetBoolean())
+                Assert.Contains(sourcePath, result.StandardError, StringComparison.Ordinal);
+            else
+                AssertFailureSource(result.StandardError, sourcePath);
             Assert.Empty(automation.OpenedWorkbooks);
             Assert.Empty(automation.ImportedSources);
         }
@@ -387,5 +393,14 @@ public sealed class PublishSourceAdmissionTests
                 automation,
                 new WorkbookReferenceNormalizer(new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),
                 new WorkbookOutputTransactionFactory(new WindowsExactFileSystemObjectOwnershipFactory()),
-                mirrorFactory ?? new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory()))));
+                mirrorFactory ?? new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory()),
+                semanticInputProvider: FakeProjectSemanticInputProvider.Empty)));
+
+    private static void AssertFailureSource(string standardError, string sourcePath)
+    {
+        using var report = JsonDocument.Parse(standardError.Split('\n')[0]);
+        Assert.False(report.RootElement.GetProperty("complete").GetBoolean());
+        Assert.Contains(report.RootElement.GetProperty("failures").EnumerateArray(),
+            failure => failure.GetProperty("uri").GetString() == new Uri(sourcePath).AbsoluteUri);
+    }
 }
