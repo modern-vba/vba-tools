@@ -482,7 +482,7 @@ internal sealed class VbaProjectSemanticResolution
             return null;
         }
 
-        if (IsCallableResultAssignment(currentDocument, argumentList, calleeRange))
+        if (IsCallableResultStorage(currentDocument, argumentList, calleeRange))
         {
             return null;
         }
@@ -561,24 +561,33 @@ internal sealed class VbaProjectSemanticResolution
             out target);
     }
 
-    internal static bool IsCallableResultAssignment(
+    internal static bool IsCallableResultStorage(
         VbaSourceDocument currentDocument,
         VbaArgumentListSyntax argumentList,
         VbaSyntaxRange calleeRange)
     {
-        if (argumentList.Form != VbaCallSyntaxForm.PropertyAssignment
+        if (argumentList.Form is not (VbaCallSyntaxForm.PropertyAssignment
+                or VbaCallSyntaxForm.BareValueRead)
             || argumentList.Callee.Contains('.', StringComparison.Ordinal))
         {
             return false;
         }
 
+        return FindCallableResultOwner(currentDocument, argumentList.Callee, calleeRange) is not null;
+    }
+
+    internal static VbaCallableDeclarationSyntax? FindCallableResultOwner(
+        VbaSourceDocument currentDocument,
+        string name,
+        VbaSyntaxRange range)
+    {
         var syntaxTree = currentDocument.SyntaxTree
             ?? VbaSyntaxTree.ParseModule(currentDocument.Uri, currentDocument.Text);
-        return syntaxTree.Module.CallableDeclarations.Any(declaration =>
-            declaration.BlockRange.Start.Offset <= calleeRange.Start.Offset
-            && calleeRange.End.Offset <= declaration.BlockRange.End.Offset
+        return syntaxTree.Module.CallableDeclarations.FirstOrDefault(declaration =>
+            declaration.BlockRange.Start.Offset <= range.Start.Offset
+            && range.End.Offset <= declaration.BlockRange.End.Offset
             && declaration.Name.Equals(
-                argumentList.Callee,
+                name,
                 StringComparison.OrdinalIgnoreCase)
             && (declaration.PropertyAccessorKind == VbaPropertyAccessorKind.Get
                 || declaration.Kind == VbaDeclarationKind.Procedure

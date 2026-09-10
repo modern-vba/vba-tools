@@ -5884,8 +5884,8 @@ public sealed class VbaSemanticInventory
             var beforeCompatibility = semanticResolution.AnalyzeCompleteCall(
                 occurrence.Uri,
                 beforeCall);
-            var beforeIsResultAssignment =
-                VbaSemanticResolution.IsCallableResultAssignment(
+            var beforeIsResultStorage =
+                VbaSemanticResolution.IsCallableResultStorage(
                     beforeDocument,
                     beforeCall,
                     beforeCall.CalleeRange!);
@@ -5928,19 +5928,19 @@ public sealed class VbaSemanticInventory
             var afterCall = afterCalls[0];
             var afterCompatibility = hypothetical.semanticResolution
                 .AnalyzeCompleteCall(occurrence.Uri, afterCall);
-            var afterIsResultAssignment =
-                VbaSemanticResolution.IsCallableResultAssignment(
+            var afterIsResultStorage =
+                VbaSemanticResolution.IsCallableResultStorage(
                     afterDocument,
                     afterCall,
                     afterCall.CalleeRange!);
-            if (beforeIsResultAssignment != afterIsResultAssignment)
+            if (beforeIsResultStorage != afterIsResultStorage)
             {
                 return ResolutionChanged(
                     "Rename would change a target occurrence's callable "
                     + "result role.");
             }
 
-            if (beforeIsResultAssignment)
+            if (beforeIsResultStorage)
             {
                 continue;
             }

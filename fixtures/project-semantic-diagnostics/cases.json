@@ -2,6 +2,350 @@
   "schemaVersion": "1.0",
   "cases": [
     {
+      "id": "property-get-result-keeps-direct-byref-storage-type",
+      "sources": [
+        {
+          "fileName": "ResultReader.cls",
+          "source": "VERSION 1.0 CLASS\nAttribute VB_Name = \"ResultReader\"\nPublic Property Get ReadCount(ByVal n As Long) As Integer\n    AcceptLong ReadCount\nEnd Property\nPrivate Sub AcceptLong(ByRef value As Long)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "ResultReader.cls",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 3,
+              "character": 15
+            },
+            "end": {
+              "line": 3,
+              "character": 24
+            }
+          },
+          "details": [
+            {
+              "location": {
+                "fileName": "ResultReader.cls",
+                "range": {
+                  "start": {
+                    "line": 5,
+                    "character": 12
+                  },
+                  "end": {
+                    "line": 5,
+                    "character": 22
+                  }
+                }
+              },
+              "relatedMessage": "Candidate signature: Sub AcceptLong(ByRef value As Long). Mismatches: argument 1 for parameter 'value' ByRef type: expected Long, found Integer.",
+              "fallbackText": "Candidate signature: Sub AcceptLong(ByRef value As Long).\nMismatches: argument 1 for parameter 'value' ByRef type: expected Long, found Integer."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.",
+          "relatedInformation": [
+            {
+              "fileName": "ResultReader.cls",
+              "range": {
+                "start": {
+                  "line": 5,
+                  "character": 12
+                },
+                "end": {
+                  "line": 5,
+                  "character": 22
+                }
+              },
+              "message": "Candidate signature: Sub AcceptLong(ByRef value As Long). Mismatches: argument 1 for parameter 'value' ByRef type: expected Long, found Integer."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "result-parentheses-and-invocations-remain-value-temporaries",
+      "sources": [
+        {
+          "fileName": "ResultReads.bas",
+          "source": "Attribute VB_Name = \"ResultReads\"\nPublic Function ReadCount(ByVal n As Long) As Integer\n    AcceptLong (ReadCount)\n    AcceptLong ReadCount(0)\nEnd Function\nPublic Sub AcceptLong(ByRef value As Long)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": []
+    },
+    {
+      "id": "result-variable-keeps-direct-byref-storage-type",
+      "sources": [
+        {
+          "fileName": "ResultReads.bas",
+          "source": "Attribute VB_Name = \"ResultReads\"\nPublic Function ReadCount(ByVal n As Long) As Integer\n    AcceptLong ReadCount\nEnd Function\nPublic Sub AcceptLong(ByRef value As Long)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "ResultReads.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 2,
+              "character": 15
+            },
+            "end": {
+              "line": 2,
+              "character": 24
+            }
+          },
+          "details": [
+            {
+              "location": {
+                "fileName": "ResultReads.bas",
+                "range": {
+                  "start": {
+                    "line": 4,
+                    "character": 11
+                  },
+                  "end": {
+                    "line": 4,
+                    "character": 21
+                  }
+                }
+              },
+              "relatedMessage": "Candidate signature: Sub AcceptLong(ByRef value As Long). Mismatches: argument 1 for parameter 'value' ByRef type: expected Long, found Integer.",
+              "fallbackText": "Candidate signature: Sub AcceptLong(ByRef value As Long).\nMismatches: argument 1 for parameter 'value' ByRef type: expected Long, found Integer."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.",
+          "relatedInformation": [
+            {
+              "fileName": "ResultReads.bas",
+              "range": {
+                "start": {
+                  "line": 4,
+                  "character": 11
+                },
+                "end": {
+                  "line": 4,
+                  "character": 21
+                }
+              },
+              "message": "Candidate signature: Sub AcceptLong(ByRef value As Long). Mismatches: argument 1 for parameter 'value' ByRef type: expected Long, found Integer."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "qualified-and-outside-result-reads-remain-invocations",
+      "sources": [
+        {
+          "fileName": "ResultReads.bas",
+          "source": "Attribute VB_Name = \"ResultReads\"\nPublic Function AppendValue(ByVal value As String) As String\n    AppendValue = ResultReads.AppendValue\nEnd Function\nPublic Sub Run()\n    Dim text As String\n    text = AppendValue\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "ResultReads.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 2,
+              "character": 30
+            },
+            "end": {
+              "line": 2,
+              "character": 41
+            }
+          },
+          "details": [
+            {
+              "location": {
+                "fileName": "ResultReads.bas",
+                "range": {
+                  "start": {
+                    "line": 1,
+                    "character": 16
+                  },
+                  "end": {
+                    "line": 1,
+                    "character": 27
+                  }
+                }
+              },
+              "relatedMessage": "Candidate signature: Function AppendValue(value As String) As String. Mismatches: parameter 'value': required argument is missing.",
+              "fallbackText": "Candidate signature: Function AppendValue(value As String) As String.\nMismatches: parameter 'value': required argument is missing."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.",
+          "relatedInformation": [
+            {
+              "fileName": "ResultReads.bas",
+              "range": {
+                "start": {
+                  "line": 1,
+                  "character": 16
+                },
+                "end": {
+                  "line": 1,
+                  "character": 27
+                }
+              },
+              "message": "Candidate signature: Function AppendValue(value As String) As String. Mismatches: parameter 'value': required argument is missing."
+            }
+          ]
+        },
+        {
+          "fileName": "ResultReads.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 6,
+              "character": 11
+            },
+            "end": {
+              "line": 6,
+              "character": 22
+            }
+          },
+          "details": [
+            {
+              "location": {
+                "fileName": "ResultReads.bas",
+                "range": {
+                  "start": {
+                    "line": 1,
+                    "character": 16
+                  },
+                  "end": {
+                    "line": 1,
+                    "character": 27
+                  }
+                }
+              },
+              "relatedMessage": "Candidate signature: Function AppendValue(value As String) As String. Mismatches: parameter 'value': required argument is missing.",
+              "fallbackText": "Candidate signature: Function AppendValue(value As String) As String.\nMismatches: parameter 'value': required argument is missing."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.",
+          "relatedInformation": [
+            {
+              "fileName": "ResultReads.bas",
+              "range": {
+                "start": {
+                  "line": 1,
+                  "character": 16
+                },
+                "end": {
+                  "line": 1,
+                  "character": 27
+                }
+              },
+              "message": "Candidate signature: Function AppendValue(value As String) As String. Mismatches: parameter 'value': required argument is missing."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "explicit-recursion-still-requires-arguments",
+      "sources": [
+        {
+          "fileName": "ResultReads.bas",
+          "source": "Attribute VB_Name = \"ResultReads\"\nPublic Function AppendValue(ByVal value As String) As String\n    AppendValue = AppendValue()\nEnd Function\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "ResultReads.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 2,
+              "character": 18
+            },
+            "end": {
+              "line": 2,
+              "character": 29
+            }
+          },
+          "details": [
+            {
+              "location": {
+                "fileName": "ResultReads.bas",
+                "range": {
+                  "start": {
+                    "line": 1,
+                    "character": 16
+                  },
+                  "end": {
+                    "line": 1,
+                    "character": 27
+                  }
+                }
+              },
+              "relatedMessage": "Candidate signature: Function AppendValue(value As String) As String. Mismatches: parameter 'value': required argument is missing.",
+              "fallbackText": "Candidate signature: Function AppendValue(value As String) As String.\nMismatches: parameter 'value': required argument is missing."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.",
+          "relatedInformation": [
+            {
+              "fileName": "ResultReads.bas",
+              "range": {
+                "start": {
+                  "line": 1,
+                  "character": 16
+                },
+                "end": {
+                  "line": 1,
+                  "character": 27
+                }
+              },
+              "message": "Candidate signature: Function AppendValue(value As String) As String. Mismatches: parameter 'value': required argument is missing."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "function-result-reads-and-explicit-recursion",
+      "sources": [
+        {
+          "fileName": "ResultReads.bas",
+          "source": "Attribute VB_Name = \"ResultReads\"\nPublic Function AppendValue(ByVal depth As Long) As String\n    AppendValue = \"base\"\n    If depth > 0 Then\n        AppendValue = AppendValue & AppendValue(depth - 1)\n    End If\nEnd Function\n"
+        }
+      ],
+      "diagnostics": []
+    },
+    {
+      "id": "property-get-result-variable-bare-read",
+      "sources": [
+        {
+          "fileName": "ResultReader.cls",
+          "source": "VERSION 1.0 CLASS\nAttribute VB_Name = \"ResultReader\"\nPublic Property Get Item(ByVal index As Long) As String\n    Item = \"base\"\n    iTeM = iTeM & \"/\"\nEnd Property\n"
+        }
+      ],
+      "diagnostics": []
+    },
+    {
+      "id": "function-result-variable-bare-read",
+      "sources": [
+        {
+          "fileName": "ResultReads.bas",
+          "source": "Attribute VB_Name = \"ResultReads\"\nPublic Function AppendValue(ByVal value As String) As String\n    AppendValue = value\n    AppendValue = AppendValue & \"/\"\nEnd Function\n"
+        }
+      ],
+      "diagnostics": []
+    },
+    {
       "id": "duplicate-procedure-declarations",
       "sources": [
         {
