@@ -26,7 +26,7 @@ public interface IWorkbookGenerationSession : IVbaProjectReferenceProbeSession
 
     Task<IReadOnlyList<WorkbookReference>> GetReferencesAsync(CancellationToken cancellationToken);
 
-    /// <summary>Reads present required references and resolves their physical library paths without modifying the workbook.</summary>
+    /// <summary>Reads present required references and resolves uniquely loaded physical library paths when available.</summary>
     async Task<IReadOnlyList<WorkbookReference>> GetReferenceIdentitiesAsync(
         IReadOnlyList<string> referenceNames, CancellationToken cancellationToken)
         => (await GetReferencesAsync(cancellationToken).ConfigureAwait(false))
