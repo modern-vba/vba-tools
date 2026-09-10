@@ -3225,6 +3225,15 @@ still make a value temporary. Explicit recursive calls, qualified names, and
 reads outside the owning Function/Get body retain ordinary call validation;
 Property Let and Set have no result storage. Rename preserves the same result
 storage versus invocation role before and after a proposed edit.
+
+In a complete member-chain call, a parenthesized intermediate member whose
+result supplies the next receiver is a value read, including under `Call`,
+`Set`, and `Let` prefixes. Only the terminal invoked member receives statement
+context; standalone Property Get statements remain invalid. Receiver argument
+lists stay separate from the terminal callable's arguments. Position syntax
+retains the explicit receiver chain and physical identifier ranges without
+projecting names inside argument expressions as receiver segments; an explicit
+root does not become an implicit `With` receiver after a call boundary.
 _Avoid_: callable-kind filter, selected accessor variant, inferred active branch
 
 **CallArgumentMapping**:

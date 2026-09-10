@@ -2,6 +2,304 @@
   "schemaVersion": "1.0",
   "cases": [
     {
+      "id": "property-receiver-unindexed-required-argument",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim item As Receiver\n    item.Child(\"A1\").Child.Activate\nEnd Sub\n"
+        },
+        {
+          "fileName": "Receiver.cls",
+          "source": "VERSION 1.0 CLASS\nAttribute VB_Name = \"Receiver\"\nPublic Property Get Child(ByVal key As String) As Receiver\nEnd Property\nPublic Sub Activate()\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "Caller.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": { "start": { "line": 3, "character": 21 }, "end": { "line": 3, "character": 26 } },
+          "details": [
+            {
+              "location": {
+                "fileName": "Receiver.cls",
+                "range": { "start": { "line": 2, "character": 20 }, "end": { "line": 2, "character": 25 } }
+              },
+              "relatedMessage": "Candidate signature: Property Child(key As String) As Receiver. Mismatches: parameter 'key': required argument is missing.",
+              "fallbackText": "Candidate signature: Property Child(key As String) As Receiver.\nMismatches: parameter 'key': required argument is missing."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.",
+          "relatedInformation": [
+            {
+              "fileName": "Receiver.cls",
+              "range": { "start": { "line": 2, "character": 20 }, "end": { "line": 2, "character": 25 } },
+              "message": "Candidate signature: Property Child(key As String) As Receiver. Mismatches: parameter 'key': required argument is missing."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "property-receiver-write-only-assignments",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim item As Receiver\n    Dim rhs As Receiver\n    Set item.Child(\"A1\").Value = rhs\n    item.Child(\"A1\").Count = 1&\nEnd Sub\n"
+        },
+        {
+          "fileName": "Receiver.cls",
+          "source": "VERSION 1.0 CLASS\nAttribute VB_Name = \"Receiver\"\nPublic Property Get Child(ByVal key As String) As Receiver\nEnd Property\nPublic Property Set Value(ByVal newValue As Receiver)\nEnd Property\nPublic Property Let Count(ByVal newValue As Long)\nEnd Property\n"
+        }
+      ],
+      "diagnostics": []
+    },
+    {
+      "id": "property-receiver-continued-terminal-statement",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim item As Receiver\n    item.Child(\"A1\") _\n        .Activate\nEnd Sub\n"
+        },
+        {
+          "fileName": "Receiver.cls",
+          "source": "VERSION 1.0 CLASS\nAttribute VB_Name = \"Receiver\"\nPublic Property Get Child(ByVal key As String) As Receiver\nEnd Property\nPublic Sub Activate()\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": []
+    },
+    {
+      "id": "property-receiver-nested-named-multiline-function-call",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim item As Receiver\n    Call item.Child(BuildKey(prefix:=\"A1\")).Find( _\n        what:=\"\", _\n        after:=item.Child(\"B1\"))\nEnd Sub\nPrivate Function BuildKey(ByVal prefix As String) As String\n    BuildKey = prefix\nEnd Function\n"
+        },
+        {
+          "fileName": "Receiver.cls",
+          "source": "VERSION 1.0 CLASS\nAttribute VB_Name = \"Receiver\"\nPublic Property Get Child(ByVal key As String) As Receiver\nEnd Property\nPublic Function Find(ByVal what As String, ByVal after As Receiver) As Receiver\nEnd Function\n"
+        }
+      ],
+      "diagnostics": []
+    },
+    {
+      "id": "property-receiver-terminal-missing-required-argument",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim item As Receiver\n    item.Child(\"A1\").Activate\nEnd Sub\n"
+        },
+        {
+          "fileName": "Receiver.cls",
+          "source": "VERSION 1.0 CLASS\nAttribute VB_Name = \"Receiver\"\nPublic Property Get Child(ByVal key As String) As Receiver\nEnd Property\nPublic Sub Activate(ByVal target As Long)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "Caller.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": { "start": { "line": 3, "character": 21 }, "end": { "line": 3, "character": 29 } },
+          "details": [
+            {
+              "location": {
+                "fileName": "Receiver.cls",
+                "range": { "start": { "line": 4, "character": 11 }, "end": { "line": 4, "character": 19 } }
+              },
+              "relatedMessage": "Candidate signature: Sub Activate(target As Long). Mismatches: parameter 'target': required argument is missing.",
+              "fallbackText": "Candidate signature: Sub Activate(target As Long).\nMismatches: parameter 'target': required argument is missing."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.",
+          "relatedInformation": [
+            {
+              "fileName": "Receiver.cls",
+              "range": { "start": { "line": 4, "character": 11 }, "end": { "line": 4, "character": 19 } },
+              "message": "Candidate signature: Sub Activate(target As Long). Mismatches: parameter 'target': required argument is missing."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "property-receiver-explicit-terminal-excess-arguments",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim item As Receiver\n    Call item.Child(\"A1\").Activate(1&)\nEnd Sub\n"
+        },
+        {
+          "fileName": "Receiver.cls",
+          "source": "VERSION 1.0 CLASS\nAttribute VB_Name = \"Receiver\"\nPublic Property Get Child(ByVal key As String) As Receiver\nEnd Property\nPublic Sub Activate()\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "Caller.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": { "start": { "line": 3, "character": 34 }, "end": { "line": 3, "character": 38 } },
+          "details": [
+            {
+              "location": {
+                "fileName": "Receiver.cls",
+                "range": { "start": { "line": 4, "character": 11 }, "end": { "line": 4, "character": 19 } }
+              },
+              "relatedMessage": "Candidate signature: Sub Activate(). Mismatches: argument 1 mapping: no parameter accepts this argument.",
+              "fallbackText": "Candidate signature: Sub Activate().\nMismatches: argument 1 mapping: no parameter accepts this argument."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.",
+          "relatedInformation": [
+            {
+              "fileName": "Receiver.cls",
+              "range": { "start": { "line": 4, "character": 11 }, "end": { "line": 4, "character": 19 } },
+              "message": "Candidate signature: Sub Activate(). Mismatches: argument 1 mapping: no parameter accepts this argument."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "property-receiver-standalone-getter-call-rejected",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim item As Receiver\n    Call item.Child(\"A1\")\nEnd Sub\n"
+        },
+        {
+          "fileName": "Receiver.cls",
+          "source": "VERSION 1.0 CLASS\nAttribute VB_Name = \"Receiver\"\nPublic Property Get Child(ByVal key As String) As Receiver\nEnd Property\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "Caller.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": { "start": { "line": 3, "character": 19 }, "end": { "line": 3, "character": 25 } },
+          "details": [
+            {
+              "location": {
+                "fileName": "Receiver.cls",
+                "range": { "start": { "line": 2, "character": 20 }, "end": { "line": 2, "character": 25 } }
+              },
+              "relatedMessage": "Candidate signature: Property Child(key As String) As Receiver. Mismatches: call context: expected Sub or Function, found Property Get.",
+              "fallbackText": "Candidate signature: Property Child(key As String) As Receiver.\nMismatches: call context: expected Sub or Function, found Property Get."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.",
+          "relatedInformation": [
+            {
+              "fileName": "Receiver.cls",
+              "range": { "start": { "line": 2, "character": 20 }, "end": { "line": 2, "character": 25 } },
+              "message": "Candidate signature: Property Child(key As String) As Receiver. Mismatches: call context: expected Sub or Function, found Property Get."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "property-receiver-assignment-and-value-chain",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim item As Receiver\n    Dim result As Receiver\n    Dim count As Long\n    Set item.Child(\"A1\").Value = item.Child(\"B1\")\n    Set result = item.Child(\"A1\").Value\n    count = item.Child(\"A1\").Count\nEnd Sub\n"
+        },
+        {
+          "fileName": "Receiver.cls",
+          "source": "VERSION 1.0 CLASS\nAttribute VB_Name = \"Receiver\"\nPublic Property Get Child(ByVal key As String) As Receiver\nEnd Property\nPublic Property Get Value() As Receiver\nEnd Property\nPublic Property Set Value(ByVal newValue As Receiver)\nEnd Property\nPublic Property Get Count() As Long\nEnd Property\n"
+        }
+      ],
+      "diagnostics": []
+    },
+    {
+      "id": "property-receiver-multiple-statement-chain",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim item As Receiver\n    item.Child(\"A1\").Child(\"B1\").Activate\n    Call item.Child(\"A1\").Child(\"B1\").Activate()\nEnd Sub\n"
+        },
+        {
+          "fileName": "Receiver.cls",
+          "source": "VERSION 1.0 CLASS\nAttribute VB_Name = \"Receiver\"\nPublic Property Get Child(ByVal key As String) As Receiver\nEnd Property\nPublic Sub Activate()\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": []
+    },
+    {
+      "id": "property-receiver-explicit-statement",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim item As Receiver\n    Call item.Child(\"A1\").Activate\nEnd Sub\n"
+        },
+        {
+          "fileName": "Receiver.cls",
+          "source": "VERSION 1.0 CLASS\nAttribute VB_Name = \"Receiver\"\nPublic Property Get Child(ByVal key As String) As Receiver\nEnd Property\nPublic Sub Activate()\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": []
+    },
+    {
+      "id": "property-receiver-terminal-excess-arguments",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim item As Receiver\n    item.Child(\"A1\").Activate 1&\nEnd Sub\n"
+        },
+        {
+          "fileName": "Receiver.cls",
+          "source": "VERSION 1.0 CLASS\nAttribute VB_Name = \"Receiver\"\nPublic Property Get Child(ByVal key As String) As Receiver\nEnd Property\nPublic Sub Activate()\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "Caller.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": { "start": { "line": 3, "character": 30 }, "end": { "line": 3, "character": 32 } },
+          "details": [
+            {
+              "location": {
+                "fileName": "Receiver.cls",
+                "range": { "start": { "line": 4, "character": 11 }, "end": { "line": 4, "character": 19 } }
+              },
+              "relatedMessage": "Candidate signature: Sub Activate(). Mismatches: argument 1 mapping: no parameter accepts this argument.",
+              "fallbackText": "Candidate signature: Sub Activate().\nMismatches: argument 1 mapping: no parameter accepts this argument."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.",
+          "relatedInformation": [
+            {
+              "fileName": "Receiver.cls",
+              "range": { "start": { "line": 4, "character": 11 }, "end": { "line": 4, "character": 19 } },
+              "message": "Candidate signature: Sub Activate(). Mismatches: argument 1 mapping: no parameter accepts this argument."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "property-receiver-implicit-statement",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim item As Receiver\n    item.Child(\"A1\").Activate\nEnd Sub\n"
+        },
+        {
+          "fileName": "Receiver.cls",
+          "source": "VERSION 1.0 CLASS\nAttribute VB_Name = \"Receiver\"\nPublic Property Get Child(ByVal key As String) As Receiver\nEnd Property\nPublic Sub Activate()\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": []
+    },
+    {
       "id": "unavailable-foreign-result-type-keeps-default-continuation-indeterminate",
       "sources": [
         {

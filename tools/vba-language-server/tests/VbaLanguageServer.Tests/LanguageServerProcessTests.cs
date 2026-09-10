@@ -14558,6 +14558,44 @@ public sealed class LanguageServerProcessTests
         await process.ShutdownAsync(3);
     }
 
+    [Theory]
+    [InlineData("    Call item.Child(\"A1\").Activate(")]
+    [InlineData("    item.Child(\"A1\").Activate ")]
+    public async Task Server_returns_the_terminal_signature_after_a_property_receiver(string invocation)
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+        await process.InitializeAsync();
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument("file:///C:/work/Receiver.cls", string.Join('\n', [
+                "VERSION 1.0 CLASS",
+                "Attribute VB_Name = \"Receiver\"",
+                "Public Property Get Child(ByVal key As String) As Receiver",
+                "End Property",
+                "Public Sub Activate(ByVal count As Long)",
+                "End Sub"
+            ])));
+        const string uri = "file:///C:/work/PropertyReceiverCaller.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"PropertyReceiverCaller\"",
+            "Public Sub Run()",
+            "    Dim item As Receiver",
+            invocation,
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process, 2, "textDocument/signatureHelp", uri, text, invocation, invocation.Length);
+        var signature = Assert.Single(response.GetProperty("result")
+            .GetProperty("signatures").EnumerateArray());
+        Assert.Equal("Sub Activate(count As Long)", signature.GetProperty("label").GetString());
+
+        await process.ShutdownAsync(3);
+    }
+
     [Fact]
     public async Task Server_completes_members_after_modeled_byval_variant_coercion()
     {

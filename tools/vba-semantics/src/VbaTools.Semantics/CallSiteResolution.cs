@@ -1889,6 +1889,11 @@ internal sealed class VbaCallSiteResolution
             return VbaCallContext.RaiseEvent;
         }
 
+        if (IsIntermediateReceiverCall(syntaxTree, callSite))
+        {
+            return VbaCallContext.ValueRead;
+        }
+
         if (prefix.Count == 1
             && prefix[0].Text.Equals("Set", StringComparison.OrdinalIgnoreCase))
         {
@@ -1927,6 +1932,41 @@ internal sealed class VbaCallSiteResolution
         }
 
         return VbaCallContext.ValueRead;
+    }
+
+    private static bool IsIntermediateReceiverCall(
+        VbaSyntaxTree syntaxTree,
+        VbaCallSiteSyntax callSite)
+    {
+        if (callSite.Form != VbaCallSyntaxForm.Parenthesized || callSite.IsIncomplete)
+        {
+            return false;
+        }
+
+        var tokens = GetLogicalTokensAfter(
+            syntaxTree.TokenStream.Tokens, callSite.Callee.Range.End.Offset);
+        if (tokens.Count == 0 || tokens[0].Text != "(")
+        {
+            return false;
+        }
+
+        var depth = 0;
+        for (var index = 0; index < tokens.Count; index++)
+        {
+            if (tokens[index].Text == "(")
+            {
+                depth++;
+            }
+            else if (tokens[index].Text == ")" && --depth == 0)
+            {
+                return index + 2 < tokens.Count
+                    && tokens[index + 1].Kind == VbaTokenKind.Punctuation
+                    && tokens[index + 1].Text == "."
+                    && tokens[index + 2].Kind is VbaTokenKind.Identifier or VbaTokenKind.Keyword;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
