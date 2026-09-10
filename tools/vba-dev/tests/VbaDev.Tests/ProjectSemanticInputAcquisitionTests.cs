@@ -26,6 +26,7 @@ public sealed class ProjectSemanticInputAcquisitionTests
     [InlineData("library-version")]
     [InlineData("library-namespace")]
     [InlineData("library-unreadable")]
+    [InlineData("library-invalid-selector")]
     public async Task UnavailableObservedIdentityFailsAnalysisBeforeGeneration(string scenario)
     {
         using var temp = TempDirectory.Create();
@@ -39,15 +40,20 @@ public sealed class ProjectSemanticInputAcquisitionTests
         var outputPath = Path.Combine(temp.CreateDirectory("Project/bin"), "Book1.xlsm");
         File.WriteAllText(outputPath, "previous output", new UTF8Encoding(false));
         var originals = new[] { templatePath, sourcePath, outputPath }.ToDictionary(path => path, File.ReadAllBytes);
+        var observedPath = scenario.StartsWith("library-", StringComparison.Ordinal)
+            ? scenario == "library-invalid-selector" ? "C:/runtime/VBE.dll/999" : "C:/runtime/VBE.dll"
+            : null;
         var observed = new WorkbookProjectIdentity(scenario == "persisted-name-mismatch" ? "DifferentProject" : "ContainingProject",
             scenario == "missing-standard" ? [] : [new(VbaProjectReferenceCatalogSet.StandardLibraryReferenceName,
                 false, "VBA", scenario == "missing-guid" ? null : "000204ef-0000-0000-c000-000000000046", 4, 2,
-                scenario.StartsWith("library-", StringComparison.Ordinal) ? "C:/runtime/VBE.dll" : null)]);
+                observedPath)]);
         var probe = new IdentityProbe((_, _) => Task.FromResult(observed));
         var generation = new FakeWorkbookGenerationAutomation();
         var metadata = new MetadataReader(new("VBA", [], "VBA"))
         {
-            PathError = scenario == "library-unreadable" ? new IOException("Observed library access failed.") : null,
+            PathError = scenario is "library-unreadable" or "library-invalid-selector"
+                ? new IOException("Observed library access failed.")
+                : null,
             Observed = new(new(VbaProjectReferenceCatalogSet.StandardLibraryReferenceName,
                 scenario == "library-guid" ? "11111111-0000-0000-c000-000000000046" : "000204ef-0000-0000-c000-000000000046",
                 scenario == "library-version" ? 5 : 4, 2, 1041, "C:/runtime/VBE.dll"),
@@ -68,9 +74,9 @@ public sealed class ProjectSemanticInputAcquisitionTests
         var failureMessage = Assert.Single(report.GetProperty("failures").EnumerateArray()).GetProperty("message").GetString();
         Assert.Contains(scenario.StartsWith("library-", StringComparison.Ordinal)
             ? VbaProjectReferenceCatalogSet.StandardLibraryReferenceName : "captured", failureMessage, StringComparison.OrdinalIgnoreCase);
-        if (scenario == "library-unreadable")
+        if (scenario is "library-unreadable" or "library-invalid-selector")
         {
-            Assert.Contains("C:/runtime/VBE.dll", failureMessage, StringComparison.Ordinal);
+            Assert.Contains(observedPath!, failureMessage, StringComparison.Ordinal);
             Assert.Contains("Observed library access failed", failureMessage, StringComparison.Ordinal);
         }
         Assert.Equal(1, probe.Reads);
@@ -95,6 +101,7 @@ public sealed class ProjectSemanticInputAcquisitionTests
             "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\nEnd Sub\n", new UTF8Encoding(false));
         const string standard = VbaProjectReferenceCatalogSet.StandardLibraryReferenceName;
         const string guid = "000204ef-0000-0000-c000-000000000046";
+        const string resourceQualifiedPath = "C:/runtime/VBE.dll/3";
         var versions = new List<TypeLibRegistryVersion> { new(6, 0, [new(0, [new("win64", "C:/runtime/VB6.dll")])]) };
         if (actualVersionRegistered) versions.Add(new(4, 2, [new(0, [new("win64", "C:/runtime/VBE.dll")]) ]));
         var registry = new RegistryReader(new TypeLibRegistryCatalog(true,
@@ -106,11 +113,11 @@ public sealed class ProjectSemanticInputAcquisitionTests
             Assert.Equal(Path.GetFullPath(templatePath), captured.SourcePath);
             Assert.Empty(generation.OpenedWorkbooks);
             return Task.FromResult(new WorkbookProjectIdentity("ObservedProject", [new(standard, false, "VBA", guid, 4, 2,
-                actualVersionRegistered ? null : "C:/runtime/VBE.dll")]));
+                actualVersionRegistered ? null : resourceQualifiedPath)]));
         });
         var metadata = new MetadataReader(new("VBA", [], "VBA"))
         {
-            Observed = new(new(standard, guid, 4, 2, 1041, "C:/runtime/VBE.dll"), new("VBA", [], "VBA"))
+            Observed = new(new(standard, guid, 4, 2, 1041, resourceQualifiedPath), new("VBA", [], "VBA"))
         };
         var commandLine = VbaDevCommandLine.Create(ToolingCompositionRoot.CreateApplicationComposition(root,
             workbookGenerationAutomation: generation, typeLibRegistryCatalogReader: registry,
@@ -121,7 +128,9 @@ public sealed class ProjectSemanticInputAcquisitionTests
 
         Assert.True(result.ExitCode == 0, result.StandardError);
         Assert.Equal(1, probe.Reads);
-        Assert.Equal(actualVersionRegistered ? 0 : 1041, Assert.Single(metadata.Identities).Lcid);
+        var metadataIdentity = Assert.Single(metadata.Identities);
+        Assert.Equal(actualVersionRegistered ? 0 : 1041, metadataIdentity.Lcid);
+        Assert.Equal(actualVersionRegistered ? "C:/runtime/VBE.dll" : resourceQualifiedPath, metadataIdentity.Path);
         Assert.Equal(1, generation.SaveCalls);
         Assert.Equal(template, File.ReadAllBytes(templatePath));
         Assert.Equal(template, File.ReadAllBytes(Path.Combine(root, "bin", "Book1.xlsm")));
