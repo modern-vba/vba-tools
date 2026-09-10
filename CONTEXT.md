@@ -3216,6 +3216,15 @@ family variant and ranks compatible, indeterminate, then incompatible contexts.
 Named-argument completion uses compatible and indeterminate variants, excluding
 only proven-incompatible variants; it is empty for context only when every
 variant is proven incompatible.
+
+An unqualified bare read or assignment of the enclosing Function or Property Get
+name refers to that invocation's result storage, not a zero-argument invocation.
+The physical enclosing declaration supplies its effective return type and array
+shape when that storage is passed as an argument. Explicit outer parentheses
+still make a value temporary. Explicit recursive calls, qualified names, and
+reads outside the owning Function/Get body retain ordinary call validation;
+Property Let and Set have no result storage. Rename preserves the same result
+storage versus invocation role before and after a proposed edit.
 _Avoid_: callable-kind filter, selected accessor variant, inferred active branch
 
 **CallArgumentMapping**:

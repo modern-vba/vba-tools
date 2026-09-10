@@ -23590,7 +23590,7 @@ public sealed class LanguageServerProcessTests
     }
 
     [Fact]
-    public async Task Server_renames_conditional_function_result_assignments_as_non_call_occurrences()
+    public async Task Server_renames_conditional_function_result_storage_and_explicit_recursive_calls()
     {
         await using var process = await LanguageServerProcessHarness.StartAsync();
 
@@ -23599,16 +23599,18 @@ public sealed class LanguageServerProcessTests
         var text = string.Join('\n', [
             "Attribute VB_Name = \"ConditionalFunctionResultRename\"",
             "#If FIRST_CONFIGURATION Then",
-            "Public Function BuildValue() As Long",
+            "Public Function BuildValue(ByVal depth As Long) As Long",
             "    BuildValue = 1",
+            "    If depth > 0 Then BuildValue = BuildValue + BuildValue(0&)",
             "End Function",
             "#Else",
-            "Public Function buildvalue() As Long",
+            "Public Function buildvalue(ByVal depth As Long) As Long",
             "    buildvalue = 2",
+            "    If depth > 0 Then buildvalue = buildvalue + buildvalue(0&)",
             "End Function",
             "#End If",
             "Public Sub Run()",
-            "    Debug.Print BuildValue()",
+            "    Debug.Print BuildValue(1&)",
             "End Sub"
         ]);
         await process.SendNotificationAsync(
@@ -23621,18 +23623,18 @@ public sealed class LanguageServerProcessTests
             "textDocument/rename",
             uri,
             text,
-            "    Debug.Print BuildValue()",
+            "    Debug.Print BuildValue(1&)",
             "    Debug.Print ".Length,
             new { newName = "CreateValue" });
-        var edits = rename
-            .GetProperty("result")
+        Assert.True(rename.TryGetProperty("result", out var renameResult), rename.ToString());
+        var edits = renameResult
             .GetProperty("changes")
             .GetProperty(uri)
             .EnumerateArray()
             .ToArray();
 
         Assert.Equal(
-            [2, 3, 6, 7, 11],
+            [2, 3, 4, 4, 4, 7, 8, 9, 9, 9, 13],
             edits.Select(edit => edit
                 .GetProperty("range")
                 .GetProperty("start")

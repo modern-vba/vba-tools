@@ -656,6 +656,22 @@ internal sealed class VbaCallSiteResolution
             return false;
         }
 
+        var resultOwner = VbaProjectSemanticResolution.FindCallableResultOwner(currentDocument, value, range);
+        if (resultOwner is not null)
+        {
+            var owner = target.PhysicalDefinitions.SingleOrDefault(definition =>
+                VbaDocumentIdentityPolicy.SameDocument(definition.Uri, currentDocument.Uri)
+                && definition.Range.Start.Line == resultOwner.Range.Start.Line
+                && definition.Range.Start.Character == resultOwner.Range.Start.Character);
+            if (owner is not null)
+            {
+                var hasType = TryGetDeclaredTypeEvidence(owner, -1, out var resultType);
+                evidence = new VbaCallArgumentTypeEvidence(
+                    hasType ? resultType : null, resultOwner.IsReturnArray, storage);
+                return true;
+            }
+        }
+
         if (TryGetConvergedCallableResultTypeEvidence(
                 currentDocument,
                 target,

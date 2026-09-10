@@ -992,11 +992,11 @@ internal sealed class VbaSemanticResolution
         out VbaResolvedNameTarget? target)
         => core.TryResolveRaiseEventTarget(uri, callSite, out target);
 
-    internal static bool IsCallableResultAssignment(
+    internal static bool IsCallableResultStorage(
         VbaSourceDocument currentDocument,
         VbaArgumentListSyntax argumentList,
         VbaSyntaxRange calleeRange)
-        => VbaProjectSemanticResolution.IsCallableResultAssignment(currentDocument, argumentList, calleeRange);
+        => VbaProjectSemanticResolution.IsCallableResultStorage(currentDocument, argumentList, calleeRange);
 
     /// <summary>
     /// Resolves the canonical casing for an identifier occurrence during formatting.
