@@ -2,6 +2,172 @@
   "schemaVersion": "1.0",
   "cases": [
     {
+      "id": "whole-typed-array-still-rejected-by-byval-scalar-long",
+      "sources": [
+        {
+          "fileName": "ArrayPassing.bas",
+          "source": "Attribute VB_Name = \"ArrayPassing\"\nPublic Sub Run()\n    Dim values(0 To 1) As Long\n    AcceptLong values\nEnd Sub\nPrivate Sub AcceptLong(ByVal value As Long)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "ArrayPassing.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 3,
+              "character": 15
+            },
+            "end": {
+              "line": 3,
+              "character": 21
+            }
+          },
+          "details": [
+            {
+              "location": {
+                "fileName": "ArrayPassing.bas",
+                "range": {
+                  "start": {
+                    "line": 5,
+                    "character": 12
+                  },
+                  "end": {
+                    "line": 5,
+                    "character": 22
+                  }
+                }
+              },
+              "relatedMessage": "Candidate signature: Sub AcceptLong(value As Long). Mismatches: argument 1 for parameter 'value' array shape: expected scalar, found array.",
+              "fallbackText": "Candidate signature: Sub AcceptLong(value As Long).\nMismatches: argument 1 for parameter 'value' array shape: expected scalar, found array."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.",
+          "relatedInformation": [
+            {
+              "fileName": "ArrayPassing.bas",
+              "range": {
+                "start": {
+                  "line": 5,
+                  "character": 12
+                },
+                "end": {
+                  "line": 5,
+                  "character": 22
+                }
+              },
+              "message": "Candidate signature: Sub AcceptLong(value As Long). Mismatches: argument 1 for parameter 'value' array shape: expected scalar, found array."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "whole-typed-array-does-not-match-variant-array-formal",
+      "sources": [
+        {
+          "fileName": "ArrayPassing.bas",
+          "source": "Attribute VB_Name = \"ArrayPassing\"\nPublic Sub Run()\n    Dim values(0 To 1) As Long\n    AcceptVariant values\nEnd Sub\nPrivate Sub AcceptVariant(ByRef value() As Variant)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "ArrayPassing.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 3,
+              "character": 18
+            },
+            "end": {
+              "line": 3,
+              "character": 24
+            }
+          },
+          "details": [
+            {
+              "location": {
+                "fileName": "ArrayPassing.bas",
+                "range": {
+                  "start": {
+                    "line": 5,
+                    "character": 12
+                  },
+                  "end": {
+                    "line": 5,
+                    "character": 25
+                  }
+                }
+              },
+              "relatedMessage": "Candidate signature: Sub AcceptVariant(ByRef value() As Variant). Mismatches: argument 1 for parameter 'value' ByRef type: expected Variant, found Long.",
+              "fallbackText": "Candidate signature: Sub AcceptVariant(ByRef value() As Variant).\nMismatches: argument 1 for parameter 'value' ByRef type: expected Variant, found Long."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.",
+          "relatedInformation": [
+            {
+              "fileName": "ArrayPassing.bas",
+              "range": {
+                "start": {
+                  "line": 5,
+                  "character": 12
+                },
+                "end": {
+                  "line": 5,
+                  "character": 25
+                }
+              },
+              "message": "Candidate signature: Sub AcceptVariant(ByRef value() As Variant). Mismatches: argument 1 for parameter 'value' ByRef type: expected Variant, found Long."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "byref-scalar-variant-still-accepts-whole-typed-array",
+      "sources": [
+        {
+          "fileName": "ArrayPassing.bas",
+          "source": "Attribute VB_Name = \"ArrayPassing\"\nPublic Sub Run()\n    Dim values(0 To 1) As Long\n    AcceptVariant values\nEnd Sub\nPrivate Sub AcceptVariant(ByRef value As Variant)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": []
+    },
+    {
+      "id": "paramarray-forwarded-to-byval-variant",
+      "sources": [
+        {
+          "fileName": "ArrayPassing.bas",
+          "source": "Attribute VB_Name = \"ArrayPassing\"\nPublic Sub Forward(ParamArray values() As Variant)\n    AcceptVariant values\nEnd Sub\nPrivate Sub AcceptVariant(ByVal value As Variant)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": []
+    },
+    {
+      "id": "byval-variant-accepts-whole-variant-array",
+      "sources": [
+        {
+          "fileName": "ArrayPassing.bas",
+          "source": "Attribute VB_Name = \"ArrayPassing\"\nPublic Sub Run()\n    Dim values(0 To 1) As Variant\n    AcceptVariant values\nEnd Sub\nPrivate Sub AcceptVariant(ByVal value As Variant)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": []
+    },
+    {
+      "id": "byval-variant-accepts-whole-typed-array",
+      "sources": [
+        {
+          "fileName": "ArrayPassing.bas",
+          "source": "Attribute VB_Name = \"ArrayPassing\"\nPublic Sub Run()\n    Dim values(0 To 1) As Long\n    AcceptVariant values\nEnd Sub\nPrivate Sub AcceptVariant(ByVal value As Variant)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": []
+    },
+    {
       "id": "property-get-result-keeps-direct-byref-storage-type",
       "sources": [
         {

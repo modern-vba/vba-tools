@@ -496,6 +496,11 @@ internal sealed class VbaCallSiteResolution
                 hasIndeterminateEvidence = true;
             }
 
+            if (!parameter.IsArray && parameterType?.Category == VbaCanonicalTypeCategory.Variant)
+            {
+                continue;
+            }
+
             if (evidence.IsArray is bool valueIsArray)
             {
                 if (parameter.IsArray != valueIsArray)

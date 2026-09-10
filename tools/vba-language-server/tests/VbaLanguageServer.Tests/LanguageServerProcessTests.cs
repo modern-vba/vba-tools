@@ -14590,6 +14590,54 @@ public sealed class LanguageServerProcessTests
         await process.ShutdownAsync(3);
     }
 
+    [Theory]
+    [InlineData("Public Sub Run()", "    Dim values(0 To 1) As Long")]
+    [InlineData("Public Sub Run()", "    Dim values(0 To 1) As Variant")]
+    [InlineData("Public Sub Run(ParamArray values() As Variant)", "")]
+    public async Task Server_completes_conditional_result_members_after_passing_whole_arrays_byval_to_variant(
+        string callerDeclaration,
+        string argumentDeclaration)
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/ConditionalVariantArrayCallResult.bas";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalVariantArrayCallResult\"",
+            "Public Type SharedResult",
+            "    SharedMember As String",
+            "End Type",
+            "#If FIRST_CONFIGURATION Then",
+            "Public Function GetPayload(ByVal Values As Variant) As SharedResult",
+            "End Function",
+            "#Else",
+            "Public Function GetPayload(ByVal Values As Variant) As SharedResult",
+            "End Function",
+            "#End If",
+            callerDeclaration,
+            argumentDeclaration,
+            "    Debug.Print GetPayload(values).",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/completion",
+            uri,
+            text,
+            "    Debug.Print GetPayload(values).",
+            "    Debug.Print GetPayload(values).".Length);
+        Assert.Contains(
+            response.GetProperty("result").EnumerateArray(),
+            item => item.GetProperty("label").GetString() == "SharedMember");
+
+        await process.ShutdownAsync(3);
+    }
+
     [Fact]
     public async Task Server_keeps_an_unmodeled_scalar_coercion_indeterminate()
     {
