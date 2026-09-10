@@ -483,6 +483,9 @@ Already installed references use their observed GUID and version, including the
 Excel workbook's VBA runtime, rather than an unrelated newer registered version.
 The library path supplied by Excel also supports references absent from the normal
 registry view; its actual TypeLib identity must match the workbook's reference.
+When Excel supplies an unreadable ordinary library alias, acquisition may use a
+registered location only for the exact observed GUID and version; the loaded
+identity and namespace must still match before its catalog is admitted.
 Missing manifest references use normal resolution. Required reference catalogs
 use observed library paths or exact identities from one captured registry snapshot;
 required intrinsic host Events use the normal owned discovery

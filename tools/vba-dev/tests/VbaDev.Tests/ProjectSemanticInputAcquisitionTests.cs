@@ -27,6 +27,8 @@ public sealed class ProjectSemanticInputAcquisitionTests
     [InlineData("library-namespace")]
     [InlineData("library-unreadable")]
     [InlineData("library-invalid-selector")]
+    [InlineData("library-fallback-identity")]
+    [InlineData("library-fallback-namespace")]
     public async Task UnavailableObservedIdentityFailsAnalysisBeforeGeneration(string scenario)
     {
         using var temp = TempDirectory.Create();
@@ -49,11 +51,18 @@ public sealed class ProjectSemanticInputAcquisitionTests
                 observedPath)]);
         var probe = new IdentityProbe((_, _) => Task.FromResult(observed));
         var generation = new FakeWorkbookGenerationAutomation();
-        var metadata = new MetadataReader(new("VBA", [], "VBA"))
+        var metadata = new MetadataReader(new("VBA", [],
+            scenario == "library-fallback-namespace" ? "OtherLibrary" : "VBA"))
         {
             PathError = scenario is "library-unreadable" or "library-invalid-selector"
+                or "library-fallback-identity" or "library-fallback-namespace"
                 ? new IOException("Observed library access failed.")
                 : null,
+            CatalogError = scenario == "library-unreadable"
+                ? new IOException("Registered library access failed.")
+                : scenario == "library-fallback-identity"
+                    ? new InvalidDataException("The registered TypeLib identity differs from the captured workbook.")
+                    : null,
             Observed = new(new(VbaProjectReferenceCatalogSet.StandardLibraryReferenceName,
                 scenario == "library-guid" ? "11111111-0000-0000-c000-000000000046" : "000204ef-0000-0000-c000-000000000046",
                 scenario == "library-version" ? 5 : 4, 2, 1041, "C:/runtime/VBE.dll"),
@@ -74,15 +83,119 @@ public sealed class ProjectSemanticInputAcquisitionTests
         var failureMessage = Assert.Single(report.GetProperty("failures").EnumerateArray()).GetProperty("message").GetString();
         Assert.Contains(scenario.StartsWith("library-", StringComparison.Ordinal)
             ? VbaProjectReferenceCatalogSet.StandardLibraryReferenceName : "captured", failureMessage, StringComparison.OrdinalIgnoreCase);
-        if (scenario is "library-unreadable" or "library-invalid-selector")
+        if (scenario is "library-unreadable" or "library-invalid-selector" or "library-fallback-identity")
         {
             Assert.Contains(observedPath!, failureMessage, StringComparison.Ordinal);
             Assert.Contains("Observed library access failed", failureMessage, StringComparison.Ordinal);
+            if (scenario == "library-unreadable")
+                Assert.Contains("Registered library access failed", failureMessage, StringComparison.Ordinal);
+            if (scenario == "library-fallback-identity")
+                Assert.Contains("identity differs", failureMessage, StringComparison.Ordinal);
         }
+        if (scenario == "library-fallback-namespace")
+            Assert.Contains("OtherLibrary", failureMessage, StringComparison.Ordinal);
         Assert.Equal(1, probe.Reads);
-        Assert.Equal(scenario is "library-guid" or "library-version" or "library-namespace" ? 1 : 0, metadata.Identities.Count);
+        Assert.Equal(scenario is "library-guid" or "library-version" or "library-namespace" or "library-unreadable"
+            or "library-fallback-identity" or "library-fallback-namespace" ? 1 : 0,
+            metadata.Identities.Count);
         Assert.Empty(generation.OpenedWorkbooks);
         foreach (var (path, bytes) in originals) Assert.Equal(bytes, File.ReadAllBytes(path));
+    }
+
+    [Fact]
+    public async Task UnreadableObservedOfficeVirtualizedPathUsesExactRegisteredIdentity()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("DisplayProject", "Book1", root, null));
+        var sourceDirectory = temp.CreateDirectory("Project/src/Book1");
+        var templatePath = Path.Combine(sourceDirectory, "Book1.xlsm");
+        var template = PackageMetadataFixture.Create("ContainingProject", 65001);
+        File.WriteAllBytes(templatePath, template);
+        File.WriteAllText(Path.Combine(sourceDirectory, "Caller.bas"),
+            "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\nEnd Sub\n", new UTF8Encoding(false));
+        const string standard = VbaProjectReferenceCatalogSet.StandardLibraryReferenceName;
+        const string guid = "000204ef-0000-0000-c000-000000000046";
+        const string observedPath = "C:/Windows/System32/VBE7.DLL";
+        const string registeredPath = "C:/Program Files/Microsoft Office/root/vfs/SystemX86/VBE7.DLL";
+        var registry = new RegistryReader(new TypeLibRegistryCatalog(true,
+            [new(standard, [new(guid, [new(4, 2, [new(0, [new("win64", registeredPath)])])])])], [], null));
+        var probe = new IdentityProbe((_, _) => Task.FromResult(new WorkbookProjectIdentity("ContainingProject",
+            [new(standard, false, "VBA", guid, 4, 2, observedPath)])));
+        var generation = new FakeWorkbookGenerationAutomation { ProjectName = "ContainingProject" };
+        generation.References.Add(new(standard, false, "VBA", guid, 4, 2));
+        var metadata = new MetadataReader(new("VBA", [], "VBA"))
+        {
+            PathError = new IOException("The Office virtualized path is unreadable.")
+        };
+        var commandLine = VbaDevCommandLine.Create(ToolingCompositionRoot.CreateApplicationComposition(root,
+            workbookProjectIdentityProbe: probe, workbookGenerationAutomation: generation,
+            typeLibRegistryCatalogReader: registry, typeLibCatalogMetadataReader: metadata));
+
+        var result = await commandLine.RunAsync(["build"]);
+
+        Assert.True(result.ExitCode == 0, result.StandardError);
+        Assert.Equal([(standard, observedPath)], metadata.ObservedPaths);
+        Assert.Equal(new VbaProjectReferenceCatalogIdentity(standard, guid, 4, 2, 0, registeredPath),
+            Assert.Single(metadata.Identities));
+        Assert.Equal(1, generation.SaveCalls);
+        Assert.Equal(template, File.ReadAllBytes(Path.Combine(root, "bin", "Book1.xlsm")));
+    }
+
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("ambiguous")]
+    [InlineData("different-guid")]
+    [InlineData("different-major")]
+    [InlineData("different-minor")]
+    public async Task UnreadableObservedPathRejectsMissingAmbiguousOrNonExactRegistration(string scenario)
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("DisplayProject", "Book1", root, null));
+        var sourceDirectory = temp.CreateDirectory("Project/src/Book1");
+        var templatePath = Path.Combine(sourceDirectory, "Book1.xlsm");
+        File.WriteAllBytes(templatePath, PackageMetadataFixture.Create("ContainingProject", 65001));
+        File.WriteAllText(Path.Combine(sourceDirectory, "Caller.bas"),
+            "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\nEnd Sub\n", new UTF8Encoding(false));
+        const string standard = VbaProjectReferenceCatalogSet.StandardLibraryReferenceName;
+        const string guid = "000204ef-0000-0000-c000-000000000046";
+        const string observedPath = "C:/Windows/System32/VBE7.DLL";
+        IReadOnlyList<TypeLibRegistryCatalogName> registrations = scenario switch
+        {
+            "missing" => [],
+            "ambiguous" => [new(standard, [new(guid, [
+                new(4, 2, [new(0, [new("win64", "C:/Office/VBE7.DLL")])]),
+                new(4, 2, [new(0, [new("win64", "D:/Office/VBE7.DLL")])])])])],
+            "different-guid" => [new(standard, [new("11111111-0000-0000-c000-000000000046",
+                [new(4, 2, [new(0, [new("win64", "C:/Office/VBE7.DLL")])])])])],
+            "different-major" => [new(standard, [new(guid,
+                [new(5, 2, [new(0, [new("win64", "C:/Office/VBE7.DLL")])])])])],
+            "different-minor" => [new(standard, [new(guid,
+                [new(4, 1, [new(0, [new("win64", "C:/Office/VBE7.DLL")])])])])],
+            _ => throw new InvalidOperationException($"Unknown scenario '{scenario}'.")
+        };
+        var probe = new IdentityProbe((_, _) => Task.FromResult(new WorkbookProjectIdentity("ContainingProject",
+            [new(standard, false, "VBA", guid, 4, 2, observedPath)])));
+        var metadata = new MetadataReader(new("VBA", [], "VBA"))
+        {
+            PathError = new IOException("The Office virtualized path is unreadable.")
+        };
+        var commandLine = VbaDevCommandLine.Create(ToolingCompositionRoot.CreateApplicationComposition(root,
+            workbookProjectIdentityProbe: probe, workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
+            typeLibRegistryCatalogReader: new RegistryReader(new(true, registrations, [], null)),
+            typeLibCatalogMetadataReader: metadata));
+
+        var result = await commandLine.RunAsync(["build"]);
+
+        Assert.Equal(1, result.ExitCode);
+        var report = Assert.Single(result.StandardError.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Where(line => line.TrimStart().StartsWith('{')).Select(line => JsonSerializer.Deserialize<JsonElement>(line)));
+        var failure = Assert.Single(report.GetProperty("failures").EnumerateArray()).GetProperty("message").GetString();
+        Assert.Contains(observedPath, failure, StringComparison.Ordinal);
+        Assert.Contains("Office virtualized path is unreadable", failure, StringComparison.Ordinal);
+        Assert.Contains("not uniquely present", failure, StringComparison.Ordinal);
+        Assert.Empty(metadata.Identities);
     }
 
     [Theory]
@@ -504,10 +617,13 @@ public sealed class ProjectSemanticInputAcquisitionTests
     private sealed class MetadataReader(TypeLibCatalogMetadata metadata) : ITypeLibCatalogMetadataReader
     {
         internal Exception? PathError { get; init; }
+        internal Exception? CatalogError { get; init; }
         internal AcquiredTypeLibCatalogMetadata? Observed { get; init; }
+        internal List<(string ReferenceName, string Path)> ObservedPaths { get; } = [];
         internal List<VbaProjectReferenceCatalogIdentity> Identities { get; } = [];
         public AcquiredTypeLibCatalogMetadata ReadMetadataFromPath(string referenceName, string path)
         {
+            ObservedPaths.Add((referenceName, path));
             if (PathError is not null) throw PathError;
             Assert.NotNull(Observed);
             Assert.Equal(referenceName, Observed.Identity.ReferenceName);
@@ -518,6 +634,7 @@ public sealed class ProjectSemanticInputAcquisitionTests
         public TypeLibCatalogMetadata ReadMetadata(VbaProjectReferenceCatalogIdentity identity)
         {
             Identities.Add(identity);
+            if (CatalogError is not null) throw CatalogError;
             return metadata;
         }
     }

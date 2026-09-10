@@ -131,23 +131,30 @@ internal sealed class ProjectSemanticInputProvider : IProjectSemanticInputProvid
     private (VbaProjectReferenceCatalogIdentity Identity, VbaProjectReferenceCatalog Catalog) ReadCatalog(
         TypeLibRegistryCatalog registry, ResolvedVbaProjectReference reference, string? observedPath, CancellationToken cancellationToken)
     {
+        Exception? observedReadError = null;
         if (!string.IsNullOrWhiteSpace(observedPath))
         {
-            AcquiredTypeLibCatalogMetadata acquired;
+            AcquiredTypeLibCatalogMetadata? acquired = null;
             try { acquired = metadataReader.ReadMetadataFromPath(reference.Name, observedPath); }
             catch (Exception error) when (error is not OperationCanceledException)
             {
-                throw new InvalidOperationException($"Required TypeLib '{reference.Name}' could not be read from observed library '{observedPath}': {error.Message}", error);
+                observedReadError = new InvalidOperationException(
+                    $"Required TypeLib '{reference.Name}' could not be read from observed library '{observedPath}': {error.Message}", error);
             }
-            cancellationToken.ThrowIfCancellationRequested();
-            var identity = acquired.Identity;
-            if (!VbaReferenceName.Comparer.Equals(identity.ReferenceName, reference.Name)
-                || !Guid.TryParse(identity.Guid, out var loadedGuid) || loadedGuid != Guid.Parse(reference.Guid)
-                || identity.MajorVersion != reference.Major || identity.MinorVersion != reference.Minor
-                || !string.Equals(identity.Path, observedPath, StringComparison.Ordinal)
-                || string.IsNullOrWhiteSpace(acquired.Metadata.ReferencedVbaProjectName))
-                throw new InvalidOperationException($"Required TypeLib at '{observedPath}' does not match the observed '{reference.Name}' identity ({reference.Guid}, {reference.Major}.{reference.Minor}). Repair the source-template reference or its library file.");
-            return (identity, TypeLibReferenceCatalogBuilder.Build(reference.Name, acquired.Metadata));
+            if (observedReadError is not null && HasTypeLibResourceSelector(observedPath))
+                throw observedReadError;
+            if (acquired is not null)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var identity = acquired.Identity;
+                if (!VbaReferenceName.Comparer.Equals(identity.ReferenceName, reference.Name)
+                    || !Guid.TryParse(identity.Guid, out var loadedGuid) || loadedGuid != Guid.Parse(reference.Guid)
+                    || identity.MajorVersion != reference.Major || identity.MinorVersion != reference.Minor
+                    || !string.Equals(identity.Path, observedPath, StringComparison.Ordinal)
+                    || string.IsNullOrWhiteSpace(acquired.Metadata.ReferencedVbaProjectName))
+                    throw new InvalidOperationException($"Required TypeLib at '{observedPath}' does not match the observed '{reference.Name}' identity ({reference.Guid}, {reference.Major}.{reference.Minor}). Repair the source-template reference or its library file.");
+                return (identity, TypeLibReferenceCatalogBuilder.Build(reference.Name, acquired.Metadata));
+            }
         }
         var registered = registry.Find(reference.Name);
         var versions = registered?.Lineages.Where(lineage => lineage.Guid.Equals(reference.Guid, StringComparison.OrdinalIgnoreCase))
@@ -155,11 +162,13 @@ internal sealed class ProjectSemanticInputProvider : IProjectSemanticInputProvid
             .Where(version => version.Major == reference.Major && version.Minor == reference.Minor).ToArray() ?? [];
         if (versions.Length != 1)
         {
-            throw new InvalidOperationException($"Required TypeLib identity '{reference.Name}' ({reference.Guid}, {reference.Major}.{reference.Minor}) "
-                + "is not uniquely present in the captured registry. Refresh or repair the registered reference.");
+            var message = $"Required TypeLib identity '{reference.Name}' ({reference.Guid}, {reference.Major}.{reference.Minor}) "
+                + "is not uniquely present in the captured registry. Refresh or repair the registered reference.";
+            if (observedReadError is not null) message += " " + observedReadError.Message;
+            throw new InvalidOperationException(message, observedReadError);
         }
 
-        var errors = new List<Exception>();
+        var errors = observedReadError is null ? [] : new List<Exception> { observedReadError };
         foreach (var location in versions[0].GetOrderedLocations())
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -168,7 +177,7 @@ internal sealed class ProjectSemanticInputProvider : IProjectSemanticInputProvid
             try
             {
                 var metadata = metadataReader.ReadMetadata(identity);
-                if (string.IsNullOrEmpty(metadata.ReferencedVbaProjectName))
+                if (string.IsNullOrWhiteSpace(metadata.ReferencedVbaProjectName))
                 {
                     throw new InvalidOperationException("The loaded TypeLib did not supply an authoritative referenced VBA project name.");
                 }
@@ -183,5 +192,11 @@ internal sealed class ProjectSemanticInputProvider : IProjectSemanticInputProvid
         throw new InvalidOperationException($"Required TypeLib metadata for '{reference.Name}' could not be read from its captured registered locations. "
             + string.Join(" ", errors.Select(error => error.Message).Distinct(StringComparer.Ordinal)),
             errors.Count switch { 0 => null, 1 => errors[0], _ => new AggregateException(errors) });
+    }
+
+    private static bool HasTypeLibResourceSelector(string path)
+    {
+        var selector = Path.GetFileName(path);
+        return selector.Length > 0 && selector.All(char.IsAsciiDigit);
     }
 }

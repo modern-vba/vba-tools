@@ -13,8 +13,9 @@ internal static class WorkbookReferenceLibraryPath
         var candidates = loadedModulePaths.Where(path =>
             Path.GetFileName(path).Equals(Path.GetFileName(observedPath), StringComparison.OrdinalIgnoreCase))
             .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        // Preserve an unresolved path so semantic acquisition can attempt an exact registered identity.
         if (candidates.Length != 1 || !File.Exists(candidates[0]))
-            throw new InvalidOperationException($"Observed library '{observedPath}' is not readable and the owned Excel process does not expose one matching loaded library path. Repair the library or Office installation.");
+            return observedPath;
         // The caller must still check this file's TypeLib GUID/version/namespace.
         return candidates[0];
     }

@@ -47,7 +47,7 @@ public sealed class WorkbookReferenceLibraryPathTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void MissingOrAmbiguousLoadedLibraryCannotSupplyAReplacement(bool ambiguous)
+    public void MissingOrAmbiguousLoadedLibraryPreservesObservedPathForRegistryFallback(bool ambiguous)
     {
         using var temp = TempDirectory.Create();
         var observed = Path.Combine(temp.Path, "virtual", "VBE7.DLL");
@@ -56,9 +56,7 @@ public sealed class WorkbookReferenceLibraryPathTests
         File.WriteAllBytes(first, [1]);
         File.WriteAllBytes(second, [2]);
 
-        var error = Assert.Throws<InvalidOperationException>(() => WorkbookReferenceLibraryPath.Resolve(observed,
+        Assert.Equal(observed, WorkbookReferenceLibraryPath.Resolve(observed,
             ambiguous ? [first, second] : []));
-
-        Assert.Contains(observed, error.Message, StringComparison.Ordinal);
     }
 }
