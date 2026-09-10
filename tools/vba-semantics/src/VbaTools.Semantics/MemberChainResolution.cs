@@ -73,6 +73,17 @@ internal sealed class VbaMemberChainResolution
         string eventName)
         => typeResolution.ResolveEvent(currentDocument, resolvedType, eventName);
 
+    public bool TryResolveImplicitDefaultMemberTarget(
+        VbaSourceDocument currentDocument,
+        VbaResolvedNameTarget resolvedTarget,
+        VbaCallSiteSyntax callSite,
+        out VbaResolvedNameTarget? defaultTarget)
+        => typeResolution.TryResolveImplicitDefaultMemberTarget(
+            currentDocument,
+            resolvedTarget,
+            callSite,
+            out defaultTarget);
+
     public VbaMemberChainResolutionResult ResolveMemberChain(
         VbaSourceDocument currentDocument,
         int line,

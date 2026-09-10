@@ -48,7 +48,8 @@ public static class TypeLibReferenceCatalogBuilder
             foreach (var member in type.Members.Where(member =>
                 !string.IsNullOrEmpty(member.Name)
                 && (TypeLibCatalogMemberFacts.IsBrowsableForNameAuthoring(member)
-                    || member.Kind == VbaSourceDefinitionKind.Event)))
+                    || member.Kind == VbaSourceDefinitionKind.Event
+                    || member.Metadata?.MemberId == 0)))
             {
                 var isCallableMetadataComplete =
                     member.Metadata?.IsComplete ?? true;
@@ -72,6 +73,7 @@ public static class TypeLibReferenceCatalogBuilder
                     IsCallableMetadataComplete:
                         isCallableMetadataComplete)
                 {
+                    IsDefaultMember = member.Metadata?.MemberId == 0,
                     PropertyAccessorKind = member.Kind
                         == VbaSourceDefinitionKind.Property
                             ? member.Metadata?.PropertyAccessorKind

@@ -3364,6 +3364,829 @@
           "referencedVbaProjectName": null
         }
       ]
+    },
+    {
+      "id": "array-index-preserves-downstream-diagnostic",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim items(0 To 1) As Item\n    Call items(0).Finish(Unknown:=False)\nEnd Sub\n"
+        },
+        {
+          "fileName": "Item.cls",
+          "source": "VERSION 1.0 CLASS\nAttribute VB_Name = \"Item\"\nPublic Sub Finish()\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "Caller.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": { "start": { "line": 3, "character": 24 }, "end": { "line": 3, "character": 40 } },
+          "details": [
+            {
+              "location": {
+                "fileName": "Item.cls",
+                "range": { "start": { "line": 2, "character": 11 }, "end": { "line": 2, "character": 17 } }
+              },
+              "relatedMessage": "Candidate signature: Sub Finish(). Mismatches: argument 1 ('Unknown') mapping: no parameter named 'Unknown'.",
+              "fallbackText": "Candidate signature: Sub Finish().\nMismatches: argument 1 ('Unknown') mapping: no parameter named 'Unknown'."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.",
+          "relatedInformation": [
+            {
+              "fileName": "Item.cls",
+              "range": { "start": { "line": 2, "character": 11 }, "end": { "line": 2, "character": 17 } },
+              "message": "Candidate signature: Sub Finish(). Mismatches: argument 1 ('Unknown') mapping: no parameter named 'Unknown'."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "implicit-default-member-unknown-receiver-array-shape",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Call Factory(0).Finish(Unknown:=False)\n    Call KnownFinish(Unknown:=False)\nEnd Sub\nPrivate Sub KnownFinish()\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "Caller.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": { "start": { "line": 3, "character": 20 }, "end": { "line": 3, "character": 36 } },
+          "details": [
+            {
+              "location": {
+                "fileName": "Caller.bas",
+                "range": { "start": { "line": 5, "character": 12 }, "end": { "line": 5, "character": 23 } }
+              },
+              "relatedMessage": "Candidate signature: Sub KnownFinish(). Mismatches: argument 1 ('Unknown') mapping: no parameter named 'Unknown'.",
+              "fallbackText": "Candidate signature: Sub KnownFinish().\nMismatches: argument 1 ('Unknown') mapping: no parameter named 'Unknown'."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.",
+          "relatedInformation": [
+            {
+              "fileName": "Caller.bas",
+              "range": { "start": { "line": 5, "character": 12 }, "end": { "line": 5, "character": 23 } },
+              "message": "Candidate signature: Sub KnownFinish(). Mismatches: argument 1 ('Unknown') mapping: no parameter named 'Unknown'."
+            }
+          ]
+        }
+      ],
+      "referenceCatalogs": [
+        {
+          "referenceName": "Unknown Array Shape Fixture Library",
+          "qualifierAliases": ["UnknownShape"],
+          "definitions": [
+            {
+              "referenceName": "Unknown Array Shape Fixture Library",
+              "name": "Application",
+              "kind": 1
+            },
+            {
+              "referenceName": "Unknown Array Shape Fixture Library",
+              "name": "Factory",
+              "kind": 3,
+              "signature": {
+                "label": "Function Factory() As Collection",
+                "parameters": [],
+                "callableKind": 1,
+                "supportsNamedArguments": true
+              },
+              "parentTypeName": "Application",
+              "typeReference": { "name": "Collection", "qualifier": "UnknownShape" },
+              "globalExposure": 1,
+              "isCallableMetadataComplete": true,
+              "callableKind": 1
+            },
+            {
+              "referenceName": "Unknown Array Shape Fixture Library",
+              "name": "Collection",
+              "kind": 1
+            },
+            {
+              "referenceName": "Unknown Array Shape Fixture Library",
+              "name": "_Default",
+              "kind": 4,
+              "signature": {
+                "label": "Property _Default(index As Variant) As Item",
+                "parameters": [
+                  { "name": "index", "typeReference": { "name": "Variant", "qualifier": null } }
+                ],
+                "callableKind": 2,
+                "supportsNamedArguments": true
+              },
+              "parentTypeName": "Collection",
+              "typeReference": { "name": "Item", "qualifier": "UnknownShape" },
+              "propertyAccess": 1,
+              "isAuthoringAvailable": false,
+              "isCallableMetadataComplete": true,
+              "isDefaultMember": true,
+              "propertyAccessorKind": 0,
+              "isReturnArray": false,
+              "callableKind": 2
+            },
+            {
+              "referenceName": "Unknown Array Shape Fixture Library",
+              "name": "Item",
+              "kind": 1
+            },
+            {
+              "referenceName": "Unknown Array Shape Fixture Library",
+              "name": "Finish",
+              "kind": 3,
+              "signature": {
+                "label": "Sub Finish()",
+                "parameters": [],
+                "callableKind": 0,
+                "supportsNamedArguments": true
+              },
+              "parentTypeName": "Item",
+              "isCallableMetadataComplete": true,
+              "callableKind": 0
+            }
+          ],
+          "typeLibTypes": null,
+          "referencedVbaProjectName": null
+        }
+      ]
+    },
+    {
+      "id": "implicit-default-member-unknown-default-result-shape",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim book As Variant\n    Call Workbooks(book).Finish(Unknown:=False)\n    Call Workbooks(Unknown:=book).Finish()\n    Call KnownFinish(Unknown:=False)\nEnd Sub\nPrivate Sub KnownFinish()\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "Caller.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": { "start": { "line": 4, "character": 18 }, "end": { "line": 4, "character": 33 } },
+          "details": [
+            {
+              "location": null,
+              "relatedMessage": "Candidate signature: Property _Default(index As Variant) As Item. Mismatches: argument 1 ('Unknown') mapping: no parameter named 'Unknown'.",
+              "fallbackText": "Candidate signature: Property _Default(index As Variant) As Item.\nMismatches: argument 1 ('Unknown') mapping: no parameter named 'Unknown'."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.\nCandidate signature: Property _Default(index As Variant) As Item.\nMismatches: argument 1 ('Unknown') mapping: no parameter named 'Unknown'.",
+          "relatedInformation": []
+        },
+        {
+          "fileName": "Caller.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": { "start": { "line": 5, "character": 20 }, "end": { "line": 5, "character": 36 } },
+          "details": [
+            {
+              "location": {
+                "fileName": "Caller.bas",
+                "range": { "start": { "line": 7, "character": 12 }, "end": { "line": 7, "character": 23 } }
+              },
+              "relatedMessage": "Candidate signature: Sub KnownFinish(). Mismatches: argument 1 ('Unknown') mapping: no parameter named 'Unknown'.",
+              "fallbackText": "Candidate signature: Sub KnownFinish().\nMismatches: argument 1 ('Unknown') mapping: no parameter named 'Unknown'."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.",
+          "relatedInformation": [
+            {
+              "fileName": "Caller.bas",
+              "range": { "start": { "line": 7, "character": 12 }, "end": { "line": 7, "character": 23 } },
+              "message": "Candidate signature: Sub KnownFinish(). Mismatches: argument 1 ('Unknown') mapping: no parameter named 'Unknown'."
+            }
+          ]
+        }
+      ],
+      "referenceCatalogs": [
+        {
+          "referenceName": "Unknown Default Result Fixture Library",
+          "qualifierAliases": ["UnknownDefaultResult"],
+          "definitions": [
+            {
+              "referenceName": "Unknown Default Result Fixture Library",
+              "name": "Application",
+              "kind": 1
+            },
+            {
+              "referenceName": "Unknown Default Result Fixture Library",
+              "name": "Workbooks",
+              "kind": 4,
+              "parentTypeName": "Application",
+              "typeReference": { "name": "Collection", "qualifier": "UnknownDefaultResult" },
+              "propertyAccess": 1,
+              "globalExposure": 1,
+              "isCallableMetadataComplete": true,
+              "propertyAccessorKind": 0,
+              "isReturnArray": false
+            },
+            {
+              "referenceName": "Unknown Default Result Fixture Library",
+              "name": "Collection",
+              "kind": 1
+            },
+            {
+              "referenceName": "Unknown Default Result Fixture Library",
+              "name": "_Default",
+              "kind": 4,
+              "signature": {
+                "label": "Property _Default(index As Variant) As Item",
+                "parameters": [
+                  { "name": "index", "typeReference": { "name": "Variant", "qualifier": null } }
+                ],
+                "callableKind": 2,
+                "supportsNamedArguments": true
+              },
+              "parentTypeName": "Collection",
+              "typeReference": { "name": "Item", "qualifier": "UnknownDefaultResult" },
+              "propertyAccess": 1,
+              "isAuthoringAvailable": false,
+              "isCallableMetadataComplete": true,
+              "isDefaultMember": true,
+              "propertyAccessorKind": 0,
+              "callableKind": 2
+            },
+            {
+              "referenceName": "Unknown Default Result Fixture Library",
+              "name": "Item",
+              "kind": 1
+            },
+            {
+              "referenceName": "Unknown Default Result Fixture Library",
+              "name": "Finish",
+              "kind": 3,
+              "signature": {
+                "label": "Sub Finish()",
+                "parameters": [],
+                "callableKind": 0,
+                "supportsNamedArguments": true
+              },
+              "parentTypeName": "Item",
+              "isCallableMetadataComplete": true,
+              "callableKind": 0
+            }
+          ],
+          "typeLibTypes": null,
+          "referencedVbaProjectName": null
+        }
+      ]
+    },
+    {
+      "id": "implicit-default-member-source-shadow",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim book As Variant\n    Call Workbooks(book).Finish(SaveChanges:=False)\nEnd Sub\nPublic Function Workbooks(ByVal book As Variant) As ShadowWorkbook\nEnd Function\n"
+        },
+        {
+          "fileName": "ShadowWorkbook.cls",
+          "source": "VERSION 1.0 CLASS\nAttribute VB_Name = \"ShadowWorkbook\"\nPublic Sub Finish()\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "Caller.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": { "start": { "line": 3, "character": 31 }, "end": { "line": 3, "character": 51 } },
+          "details": [
+            {
+              "location": {
+                "fileName": "ShadowWorkbook.cls",
+                "range": { "start": { "line": 2, "character": 11 }, "end": { "line": 2, "character": 17 } }
+              },
+              "relatedMessage": "Candidate signature: Sub Finish(). Mismatches: argument 1 ('SaveChanges') mapping: no parameter named 'SaveChanges'.",
+              "fallbackText": "Candidate signature: Sub Finish().\nMismatches: argument 1 ('SaveChanges') mapping: no parameter named 'SaveChanges'."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.",
+          "relatedInformation": [
+            {
+              "fileName": "ShadowWorkbook.cls",
+              "range": { "start": { "line": 2, "character": 11 }, "end": { "line": 2, "character": 17 } },
+              "message": "Candidate signature: Sub Finish(). Mismatches: argument 1 ('SaveChanges') mapping: no parameter named 'SaveChanges'."
+            }
+          ]
+        }
+      ],
+      "referenceCatalogs": [
+        {
+          "referenceName": "Excel Fixture Library",
+          "qualifierAliases": ["Excel"],
+          "definitions": [
+            {
+              "referenceName": "Excel Fixture Library",
+              "name": "Application",
+              "kind": 1
+            },
+            {
+              "referenceName": "Excel Fixture Library",
+              "name": "Workbooks",
+              "kind": 4,
+              "parentTypeName": "Application",
+              "typeReference": { "name": "Workbooks", "qualifier": "Excel" },
+              "propertyAccess": 1,
+              "globalExposure": 1,
+              "isCallableMetadataComplete": true,
+              "propertyAccessorKind": 0,
+              "isReturnArray": false
+            },
+            {
+              "referenceName": "Excel Fixture Library",
+              "name": "Workbooks",
+              "kind": 1
+            },
+            {
+              "referenceName": "Excel Fixture Library",
+              "name": "_Default",
+              "kind": 4,
+              "signature": {
+                "label": "Property _Default(index As Variant) As ExternalWorkbook",
+                "parameters": [
+                  { "name": "index", "typeReference": { "name": "Variant", "qualifier": null } }
+                ],
+                "callableKind": 2,
+                "supportsNamedArguments": true
+              },
+              "parentTypeName": "Workbooks",
+              "typeReference": { "name": "ExternalWorkbook", "qualifier": "Excel" },
+              "propertyAccess": 1,
+              "isAuthoringAvailable": false,
+              "isCallableMetadataComplete": true,
+              "isDefaultMember": true,
+              "propertyAccessorKind": 0,
+              "isReturnArray": false,
+              "callableKind": 2
+            },
+            {
+              "referenceName": "Excel Fixture Library",
+              "name": "ExternalWorkbook",
+              "kind": 1
+            },
+            {
+              "referenceName": "Excel Fixture Library",
+              "name": "Finish",
+              "kind": 3,
+              "signature": {
+                "label": "Sub Finish([SaveChanges As Variant])",
+                "parameters": [
+                  {
+                    "name": "SaveChanges",
+                    "isOptional": true,
+                    "typeReference": { "name": "Variant", "qualifier": null }
+                  }
+                ],
+                "callableKind": 0,
+                "supportsNamedArguments": true
+              },
+              "parentTypeName": "ExternalWorkbook",
+              "isCallableMetadataComplete": true,
+              "callableKind": 0
+            }
+          ],
+          "typeLibTypes": null,
+          "referencedVbaProjectName": null
+        }
+      ]
+    },
+    {
+      "id": "implicit-default-member-incomplete-evidence",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim book As Variant\n    Call Workbooks(book).Finish(Unknown:=False)\n    Call KnownFinish(Unknown:=False)\nEnd Sub\nPrivate Sub KnownFinish()\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "Caller.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": { "start": { "line": 4, "character": 20 }, "end": { "line": 4, "character": 36 } },
+          "details": [
+            {
+              "location": {
+                "fileName": "Caller.bas",
+                "range": { "start": { "line": 6, "character": 12 }, "end": { "line": 6, "character": 23 } }
+              },
+              "relatedMessage": "Candidate signature: Sub KnownFinish(). Mismatches: argument 1 ('Unknown') mapping: no parameter named 'Unknown'.",
+              "fallbackText": "Candidate signature: Sub KnownFinish().\nMismatches: argument 1 ('Unknown') mapping: no parameter named 'Unknown'."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.",
+          "relatedInformation": [
+            {
+              "fileName": "Caller.bas",
+              "range": { "start": { "line": 6, "character": 12 }, "end": { "line": 6, "character": 23 } },
+              "message": "Candidate signature: Sub KnownFinish(). Mismatches: argument 1 ('Unknown') mapping: no parameter named 'Unknown'."
+            }
+          ]
+        }
+      ],
+      "referenceCatalogs": [
+        {
+          "referenceName": "Incomplete Default Fixture Library",
+          "qualifierAliases": ["IncompleteDefault"],
+          "definitions": [
+            {
+              "referenceName": "Incomplete Default Fixture Library",
+              "name": "Application",
+              "kind": 1
+            },
+            {
+              "referenceName": "Incomplete Default Fixture Library",
+              "name": "Workbooks",
+              "kind": 4,
+              "parentTypeName": "Application",
+              "typeReference": { "name": "Workbooks", "qualifier": "IncompleteDefault" },
+              "propertyAccess": 1,
+              "globalExposure": 1,
+              "isCallableMetadataComplete": true,
+              "propertyAccessorKind": 0,
+              "isReturnArray": false
+            },
+            {
+              "referenceName": "Incomplete Default Fixture Library",
+              "name": "Workbooks",
+              "kind": 1
+            },
+            {
+              "referenceName": "Incomplete Default Fixture Library",
+              "name": "_Default",
+              "kind": 4,
+              "signature": {
+                "label": "Property _Default(index As Variant) As ExternalWorkbook",
+                "parameters": [{ "name": "index" }],
+                "callableKind": 2,
+                "supportsNamedArguments": true
+              },
+              "parentTypeName": "Workbooks",
+              "typeReference": { "name": "ExternalWorkbook", "qualifier": "IncompleteDefault" },
+              "propertyAccess": 1,
+              "isAuthoringAvailable": false,
+              "isCallableMetadataComplete": false,
+              "isDefaultMember": true,
+              "propertyAccessorKind": 0,
+              "callableKind": 2
+            },
+            {
+              "referenceName": "Incomplete Default Fixture Library",
+              "name": "ExternalWorkbook",
+              "kind": 1
+            },
+            {
+              "referenceName": "Incomplete Default Fixture Library",
+              "name": "Finish",
+              "kind": 3,
+              "signature": {
+                "label": "Sub Finish()",
+                "parameters": [],
+                "callableKind": 0,
+                "supportsNamedArguments": true
+              },
+              "parentTypeName": "ExternalWorkbook",
+              "isCallableMetadataComplete": true,
+              "callableKind": 0
+            }
+          ],
+          "typeLibTypes": null,
+          "referencedVbaProjectName": null
+        }
+      ]
+    },
+    {
+      "id": "implicit-default-member-ambiguous-evidence",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim book As Variant\n    Call Workbooks(book).Finish(Unknown:=False)\n    Call KnownFinish(Unknown:=False)\nEnd Sub\nPrivate Sub KnownFinish()\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "Caller.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": { "start": { "line": 4, "character": 20 }, "end": { "line": 4, "character": 36 } },
+          "details": [
+            {
+              "location": {
+                "fileName": "Caller.bas",
+                "range": { "start": { "line": 6, "character": 12 }, "end": { "line": 6, "character": 23 } }
+              },
+              "relatedMessage": "Candidate signature: Sub KnownFinish(). Mismatches: argument 1 ('Unknown') mapping: no parameter named 'Unknown'.",
+              "fallbackText": "Candidate signature: Sub KnownFinish().\nMismatches: argument 1 ('Unknown') mapping: no parameter named 'Unknown'."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.",
+          "relatedInformation": [
+            {
+              "fileName": "Caller.bas",
+              "range": { "start": { "line": 6, "character": 12 }, "end": { "line": 6, "character": 23 } },
+              "message": "Candidate signature: Sub KnownFinish(). Mismatches: argument 1 ('Unknown') mapping: no parameter named 'Unknown'."
+            }
+          ]
+        }
+      ],
+      "referenceCatalogs": [
+        {
+          "referenceName": "Ambiguous Default Fixture Library",
+          "qualifierAliases": ["AmbiguousDefault"],
+          "definitions": [
+            {
+              "referenceName": "Ambiguous Default Fixture Library",
+              "name": "Application",
+              "kind": 1
+            },
+            {
+              "referenceName": "Ambiguous Default Fixture Library",
+              "name": "Workbooks",
+              "kind": 4,
+              "parentTypeName": "Application",
+              "typeReference": { "name": "Workbooks", "qualifier": "AmbiguousDefault" },
+              "propertyAccess": 1,
+              "globalExposure": 1,
+              "isCallableMetadataComplete": true,
+              "propertyAccessorKind": 0,
+              "isReturnArray": false
+            },
+            {
+              "referenceName": "Ambiguous Default Fixture Library",
+              "name": "Workbooks",
+              "kind": 1
+            },
+            {
+              "referenceName": "Ambiguous Default Fixture Library",
+              "name": "_DefaultA",
+              "kind": 4,
+              "signature": {
+                "label": "Property _DefaultA(index As Variant) As ExternalWorkbook",
+                "parameters": [{ "name": "index" }],
+                "callableKind": 2,
+                "supportsNamedArguments": true
+              },
+              "parentTypeName": "Workbooks",
+              "typeReference": { "name": "ExternalWorkbook", "qualifier": "AmbiguousDefault" },
+              "propertyAccess": 1,
+              "isAuthoringAvailable": false,
+              "isCallableMetadataComplete": true,
+              "isDefaultMember": true,
+              "propertyAccessorKind": 0,
+              "isReturnArray": false,
+              "callableKind": 2
+            },
+            {
+              "referenceName": "Ambiguous Default Fixture Library",
+              "name": "_DefaultB",
+              "kind": 4,
+              "signature": {
+                "label": "Property _DefaultB(index As Variant) As ExternalWorkbook",
+                "parameters": [{ "name": "index" }],
+                "callableKind": 2,
+                "supportsNamedArguments": true
+              },
+              "parentTypeName": "Workbooks",
+              "typeReference": { "name": "ExternalWorkbook", "qualifier": "AmbiguousDefault" },
+              "propertyAccess": 1,
+              "isAuthoringAvailable": false,
+              "isCallableMetadataComplete": true,
+              "isDefaultMember": true,
+              "propertyAccessorKind": 0,
+              "isReturnArray": false,
+              "callableKind": 2
+            },
+            {
+              "referenceName": "Ambiguous Default Fixture Library",
+              "name": "ExternalWorkbook",
+              "kind": 1
+            },
+            {
+              "referenceName": "Ambiguous Default Fixture Library",
+              "name": "Finish",
+              "kind": 3,
+              "signature": {
+                "label": "Sub Finish()",
+                "parameters": [],
+                "callableKind": 0,
+                "supportsNamedArguments": true
+              },
+              "parentTypeName": "ExternalWorkbook",
+              "isCallableMetadataComplete": true,
+              "callableKind": 0
+            }
+          ],
+          "typeLibTypes": null,
+          "referencedVbaProjectName": null
+        }
+      ]
+    },
+    {
+      "id": "implicit-default-member-workbooks-receiver",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim book As Variant\n    Call Workbooks(book).Close(SaveChanges:=False)\n    Call Workbooks.Item(book).Close()\n    Call ActiveWorkbook.Close(SaveChanges:=False)\n    Call Workbooks(Unknown:=book).Close()\n    Call Workbooks(book).Close(Unknown:=False)\n    Call Workbooks.Close(SaveChanges:=False)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "Caller.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": { "start": { "line": 6, "character": 18 }, "end": { "line": 6, "character": 33 } },
+          "details": [
+            {
+              "location": null,
+              "relatedMessage": "Candidate signature: Property _Default(index As Variant) As Workbook. Mismatches: argument 1 ('Unknown') mapping: no parameter named 'Unknown'.",
+              "fallbackText": "Candidate signature: Property _Default(index As Variant) As Workbook.\nMismatches: argument 1 ('Unknown') mapping: no parameter named 'Unknown'."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.\nCandidate signature: Property _Default(index As Variant) As Workbook.\nMismatches: argument 1 ('Unknown') mapping: no parameter named 'Unknown'.",
+          "relatedInformation": []
+        },
+        {
+          "fileName": "Caller.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": { "start": { "line": 7, "character": 30 }, "end": { "line": 7, "character": 46 } },
+          "details": [
+            {
+              "location": null,
+              "relatedMessage": "Candidate signature: Sub Close([SaveChanges As Variant]). Mismatches: argument 1 ('Unknown') mapping: no parameter named 'Unknown'.",
+              "fallbackText": "Candidate signature: Sub Close([SaveChanges As Variant]).\nMismatches: argument 1 ('Unknown') mapping: no parameter named 'Unknown'."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.\nCandidate signature: Sub Close([SaveChanges As Variant]).\nMismatches: argument 1 ('Unknown') mapping: no parameter named 'Unknown'.",
+          "relatedInformation": []
+        },
+        {
+          "fileName": "Caller.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": { "start": { "line": 8, "character": 24 }, "end": { "line": 8, "character": 44 } },
+          "details": [
+            {
+              "location": null,
+              "relatedMessage": "Candidate signature: Sub Close(). Mismatches: argument 1 ('SaveChanges') mapping: no parameter named 'SaveChanges'.",
+              "fallbackText": "Candidate signature: Sub Close().\nMismatches: argument 1 ('SaveChanges') mapping: no parameter named 'SaveChanges'."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.\nCandidate signature: Sub Close().\nMismatches: argument 1 ('SaveChanges') mapping: no parameter named 'SaveChanges'.",
+          "relatedInformation": []
+        }
+      ],
+      "referenceCatalogs": [
+        {
+          "referenceName": "Excel Default Fixture Library",
+          "qualifierAliases": ["Excel"],
+          "definitions": [
+            {
+              "referenceName": "Excel Default Fixture Library",
+              "name": "Application",
+              "kind": 1
+            },
+            {
+              "referenceName": "Excel Default Fixture Library",
+              "name": "Workbooks",
+              "kind": 4,
+              "parentTypeName": "Application",
+              "typeReference": { "name": "Workbooks", "qualifier": "Excel" },
+              "propertyAccess": 1,
+              "globalExposure": 1,
+              "isCallableMetadataComplete": true,
+              "propertyAccessorKind": 0,
+              "isReturnArray": false
+            },
+            {
+              "referenceName": "Excel Default Fixture Library",
+              "name": "ActiveWorkbook",
+              "kind": 4,
+              "parentTypeName": "Application",
+              "typeReference": { "name": "Workbook", "qualifier": "Excel" },
+              "propertyAccess": 1,
+              "globalExposure": 1,
+              "isCallableMetadataComplete": true,
+              "propertyAccessorKind": 0,
+              "isReturnArray": false
+            },
+            {
+              "referenceName": "Excel Default Fixture Library",
+              "name": "Workbooks",
+              "kind": 1
+            },
+            {
+              "referenceName": "Excel Default Fixture Library",
+              "name": "Item",
+              "kind": 4,
+              "signature": {
+                "label": "Property Item(index As Variant) As VisibleItemResult",
+                "parameters": [{ "name": "index" }],
+                "callableKind": 2,
+                "supportsNamedArguments": true
+              },
+              "parentTypeName": "Workbooks",
+              "typeReference": { "name": "VisibleItemResult", "qualifier": "Excel" },
+              "propertyAccess": 1,
+              "isCallableMetadataComplete": true,
+              "propertyAccessorKind": 0,
+              "isReturnArray": false,
+              "callableKind": 2
+            },
+            {
+              "referenceName": "Excel Default Fixture Library",
+              "name": "_Default",
+              "kind": 4,
+              "signature": {
+                "label": "Property _Default(index As Variant) As Workbook",
+                "parameters": [
+                  {
+                    "name": "index",
+                    "typeReference": { "name": "Variant", "qualifier": null }
+                  }
+                ],
+                "callableKind": 2,
+                "supportsNamedArguments": true
+              },
+              "parentTypeName": "Workbooks",
+              "typeReference": { "name": "Workbook", "qualifier": "Excel" },
+              "propertyAccess": 1,
+              "isAuthoringAvailable": false,
+              "isCallableMetadataComplete": true,
+              "isDefaultMember": true,
+              "propertyAccessorKind": 0,
+              "isReturnArray": false,
+              "callableKind": 2
+            },
+            {
+              "referenceName": "Excel Default Fixture Library",
+              "name": "Close",
+              "kind": 3,
+              "signature": { "label": "Sub Close()", "parameters": [], "callableKind": 0, "supportsNamedArguments": true },
+              "parentTypeName": "Workbooks",
+              "isCallableMetadataComplete": true,
+              "callableKind": 0
+            },
+            {
+              "referenceName": "Excel Default Fixture Library",
+              "name": "Workbook",
+              "kind": 1
+            },
+            {
+              "referenceName": "Excel Default Fixture Library",
+              "name": "Close",
+              "kind": 3,
+              "signature": {
+                "label": "Sub Close([SaveChanges As Variant])",
+                "parameters": [
+                  {
+                    "name": "SaveChanges",
+                    "isOptional": true,
+                    "typeReference": { "name": "Variant", "qualifier": null }
+                  }
+                ],
+                "callableKind": 0,
+                "supportsNamedArguments": true
+              },
+              "parentTypeName": "Workbook",
+              "isCallableMetadataComplete": true,
+              "callableKind": 0
+            },
+            {
+              "referenceName": "Excel Default Fixture Library",
+              "name": "VisibleItemResult",
+              "kind": 1
+            },
+            {
+              "referenceName": "Excel Default Fixture Library",
+              "name": "Close",
+              "kind": 3,
+              "signature": { "label": "Sub Close()", "parameters": [], "callableKind": 0, "supportsNamedArguments": true },
+              "parentTypeName": "VisibleItemResult",
+              "isCallableMetadataComplete": true,
+              "callableKind": 0
+            }
+          ],
+          "typeLibTypes": null,
+          "referencedVbaProjectName": null
+        }
+      ]
     }
   ]
 }

@@ -240,6 +240,16 @@ internal sealed class VbaCallSiteResolution
         VbaResolvedNameTarget target)
     {
         var callSite = CreateCompleteCallSite(argumentList);
+        if (memberChainResolution.TryResolveImplicitDefaultMemberTarget(
+                currentDocument,
+                target,
+                callSite,
+                out var defaultTarget)
+            && defaultTarget is not null)
+        {
+            target = defaultTarget;
+        }
+
         var callContext = GetCallContext(currentDocument, callSite);
         var variants = new List<VbaCallVariantCompatibility>();
         foreach (var definition in GetCallableUseSiteDefinitions(currentDocument, target))

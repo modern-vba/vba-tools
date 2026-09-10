@@ -32,6 +32,11 @@ public sealed record VbaProjectReferenceDefinition(
     bool IsCallableMetadataComplete = true)
 {
     /// <summary>
+    /// Gets whether TypeLib metadata identifies this callable as the type's default member.
+    /// </summary>
+    public bool IsDefaultMember { get; init; }
+
+    /// <summary>
     /// Gets the physical TypeLib Property invoke kind, when known.
     /// </summary>
     public VbaPropertyAccessorKind? PropertyAccessorKind { get; init; }
@@ -881,7 +886,8 @@ public sealed class VbaProjectReferenceCatalogSet
             IsAuthoringAvailable: definition.IsAuthoringAvailable,
             IsCallableMetadataComplete: definition.IsCallableMetadataComplete)
         {
-            IsReturnArray = definition.IsReturnArray
+            IsReturnArray = definition.IsReturnArray,
+            IsDefaultMember = definition.IsDefaultMember
         };
     }
 
