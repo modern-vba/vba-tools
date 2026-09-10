@@ -141,10 +141,7 @@ internal static class VbaCallSyntaxParser
 
             index = calleeEnd;
             if (calleeStart > 0
-                    && TextEquals(significant[calleeStart - 1], "AddressOf")
-                || hasStatementCallee
-                    && calleeStart == statementCalleeStart
-                    && calleeEnd == statementCalleeEnd)
+                && TextEquals(significant[calleeStart - 1], "AddressOf"))
             {
                 continue;
             }
@@ -153,7 +150,10 @@ internal static class VbaCallSyntaxParser
                  candidateEnd <= calleeEnd;
                  candidateEnd += 2)
             {
-                if (IsAssignmentTarget(significant, calleeStart, candidateEnd)
+                if (hasStatementCallee
+                        && calleeStart >= statementCalleeStart
+                        && candidateEnd == statementCalleeEnd
+                    || IsAssignmentTarget(significant, calleeStart, candidateEnd)
                     || IsLabelReference(significant, calleeStart, candidateEnd)
                     || candidateEnd + 1 < significant.Count
                         && significant[candidateEnd + 1].Kind == VbaTokenKind.Operator
@@ -167,7 +167,10 @@ internal static class VbaCallSyntaxParser
                 var calleeRange = new VbaSyntaxRange(
                     significant[calleeStart].Range.Start,
                     significant[candidateEnd].Range.End);
-                if (argumentLists.Any(argumentList => argumentList.CalleeRange == calleeRange))
+                if (argumentLists.Any(argumentList =>
+                        argumentList.CalleeRange == calleeRange
+                        || argumentList.Form == VbaCallSyntaxForm.PropertyAssignment
+                            && argumentList.CalleeRange?.End == calleeRange.End))
                 {
                     continue;
                 }
@@ -338,11 +341,27 @@ internal static class VbaCallSyntaxParser
         }
 
         end = start;
-        while (end + 2 < assignmentIndex
-            && IsDot(tokens[end + 1])
-            && IsNameToken(tokens[end + 2]))
+        while (end + 1 < assignmentIndex)
         {
-            end += 2;
+            var receiverEnd = end;
+            if (IsPunctuation(tokens[end + 1], "(")
+                && tokens[end].Range.End.Offset == tokens[end + 1].Range.Start.Offset)
+            {
+                receiverEnd = FindMatchingParenthesis(tokens, end + 1);
+                if (receiverEnd < 0)
+                {
+                    break;
+                }
+            }
+
+            if (receiverEnd + 2 >= assignmentIndex
+                || !IsDot(tokens[receiverEnd + 1])
+                || !IsNameToken(tokens[receiverEnd + 2]))
+            {
+                break;
+            }
+
+            end = receiverEnd + 2;
         }
 
         if (end != assignmentIndex - 1)
@@ -1279,6 +1298,28 @@ internal static class VbaCallSyntaxParser
         return -1;
     }
 
+    private static int FindMatchingOpenParenthesis(IReadOnlyList<VbaToken> tokens, int closeIndex)
+    {
+        var depth = 0;
+        for (var index = closeIndex; index >= 0; index--)
+        {
+            if (IsPunctuation(tokens[index], ")"))
+            {
+                depth++;
+            }
+            else if (IsPunctuation(tokens[index], "("))
+            {
+                depth--;
+                if (depth == 0)
+                {
+                    return index;
+                }
+            }
+        }
+
+        return -1;
+    }
+
     private static bool TryGetCalleeBefore(
         IReadOnlyList<VbaToken> tokens,
         int openIndex,
@@ -1297,14 +1338,30 @@ internal static class VbaCallSyntaxParser
             return false;
         }
 
-        while (start >= 2
-            && IsDot(tokens[start - 1])
-            && IsNameToken(tokens[start - 2])
-            && (start - 2 != 0
-                || !TextEquals(tokens[start - 2], "Call")
-                    && !TextEquals(tokens[start - 2], "RaiseEvent")))
+        while (start >= 2 && IsDot(tokens[start - 1]))
         {
-            start -= 2;
+            var receiverStart = start - 2;
+            if (IsPunctuation(tokens[receiverStart], ")"))
+            {
+                var receiverOpen = FindMatchingOpenParenthesis(tokens, receiverStart);
+                if (receiverOpen <= 0
+                    || tokens[receiverOpen - 1].Range.End.Offset != tokens[receiverOpen].Range.Start.Offset)
+                {
+                    break;
+                }
+
+                receiverStart = receiverOpen - 1;
+            }
+
+            if (!IsNameToken(tokens[receiverStart])
+                || receiverStart == 0
+                    && (TextEquals(tokens[receiverStart], "Call")
+                        || TextEquals(tokens[receiverStart], "RaiseEvent")))
+            {
+                break;
+            }
+
+            start = receiverStart;
         }
 
         if (start == end
@@ -1585,13 +1642,29 @@ internal static class VbaCallSyntaxParser
         }
 
         end = start;
-        while (end + 2 < tokens.Count
-            && tokens[end].Range.End.Offset == tokens[end + 1].Range.Start.Offset
-            && IsDot(tokens[end + 1])
-            && tokens[end + 1].Range.End.Offset == tokens[end + 2].Range.Start.Offset
-            && IsNameToken(tokens[end + 2]))
+        while (end + 1 < tokens.Count)
         {
-            end += 2;
+            var receiverEnd = end;
+            if (IsPunctuation(tokens[end + 1], "(")
+                && tokens[end].Range.End.Offset == tokens[end + 1].Range.Start.Offset)
+            {
+                receiverEnd = FindMatchingParenthesis(tokens, end + 1);
+                if (receiverEnd < 0)
+                {
+                    break;
+                }
+            }
+
+            if (receiverEnd + 2 >= tokens.Count
+                || !AreAdjacentOrContinued(tokens[receiverEnd], tokens[receiverEnd + 1])
+                || !IsDot(tokens[receiverEnd + 1])
+                || !AreAdjacentOrContinued(tokens[receiverEnd + 1], tokens[receiverEnd + 2])
+                || !IsNameToken(tokens[receiverEnd + 2]))
+            {
+                break;
+            }
+
+            end = receiverEnd + 2;
         }
 
         if (isLeadingDot)
@@ -1601,6 +1674,11 @@ internal static class VbaCallSyntaxParser
 
         return true;
     }
+
+    private static bool AreAdjacentOrContinued(VbaToken left, VbaToken right)
+        // A token list belongs to one logical statement, so a physical line change is a continuation.
+        => left.Range.End.Offset == right.Range.Start.Offset
+            || left.Range.End.Line < right.Range.Start.Line;
 
     private static string GetCalleeText(IReadOnlyList<VbaToken> tokens, int start, int end)
         => string.Concat(tokens.Skip(start).Take(end - start + 1).Select(token => token.Text));

@@ -726,15 +726,10 @@ internal sealed class VbaPositionSyntaxIndex
 
         if (nameIndex >= 0)
         {
-            var start = nameIndex;
-            while (start >= 2 && IsDot(significant[start - 1]) && IsNameToken(significant[start - 2]))
+            var start = FindMemberChainStart(significant, nameIndex);
+            if (start < 0)
             {
-                start -= 2;
-            }
-
-            if (start > 0 && IsDot(significant[start - 1]))
-            {
-                start--;
+                return null;
             }
 
             var end = nameIndex;
@@ -754,23 +749,15 @@ internal sealed class VbaPositionSyntaxIndex
                 return null;
             }
 
-            var segments = significant
-                .Skip(start)
-                .Take(end - start + 1)
-                .Where(IsNameToken)
-                .Select(token => ToIdentifier(token))
-                .ToArray();
-            var targetIndex = significant
-                .Skip(start)
-                .Take(nameIndex - start)
-                .Count(IsNameToken);
-            return new VbaMemberAccessSyntax(
-                segments,
-                targetIndex,
-                IsDot(significant[start]),
-                hasTrailingDot,
-                position.Offset > significant[nameIndex].Range.End.Offset,
-                new VbaSyntaxRange(significant[start].Range.Start, significant[end].Range.End));
+            var chain = CreateChain(significant, start, hasTrailingDot ? end - 1 : end, nameIndex);
+            return chain is null
+                ? null
+                : chain with
+                {
+                    IsIncomplete = hasTrailingDot,
+                    HasTrailingWhitespace = position.Offset > significant[nameIndex].Range.End.Offset,
+                    Range = new VbaSyntaxRange(significant[start].Range.Start, significant[end].Range.End)
+                };
         }
 
         var anchorIndex = -1;
@@ -787,32 +774,28 @@ internal sealed class VbaPositionSyntaxIndex
             return null;
         }
 
-        var chainStart = anchorIndex;
-        if (anchorIndex > 0 && IsNameToken(significant[anchorIndex - 1]))
+        var chainStart = FindMemberChainStart(significant, anchorIndex + 1);
+        if (chainStart < 0)
         {
-            chainStart = anchorIndex - 1;
-            while (chainStart >= 2
-                && IsDot(significant[chainStart - 1])
-                && IsNameToken(significant[chainStart - 2]))
-            {
-                chainStart -= 2;
-            }
-
-            if (chainStart > 0 && IsDot(significant[chainStart - 1]))
-            {
-                chainStart--;
-            }
+            return null;
         }
 
-        var chainSegments = significant
-            .Skip(chainStart)
-            .Take(anchorIndex - chainStart + 1)
-            .Where(IsNameToken)
-            .Select(token => ToIdentifier(token))
-            .ToArray();
+        IReadOnlyList<VbaPositionIdentifierSyntax> chainSegments = [];
+        if (chainStart < anchorIndex)
+        {
+            var firstNameIndex = IsDot(significant[chainStart]) ? chainStart + 1 : chainStart;
+            var chain = CreateChain(significant, chainStart, anchorIndex - 1, firstNameIndex);
+            if (chain is null)
+            {
+                return null;
+            }
+
+            chainSegments = chain.Segments;
+        }
+
         return new VbaMemberAccessSyntax(
             chainSegments,
-            chainSegments.Length,
+            chainSegments.Count,
             IsDot(significant[chainStart]),
             true,
             position.Offset > significant[anchorIndex].Range.End.Offset,
@@ -3318,6 +3301,56 @@ internal sealed class VbaPositionSyntaxIndex
         return completed;
     }
 
+    private static int FindMemberChainStart(IReadOnlyList<VbaToken> tokens, int nameIndex)
+    {
+        var start = nameIndex;
+        while (start >= 2 && IsDot(tokens[start - 1]))
+        {
+            var receiverStart = start - 2;
+            if (IsPunctuation(tokens[receiverStart], ")"))
+            {
+                var depth = 1;
+                while (--receiverStart >= 0)
+                {
+                    if (IsPunctuation(tokens[receiverStart], ")"))
+                    {
+                        depth++;
+                    }
+                    else if (IsPunctuation(tokens[receiverStart], "(") && --depth == 0)
+                    {
+                        break;
+                    }
+                }
+
+                if (receiverStart <= 0
+                    || tokens[receiverStart - 1].Range.End.Offset != tokens[receiverStart].Range.Start.Offset)
+                {
+                    return -1;
+                }
+
+                receiverStart--;
+                if (!IsNameToken(tokens[receiverStart]))
+                {
+                    return -1;
+                }
+            }
+
+            if (!IsNameToken(tokens[receiverStart])
+                || receiverStart == 0
+                    && (IsWord(tokens[receiverStart], "Call")
+                        || IsWord(tokens[receiverStart], "Let")
+                        || IsWord(tokens[receiverStart], "Set")
+                        || IsWord(tokens[receiverStart], "RaiseEvent")))
+            {
+                break;
+            }
+
+            start = receiverStart;
+        }
+
+        return start > 0 && IsDot(tokens[start - 1]) ? start - 1 : start;
+    }
+
     private static VbaMemberAccessSyntax? CreateChain(
         IReadOnlyList<VbaToken> tokens,
         int start,
@@ -3355,6 +3388,29 @@ internal sealed class VbaPositionSyntaxIndex
                 }
 
                 segments.Add(ToIdentifier(token));
+            }
+            else if (IsPunctuation(token, "(")
+                && tokens[index - 1].Range.End.Offset == token.Range.Start.Offset)
+            {
+                var depth = 1;
+                while (++index <= end)
+                {
+                    if (IsPunctuation(tokens[index], "("))
+                    {
+                        depth++;
+                    }
+                    else if (IsPunctuation(tokens[index], ")") && --depth == 0)
+                    {
+                        break;
+                    }
+                }
+
+                if (depth != 0)
+                {
+                    return null;
+                }
+
+                continue;
             }
             else if (!IsDot(token))
             {
