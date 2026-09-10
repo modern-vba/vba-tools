@@ -3248,6 +3248,13 @@ expression-classification rules, including a parenthesized expression's
 value-temporary behavior. Unknown rules are never treated as incompatibility
 merely because the implementation lacks them.
 
+A scalar `ByVal As Variant` formal accepts a whole typed array or Variant array,
+including forwarded `ParamArray` storage, as a Variant containing the array.
+After modeled value-type compatibility is checked, the formal's scalar shape
+does not reject that array value. This does not relax typed array formals or
+source ByRef storage requirements, and unknown external passing evidence stays
+indeterminate.
+
 Parameter provenance selects the passing contract independently of the displayed
 `ByRef` label. Source procedures, including source `Declare` declarations, use
 VBA parameter rules and the shared `EffectiveDeclaredType` authority. Ordinary
