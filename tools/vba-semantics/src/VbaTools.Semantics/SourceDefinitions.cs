@@ -481,6 +481,11 @@ public sealed record VbaSourceDefinition(
     bool IsCallableMetadataComplete = true)
 {
     /// <summary>
+    /// Gets whether authoritative metadata identifies this callable as its type's default member.
+    /// </summary>
+    public bool IsDefaultMember { get; init; }
+
+    /// <summary>
     /// Gets whether a foreign callable result is an array, or null when unavailable.
     /// </summary>
     public bool? IsReturnArray { get; init; }

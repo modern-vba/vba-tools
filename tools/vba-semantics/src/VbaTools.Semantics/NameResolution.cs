@@ -904,6 +904,21 @@ public sealed class VbaNameResolutionService
             candidates.ReferenceSelection);
     }
 
+    internal VbaNameResolutionOutcome ResolveDefaultMemberOutcome(
+        VbaSourceDocument currentDocument,
+        VbaResolvedType resolvedType)
+    {
+        var matchingCandidates = GetMemberCandidates(currentDocument, resolvedType)
+            .Where(candidate => candidate.Definition.IsDefaultMember)
+            .Select(candidate => candidate.Definition)
+            .ToArray();
+        return resolutionPolicy.ResolveRankedCandidatesOutcome(
+            matchingCandidates.Select(definition => new VbaRankedDefinition(
+                definition,
+                VbaResolutionPolicy.CurrentModuleRank)),
+            candidates.ReferenceSelection);
+    }
+
     internal VbaSourceDefinition? ResolveMember(
         VbaSourceDocument currentDocument,
         string typeName,
