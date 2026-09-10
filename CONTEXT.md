@@ -3255,6 +3255,21 @@ does not reject that array value. This does not relax typed array formals or
 source ByRef storage requirements, and unknown external passing evidence stays
 indeterminate.
 
+For a readable Function or Property Get with no formal parameters, a nonempty
+parenthesized argument list can index its declared result rather than supply
+callable arguments. A proven array result admits positional, non-omitted
+indices; named indices remain invalid. Its selected element retains direct
+storage classification and its declared element type, while an explicitly
+parenthesized element becomes a value temporary. Whole-array callable results
+retain their array shape. Missing external result-type or result-shape metadata
+remains unknown, not proof that indexing or default continuation is invalid.
+The current model does not record array rank and cannot prove rank mismatches.
+Object and Variant results permit unbound positional continuation but remain
+indeterminate; a specific-class result likewise remains indeterminate without
+projected default-member identity and signature evidence. Library member names
+are not exceptions. Ordinary parameterized calls keep their formal-argument
+mapping, and explicit call-then-index syntax keeps its existing treatment.
+
 Parameter provenance selects the passing contract independently of the displayed
 `ByRef` label. Source procedures, including source `Declare` declarations, use
 VBA parameter rules and the shared `EffectiveDeclaredType` authority. Ordinary

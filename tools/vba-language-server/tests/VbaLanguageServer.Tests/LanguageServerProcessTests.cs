@@ -14463,6 +14463,101 @@ public sealed class LanguageServerProcessTests
         await process.ShutdownAsync(3);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Server_completes_indexed_conditional_results_only_with_proven_array_element_type(
+        bool returnsArray)
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string resultUri = "file:///C:/work/SharedResult.cls";
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(resultUri, string.Join('\n', [
+                "VERSION 1.0 CLASS",
+                "Attribute VB_Name = \"SharedResult\"",
+                "Public SharedMember As String"
+            ])));
+        const string callerUri = "file:///C:/work/ConditionalIndexedCallResult.bas";
+        var returnType = returnsArray ? "SharedResult()" : "SharedResult";
+        var callerText = string.Join('\n', [
+            "Attribute VB_Name = \"ConditionalIndexedCallResult\"",
+            "#If FIRST_CONFIGURATION Then",
+            $"Public Function GetPayload() As {returnType}",
+            "End Function",
+            "#Else",
+            $"Public Function GetPayload() As {returnType}",
+            "End Function",
+            "#End If",
+            "Public Sub Run()",
+            "    Debug.Print GetPayload(0).",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(callerUri, callerText));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/completion",
+            callerUri,
+            callerText,
+            "    Debug.Print GetPayload(0).",
+            "    Debug.Print GetPayload(0).".Length);
+        Assert.Equal(
+            returnsArray,
+            response.GetProperty("result").EnumerateArray().Any(
+                item => item.GetProperty("label").GetString() == "SharedMember"));
+
+        await process.ShutdownAsync(3);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Server_offers_positional_index_completion_for_a_parameterless_array_result(
+        bool conditional)
+    {
+        await using var process = await LanguageServerProcessHarness.StartAsync();
+
+        await process.InitializeAsync();
+        const string uri = "file:///C:/work/CallableResultIndexCompletion.bas";
+        var declaration = conditional
+            ? "#If FIRST_CONFIGURATION Then\nPublic Function Values() As Long()\nEnd Function\n"
+                + "#Else\nPublic Function Values() As Long()\nEnd Function\n#End If"
+            : "Public Function Values() As Long()\nEnd Function";
+        var text = string.Join('\n', [
+            "Attribute VB_Name = \"CallableResultIndexCompletion\"",
+            declaration,
+            "Public Sub Run()",
+            "    Dim index As Long",
+            "    Debug.Print Values(ind",
+            "End Sub"
+        ]);
+        await process.SendNotificationAsync(
+            "textDocument/didOpen",
+            CreateOpenDocument(uri, text));
+
+        var response = await SendPositionRequestAsync(
+            process,
+            2,
+            "textDocument/completion",
+            uri,
+            text,
+            "    Debug.Print Values(ind",
+            "    Debug.Print Values(ind".Length);
+        var items = response.GetProperty("result").EnumerateArray().ToArray();
+        var indexItem = Assert.Single(items, item =>
+            item.GetProperty("label").GetString() == "index");
+        Assert.Equal(6, indexItem.GetProperty("kind").GetInt32());
+        Assert.DoesNotContain(items, item => item.GetProperty("kind").GetInt32() == 5);
+
+        await process.ShutdownAsync(3);
+    }
+
     [Fact]
     public async Task Server_completes_members_after_modeled_byval_variant_coercion()
     {

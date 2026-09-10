@@ -274,6 +274,15 @@ internal sealed class VbaCallSiteResolution
                 definition,
                 signature,
                 callContext);
+            if (TryMapParameterlessResultIndex(
+                    definition, signature, callSite, callContext, out var resultMapping))
+            {
+                variants.Add(new VbaCallVariantCompatibility(
+                    definition, signature, signature, resultMapping, resultMapping.State,
+                    IsArrayResultElement: resultMapping.State == VbaCallCompatibilityState.Applicable));
+                continue;
+            }
+
             var mapping = VbaCallArgumentMapper.MapComplete(
                 invocationSignature,
                 callSite,
@@ -298,6 +307,62 @@ internal sealed class VbaCallSiteResolution
             target,
             callContext,
             Array.AsReadOnly(variants.ToArray()));
+    }
+
+    private bool TryMapParameterlessResultIndex(
+        VbaSourceDefinition definition,
+        VbaCallableSignature signature,
+        VbaCallSiteSyntax callSite,
+        VbaCallContext context,
+        out VbaCompleteCallArgumentMapping mapping)
+    {
+        mapping = default!;
+        if (context != VbaCallContext.ValueRead
+            || callSite.Form != VbaCallSyntaxForm.Parenthesized
+            || callSite.IsIncomplete
+            || callSite.Arguments.Count == 0
+            || signature.Parameters.Count != 0
+            || VbaCallArgumentMapper.GetContextCompatibility(definition, signature, context)
+                != VbaCallContextCompatibility.Compatible)
+        {
+            return false;
+        }
+
+        var resultArrayShape = definition.Identity.Origin == VbaDefinitionOrigin.Source
+            ? (bool?)definition.IsArray : definition.IsReturnArray;
+        var isArray = resultArrayShape == true;
+        VbaCanonicalTypeEvidence? resultType = null;
+        if (!isArray)
+        {
+            TryGetDeclaredTypeEvidence(definition, -1, out resultType);
+        }
+
+        if (resultArrayShape == false && resultType is not null
+            && resultType.Category is not (VbaCanonicalTypeCategory.Variant
+                or VbaCanonicalTypeCategory.Object or VbaCanonicalTypeCategory.Class))
+        {
+            return false;
+        }
+
+        var requiresArrayIndexShape = isArray
+            || resultType?.Category is not (null or VbaCanonicalTypeCategory.Variant
+                or VbaCanonicalTypeCategory.Object or VbaCanonicalTypeCategory.Class);
+        if (callSite.Arguments.Any(argument => argument.Name is not null
+                    && (isArray || resultType is not null
+                        && resultType.Category != VbaCanonicalTypeCategory.Class)
+                || requiresArrayIndexShape && argument.IsOmitted))
+        {
+            return false;
+        }
+
+        mapping = VbaCallArgumentMapper.MapCompleteZeroArgument(
+            signature, VbaCallContextCompatibility.Compatible);
+        if (!isArray)
+        {
+            mapping = mapping with { State = VbaCallCompatibilityState.Indeterminate };
+        }
+
+        return true;
     }
 
     internal bool TryResolveRaiseEventTarget(
@@ -766,9 +831,13 @@ internal sealed class VbaCallSiteResolution
             return false;
         }
 
+        var resultShapes = definitions.Select(definition =>
+                definition.Identity.Origin == VbaDefinitionOrigin.Source
+                    ? (bool?)definition.IsArray : definition.IsReturnArray)
+            .Distinct().ToArray();
         evidence = new VbaCallArgumentTypeEvidence(
             convergedType,
-            IsArray: false,
+            IsArray: resultShapes.Length == 1 ? resultShapes[0] : null,
             VbaCallArgumentStorage.ValueTemporary);
         return true;
     }
@@ -790,6 +859,7 @@ internal sealed class VbaCallSiteResolution
                 and not VbaTokenKind.NewLine
                 and not VbaTokenKind.LineContinuation)
             .ToArray();
+        var isOuterParenthesized = HasCompleteOuterParenthesisPair(tokens);
         while (HasCompleteOuterParenthesisPair(tokens))
         {
             tokens = tokens[1..^1];
@@ -832,10 +902,16 @@ internal sealed class VbaCallSiteResolution
         }
 
         var compatibility = AnalyzeCompleteCall(currentDocument, nestedCall, target);
-        return TryGetConvergedCallableResultTypeEvidence(
+        var hasEvidence = TryGetConvergedCallableResultTypeEvidence(
             currentDocument,
             compatibility,
             out evidence);
+        if (hasEvidence && isOuterParenthesized)
+        {
+            evidence = evidence with { Storage = VbaCallArgumentStorage.ValueTemporary };
+        }
+
+        return hasEvidence;
     }
 
     private bool TryGetConvergedCallableResultTypeEvidence(
@@ -899,16 +975,23 @@ internal sealed class VbaCallSiteResolution
             convergedType = variantType;
         }
 
-        if (convergedType is null)
+        if (convergedType is null
+            || variants.Any(variant => variant.IsArrayResultElement != variants[0].IsArrayResultElement))
         {
             evidence = default!;
             return false;
         }
 
+        var resultShapes = variants.Select(variant => variant.IsArrayResultElement
+                ? false : variant.Definition.Identity.Origin == VbaDefinitionOrigin.Source
+                    ? (bool?)variant.Definition.IsArray : variant.Definition.IsReturnArray)
+            .Distinct().ToArray();
         evidence = new VbaCallArgumentTypeEvidence(
             convergedType,
-            IsArray: false,
-            VbaCallArgumentStorage.ValueTemporary);
+            IsArray: resultShapes.Length == 1 ? resultShapes[0] : null,
+            variants[0].IsArrayResultElement
+                ? VbaCallArgumentStorage.DirectStorage
+                : VbaCallArgumentStorage.ValueTemporary);
         return true;
     }
 
@@ -1934,6 +2017,12 @@ internal sealed class VbaCallSiteResolution
             return new VbaCallArgumentAvailability(definition, signature, false, []);
         }
 
+        if (TryGetArrayResultIndexAvailability(
+                definition, signature, callSite, callContext, out var indexAvailability))
+        {
+            return indexAvailability;
+        }
+
         if (IsExplicitlyWriteOnlyProperty(definition))
         {
             if (callContext != VbaCallContext.Indeterminate
@@ -1955,6 +2044,33 @@ internal sealed class VbaCallSiteResolution
             VbaCallArgumentMapper.GetContextCompatibility(definition, signature, callContext));
     }
 
+    private static bool TryGetArrayResultIndexAvailability(
+        VbaSourceDefinition definition,
+        VbaCallableSignature signature,
+        VbaCallSiteSyntax callSite,
+        VbaCallContext context,
+        out VbaCallArgumentAvailability availability)
+    {
+        availability = default!;
+        if (signature.Parameters.Count != 0
+            || !(definition.Identity.Origin == VbaDefinitionOrigin.Source
+                ? definition.IsArray : definition.IsReturnArray == true)
+            || callSite.Form != VbaCallSyntaxForm.Parenthesized
+            || context != VbaCallContext.ValueRead
+            || VbaCallArgumentMapper.GetContextCompatibility(definition, signature, context)
+                != VbaCallContextCompatibility.Compatible)
+        {
+            return false;
+        }
+
+        var hasInvalidPriorIndex = GetPriorArguments(callSite)
+            .Any(argument => argument.Name is not null || argument.IsOmitted);
+        availability = new VbaCallArgumentAvailability(
+            definition, signature, !hasInvalidPriorIndex, [],
+            ContextCompatibility: VbaCallContextCompatibility.Compatible);
+        return true;
+    }
+
     private static VbaCallArgumentAvailability AnalyzeConditionalArguments(
         VbaSourceDocument currentDocument,
         VbaResolvedNameTarget target,
@@ -1967,6 +2083,13 @@ internal sealed class VbaCallSiteResolution
             var signature = definition.Signature;
             if (signature is null)
             {
+                continue;
+            }
+
+            if (TryGetArrayResultIndexAvailability(
+                    definition, signature, callSite, callContext, out var indexAvailability))
+            {
+                variantAvailability.Add(indexAvailability);
                 continue;
             }
 
