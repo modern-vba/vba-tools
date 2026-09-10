@@ -2,6 +2,705 @@
   "schemaVersion": "1.0",
   "cases": [
     {
+      "id": "unavailable-foreign-result-type-keeps-default-continuation-indeterminate",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim provider As Foreign.ResultProvider\n    Dim first As Variant\n    first = provider.Values(index:=0)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [],
+      "referenceCatalogs": [
+        {
+          "referenceName": "Foreign Result Library",
+          "qualifierAliases": ["Foreign"],
+          "definitions": [
+            {
+              "referenceName": "Foreign Result Library",
+              "name": "ResultProvider",
+              "kind": 1
+            },
+            {
+              "referenceName": "Foreign Result Library",
+              "name": "Values",
+              "kind": 3,
+              "parentTypeName": "ResultProvider",
+              "typeReference": null,
+              "isReturnArray": false,
+              "isCallableMetadataComplete": true,
+              "signature": {
+                "label": "Function Values()",
+                "parameters": [],
+                "callableKind": 1,
+                "supportsNamedArguments": true,
+                "passingConvention": 1
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "unavailable-foreign-array-result-shape-is-indeterminate",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim provider As Foreign.ResultProvider\n    Dim first As String\n    first = provider.Values(0)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [],
+      "referenceCatalogs": [
+        {
+          "referenceName": "Foreign Result Library",
+          "qualifierAliases": ["Foreign"],
+          "definitions": [
+            {
+              "referenceName": "Foreign Result Library",
+              "name": "ResultProvider",
+              "kind": 1
+            },
+            {
+              "referenceName": "Foreign Result Library",
+              "name": "Values",
+              "kind": 3,
+              "parentTypeName": "ResultProvider",
+              "typeReference": { "name": "String", "qualifier": null },
+              "isReturnArray": null,
+              "isCallableMetadataComplete": true,
+              "signature": {
+                "label": "Function Values() As String",
+                "parameters": [],
+                "callableKind": 1,
+                "supportsNamedArguments": true,
+                "passingConvention": 1
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "explicit-parameterized-call-then-array-index",
+      "sources": [
+        {
+          "fileName": "ResultIndex.bas",
+          "source": "Attribute VB_Name = \"ResultIndex\"\nPublic Function Values(ByVal count As Long) As Long()\n    Dim items(0 To 1) As Long\n    Values = items\nEnd Function\nPublic Sub Run()\n    Dim first As Long\n    first = Values(1&)(0)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": []
+    },
+    {
+      "id": "explicit-parameterless-call-then-array-index",
+      "sources": [
+        {
+          "fileName": "ResultIndex.bas",
+          "source": "Attribute VB_Name = \"ResultIndex\"\nPublic Function Values() As Long()\n    Dim items(0 To 1) As Long\n    Values = items\nEnd Function\nPublic Sub Run()\n    Dim first As Long\n    first = Values()(0)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": []
+    },
+    {
+      "id": "all-optional-array-call-rejects-excess-arguments",
+      "sources": [
+        {
+          "fileName": "ResultIndex.bas",
+          "source": "Attribute VB_Name = \"ResultIndex\"\nPublic Function Values(Optional ByVal count As Long = 0) As Long()\nEnd Function\nPublic Sub Run()\n    Dim first As Long\n    first = Values(1&,0)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "ResultIndex.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 5,
+              "character": 18
+            },
+            "end": {
+              "line": 5,
+              "character": 24
+            }
+          },
+          "details": [
+            {
+              "location": {
+                "fileName": "ResultIndex.bas",
+                "range": {
+                  "start": {
+                    "line": 1,
+                    "character": 16
+                  },
+                  "end": {
+                    "line": 1,
+                    "character": 22
+                  }
+                }
+              },
+              "relatedMessage": "Candidate signature: Function Values([count As Long]) As Long(). Mismatches: argument 2 mapping: no parameter accepts this argument.",
+              "fallbackText": "Candidate signature: Function Values([count As Long]) As Long().\nMismatches: argument 2 mapping: no parameter accepts this argument."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.",
+          "relatedInformation": [
+            {
+              "fileName": "ResultIndex.bas",
+              "range": {
+                "start": {
+                  "line": 1,
+                  "character": 16
+                },
+                "end": {
+                  "line": 1,
+                  "character": 22
+                }
+              },
+              "message": "Candidate signature: Function Values([count As Long]) As Long(). Mismatches: argument 2 mapping: no parameter accepts this argument."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "parameterized-array-call-rejects-excess-arguments",
+      "sources": [
+        {
+          "fileName": "ResultIndex.bas",
+          "source": "Attribute VB_Name = \"ResultIndex\"\nPublic Function Values(ByVal count As Long) As Long()\nEnd Function\nPublic Sub Run()\n    Dim first As Long\n    first = Values(1&,0)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "ResultIndex.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 5,
+              "character": 18
+            },
+            "end": {
+              "line": 5,
+              "character": 24
+            }
+          },
+          "details": [
+            {
+              "location": {
+                "fileName": "ResultIndex.bas",
+                "range": {
+                  "start": {
+                    "line": 1,
+                    "character": 16
+                  },
+                  "end": {
+                    "line": 1,
+                    "character": 22
+                  }
+                }
+              },
+              "relatedMessage": "Candidate signature: Function Values(count As Long) As Long(). Mismatches: argument 2 mapping: no parameter accepts this argument.",
+              "fallbackText": "Candidate signature: Function Values(count As Long) As Long().\nMismatches: argument 2 mapping: no parameter accepts this argument."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.",
+          "relatedInformation": [
+            {
+              "fileName": "ResultIndex.bas",
+              "range": {
+                "start": {
+                  "line": 1,
+                  "character": 16
+                },
+                "end": {
+                  "line": 1,
+                  "character": 22
+                }
+              },
+              "message": "Candidate signature: Function Values(count As Long) As Long(). Mismatches: argument 2 mapping: no parameter accepts this argument."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "array-result-index-rejects-omitted-subscript",
+      "sources": [
+        {
+          "fileName": "ResultIndex.bas",
+          "source": "Attribute VB_Name = \"ResultIndex\"\nPublic Function Values() As Long()\nEnd Function\nPublic Sub Run()\n    Dim first As Long\n    first = Values(,0)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "ResultIndex.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 5,
+              "character": 18
+            },
+            "end": {
+              "line": 5,
+              "character": 22
+            }
+          },
+          "details": [
+            {
+              "location": {
+                "fileName": "ResultIndex.bas",
+                "range": {
+                  "start": {
+                    "line": 1,
+                    "character": 16
+                  },
+                  "end": {
+                    "line": 1,
+                    "character": 22
+                  }
+                }
+              },
+              "relatedMessage": "Candidate signature: Function Values() As Long(). Mismatches: argument 1 mapping: no parameter accepts this argument; argument 2 mapping: no parameter accepts this argument.",
+              "fallbackText": "Candidate signature: Function Values() As Long().\nMismatches: argument 1 mapping: no parameter accepts this argument; argument 2 mapping: no parameter accepts this argument."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.",
+          "relatedInformation": [
+            {
+              "fileName": "ResultIndex.bas",
+              "range": {
+                "start": {
+                  "line": 1,
+                  "character": 16
+                },
+                "end": {
+                  "line": 1,
+                  "character": 22
+                }
+              },
+              "message": "Candidate signature: Function Values() As Long(). Mismatches: argument 1 mapping: no parameter accepts this argument; argument 2 mapping: no parameter accepts this argument."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "variant-result-index-rejects-named-arguments",
+      "sources": [
+        {
+          "fileName": "ResultIndex.bas",
+          "source": "Attribute VB_Name = \"ResultIndex\"\nPublic Function Values() As Variant\nEnd Function\nPublic Sub Run()\n    Dim first As Variant\n    first = Values(index:=0)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "ResultIndex.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 5,
+              "character": 18
+            },
+            "end": {
+              "line": 5,
+              "character": 28
+            }
+          },
+          "details": [
+            {
+              "location": {
+                "fileName": "ResultIndex.bas",
+                "range": {
+                  "start": {
+                    "line": 1,
+                    "character": 16
+                  },
+                  "end": {
+                    "line": 1,
+                    "character": 22
+                  }
+                }
+              },
+              "relatedMessage": "Candidate signature: Function Values() As Variant. Mismatches: argument 1 ('index') mapping: no parameter named 'index'.",
+              "fallbackText": "Candidate signature: Function Values() As Variant.\nMismatches: argument 1 ('index') mapping: no parameter named 'index'."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.",
+          "relatedInformation": [
+            {
+              "fileName": "ResultIndex.bas",
+              "range": {
+                "start": {
+                  "line": 1,
+                  "character": 16
+                },
+                "end": {
+                  "line": 1,
+                  "character": 22
+                }
+              },
+              "message": "Candidate signature: Function Values() As Variant. Mismatches: argument 1 ('index') mapping: no parameter named 'index'."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "array-result-index-rejects-named-arguments",
+      "sources": [
+        {
+          "fileName": "ResultIndex.bas",
+          "source": "Attribute VB_Name = \"ResultIndex\"\nPublic Function Values() As Long()\nEnd Function\nPublic Sub Run()\n    Dim first As Long\n    first = Values(index:=0)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "ResultIndex.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 5,
+              "character": 18
+            },
+            "end": {
+              "line": 5,
+              "character": 28
+            }
+          },
+          "details": [
+            {
+              "location": {
+                "fileName": "ResultIndex.bas",
+                "range": {
+                  "start": {
+                    "line": 1,
+                    "character": 16
+                  },
+                  "end": {
+                    "line": 1,
+                    "character": 22
+                  }
+                }
+              },
+              "relatedMessage": "Candidate signature: Function Values() As Long(). Mismatches: argument 1 ('index') mapping: no parameter named 'index'.",
+              "fallbackText": "Candidate signature: Function Values() As Long().\nMismatches: argument 1 ('index') mapping: no parameter named 'index'."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.",
+          "relatedInformation": [
+            {
+              "fileName": "ResultIndex.bas",
+              "range": {
+                "start": {
+                  "line": 1,
+                  "character": 16
+                },
+                "end": {
+                  "line": 1,
+                  "character": 22
+                }
+              },
+              "message": "Candidate signature: Function Values() As Long(). Mismatches: argument 1 ('index') mapping: no parameter named 'index'."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "whole-callable-array-results-are-not-scalar-elements",
+      "sources": [
+        {
+          "fileName": "ResultIndex.bas",
+          "source": "Attribute VB_Name = \"ResultIndex\"\nPublic Function Values() As Long()\n    Dim items(0 To 1) As Long\n    Values = items\nEnd Function\nPublic Sub Run()\n    AcceptLong Values()\n    AcceptLong Values\nEnd Sub\nPrivate Sub AcceptLong(ByVal value As Long)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "ResultIndex.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 6,
+              "character": 15
+            },
+            "end": {
+              "line": 6,
+              "character": 23
+            }
+          },
+          "details": [
+            {
+              "location": {
+                "fileName": "ResultIndex.bas",
+                "range": {
+                  "start": {
+                    "line": 9,
+                    "character": 12
+                  },
+                  "end": {
+                    "line": 9,
+                    "character": 22
+                  }
+                }
+              },
+              "relatedMessage": "Candidate signature: Sub AcceptLong(value As Long). Mismatches: argument 1 for parameter 'value' array shape: expected scalar, found array.",
+              "fallbackText": "Candidate signature: Sub AcceptLong(value As Long).\nMismatches: argument 1 for parameter 'value' array shape: expected scalar, found array."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.",
+          "relatedInformation": [
+            {
+              "fileName": "ResultIndex.bas",
+              "range": {
+                "start": {
+                  "line": 9,
+                  "character": 12
+                },
+                "end": {
+                  "line": 9,
+                  "character": 22
+                }
+              },
+              "message": "Candidate signature: Sub AcceptLong(value As Long). Mismatches: argument 1 for parameter 'value' array shape: expected scalar, found array."
+            }
+          ]
+        },
+        {
+          "fileName": "ResultIndex.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 7,
+              "character": 15
+            },
+            "end": {
+              "line": 7,
+              "character": 21
+            }
+          },
+          "details": [
+            {
+              "location": {
+                "fileName": "ResultIndex.bas",
+                "range": {
+                  "start": {
+                    "line": 9,
+                    "character": 12
+                  },
+                  "end": {
+                    "line": 9,
+                    "character": 22
+                  }
+                }
+              },
+              "relatedMessage": "Candidate signature: Sub AcceptLong(value As Long). Mismatches: argument 1 for parameter 'value' array shape: expected scalar, found array.",
+              "fallbackText": "Candidate signature: Sub AcceptLong(value As Long).\nMismatches: argument 1 for parameter 'value' array shape: expected scalar, found array."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.",
+          "relatedInformation": [
+            {
+              "fileName": "ResultIndex.bas",
+              "range": {
+                "start": {
+                  "line": 9,
+                  "character": 12
+                },
+                "end": {
+                  "line": 9,
+                  "character": 22
+                }
+              },
+              "message": "Candidate signature: Sub AcceptLong(value As Long). Mismatches: argument 1 for parameter 'value' array shape: expected scalar, found array."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "parenthesized-indexed-callable-array-result-is-a-value-temporary",
+      "sources": [
+        {
+          "fileName": "ResultIndex.bas",
+          "source": "Attribute VB_Name = \"ResultIndex\"\nPublic Function Values() As Integer()\n    Dim items(0 To 1) As Integer\n    Values = items\nEnd Function\nPublic Sub Run()\n    AcceptLong (Values(0))\nEnd Sub\nPrivate Sub AcceptLong(ByRef value As Long)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": []
+    },
+    {
+      "id": "indexed-callable-array-result-retains-byref-element-type",
+      "sources": [
+        {
+          "fileName": "ResultIndex.bas",
+          "source": "Attribute VB_Name = \"ResultIndex\"\nPublic Function Values() As Integer()\n    Dim items(0 To 1) As Integer\n    Values = items\nEnd Function\nPublic Sub Run()\n    AcceptLong Values(0)\nEnd Sub\nPrivate Sub AcceptLong(ByRef value As Long)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "ResultIndex.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": {
+            "start": {
+              "line": 6,
+              "character": 15
+            },
+            "end": {
+              "line": 6,
+              "character": 24
+            }
+          },
+          "details": [
+            {
+              "location": {
+                "fileName": "ResultIndex.bas",
+                "range": {
+                  "start": {
+                    "line": 8,
+                    "character": 12
+                  },
+                  "end": {
+                    "line": 8,
+                    "character": 22
+                  }
+                }
+              },
+              "relatedMessage": "Candidate signature: Sub AcceptLong(ByRef value As Long). Mismatches: argument 1 for parameter 'value' ByRef type: expected Long, found Integer.",
+              "fallbackText": "Candidate signature: Sub AcceptLong(ByRef value As Long).\nMismatches: argument 1 for parameter 'value' ByRef type: expected Long, found Integer."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.",
+          "relatedInformation": [
+            {
+              "fileName": "ResultIndex.bas",
+              "range": {
+                "start": {
+                  "line": 8,
+                  "character": 12
+                },
+                "end": {
+                  "line": 8,
+                  "character": 22
+                }
+              },
+              "message": "Candidate signature: Sub AcceptLong(ByRef value As Long). Mismatches: argument 1 for parameter 'value' ByRef type: expected Long, found Integer."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "class-result-default-member-evidence-is-indeterminate",
+      "sources": [
+        {
+          "fileName": "ResultIndex.bas",
+          "source": "Attribute VB_Name = \"ResultIndex\"\nPublic Function Values() As ResultItems\n    Set Values = Nothing\nEnd Function\nPublic Sub Run()\n    Dim first As Variant\n    first = Values(index:=0)\nEnd Sub\n"
+        },
+        {
+          "fileName": "ResultItems.cls",
+          "source": "VERSION 1.0 CLASS\nAttribute VB_Name = \"ResultItems\"\nPublic Function Item(ByVal index As Long) As String\nAttribute Item.VB_UserMemId = 0\nEnd Function\n"
+        }
+      ],
+      "diagnostics": []
+    },
+    {
+      "id": "parameterless-object-result-index-is-unbound",
+      "sources": [
+        {
+          "fileName": "ResultIndex.bas",
+          "source": "Attribute VB_Name = \"ResultIndex\"\nPublic Function Values() As Object\n    Set Values = Nothing\nEnd Function\nPublic Sub Run()\n    Dim first As Variant\n    first = Values(0)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": []
+    },
+    {
+      "id": "early-bound-dictionary-keys-result-index",
+      "sources": [
+        {
+          "fileName": "Caller.bas",
+          "source": "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n    Dim values As Scripting.Dictionary\n    Dim first As Variant\n    first = values.Keys(0)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [],
+      "referenceCatalogs": [
+        {
+          "referenceName": "Microsoft Scripting Runtime",
+          "qualifierAliases": [
+            "Scripting"
+          ],
+          "definitions": [
+            {
+              "referenceName": "Microsoft Scripting Runtime",
+              "name": "Dictionary",
+              "kind": 1
+            },
+            {
+              "referenceName": "Microsoft Scripting Runtime",
+              "name": "Keys",
+              "kind": 3,
+              "parentTypeName": "Dictionary",
+              "typeReference": {
+                "name": "Variant",
+                "qualifier": null
+              },
+              "isReturnArray": false,
+              "isCallableMetadataComplete": true,
+              "signature": {
+                "label": "Function Keys() As Variant",
+                "parameters": [],
+                "callableKind": 1,
+                "supportsNamedArguments": true,
+                "passingConvention": 1
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "parameterless-variant-result-index-is-unbound",
+      "sources": [
+        {
+          "fileName": "ResultIndex.bas",
+          "source": "Attribute VB_Name = \"ResultIndex\"\nPublic Function Values() As Variant\n    Values = Array(\"alpha\")\nEnd Function\nPublic Sub Run()\n    Dim first As Variant\n    first = Values(0)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": []
+    },
+    {
+      "id": "parameterless-property-array-result-index",
+      "sources": [
+        {
+          "fileName": "ResultReader.cls",
+          "source": "VERSION 1.0 CLASS\nAttribute VB_Name = \"ResultReader\"\nPublic Property Get Values() As Long()\n    Dim items(0 To 1) As Long\n    Values = items\nEnd Property\nPublic Sub Run()\n    Dim first As Long\n    first = Values(0)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": []
+    },
+    {
+      "id": "parameterless-function-array-result-index",
+      "sources": [
+        {
+          "fileName": "ResultIndex.bas",
+          "source": "Attribute VB_Name = \"ResultIndex\"\nPublic Function Values() As Long()\n    Dim items(0 To 1) As Long\n    Values = items\nEnd Function\nPublic Sub Run()\n    Dim first As Long\n    first = Values(0)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": []
+    },
+    {
       "id": "whole-typed-array-still-rejected-by-byval-scalar-long",
       "sources": [
         {

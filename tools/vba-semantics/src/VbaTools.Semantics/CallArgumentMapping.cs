@@ -73,7 +73,8 @@ internal sealed record VbaCallVariantCompatibility(
     VbaCallableSignature? Signature,
     VbaCallableSignature? InvocationSignature,
     VbaCompleteCallArgumentMapping? Mapping,
-    VbaCallCompatibilityState State);
+    VbaCallCompatibilityState State,
+    bool IsArrayResultElement = false);
 
 internal sealed record VbaConditionalCallCompatibility(
     VbaResolvedNameTarget Target,
