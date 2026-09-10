@@ -23,6 +23,17 @@ public sealed class WorkbookReferenceLibraryPathTests
     }
 
     [Fact]
+    public void ResourceQualifiedTypeLibPathPreservesTheExactLoadTarget()
+    {
+        using var temp = TempDirectory.Create();
+        var library = Path.Combine(temp.Path, "Library.dll");
+        File.WriteAllBytes(library, [1]);
+        var observed = Path.Combine(library, "3");
+
+        Assert.Equal(observed, WorkbookReferenceLibraryPath.Resolve(observed, []));
+    }
+
+    [Fact]
     public void MissingVirtualPathUsesTheUniqueLoadedPhysicalLibrary()
     {
         using var temp = TempDirectory.Create();
