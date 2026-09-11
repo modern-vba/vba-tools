@@ -34,6 +34,30 @@ public sealed class VbaProjectIdentityModelTests
     }
 
     [Fact]
+    public void Document_identity_preserves_escaped_Japanese_file_uri_aliases_and_distinct_paths()
+    {
+        const string canonicalUri =
+            "file:///C:/projects/%E6%9B%B8%E5%BC%8F%E3%81%A7%E3%83%86%E3%82%AD%E3%82%B9%E3%83%88%E6%8A%BD%E5%87%BA/Module%20One.bas";
+        const string equivalentUri =
+            "file:///c%3A/projects/%E6%9B%B8%E5%BC%8F%E3%81%A7%E3%83%86%E3%82%AD%E3%82%B9%E3%83%88%E6%8A%BD%E5%87%BA/Nested/../Module%20One.bas";
+        const string distinctUri =
+            "file:///C:/projects/%E6%9B%B8%E5%BC%8F%E3%81%A7%E3%83%86%E3%82%AD%E3%82%B9%E3%83%88%E6%8A%BD%E5%87%BA/Module%20Two.bas";
+
+        Assert.True(VbaProjectIdentityModel.TryIdentifyDocument(
+            canonicalUri,
+            out var canonical));
+        Assert.True(VbaProjectIdentityModel.TryIdentifyDocument(
+            equivalentUri,
+            out var equivalent));
+        Assert.True(VbaProjectIdentityModel.TryIdentifyDocument(
+            distinctUri,
+            out var distinct));
+
+        Assert.Equal(canonical, equivalent);
+        Assert.NotEqual(canonical, distinct);
+    }
+
+    [Fact]
     public void Document_identity_normalizes_non_file_uris_without_using_them_as_authorities()
     {
         const string firstUri =

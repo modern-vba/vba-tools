@@ -16,7 +16,8 @@ internal static class VbaDocumentIdentityPolicy
 
         if (parsed.IsFile)
         {
-            var localPath = TryGetLocalPath(uri);
+            // Reuse the admitted parse; reparsing adds no identity evidence and re-enters runtime URI canonicalization.
+            var localPath = TryGetLocalPath(parsed);
             if (localPath is null
                 || !TryNormalizePath(localPath, out var canonicalPath))
             {
@@ -120,7 +121,18 @@ internal static class VbaDocumentIdentityPolicy
     {
         try
         {
-            var parsed = new Uri(uri);
+            return TryGetLocalPath(new Uri(uri));
+        }
+        catch (UriFormatException)
+        {
+            return null;
+        }
+    }
+
+    private static string? TryGetLocalPath(Uri parsed)
+    {
+        try
+        {
             if (!parsed.IsFile)
             {
                 return null;
