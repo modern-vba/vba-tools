@@ -82,6 +82,57 @@ public sealed class VbaSourceAnalysisReportTests
         return builder.ToReport();
     }
 
+    [Fact]
+    public void FailureEvidenceSurvivesSnapshotCloneAndCleanupFailureWithoutChangingItsPhase()
+    {
+        var tree = VbaSyntaxTree.ParseModule(SourceUri, "Attribute VB_Name = \"Severity\"\n");
+        var builder = new VbaSourceAnalysisReport.Builder
+        {
+            SourceDirectory = "captured-source", AdmissionPurpose = "SourceSnapshotBuild", ActiveCodePage = 932
+        };
+        builder.Add(tree);
+        builder.Phase = "projectSemanticAnalysis";
+        var original = new NullReferenceException("Original semantic failure.");
+        builder.FailProject(original);
+        var report = builder.Clone().ToReport().WithProjectFailure(new IOException("Cleanup failed."));
+
+        Assert.False(report.Complete);
+        Assert.Same(original, report.Failures[0].Exception);
+        Assert.Equal("projectSemanticAnalysis", report.Failures[0].Phase);
+        Assert.Equal("snapshotCleanup", report.Failures[1].Phase);
+        Assert.Same(tree, Assert.Single(report.SyntaxTrees));
+        Assert.Equal("captured-source", report.SourceDirectory);
+        Assert.Equal("SourceSnapshotBuild", report.AdmissionPurpose);
+        Assert.Equal(932, report.ActiveCodePage);
+    }
+
+    [Fact]
+    public void SuccessfulReportsDoNotRetainSourceTreesForEvidence()
+    {
+        var builder = new VbaSourceAnalysisReport.Builder();
+        builder.Add(VbaSyntaxTree.ParseModule(SourceUri, "Attribute VB_Name = \"Severity\"\n"));
+
+        Assert.Empty(builder.ToReport().SyntaxTrees);
+        Assert.Null(builder.ToReport().SemanticInputs);
+    }
+
+    [Fact]
+    public void FailureRenderingSurvivesACustomExceptionFormatterFailure()
+    {
+        var builder = new VbaSourceAnalysisReport.Builder();
+        builder.FailProject(new UnrenderableException());
+
+        using var document = JsonDocument.Parse(VbaSourceAnalysisOutput.Render(builder.ToReport()));
+        var failure = Assert.Single(document.RootElement.GetProperty("failures").EnumerateArray());
+        Assert.Equal("Original message.", failure.GetProperty("message").GetString());
+        Assert.Contains("exception text unavailable", failure.GetProperty("exception").GetString());
+    }
+
+    private sealed class UnrenderableException() : Exception("Original message.")
+    {
+        public override string ToString() => throw new InvalidOperationException("Formatter failed.");
+    }
+
     private static SerializedDiagnostic ReadDiagnostic(JsonElement diagnostic)
     {
         var range = diagnostic.GetProperty("range");

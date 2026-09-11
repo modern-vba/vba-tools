@@ -226,10 +226,13 @@ internal sealed class VbaSourceAdmission
         Exception? operationalFailure = null;
         if (!projectFatal && acquireInputs is not null)
         {
+            analysis.Phase = "semanticInputAcquisition";
+            analysis.ActiveSourcePath = null;
             try
             {
                 inputs = await acquireInputs(analysis.CapturedSyntaxTrees, cancellationToken).ConfigureAwait(false);
                 ArgumentNullException.ThrowIfNull(inputs);
+                analysis.SemanticInputs = inputs;
             }
             catch (Exception error)
             {
@@ -241,6 +244,8 @@ internal sealed class VbaSourceAdmission
         {
             if (operationalFailure is null || !cancellationToken.IsCancellationRequested)
             {
+                analysis.Phase = "projectSemanticAnalysis";
+                analysis.ActiveSourcePath = null;
                 analysis.AnalyzeProjectSources(cancellationToken, inputs);
             }
         }
@@ -321,7 +326,14 @@ internal sealed class VbaSourceAdmission
         VbaSourceAnalysisReport.Builder? analysis = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (analysis is not null)
+        {
+            analysis.SourceDirectory = sourceDirectory;
+            analysis.AdmissionPurpose = purpose.ToString();
+            analysis.Phase = "sourceInventory";
+        }
         var activeCodePage = getActiveCodePage();
+        if (analysis is not null) analysis.ActiveCodePage = activeCodePage;
         cancellationToken.ThrowIfCancellationRequested();
         var encoding = CreateStrictActiveEncoding(activeCodePage);
         var root = Path.GetFullPath(sourceDirectory);
@@ -405,6 +417,11 @@ internal sealed class VbaSourceAdmission
                 continue;
             }
             string text;
+            if (analysis is not null)
+            {
+                analysis.Phase = "sourceDecode";
+                analysis.ActiveSourcePath = source.SourceFile.SourcePath;
+            }
             try
             {
                 text = source.ReadDecodedText(cancellationToken);
@@ -421,10 +438,12 @@ internal sealed class VbaSourceAdmission
             }
             if (analysis is not null)
             {
+                analysis.Phase = "sourceParse";
                 analysis.Add(source.ReadSyntax(cancellationToken));
             }
             try
             {
+                if (analysis is not null) analysis.Phase = "sourceAdmission";
                 admitted.Add(source.AdmitSelectedSource(cancellationToken));
             }
             catch (SourceFileProcessingException error) when (analysis is not null)
@@ -434,6 +453,11 @@ internal sealed class VbaSourceAdmission
         }
 
         cancellationToken.ThrowIfCancellationRequested();
+        if (analysis is not null)
+        {
+            analysis.Phase = "sourceOrdering";
+            analysis.ActiveSourcePath = null;
+        }
         var ordered = purpose is AdmissionPurpose.ProjectBuild or AdmissionPurpose.ProjectPublish
             ? OrderProjectSources(admitted, commonModules)
             : admitted;

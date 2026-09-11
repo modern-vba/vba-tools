@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { VbaDevOutputContractError } from './vbaDevOutputContract';
+import { VbaDevOutputContractError, parseVbaDevSourceAnalysisReports } from './vbaDevOutputContract';
 
 import {
   VbaDevDiagnosticReporter,
@@ -355,6 +355,30 @@ test('valid sourceAnalysis reports preserve findings and accept failures without
       report.expected.filter(diagnostic => diagnostic.uriPath === uncPath), report.name);
     assert.equal(collection.entries.size, report.expected.length === 0 ? 0 : 2, report.name);
   }
+});
+
+test('sourceAnalysis failure evidence and a trailing saved-log path preserve diagnostics and failure handling', () => {
+  const original = semanticReport();
+  const collection = new FakeDiagnosticCollection();
+  const reporter = new VbaDevDiagnosticReporter(collection);
+  const message = 'Object reference not set to an instance of an object.';
+  const output = [JSON.stringify({
+    ...original,
+    complete: false,
+    failures: [{
+      scope: 'project', uri: null, message,
+      phase: 'projectSemanticAnalysis', exceptionType: 'System.NullReferenceException',
+      exception: `System.NullReferenceException: ${message}\n   at VbaDev.SourceAnalysis.Analyze()`
+    }]
+  }), 'Source analysis failure evidence: C:\\logs\\source-analysis-failure.json', ''].join('\n');
+  const expected = parseVbaDevDiagnostics(JSON.stringify(original));
+
+  assert.deepEqual(reporter.refresh('evidence-build', output), expected);
+  assert.deepEqual(parseVbaDevSourceAnalysisReports(output), [{
+    complete: false, diagnostics: expected, failures: [{ message }]
+  }]);
+  assert.equal(collection.entries.size, 1);
+  assert.deepEqual(collection.entries.get(String.raw`C:\work\Caller.bas`), expected);
 });
 
 test('sourceAnalysis 3.0 preserves related declaration navigation and replaces it on a clean rerun', () => {

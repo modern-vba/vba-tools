@@ -23,7 +23,10 @@ internal static class VbaSourceAnalysisOutput
             {
                 scope = failure.Scope,
                 uri = failure.SourceUri,
-                message = failure.Message
+                message = failure.Message,
+                phase = failure.Phase,
+                exceptionType = failure.Exception?.GetType().FullName,
+                exception = failure.ExceptionDetails
             })
         }) + Environment.NewLine;
     }

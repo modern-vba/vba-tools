@@ -108,6 +108,11 @@ public sealed class SnapshotBuildSourceDiagnosticsTests
         Assert.Equal(2, failures.Length);
         Assert.Contains(failures, failure => failure.GetProperty("uri").GetString() == new Uri(brokenPath).AbsoluteUri);
         Assert.Contains(failures, failure => failure.GetProperty("message").GetString() == "Required TypeLib unavailable for this snapshot.");
+        var inputFailure = Assert.Single(failures, failure => failure.GetProperty("scope").GetString() == "project");
+        Assert.Equal("semanticInputAcquisition", inputFailure.GetProperty("phase").GetString());
+        Assert.Equal(typeof(IOException).FullName, inputFailure.GetProperty("exceptionType").GetString());
+        Assert.Contains(nameof(SnapshotBuildAggregatesReadableSourceFindingsWithDecodeAndRequiredInputFailures),
+            inputFailure.GetProperty("exception").GetString());
         Assert.Equal(1, provider.Calls);
         Assert.Empty(automation.OpenedWorkbooks);
         Assert.Equal(0, automation.SaveCalls);

@@ -1364,6 +1364,14 @@ host or identity acquisition is incomplete even without a source Error; a
 successfully read empty catalog and modeled static indeterminacy remain distinct.
 Operational causes retain their cancellation and lifecycle evidence. Warning
 and information diagnostics are not promoted to errors.
+Processing failures also retain the original exception, the admission or semantic
+phase, and the active source path when known. Incomplete reports retain the
+captured syntax trees and successfully acquired semantic inputs for local evidence;
+complete reports do not retain those extra references. The command boundary adds
+bounded exception details to the existing `sourceAnalysis` schema `3.0` failure
+record and best-effort saves a local evidence report without changing exit status,
+owned-process release proof, or workbook commitment. No evidence file is created
+for ordinary source diagnostics alone or cancellation-only failures.
 _Avoid_: compiler result, semantic validation proof, first-error exception
 
 **WorkbookMaterializationNamePreflight**:
