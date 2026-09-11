@@ -64,6 +64,7 @@ public static class ToolingCompositionRoot
         IProjectSemanticInputProvider? projectSemanticInputProvider = null,
         ITypeLibRegistryCatalogReader? typeLibRegistryCatalogReader = null,
         ITypeLibCatalogMetadataReader? typeLibCatalogMetadataReader = null,
+        IOfficeClickToRunTypeLibEvidenceReader? officeClickToRunTypeLibEvidenceReader = null,
         IWorkbookProjectIdentityProbe? workbookProjectIdentityProbe = null)
     {
         var ownershipFactory = new WindowsExactFileSystemObjectOwnershipFactory();
@@ -117,6 +118,7 @@ public static class ToolingCompositionRoot
             new VbeImportSourceSetFactory(ownershipFactory),
             semanticInputProvider: projectSemanticInputProvider ?? new ProjectSemanticInputProvider(
                 referencePlanner, registrySnapshot, typeLibCatalogMetadataReader ?? new ComTypeLibCatalogMetadataReader(),
+                officeClickToRunTypeLibEvidenceReader ?? new RegistryOfficeClickToRunTypeLibEvidenceReader(),
                 hostEventAutomation, workbookProjectIdentityProbe ?? new WorkbookProjectIdentityProbe(
                     ownershipFactory, new ExcelComWorkbookGenerationAutomation())));
         IReadOnlyList<IDoctorProjectDiagnosticProvider> staticProjectDiagnosticProviders =
