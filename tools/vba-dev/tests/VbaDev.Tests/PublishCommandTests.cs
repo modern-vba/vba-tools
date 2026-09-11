@@ -23,6 +23,8 @@ public sealed class PublishCommandTests
         new JsonProjectManifestStore().Save(root, ProjectManifestTestData.TwoDocumentManifest(root));
         CreateWorkbookSource(root, "SecondBook", ("Local.bas", "Attribute VB_Name = \"Local\""));
         var automation = new FakeWorkbookGenerationAutomation(new WorkbookModule("OldModule", WorkbookModuleKind.StandardModule));
+        var standardLibrary = new WorkbookReference("Visual Basic For Applications", false, "VBA");
+        automation.References.Add(standardLibrary);
         var runner = new FakeWorkbookTestRunner(new WorkbookTestResultRow("Test_Module", "Test_Fails", "NG", "should not run"));
         var application = VbaDevCommandLine.Create(
             ToolingCompositionRoot.CreateApplicationComposition(
@@ -47,6 +49,7 @@ public sealed class PublishCommandTests
         Assert.NotEqual(expectedPublish, automation.OpenedWorkbooks[0]);
         Assert.Contains(Path.Combine(root, "publish"), automation.OpenedWorkbooks[0], StringComparison.Ordinal);
         Assert.Equal(["remove:OldModule", "import:Local.bas", "save"], automation.Events);
+        Assert.Contains(standardLibrary, automation.References);
         Assert.Empty(runner.Workbooks);
     }
 

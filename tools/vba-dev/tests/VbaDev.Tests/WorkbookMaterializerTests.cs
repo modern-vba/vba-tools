@@ -1410,8 +1410,10 @@ public sealed class WorkbookMaterializerTests
         Assert.Empty(Directory.EnumerateFiles(temp.Path, ".Book1.*.tmp.xlsm"));
     }
 
-    [Fact]
-    public async Task ProtectedReferenceConflictUsesItsFinalActualNamespaceName()
+    [Theory]
+    [InlineData("Protected Library Description", "ProtectedNamespace")]
+    [InlineData("Visual Basic For Applications", "VBA")]
+    public async Task ProtectedReferenceConflictUsesItsFinalActualNamespaceName(string referenceName, string namespaceName)
     {
         using var temp = TempDirectory.Create();
         var templatePath = Path.Combine(temp.Path, "Template.xlsm");
@@ -1421,7 +1423,7 @@ public sealed class WorkbookMaterializerTests
         File.WriteAllText(targetPath, "previous-workbook", Encoding.UTF8);
         File.WriteAllText(
             sourcePath,
-            "Attribute VB_Name = \"protectednamespace\"\r\n",
+            $"Attribute VB_Name = \"{namespaceName.ToLowerInvariant()}\"\r\n",
             new UTF8Encoding(false));
         var events = new List<string>();
         var automation = new RecordingWorkbookGenerationAutomation(events)
@@ -1429,9 +1431,9 @@ public sealed class WorkbookMaterializerTests
             References =
             [
                 new WorkbookReference(
-                    "Protected Library Description",
+                    referenceName,
                     IsRemovable: false,
-                    NamespaceName: "ProtectedNamespace")
+                    NamespaceName: namespaceName)
             ]
         };
         var pipeline = CreatePipeline(automation);
@@ -1445,7 +1447,7 @@ public sealed class WorkbookMaterializerTests
             WorkbookAutomationTimeouts.Default,
             CancellationToken.None));
 
-        Assert.Contains("active reference 'ProtectedNamespace'", error.Message, StringComparison.Ordinal);
+        Assert.Contains($"active reference '{namespaceName}'", error.Message, StringComparison.Ordinal);
         Assert.Contains(sourcePath, error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Single(events, item => item == "get-references");
         Assert.DoesNotContain("verify", events);
@@ -1454,8 +1456,10 @@ public sealed class WorkbookMaterializerTests
         Assert.Empty(Directory.EnumerateFiles(temp.Path, ".Book1.*.tmp.xlsm"));
     }
 
-    [Fact]
-    public async Task IncompleteFinalReferenceIdentityFailsBeforeSourceImportOrSave()
+    [Theory]
+    [InlineData("Incomplete Library Description")]
+    [InlineData("Visual Basic For Applications")]
+    public async Task IncompleteFinalReferenceIdentityFailsBeforeSourceImportOrSave(string referenceName)
     {
         using var temp = TempDirectory.Create();
         var templatePath = Path.Combine(temp.Path, "Template.xlsm");
@@ -1473,7 +1477,7 @@ public sealed class WorkbookMaterializerTests
             FinalReferences =
             [
                 new WorkbookReference(
-                    "Incomplete Library Description",
+                    referenceName,
                     IsRemovable: false,
                     NamespaceName: " ")
             ]

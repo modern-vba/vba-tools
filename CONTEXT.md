@@ -1913,7 +1913,12 @@ _Avoid_: active reference, preferred library, MainHostApplication
 **ProtectedVbaProjectReference**:
 A `VbaProjectReference` that Office or VBIDE keeps as part of the workbook's VBA
 project and that tooling should not remove during generated workbook
-normalization.
+normalization. The always-active `VbaStandardLibraryReference` is workbook
+baseline, not an unlisted-reference warning: normalization retains it without
+attempting removal, using the shared standard-library name identity policy.
+Other unselected protected references still produce warnings. The standard
+library remains in the actual reference inventory for identity and namespace
+validation and stays outside `VbaProjectReferenceSelection`.
 _Avoid_: built-in reference, default reference, undeletable reference
 
 **PublishableVbaSource**:
