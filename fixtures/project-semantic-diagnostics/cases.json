@@ -3995,6 +3995,177 @@
       ]
     },
     {
+      "id": "callbyname-paramarray-accepted",
+      "sources": [
+        {
+          "fileName": "CallByNameAccepted.bas",
+          "source": "Attribute VB_Name = \"CallByNameAccepted\"\nPrivate Const VbMethod As Long = 1\nPrivate Const VbGet As Long = 2\nPublic Sub Run()\n    Dim target As Object\n    Dim value As Variant\n    value = CallByName(target, \"Name\", VbGet)\n    CallByName target, \"Run\", VbMethod\n    value = CallByName(target, \"Run\", VbMethod, 1, 2, 3)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [],
+      "referenceCatalogs": [
+        {
+          "referenceName": "Visual Basic For Applications",
+          "qualifierAliases": ["VBA"],
+          "definitions": [
+            {
+              "referenceName": "Visual Basic For Applications",
+              "name": "Interaction",
+              "kind": 0
+            },
+            {
+              "referenceName": "Visual Basic For Applications",
+              "name": "CallByName",
+              "kind": 3,
+              "signature": {
+                "label": "CallByName(Object, ProcName, CallType, Args) As Variant",
+                "parameters": [
+                  {
+                    "name": "Object",
+                    "typeReference": { "name": "Object", "qualifier": null },
+                    "isByRef": false,
+                    "typeLibPassing": { "direction": 1, "abiPointerDepth": 0 }
+                  },
+                  {
+                    "name": "ProcName",
+                    "typeReference": { "name": "String", "qualifier": null },
+                    "isByRef": false,
+                    "typeLibPassing": { "direction": 1, "abiPointerDepth": 0 }
+                  },
+                  {
+                    "name": "CallType",
+                    "typeReference": { "name": "Long", "qualifier": null },
+                    "isByRef": false,
+                    "typeLibPassing": { "direction": 1, "abiPointerDepth": 0 }
+                  },
+                  {
+                    "name": "Args",
+                    "typeReference": { "name": "Variant", "qualifier": null },
+                    "isByRef": true,
+                    "isParamArray": true,
+                    "isArray": true,
+                    "typeLibPassing": { "direction": 1, "abiPointerDepth": 1 }
+                  }
+                ],
+                "callableKind": 1,
+                "supportsNamedArguments": true,
+                "passingConvention": 1
+              },
+              "parentTypeName": "Interaction",
+              "typeReference": { "name": "Variant", "qualifier": null },
+              "globalExposure": 1,
+              "isCallableMetadataComplete": true,
+              "callableKind": 1
+            }
+          ],
+          "typeLibTypes": null,
+          "referencedVbaProjectName": null
+        }
+      ]
+    },
+    {
+      "id": "callbyname-paramarray-invalid",
+      "sources": [
+        {
+          "fileName": "CallByNameInvalid.bas",
+          "source": "Attribute VB_Name = \"CallByNameInvalid\"\nPrivate Const VbMethod As Long = 1\nPublic Sub Run()\n    Dim target As Object\n    Dim value As Variant\n    value = CallByName(target, \"Name\")\n    value = CallByName(target, \"Run\", VbMethod, Args:=1)\nEnd Sub\n"
+        }
+      ],
+      "diagnostics": [
+        {
+          "fileName": "CallByNameInvalid.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": { "start": { "line": 5, "character": 22 }, "end": { "line": 5, "character": 38 } },
+          "details": [
+            {
+              "location": null,
+              "relatedMessage": "Candidate signature: Function CallByName(Object As Object, ProcName As String, CallType As Long, ParamArray Args() As Variant) As Variant. Mismatches: parameter 'CallType': required argument is missing.",
+              "fallbackText": "Candidate signature: Function CallByName(Object As Object, ProcName As String, CallType As Long, ParamArray Args() As Variant) As Variant.\nMismatches: parameter 'CallType': required argument is missing."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.\nCandidate signature: Function CallByName(Object As Object, ProcName As String, CallType As Long, ParamArray Args() As Variant) As Variant.\nMismatches: parameter 'CallType': required argument is missing.",
+          "relatedInformation": []
+        },
+        {
+          "fileName": "CallByNameInvalid.bas",
+          "code": "validation.incompatibleCallArgumentList",
+          "message": "No available callable signature accepts this argument list.",
+          "severity": "error",
+          "range": { "start": { "line": 6, "character": 22 }, "end": { "line": 6, "character": 56 } },
+          "details": [
+            {
+              "location": null,
+              "relatedMessage": "Candidate signature: Function CallByName(Object As Object, ProcName As String, CallType As Long, ParamArray Args() As Variant) As Variant. Mismatches: argument 4 ('Args') mapping: named arguments are not accepted.",
+              "fallbackText": "Candidate signature: Function CallByName(Object As Object, ProcName As String, CallType As Long, ParamArray Args() As Variant) As Variant.\nMismatches: argument 4 ('Args') mapping: named arguments are not accepted."
+            }
+          ],
+          "cliMessage": "No available callable signature accepts this argument list.\nCandidate signature: Function CallByName(Object As Object, ProcName As String, CallType As Long, ParamArray Args() As Variant) As Variant.\nMismatches: argument 4 ('Args') mapping: named arguments are not accepted.",
+          "relatedInformation": []
+        }
+      ],
+      "referenceCatalogs": [
+        {
+          "referenceName": "Visual Basic For Applications",
+          "qualifierAliases": ["VBA"],
+          "definitions": [
+            {
+              "referenceName": "Visual Basic For Applications",
+              "name": "Interaction",
+              "kind": 0
+            },
+            {
+              "referenceName": "Visual Basic For Applications",
+              "name": "CallByName",
+              "kind": 3,
+              "signature": {
+                "label": "CallByName(Object, ProcName, CallType, Args) As Variant",
+                "parameters": [
+                  {
+                    "name": "Object",
+                    "typeReference": { "name": "Object", "qualifier": null },
+                    "isByRef": false,
+                    "typeLibPassing": { "direction": 1, "abiPointerDepth": 0 }
+                  },
+                  {
+                    "name": "ProcName",
+                    "typeReference": { "name": "String", "qualifier": null },
+                    "isByRef": false,
+                    "typeLibPassing": { "direction": 1, "abiPointerDepth": 0 }
+                  },
+                  {
+                    "name": "CallType",
+                    "typeReference": { "name": "Long", "qualifier": null },
+                    "isByRef": false,
+                    "typeLibPassing": { "direction": 1, "abiPointerDepth": 0 }
+                  },
+                  {
+                    "name": "Args",
+                    "typeReference": { "name": "Variant", "qualifier": null },
+                    "isByRef": true,
+                    "isParamArray": true,
+                    "isArray": true,
+                    "typeLibPassing": { "direction": 1, "abiPointerDepth": 1 }
+                  }
+                ],
+                "callableKind": 1,
+                "supportsNamedArguments": true,
+                "passingConvention": 1
+              },
+              "parentTypeName": "Interaction",
+              "typeReference": { "name": "Variant", "qualifier": null },
+              "globalExposure": 1,
+              "isCallableMetadataComplete": true,
+              "callableKind": 1
+            }
+          ],
+          "typeLibTypes": null,
+          "referencedVbaProjectName": null
+        }
+      ]
+    },
+    {
       "id": "implicit-default-member-workbooks-receiver",
       "sources": [
         {

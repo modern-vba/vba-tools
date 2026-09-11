@@ -4,6 +4,7 @@ using System.Text.Json;
 using VbaTools.Processes;
 using VbaLanguageServer.ProjectModel;
 using VbaLanguageServer.SourceModel;
+using VbaTools.Syntax;
 using VbaTools.TypeLibRegistry;
 using Xunit;
 
@@ -1444,6 +1445,66 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
     }
 
     [Fact]
+    public void ComTypeLibCatalogMetadataReaderReadsInstalledVbeCallByNameParamArrayWhenAvailable()
+    {
+        if (!OperatingSystem.IsWindows()
+            || FindInstalledVbe7Path() is not { } vbePath)
+        {
+            return;
+        }
+
+        const string referenceName =
+            VbaProjectReferenceCatalogSet.StandardLibraryReferenceName;
+        var acquired = new ComTypeLibCatalogMetadataReader()
+            .ReadMetadataFromPath(referenceName, vbePath);
+
+        Assert.Equal("000204ef-0000-0000-c000-000000000046", acquired.Identity.Guid);
+        Assert.Equal(4, acquired.Identity.MajorVersion);
+        Assert.Equal(2, acquired.Identity.MinorVersion);
+        Assert.Equal("VBA", acquired.Metadata.QualifierAlias);
+        Assert.Equal("VBA", acquired.Metadata.ReferencedVbaProjectName);
+
+        var catalog = TypeLibReferenceCatalogBuilder.Build(
+            referenceName,
+            acquired.Metadata);
+        var definition = Assert.Single(
+            catalog.Definitions,
+            candidate => candidate.Name == "CallByName"
+                && candidate.ParentTypeName == "Interaction");
+        var parameters = Assert.IsAssignableFrom<
+            IReadOnlyList<VbaCallableParameter>>(definition.Signature?.Parameters);
+        Assert.Equal(
+            ["Object", "ProcName", "CallType", "Args"],
+            parameters.Select(parameter => parameter.Name));
+        Assert.True(parameters[^1].IsParamArray);
+        Assert.True(parameters[^1].IsArray);
+        Assert.DoesNotContain(
+            parameters,
+            parameter => parameter.Name.Equals("lcid", StringComparison.OrdinalIgnoreCase));
+
+        const string uri = "file:///C:/work/InstalledVbeCallByName.bas";
+        var syntax = VbaSyntaxTree.ParseModule(
+            uri,
+            "Attribute VB_Name = \"InstalledVbeCallByName\"\nOption Explicit\n\nPublic Sub Run(ByVal target As Object)\n    Dim value As Variant\n    value = CallByName(target, \"Name\", VbGet)\nEnd Sub\n");
+        var inventory = VbaSemanticInventory.Create(
+            new Dictionary<string, VbaSourceDocument>(StringComparer.OrdinalIgnoreCase)
+            {
+                [uri] = VbaSourceDocumentProjector.Project(uri, syntax)
+            },
+            VbaProjectReferenceSelection.Create(
+                ProjectDocument.ExcelKind,
+                [new VbaProjectReference(referenceName)]),
+            VbaProjectReferenceCatalogSet.Empty.WithCatalog(catalog));
+
+        var target = Assert.IsAssignableFrom<VbaResolvedNameTarget>(
+            inventory.ResolveSourceTarget(uri, 5, "    value = ".Length));
+        Assert.Equal("CallByName", target.CanonicalName);
+        Assert.Equal(
+            VbaDefinitionOrigin.ProjectReference,
+            target.SelectedDefinition.Identity.Origin);
+    }
+
+    [Fact]
     public async Task CatalogRefreshUpdatesCacheAfterDiscoveryWithoutBlockingEditorRequests()
     {
         var cache = new VbaProjectReferenceCatalogCache(VbaProjectReferenceCatalogSet.Empty);
@@ -1838,6 +1899,59 @@ public sealed class VbaProjectReferenceCatalogRefreshTests
                 : throw new FileNotFoundException("The registered TypeLib location is unavailable.", identity.Path);
         }
     }
+
+    private static string? FindInstalledVbe7Path()
+    {
+        var programFiles = Environment.GetFolderPath(
+            Environment.SpecialFolder.ProgramFiles);
+        var programFilesX86 = Environment.GetFolderPath(
+            Environment.SpecialFolder.ProgramFilesX86);
+        var commonProgramFiles = Environment.GetFolderPath(
+            Environment.SpecialFolder.CommonProgramFiles);
+        var commonProgramFilesX86 = Environment.GetFolderPath(
+            Environment.SpecialFolder.CommonProgramFilesX86);
+        var candidates = new[]
+        {
+            CreateClickToRunVbe7Path(programFiles, "ProgramFilesCommonX64"),
+            CreateClickToRunVbe7Path(programFilesX86, "ProgramFilesCommonX86"),
+            CreateClickToRunVbe7Path(programFiles, "ProgramFilesCommonX86"),
+            CreateClickToRunVbe7Path(programFilesX86, "ProgramFilesCommonX64"),
+            CreateCommonFilesVbe7Path(commonProgramFiles),
+            CreateCommonFilesVbe7Path(commonProgramFilesX86)
+        };
+
+        return candidates
+            .Where(candidate => candidate is not null)
+            .Select(candidate => candidate!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(File.Exists);
+    }
+
+    private static string? CreateClickToRunVbe7Path(
+        string installationRoot,
+        string commonFilesRoot)
+        => string.IsNullOrWhiteSpace(installationRoot)
+            ? null
+            : Path.Combine(
+                installationRoot,
+                "Microsoft Office",
+                "root",
+                "vfs",
+                commonFilesRoot,
+                "Microsoft Shared",
+                "VBA",
+                "VBA7.1",
+                "VBE7.DLL");
+
+    private static string? CreateCommonFilesVbe7Path(string commonFilesRoot)
+        => string.IsNullOrWhiteSpace(commonFilesRoot)
+            ? null
+            : Path.Combine(
+                commonFilesRoot,
+                "Microsoft Shared",
+                "VBA",
+                "VBA7.1",
+                "VBE7.DLL");
 
     private static TypeLibRegistryCatalog CreateNeutralRegistryCatalog(
         string name,

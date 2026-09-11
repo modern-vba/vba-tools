@@ -559,6 +559,24 @@ public sealed class ProjectSemanticDiagnosticConformanceTests
         var inventory = VbaSemanticInventory.Create(documents,
             referenceSelection: names.Count == 0 ? null : VbaProjectReferenceSelection.Create("word", names),
             referenceCatalogs: catalogs, intrinsicHostEventCatalog: host);
+        if (caseId is "callbyname-paramarray-accepted" or "callbyname-paramarray-invalid")
+        {
+            var target = Assert.IsAssignableFrom<VbaResolvedNameTarget>(
+                inventory.ResolveSourceTarget(
+                    sources[0].Uri,
+                    caseId == "callbyname-paramarray-accepted" ? 6 : 5,
+                    "    value = ".Length));
+            Assert.Equal("CallByName", target.CanonicalName);
+            Assert.Equal(
+                VbaDefinitionOrigin.ProjectReference,
+                target.SelectedDefinition.Identity.Origin);
+            var signature = Assert.IsType<VbaCallableSignature>(
+                target.SelectedDefinition.Signature);
+            var parameter = Assert.IsType<VbaCallableParameter>(signature.Parameters[^1]);
+            Assert.Equal("Args", parameter.Name);
+            Assert.True(parameter.IsParamArray);
+            Assert.True(parameter.IsArray);
+        }
         if (caseId.StartsWith("external-", StringComparison.Ordinal))
         {
             var target = Assert.IsAssignableFrom<VbaResolvedNameTarget>(inventory.ResolveSourceTarget(sources[0].Uri, 4, 11));

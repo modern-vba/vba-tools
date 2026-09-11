@@ -518,6 +518,10 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         hasReturnValueParameter = false;
         isComplete = funcDesc.cParams <= 0
             || funcDesc.lprgelemdescParam != IntPtr.Zero;
+        if (funcDesc.cParamsOpt == -1 && funcDesc.cParams <= 0)
+        {
+            isComplete = false;
+        }
         if (funcDesc.cParams <= 0
             || funcDesc.lprgelemdescParam == IntPtr.Zero)
         {
@@ -526,6 +530,23 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
 
         var parameters = new List<VbaCallableParameter>();
         var elementSize = Marshal.SizeOf<ELEMDESC>();
+        var lastVisibleParameterIndex = -1;
+        for (var index = funcDesc.cParams - 1; index >= 0; index--)
+        {
+            var elementPointer = IntPtr.Add(funcDesc.lprgelemdescParam, index * elementSize);
+            var flags = Marshal.PtrToStructure<ELEMDESC>(elementPointer)
+                .desc.paramdesc.wParamFlags;
+            if ((flags & (PARAMFLAG.PARAMFLAG_FRETVAL | PARAMFLAG.PARAMFLAG_FLCID)) == 0)
+            {
+                lastVisibleParameterIndex = index;
+                break;
+            }
+        }
+        if (funcDesc.cParamsOpt == -1 && lastVisibleParameterIndex < 0)
+        {
+            isComplete = false;
+        }
+
         for (var index = 0; index < funcDesc.cParams; index++)
         {
             var elementPointer = IntPtr.Add(funcDesc.lprgelemdescParam, index * elementSize);
@@ -546,11 +567,16 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
             var parameterName = index < names.Count && !string.IsNullOrEmpty(names[index])
                 ? names[index]
                 : $"Arg{parameters.Count + 1}";
-            var isOptional = (element.desc.paramdesc.wParamFlags & PARAMFLAG.PARAMFLAG_FOPT) != 0
-                || (element.desc.paramdesc.wParamFlags & PARAMFLAG.PARAMFLAG_FHASDEFAULT) != 0;
-            var isParamArray = funcDesc.cParamsOpt == -1 && index == funcDesc.cParams - 1;
+            var hasVariadicMetadata = funcDesc.cParamsOpt == -1
+                && index == lastVisibleParameterIndex;
+            var isParamArray = hasVariadicMetadata
+                && (element.desc.paramdesc.wParamFlags & PARAMFLAG.PARAMFLAG_FOUT) == 0
+                && IsVariantSafeArrayParameter(element.tdesc);
+            var isOptional = !isParamArray
+                && ((element.desc.paramdesc.wParamFlags & PARAMFLAG.PARAMFLAG_FOPT) != 0
+                    || (element.desc.paramdesc.wParamFlags & PARAMFLAG.PARAMFLAG_FHASDEFAULT) != 0);
             var isArray = GetArrayTypeEvidence(element.tdesc);
-            if (!isParamArray && isArray is null)
+            if (!isParamArray && (hasVariadicMetadata || isArray is null))
             {
                 isComplete = false;
             }
@@ -561,7 +587,7 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
                 TypeReference: ToTypeReference(typeInfo, element.tdesc),
                 IsByRef: GetParameterPassing(element),
                 IsParamArray: isParamArray,
-                IsArray: isParamArray || isArray == true)
+                IsArray: isArray == true)
             {
                 TypeLibPassing = new VbaTypeLibParameterPassing(
                     GetParameterDirection(element.desc.paramdesc.wParamFlags),
@@ -745,6 +771,24 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         return TryGetNestedTypeDescription(typeDesc, out var nestedType)
             ? GetArrayTypeEvidence(nestedType)
             : null;
+    }
+
+    private static bool IsVariantSafeArrayParameter(TYPEDESC typeDesc)
+    {
+        var pointerDepth = 0;
+        while ((VarEnum)typeDesc.vt == VarEnum.VT_PTR)
+        {
+            pointerDepth++;
+            if (!TryGetNestedTypeDescription(typeDesc, out typeDesc))
+            {
+                return false;
+            }
+        }
+
+        return pointerDepth > 0
+            && (VarEnum)typeDesc.vt == VarEnum.VT_SAFEARRAY
+            && TryGetNestedTypeDescription(typeDesc, out var elementType)
+            && (VarEnum)elementType.vt == VarEnum.VT_VARIANT;
     }
 
     private static VbaTypeReference? ToTypeReference(ITypeInfo typeInfo, TYPEDESC typeDesc)
