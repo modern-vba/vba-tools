@@ -78,7 +78,8 @@ internal static class CommandLineTestFactory
             projectManifestMutationCoordinator,
             projectManifestMutationLeaseProvider,
             hostEventCatalogAutomation,
-            projectSemanticInputProvider: projectSemanticInputProvider ?? new FakeProjectSemanticInputProvider(vbaProjectReferenceResolver));
+            projectSemanticInputProvider: projectSemanticInputProvider ?? new FakeProjectSemanticInputProvider(vbaProjectReferenceResolver),
+            persistSourceAnalysisFailureEvidence: false);
         return generatingExecutablePath is null
             ? VbaDevCommandLine.Create(composition)
             : VbaDevCommandLine.Create(composition, generatingExecutablePath);

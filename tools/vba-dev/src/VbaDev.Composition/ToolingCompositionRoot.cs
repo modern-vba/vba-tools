@@ -45,6 +45,7 @@ public static class ToolingCompositionRoot
     /// <param name="exportDestinationFileOperations">The optional recoverable export filesystem adapter.</param>
     /// <param name="projectManifestMutationCoordinator">The optional rebased manifest mutation boundary.</param>
     /// <param name="projectManifestMutationLeaseProvider">The optional shared project mutation lease provider.</param>
+    /// <param name="persistSourceAnalysisFailureEvidence">Whether to retain local failure evidence; tests can disable persistence.</param>
     /// <returns>The composed services consumed by a command-line host.</returns>
     public static ToolingApplicationComposition CreateApplicationComposition(
         string workingDirectory,
@@ -65,7 +66,8 @@ public static class ToolingCompositionRoot
         ITypeLibRegistryCatalogReader? typeLibRegistryCatalogReader = null,
         ITypeLibCatalogMetadataReader? typeLibCatalogMetadataReader = null,
         IOfficeClickToRunTypeLibEvidenceReader? officeClickToRunTypeLibEvidenceReader = null,
-        IWorkbookProjectIdentityProbe? workbookProjectIdentityProbe = null)
+        IWorkbookProjectIdentityProbe? workbookProjectIdentityProbe = null,
+        bool persistSourceAnalysisFailureEvidence = true)
     {
         var ownershipFactory = new WindowsExactFileSystemObjectOwnershipFactory();
         var pathIdentityResolver = new FileSystemPathIdentityResolver();
@@ -148,7 +150,8 @@ public static class ToolingCompositionRoot
             referencePlanner,
             mutationLeaseProvider,
             pathIdentityResolver);
-        var workbookOutputCommand = new WorkbookOutputCommand(materializer);
+        var workbookOutputCommand = new WorkbookOutputCommand(materializer,
+            persistSourceAnalysisFailureEvidence ? new SourceAnalysisEvidenceStore().Save : null);
         var buildCommand = new BuildCommand(workbookOutputCommand, pathIdentityResolver, ownershipFactory);
         var publishCommand = new PublishCommand(workbookOutputCommand);
         var testCommand = new TestCommand(

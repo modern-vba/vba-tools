@@ -17,6 +17,166 @@ namespace VbaDev.Tests;
 public sealed class BuildSourceDiagnosticsTests
 {
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UnexpectedSourceReadFailureRetainsPhaseCauseAndActiveOriginalPath(bool publish)
+    {
+        using var fixture = new BuildFixture(publish: publish);
+        var earlierSource = fixture.SourcePath("AFirst.bas");
+        var failingSource = fixture.SourcePath("ZFailure.bas");
+        File.WriteAllText(earlierSource,
+            "Attribute VB_Name = \"AFirst\"\nPublic Sub Run()\n    value = \"unterminated\nEnd Sub\n",
+            new UTF8Encoding(false));
+        File.WriteAllText(failingSource, "Attribute VB_Name = \"ZFailure\"\n", new UTF8Encoding(false));
+        var cause = new NullReferenceException("Unexpected source reader failure.",
+            new InvalidOperationException("Original nested evidence."));
+        var recorded = new List<VbaSourceAnalysisReport>();
+        var evidenceLine = "Source analysis failure evidence: C:\\logs\\source-analysis-failure.json" + Environment.NewLine;
+
+        var result = await fixture.RunAsync(readAllBytes: path =>
+        {
+            if (path == failingSource) throw cause;
+            return File.ReadAllBytes(path);
+        }, saveFailureEvidence: (context, operation, report) =>
+        {
+            Assert.Equal("Book1", context.DocumentName);
+            Assert.Equal(publish ? "publish" : "build", operation);
+            recorded.Add(report);
+            return evidenceLine;
+        });
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        var capturedFailure = Assert.Single(Assert.Single(recorded).Failures);
+        Assert.Equal("sourceDecode", capturedFailure.Phase);
+        Assert.Equal(failingSource, capturedFailure.ActiveSourcePath);
+        Assert.Same(cause, capturedFailure.Exception);
+        var report = ReadSourceAnalysisReport(result.StandardError);
+        Assert.False(report.GetProperty("complete").GetBoolean());
+        Assert.Contains(report.GetProperty("diagnostics").EnumerateArray(), diagnostic =>
+            diagnostic.GetProperty("uri").GetString() == new Uri(earlierSource).AbsoluteUri
+            && diagnostic.GetProperty("code").GetString() == "syntax.unterminatedStringLiteral");
+        AssertFailureEvidence(Assert.Single(report.GetProperty("failures").EnumerateArray()), cause, "sourceDecode");
+        Assert.Contains(nameof(UnexpectedSourceReadFailureRetainsPhaseCauseAndActiveOriginalPath), cause.StackTrace);
+        Assert.EndsWith(evidenceLine, result.StandardError, StringComparison.Ordinal);
+        fixture.AssertNoGenerationAndFilesUnchanged();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UnexpectedRequiredInputFailureSavesEvidenceOnceAndRetainsItsOriginalStack(bool publish)
+    {
+        using var fixture = new BuildFixture(publish: publish);
+        File.WriteAllText(fixture.SourcePath("Caller.bas"),
+            "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\nEnd Sub\n", new UTF8Encoding(false));
+        var cause = new NullReferenceException("Unexpected required metadata processing failure.");
+        var provider = new SemanticInputProvider((_, _, _, _) => throw cause);
+        var recorded = new List<VbaSourceAnalysisReport>();
+        var evidenceLine = "Source analysis failure evidence: C:\\logs\\source-analysis-failure.json" + Environment.NewLine;
+
+        var result = await fixture.RunAsync(semanticInputProvider: provider,
+            saveFailureEvidence: (_, operation, report) =>
+            {
+                Assert.Equal(publish ? "publish" : "build", operation);
+                recorded.Add(report);
+                return evidenceLine;
+            });
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        var captured = Assert.Single(recorded);
+        var capturedFailure = Assert.Single(captured.Failures);
+        Assert.Equal("semanticInputAcquisition", capturedFailure.Phase);
+        Assert.Null(capturedFailure.ActiveSourcePath);
+        Assert.Same(cause, capturedFailure.Exception);
+        Assert.Equal(fixture.SourcePath("Caller.bas"), new Uri(Assert.Single(captured.SyntaxTrees).Uri).LocalPath);
+        var report = ReadSourceAnalysisReport(result.StandardError);
+        Assert.False(report.GetProperty("complete").GetBoolean());
+        Assert.Empty(report.GetProperty("diagnostics").EnumerateArray());
+        AssertFailureEvidence(Assert.Single(report.GetProperty("failures").EnumerateArray()), cause,
+            "semanticInputAcquisition");
+        Assert.Contains(nameof(UnexpectedRequiredInputFailureSavesEvidenceOnceAndRetainsItsOriginalStack), cause.StackTrace);
+        Assert.EndsWith(evidenceLine, result.StandardError, StringComparison.Ordinal);
+        Assert.Equal(1, provider.Calls);
+        fixture.AssertNoGenerationAndFilesUnchanged();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task EvidenceSaveFailureCannotMaskThePrimarySourceAnalysisFailure(bool metadataFailure)
+    {
+        using var fixture = new BuildFixture();
+        File.WriteAllText(fixture.SourcePath("Caller.bas"),
+            "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\nEnd Sub\n", new UTF8Encoding(false));
+        var cause = new NullReferenceException("The original analysis failure.");
+        var writes = 0;
+
+        var result = await fixture.RunAsync(
+            readAllBytes: metadataFailure ? null : _ => throw cause,
+            semanticInputProvider: metadataFailure ? new SemanticInputProvider((_, _, _, _) => throw cause) : null,
+            saveFailureEvidence: (_, _, _) =>
+            {
+                writes++;
+                throw new IOException("Evidence destination is unavailable.");
+            });
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Equal(1, writes);
+        var report = ReadSourceAnalysisReport(result.StandardError);
+        Assert.False(report.GetProperty("complete").GetBoolean());
+        AssertFailureEvidence(Assert.Single(report.GetProperty("failures").EnumerateArray()), cause,
+            metadataFailure ? "semanticInputAcquisition" : "sourceDecode");
+        Assert.Contains("Source-analysis failure evidence could not be saved (IOException).", result.StandardError,
+            StringComparison.Ordinal);
+        Assert.Contains("Retain the sourceAnalysis record from stderr.", result.StandardError, StringComparison.Ordinal);
+        fixture.AssertNoGenerationAndFilesUnchanged();
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task SuccessfulAndOrdinaryDiagnosticBuildsDoNotSaveFailureEvidence(bool publish, bool sourceError)
+    {
+        using var fixture = new BuildFixture(publish: publish);
+        File.WriteAllText(fixture.SourcePath("Caller.bas"),
+            "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\n"
+            + (sourceError ? "    value = \"unterminated\n" : string.Empty) + "End Sub\n", new UTF8Encoding(false));
+        var writes = 0;
+
+        var result = await fixture.RunAsync(saveFailureEvidence: (_, _, _) =>
+        {
+            writes++;
+            return "Unexpected evidence write.";
+        });
+
+        Assert.Equal(0, writes);
+        if (sourceError)
+        {
+            Assert.Equal(1, result.ExitCode);
+            var report = ReadSourceAnalysisReport(result.StandardError);
+            Assert.True(report.GetProperty("complete").GetBoolean());
+            Assert.Empty(report.GetProperty("failures").EnumerateArray());
+            Assert.NotEmpty(report.GetProperty("diagnostics").EnumerateArray());
+            fixture.AssertNoGenerationAndFilesUnchanged();
+        }
+        else fixture.AssertSuccessfulBuild(result, importedSourceCount: 1);
+    }
+
+    private static void AssertFailureEvidence(JsonElement failure, Exception cause, string phase)
+    {
+        Assert.Equal(cause.Message, failure.GetProperty("message").GetString());
+        Assert.Equal(phase, failure.GetProperty("phase").GetString());
+        Assert.Equal(cause.GetType().FullName, failure.GetProperty("exceptionType").GetString());
+        Assert.Equal(cause.ToString(), failure.GetProperty("exception").GetString());
+        Assert.False(failure.TryGetProperty("range", out _));
+    }
+
+    [Theory]
     [InlineData("unexpected")]
     [InlineData("unexpected-after-cancel")]
     [InlineData("untrusted-cancel")]
@@ -879,7 +1039,8 @@ public sealed class BuildSourceDiagnosticsTests
             Func<string, byte[]>? readAllBytes = null,
             CancellationToken cancellationToken = default,
             IProjectSemanticInputProvider? semanticInputProvider = null,
-            bool provideEmptyInputs = true)
+            bool provideEmptyInputs = true,
+            Func<ResolvedProjectContext, string, VbaSourceAnalysisReport, string>? saveFailureEvidence = null)
         {
             originalFiles = Directory.GetFiles(SourceDirectory, "*", SearchOption.AllDirectories)
                 .Append(OutputPath)
@@ -896,9 +1057,9 @@ public sealed class BuildSourceDiagnosticsTests
                     mirrorCreations++;
                     mirrorPaths.Add(sourceSet.StagingPath);
                 }), semanticInputProvider: semanticInputProvider ?? (provideEmptyInputs ? FakeProjectSemanticInputProvider.Empty : null));
-            if (publish) return new PublishCommand(new WorkbookOutputCommand(materializer)).RunAsync(context, cancellationToken);
+            if (publish) return new PublishCommand(new WorkbookOutputCommand(materializer, saveFailureEvidence)).RunAsync(context, cancellationToken);
             var command = new BuildCommand(
-                new WorkbookOutputCommand(materializer), new FileSystemPathIdentityResolver(), ownership);
+                new WorkbookOutputCommand(materializer, saveFailureEvidence), new FileSystemPathIdentityResolver(), ownership);
             return command.RunAsync(context, cancellationToken);
         }
 

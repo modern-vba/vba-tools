@@ -12,28 +12,64 @@ internal sealed record VbaSourceDiagnostic(
     VbaRange Range,
     IReadOnlyList<VbaDiagnosticDetail>? Details = null);
 
-internal sealed record VbaSourceAnalysisFailure(string Scope, string? SourceUri, string Message);
+internal sealed record VbaSourceAnalysisFailure(string Scope, string? SourceUri, string Message,
+    string Phase = "unknown", Exception? Exception = null, string? ActiveSourcePath = null)
+{
+    internal string? ExceptionDetails
+    {
+        get
+        {
+            if (Exception is null) return null;
+            try
+            {
+                var text = Exception.ToString();
+                return text.Length <= 16384 ? text : text[..16384] + " [truncated]";
+            }
+            catch (Exception)
+            {
+                // A custom exception formatter must not hide the captured failure or block persistence.
+                return $"{Exception.GetType().FullName}: exception text unavailable.";
+            }
+        }
+    }
+}
 
 /// <summary>Retains source findings from the exact trees admitted for an invocation.</summary>
 internal sealed class VbaSourceAnalysisReport
 {
     private VbaSourceAnalysisReport(
         ImmutableArray<VbaSourceDiagnostic> diagnostics,
-        ImmutableArray<VbaSourceAnalysisFailure> failures)
+        ImmutableArray<VbaSourceAnalysisFailure> failures,
+        ImmutableArray<VbaSyntaxTree> syntaxTrees,
+        VbaProjectSemanticInputs? semanticInputs,
+        string? sourceDirectory,
+        string? admissionPurpose,
+        int? activeCodePage)
     {
         Diagnostics = diagnostics;
         Failures = failures;
+        SyntaxTrees = syntaxTrees;
+        SemanticInputs = semanticInputs;
+        SourceDirectory = sourceDirectory;
+        AdmissionPurpose = admissionPurpose;
+        ActiveCodePage = activeCodePage;
     }
 
     internal ImmutableArray<VbaSourceDiagnostic> Diagnostics { get; }
     internal ImmutableArray<VbaSourceAnalysisFailure> Failures { get; }
     internal bool Complete => Failures.IsEmpty;
+    internal ImmutableArray<VbaSyntaxTree> SyntaxTrees { get; }
+    internal VbaProjectSemanticInputs? SemanticInputs { get; }
+    internal string? SourceDirectory { get; }
+    internal string? AdmissionPurpose { get; }
+    internal int? ActiveCodePage { get; }
 
     internal bool HasErrors => Diagnostics.Any(diagnostic =>
         diagnostic.Severity.Equals("error", StringComparison.OrdinalIgnoreCase));
 
     internal VbaSourceAnalysisReport WithProjectFailure(Exception error)
-        => new(Diagnostics, Failures.Add(new("project", null, FailureMessage(error))));
+        => new(Diagnostics, Failures.Add(new("project", null, FailureMessage(error), "snapshotCleanup", error)),
+            SyntaxTrees, SemanticInputs, SourceDirectory, AdmissionPurpose, ActiveCodePage);
 
     private static string FailureMessage(Exception error)
         => string.IsNullOrWhiteSpace(error.Message)
@@ -46,10 +82,21 @@ internal sealed class VbaSourceAnalysisReport
         private readonly ImmutableArray<VbaSourceAnalysisFailure>.Builder failures = ImmutableArray.CreateBuilder<VbaSourceAnalysisFailure>();
 
         private readonly ImmutableArray<VbaSyntaxTree>.Builder syntaxTrees = ImmutableArray.CreateBuilder<VbaSyntaxTree>();
+        internal string Phase { get; set; } = "sourceAdmission";
+        internal string? ActiveSourcePath { get; set; }
+        internal string? SourceDirectory { get; set; }
+        internal string? AdmissionPurpose { get; set; }
+        internal int? ActiveCodePage { get; set; }
+        internal VbaProjectSemanticInputs? SemanticInputs { get; set; }
 
         internal Builder Clone()
         {
-            var copy = new Builder();
+            var copy = new Builder
+            {
+                Phase = Phase, ActiveSourcePath = ActiveSourcePath,
+                SourceDirectory = SourceDirectory, AdmissionPurpose = AdmissionPurpose,
+                ActiveCodePage = ActiveCodePage, SemanticInputs = SemanticInputs
+            };
             copy.diagnostics.AddRange(diagnostics);
             copy.failures.AddRange(failures);
             copy.syntaxTrees.AddRange(syntaxTrees);
@@ -59,6 +106,7 @@ internal sealed class VbaSourceAnalysisReport
         internal void Add(VbaSyntaxTree syntax)
         {
             syntaxTrees.Add(syntax);
+            Phase = "documentValidation";
             var uri = syntax.Uri;
             foreach (var diagnostic in syntax.Diagnostics)
             {
@@ -91,13 +139,16 @@ internal sealed class VbaSourceAnalysisReport
             => new(new(range.Start.Line, range.Start.Character), new(range.End.Line, range.End.Character));
 
         internal void FailSource(string path, Exception error)
-            => failures.Add(new("source", new Uri(path).AbsoluteUri, FailureMessage(error)));
+            => failures.Add(new("source", new Uri(path).AbsoluteUri, FailureMessage(error), Phase, error, path));
 
         internal void FailProject(Exception error)
-            => failures.Add(new("project", null, FailureMessage(error)));
+            => failures.Add(new("project", null, FailureMessage(error), Phase, error, ActiveSourcePath));
 
         internal VbaSourceAnalysisReport ToReport()
-            => new(diagnostics.ToImmutable(), failures.ToImmutable());
+            => new(diagnostics.ToImmutable(), failures.ToImmutable(),
+                failures.Count == 0 ? [] : CapturedSyntaxTrees,
+                failures.Count == 0 ? null : SemanticInputs,
+                SourceDirectory, AdmissionPurpose, ActiveCodePage);
     }
 }
 

@@ -14,10 +14,13 @@ namespace VbaDev.App.Build;
 internal sealed class WorkbookOutputCommand
 {
     private readonly WorkbookMaterializer materializer;
+    private readonly Func<ResolvedProjectContext, string, VbaSourceAnalysisReport, string>? saveFailureEvidence;
 
-    internal WorkbookOutputCommand(WorkbookMaterializer materializer)
+    internal WorkbookOutputCommand(WorkbookMaterializer materializer,
+        Func<ResolvedProjectContext, string, VbaSourceAnalysisReport, string>? saveFailureEvidence = null)
     {
         this.materializer = materializer;
+        this.saveFailureEvidence = saveFailureEvidence;
     }
 
     internal CommandResult RunBuild(ResolvedProjectContext context)
@@ -190,7 +193,8 @@ internal sealed class WorkbookOutputCommand
         }
         catch (VbaSourceAnalysisException ex) when (ex.OperationalFailure is null)
         {
-            return Failed(new CommandResult(1, string.Empty, VbaSourceAnalysisOutput.Render(ex.Report)));
+            return Failed(new CommandResult(1, string.Empty, VbaSourceAnalysisOutput.Render(ex.Report)
+                + SaveFailureEvidence(context, operationName, ex.Report)));
         }
         catch (Exception caught)
         {
@@ -234,9 +238,22 @@ internal sealed class WorkbookOutputCommand
 
             if (sourceAnalysis is not null)
             {
-                result = result with { StandardError = VbaSourceAnalysisOutput.Render(sourceAnalysis.Report) + result.StandardError };
+                result = result with { StandardError = VbaSourceAnalysisOutput.Render(sourceAnalysis.Report)
+                    + result.StandardError + SaveFailureEvidence(context, operationName, sourceAnalysis.Report) };
             }
             return Failed(PreserveReleaseProof(facts, result));
+        }
+    }
+
+    private string SaveFailureEvidence(ResolvedProjectContext context, string operation, VbaSourceAnalysisReport report)
+    {
+        if (saveFailureEvidence is null || report.Complete) return string.Empty;
+        try { return saveFailureEvidence(context, operation, report); }
+        catch (Exception error)
+        {
+            // Evidence is best-effort; the original report and lifecycle disposition remain authoritative.
+            return $"Source-analysis failure evidence could not be saved ({error.GetType().Name}). "
+                + "Retain the sourceAnalysis record from stderr." + Environment.NewLine;
         }
     }
 
