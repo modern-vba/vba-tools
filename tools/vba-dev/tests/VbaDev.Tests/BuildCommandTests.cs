@@ -141,6 +141,8 @@ public sealed class BuildCommandTests
         var outputPath = Path.Combine(temp.CreateDirectory("session"), "Book1.xlsm");
         File.WriteAllText(outputPath, "previous-output", Encoding.UTF8);
         var automation = new FakeWorkbookGenerationAutomation();
+        var standardLibrary = new WorkbookReference("Visual Basic For Applications", false, "VBA");
+        automation.References.Add(standardLibrary);
         automation.AdoptedReferenceNamespaces["Snapshot Reference"] = "SnapshotReference";
         var application = CommandLineTestFactory.Create(
             root,
@@ -168,6 +170,7 @@ public sealed class BuildCommandTests
             result.StandardOutput);
         Assert.Empty(result.StandardError);
         Assert.Equal("snapshot-template", File.ReadAllText(outputPath, Encoding.UTF8));
+        Assert.Contains(standardLibrary, automation.References);
         Assert.Equal("existing-bin", File.ReadAllText(binPath, Encoding.UTF8));
         Assert.Equal("existing-publish", File.ReadAllText(publishPath, Encoding.UTF8));
         Assert.Equal(templateBytes, File.ReadAllBytes(templatePath));
@@ -1289,6 +1292,32 @@ public sealed class BuildCommandTests
         Assert.Equal(0, result.ExitCode);
         Assert.Contains("WARN", result.StandardOutput, StringComparison.Ordinal);
         Assert.Contains("Book1/Protected Library", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildRetainsStandardLibraryWithoutWarningWhileReportingOtherProtectedReferences()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("Project", "Book1", root, null));
+        CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
+        var manifestPath = Path.Combine(root, ProjectManifest.ManifestFileName);
+        var manifestBytes = File.ReadAllBytes(manifestPath);
+        var automation = new FakeWorkbookGenerationAutomation();
+        var standardLibrary = new WorkbookReference(
+            "Visual Basic For Applications", IsRemovable: false, NamespaceName: "VBA");
+        automation.References.Add(standardLibrary);
+        automation.References.Add(new WorkbookReference(
+            "Protected Library", IsRemovable: false, NamespaceName: "ProtectedLibrary"));
+        var application = CommandLineTestFactory.Create(root, workbookGenerationAutomation: automation);
+
+        var result = application.Run(["build"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.DoesNotContain("Book1/Visual Basic For Applications", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("Book1/Protected Library", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains(standardLibrary, automation.References);
+        Assert.Equal(manifestBytes, File.ReadAllBytes(manifestPath));
     }
 
     [Fact]

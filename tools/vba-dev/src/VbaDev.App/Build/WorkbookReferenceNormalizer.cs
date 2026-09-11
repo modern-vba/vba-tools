@@ -40,7 +40,7 @@ public sealed class WorkbookReferenceNormalizer
         var currentReferences = session.GetReferences().ToArray();
         foreach (var reference in currentReferences)
         {
-            if (desiredNames.Contains(reference.Name))
+            if (VbaProjectReferenceName.IsStandardLibrary(reference.Name) || desiredNames.Contains(reference.Name))
             {
                 continue;
             }
@@ -92,7 +92,7 @@ public sealed class WorkbookReferenceNormalizer
             .ToArray();
         foreach (var reference in currentReferences)
         {
-            if (desiredNames.Contains(reference.Name))
+            if (VbaProjectReferenceName.IsStandardLibrary(reference.Name) || desiredNames.Contains(reference.Name))
             {
                 continue;
             }

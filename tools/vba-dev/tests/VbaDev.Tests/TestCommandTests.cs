@@ -804,6 +804,8 @@ public sealed class TestCommandTests
         CreateWorkbookSource(root, "Book1", ("Local.bas", "Attribute VB_Name = \"Local\""));
         var runner = new FakeWorkbookTestRunner(new WorkbookTestResultRow("Test_Module", "Test_Passes", "OK", ""));
         var buildAutomation = new FakeWorkbookGenerationAutomation();
+        var standardLibrary = new WorkbookReference("Visual Basic For Applications", true, "VBA");
+        buildAutomation.References.Add(standardLibrary);
         var application = CommandLineTestFactory.Create(
             root,
             workbookGenerationAutomation: buildAutomation,
@@ -815,6 +817,7 @@ public sealed class TestCommandTests
         Assert.NotEmpty(buildAutomation.OpenedWorkbooks);
         Assert.Equal([Path.Combine(root, "bin", "Book1.xlsm")], runner.Workbooks);
         Assert.DoesNotContain("Built ", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains(standardLibrary, buildAutomation.References);
     }
 
     [Theory]

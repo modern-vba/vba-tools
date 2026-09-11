@@ -35,6 +35,53 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
 
     [WindowsExcelIntegrationFact]
     [Trait("Category", "WindowsExcelIntegration")]
+    public async Task OrdinaryBuildRetainsStandardLibraryWithoutWarning()
+    {
+        using var temp = TempDirectory.Create();
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        var root = temp.CreateDirectory("Project");
+        var manifestStore = new JsonProjectManifestStore();
+        manifestStore.Save(root, ProjectManifest.CreateDefault("StandardLibraryProject", "Book1", root, null));
+        var context = new ProjectContextResolver(manifestStore).Resolve(new(root, "Book1", root));
+        Directory.CreateDirectory(context.DocumentSourceSetPath);
+        CreateEmptyMacroEnabledWorkbook(context.TemplateDocumentPath);
+        var sourcePath = Path.Combine(context.DocumentSourceSetPath, "StandardLibraryProbe.bas");
+        File.WriteAllText(sourcePath, "Attribute VB_Name = \"StandardLibraryProbe\"\r\nOption Explicit\r\n", new UTF8Encoding(false));
+        var originalManifest = File.ReadAllBytes(context.ManifestPath);
+        var originalTemplate = File.ReadAllBytes(context.TemplateDocumentPath);
+        var originalSource = File.ReadAllBytes(sourcePath);
+        var initialProcesses = CaptureExcelProcessIds();
+
+        try
+        {
+            var result = await CreateOrdinaryBuildCommand(_ => { }).RunAsync(context, cancellation.Token);
+            output.WriteLine(result.StandardOutput);
+            output.WriteLine(result.StandardError);
+            Assert.Equal(0, result.ExitCode);
+            Assert.DoesNotContain("Book1/Visual Basic For Applications", result.StandardOutput, StringComparison.Ordinal);
+            Assert.DoesNotContain("Book1/Visual Basic For Applications", result.StandardError, StringComparison.Ordinal);
+
+            var references = await new ExcelComWorkbookGenerationAutomation().RunAsync(
+                context.BinDocumentPath,
+                WorkbookAutomationTimeouts.Default,
+                (session, token) => session.GetReferencesAsync(token),
+                cancellation.Token);
+            var standardLibrary = Assert.Single(references, reference => VbaProjectReferenceName.IsStandardLibrary(reference.Name));
+            Assert.False(standardLibrary.IsRemovable);
+            Assert.Equal("VBA", standardLibrary.NamespaceName);
+            output.WriteLine($"Retained reference: {standardLibrary.Name} ({standardLibrary.NamespaceName})");
+            Assert.Equal(originalManifest, File.ReadAllBytes(context.ManifestPath));
+            Assert.Equal(originalTemplate, File.ReadAllBytes(context.TemplateDocumentPath));
+            Assert.Equal(originalSource, File.ReadAllBytes(sourcePath));
+        }
+        finally
+        {
+            await WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20));
+        }
+    }
+
+    [WindowsExcelIntegrationFact]
+    [Trait("Category", "WindowsExcelIntegration")]
     public async Task ExplicitlyLaunchedOwnedExcelCanBeBoundAndReleased()
     {
         using var terminationController = new OwnedExcelTerminationController();
