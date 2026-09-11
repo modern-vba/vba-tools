@@ -10,6 +10,174 @@ namespace VbaLanguageServer.Tests;
 
 public sealed class ComTypeLibCatalogMetadataReaderTests
 {
+    [Fact]
+    public void ReadMetadataReleasesLoadedTypeLibExactlyOnceAfterSuccess()
+    {
+        var typeLib = CreateTypeLib("Library");
+        var releases = new ComObjectReleaseCounter();
+
+        _ = CreateReader(typeLib, releases).ReadMetadata(CreateLibraryIdentity());
+
+        Assert.Equal(1, releases[typeLib]);
+    }
+
+    [Fact]
+    public void ReadMetadataReleasesLoadedTypeLibExactlyOnceWhenMetadataReadFails()
+    {
+        var expectedException = new InvalidDataException("metadata read failed");
+        var typeLib = CreateTypeLib("Library");
+        ((TypeLibProxy)(object)typeLib).DocumentationException = expectedException;
+        var releases = new ComObjectReleaseCounter();
+        var reader = CreateReader(typeLib, releases);
+
+        var exception = Assert.Throws<InvalidDataException>(
+            () => reader.ReadMetadata(CreateLibraryIdentity()));
+
+        Assert.Same(expectedException, exception);
+        Assert.Equal(1, releases[typeLib]);
+    }
+
+    [Fact]
+    public void ReadMetadataReleasesLoadedTypeLibExactlyOnceWhenMetadataReadIsCanceled()
+    {
+        var expectedException = new OperationCanceledException("metadata read canceled");
+        var typeLib = CreateTypeLib("Library");
+        ((TypeLibProxy)(object)typeLib).DocumentationException = expectedException;
+        var releases = new ComObjectReleaseCounter();
+        var reader = CreateReader(typeLib, releases);
+
+        var exception = Assert.Throws<OperationCanceledException>(
+            () => reader.ReadMetadata(CreateLibraryIdentity()));
+
+        Assert.Same(expectedException, exception);
+        Assert.Equal(1, releases[typeLib]);
+    }
+
+    [Fact]
+    public void ReadMetadataReleasesPathTypeLibExactlyOnceWhenIdentityDoesNotMatch()
+    {
+        var typeLib = CreateTypeLib("Library");
+        ((TypeLibProxy)(object)typeLib).LibraryGuid = Guid.Parse(
+            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+        var releases = new ComObjectReleaseCounter();
+        var reader = CreatePathReader(typeLib, releases);
+
+        Assert.Throws<InvalidDataException>(
+            () => reader.ReadMetadata(CreateLibraryIdentity()));
+
+        Assert.Equal(1, releases[typeLib]);
+    }
+
+    [Fact]
+    public void ReadMetadataFromPathReleasesPathTypeLibExactlyOnceAfterSuccess()
+    {
+        var typeLib = CreateTypeLib("Library");
+        var releases = new ComObjectReleaseCounter();
+        var reader = CreatePathReader(typeLib, releases);
+
+        var acquired = reader.ReadMetadataFromPath(
+            "Library",
+            @"C:\TypeLibs\Library.tlb");
+
+        Assert.Equal("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", acquired.Identity.Guid);
+        Assert.Equal(1, releases[typeLib]);
+    }
+
+    [Fact]
+    public void ReadMetadataReleasesApiReturnedTypeInfoExactlyOnceAfterSuccess()
+    {
+        var typeInfo = CreateTypeInfo("LibraryType", TYPEKIND.TKIND_RECORD);
+        var typeLib = CreateTypeLib("Library", typeInfo);
+        var releases = new ComObjectReleaseCounter();
+
+        _ = CreateReader(typeLib, releases).ReadMetadata(CreateLibraryIdentity());
+
+        Assert.Equal(1, releases[typeInfo]);
+        Assert.Equal(1, releases[typeLib]);
+    }
+
+    [Fact]
+    public void ReadMetadataReleasesAlreadyReturnedTypeInfosWhenLaterAcquisitionFails()
+    {
+        var expectedException = new InvalidDataException("type info acquisition failed");
+        var acquiredTypeInfo = CreateTypeInfo("Acquired", TYPEKIND.TKIND_RECORD);
+        var unavailableTypeInfo = CreateTypeInfo("Unavailable", TYPEKIND.TKIND_RECORD);
+        var typeLib = CreateTypeLib("Library", acquiredTypeInfo, unavailableTypeInfo);
+        var typeLibProxy = (TypeLibProxy)(object)typeLib;
+        typeLibProxy.GetTypeInfoExceptionIndex = 1;
+        typeLibProxy.GetTypeInfoException = expectedException;
+        var releases = new ComObjectReleaseCounter();
+        var reader = CreateReader(typeLib, releases);
+
+        var exception = Assert.Throws<InvalidDataException>(
+            () => reader.ReadMetadata(CreateLibraryIdentity()));
+
+        Assert.Same(expectedException, exception);
+        Assert.Equal(1, releases[acquiredTypeInfo]);
+        Assert.Equal(0, releases[unavailableTypeInfo]);
+        Assert.Equal(1, releases[typeLib]);
+    }
+
+    [Fact]
+    public void ReadMetadataReleasesReferencedTypeInfoExactlyOnceAfterUse()
+    {
+        var referencedTypeInfo = CreateTypeInfo("ReferencedType", TYPEKIND.TKIND_RECORD);
+        var containerTypeInfo = CreateTypeInfo(
+            "Container",
+            TYPEKIND.TKIND_RECORD,
+            variableName: "Value",
+            variableTypeInfo: referencedTypeInfo);
+        var typeLib = CreateTypeLib("Library", containerTypeInfo);
+        var releases = new ComObjectReleaseCounter();
+
+        _ = CreateReader(typeLib, releases).ReadMetadata(CreateLibraryIdentity());
+
+        Assert.Equal(1, releases[referencedTypeInfo]);
+    }
+
+    [Fact]
+    public void ReadMetadataReleasesImplementedTypeInfoExactlyOnceWhenItsMetadataReadFails()
+    {
+        var expectedException = new InvalidDataException("implemented metadata read failed");
+        var implementedTypeInfo = CreateTypeInfo(
+            "Implemented",
+            TYPEKIND.TKIND_DISPATCH,
+            functionNames: ["Run"]);
+        ((TypeInfoProxy)(object)implementedTypeInfo).DocumentationException = expectedException;
+        var coClassTypeInfo = CreateTypeInfo(
+            "Container",
+            TYPEKIND.TKIND_COCLASS,
+            implementedTypeInfo: implementedTypeInfo);
+        var typeLib = CreateTypeLib("Library", coClassTypeInfo);
+        var releases = new ComObjectReleaseCounter();
+        var reader = CreateReader(typeLib, releases);
+
+        var exception = Assert.Throws<InvalidDataException>(
+            () => reader.ReadMetadata(CreateLibraryIdentity()));
+
+        Assert.Same(expectedException, exception);
+        Assert.Equal(1, releases[implementedTypeInfo]);
+    }
+
+    [Fact]
+    public void ReadMetadataReleasesImplementedTypeInfoOncePerApiAcquisition()
+    {
+        var implementedTypeInfo = CreateTypeInfo(
+            "Implemented",
+            TYPEKIND.TKIND_DISPATCH,
+            functionNames: ["Run"]);
+        var coClassTypeInfo = CreateTypeInfo(
+            "Container",
+            TYPEKIND.TKIND_COCLASS,
+            implementedTypeInfo: implementedTypeInfo);
+        var typeLib = CreateTypeLib("Library", coClassTypeInfo);
+        var releases = new ComObjectReleaseCounter();
+
+        _ = CreateReader(typeLib, releases).ReadMetadata(CreateLibraryIdentity());
+
+        Assert.Equal(2, releases[implementedTypeInfo]);
+    }
+
     [Theory]
     [InlineData(TYPEKIND.TKIND_DISPATCH, (TYPEFLAGS)0, FUNCKIND.FUNC_DISPATCH, true)]
     [InlineData(TYPEKIND.TKIND_INTERFACE, TYPEFLAGS.TYPEFLAG_FOLEAUTOMATION,
@@ -2148,6 +2316,28 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
         Assert.Equal("Run", Assert.Single(forwarded.Members).Name);
     }
 
+    private static VbaProjectReferenceCatalogIdentity CreateLibraryIdentity()
+        => new(
+            "Library",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            1,
+            0,
+            0,
+            @"C:\TypeLibs\Library.tlb");
+
+    private static ComTypeLibCatalogMetadataReader CreateReader(
+        ITypeLib typeLib,
+        ComObjectReleaseCounter releases)
+        => new(_ => typeLib, releases.Release);
+
+    private static ComTypeLibCatalogMetadataReader CreatePathReader(
+        ITypeLib typeLib,
+        ComObjectReleaseCounter releases)
+        => new(
+            typeLibLoader: null,
+            observedPathTypeLibLoader: _ => typeLib,
+            comObjectReleaser: releases.Release);
+
     private static ITypeLib CreateTypeLib(
         string libraryName,
         params ITypeInfo[] typeInfos)
@@ -2270,9 +2460,30 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
         PARAMFLAG Flags,
         VarEnum? NestedElementVarType = null);
 
+    private sealed class ComObjectReleaseCounter
+    {
+        private readonly Dictionary<object, int> counts = new(
+            ReferenceEqualityComparer.Instance);
+
+        public int this[object value]
+            => counts.TryGetValue(value, out var count) ? count : 0;
+
+        public void Release(object value)
+            => counts[value] = this[value] + 1;
+    }
+
     private class TypeLibProxy : DispatchProxy
     {
         public string LibraryName { get; set; } = string.Empty;
+
+        public Guid LibraryGuid { get; set; } = Guid.Parse(
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+
+        public Exception? DocumentationException { get; set; }
+
+        public int? GetTypeInfoExceptionIndex { get; set; }
+
+        public Exception? GetTypeInfoException { get; set; }
 
         public IReadOnlyList<ITypeInfo> TypeInfos { get; set; } = [];
 
@@ -2283,15 +2494,40 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
             switch (targetMethod.Name)
             {
                 case nameof(ITypeLib.GetDocumentation):
+                    if (DocumentationException is not null)
+                    {
+                        throw DocumentationException;
+                    }
                     args[1] = LibraryName;
                     args[2] = string.Empty;
                     args[3] = 0;
                     args[4] = string.Empty;
                     return null;
+                case nameof(ITypeLib.GetLibAttr):
+                    var attributes = new TYPELIBATTR
+                    {
+                        guid = LibraryGuid,
+                        wMajorVerNum = 1,
+                        wMinorVerNum = 0,
+                        lcid = 0
+                    };
+                    var pointer = Marshal.AllocHGlobal(Marshal.SizeOf<TYPELIBATTR>());
+                    Marshal.StructureToPtr(attributes, pointer, fDeleteOld: false);
+                    args[0] = pointer;
+                    return null;
+                case nameof(ITypeLib.ReleaseTLibAttr):
+                    Marshal.FreeHGlobal((IntPtr)args[0]!);
+                    return null;
                 case nameof(ITypeLib.GetTypeInfoCount):
                     return TypeInfos.Count;
                 case nameof(ITypeLib.GetTypeInfo):
-                    args[1] = TypeInfos[(int)args[0]!];
+                    var typeInfoIndex = (int)args[0]!;
+                    if (typeInfoIndex == GetTypeInfoExceptionIndex)
+                    {
+                        throw GetTypeInfoException
+                            ?? new InvalidOperationException("Type info acquisition failed.");
+                    }
+                    args[1] = TypeInfos[typeInfoIndex];
                     return null;
                 default:
                     throw new NotSupportedException(targetMethod.Name);
@@ -2309,6 +2545,8 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
         public TYPEKIND TypeKind { get; set; }
 
         public TYPEFLAGS TypeFlags { get; set; }
+
+        public Exception? DocumentationException { get; set; }
 
         public string? VariableName { get; set; }
 
@@ -2361,6 +2599,10 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
                     Marshal.FreeHGlobal((IntPtr)args[0]!);
                     return null;
                 case nameof(ITypeInfo.GetDocumentation):
+                    if (DocumentationException is not null)
+                    {
+                        throw DocumentationException;
+                    }
                     args[1] = (int)args[0]! switch
                     {
                         VariableMemberId => VariableName,

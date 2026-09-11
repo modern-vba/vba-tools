@@ -17,16 +17,19 @@ internal sealed class ProjectSemanticInputProvider : IProjectSemanticInputProvid
     private readonly VbaProjectReferencePlanner referencePlanner;
     private readonly ITypeLibRegistryCatalogReader registryReader;
     private readonly ITypeLibCatalogMetadataReader metadataReader;
+    private readonly IOfficeClickToRunTypeLibEvidenceReader officeClickToRunEvidenceReader;
     private readonly IHostEventCatalogAutomation hostEventCatalog;
     private readonly IWorkbookProjectIdentityProbe projectIdentityProbe;
 
     internal ProjectSemanticInputProvider(VbaProjectReferencePlanner referencePlanner,
         ITypeLibRegistryCatalogReader registryReader, ITypeLibCatalogMetadataReader metadataReader,
+        IOfficeClickToRunTypeLibEvidenceReader officeClickToRunEvidenceReader,
         IHostEventCatalogAutomation hostEventCatalog, IWorkbookProjectIdentityProbe projectIdentityProbe)
     {
         this.referencePlanner = referencePlanner;
         this.registryReader = registryReader;
         this.metadataReader = metadataReader;
+        this.officeClickToRunEvidenceReader = officeClickToRunEvidenceReader;
         this.hostEventCatalog = hostEventCatalog;
         this.projectIdentityProbe = projectIdentityProbe;
     }
@@ -75,6 +78,13 @@ internal sealed class ProjectSemanticInputProvider : IProjectSemanticInputProvid
         {
             throw new InvalidOperationException(registry.Diagnostic?.Message ?? "The required TypeLib registry snapshot is incomplete.");
         }
+        var officeClickToRunEvidence = new Lazy<OfficeClickToRunTypeLibEvidenceSnapshot>(() =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var snapshot = officeClickToRunEvidenceReader.Read();
+            cancellationToken.ThrowIfCancellationRequested();
+            return snapshot;
+        }, LazyThreadSafetyMode.None);
 
         var catalogs = VbaProjectReferenceCatalogSet.Empty;
         var identities = new Dictionary<string, VbaProjectReferenceCatalogIdentity>(VbaReferenceName.Comparer);
@@ -84,7 +94,8 @@ internal sealed class ProjectSemanticInputProvider : IProjectSemanticInputProvid
         {
             cancellationToken.ThrowIfCancellationRequested();
             observedReferences.TryGetValue(reference.Name, out var observedReference);
-            var acquired = ReadCatalog(registry, reference, observedReference?.FullPath, cancellationToken);
+            var acquired = ReadCatalog(registry, officeClickToRunEvidence, reference,
+                observedReference?.FullPath, cancellationToken);
             if (observedReferences.TryGetValue(reference.Name, out var existing)
                 && !existing.NamespaceName!.Equals(acquired.Catalog.ReferencedVbaProjectName, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException($"Required TypeLib '{reference.Name}' exposes namespace '{acquired.Catalog.ReferencedVbaProjectName}', but the captured workbook exposes '{existing.NamespaceName}'. Repair the source-template reference or registered TypeLib.");
@@ -129,7 +140,8 @@ internal sealed class ProjectSemanticInputProvider : IProjectSemanticInputProvid
     }
 
     private (VbaProjectReferenceCatalogIdentity Identity, VbaProjectReferenceCatalog Catalog) ReadCatalog(
-        TypeLibRegistryCatalog registry, ResolvedVbaProjectReference reference, string? observedPath, CancellationToken cancellationToken)
+        TypeLibRegistryCatalog registry, Lazy<OfficeClickToRunTypeLibEvidenceSnapshot> officeClickToRunEvidence,
+        ResolvedVbaProjectReference reference, string? observedPath, CancellationToken cancellationToken)
     {
         Exception? observedReadError = null;
         if (!string.IsNullOrWhiteSpace(observedPath))
@@ -140,6 +152,7 @@ internal sealed class ProjectSemanticInputProvider : IProjectSemanticInputProvid
             {
                 observedReadError = new InvalidOperationException(
                     $"Required TypeLib '{reference.Name}' could not be read from observed library '{observedPath}': {error.Message}", error);
+                cancellationToken.ThrowIfCancellationRequested();
             }
             if (observedReadError is not null && HasTypeLibResourceSelector(observedPath))
                 throw observedReadError;
@@ -160,7 +173,7 @@ internal sealed class ProjectSemanticInputProvider : IProjectSemanticInputProvid
         var versions = registered?.Lineages.Where(lineage => lineage.Guid.Equals(reference.Guid, StringComparison.OrdinalIgnoreCase))
             .SelectMany(lineage => lineage.Versions)
             .Where(version => version.Major == reference.Major && version.Minor == reference.Minor).ToArray() ?? [];
-        if (versions.Length != 1)
+        if (versions.Length > 1)
         {
             var message = $"Required TypeLib identity '{reference.Name}' ({reference.Guid}, {reference.Major}.{reference.Minor}) "
                 + "is not uniquely present in the captured registry. Refresh or repair the registered reference.";
@@ -169,27 +182,83 @@ internal sealed class ProjectSemanticInputProvider : IProjectSemanticInputProvid
         }
 
         var errors = observedReadError is null ? [] : new List<Exception> { observedReadError };
-        foreach (var location in versions[0].GetOrderedLocations())
+        if (versions.Length == 0)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var identity = new VbaProjectReferenceCatalogIdentity(reference.Name, reference.Guid,
-                reference.Major, reference.Minor, location.Lcid, location.Path);
-            try
+            errors.Add(new InvalidOperationException(
+                $"Required TypeLib identity '{reference.Name}' ({reference.Guid}, {reference.Major}.{reference.Minor}) "
+                + "is not uniquely present in the captured registry. Refresh or repair the registered reference."));
+        }
+        else
+        {
+            foreach (var location in versions[0].GetOrderedLocations())
             {
-                var metadata = metadataReader.ReadMetadata(identity);
-                if (string.IsNullOrWhiteSpace(metadata.ReferencedVbaProjectName))
+                cancellationToken.ThrowIfCancellationRequested();
+                var identity = new VbaProjectReferenceCatalogIdentity(reference.Name, reference.Guid,
+                    reference.Major, reference.Minor, location.Lcid, location.Path);
+                try
                 {
-                    throw new InvalidOperationException("The loaded TypeLib did not supply an authoritative referenced VBA project name.");
+                    var metadata = metadataReader.ReadMetadata(identity);
+                    if (string.IsNullOrWhiteSpace(metadata.ReferencedVbaProjectName))
+                    {
+                        throw new InvalidOperationException("The loaded TypeLib did not supply an authoritative referenced VBA project name.");
+                    }
+                    return (identity, TypeLibReferenceCatalogBuilder.Build(reference.Name, metadata));
                 }
-                return (identity, TypeLibReferenceCatalogBuilder.Build(reference.Name, metadata));
-            }
-            catch (Exception error) when (error is not OperationCanceledException)
-            {
-                errors.Add(error);
+                catch (Exception error) when (error is not OperationCanceledException)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    errors.Add(error);
+                }
             }
         }
 
-        throw new InvalidOperationException($"Required TypeLib metadata for '{reference.Name}' could not be read from its captured registered locations. "
+        if (!string.IsNullOrWhiteSpace(observedPath)
+            && OfficeClickToRunTypeLibPathResolver.MayApply(observedPath))
+        {
+            var resolution = OfficeClickToRunTypeLibPathResolver.Resolve(
+                officeClickToRunEvidence.Value, reference, observedPath);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (resolution.Applicable)
+            {
+                if (resolution.Candidate is null)
+                {
+                    errors.Add(new InvalidOperationException(resolution.Diagnostic
+                        ?? "Office Click-to-Run TypeLib evidence did not produce an authoritative physical candidate."));
+                }
+                else
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    try
+                    {
+                        var acquired = metadataReader.ReadMetadataFromPath(reference.Name, resolution.Candidate.Path);
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var identity = acquired.Identity;
+                        if (!VbaReferenceName.Comparer.Equals(identity.ReferenceName, reference.Name)
+                            || !Guid.TryParse(identity.Guid, out var loadedGuid) || loadedGuid != Guid.Parse(reference.Guid)
+                            || identity.MajorVersion != reference.Major || identity.MinorVersion != reference.Minor
+                            || identity.Lcid != resolution.Candidate.Lcid
+                            || !string.Equals(identity.Path, resolution.Candidate.Path, StringComparison.Ordinal)
+                            || string.IsNullOrWhiteSpace(acquired.Metadata.ReferencedVbaProjectName))
+                        {
+                            throw new InvalidDataException($"Click-to-Run TypeLib at '{resolution.Candidate.Path}' does not match "
+                                + $"authoritative evidence for '{reference.Name}' ({reference.Guid}, {reference.Major}.{reference.Minor}, LCID {resolution.Candidate.Lcid}). "
+                                + $"Loaded identity was '{identity.ReferenceName}' ({identity.Guid}, {identity.MajorVersion}.{identity.MinorVersion}, "
+                                + $"LCID {identity.Lcid}) at '{identity.Path}'.");
+                        }
+                        return (identity, TypeLibReferenceCatalogBuilder.Build(reference.Name, acquired.Metadata));
+                    }
+                    catch (Exception error) when (error is not OperationCanceledException)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        errors.Add(error);
+                    }
+                }
+            }
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        throw new InvalidOperationException($"Required TypeLib metadata for '{reference.Name}' could not be read from its observed, "
+            + "captured registered, or authoritative Office Click-to-Run locations. "
             + string.Join(" ", errors.Select(error => error.Message).Distinct(StringComparer.Ordinal)),
             errors.Count switch { 0 => null, 1 => errors[0], _ => new AggregateException(errors) });
     }

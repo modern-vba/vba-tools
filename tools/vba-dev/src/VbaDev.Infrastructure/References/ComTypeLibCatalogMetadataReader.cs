@@ -1,6 +1,5 @@
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
-using System.Runtime.Versioning;
 using System.Text;
 using VbaTools.Syntax;
 using VbaTools.Semantics;
@@ -15,19 +14,45 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
 {
     private const int TypeDocumentationMemberId = -1;
     private readonly Func<VbaProjectReferenceCatalogIdentity, ITypeLib>? typeLibLoader;
+    private readonly Func<string, ITypeLib>? observedPathTypeLibLoader;
+    private readonly Action<object> comObjectReleaser;
 
     /// <summary>
     /// Creates a reader backed by the Windows COM TypeLib loader.
     /// </summary>
     public ComTypeLibCatalogMetadataReader()
     {
+        comObjectReleaser = ReleaseComObject;
     }
 
     internal ComTypeLibCatalogMetadataReader(
         Func<VbaProjectReferenceCatalogIdentity, ITypeLib> typeLibLoader)
+        : this(
+            typeLibLoader ?? throw new ArgumentNullException(nameof(typeLibLoader)),
+            observedPathTypeLibLoader: null,
+            ReleaseComObject)
     {
-        this.typeLibLoader = typeLibLoader
-            ?? throw new ArgumentNullException(nameof(typeLibLoader));
+    }
+
+    internal ComTypeLibCatalogMetadataReader(
+        Func<VbaProjectReferenceCatalogIdentity, ITypeLib> typeLibLoader,
+        Action<object> comObjectReleaser)
+        : this(
+            typeLibLoader ?? throw new ArgumentNullException(nameof(typeLibLoader)),
+            observedPathTypeLibLoader: null,
+            comObjectReleaser)
+    {
+    }
+
+    internal ComTypeLibCatalogMetadataReader(
+        Func<VbaProjectReferenceCatalogIdentity, ITypeLib>? typeLibLoader,
+        Func<string, ITypeLib>? observedPathTypeLibLoader,
+        Action<object> comObjectReleaser)
+    {
+        this.typeLibLoader = typeLibLoader;
+        this.observedPathTypeLibLoader = observedPathTypeLibLoader;
+        this.comObjectReleaser = comObjectReleaser
+            ?? throw new ArgumentNullException(nameof(comObjectReleaser));
     }
 
     /// <summary>
@@ -39,10 +64,18 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
     {
         if (typeLibLoader is not null)
         {
-            return ReadLoadedMetadata(identity, typeLibLoader(identity));
+            var typeLib = typeLibLoader(identity);
+            try
+            {
+                return ReadLoadedMetadata(identity, typeLib);
+            }
+            finally
+            {
+                comObjectReleaser(typeLib);
+            }
         }
 
-        if (!OperatingSystem.IsWindows())
+        if (!OperatingSystem.IsWindows() && observedPathTypeLibLoader is null)
         {
             return new TypeLibCatalogMetadata(CreateFallbackQualifier(identity.ReferenceName), []);
         }
@@ -53,17 +86,23 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
     /// <summary>Reads an observed library's actual identity, including LCID, without requiring a registry entry.</summary>
     public AcquiredTypeLibCatalogMetadata ReadMetadataFromPath(string referenceName, string path)
     {
-        if (!OperatingSystem.IsWindows())
+        if (!OperatingSystem.IsWindows() && observedPathTypeLibLoader is null)
             throw new PlatformNotSupportedException("Observed TypeLib metadata requires Windows COM.");
         return ReadObservedWindowsMetadata(referenceName, path);
     }
 
-    [SupportedOSPlatform("windows")]
-    private static AcquiredTypeLibCatalogMetadata ReadObservedWindowsMetadata(string referenceName, string path)
+    private AcquiredTypeLibCatalogMetadata ReadObservedWindowsMetadata(string referenceName, string path)
     {
-        LoadTypeLibEx(path, REGKIND.REGKIND_NONE, out var typeLib);
-        var identity = ReadLibraryIdentity(typeLib, referenceName, path);
-        return new(identity, ReadLoadedMetadata(identity, typeLib));
+        var typeLib = LoadPathTypeLib(path);
+        try
+        {
+            var identity = ReadLibraryIdentity(typeLib, referenceName, path);
+            return new(identity, ReadLoadedMetadata(identity, typeLib));
+        }
+        finally
+        {
+            comObjectReleaser(typeLib);
+        }
     }
 
     private static VbaProjectReferenceCatalogIdentity ReadLibraryIdentity(ITypeLib typeLib, string referenceName, string path)
@@ -82,46 +121,67 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         }
     }
 
-    [SupportedOSPlatform("windows")]
-    private static TypeLibCatalogMetadata ReadWindowsMetadata(VbaProjectReferenceCatalogIdentity identity)
+    private TypeLibCatalogMetadata ReadWindowsMetadata(VbaProjectReferenceCatalogIdentity identity)
     {
-        var typeLib = LoadWindowsTypeLib(identity);
-        return ReadLoadedMetadata(identity, typeLib);
+        var typeLib = LoadPathTypeLib(identity.Path);
+        try
+        {
+            ValidateWindowsTypeLibIdentity(typeLib, identity);
+            return ReadLoadedMetadata(identity, typeLib);
+        }
+        finally
+        {
+            comObjectReleaser(typeLib);
+        }
     }
 
-    private static TypeLibCatalogMetadata ReadLoadedMetadata(
+    private TypeLibCatalogMetadata ReadLoadedMetadata(
         VbaProjectReferenceCatalogIdentity identity,
         ITypeLib typeLib)
     {
         typeLib.GetDocumentation(TypeDocumentationMemberId, out var libraryName, out _, out _, out _);
 
         var typeInfos = ReadTypeInfos(typeLib);
-        var types = new List<TypeLibCatalogType>();
-        foreach (var typeInfo in typeInfos)
+        try
         {
-            var type = ReadType(typeInfo);
-            if (type is not null)
+            var types = new List<TypeLibCatalogType>();
+            foreach (var typeInfo in typeInfos)
             {
-                types.Add(type);
+                var type = ReadType(typeInfo);
+                if (type is not null)
+                {
+                    types.Add(type);
+                }
             }
+
+            types.AddRange(ReadCoClassForwardedMembers(typeInfos));
+            return new TypeLibCatalogMetadata(
+                string.IsNullOrEmpty(libraryName) ? CreateFallbackQualifier(identity.ReferenceName) : libraryName,
+                types,
+                string.IsNullOrEmpty(libraryName) ? null : libraryName);
+        }
+        finally
+        {
+            ReleaseTypeInfos(typeInfos);
+        }
+    }
+
+    private ITypeLib LoadPathTypeLib(string path)
+    {
+        if (observedPathTypeLibLoader is not null)
+        {
+            return observedPathTypeLibLoader(path);
         }
 
-        types.AddRange(ReadCoClassForwardedMembers(typeInfos));
-        return new TypeLibCatalogMetadata(
-            string.IsNullOrEmpty(libraryName) ? CreateFallbackQualifier(identity.ReferenceName) : libraryName,
-            types,
-            string.IsNullOrEmpty(libraryName) ? null : libraryName);
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new PlatformNotSupportedException("Observed TypeLib metadata requires Windows COM.");
+        }
+
+        LoadTypeLibEx(path, REGKIND.REGKIND_NONE, out var typeLib);
+        return typeLib;
     }
 
-    [SupportedOSPlatform("windows")]
-    private static ITypeLib LoadWindowsTypeLib(VbaProjectReferenceCatalogIdentity identity)
-    {
-        LoadTypeLibEx(identity.Path, REGKIND.REGKIND_NONE, out var pathTypeLib);
-        ValidateWindowsTypeLibIdentity(pathTypeLib, identity);
-        return pathTypeLib;
-    }
-
-    [SupportedOSPlatform("windows")]
     private static void ValidateWindowsTypeLibIdentity(
         ITypeLib typeLib,
         VbaProjectReferenceCatalogIdentity identity)
@@ -139,20 +199,36 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         }
     }
 
-    private static IReadOnlyList<ITypeInfo> ReadTypeInfos(ITypeLib typeLib)
+    private IReadOnlyList<ITypeInfo> ReadTypeInfos(ITypeLib typeLib)
     {
         var typeInfos = new List<ITypeInfo>();
-        var count = typeLib.GetTypeInfoCount();
-        for (var index = 0; index < count; index++)
+        try
         {
-            typeLib.GetTypeInfo(index, out var typeInfo);
-            typeInfos.Add(typeInfo);
-        }
+            var count = typeLib.GetTypeInfoCount();
+            for (var index = 0; index < count; index++)
+            {
+                typeLib.GetTypeInfo(index, out var typeInfo);
+                typeInfos.Add(typeInfo);
+            }
 
-        return typeInfos;
+            return typeInfos;
+        }
+        catch
+        {
+            ReleaseTypeInfos(typeInfos);
+            throw;
+        }
     }
 
-    private static TypeLibCatalogType? ReadType(ITypeInfo typeInfo, bool allowHiddenType = false)
+    private void ReleaseTypeInfos(IReadOnlyList<ITypeInfo> typeInfos)
+    {
+        for (var index = typeInfos.Count - 1; index >= 0; index--)
+        {
+            comObjectReleaser(typeInfos[index]);
+        }
+    }
+
+    private TypeLibCatalogType? ReadType(ITypeInfo typeInfo, bool allowHiddenType = false)
     {
         var attrPointer = IntPtr.Zero;
         try
@@ -210,7 +286,7 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         }
     }
 
-    private static IReadOnlyList<TypeLibCatalogImplementedInterface> ReadImplementedInterfaces(
+    private IReadOnlyList<TypeLibCatalogImplementedInterface> ReadImplementedInterfaces(
         ITypeInfo typeInfo,
         TYPEATTR attr,
         out bool isComplete)
@@ -226,43 +302,53 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         {
             typeInfo.GetImplTypeFlags(index, out var implementationFlags);
             typeInfo.GetRefTypeOfImplType(index, out var href);
-            typeInfo.GetRefTypeInfo(href, out var implementedTypeInfo);
-
-            var implementedAttrPointer = IntPtr.Zero;
+            ITypeInfo? implementedTypeInfo = null;
             try
             {
-                implementedTypeInfo.GetTypeAttr(out implementedAttrPointer);
-                var implementedAttr = Marshal.PtrToStructure<TYPEATTR>(implementedAttrPointer);
-                implementedTypeInfo.GetDocumentation(
-                    TypeDocumentationMemberId,
-                    out var implementedTypeName,
-                    out _,
-                    out _,
-                    out _);
-                if (string.IsNullOrEmpty(implementedTypeName))
+                typeInfo.GetRefTypeInfo(href, out implementedTypeInfo);
+                var implementedAttrPointer = IntPtr.Zero;
+                try
                 {
-                    isComplete = false;
-                    continue;
-                }
+                    implementedTypeInfo.GetTypeAttr(out implementedAttrPointer);
+                    var implementedAttr = Marshal.PtrToStructure<TYPEATTR>(implementedAttrPointer);
+                    implementedTypeInfo.GetDocumentation(
+                        TypeDocumentationMemberId,
+                        out var implementedTypeName,
+                        out _,
+                        out _,
+                        out _);
+                    if (string.IsNullOrEmpty(implementedTypeName))
+                    {
+                        isComplete = false;
+                        continue;
+                    }
 
-                var callableMembers = ReadFunctionMembers(
-                    implementedTypeInfo,
-                    implementedAttr,
-                    implementedTypeName,
-                    out var isCallableSurfaceComplete);
-                implementedInterfaces.Add(new TypeLibCatalogImplementedInterface(
-                    implementedTypeName,
-                    (int)implementedAttr.wTypeFlags,
-                    (int)implementationFlags,
-                    callableMembers,
-                    RawTypeKind: GetRawTypeKind(implementedAttr.typekind),
-                    IsComplete: isCallableSurfaceComplete));
+                    var callableMembers = ReadFunctionMembers(
+                        implementedTypeInfo,
+                        implementedAttr,
+                        implementedTypeName,
+                        out var isCallableSurfaceComplete);
+                    implementedInterfaces.Add(new TypeLibCatalogImplementedInterface(
+                        implementedTypeName,
+                        (int)implementedAttr.wTypeFlags,
+                        (int)implementationFlags,
+                        callableMembers,
+                        RawTypeKind: GetRawTypeKind(implementedAttr.typekind),
+                        IsComplete: isCallableSurfaceComplete));
+                }
+                finally
+                {
+                    if (implementedAttrPointer != IntPtr.Zero)
+                    {
+                        implementedTypeInfo.ReleaseTypeAttr(implementedAttrPointer);
+                    }
+                }
             }
             finally
             {
-                if (implementedAttrPointer != IntPtr.Zero)
+                if (implementedTypeInfo is not null)
                 {
-                    implementedTypeInfo.ReleaseTypeAttr(implementedAttrPointer);
+                    comObjectReleaser(implementedTypeInfo);
                 }
             }
         }
@@ -270,7 +356,7 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         return implementedInterfaces;
     }
 
-    private static IReadOnlyList<TypeLibCatalogType> ReadCoClassForwardedMembers(IReadOnlyList<ITypeInfo> typeInfos)
+    private IReadOnlyList<TypeLibCatalogType> ReadCoClassForwardedMembers(IReadOnlyList<ITypeInfo> typeInfos)
     {
         var forwardedTypes = new List<TypeLibCatalogType>();
         foreach (var coClassInfo in typeInfos)
@@ -316,31 +402,42 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
                     }
 
                     coClassInfo.GetRefTypeOfImplType(index, out var href);
-                    coClassInfo.GetRefTypeInfo(href, out var implementedInfo);
-                    var implementedType = ReadType(implementedInfo, allowHiddenType: true);
-                    if (implementedType is null)
+                    ITypeInfo? implementedInfo = null;
+                    try
                     {
-                        continue;
-                    }
-
-                    if (isDefaultSource
-                        && implementedType.Metadata?.RawTypeKind is not (
-                            TypeLibCatalogRawTypeKind.Interface
-                            or TypeLibCatalogRawTypeKind.Dispatch))
-                    {
-                        continue;
-                    }
-
-                    members.AddRange(implementedType.Members.Select(member => isDefaultSource
-                        ? member with
+                        coClassInfo.GetRefTypeInfo(href, out implementedInfo);
+                        var implementedType = ReadType(implementedInfo, allowHiddenType: true);
+                        if (implementedType is null)
                         {
-                            Kind = VbaSourceDefinitionKind.Event,
-                            Signature = member.Signature is null
-                                ? null
-                                : member.Signature with { CallableKind = VbaCallableKind.Event },
-                            PropertyAccess = VbaPropertyAccess.Unknown
+                            continue;
                         }
-                        : member));
+
+                        if (isDefaultSource
+                            && implementedType.Metadata?.RawTypeKind is not (
+                                TypeLibCatalogRawTypeKind.Interface
+                                or TypeLibCatalogRawTypeKind.Dispatch))
+                        {
+                            continue;
+                        }
+
+                        members.AddRange(implementedType.Members.Select(member => isDefaultSource
+                            ? member with
+                            {
+                                Kind = VbaSourceDefinitionKind.Event,
+                                Signature = member.Signature is null
+                                    ? null
+                                    : member.Signature with { CallableKind = VbaCallableKind.Event },
+                                PropertyAccess = VbaPropertyAccess.Unknown
+                            }
+                            : member));
+                    }
+                    finally
+                    {
+                        if (implementedInfo is not null)
+                        {
+                            comObjectReleaser(implementedInfo);
+                        }
+                    }
                 }
 
                 if (members.Count > 0)
@@ -367,7 +464,7 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         return forwardedTypes;
     }
 
-    private static IReadOnlyList<TypeLibCatalogMember> ReadVariableMembers(
+    private IReadOnlyList<TypeLibCatalogMember> ReadVariableMembers(
         ITypeInfo typeInfo,
         TYPEATTR attr,
         string typeName,
@@ -417,7 +514,7 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         return members;
     }
 
-    private static IReadOnlyList<TypeLibCatalogMember> ReadFunctionMembers(
+    private IReadOnlyList<TypeLibCatalogMember> ReadFunctionMembers(
         ITypeInfo typeInfo,
         TYPEATTR attr,
         string typeName,
@@ -504,7 +601,7 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         return members;
     }
 
-    private static IReadOnlyList<VbaCallableParameter> ReadParameters(
+    private IReadOnlyList<VbaCallableParameter> ReadParameters(
         ITypeInfo typeInfo,
         FUNCDESC funcDesc,
         IReadOnlyList<string> names,
@@ -791,7 +888,7 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
             && (VarEnum)elementType.vt == VarEnum.VT_VARIANT;
     }
 
-    private static VbaTypeReference? ToTypeReference(ITypeInfo typeInfo, TYPEDESC typeDesc)
+    private VbaTypeReference? ToTypeReference(ITypeInfo typeInfo, TYPEDESC typeDesc)
     {
         var varType = (VarEnum)typeDesc.vt;
         return varType switch
@@ -826,7 +923,7 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         };
     }
 
-    private static VbaTypeReference? ToNestedTypeReference(ITypeInfo typeInfo, TYPEDESC typeDesc)
+    private VbaTypeReference? ToNestedTypeReference(ITypeInfo typeInfo, TYPEDESC typeDesc)
     {
         if (!TryGetNestedTypeDescription(typeDesc, out var nested))
         {
@@ -848,18 +945,26 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
         return true;
     }
 
-    private static VbaTypeReference? ToUserDefinedTypeReference(ITypeInfo typeInfo, TYPEDESC typeDesc)
+    private VbaTypeReference? ToUserDefinedTypeReference(ITypeInfo typeInfo, TYPEDESC typeDesc)
     {
+        ITypeInfo? referencedTypeInfo = null;
         try
         {
             var hrefType = unchecked((int)typeDesc.lpValue.ToInt64());
-            typeInfo.GetRefTypeInfo(hrefType, out var referencedTypeInfo);
+            typeInfo.GetRefTypeInfo(hrefType, out referencedTypeInfo);
             referencedTypeInfo.GetDocumentation(TypeDocumentationMemberId, out var name, out _, out _, out _);
             return string.IsNullOrEmpty(name) ? null : new VbaTypeReference(name);
         }
         catch (COMException)
         {
             return null;
+        }
+        finally
+        {
+            if (referencedTypeInfo is not null)
+            {
+                comObjectReleaser(referencedTypeInfo);
+            }
         }
     }
 
@@ -920,6 +1025,14 @@ public sealed class ComTypeLibCatalogMetadataReader : ITypeLibCatalogMetadataRea
 
     private static string CreateFallbackQualifier(string referenceName)
         => TypeLibReferenceCatalogBuilder.CreateQualifierAlias(referenceName);
+
+    private static void ReleaseComObject(object value)
+    {
+        if (OperatingSystem.IsWindows() && Marshal.IsComObject(value))
+        {
+            Marshal.ReleaseComObject(value);
+        }
+    }
 
     [DllImport("oleaut32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
     private static extern void LoadTypeLibEx(

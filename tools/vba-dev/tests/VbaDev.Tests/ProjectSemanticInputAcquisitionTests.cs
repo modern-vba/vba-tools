@@ -68,10 +68,14 @@ public sealed class ProjectSemanticInputAcquisitionTests
                 scenario == "library-version" ? 5 : 4, 2, 1041, "C:/runtime/VBE.dll"),
                 new("VBA", [], scenario == "library-namespace" ? "OtherLibrary" : "VBA"))
         };
+        var clickToRun = new OfficeClickToRunEvidenceReader(
+            OfficeClickToRunTypeLibEvidenceSnapshot.Empty,
+            () => throw new InvalidOperationException("Non-C2R and resource-qualified paths must not read Click-to-Run evidence."));
         var commandLine = VbaDevCommandLine.Create(ToolingCompositionRoot.CreateApplicationComposition(root,
             workbookProjectIdentityProbe: probe, workbookGenerationAutomation: generation,
             typeLibRegistryCatalogReader: new RegistryReader(new(true, [StandardRegistration()], [], null)),
-            typeLibCatalogMetadataReader: metadata));
+            typeLibCatalogMetadataReader: metadata,
+            officeClickToRunTypeLibEvidenceReader: clickToRun));
 
         var result = await commandLine.RunAsync(["build"]);
 
@@ -95,6 +99,7 @@ public sealed class ProjectSemanticInputAcquisitionTests
         if (scenario == "library-fallback-namespace")
             Assert.Contains("OtherLibrary", failureMessage, StringComparison.Ordinal);
         Assert.Equal(1, probe.Reads);
+        Assert.Equal(0, clickToRun.Reads);
         Assert.Equal(scenario is "library-guid" or "library-version" or "library-namespace" or "library-unreadable"
             or "library-fallback-identity" or "library-fallback-namespace" ? 1 : 0,
             metadata.Identities.Count);
@@ -128,9 +133,13 @@ public sealed class ProjectSemanticInputAcquisitionTests
         {
             PathError = new IOException("The Office virtualized path is unreadable.")
         };
+        var clickToRun = new OfficeClickToRunEvidenceReader(
+            OfficeClickToRunTypeLibEvidenceSnapshot.Empty,
+            () => throw new InvalidOperationException("Exact ordinary registry success must not read Click-to-Run evidence."));
         var commandLine = VbaDevCommandLine.Create(ToolingCompositionRoot.CreateApplicationComposition(root,
             workbookProjectIdentityProbe: probe, workbookGenerationAutomation: generation,
-            typeLibRegistryCatalogReader: registry, typeLibCatalogMetadataReader: metadata));
+            typeLibRegistryCatalogReader: registry, typeLibCatalogMetadataReader: metadata,
+            officeClickToRunTypeLibEvidenceReader: clickToRun));
 
         var result = await commandLine.RunAsync(["build"]);
 
@@ -138,8 +147,242 @@ public sealed class ProjectSemanticInputAcquisitionTests
         Assert.Equal([(standard, observedPath)], metadata.ObservedPaths);
         Assert.Equal(new VbaProjectReferenceCatalogIdentity(standard, guid, 4, 2, 0, registeredPath),
             Assert.Single(metadata.Identities));
+        Assert.Equal(0, clickToRun.Reads);
         Assert.Equal(1, generation.SaveCalls);
         Assert.Equal(template, File.ReadAllBytes(Path.Combine(root, "bin", "Book1.xlsm")));
+    }
+
+    [Theory]
+    [InlineData("x64", "win64", "System", false)]
+    [InlineData("x64", "win64", "System", true)]
+    [InlineData("x86", "win32", "SystemX86", false)]
+    [InlineData("x86", "win32", "SystemX86", true)]
+    public async Task UnreadableObservedOfficeClickToRunAliasUsesArchitectureApplicablePhysicalTypeLib(
+        string installationPlatform, string registryPlatform, string vfsRoot, bool sourceSnapshot)
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        const string referenceName = "Microsoft Windows Common Controls 6.0 (SP6)";
+        const string referenceNamespace = "MSComctlLib";
+        const string guid = "831fdd16-0c5c-11d2-a9fc-0000f8754da1";
+        const string observedPath = "C:/Windows/System32/MSCOMCTL.OCX";
+        const string standardObservedPath = "C:/Windows/System32/VBE7.DLL";
+        var installationPath = Path.GetFullPath(temp.CreateDirectory("ClickToRun/Office"));
+        var physicalPath = Path.GetFullPath(Path.Combine(installationPath, "root", "vfs", vfsRoot, "MSCOMCTL.OCX"));
+        var standardPhysicalPath = Path.GetFullPath(Path.Combine(installationPath, "root", "vfs", vfsRoot, "VBE7.DLL"));
+        Directory.CreateDirectory(Path.GetDirectoryName(physicalPath)!);
+        File.WriteAllBytes(physicalPath, [0x43, 0x32, 0x52]);
+        File.WriteAllBytes(standardPhysicalPath, [0x56, 0x42, 0x41]);
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("DisplayProject", "Book1", root, null,
+            references: [new(referenceName, true)]));
+        var sourceDirectory = temp.CreateDirectory("Project/src/Book1");
+        var templatePath = Path.Combine(sourceDirectory, "Book1.xlsm");
+        var template = PackageMetadataFixture.Create("ContainingProject", 65001);
+        File.WriteAllBytes(templatePath, template);
+        File.WriteAllText(Path.Combine(sourceDirectory, "Caller.bas"),
+            "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\nEnd Sub\n", new UTF8Encoding(false));
+        var snapshotDirectory = temp.CreateDirectory("snapshot");
+        var snapshotSourcePath = Path.Combine(snapshotDirectory, "SnapshotCaller.bas");
+        File.WriteAllText(snapshotSourcePath,
+            "Attribute VB_Name = \"SnapshotCaller\"\nPublic Sub Run()\nEnd Sub\n", new UTF8Encoding(false));
+        var snapshotSourceBytes = File.ReadAllBytes(snapshotSourcePath);
+        var snapshotOutputPath = Path.Combine(temp.CreateDirectory("session"), "Book1.xlsm");
+        File.WriteAllText(snapshotOutputPath, "previous output", new UTF8Encoding(false));
+        const string standard = VbaProjectReferenceCatalogSet.StandardLibraryReferenceName;
+        const string standardGuid = "000204ef-0000-0000-c000-000000000046";
+        var registry = new RegistryReader(new TypeLibRegistryCatalog(true, [], [], null));
+        var probe = new IdentityProbe((_, _) => Task.FromResult(new WorkbookProjectIdentity("ContainingProject",
+        [
+            new(standard, false, "VBA", standardGuid, 4, 2, standardObservedPath),
+            new(referenceName, false, referenceNamespace, guid, 2, 2, observedPath)
+        ])));
+        var evidence = new OfficeClickToRunEvidenceReader(new(true,
+        [
+            new(installationPath, installationPlatform,
+            [
+                new(standard, standardGuid, 4, 2, 0, registryPlatform, standardObservedPath),
+                new(referenceName, guid, 2, 2, 0, registryPlatform, observedPath)
+            ])
+        ], null));
+        var metadata = new RoutingMetadataReader(
+            _ => throw new InvalidOperationException("The ordinary registry must not supply the Click-to-Run libraries."),
+            (name, path) => path == observedPath || path == standardObservedPath
+                ? throw new IOException("The Office virtual alias is unreadable outside Click-to-Run virtualization.")
+                : path == standardPhysicalPath
+                    ? new(new(name, standardGuid, 4, 2, 0, standardPhysicalPath), new("VBA", [], "VBA"))
+                    : new(new(name, guid, 2, 2, 0, physicalPath), new(referenceNamespace, [], referenceNamespace)));
+        var generation = new FakeWorkbookGenerationAutomation { ProjectName = "ContainingProject" };
+        generation.References.Add(new(standard, false, "VBA", standardGuid, 4, 2));
+        generation.References.Add(new(referenceName, false, referenceNamespace, guid, 2, 2));
+        var commandLine = VbaDevCommandLine.Create(ToolingCompositionRoot.CreateApplicationComposition(root,
+            workbookProjectIdentityProbe: probe, workbookGenerationAutomation: generation,
+            typeLibRegistryCatalogReader: registry, typeLibCatalogMetadataReader: metadata,
+            officeClickToRunTypeLibEvidenceReader: evidence));
+
+        var result = await commandLine.RunAsync(sourceSnapshot
+            ? ["build", "--source-snapshot", snapshotDirectory, "--output", snapshotOutputPath]
+            : ["build"]);
+
+        Assert.True(result.ExitCode == 0, result.StandardError);
+        Assert.Equal(1, evidence.Reads);
+        Assert.Equal([
+            (standard, standardObservedPath),
+            (standard, standardPhysicalPath),
+            (referenceName, observedPath),
+            (referenceName, physicalPath)
+        ], metadata.ObservedPaths);
+        Assert.Equal(1, generation.SaveCalls);
+        Assert.Equal(template, File.ReadAllBytes(sourceSnapshot
+            ? snapshotOutputPath
+            : Path.Combine(root, "bin", "Book1.xlsm")));
+        Assert.Equal(snapshotSourceBytes, File.ReadAllBytes(snapshotSourcePath));
+    }
+
+    [Fact]
+    public async Task UnreadableClickToRunPhysicalCandidateReportsTheAuthoritativeLoaderFailure()
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("DisplayProject", "Book1", root, null));
+        var sourceDirectory = temp.CreateDirectory("Project/src/Book1");
+        var templatePath = Path.Combine(sourceDirectory, "Book1.xlsm");
+        File.WriteAllBytes(templatePath, PackageMetadataFixture.Create("ContainingProject", 65001));
+        File.WriteAllText(Path.Combine(sourceDirectory, "Caller.bas"),
+            "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\nEnd Sub\n", new UTF8Encoding(false));
+        const string standard = VbaProjectReferenceCatalogSet.StandardLibraryReferenceName;
+        const string guid = "000204ef-0000-0000-c000-000000000046";
+        const string observedPath = "C:/Windows/System32/VBE7.DLL";
+        var installationPath = Path.GetFullPath(temp.CreateDirectory("ClickToRun/Office"));
+        var physicalPath = Path.GetFullPath(Path.Combine(installationPath, "root", "vfs", "System", "VBE7.DLL"));
+        var evidence = new OfficeClickToRunEvidenceReader(new(true,
+            [new(installationPath, "x64", [new(standard, guid, 4, 2, 0, "win64", observedPath)])], null));
+        var metadata = new RoutingMetadataReader(
+            _ => throw new InvalidOperationException("No ordinary registered library should be read."),
+            (_, path) => path == observedPath
+                ? throw new IOException("The observed alias is unreadable.")
+                : throw new UnauthorizedAccessException("Access to physical C2R TypeLib denied."));
+        var probe = new IdentityProbe((_, _) => Task.FromResult(new WorkbookProjectIdentity("ContainingProject",
+            [new(standard, false, "VBA", guid, 4, 2, observedPath)])));
+        var generation = new FakeWorkbookGenerationAutomation();
+        var commandLine = VbaDevCommandLine.Create(ToolingCompositionRoot.CreateApplicationComposition(root,
+            workbookProjectIdentityProbe: probe, workbookGenerationAutomation: generation,
+            typeLibRegistryCatalogReader: new RegistryReader(new(true, [], [], null)),
+            typeLibCatalogMetadataReader: metadata, officeClickToRunTypeLibEvidenceReader: evidence));
+
+        var result = await commandLine.RunAsync(["build"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("Access to physical C2R TypeLib denied", result.StandardError, StringComparison.Ordinal);
+        Assert.Equal([(standard, observedPath), (standard, physicalPath)], metadata.ObservedPaths);
+        Assert.Equal(0, generation.SaveCalls);
+    }
+
+    [Theory]
+    [InlineData("guid")]
+    [InlineData("major")]
+    [InlineData("minor")]
+    [InlineData("lcid")]
+    [InlineData("path")]
+    [InlineData("blank-namespace")]
+    [InlineData("namespace")]
+    public async Task MismatchedPhysicalClickToRunMetadataCannotReachGeneration(string scenario)
+    {
+        using var temp = TempDirectory.Create();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("DisplayProject", "Book1", root, null));
+        var sourceDirectory = temp.CreateDirectory("Project/src/Book1");
+        var templatePath = Path.Combine(sourceDirectory, "Book1.xlsm");
+        var sourcePath = Path.Combine(sourceDirectory, "Caller.bas");
+        File.WriteAllBytes(templatePath, PackageMetadataFixture.Create("ContainingProject", 65001));
+        File.WriteAllText(sourcePath, "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\nEnd Sub\n", new UTF8Encoding(false));
+        var outputPath = Path.Combine(temp.CreateDirectory("Project/bin"), "Book1.xlsm");
+        File.WriteAllText(outputPath, "previous output", new UTF8Encoding(false));
+        var originals = new[] { templatePath, sourcePath, outputPath }.ToDictionary(path => path, File.ReadAllBytes);
+        const string standard = VbaProjectReferenceCatalogSet.StandardLibraryReferenceName;
+        const string guid = "000204ef-0000-0000-c000-000000000046";
+        const string observedPath = "C:/Windows/System32/VBE7.DLL";
+        var installationPath = Path.GetFullPath(temp.CreateDirectory("ClickToRun/Office"));
+        var physicalPath = Path.GetFullPath(Path.Combine(installationPath, "root", "vfs", "System", "VBE7.DLL"));
+        var evidence = new OfficeClickToRunEvidenceReader(new(true,
+            [new(installationPath, "x64", [new(standard, guid, 4, 2, 0, "win64", observedPath)])], null));
+        var metadata = new RoutingMetadataReader(
+            _ => throw new InvalidOperationException("No ordinary registered library should be read."),
+            (name, path) => path == observedPath
+                ? throw new IOException("The observed alias is unreadable.")
+                : new(new(name,
+                        scenario == "guid" ? "11111111-0000-0000-c000-000000000046" : guid,
+                        scenario == "major" ? 5 : 4,
+                        scenario == "minor" ? 1 : 2,
+                        scenario == "lcid" ? 1041 : 0,
+                        scenario == "path" ? physicalPath + ".other" : physicalPath),
+                    scenario == "blank-namespace"
+                        ? new("VBA", [])
+                        : new(scenario == "namespace" ? "OtherNamespace" : "VBA", [],
+                            scenario == "namespace" ? "OtherNamespace" : "VBA")));
+        var probe = new IdentityProbe((_, _) => Task.FromResult(new WorkbookProjectIdentity("ContainingProject",
+            [new(standard, false, "VBA", guid, 4, 2, observedPath)])));
+        var generation = new FakeWorkbookGenerationAutomation();
+        var commandLine = VbaDevCommandLine.Create(ToolingCompositionRoot.CreateApplicationComposition(root,
+            workbookProjectIdentityProbe: probe, workbookGenerationAutomation: generation,
+            typeLibRegistryCatalogReader: new RegistryReader(new(true, [], [], null)),
+            typeLibCatalogMetadataReader: metadata, officeClickToRunTypeLibEvidenceReader: evidence));
+
+        var result = await commandLine.RunAsync(["build"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("TypeLib", result.StandardError, StringComparison.Ordinal);
+        Assert.Equal(0, generation.SaveCalls);
+        Assert.Empty(generation.OpenedWorkbooks);
+        foreach (var (path, bytes) in originals) Assert.Equal(bytes, File.ReadAllBytes(path));
+    }
+
+    [Fact]
+    public async Task CallerCancellationDuringPhysicalClickToRunLoadIsNotReportedAsMetadataFailure()
+    {
+        using var temp = TempDirectory.Create();
+        using var cancellation = new CancellationTokenSource();
+        var root = temp.CreateDirectory("Project");
+        new JsonProjectManifestStore().Save(root, ProjectManifest.CreateDefault("DisplayProject", "Book1", root, null));
+        var sourceDirectory = temp.CreateDirectory("Project/src/Book1");
+        var templatePath = Path.Combine(sourceDirectory, "Book1.xlsm");
+        var sourcePath = Path.Combine(sourceDirectory, "Caller.bas");
+        File.WriteAllBytes(templatePath, PackageMetadataFixture.Create("ContainingProject", 65001));
+        File.WriteAllText(sourcePath, "Attribute VB_Name = \"Caller\"\nPublic Sub Run()\nEnd Sub\n", new UTF8Encoding(false));
+        var outputPath = Path.Combine(temp.CreateDirectory("Project/bin"), "Book1.xlsm");
+        File.WriteAllText(outputPath, "previous output", new UTF8Encoding(false));
+        var originals = new[] { templatePath, sourcePath, outputPath }.ToDictionary(path => path, File.ReadAllBytes);
+        const string standard = VbaProjectReferenceCatalogSet.StandardLibraryReferenceName;
+        const string guid = "000204ef-0000-0000-c000-000000000046";
+        const string observedPath = "C:/Windows/System32/VBE7.DLL";
+        var installationPath = Path.GetFullPath(temp.CreateDirectory("ClickToRun/Office"));
+        var physicalPath = Path.GetFullPath(Path.Combine(installationPath, "root", "vfs", "System", "VBE7.DLL"));
+        var evidence = new OfficeClickToRunEvidenceReader(new(true,
+            [new(installationPath, "x64", [new(standard, guid, 4, 2, 0, "win64", observedPath)])], null));
+        var metadata = new RoutingMetadataReader(
+            _ => throw new InvalidOperationException("No ordinary registered library should be read."),
+            (_, path) =>
+            {
+                if (path == observedPath) throw new IOException("The observed alias is unreadable.");
+                cancellation.Cancel();
+                throw new IOException("The physical load was interrupted after caller cancellation.");
+            });
+        var probe = new IdentityProbe((_, _) => Task.FromResult(new WorkbookProjectIdentity("ContainingProject",
+            [new(standard, false, "VBA", guid, 4, 2, observedPath)])));
+        var generation = new FakeWorkbookGenerationAutomation();
+        var commandLine = VbaDevCommandLine.Create(ToolingCompositionRoot.CreateApplicationComposition(root,
+            workbookProjectIdentityProbe: probe, workbookGenerationAutomation: generation,
+            typeLibRegistryCatalogReader: new RegistryReader(new(true, [], [], null)),
+            typeLibCatalogMetadataReader: metadata, officeClickToRunTypeLibEvidenceReader: evidence));
+
+        var result = await commandLine.RunAsync(["build"], cancellation.Token);
+
+        Assert.True(cancellation.IsCancellationRequested);
+        Assert.Equal(130, result.ExitCode);
+        Assert.DoesNotContain("physical load was interrupted", result.StandardError, StringComparison.Ordinal);
+        Assert.Equal([(standard, observedPath), (standard, physicalPath)], metadata.ObservedPaths);
+        Assert.Equal(0, generation.SaveCalls);
+        Assert.Empty(generation.OpenedWorkbooks);
+        foreach (var (path, bytes) in originals) Assert.Equal(bytes, File.ReadAllBytes(path));
     }
 
     [Theory]
@@ -181,10 +424,12 @@ public sealed class ProjectSemanticInputAcquisitionTests
         {
             PathError = new IOException("The Office virtualized path is unreadable.")
         };
+        var clickToRun = new OfficeClickToRunEvidenceReader(OfficeClickToRunTypeLibEvidenceSnapshot.Empty);
         var commandLine = VbaDevCommandLine.Create(ToolingCompositionRoot.CreateApplicationComposition(root,
             workbookProjectIdentityProbe: probe, workbookGenerationAutomation: new FakeWorkbookGenerationAutomation(),
             typeLibRegistryCatalogReader: new RegistryReader(new(true, registrations, [], null)),
-            typeLibCatalogMetadataReader: metadata));
+            typeLibCatalogMetadataReader: metadata,
+            officeClickToRunTypeLibEvidenceReader: clickToRun));
 
         var result = await commandLine.RunAsync(["build"]);
 
@@ -196,6 +441,7 @@ public sealed class ProjectSemanticInputAcquisitionTests
         Assert.Contains("Office virtualized path is unreadable", failure, StringComparison.Ordinal);
         Assert.Contains("not uniquely present", failure, StringComparison.Ordinal);
         Assert.Empty(metadata.Identities);
+        Assert.Equal(scenario == "ambiguous" ? 0 : 1, clickToRun.Reads);
     }
 
     [Theory]
@@ -232,10 +478,14 @@ public sealed class ProjectSemanticInputAcquisitionTests
         {
             Observed = new(new(standard, guid, 4, 2, 1041, resourceQualifiedPath), new("VBA", [], "VBA"))
         };
+        var clickToRun = new OfficeClickToRunEvidenceReader(
+            OfficeClickToRunTypeLibEvidenceSnapshot.Empty,
+            () => throw new InvalidOperationException("Readable observed or exact registered metadata must not read Click-to-Run evidence."));
         var commandLine = VbaDevCommandLine.Create(ToolingCompositionRoot.CreateApplicationComposition(root,
             workbookGenerationAutomation: generation, typeLibRegistryCatalogReader: registry,
             typeLibCatalogMetadataReader: metadata,
-            workbookProjectIdentityProbe: probe));
+            workbookProjectIdentityProbe: probe,
+            officeClickToRunTypeLibEvidenceReader: clickToRun));
 
         var result = await commandLine.RunAsync(["build"]);
 
@@ -244,6 +494,7 @@ public sealed class ProjectSemanticInputAcquisitionTests
         var metadataIdentity = Assert.Single(metadata.Identities);
         Assert.Equal(actualVersionRegistered ? 0 : 1041, metadataIdentity.Lcid);
         Assert.Equal(actualVersionRegistered ? "C:/runtime/VBE.dll" : resourceQualifiedPath, metadataIdentity.Path);
+        Assert.Equal(0, clickToRun.Reads);
         Assert.Equal(1, generation.SaveCalls);
         Assert.Equal(template, File.ReadAllBytes(templatePath));
         Assert.Equal(template, File.ReadAllBytes(Path.Combine(root, "bin", "Book1.xlsm")));
@@ -636,6 +887,37 @@ public sealed class ProjectSemanticInputAcquisitionTests
             Identities.Add(identity);
             if (CatalogError is not null) throw CatalogError;
             return metadata;
+        }
+    }
+
+    private sealed class RoutingMetadataReader(
+        Func<VbaProjectReferenceCatalogIdentity, TypeLibCatalogMetadata> readRegistered,
+        Func<string, string, AcquiredTypeLibCatalogMetadata> readPath) : ITypeLibCatalogMetadataReader
+    {
+        internal List<(string ReferenceName, string Path)> ObservedPaths { get; } = [];
+
+        public TypeLibCatalogMetadata ReadMetadata(VbaProjectReferenceCatalogIdentity identity)
+            => readRegistered(identity);
+
+        public AcquiredTypeLibCatalogMetadata ReadMetadataFromPath(string referenceName, string path)
+        {
+            ObservedPaths.Add((referenceName, path));
+            return readPath(referenceName, path);
+        }
+    }
+
+    private sealed class OfficeClickToRunEvidenceReader(
+        OfficeClickToRunTypeLibEvidenceSnapshot evidence,
+        Action? onRead = null)
+        : IOfficeClickToRunTypeLibEvidenceReader
+    {
+        internal int Reads { get; private set; }
+
+        public OfficeClickToRunTypeLibEvidenceSnapshot Read()
+        {
+            Reads++;
+            onRead?.Invoke();
+            return evidence;
         }
     }
 

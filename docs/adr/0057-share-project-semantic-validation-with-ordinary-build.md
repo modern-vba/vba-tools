@@ -72,6 +72,23 @@ automation service and the same admission policy as `host-event list`.
 Only a captured form source requires the intrinsic UserForm catalog; custom
 source Events and external TypeLib Events use their own declared contracts.
 
+An unreadable observed Office Click-to-Run virtual path gains one additional,
+separate location authority only after exact ordinary registered locations have
+failed. One invocation captures the machine-scoped Click-to-Run installation path
+and platform together with its virtual `Classes\TypeLib` registration. The
+registration must match the captured reference name, GUID, major/minor version,
+and exact observed alias; its LCID and platform registry topology must be valid.
+With matching
+x64/`win64` evidence, only the Windows `System32` virtual root maps to
+`root\vfs\System`. With matching x86/`win32` evidence, an exact `System32` or
+`SysWOW64` alias maps to `root\vfs\SystemX86`. The derived physical file is
+then loaded without COM registration, and its GUID, version, LCID, path and VBA
+namespace are verified through the same metadata admission used by other paths.
+Missing, malformed, ambiguous or mismatched evidence fails closed. This authority
+does not override an ambiguous ordinary registration, search by file name, scan
+arbitrary directories, copy an Office binary, write the registry or register COM.
+Type libraries and the owned probe resources are released on every terminal path.
+
 Excel can save an initial macro-enabled workbook without persisting a VBA project
 part. The neutral package reader distinguishes that conclusive absence from
 malformed or contradictory VBA metadata. This absence allows the owned inspection
