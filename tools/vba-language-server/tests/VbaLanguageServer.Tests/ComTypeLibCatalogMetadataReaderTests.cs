@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
+using VbaLanguageServer.Diagnostics;
 using VbaLanguageServer.SourceModel;
 using VbaTools.Syntax;
 using Xunit;
@@ -997,6 +998,551 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
     }
 
     [Fact]
+    public void ReadMetadataProjectsTheFinalVisibleVariadicArrayBeforeAHiddenLcidAsParamArray()
+    {
+        var catalog = CreateCallByNameCatalog();
+
+        var definition = Assert.Single(catalog.Definitions,
+            candidate => candidate.Name == "CallByName");
+        var parameters = Assert.IsAssignableFrom<IReadOnlyList<VbaCallableParameter>>(
+            definition.Signature?.Parameters);
+        Assert.Equal(["Object", "ProcName", "CallType", "Args"],
+            parameters.Select(parameter => parameter.Name));
+        Assert.True(parameters[^1].IsParamArray);
+        Assert.True(parameters[^1].IsArray);
+        Assert.False(parameters[^1].IsOptional);
+        Assert.DoesNotContain(parameters, parameter => parameter.Name == "lcid");
+    }
+
+    [Fact]
+    public void ReaderBuiltCallByNameCatalogAcceptsFixedAndForwardedPositionalArguments()
+    {
+        const string uri = "file:///C:/work/CallByNameCaller.bas";
+        var syntax = VbaSyntaxTree.ParseModule(
+            uri,
+            "Attribute VB_Name = \"CallByNameCaller\"\nPrivate Const VbMethod As Long = 1\nPrivate Const VbGet As Long = 2\nPublic Sub Run()\n    Dim target As Object\n    Dim value As Variant\n    value = CallByName(target, \"Name\", VbGet)\n    CallByName target, \"Run\", VbMethod\n    value = CallByName(target, \"Run\", VbMethod, 1, 2, 3)\nEnd Sub\n");
+        var catalog = CreateCallByNameCatalog();
+        var inputs = VbaProjectSemanticInputs.Capture(
+            VbaReferenceSelection.Capture([catalog.ReferenceName], catalog.ReferenceName),
+            VbaProjectReferenceCatalogSet.Empty.WithCatalog(catalog));
+        var document = VbaSourceDocumentProjector.Project(uri, syntax);
+        var inventory = VbaSemanticInventory.Create(
+            new Dictionary<string, VbaSourceDocument>(StringComparer.OrdinalIgnoreCase)
+            {
+                [uri] = document
+            },
+            VbaProjectReferenceSelection.Create(
+                "excel",
+                [new VbaProjectReference(catalog.ReferenceName)]),
+            inputs.ReferenceCatalogs);
+
+        var diagnostics = VbaProjectSourceAnalysis.Analyze([syntax], inputs);
+
+        var target = Assert.IsAssignableFrom<VbaResolvedNameTarget>(
+            inventory.ResolveSourceTarget(uri, 6, "    value = ".Length));
+        Assert.Equal("CallByName", target.CanonicalName);
+        Assert.Equal(
+            VbaDefinitionOrigin.ProjectReference,
+            target.SelectedDefinition.Identity.Origin);
+        Assert.Empty(diagnostics);
+    }
+
+    [Fact]
+    public void ReaderBuiltCallByNameCatalogRejectsInvalidFixedAndParamArrayArguments()
+    {
+        const string uri = "file:///C:/work/InvalidCallByNameCaller.bas";
+        const string source =
+            "Attribute VB_Name = \"InvalidCallByNameCaller\"\nPrivate Const VbMethod As Long = 1\nPublic Sub Run()\n    Dim target As Object\n    Dim value As Variant\n    value = CallByName(target, \"Name\")\n    value = CallByName(target, \"Run\", VbMethod, Args:=1)\n    value = CallByName(target, ProcName:=\"Run\", VbMethod)\nEnd Sub\n";
+        var syntax = VbaSyntaxTree.ParseModule(uri, source);
+        var catalog = CreateCallByNameCatalog();
+        var inputs = VbaProjectSemanticInputs.Capture(
+            VbaReferenceSelection.Capture([catalog.ReferenceName], catalog.ReferenceName),
+            VbaProjectReferenceCatalogSet.Empty.WithCatalog(catalog));
+
+        var diagnostics = VbaProjectSourceAnalysis.Analyze([syntax], inputs)
+            .Where(diagnostic =>
+                diagnostic.Code == "validation.incompatibleCallArgumentList")
+            .ToArray();
+
+        Assert.Equal([5, 6],
+            diagnostics.Select(diagnostic => diagnostic.Range.Start.Line));
+        var argumentOrderDiagnostic = Assert.Single(
+            VbaDocumentDiagnostics.Collect(syntax, uri),
+            diagnostic => diagnostic.Code
+                == "validation.positionalCallArgumentAfterNamed");
+        Assert.Equal(7, argumentOrderDiagnostic.Range.Start.Line);
+    }
+
+    [Fact]
+    public void ReaderBuiltCallByNameCatalogPresentsParamArrayWithoutHiddenAbiParameters()
+    {
+        const string uri = "file:///C:/work/CallByNameSignatureHelp.bas";
+        var catalog = CreateCallByNameCatalog();
+        var inventory = VbaSemanticInventoryFixture.Create(
+            new Dictionary<string, string>
+            {
+                [uri] =
+                    "Attribute VB_Name = \"CallByNameSignatureHelp\"\nPublic Sub Run()\n    Dim value As Variant\n    value = CallByName(\nEnd Sub\n"
+            },
+            VbaProjectReferenceSelection.Create(
+                "excel",
+                [new VbaProjectReference(catalog.ReferenceName)]),
+            VbaProjectReferenceCatalogSet.Empty.WithCatalog(catalog));
+
+        var signatureHelp = Assert.IsType<VbaSignatureHelp>(inventory.GetSignatureHelp(
+            uri,
+            3,
+            "    value = CallByName(".Length));
+
+        Assert.Contains(
+            "ParamArray Args() As Variant",
+            signatureHelp.Signature.Label,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "lcid",
+            signatureHelp.Signature.Label,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(
+            ["Object", "ProcName", "CallType", "Args"],
+            signatureHelp.Signature.Parameters.Select(parameter => parameter.Name));
+    }
+
+    [Fact]
+    public void ReadMetadataKeepsRawNameAlignmentWhenHiddenAbiParametersAreInterleaved()
+    {
+        var reader = new ComTypeLibCatalogMetadataReader(
+            _ => CreateTypeLib(
+                "Library",
+                CreateTypeInfo(
+                    "Invoker",
+                    TYPEKIND.TKIND_MODULE,
+                    functionNames: ["Invoke", "Target", "lcid", "Args"],
+                    functionParameters:
+                    [
+                        new(VarEnum.VT_DISPATCH, null, PARAMFLAG.PARAMFLAG_FIN),
+                        new(VarEnum.VT_I4, null,
+                            PARAMFLAG.PARAMFLAG_FIN | PARAMFLAG.PARAMFLAG_FLCID),
+                        new(
+                            VarEnum.VT_PTR,
+                            VarEnum.VT_SAFEARRAY,
+                            PARAMFLAG.PARAMFLAG_FIN,
+                            VarEnum.VT_VARIANT)
+                    ],
+                    functionOptionalParameterCount: -1)));
+
+        var metadata = reader.ReadMetadata(new VbaProjectReferenceCatalogIdentity(
+            "Library",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            1,
+            0,
+            0,
+            @"C:\TypeLibs\Library.tlb"));
+        var catalog = TypeLibReferenceCatalogBuilder.Build("Library", metadata);
+
+        var definition = Assert.Single(catalog.Definitions,
+            candidate => candidate.Name == "Invoke");
+        var parameters = Assert.IsAssignableFrom<IReadOnlyList<VbaCallableParameter>>(
+            definition.Signature?.Parameters);
+        Assert.Equal(["Target", "Args"],
+            parameters.Select(parameter => parameter.Name));
+        Assert.True(parameters[^1].IsParamArray);
+    }
+
+    [Theory]
+    [InlineData(VarEnum.VT_I4, null, null, false)]
+    [InlineData(VarEnum.VT_SAFEARRAY, VarEnum.VT_VARIANT, null, true)]
+    [InlineData(VarEnum.VT_CARRAY, VarEnum.VT_VARIANT, null, true)]
+    [InlineData(VarEnum.VT_PTR, VarEnum.VT_SAFEARRAY, VarEnum.VT_BSTR, true)]
+    [InlineData(VarEnum.VT_PTR, null, null, false)]
+    public void VariadicMetadataWithoutAProvenVariantSafeArrayFailsClosed(
+        VarEnum varType,
+        VarEnum? elementVarType,
+        VarEnum? nestedElementVarType,
+        bool expectedIsArray)
+    {
+        var reader = new ComTypeLibCatalogMetadataReader(
+            _ => CreateTypeLib(
+                "Library",
+                CreateTypeInfo(
+                    "Collector",
+                    TYPEKIND.TKIND_MODULE,
+                    functionNames: ["Collect", "Values"],
+                    functionParameters:
+                    [
+                        new(
+                            varType,
+                            elementVarType,
+                            PARAMFLAG.PARAMFLAG_FIN,
+                            nestedElementVarType)
+                    ],
+                    functionOptionalParameterCount: -1)));
+
+        var metadata = reader.ReadMetadata(new VbaProjectReferenceCatalogIdentity(
+            "Library",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            1,
+            0,
+            0,
+            @"C:\TypeLibs\Library.tlb"));
+
+        var member = Assert.Single(Assert.Single(metadata.Types).Members);
+        var parameter = Assert.Single(Assert.IsAssignableFrom<
+            IReadOnlyList<VbaCallableParameter>>(member.Signature?.Parameters));
+        Assert.False(parameter.IsParamArray);
+        Assert.Equal(expectedIsArray, parameter.IsArray);
+        Assert.False(member.Metadata?.IsComplete);
+
+        var definition = Assert.Single(
+            TypeLibReferenceCatalogBuilder.Build("Library", metadata).Definitions,
+            candidate => candidate.Name == "Collect");
+        Assert.Null(definition.Signature);
+        Assert.False(definition.IsCallableMetadataComplete);
+    }
+
+    [Theory]
+    [InlineData(PARAMFLAG.PARAMFLAG_FOUT)]
+    [InlineData(PARAMFLAG.PARAMFLAG_FIN | PARAMFLAG.PARAMFLAG_FOUT)]
+    public void VariadicMetadataWithAnOutputDescriptorFailsClosed(PARAMFLAG flags)
+    {
+        var reader = new ComTypeLibCatalogMetadataReader(
+            _ => CreateTypeLib(
+                "Library",
+                CreateTypeInfo(
+                    "Collector",
+                    TYPEKIND.TKIND_MODULE,
+                    functionNames: ["Collect", "Values"],
+                    functionParameters:
+                    [
+                        new(
+                            VarEnum.VT_PTR,
+                            VarEnum.VT_SAFEARRAY,
+                            flags,
+                            VarEnum.VT_VARIANT)
+                    ],
+                    functionOptionalParameterCount: -1)));
+
+        var metadata = reader.ReadMetadata(new VbaProjectReferenceCatalogIdentity(
+            "Library",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            1,
+            0,
+            0,
+            @"C:\TypeLibs\Library.tlb"));
+
+        var member = Assert.Single(Assert.Single(metadata.Types).Members);
+        var parameter = Assert.Single(Assert.IsAssignableFrom<
+            IReadOnlyList<VbaCallableParameter>>(member.Signature?.Parameters));
+        Assert.False(parameter.IsParamArray);
+        Assert.True(parameter.IsArray);
+        Assert.False(member.Metadata?.IsComplete);
+
+        var definition = Assert.Single(
+            TypeLibReferenceCatalogBuilder.Build("Library", metadata).Definitions,
+            candidate => candidate.Name == "Collect");
+        Assert.Null(definition.Signature);
+        Assert.False(definition.IsCallableMetadataComplete);
+    }
+
+    [Theory]
+    [InlineData(PARAMFLAG.PARAMFLAG_NONE)]
+    [InlineData(PARAMFLAG.PARAMFLAG_FIN)]
+    [InlineData(PARAMFLAG.PARAMFLAG_FOPT)]
+    [InlineData(PARAMFLAG.PARAMFLAG_FHASDEFAULT)]
+    [InlineData(
+        PARAMFLAG.PARAMFLAG_FIN
+        | PARAMFLAG.PARAMFLAG_FOPT
+        | PARAMFLAG.PARAMFLAG_FHASDEFAULT)]
+    public void VariadicMetadataAllowsNonOutputDirectionAndOptionalFlagNoise(
+        PARAMFLAG flags)
+    {
+        var reader = new ComTypeLibCatalogMetadataReader(
+            _ => CreateTypeLib(
+                "Library",
+                CreateTypeInfo(
+                    "Collector",
+                    TYPEKIND.TKIND_MODULE,
+                    functionNames: ["Collect", "Values"],
+                    functionParameters:
+                    [
+                        new(
+                            VarEnum.VT_PTR,
+                            VarEnum.VT_SAFEARRAY,
+                            flags,
+                            VarEnum.VT_VARIANT)
+                    ],
+                    functionOptionalParameterCount: -1)));
+
+        var metadata = reader.ReadMetadata(new VbaProjectReferenceCatalogIdentity(
+            "Library",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            1,
+            0,
+            0,
+            @"C:\TypeLibs\Library.tlb"));
+
+        var member = Assert.Single(Assert.Single(metadata.Types).Members);
+        var parameter = Assert.Single(Assert.IsAssignableFrom<
+            IReadOnlyList<VbaCallableParameter>>(member.Signature?.Parameters));
+        Assert.True(parameter.IsParamArray);
+        Assert.True(parameter.IsArray);
+        Assert.False(parameter.IsOptional);
+        Assert.DoesNotContain(
+            "[",
+            member.Signature!.Label,
+            StringComparison.Ordinal);
+        Assert.True(member.Metadata?.IsComplete);
+
+        var definition = Assert.Single(
+            TypeLibReferenceCatalogBuilder.Build("Library", metadata).Definitions,
+            candidate => candidate.Name == "Collect");
+        Assert.NotNull(definition.Signature);
+        Assert.True(definition.IsCallableMetadataComplete);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void VariadicMetadataWithoutAVisibleParameterFailsClosed(
+        bool hasHiddenDescriptors)
+    {
+        var reader = new ComTypeLibCatalogMetadataReader(
+            _ => CreateTypeLib(
+                "Library",
+                CreateTypeInfo(
+                    "Collector",
+                    TYPEKIND.TKIND_MODULE,
+                    functionNames: hasHiddenDescriptors
+                        ? ["Collect", "lcid", "retval"]
+                        : ["Collect"],
+                    functionParameters: hasHiddenDescriptors
+                        ?
+                        [
+                            new(VarEnum.VT_I4, null,
+                                PARAMFLAG.PARAMFLAG_FIN | PARAMFLAG.PARAMFLAG_FLCID),
+                            new(VarEnum.VT_I4, null,
+                                PARAMFLAG.PARAMFLAG_FOUT | PARAMFLAG.PARAMFLAG_FRETVAL)
+                        ]
+                        : [],
+                    functionOptionalParameterCount: -1)));
+
+        var metadata = reader.ReadMetadata(new VbaProjectReferenceCatalogIdentity(
+            "Library",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            1,
+            0,
+            0,
+            @"C:\TypeLibs\Library.tlb"));
+
+        var member = Assert.Single(Assert.Single(metadata.Types).Members);
+        Assert.Empty(Assert.IsAssignableFrom<IReadOnlyList<VbaCallableParameter>>(
+            member.Signature?.Parameters));
+        Assert.False(member.Metadata?.IsComplete);
+
+        var definition = Assert.Single(
+            TypeLibReferenceCatalogBuilder.Build("Library", metadata).Definitions,
+            candidate => candidate.Name == "Collect");
+        Assert.Null(definition.Signature);
+        Assert.False(definition.IsCallableMetadataComplete);
+    }
+
+    [Fact]
+    public void ReadMetadataDoesNotTreatARequiredArrayBeforeAHiddenLcidAsParamArray()
+    {
+        var reader = new ComTypeLibCatalogMetadataReader(
+            _ => CreateTypeLib(
+                "Library",
+                CreateTypeInfo(
+                    "Collector",
+                    TYPEKIND.TKIND_MODULE,
+                    functionNames: ["Collect", "Values", "lcid"],
+                    functionParameters:
+                    [
+                        new(VarEnum.VT_SAFEARRAY, VarEnum.VT_VARIANT, PARAMFLAG.PARAMFLAG_FIN),
+                        new(VarEnum.VT_I4, null,
+                            PARAMFLAG.PARAMFLAG_FIN | PARAMFLAG.PARAMFLAG_FLCID)
+                    ])));
+
+        var metadata = reader.ReadMetadata(new VbaProjectReferenceCatalogIdentity(
+            "Library",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            1,
+            0,
+            0,
+            @"C:\TypeLibs\Library.tlb"));
+        var catalog = TypeLibReferenceCatalogBuilder.Build("Library", metadata);
+
+        var definition = Assert.Single(catalog.Definitions,
+            candidate => candidate.Name == "Collect");
+        var parameter = Assert.Single(Assert.IsAssignableFrom<
+            IReadOnlyList<VbaCallableParameter>>(definition.Signature?.Parameters));
+        Assert.True(parameter.IsArray);
+        Assert.False(parameter.IsOptional);
+        Assert.False(parameter.IsParamArray);
+    }
+
+    [Fact]
+    public void ReadMetadataProjectsParamArrayAfterAPrecedingRetvalDescriptor()
+    {
+        var reader = new ComTypeLibCatalogMetadataReader(
+            _ => CreateTypeLib(
+                "Library",
+                CreateTypeInfo(
+                    "Collector",
+                    TYPEKIND.TKIND_MODULE,
+                    functionNames: ["Collect", "retval", "Values"],
+                    functionParameters:
+                    [
+                        new(VarEnum.VT_I4, null,
+                            PARAMFLAG.PARAMFLAG_FOUT | PARAMFLAG.PARAMFLAG_FRETVAL),
+                        new(
+                            VarEnum.VT_PTR,
+                            VarEnum.VT_SAFEARRAY,
+                            PARAMFLAG.PARAMFLAG_FIN,
+                            VarEnum.VT_VARIANT)
+                    ],
+                    functionOptionalParameterCount: -1)));
+
+        var metadata = reader.ReadMetadata(new VbaProjectReferenceCatalogIdentity(
+            "Library",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            1,
+            0,
+            0,
+            @"C:\TypeLibs\Library.tlb"));
+        var catalog = TypeLibReferenceCatalogBuilder.Build("Library", metadata);
+
+        var definition = Assert.Single(catalog.Definitions,
+            candidate => candidate.Name == "Collect");
+        var parameter = Assert.Single(Assert.IsAssignableFrom<
+            IReadOnlyList<VbaCallableParameter>>(definition.Signature?.Parameters));
+        Assert.Equal("Values", parameter.Name);
+        Assert.True(parameter.IsArray);
+        Assert.True(parameter.IsParamArray);
+    }
+
+    [Fact]
+    public void ReadMetadataProjectsParamArrayBeforeATrailingRetvalDescriptor()
+    {
+        var reader = new ComTypeLibCatalogMetadataReader(
+            _ => CreateTypeLib(
+                "Library",
+                CreateTypeInfo(
+                    "Collector",
+                    TYPEKIND.TKIND_MODULE,
+                    functionNames: ["Collect", "Values", "retval"],
+                    functionParameters:
+                    [
+                        new(
+                            VarEnum.VT_PTR,
+                            VarEnum.VT_SAFEARRAY,
+                            PARAMFLAG.PARAMFLAG_FIN,
+                            VarEnum.VT_VARIANT),
+                        new(VarEnum.VT_I4, null,
+                            PARAMFLAG.PARAMFLAG_FOUT | PARAMFLAG.PARAMFLAG_FRETVAL)
+                    ],
+                    functionOptionalParameterCount: -1)));
+
+        var metadata = reader.ReadMetadata(new VbaProjectReferenceCatalogIdentity(
+            "Library",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            1,
+            0,
+            0,
+            @"C:\TypeLibs\Library.tlb"));
+        var catalog = TypeLibReferenceCatalogBuilder.Build("Library", metadata);
+
+        var definition = Assert.Single(catalog.Definitions,
+            candidate => candidate.Name == "Collect");
+        var parameter = Assert.Single(Assert.IsAssignableFrom<
+            IReadOnlyList<VbaCallableParameter>>(definition.Signature?.Parameters));
+        Assert.Equal("Values", parameter.Name);
+        Assert.True(parameter.IsArray);
+        Assert.True(parameter.IsParamArray);
+    }
+
+    [Fact]
+    public void ReadMetadataProjectsParamArrayBeforeTrailingLcidAndRetvalDescriptors()
+    {
+        var reader = new ComTypeLibCatalogMetadataReader(
+            _ => CreateTypeLib(
+                "Library",
+                CreateTypeInfo(
+                    "Collector",
+                    TYPEKIND.TKIND_MODULE,
+                    functionNames: ["Collect", "Values", "lcid", "retval"],
+                    functionParameters:
+                    [
+                        new(
+                            VarEnum.VT_PTR,
+                            VarEnum.VT_SAFEARRAY,
+                            PARAMFLAG.PARAMFLAG_FIN,
+                            VarEnum.VT_VARIANT),
+                        new(VarEnum.VT_I4, null,
+                            PARAMFLAG.PARAMFLAG_FIN | PARAMFLAG.PARAMFLAG_FLCID),
+                        new(VarEnum.VT_I4, null,
+                            PARAMFLAG.PARAMFLAG_FOUT | PARAMFLAG.PARAMFLAG_FRETVAL)
+                    ],
+                    functionOptionalParameterCount: -1)));
+
+        var metadata = reader.ReadMetadata(new VbaProjectReferenceCatalogIdentity(
+            "Library",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            1,
+            0,
+            0,
+            @"C:\TypeLibs\Library.tlb"));
+        var catalog = TypeLibReferenceCatalogBuilder.Build("Library", metadata);
+
+        var definition = Assert.Single(catalog.Definitions,
+            candidate => candidate.Name == "Collect");
+        var parameter = Assert.Single(Assert.IsAssignableFrom<
+            IReadOnlyList<VbaCallableParameter>>(definition.Signature?.Parameters));
+        Assert.Equal("Values", parameter.Name);
+        Assert.True(parameter.IsArray);
+        Assert.True(parameter.IsParamArray);
+    }
+
+    [Fact]
+    public void ReadMetadataKeepsAnOutOnlyParameterInTheVisibleOrderBeforeParamArray()
+    {
+        var reader = new ComTypeLibCatalogMetadataReader(
+            _ => CreateTypeLib(
+                "Library",
+                CreateTypeInfo(
+                    "Collector",
+                    TYPEKIND.TKIND_MODULE,
+                    functionNames: ["Collect", "Result", "Values"],
+                    functionParameters:
+                    [
+                        new(VarEnum.VT_I4, null, PARAMFLAG.PARAMFLAG_FOUT),
+                        new(
+                            VarEnum.VT_PTR,
+                            VarEnum.VT_SAFEARRAY,
+                            PARAMFLAG.PARAMFLAG_FIN,
+                            VarEnum.VT_VARIANT)
+                    ],
+                    functionOptionalParameterCount: -1)));
+
+        var metadata = reader.ReadMetadata(new VbaProjectReferenceCatalogIdentity(
+            "Library",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            1,
+            0,
+            0,
+            @"C:\TypeLibs\Library.tlb"));
+        var catalog = TypeLibReferenceCatalogBuilder.Build("Library", metadata);
+
+        var definition = Assert.Single(catalog.Definitions,
+            candidate => candidate.Name == "Collect");
+        var parameters = Assert.IsAssignableFrom<IReadOnlyList<VbaCallableParameter>>(
+            definition.Signature?.Parameters);
+        Assert.Equal(["Result", "Values"],
+            parameters.Select(parameter => parameter.Name));
+        Assert.False(parameters[0].IsParamArray);
+        Assert.True(parameters[1].IsParamArray);
+    }
+
+    [Fact]
     public void ReadMetadataPreservesFunctionReturnArrayShape()
     {
         var reader = new ComTypeLibCatalogMetadataReader(
@@ -1613,6 +2159,41 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
         return typeLib;
     }
 
+    private static VbaProjectReferenceCatalog CreateCallByNameCatalog()
+    {
+        const string referenceName = "Visual Basic For Applications";
+        var reader = new ComTypeLibCatalogMetadataReader(
+            _ => CreateTypeLib(
+                "VBA",
+                CreateTypeInfo(
+                    "Interaction",
+                    TYPEKIND.TKIND_MODULE,
+                    functionNames: ["CallByName", "Object", "ProcName", "CallType", "Args", "lcid"],
+                    functionParameters:
+                    [
+                        new(VarEnum.VT_DISPATCH, null, PARAMFLAG.PARAMFLAG_FIN),
+                        new(VarEnum.VT_BSTR, null, PARAMFLAG.PARAMFLAG_FIN),
+                        new(VarEnum.VT_I4, null, PARAMFLAG.PARAMFLAG_FIN),
+                        new(
+                            VarEnum.VT_PTR,
+                            VarEnum.VT_SAFEARRAY,
+                            PARAMFLAG.PARAMFLAG_FIN,
+                            VarEnum.VT_VARIANT),
+                        new(VarEnum.VT_I4, null,
+                            PARAMFLAG.PARAMFLAG_FIN | PARAMFLAG.PARAMFLAG_FLCID)
+                    ],
+                    functionOptionalParameterCount: -1,
+                    functionReturnVarType: VarEnum.VT_VARIANT)));
+        var metadata = reader.ReadMetadata(new VbaProjectReferenceCatalogIdentity(
+            referenceName,
+            "000204ef-0000-0000-c000-000000000046",
+            4,
+            2,
+            0,
+            @"C:\Windows\System32\VBE7.DLL"));
+        return TypeLibReferenceCatalogBuilder.Build(referenceName, metadata);
+    }
+
     private static VbaProjectReferenceCatalog CreateCatalogWithTypeMetadata(
         TypeLibCatalogTypeMetadata metadata)
         => new(
@@ -1650,7 +2231,9 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
         VarEnum functionParameterVarType = VarEnum.VT_I4,
         VarEnum? functionParameterElementVarType = null,
         PARAMFLAG functionParameterFlags = PARAMFLAG.PARAMFLAG_FIN,
-        FUNCKIND functionKind = FUNCKIND.FUNC_DISPATCH)
+        FUNCKIND functionKind = FUNCKIND.FUNC_DISPATCH,
+        IReadOnlyList<FunctionParameter>? functionParameters = null,
+        short functionOptionalParameterCount = 0)
     {
         var typeInfo = DispatchProxy.Create<ITypeInfo, TypeInfoProxy>();
         var proxy = (TypeInfoProxy)(object)typeInfo;
@@ -1672,12 +2255,20 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
         proxy.FunctionParameterElementVarType = functionParameterElementVarType;
         proxy.FunctionParameterFlags = functionParameterFlags;
         proxy.FunctionKind = functionKind;
+        proxy.FunctionParameters = functionParameters;
+        proxy.FunctionOptionalParameterCount = functionOptionalParameterCount;
         return typeInfo;
     }
 
     private sealed record ImplementedType(
         ITypeInfo TypeInfo,
         IMPLTYPEFLAGS Flags);
+
+    private sealed record FunctionParameter(
+        VarEnum VarType,
+        VarEnum? ElementVarType,
+        PARAMFLAG Flags,
+        VarEnum? NestedElementVarType = null);
 
     private class TypeLibProxy : DispatchProxy
     {
@@ -1743,6 +2334,10 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
 
         public PARAMFLAG FunctionParameterFlags { get; set; } = PARAMFLAG.PARAMFLAG_FIN;
 
+        public IReadOnlyList<FunctionParameter>? FunctionParameters { get; set; }
+
+        public short FunctionOptionalParameterCount { get; set; }
+
         protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
         {
             ArgumentNullException.ThrowIfNull(targetMethod);
@@ -1799,7 +2394,8 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
                     Marshal.FreeHGlobal((IntPtr)args[0]!);
                     return null;
                 case nameof(ITypeInfo.GetFuncDesc):
-                    var parameterCount = Math.Max(0, (FunctionNames?.Length ?? 1) - 1);
+                    var parameterCount = FunctionParameters?.Count
+                        ?? Math.Max(0, (FunctionNames?.Length ?? 1) - 1);
                     var elementSize = Marshal.SizeOf<ELEMDESC>();
                     var parameterPointer = parameterCount == 0
                             || HasMissingParameterDescriptors
@@ -1809,15 +2405,36 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
                         parameterPointer != IntPtr.Zero && index < parameterCount;
                         index++)
                     {
+                        var descriptor = FunctionParameters?[index];
                         var parameterType = new TYPEDESC
                         {
-                            vt = unchecked((short)FunctionParameterVarType)
+                            vt = unchecked((short)(descriptor?.VarType
+                                ?? FunctionParameterVarType))
                         };
-                        if (FunctionParameterElementVarType is { } parameterElementVarType)
+                        var parameterElementVarType = descriptor?.ElementVarType
+                            ?? FunctionParameterElementVarType;
+                        if (parameterElementVarType is not null)
                         {
+                            var nestedParameterType = new TYPEDESC
+                            {
+                                vt = unchecked((short)parameterElementVarType.Value)
+                            };
+                            if (descriptor?.NestedElementVarType is { } nestedElementVarType)
+                            {
+                                var nestedElementPointer = Marshal.AllocHGlobal(
+                                    Marshal.SizeOf<TYPEDESC>());
+                                Marshal.StructureToPtr(
+                                    new TYPEDESC
+                                    {
+                                        vt = unchecked((short)nestedElementVarType)
+                                    },
+                                    nestedElementPointer,
+                                    fDeleteOld: false);
+                                nestedParameterType.lpValue = nestedElementPointer;
+                            }
                             var parameterTypePointer = Marshal.AllocHGlobal(Marshal.SizeOf<TYPEDESC>());
                             Marshal.StructureToPtr(
-                                new TYPEDESC { vt = unchecked((short)parameterElementVarType) },
+                                nestedParameterType,
                                 parameterTypePointer,
                                 fDeleteOld: false);
                             parameterType.lpValue = parameterTypePointer;
@@ -1829,7 +2446,8 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
                             {
                                 paramdesc = new PARAMDESC
                                 {
-                                    wParamFlags = FunctionParameterFlags
+                                    wParamFlags = descriptor?.Flags
+                                        ?? FunctionParameterFlags
                                 }
                             }
                         };
@@ -1864,6 +2482,7 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
                         funckind = FunctionKind,
                         invkind = INVOKEKIND.INVOKE_FUNC,
                         cParams = unchecked((short)parameterCount),
+                        cParamsOpt = FunctionOptionalParameterCount,
                         wFuncFlags = unchecked((short)FunctionFlags),
                         elemdescFunc = new ELEMDESC
                         {
@@ -1882,20 +2501,12 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
                         {
                             var parameter = Marshal.PtrToStructure<ELEMDESC>(IntPtr.Add(
                                 releasedFunction.lprgelemdescParam, index * Marshal.SizeOf<ELEMDESC>()));
-                            if (parameter.tdesc.lpValue != IntPtr.Zero)
-                            {
-                                Marshal.FreeHGlobal(parameter.tdesc.lpValue);
-                            }
+                            FreeNestedTypeDescriptions(parameter.tdesc);
                         }
                         Marshal.FreeHGlobal(releasedFunction.lprgelemdescParam);
                     }
 
-                    if (releasedFunction.elemdescFunc.tdesc.lpValue
-                        != IntPtr.Zero)
-                    {
-                        Marshal.FreeHGlobal(
-                            releasedFunction.elemdescFunc.tdesc.lpValue);
-                    }
+                    FreeNestedTypeDescriptions(releasedFunction.elemdescFunc.tdesc);
 
                     Marshal.FreeHGlobal((IntPtr)args[0]!);
                     return null;
@@ -1921,6 +2532,19 @@ public sealed class ComTypeLibCatalogMetadataReaderTests
                 default:
                     throw new NotSupportedException(targetMethod.Name);
             }
+        }
+
+        private static void FreeNestedTypeDescriptions(TYPEDESC typeDescription)
+        {
+            if (typeDescription.lpValue == IntPtr.Zero)
+            {
+                return;
+            }
+
+            var nestedTypeDescription = Marshal.PtrToStructure<TYPEDESC>(
+                typeDescription.lpValue);
+            FreeNestedTypeDescriptions(nestedTypeDescription);
+            Marshal.FreeHGlobal(typeDescription.lpValue);
         }
     }
 }

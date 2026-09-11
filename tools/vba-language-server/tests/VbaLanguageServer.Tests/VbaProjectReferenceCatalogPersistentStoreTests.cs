@@ -13,7 +13,7 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
     public void TypeLibContractEvidenceUsesANewGeneratorVersion()
     {
         Assert.Equal(
-            "typelib-catalog-v14",
+            "typelib-catalog-v15",
             VbaProjectReferenceCatalogPersistentStore.CurrentGeneratorVersion);
     }
 
@@ -112,10 +112,83 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
     }
 
     [Fact]
-    public void PersistentStoreTreatsVersionThirteenCatalogsAsStale()
+    public void PersistentStoreRoundTripsParamArrayShapeInProjectedAndRawSignatures()
     {
         var cacheRoot = Directory.CreateTempSubdirectory(
-            "vba-ls-catalog-v13-").FullName;
+            "vba-ls-catalog-param-array-").FullName;
+        try
+        {
+            const string referenceName = "Generated Library";
+            var signature = new VbaCallableSignature(
+                "Sub Collect(Prefix As String, ParamArray Values() As Variant)",
+                [
+                    new VbaCallableParameter(
+                        "Prefix",
+                        TypeReference: new VbaTypeReference("String")),
+                    new VbaCallableParameter(
+                        "Values",
+                        TypeReference: new VbaTypeReference("Variant"),
+                        IsParamArray: true,
+                        IsArray: true)
+                ],
+                CallableKind: VbaCallableKind.Sub);
+            var catalog = TypeLibReferenceCatalogBuilder.Build(
+                referenceName,
+                new TypeLibCatalogMetadata(
+                    referenceName,
+                    [
+                        new TypeLibCatalogType(
+                            "Interaction",
+                            VbaSourceDefinitionKind.Module,
+                            Documentation: null,
+                            Members:
+                            [
+                                new TypeLibCatalogMember(
+                                    "Collect",
+                                    VbaSourceDefinitionKind.Procedure,
+                                    Documentation: null,
+                                    Signature: signature,
+                                    Metadata: new TypeLibCatalogCallableMetadata(
+                                        MemberId: 1,
+                                        FunctionFlags: 0))
+                            ],
+                            Metadata: new TypeLibCatalogTypeMetadata(
+                                TypeLibCatalogRawTypeKind.Other,
+                                TypeFlags: 0,
+                                ImplementedInterfaces: []))
+                    ]));
+            var store = new VbaProjectReferenceCatalogPersistentStore(cacheRoot);
+            store.Save(new VbaProjectReferenceCatalogPersistentEntry(
+                CreateIdentity(referenceName),
+                catalog));
+
+            var load = store.Load(referenceName);
+
+            Assert.Equal(VbaProjectReferenceCatalogPersistentLoadStatus.Current, load.Status);
+            var entry = Assert.IsType<VbaProjectReferenceCatalogPersistentEntry>(load.Entry);
+            var definition = Assert.Single(entry.Catalog.Definitions,
+                candidate => candidate.Name == "Collect");
+            var rawMember = Assert.Single(Assert.Single(entry.Catalog.TypeLibTypes!).Members);
+            foreach (var loadedSignature in new[] { definition.Signature, rawMember.Signature })
+            {
+                Assert.NotNull(loadedSignature);
+                var parameter = Assert.Single(loadedSignature.Parameters,
+                    candidate => candidate.Name == "Values");
+                Assert.True(parameter.IsParamArray);
+                Assert.True(parameter.IsArray);
+            }
+        }
+        finally
+        {
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void PersistentStoreTreatsVersionFourteenCatalogsAsStale()
+    {
+        var cacheRoot = Directory.CreateTempSubdirectory(
+            "vba-ls-catalog-v14-").FullName;
         try
         {
             const string referenceName = "Generated Library";
@@ -129,18 +202,18 @@ public sealed class VbaProjectReferenceCatalogPersistentStoreTests
                 "catalogs",
                 VbaProjectReferenceCatalogPersistentStore.CreateCatalogEntryKey(identity));
             var entryJson = JsonNode.Parse(File.ReadAllText(entryPath))!.AsObject();
-            entryJson["generatorVersion"] = "typelib-catalog-v13";
+            entryJson["generatorVersion"] = "typelib-catalog-v14";
             File.WriteAllText(entryPath, entryJson.ToJsonString());
             var indexPath = store.GetReferenceIndexPath(referenceName);
             var indexJson = JsonNode.Parse(File.ReadAllText(indexPath))!.AsObject();
-            indexJson["generatorVersion"] = "typelib-catalog-v13";
+            indexJson["generatorVersion"] = "typelib-catalog-v14";
             File.WriteAllText(indexPath, indexJson.ToJsonString());
 
             var load = store.Load(referenceName);
 
             Assert.Equal(VbaProjectReferenceCatalogPersistentLoadStatus.Stale, load.Status);
             Assert.NotNull(load.Entry);
-            Assert.Contains("typelib-catalog-v13", load.WarningMessage, StringComparison.Ordinal);
+            Assert.Contains("typelib-catalog-v14", load.WarningMessage, StringComparison.Ordinal);
         }
         finally
         {
