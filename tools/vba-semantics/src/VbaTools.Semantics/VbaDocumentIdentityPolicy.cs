@@ -6,6 +6,7 @@ internal static class VbaDocumentIdentityPolicy
         string uri,
         out VbaDocumentIdentity identity)
     {
+        VbaSemanticWorkObservation.RecordDocumentIdentification();
         identity = default;
         if (string.IsNullOrWhiteSpace(uri)
             || LooksLikeLocalPath(uri)

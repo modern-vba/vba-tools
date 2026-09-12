@@ -403,7 +403,7 @@ internal sealed class VbaProjectSemanticResolution
                 && diagnostic.Range == raiseEventKeyword.Range);
     }
 
-    internal static VbaResolvedNameTarget? RetargetConditionalPropertyAccessor(
+    internal VbaResolvedNameTarget? RetargetConditionalPropertyAccessor(
         VbaSourceDocument currentDocument,
         VbaCompletionExpectation propertyUsageExpectation,
         bool isCurrentResultTarget,
@@ -430,7 +430,7 @@ internal sealed class VbaProjectSemanticResolution
             {
                 Target = accessorTarget,
                 Definitions = accessorTarget.PhysicalDefinitions
-                    .Where(definition => VbaDocumentIdentityPolicy.SameDocument(
+                    .Where(definition => nameResolution.SameDocument(
                             currentDocument.Uri,
                             definition.Uri)
                         || definition.Visibility.IsProjectVisible())
@@ -772,7 +772,7 @@ internal sealed class VbaProjectSemanticResolution
         foreach (var variable in variableTarget.PhysicalDefinitions.Where(definition =>
             definition.Kind == VbaSourceDefinitionKind.Variable
             && definition.ParentProcedureName is null
-            && VbaDocumentIdentityPolicy.SameDocument(
+            && nameResolution.SameDocument(
                 definition.Uri,
                 currentDocument.Uri)))
         {

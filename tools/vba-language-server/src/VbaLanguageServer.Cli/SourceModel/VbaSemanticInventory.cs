@@ -64,7 +64,7 @@ public sealed class VbaSemanticInventory
     /// </summary>
     internal long EstimateRetainedAnalysisBytes()
     {
-        long bytes = 16 * 1024;
+        long bytes = 16 * 1024 + definitionCandidates.EstimateAdmittedIdentityBytes();
         foreach (var document in sourceDocuments)
         {
             if (document.SyntaxTree is not { } tree)

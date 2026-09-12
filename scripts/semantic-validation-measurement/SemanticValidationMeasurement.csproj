@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="VbaTools.Semantics">
+      <HintPath>$(SemanticAssemblyDirectory)/VbaTools.Semantics.dll</HintPath>
+    </Reference>
+    <Reference Include="VbaTools.Syntax">
+      <HintPath>$(SemanticAssemblyDirectory)/VbaTools.Syntax.dll</HintPath>
+    </Reference>
+    <AssemblyMetadata Include="BuildSdkVersion" Value="$(NETCoreSdkVersion)" />
+  </ItemGroup>
+  <Target Name="RequireMeasuredAssemblies" BeforeTargets="ResolveReferences">
+    <Error Condition="'$(SemanticAssemblyDirectory)' == ''" Text="Set SemanticAssemblyDirectory to the frozen baseline or candidate assembly directory." />
+    <Error Condition="!Exists('$(SemanticAssemblyDirectory)/VbaTools.Semantics.dll') Or !Exists('$(SemanticAssemblyDirectory)/VbaTools.Syntax.dll')" Text="The measured directory must contain VbaTools.Semantics.dll and VbaTools.Syntax.dll." />
+  </Target>
+</Project>

@@ -447,6 +447,7 @@ internal sealed class VbaConditionalDeclarationFamilyIndex
 /// </summary>
 internal sealed class VbaSemanticDiagnosticIndex
 {
+    private readonly VbaNameCandidateInventory definitionCandidates;
     private readonly IReadOnlyDictionary<
         VbaDocumentIdentity,
         IReadOnlyList<VbaSemanticDiagnostic>> diagnosticsByIdentity;
@@ -457,6 +458,7 @@ internal sealed class VbaSemanticDiagnosticIndex
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        definitionCandidates = semanticResolution.DefinitionCandidates;
         var diagnostics = new Dictionary<
             VbaDocumentIdentity,
             List<VbaSemanticDiagnostic>>();
@@ -762,14 +764,14 @@ internal sealed class VbaSemanticDiagnosticIndex
     }
 
     public IReadOnlyList<VbaSemanticDiagnostic> GetDiagnostics(string uri)
-        => VbaDocumentIdentityPolicy.TryIdentifyDocument(
+        => definitionCandidates.TryIdentifyDocument(
                 uri,
                 out var identity)
             && diagnosticsByIdentity.TryGetValue(identity, out var diagnostics)
             ? diagnostics
             : [];
 
-    private static void AddRaiseEventTargetDiagnostic(
+    private void AddRaiseEventTargetDiagnostic(
         IDictionary<
             VbaDocumentIdentity,
             List<VbaSemanticDiagnostic>> diagnostics,
@@ -785,14 +787,14 @@ internal sealed class VbaSemanticDiagnosticIndex
                 range));
     }
 
-    private static void AddProjectDiagnostic(
+    private void AddProjectDiagnostic(
         IDictionary<
             VbaDocumentIdentity,
             List<VbaSemanticDiagnostic>> diagnostics,
         string uri,
         VbaSemanticDiagnostic diagnostic)
     {
-        if (!VbaDocumentIdentityPolicy.TryIdentifyDocument(
+        if (!definitionCandidates.TryIdentifyDocument(
                 uri,
                 out var identity))
         {

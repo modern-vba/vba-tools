@@ -36,6 +36,17 @@ Editor-query handlers never request that diagnostic index as a condition of
 completion, hover, signature help, symbols, definition, references, rename,
 formatting, or semantic-token execution.
 
+The shared name-candidate inventory admits each original source/reference URI
+spelling once and retains its typed document identity alongside presentation
+data. Name, member, type, call, and diagnostic lookups reuse these admissions.
+Raw spelling lookup is ordinal-exact; typed identity equality, unresolved-file
+semantics, and the distinction from filesystem ownership remain unchanged.
+Invalid admissions retain failure, not a default identity that can compare equal.
+An unknown query spelling may be identified for that lookup but never enters
+the retained map. The map is constructor-complete, read-only for concurrent
+queries, shares the inventory lifecycle, and is explicitly charged to retained
+capacity. This is not a process-global URI cache or a second identity policy.
+
 The inventory's name-resolution service owns the immutable, lazily published
 `EffectiveDeclaredType` results described in ADR 0045. One result per physical
 declaration and parameter ordinal supplies all semantic and presentation
