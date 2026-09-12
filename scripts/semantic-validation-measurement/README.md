@@ -49,9 +49,16 @@ qualification, unqualified cross-module lookup, a private source declaration
 shadowing a same-name reference declaration, global reference calls, qualified
 reference calls, and calls through a reference-class variable. The synthetic
 Automation catalog includes explicit parameter direction and ABI evidence.
-`--calls-per-document` sets the **number of six-call groups per caller**; the
-report records both the group size and group count. Increase this value without
-changing document/candidate cardinality. Four deliberate missing-required-
+`--calls-per-document` sets the **split-layout number of six-call groups per
+caller**; the total is always four times that value. The optional `--layout`
+accepts `split` (the unchanged default) or `concentrated`. With a value of 128,
+split assigns `[128,128,128,128]` groups to the four callers, while concentrated
+assigns `[512,0,0,0]`. All eight documents and their declarations remain present;
+total source characters/lines, call groups, reference metadata and resolution
+queries remain fixed. The report's `callGroupsByCaller` gives the actual
+distribution; `callGroupsPerDocument` retains the configured split-layout value.
+Increase the configured group count without changing document/candidate
+cardinality. Four deliberate missing-required-
 argument calls must remain the only semantic findings, at specified source lines.
 
 The complete generated text is parsed once before trials. Each timed public
@@ -72,6 +79,15 @@ visibility, shadowing and unresolved outcomes are checked after timing every
 result. The recorded diagnostic and resolution fingerprints include original
 locations, allowing exact cross-variant comparison.
 
+For logical-token indexing work (#420), the `Resolve` phase is an independent
+name-resolution control, **not** a targeted call/token-range timing: that public
+API does not traverse complete-call context or argument-token ranges. The
+targeted examined-token/range-lookup work is verified by deterministic regressions
+through public `Analyze`; the harness supplies full semantic-analysis timings.
+Any sampled helper timings are separate, explicitly instrumented evidence.
+Do not expose internal helpers or add a product dependency to manufacture a
+target-only benchmark interface.
+
 All four trials run in one process: one complete excluded warm-up followed by
 three measured trials. Every trial creates a new semantic analysis and new
 resolution service; there is no process-global harness cache. Resolver
@@ -88,6 +104,18 @@ and larger `--calls-per-document` and `--lookup-repetitions` values. Timing is
 supplemental evidence: deterministic normalization/work-count regression belongs
 in the real shared-resolution tests, not in a wall-clock threshold here.
 
+For the concentration control, run both layouts against both frozen variants
+using the same group/repetition counts. Compare matching layout fingerprints
+across variants, not across layouts: moving calls intentionally changes source
+positions and thus source, definition-location and diagnostic fingerprints.
+For #420 the baseline is the completed #419 state, not the pre-#419 executable.
+The unchanged source trees are reused between trials. The #420 implementation
+owns its index in each newly created candidate inventory, not on the syntax tree,
+so every timed Analyze includes fresh token-index preparation. If a future
+implementation retains an index on the reused syntax trees, this becomes a
+warm-index measurement and must not be presented as cold preparation. Fresh
+ordinary workbook Builds supply the separate cold end-to-end measurement.
+
 ## Smoke verification
 
 After building the harness, run its tiny public-process contract test:
@@ -97,8 +125,10 @@ $env:VBA_SEMANTIC_MEASUREMENT_ASSEMBLY = Join-Path $baselineHarness 'SemanticVal
 node --test --test-isolation=none scripts/semantic-validation-measurement/smoke.test.mjs
 ```
 
-The smoke invocation uses two call groups and two lookup repetitions, still
+The smoke invocations use a split-layout group budget of two and two lookup repetitions, still
 retaining one warm-up and three measured trials. It checks successful expected
 findings, resolution counts, stable fingerprints, loaded DLL hashes and report
-shape. Its timings are not performance evidence. The test requires ordinary
+shape. The concentration case checks the changed distribution with the same
+total workload, documents, catalogs and checked outcomes. Its timings are not
+performance evidence. The test requires ordinary
 local child-process launch permission; it never opts into Excel integration.

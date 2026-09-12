@@ -14,7 +14,7 @@ var jsonOptions = new JsonSerializerOptions
     WriteIndented = true
 };
 var options = MeasurementOptions.Parse(args);
-var corpus = GeneratedCorpus.Create(options.CallsPerDocument);
+var corpus = GeneratedCorpus.Create(options.CallsPerDocument, options.Layout);
 var syntaxStarted = Stopwatch.GetTimestamp();
 var syntaxTrees = corpus.Sources.Select(source =>
     VbaSyntaxTree.ParseModule(source.Uri, source.Text)).ToArray();
@@ -65,9 +65,11 @@ Console.WriteLine(JsonSerializer.Serialize(new
     corpus = new
     {
         name = "fixed-eight-document-source-and-reference-lookup-v1",
+        options.Layout,
         documentCount = corpus.Sources.Length,
         options.CallsPerDocument,
         callGroupsPerDocument = options.CallsPerDocument,
+        corpus.CallGroupsByCaller,
         explicitCallsPerGroup = 6,
         negativeSentinelCalls = 4,
         sourceCharacters = corpus.Sources.Sum(source => source.Text.Length),
@@ -188,7 +190,7 @@ sealed class Trial
     public object? Failure { get; set; }
 }
 
-sealed record MeasurementOptions(string Variant, string Revision, int CallsPerDocument, int LookupRepetitions)
+sealed record MeasurementOptions(string Variant, string Revision, int CallsPerDocument, int LookupRepetitions, string Layout)
 {
     public static MeasurementOptions Parse(string[] arguments)
     {
@@ -196,13 +198,16 @@ sealed record MeasurementOptions(string Variant, string Revision, int CallsPerDo
         for (var index = 0; index < arguments.Length; index += 2)
         {
             if (index + 1 >= arguments.Length
-                || arguments[index] is not ("--variant" or "--revision" or "--calls-per-document" or "--lookup-repetitions")
+                || arguments[index] is not ("--variant" or "--revision" or "--calls-per-document" or "--lookup-repetitions" or "--layout")
                 || !values.TryAdd(arguments[index], arguments[index + 1]))
-                throw new ArgumentException("Expected unique --variant, --revision, --calls-per-document, or --lookup-repetitions value pairs.");
+                throw new ArgumentException("Expected unique --variant, --revision, --calls-per-document, --lookup-repetitions, or --layout value pairs.");
         }
         var variant = values.GetValueOrDefault("--variant") ?? "unspecified";
         var revision = values.GetValueOrDefault("--revision") ?? "not-supplied";
-        return new(variant, revision, ReadPositive("--calls-per-document", 128), ReadPositive("--lookup-repetitions", 2000));
+        var layout = values.GetValueOrDefault("--layout") ?? "split";
+        if (layout is not ("split" or "concentrated"))
+            throw new ArgumentException("--layout must be split or concentrated.");
+        return new(variant, revision, ReadPositive("--calls-per-document", 128), ReadPositive("--lookup-repetitions", 2000), layout);
 
         int ReadPositive(string name, int defaultValue)
         {
@@ -220,16 +225,19 @@ sealed record ResolutionQuery(string Uri, string? Qualifier, string Identifier,
 
 sealed record GeneratedCorpus(SourceFixture[] Sources, VbaSourceDocument[] ResolutionDocuments,
     VbaProjectReferenceCatalog Catalog, ResolutionQuery[] Queries,
-    IReadOnlyDictionary<string, int> ExpectedDiagnosticLines)
+    IReadOnlyDictionary<string, int> ExpectedDiagnosticLines, int[] CallGroupsByCaller)
 {
     public const string ReferenceName = "Generated Automation Reference";
 
-    public static GeneratedCorpus Create(int callGroups)
+    public static GeneratedCorpus Create(int callGroups, string layout)
     {
         var sources = new List<SourceFixture>();
         var documents = new List<VbaSourceDocument>();
         var queries = new List<ResolutionQuery>();
         var expectedLines = new Dictionary<string, int>(StringComparer.Ordinal);
+        int[] callGroupsByCaller = layout == "concentrated"
+            ? [checked(callGroups * 4), 0, 0, 0]
+            : [callGroups, callGroups, callGroups, callGroups];
         for (var index = 0; index < 4; index++)
         {
             var name = $"Shared{index}";
@@ -252,7 +260,7 @@ sealed record GeneratedCorpus(SourceFixture[] Sources, VbaSourceDocument[] Resol
                 $"Attribute VB_Name = \"{name}\"", "Option Explicit", $"Public Sub Run{index}()",
                 "    Dim value As Long", "    Dim external As RefLib.Widget"
             };
-            for (var group = 0; group < callGroups; group++)
+            for (var group = 0; group < callGroupsByCaller[index]; group++)
                 lines.AddRange([
                     "    Call Shared0.Ping0(value)", "    Call Ping1(value)",
                     "    Call Shadowed(value)", "    Call ReferenceTouch(value)",
@@ -283,7 +291,7 @@ sealed record GeneratedCorpus(SourceFixture[] Sources, VbaSourceDocument[] Resol
                 new(uri, "Shared0", "Hidden", null)
             ]);
         }
-        return new(sources.ToArray(), documents.ToArray(), CreateCatalog(), queries.ToArray(), expectedLines);
+        return new(sources.ToArray(), documents.ToArray(), CreateCatalog(), queries.ToArray(), expectedLines, callGroupsByCaller);
     }
 
     private static string SourceUri(string name)
