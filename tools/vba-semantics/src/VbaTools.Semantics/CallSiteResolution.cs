@@ -740,7 +740,7 @@ internal sealed class VbaCallSiteResolution
         if (resultOwner is not null)
         {
             var owner = target.PhysicalDefinitions.SingleOrDefault(definition =>
-                VbaDocumentIdentityPolicy.SameDocument(definition.Uri, currentDocument.Uri)
+                nameResolution.SameDocument(definition.Uri, currentDocument.Uri)
                 && definition.Range.Start.Line == resultOwner.Range.Start.Line
                 && definition.Range.Start.Character == resultOwner.Range.Start.Character);
             if (owner is not null)
@@ -2121,7 +2121,7 @@ internal sealed class VbaCallSiteResolution
         return true;
     }
 
-    private static VbaCallArgumentAvailability AnalyzeConditionalArguments(
+    private VbaCallArgumentAvailability AnalyzeConditionalArguments(
         VbaSourceDocument currentDocument,
         VbaResolvedNameTarget target,
         VbaCallSiteSyntax callSite)
@@ -2638,23 +2638,23 @@ internal sealed class VbaCallSiteResolution
             ContextCompatibility: mapping.ContextCompatibility);
     }
 
-    private static IEnumerable<VbaSourceDefinition> GetUseSiteDefinitions(
+    private IEnumerable<VbaSourceDefinition> GetUseSiteDefinitions(
         VbaSourceDocument currentDocument,
         VbaResolvedNameTarget target)
         => target.PhysicalDefinitions.Where(definition =>
-            VbaDocumentIdentityPolicy.SameDocument(
+            nameResolution.SameDocument(
                 definition.Uri,
                 currentDocument.Uri)
             || definition.Visibility.IsProjectVisible());
 
-    private static IEnumerable<VbaSourceDefinition> GetCallableUseSiteDefinitions(
+    private IEnumerable<VbaSourceDefinition> GetCallableUseSiteDefinitions(
         VbaSourceDocument currentDocument,
         VbaResolvedNameTarget target)
         => (target is VbaPropertyNameTarget propertyTarget
                 ? propertyTarget.Property.PropertyDefinitions
                 : target.PhysicalDefinitions)
             .Where(definition =>
-                VbaDocumentIdentityPolicy.SameDocument(
+                nameResolution.SameDocument(
                     definition.Uri,
                     currentDocument.Uri)
                 || definition.Visibility.IsProjectVisible());

@@ -433,14 +433,14 @@ internal sealed class VbaTypeResolution
         return true;
     }
 
-    private static IEnumerable<VbaSourceDefinition> GetReadableDefinitions(
+    private IEnumerable<VbaSourceDefinition> GetReadableDefinitions(
         VbaSourceDocument currentDocument,
         VbaResolvedNameTarget target)
         => (target is VbaPropertyNameTarget propertyTarget
                 ? propertyTarget.Property.PropertyDefinitions
                 : target.PhysicalDefinitions)
             .Where(definition =>
-                VbaDocumentIdentityPolicy.SameDocument(
+                nameResolution.SameDocument(
                     definition.Uri,
                     currentDocument.Uri)
                 || definition.Visibility.IsProjectVisible())
@@ -711,7 +711,7 @@ internal sealed class VbaTypeResolution
         foreach (var definition in definitions)
         {
             var signature = definition.Signature;
-            if (!VbaDocumentIdentityPolicy.SameDocument(
+            if (!nameResolution.SameDocument(
                     definition.Uri,
                     currentDocument.Uri)
                     && !definition.Visibility.IsProjectVisible()

@@ -353,7 +353,7 @@ internal sealed class VbaSemanticResolution
             VbaCompletionExpectation.ImplementsType =>
                 CreateDefinitionCandidates(GetTypeCompletionDefinitions(currentDocument, typeQualifier)
                     .Where(candidate => candidate.Definition.Kind == VbaSourceDefinitionKind.Class)
-                    .Where(candidate => !VbaProjectIdentityModel.SameDocument(
+                    .Where(candidate => !nameResolution.SameDocument(
                         candidate.Definition.Uri,
                         currentDocument.Uri))),
             VbaCompletionExpectation.CallArgument =>
@@ -529,13 +529,13 @@ internal sealed class VbaSemanticResolution
         int beforeOffset)
         => VbaProjectSemanticResolution.HasRaiseEventPlacementDiagnostic(syntaxTree, beforeOffset);
 
-    private static VbaResolvedNameTarget? RetargetConditionalPropertyAccessor(
+    private VbaResolvedNameTarget? RetargetConditionalPropertyAccessor(
         VbaSourceDocument currentDocument,
         VbaCompletionExpectation propertyUsageExpectation,
         bool isCurrentResultTarget,
         VbaPropertyAccessorKind? requestedWriteAccessorKind,
         VbaResolvedNameTarget? target)
-        => VbaProjectSemanticResolution.RetargetConditionalPropertyAccessor(currentDocument, propertyUsageExpectation, isCurrentResultTarget, requestedWriteAccessorKind, target);
+        => core.RetargetConditionalPropertyAccessor(currentDocument, propertyUsageExpectation, isCurrentResultTarget, requestedWriteAccessorKind, target);
 
     private static Func<VbaSourceDefinition, bool>? GetPropertyUsageFilter(
         VbaCompletionExpectation expectation,
@@ -1151,7 +1151,7 @@ internal sealed class VbaSemanticResolution
         }
 
         return physicalDefinitions.Where(variant =>
-            VbaProjectIdentityModel.SameDocument(
+            nameResolution.SameDocument(
                 variant.Uri,
                 currentDocument.Uri)
             || variant.Visibility.IsProjectVisible());
