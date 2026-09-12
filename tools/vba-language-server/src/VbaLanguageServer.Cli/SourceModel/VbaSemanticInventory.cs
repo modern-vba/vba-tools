@@ -64,7 +64,11 @@ public sealed class VbaSemanticInventory
     /// </summary>
     internal long EstimateRetainedAnalysisBytes()
     {
+        var tokenIndexBytes = definitionCandidates.EstimateTokenRangeIndexBytes();
+        if (tokenIndexBytes == long.MaxValue) return long.MaxValue;
         long bytes = 16 * 1024 + definitionCandidates.EstimateAdmittedIdentityBytes();
+        if (tokenIndexBytes > long.MaxValue - bytes) return long.MaxValue;
+        bytes += tokenIndexBytes;
         foreach (var document in sourceDocuments)
         {
             if (document.SyntaxTree is not { } tree)

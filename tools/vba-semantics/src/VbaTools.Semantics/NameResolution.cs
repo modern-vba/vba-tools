@@ -621,6 +621,11 @@ public sealed class VbaNameResolutionService
     internal VbaSourceDocument? FindDocument(string uri)
         => candidates.FindDocument(uri);
 
+    internal VbaLogicalTokenIndex GetTokenRangeIndex(
+        VbaSourceDocument document,
+        CancellationToken cancellationToken = default)
+        => candidates.GetTokenRangeIndex(document, cancellationToken);
+
     internal IReadOnlyList<VbaSourceDefinition> GetLogicalDefinitions(
         VbaSourceDefinition definition)
         => candidates.ConditionalFamilies.GetLogicalDefinitions(definition);
@@ -1150,6 +1155,7 @@ public sealed class VbaNameResolutionService
 /// </summary>
 internal sealed class VbaNameCandidateInventory
 {
+    private readonly Dictionary<VbaSourceDocument, VbaLogicalTokenIndexOwner> tokenIndexes;
     private readonly Dictionary<string, VbaDocumentIdentity?> admittedIdentitiesByUri;
     private readonly VbaProjectReferenceCatalogSet referenceCatalogs;
     private readonly IReadOnlyDictionary<string, VbaProjectReferenceCatalogSource>
@@ -1177,6 +1183,13 @@ internal sealed class VbaNameCandidateInventory
         IReadOnlyDictionary<string, VbaProjectReferenceCatalogSource>?
             referenceCatalogSources = null)
     {
+        // Associate lexical evidence with the exact admitted revision, not URI or record value equality.
+        tokenIndexes = new Dictionary<VbaSourceDocument, VbaLogicalTokenIndexOwner>(
+            ReferenceEqualityComparer.Instance);
+        foreach (var document in documents)
+        {
+            tokenIndexes.TryAdd(document, new VbaLogicalTokenIndexOwner(document));
+        }
         // Only admitted input spellings are retained. Unknown query spellings never grow this map.
         admittedIdentitiesByUri = documents.Select(document => document.Uri)
             .Concat(documents.SelectMany(document => document.Definitions).Select(definition => definition.Uri))
@@ -1280,6 +1293,25 @@ internal sealed class VbaNameCandidateInventory
         }
 
         return VbaDocumentIdentityPolicy.TryIdentifyDocument(uri!, out identity);
+    }
+
+    internal VbaLogicalTokenIndex GetTokenRangeIndex(
+        VbaSourceDocument document,
+        CancellationToken cancellationToken = default)
+        => (tokenIndexes.TryGetValue(document, out var owner)
+                ? owner : new VbaLogicalTokenIndexOwner(document))
+            .Get(cancellationToken);
+
+    internal long EstimateTokenRangeIndexBytes()
+    {
+        long bytes = 256;
+        foreach (var owner in tokenIndexes.Values)
+        {
+            var retained = owner.EstimateRetainedBytes();
+            if (retained == long.MaxValue || bytes > long.MaxValue - retained) return long.MaxValue;
+            bytes += retained;
+        }
+        return bytes;
     }
 
     public VbaSourceDocument? FindDocument(string uri)

@@ -649,6 +649,8 @@ internal sealed class VbaSemanticDiagnosticIndex
                         Details: compatibility.CreateDiagnosticDetails()));
             }
 
+            if (syntaxTree.Module.ArgumentLists.Count > 0)
+                semanticResolution.CallSiteResolution.PrepareTokenRanges(document, cancellationToken);
             foreach (var argumentList in syntaxTree.Module.ArgumentLists)
             {
                 cancellationToken.ThrowIfCancellationRequested();

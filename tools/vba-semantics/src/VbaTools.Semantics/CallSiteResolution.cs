@@ -49,6 +49,9 @@ internal sealed class VbaCallSiteResolution
         this.interfaceSemantics = interfaceSemantics ?? new VbaInterfaceSemanticModel(nameResolution);
     }
 
+    internal void PrepareTokenRanges(VbaSourceDocument document, CancellationToken cancellationToken)
+        => nameResolution.GetTokenRangeIndex(document, cancellationToken);
+
     public VbaSignatureHelp? GetSignatureHelp(
         VbaSourceDocument currentDocument,
         int line,
@@ -861,14 +864,7 @@ internal sealed class VbaCallSiteResolution
         var syntaxTree = currentDocument.SyntaxTree
             ?? VbaSyntaxTree.ParseModule(currentDocument.Uri, currentDocument.Text);
         var range = argument.ValueRange ?? argument.Range;
-        var tokens = syntaxTree.TokenStream.Tokens
-            .Where(token => range.Start.Offset <= token.Range.Start.Offset
-                && token.Range.End.Offset <= range.End.Offset)
-            .Where(token => token.Kind is not VbaTokenKind.Whitespace
-                and not VbaTokenKind.Comment
-                and not VbaTokenKind.NewLine
-                and not VbaTokenKind.LineContinuation)
-            .ToArray();
+        var tokens = nameResolution.GetTokenRangeIndex(currentDocument).Within(range);
         var isOuterParenthesized = HasCompleteOuterParenthesisPair(tokens);
         while (HasCompleteOuterParenthesisPair(tokens))
         {
@@ -1016,14 +1012,7 @@ internal sealed class VbaCallSiteResolution
         var syntaxTree = currentDocument.SyntaxTree
             ?? VbaSyntaxTree.ParseModule(currentDocument.Uri, currentDocument.Text);
         var range = argument.ValueRange ?? argument.Range;
-        var tokens = syntaxTree.TokenStream.Tokens
-            .Where(token => range.Start.Offset <= token.Range.Start.Offset
-                && token.Range.End.Offset <= range.End.Offset)
-            .Where(token => token.Kind is not VbaTokenKind.Whitespace
-                and not VbaTokenKind.Comment
-                and not VbaTokenKind.NewLine
-                and not VbaTokenKind.LineContinuation)
-            .ToArray();
+        var tokens = nameResolution.GetTokenRangeIndex(currentDocument).Within(range);
         if (isOuterParenthesized)
         {
             while (HasCompleteOuterParenthesisPair(tokens))
@@ -1191,14 +1180,7 @@ internal sealed class VbaCallSiteResolution
         var syntaxTree = currentDocument.SyntaxTree
             ?? VbaSyntaxTree.ParseModule(currentDocument.Uri, currentDocument.Text);
         var range = argument.ValueRange ?? argument.Range;
-        var tokens = syntaxTree.TokenStream.Tokens
-            .Where(token => range.Start.Offset <= token.Range.Start.Offset
-                && token.Range.End.Offset <= range.End.Offset)
-            .Where(token => token.Kind is not VbaTokenKind.Whitespace
-                and not VbaTokenKind.Comment
-                and not VbaTokenKind.NewLine
-                and not VbaTokenKind.LineContinuation)
-            .ToArray();
+        var tokens = nameResolution.GetTokenRangeIndex(currentDocument).Within(range);
         if (isOuterParenthesized
             && tokens.Length >= 2
             && tokens[0].Text == "("
@@ -1883,14 +1865,12 @@ internal sealed class VbaCallSiteResolution
         };
     }
 
-    private static VbaCallContext GetCallContext(
+    private VbaCallContext GetCallContext(
         VbaSourceDocument currentDocument,
         VbaCallSiteSyntax callSite)
     {
-        var syntaxTree = currentDocument.SyntaxTree
-            ?? VbaSyntaxTree.ParseModule(currentDocument.Uri, currentDocument.Text);
         var prefix = GetLogicalTokensBefore(
-            syntaxTree.TokenStream.Tokens,
+            currentDocument,
             callSite.Callee.Range.Start.Offset);
         if (prefix.LastOrDefault()?.Text.Equals(
                 "RaiseEvent",
@@ -1899,7 +1879,7 @@ internal sealed class VbaCallSiteResolution
             return VbaCallContext.RaiseEvent;
         }
 
-        if (IsIntermediateReceiverCall(syntaxTree, callSite))
+        if (IsIntermediateReceiverCall(currentDocument, callSite))
         {
             return VbaCallContext.ValueRead;
         }
@@ -1944,8 +1924,8 @@ internal sealed class VbaCallSiteResolution
         return VbaCallContext.ValueRead;
     }
 
-    private static bool IsIntermediateReceiverCall(
-        VbaSyntaxTree syntaxTree,
+    private bool IsIntermediateReceiverCall(
+        VbaSourceDocument currentDocument,
         VbaCallSiteSyntax callSite)
     {
         if (callSite.Form != VbaCallSyntaxForm.Parenthesized || callSite.IsIncomplete)
@@ -1954,7 +1934,7 @@ internal sealed class VbaCallSiteResolution
         }
 
         var tokens = GetLogicalTokensAfter(
-            syntaxTree.TokenStream.Tokens, callSite.Callee.Range.End.Offset);
+            currentDocument, callSite.Callee.Range.End.Offset);
         if (tokens.Count == 0 || tokens[0].Text != "(")
         {
             return false;
@@ -2259,7 +2239,7 @@ internal sealed class VbaCallSiteResolution
         return true;
     }
 
-    private static bool IsPropertyAssignmentTargetCall(
+    private bool IsPropertyAssignmentTargetCall(
         VbaSourceDocument currentDocument,
         VbaCallSiteSyntax callSite)
     {
@@ -2273,10 +2253,8 @@ internal sealed class VbaCallSiteResolution
             return false;
         }
 
-        var syntaxTree = currentDocument.SyntaxTree
-            ?? VbaSyntaxTree.ParseModule(currentDocument.Uri, currentDocument.Text);
         var prefix = GetLogicalTokensBefore(
-            syntaxTree.TokenStream.Tokens,
+            currentDocument,
             callSite.Callee.Range.Start.Offset);
         if (prefix.Count == 1
             && (prefix[0].Text.Equals("Set", StringComparison.OrdinalIgnoreCase)
@@ -2286,14 +2264,14 @@ internal sealed class VbaCallSiteResolution
         }
 
         if (!HasAssignmentTargetPrefix(
-                syntaxTree.TokenStream.Tokens,
+                currentDocument,
                 callSite.Callee.Range.Start.Offset))
         {
             return false;
         }
 
         var tokens = GetLogicalTokensAfter(
-            syntaxTree.TokenStream.Tokens,
+            currentDocument,
             callSite.Callee.Range.End.Offset);
         if (tokens.Count == 0
             || tokens[0].Kind != VbaTokenKind.Punctuation
@@ -2334,11 +2312,11 @@ internal sealed class VbaCallSiteResolution
         return false;
     }
 
-    private static bool HasAssignmentTargetPrefix(
-        IReadOnlyList<VbaToken> tokens,
+    private bool HasAssignmentTargetPrefix(
+        VbaSourceDocument document,
         int offset)
     {
-        var prefix = GetLogicalTokensBefore(tokens, offset);
+        var prefix = GetLogicalTokensBefore(document, offset);
         return prefix.Count == 0
             || (prefix.Count == 1
                 && prefix[0].Kind == VbaTokenKind.Keyword
@@ -2348,126 +2326,11 @@ internal sealed class VbaCallSiteResolution
                 && prefix[0].Text.Equals("Set", StringComparison.OrdinalIgnoreCase));
     }
 
-    private static IReadOnlyList<VbaToken> GetLogicalTokensBefore(
-        IReadOnlyList<VbaToken> tokens,
-        int offset)
-    {
-        var prefix = new List<VbaToken>();
-        var continuesOnNextLine = false;
-        var parenthesisDepth = 0;
-        foreach (var token in tokens)
-        {
-            if (token.Range.Start.Offset >= offset)
-            {
-                break;
-            }
+    private IReadOnlyList<VbaToken> GetLogicalTokensBefore(VbaSourceDocument document, int offset)
+        => nameResolution.GetTokenRangeIndex(document).Before(offset);
 
-            if (token.Kind == VbaTokenKind.Whitespace)
-            {
-                continue;
-            }
-
-            if (token.Kind == VbaTokenKind.LineContinuation)
-            {
-                continuesOnNextLine = true;
-                continue;
-            }
-
-            if (token.Kind == VbaTokenKind.NewLine)
-            {
-                if (continuesOnNextLine)
-                {
-                    continuesOnNextLine = false;
-                    continue;
-                }
-
-                prefix.Clear();
-                parenthesisDepth = 0;
-                continue;
-            }
-
-            if (token.Kind == VbaTokenKind.Comment)
-            {
-                prefix.Clear();
-                parenthesisDepth = 0;
-                continue;
-            }
-
-            continuesOnNextLine = false;
-            if (token.Kind == VbaTokenKind.Punctuation)
-            {
-                if (token.Text == ":" && parenthesisDepth == 0)
-                {
-                    prefix.Clear();
-                    continue;
-                }
-
-                if (token.Text == "(")
-                {
-                    parenthesisDepth++;
-                }
-                else if (token.Text == ")" && parenthesisDepth > 0)
-                {
-                    parenthesisDepth--;
-                }
-            }
-
-            if (parenthesisDepth == 0
-                && token.Kind == VbaTokenKind.Keyword
-                && (token.Text.Equals("Then", StringComparison.OrdinalIgnoreCase)
-                    || token.Text.Equals("Else", StringComparison.OrdinalIgnoreCase)))
-            {
-                prefix.Clear();
-                continue;
-            }
-
-            prefix.Add(token);
-        }
-
-        return prefix;
-    }
-
-    private static IReadOnlyList<VbaToken> GetLogicalTokensAfter(
-        IReadOnlyList<VbaToken> tokens,
-        int offset)
-    {
-        var result = new List<VbaToken>();
-        var continuesOnNextLine = false;
-        foreach (var token in tokens.Where(token => token.Range.End.Offset > offset))
-        {
-            if (token.Kind == VbaTokenKind.Whitespace)
-            {
-                continue;
-            }
-
-            if (token.Kind == VbaTokenKind.LineContinuation)
-            {
-                continuesOnNextLine = true;
-                continue;
-            }
-
-            if (token.Kind == VbaTokenKind.NewLine)
-            {
-                if (continuesOnNextLine)
-                {
-                    continuesOnNextLine = false;
-                    continue;
-                }
-
-                break;
-            }
-
-            if (token.Kind == VbaTokenKind.Comment)
-            {
-                break;
-            }
-
-            continuesOnNextLine = false;
-            result.Add(token);
-        }
-
-        return result;
-    }
+    private IReadOnlyList<VbaToken> GetLogicalTokensAfter(VbaSourceDocument document, int offset)
+        => nameResolution.GetTokenRangeIndex(document).After(offset);
 
     private bool TryResolveCallableTarget(
         VbaSourceDocument currentDocument,

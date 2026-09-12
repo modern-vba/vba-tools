@@ -30,3 +30,28 @@ test('generated semantic workload reports four complete, independently checked t
   assert.ok(report.medians.analysisMilliseconds >= 0);
   assert.ok(report.medians.repeatedResolutionMilliseconds >= 0);
 });
+
+test('concentrating calls preserves total workload, documents, catalogs and checked outcomes', () => {
+  const reports = [];
+  for (const layoutArguments of [[], ['--layout', 'concentrated']]) {
+    const result = spawnSync('dotnet', [measurementAssembly,
+      '--variant', 'layout-smoke', '--calls-per-document', '2', '--lookup-repetitions', '2',
+      ...layoutArguments], { encoding: 'utf8', timeout: 60_000 });
+    assert.equal(result.status, 0, `${result.error ?? ''}\n${result.stdout}\n${result.stderr}`);
+    reports.push(JSON.parse(result.stdout));
+  }
+  const [split, concentrated] = reports;
+  assert.equal(split.corpus.layout, 'split');
+  assert.equal(concentrated.corpus.layout, 'concentrated');
+  assert.deepEqual(split.corpus.callGroupsByCaller, [2, 2, 2, 2]);
+  assert.deepEqual(concentrated.corpus.callGroupsByCaller, [8, 0, 0, 0]);
+  assert.equal(concentrated.corpus.documentCount, 8);
+  assert.equal(concentrated.corpus.sourceCharacters, split.corpus.sourceCharacters);
+  assert.equal(concentrated.corpus.sourceLines, split.corpus.sourceLines);
+  assert.equal(concentrated.corpus.catalogSha256, split.corpus.catalogSha256);
+  assert.equal(concentrated.corpus.referenceSelectionSha256, split.corpus.referenceSelectionSha256);
+  assert.equal(concentrated.corpus.queriesPerRepetition, split.corpus.queriesPerRepetition);
+  assert.notEqual(concentrated.corpus.sourcesSha256, split.corpus.sourcesSha256);
+  assert.equal(concentrated.trials.length, 4);
+  assert.ok(concentrated.trials.every(trial => trial.success && trial.diagnosticCount === 4 && trial.resolutionCount === 64));
+});

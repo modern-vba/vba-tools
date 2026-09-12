@@ -47,6 +47,36 @@ the retained map. The map is constructor-complete, read-only for concurrent
 queries, shares the inventory lifecycle, and is explicitly charged to retained
 capacity. This is not a process-global URI cache or a second identity policy.
 
+The same candidate inventory owns a finite, constructor-complete map from exact
+captured source-document objects to lazy logical-token indexes. Each index uses
+the captured syntax tree's original tokens and UTF-16 offsets. One linear pass
+records prefix-reset checkpoints; binary searches seek prefix endpoints, suffix
+starts and argument-range starts, after which only the queried span is examined.
+No copied prefix per call or process-global source cache is retained. New source
+or catalog inventories receive new owners; retained analysis can share completed
+lexical evidence only under the existing exact-input reuse proof. Unknown source
+objects may be queried without enlarging the admitted map.
+
+Prefix boundaries preserve comments, noncontinued newlines and top-level colon,
+Then and Else resets, including existing parenthesis and continuation handling.
+Suffixes deliberately have different semantics: they stop at comments or
+noncontinued newlines, not at colon/Then/Else. Argument selection retains tokens
+whose start and end lie inside the requested range, excluding the existing four
+trivia kinds. String/date literal contents do not create lexical boundaries.
+This index does not change parsing or call applicability policy.
+
+Index arrays are prepared privately with periodic cancellation checks and a final
+check before atomic publication. Cancelled construction is not cached; a later
+valid request can retry. Concurrent first reads may prepare redundant temporary
+arrays, but only one complete index is retained. Project Validation prepares a
+document's index with its current cancellation token before call traversal;
+interactive queries may initialize the same lexical index without constructing
+Project Validation Diagnostics. No request cancellation token is retained. The
+retention budget explicitly reserves owner/map allowances and one integer
+checkpoint per token boundary even before lazy initialization. Reproducible
+split/concentrated workloads live in `scripts/semantic-validation-measurement`;
+ordinary isolated workbook timings remain separate from semantic measurements.
+
 The inventory's name-resolution service owns the immutable, lazily published
 `EffectiveDeclaredType` results described in ADR 0045. One result per physical
 declaration and parameter ordinal supplies all semantic and presentation
