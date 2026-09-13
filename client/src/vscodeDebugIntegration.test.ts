@@ -211,6 +211,31 @@ test('snapshot startup rejects mutually old provider and extension requirements 
   assert.equal(captures, 0);
 });
 
+test('duplicate adapter capability properties block F5 before source capture', async () => {
+  let captures = 0;
+  const adapterRaw = JSON.stringify(compatibleDebugAdapterCapabilities()).slice(0, -1)
+    + ',"unknown":[{"same":1,"same":1}]}';
+  const integration = fixtureIntegration({
+    extensionRoot: path.resolve(__dirname, '..', '..'),
+    getConfiguredDevToolPath: () => undefined,
+    vbaDevResolver: { resolve: async () => ({
+      executablePath: path.resolve('vba-dev.exe'), bundledPath: path.resolve('vba-dev.exe'),
+      source: 'bundled', capabilities: compatibleCapabilities()
+    }) },
+    capabilitiesProcess: async file => ({
+      stdout: file.endsWith('vba-dev.exe') ? JSON.stringify(compatibleCapabilities()) : adapterRaw,
+      stderr: ''
+    }),
+    debugConfigurationHost: { ...snapshotDebugHost(), captureSourceInventory: async () => {
+      captures += 1;
+      throw new Error('Source capture must not begin.');
+    } }
+  });
+
+  await assert.rejects(integration.resolveDebugConfiguration({}), /duplicate.*same/i);
+  assert.equal(captures, 0);
+});
+
 test('F5 cancellation aborts owned CLI capability inspection before source capture', async () => {
   await assertCancelledProviderInspection('cli');
 });

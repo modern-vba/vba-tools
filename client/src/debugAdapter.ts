@@ -9,20 +9,9 @@ import {
 } from './distributionManifest';
 import type { CommandCancellationToken } from './devtoolCommand';
 
-export interface RequiredVbaDebugAdapterContract {
-  readonly contractVersion: string;
-  readonly protocolVersion: string;
-  readonly transports: readonly string[];
-  readonly sessionIdFormat: string;
-  readonly commands: readonly string[];
-  readonly commandSchemaVersions: Readonly<Record<string, string>>;
-  readonly featureVersions: Readonly<Record<string, string>>;
-  readonly requiredVbaDevFeatureVersions: Readonly<Record<string, string>>;
-}
-
-export interface VbaDebugAdapterCapabilities extends RequiredVbaDebugAdapterContract {
-  readonly toolVersion: string;
-}
+import { admitVbaDebugAdapterCapabilities, CapabilityRejection } from './capabilityAdmission';
+import type { RequiredVbaDebugAdapterContract, VbaDebugAdapterCapabilities } from './capabilityAdmission';
+export type { RequiredVbaDebugAdapterContract, VbaDebugAdapterCapabilities } from './capabilityAdmission';
 
 export interface CompatibleVbaDebugAdapter {
   readonly executablePath: string;
@@ -127,9 +116,11 @@ export async function resolveCompatibleVbaDebugAdapter(
 
   try {
     const result = await runProcess(executablePath, ['capabilities', '--format', 'json']);
-    const capabilities = parseCapabilities(result.stdout);
-    validateCapabilities(capabilities, requiredContract, executablePath);
-    return Object.freeze({ executablePath, capabilities });
+    const admitted = admitVbaDebugAdapterCapabilities(result.stdout, requiredContract);
+    if (!admitted.accepted) {
+      throw new VbaDebugAdapterCompatibilityError(describeCapabilityRejection(executablePath, admitted.rejection));
+    }
+    return Object.freeze({ executablePath, capabilities: admitted.facts });
   } catch (error) {
     if (error instanceof VbaDebugAdapterCompatibilityError) {
       throw error;
@@ -140,72 +131,26 @@ export async function resolveCompatibleVbaDebugAdapter(
   }
 }
 
-function parseCapabilities(stdout: string): VbaDebugAdapterCapabilities {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(stdout) as unknown;
-  } catch (error) {
-    throw new VbaDebugAdapterCompatibilityError(
-      `vba-debug-adapter capabilities returned invalid JSON: ${String(error)}`
-    );
-  }
-
-  if (!isCapabilities(parsed)) {
-    throw new VbaDebugAdapterCompatibilityError(
-      'vba-debug-adapter capabilities omitted required contract fields.'
-    );
-  }
-  return parsed;
-}
-
-function validateCapabilities(
-  actual: VbaDebugAdapterCapabilities,
-  required: RequiredVbaDebugAdapterContract,
-  executablePath: string
-): void {
-  for (const [name, actualValue, requiredValue] of [
-    ['contractVersion', actual.contractVersion, required.contractVersion],
-    ['protocolVersion', actual.protocolVersion, required.protocolVersion],
-    ['sessionIdFormat', actual.sessionIdFormat, required.sessionIdFormat]
-  ] as const) {
-    if (actualValue !== requiredValue) {
-      throw new VbaDebugAdapterCompatibilityError(
-        `vba-debug-adapter at '${executablePath}' reports ${name} ${actualValue}, ` +
-        `but this extension requires ${requiredValue}.`
-      );
-    }
-  }
-
-  for (const [name, actualValues, requiredValues] of [
-    ['transports', actual.transports, required.transports],
-    ['commands', actual.commands, required.commands]
-  ] as const) {
-    if (!equalStringArrays(actualValues, requiredValues)) {
-      throw new VbaDebugAdapterCompatibilityError(
-        `vba-debug-adapter at '${executablePath}' reports incompatible ${name}.`
-      );
-    }
-  }
-
-  for (const [name, requiredVersion] of Object.entries(required.featureVersions)) {
-    if (actual.featureVersions?.[name] !== requiredVersion) {
-      throw new VbaDebugAdapterCompatibilityError(
-        `vba-debug-adapter at '${executablePath}' reports incompatible feature ${name}; ` +
-        `this extension requires ${requiredVersion}.`
-      );
-    }
-  }
-
-  if (
-    !equalStringRecords(actual.commandSchemaVersions, required.commandSchemaVersions) ||
-    !equalStringRecords(
-      actual.requiredVbaDevFeatureVersions,
-      required.requiredVbaDevFeatureVersions
-    )
-  ) {
-    throw new VbaDebugAdapterCompatibilityError(
-      `vba-debug-adapter at '${executablePath}' reports incompatible command or vba-dev feature versions.`
-    );
+function describeCapabilityRejection(executablePath: string, rejection: CapabilityRejection): string {
+  const prefix = `vba-debug-adapter at '${executablePath}'`;
+  const [field, name] = rejection.path;
+  switch (rejection.code) {
+    case 'InvalidJson': return 'vba-debug-adapter capabilities returned invalid JSON.';
+    case 'DuplicateProperty': return `${prefix} reports duplicate capabilities property '${field}'.`;
+    case 'InvalidConsumedValue': return `${prefix} reports an invalid capability value at '${rejection.path.join('.') || 'response'}'.`;
+    case 'MissingCapability':
+      if (field === 'featureVersions' && name !== undefined) {
+        return `${prefix} reports incompatible feature ${name}; this extension requires ${rejection.expected}.`;
+      }
+      if ((field === 'commands' || field === 'transports') && name !== undefined) {
+        return `${prefix} reports incompatible ${field}; this extension requires '${name}'.`;
+      }
+      if (name !== undefined) return `${prefix} reports incompatible command or vba-dev feature versions.`;
+      return 'vba-debug-adapter capabilities omitted required contract fields.';
+    case 'VersionMismatch':
+      if (name === undefined) return `${prefix} reports ${field} ${rejection.actual}, but this extension requires ${rejection.expected}.`;
+      if (field === 'featureVersions') return `${prefix} reports incompatible feature ${name}; this extension requires ${rejection.expected}.`;
+      return `${prefix} reports incompatible command or vba-dev feature versions.`;
   }
 }
 
@@ -219,29 +164,6 @@ function isRequiredContract(value: unknown): value is RequiredVbaDebugAdapterCon
     isStringRecord(value.commandSchemaVersions) &&
     isStringRecord(value.featureVersions) &&
     isStringRecord(value.requiredVbaDevFeatureVersions);
-}
-
-function isCapabilities(value: unknown): value is VbaDebugAdapterCapabilities {
-  return isRequiredContract(value) &&
-    typeof (value as unknown as Record<string, unknown>).toolVersion === 'string';
-}
-
-function equalStringArrays(
-  actual: readonly string[],
-  expected: readonly string[]
-): boolean {
-  return actual.length === expected.length &&
-    actual.every((value, index) => value === expected[index]);
-}
-
-function equalStringRecords(
-  actual: Readonly<Record<string, string>>,
-  expected: Readonly<Record<string, string>>
-): boolean {
-  const actualEntries = Object.entries(actual);
-  const expectedEntries = Object.entries(expected);
-  return actualEntries.length === expectedEntries.length &&
-    expectedEntries.every(([name, version]) => actual[name] === version);
 }
 
 function isStringArray(value: unknown): value is readonly string[] {

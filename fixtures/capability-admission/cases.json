@@ -30,7 +30,8 @@
       "expectedByProfile": {
         "refList": "DuplicateProperty",
         "snapshotBuild": "DuplicateProperty",
-        "extension": "DuplicateProperty"
+        "extension": "DuplicateProperty",
+        "adapter": "DuplicateProperty"
       }
     },
     {
@@ -39,7 +40,8 @@
       "expectedByProfile": {
         "refList": "DuplicateProperty",
         "snapshotBuild": "DuplicateProperty",
-        "extension": "DuplicateProperty"
+        "extension": "DuplicateProperty",
+        "adapter": "DuplicateProperty"
       }
     },
     {
@@ -48,7 +50,8 @@
       "expectedByProfile": {
         "refList": "DuplicateProperty",
         "snapshotBuild": "DuplicateProperty",
-        "extension": "DuplicateProperty"
+        "extension": "DuplicateProperty",
+        "adapter": "DuplicateProperty"
       }
     },
     {
@@ -57,7 +60,8 @@
       "expectedByProfile": {
         "refList": "DuplicateProperty",
         "snapshotBuild": "DuplicateProperty",
-        "extension": "DuplicateProperty"
+        "extension": "DuplicateProperty",
+        "adapter": "DuplicateProperty"
       }
     },
     {
@@ -66,7 +70,8 @@
       "expectedByProfile": {
         "refList": "DuplicateProperty",
         "snapshotBuild": "DuplicateProperty",
-        "extension": "DuplicateProperty"
+        "extension": "DuplicateProperty",
+        "adapter": "DuplicateProperty"
       }
     },
     {
@@ -75,7 +80,8 @@
       "expectedByProfile": {
         "refList": "DuplicateProperty",
         "snapshotBuild": "DuplicateProperty",
-        "extension": "DuplicateProperty"
+        "extension": "DuplicateProperty",
+        "adapter": "DuplicateProperty"
       }
     },
     {
@@ -84,7 +90,8 @@
       "expectedByProfile": {
         "refList": "DuplicateProperty",
         "snapshotBuild": "DuplicateProperty",
-        "extension": "DuplicateProperty"
+        "extension": "DuplicateProperty",
+        "adapter": "DuplicateProperty"
       }
     },
     {
@@ -93,7 +100,8 @@
       "expectedByProfile": {
         "refList": "DuplicateProperty",
         "snapshotBuild": "DuplicateProperty",
-        "extension": "DuplicateProperty"
+        "extension": "DuplicateProperty",
+        "adapter": "DuplicateProperty"
       }
     },
     {
@@ -102,7 +110,8 @@
       "expectedByProfile": {
         "refList": "DuplicateProperty",
         "snapshotBuild": "DuplicateProperty",
-        "extension": "DuplicateProperty"
+        "extension": "DuplicateProperty",
+        "adapter": "DuplicateProperty"
       }
     },
     {
@@ -111,7 +120,8 @@
       "expectedByProfile": {
         "refList": "DuplicateProperty",
         "snapshotBuild": "DuplicateProperty",
-        "extension": "DuplicateProperty"
+        "extension": "DuplicateProperty",
+        "adapter": "DuplicateProperty"
       }
     },
     {
@@ -120,7 +130,8 @@
       "expectedByProfile": {
         "refList": "InvalidJson",
         "snapshotBuild": "InvalidJson",
-        "extension": "InvalidJson"
+        "extension": "InvalidJson",
+        "adapter": "InvalidJson"
       }
     },
     {
@@ -129,7 +140,8 @@
       "expectedByProfile": {
         "refList": "InvalidJson",
         "snapshotBuild": "InvalidJson",
-        "extension": "InvalidJson"
+        "extension": "InvalidJson",
+        "adapter": "InvalidJson"
       }
     },
     {
@@ -138,7 +150,8 @@
       "expectedByProfile": {
         "refList": "InvalidJson",
         "snapshotBuild": "InvalidJson",
-        "extension": "InvalidJson"
+        "extension": "InvalidJson",
+        "adapter": "InvalidJson"
       }
     },
     {
@@ -147,7 +160,8 @@
       "expectedByProfile": {
         "refList": "InvalidJson",
         "snapshotBuild": "InvalidJson",
-        "extension": "InvalidJson"
+        "extension": "InvalidJson",
+        "adapter": "InvalidJson"
       }
     },
     {
@@ -156,7 +170,8 @@
       "expectedByProfile": {
         "refList": "InvalidJson",
         "snapshotBuild": "InvalidJson",
-        "extension": "InvalidJson"
+        "extension": "InvalidJson",
+        "adapter": "InvalidJson"
       }
     },
     {
@@ -165,7 +180,8 @@
       "expectedByProfile": {
         "refList": "InvalidJson",
         "snapshotBuild": "InvalidJson",
-        "extension": "InvalidJson"
+        "extension": "InvalidJson",
+        "adapter": "InvalidJson"
       }
     },
     {
@@ -174,7 +190,8 @@
       "expectedByProfile": {
         "refList": "InvalidConsumedValue",
         "snapshotBuild": "InvalidConsumedValue",
-        "extension": "InvalidConsumedValue"
+        "extension": "InvalidConsumedValue",
+        "adapter": "InvalidConsumedValue"
       }
     },
     {
@@ -300,7 +317,8 @@
       "expectedByProfile": {
         "refList": "InvalidJson",
         "snapshotBuild": "InvalidJson",
-        "extension": "InvalidJson"
+        "extension": "InvalidJson",
+        "adapter": "InvalidJson"
       }
     },
     {
@@ -309,7 +327,8 @@
       "expectedByProfile": {
         "refList": "InvalidJson",
         "snapshotBuild": "InvalidJson",
-        "extension": "InvalidJson"
+        "extension": "InvalidJson",
+        "adapter": "InvalidJson"
       }
     },
     {
@@ -318,7 +337,8 @@
       "expectedByProfile": {
         "refList": "InvalidJson",
         "snapshotBuild": "InvalidJson",
-        "extension": "InvalidJson"
+        "extension": "InvalidJson",
+        "adapter": "InvalidJson"
       }
     },
     {
@@ -327,7 +347,8 @@
       "expectedByProfile": {
         "refList": "DuplicateProperty",
         "snapshotBuild": "DuplicateProperty",
-        "extension": "DuplicateProperty"
+        "extension": "DuplicateProperty",
+        "adapter": "DuplicateProperty"
       }
     },
     {
@@ -363,7 +384,8 @@
       "expectedByProfile": {
         "refList": "DuplicateProperty",
         "snapshotBuild": "DuplicateProperty",
-        "extension": "DuplicateProperty"
+        "extension": "DuplicateProperty",
+        "adapter": "DuplicateProperty"
       }
     },
     {
@@ -454,6 +476,398 @@
         "refList": "Accepted",
         "snapshotBuild": "Accepted",
         "extension": "Accepted"
+      }
+    },
+    {
+      "id": "adapter-minimal-compatible",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "Accepted"
+      }
+    },
+    {
+      "id": "adapter-reordered-commands",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"doctor\",\"cleanup\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "Accepted"
+      }
+    },
+    {
+      "id": "adapter-additive-reordered-offers",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"named-pipe\",\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"additional\",\"doctor\",\"cleanup\"],\"commandSchemaVersions\":{\"additional\":\"99.0\",\"doctor\":\"1.0\"},\"featureVersions\":{\"additional\":\"99.0\",\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"},\"unknown\":{\"description\":\"Additional offers are compatible.\"}}",
+      "expectedByProfile": {
+        "adapter": "Accepted"
+      }
+    },
+    {
+      "id": "adapter-repeated-offers",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\",\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"doctor\",\"cleanup\",\"doctor\",\"cleanup\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "Accepted"
+      }
+    },
+    {
+      "id": "adapter-missing-command-cleanup",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "MissingCapability"
+      }
+    },
+    {
+      "id": "adapter-missing-command-doctor",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "MissingCapability"
+      }
+    },
+    {
+      "id": "adapter-required-command-case-is-exact",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"Doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "MissingCapability"
+      }
+    },
+    {
+      "id": "adapter-missing-required-transport",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"named-pipe\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "MissingCapability"
+      }
+    },
+    {
+      "id": "adapter-required-transport-case-is-exact",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"STDIO\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "MissingCapability"
+      }
+    },
+    {
+      "id": "adapter-missing-command-schema",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "MissingCapability"
+      }
+    },
+    {
+      "id": "adapter-command-schema-incompatible",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"2.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "VersionMismatch"
+      }
+    },
+    {
+      "id": "adapter-missing-cancellation-feature",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "MissingCapability"
+      }
+    },
+    {
+      "id": "adapter-missing-diagnostics-feature",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "MissingCapability"
+      }
+    },
+    {
+      "id": "adapter-cancellation-feature-incompatible",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"2.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "VersionMismatch"
+      }
+    },
+    {
+      "id": "adapter-diagnostics-feature-incompatible",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"2.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "VersionMismatch"
+      }
+    },
+    {
+      "id": "adapter-additional-command-schema",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\",\"additional\":\"99.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "Accepted"
+      }
+    },
+    {
+      "id": "adapter-additional-feature",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\",\"additional\":\"99.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "Accepted"
+      }
+    },
+    {
+      "id": "adapter-dependency-declaration-reordered",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshotAnalysis\":\"1.0\",\"build.sourceSnapshot\":\"2.0\"}}",
+      "expectedByProfile": {
+        "adapter": "Accepted"
+      }
+    },
+    {
+      "id": "adapter-dependency-declaration-extra",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"additional\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "VersionMismatch"
+      }
+    },
+    {
+      "id": "adapter-dependency-declaration-missing-snapshot",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "MissingCapability"
+      }
+    },
+    {
+      "id": "adapter-dependency-declaration-missing-analysis",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\"}}",
+      "expectedByProfile": {
+        "adapter": "MissingCapability"
+      }
+    },
+    {
+      "id": "adapter-dependency-declaration-version-mismatch",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"2.0\"}}",
+      "expectedByProfile": {
+        "adapter": "VersionMismatch"
+      }
+    },
+    {
+      "id": "adapter-missing-field-toolVersion",
+      "rawJson": "{\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "MissingCapability"
+      }
+    },
+    {
+      "id": "adapter-missing-field-contractVersion",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "MissingCapability"
+      }
+    },
+    {
+      "id": "adapter-missing-field-protocolVersion",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "MissingCapability"
+      }
+    },
+    {
+      "id": "adapter-missing-field-sessionIdFormat",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "MissingCapability"
+      }
+    },
+    {
+      "id": "adapter-missing-field-transports",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "MissingCapability"
+      }
+    },
+    {
+      "id": "adapter-missing-field-commands",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "MissingCapability"
+      }
+    },
+    {
+      "id": "adapter-missing-field-commandSchemaVersions",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "MissingCapability"
+      }
+    },
+    {
+      "id": "adapter-missing-field-featureVersions",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "MissingCapability"
+      }
+    },
+    {
+      "id": "adapter-missing-field-requiredVbaDevFeatureVersions",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "MissingCapability"
+      }
+    },
+    {
+      "id": "adapter-wrong-type-toolVersion",
+      "rawJson": "{\"toolVersion\":1,\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "InvalidConsumedValue"
+      }
+    },
+    {
+      "id": "adapter-wrong-type-contractVersion",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":null,\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "InvalidConsumedValue"
+      }
+    },
+    {
+      "id": "adapter-wrong-type-protocolVersion",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":2,\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "InvalidConsumedValue"
+      }
+    },
+    {
+      "id": "adapter-wrong-type-sessionIdFormat",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":[],\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "InvalidConsumedValue"
+      }
+    },
+    {
+      "id": "adapter-wrong-type-transports",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":\"stdio\",\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "InvalidConsumedValue"
+      }
+    },
+    {
+      "id": "adapter-wrong-type-commands",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":{},\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "InvalidConsumedValue"
+      }
+    },
+    {
+      "id": "adapter-wrong-type-commandSchemaVersions",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":[],\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "InvalidConsumedValue"
+      }
+    },
+    {
+      "id": "adapter-wrong-type-featureVersions",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":[],\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "InvalidConsumedValue"
+      }
+    },
+    {
+      "id": "adapter-wrong-type-requiredVbaDevFeatureVersions",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":[]}",
+      "expectedByProfile": {
+        "adapter": "InvalidConsumedValue"
+      }
+    },
+    {
+      "id": "adapter-contract-version-incompatible",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"2.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "VersionMismatch"
+      }
+    },
+    {
+      "id": "adapter-protocol-version-incompatible",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"1.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "VersionMismatch"
+      }
+    },
+    {
+      "id": "adapter-session-id-format-incompatible",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"uppercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "VersionMismatch"
+      }
+    },
+    {
+      "id": "adapter-empty-informational-tool-version",
+      "rawJson": "{\"toolVersion\":\"\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "Accepted"
+      }
+    },
+    {
+      "id": "adapter-command-offer-wrong-element-type",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\",1],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "InvalidConsumedValue"
+      }
+    },
+    {
+      "id": "adapter-transport-offer-wrong-element-type",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\",false],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "InvalidConsumedValue"
+      }
+    },
+    {
+      "id": "adapter-command-schema-wrong-value-type",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\",\"additional\":1},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "InvalidConsumedValue"
+      }
+    },
+    {
+      "id": "adapter-feature-version-wrong-value-type",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\",\"additional\":null},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "InvalidConsumedValue"
+      }
+    },
+    {
+      "id": "adapter-dependency-version-wrong-value-type",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":2,\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "InvalidConsumedValue"
+      }
+    },
+    {
+      "id": "adapter-undecodable-tool-version",
+      "rawJson": "{\"toolVersion\":\"\\ud800\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "InvalidConsumedValue"
+      }
+    },
+    {
+      "id": "adapter-undecodable-command-offer",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\",\"\\ud800\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "InvalidConsumedValue"
+      }
+    },
+    {
+      "id": "adapter-undecodable-transport-offer",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\",\"\\udfff\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "InvalidConsumedValue"
+      }
+    },
+    {
+      "id": "adapter-undecodable-consumed-command-version",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"\\ud800\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "InvalidConsumedValue"
+      }
+    },
+    {
+      "id": "adapter-undecodable-consumed-feature-version",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"\\udfff\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "adapter": "InvalidConsumedValue"
+      }
+    },
+    {
+      "id": "adapter-undecodable-dependency-version",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"\\ud800\"}}",
+      "expectedByProfile": {
+        "adapter": "InvalidConsumedValue"
+      }
+    },
+    {
+      "id": "adapter-unique-unknown-values-remain-uninterpreted",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"protocolVersion\":\"2.0\",\"transports\":[\"stdio\"],\"sessionIdFormat\":\"lowercase-hex-32\",\"commands\":[\"cleanup\",\"doctor\"],\"commandSchemaVersions\":{\"doctor\":\"1.0\"},\"featureVersions\":{\"doctor.stdinCancellation\":\"1.0\",\"snapshotBuild.diagnostics\":\"1.0\"},\"requiredVbaDevFeatureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"},\"unknown\":{\"name\":1,\"Name\":2,\"é\":3,\"e\\u0301\":4,\"huge\":1e999,\"value\":\"\\ud800\",\"items\":[{\"same\":1},{\"same\":1},2,2]}}",
+      "expectedByProfile": {
+        "adapter": "Accepted"
       }
     }
   ]

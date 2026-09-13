@@ -819,6 +819,17 @@ test('bundled debug adapter capabilities require the snapshot build feature cont
   );
 });
 
+test('packaging admits reordered and additive adapter offers with repeated entries', () => {
+  const contract = readRequiredVbaDebugAdapterContract();
+  assert.doesNotThrow(() => assertBundledDebugAdapterCapabilities(JSON.stringify({
+    toolVersion: '0.1.0', ...contract,
+    commands: ['doctor', 'inspect', 'cleanup', 'doctor'],
+    transports: ['socket', 'stdio', 'stdio'],
+    commandSchemaVersions: { inspect: '9.0', ...contract.commandSchemaVersions },
+    featureVersions: { future: '9.0', ...contract.featureVersions }
+  })));
+});
+
 test('packaging admits the coordinated ACP-authoritative snapshot v2 providers', () => {
   const cliContract = readRequiredVbaDevContract();
   const adapterContract = readRequiredVbaDebugAdapterContract();

@@ -590,9 +590,9 @@ export function assertBundledDebugAdapterCapabilities(
     parsed.contractVersion !== contract.contractVersion ||
     parsed.protocolVersion !== contract.protocolVersion ||
     parsed.sessionIdFormat !== contract.sessionIdFormat ||
-    !equalStringArrays(parsed.transports, contract.transports) ||
-    !equalStringArrays(parsed.commands, contract.commands) ||
-    !equalStringRecords(parsed.commandSchemaVersions, contract.commandSchemaVersions)
+    !containsRequiredStrings(parsed.transports, contract.transports) ||
+    !containsRequiredStrings(parsed.commands, contract.commands) ||
+    !containsRequiredStringEntries(parsed.commandSchemaVersions, contract.commandSchemaVersions)
   ) {
     throw new Error('Bundled vba-debug-adapter capabilities do not satisfy the required adapter contract.');
   }
@@ -769,10 +769,14 @@ function isRequiredVbaDebugAdapterContract(value) {
     isStringRecord(value.requiredVbaDevFeatureVersions);
 }
 
-function equalStringArrays(actual, expected) {
+function containsRequiredStrings(actual, expected) {
   return isStringArray(actual) &&
-    actual.length === expected.length &&
-    actual.every((value, index) => value === expected[index]);
+    expected.every((value) => actual.includes(value));
+}
+
+function containsRequiredStringEntries(actual, expected) {
+  return isStringRecord(actual) && Object.entries(expected)
+    .every(([name, version]) => Object.hasOwn(actual, name) && actual[name] === version);
 }
 
 function equalStringRecords(actual, expected) {
