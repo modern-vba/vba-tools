@@ -1,3 +1,5 @@
+using VbaTools.SourceIdentities;
+
 namespace VbaTools.Semantics;
 
 internal static class VbaDocumentIdentityPolicy
@@ -18,9 +20,7 @@ internal static class VbaDocumentIdentityPolicy
         if (parsed.IsFile)
         {
             // Reuse the admitted parse; reparsing adds no identity evidence and re-enters runtime URI canonicalization.
-            var localPath = TryGetLocalPath(parsed);
-            if (localPath is null
-                || !TryNormalizePath(localPath, out var canonicalPath))
+            if (!SourceIdentity.TryFromUri(parsed, out var sourceIdentity))
             {
                 identity = new VbaDocumentIdentity(
                     VbaDocumentIdentityKind.UnresolvedFileUri,
@@ -30,7 +30,7 @@ internal static class VbaDocumentIdentityPolicy
 
             identity = new VbaDocumentIdentity(
                 VbaDocumentIdentityKind.LocalFile,
-                canonicalPath);
+                sourceIdentity.Path);
             return true;
         }
 
@@ -85,29 +85,11 @@ internal static class VbaDocumentIdentityPolicy
         return true;
     }
 
-    internal static bool TryNormalizePath(
-        string path,
-        out string canonicalPath)
+    internal static bool TryNormalizePath(string path, out string canonicalPath)
     {
-        canonicalPath = "";
-        if (string.IsNullOrWhiteSpace(path)
-            || !Path.IsPathFullyQualified(path))
-        {
-            return false;
-        }
-
-        try
-        {
-            canonicalPath = Path.GetFullPath(path);
-            return true;
-        }
-        catch (Exception ex) when (ex is ArgumentException
-            or NotSupportedException
-            or PathTooLongException
-            or System.Security.SecurityException)
-        {
-            return false;
-        }
+        var identified = SourceIdentity.TryFromPath(path, out var identity);
+        canonicalPath = identity.Path;
+        return identified;
     }
 
     private static bool LooksLikeLocalPath(string value)
@@ -119,76 +101,5 @@ internal static class VbaDocumentIdentityPolicy
                 && value[2] is '\\' or '/';
 
     public static string? TryGetLocalPath(string uri)
-    {
-        try
-        {
-            return TryGetLocalPath(new Uri(uri));
-        }
-        catch (UriFormatException)
-        {
-            return null;
-        }
-    }
-
-    private static string? TryGetLocalPath(Uri parsed)
-    {
-        try
-        {
-            if (!parsed.IsFile)
-            {
-                return null;
-            }
-
-            if (TryGetFullPath(parsed.LocalPath, out var localPath))
-            {
-                return localPath;
-            }
-
-            var absolutePath = Uri.UnescapeDataString(parsed.AbsolutePath);
-            var candidatePath = NormalizeFileAbsolutePath(absolutePath);
-            return TryGetFullPath(candidatePath, out localPath) ? localPath : null;
-        }
-        catch (UriFormatException)
-        {
-            return null;
-        }
-    }
-
-    private static string NormalizeFileAbsolutePath(string path)
-    {
-        var normalized = path.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
-        if (normalized.Length >= 3
-            && IsDirectorySeparator(normalized[0])
-            && char.IsLetter(normalized[1])
-            && normalized[2] == Path.VolumeSeparatorChar)
-        {
-            return normalized[1..];
-        }
-
-        return normalized;
-    }
-
-    private static bool TryGetFullPath(string path, out string fullPath)
-    {
-        try
-        {
-            fullPath = Path.GetFullPath(NormalizeFileAbsolutePath(path));
-            return true;
-        }
-        catch (ArgumentException)
-        {
-        }
-        catch (NotSupportedException)
-        {
-        }
-        catch (PathTooLongException)
-        {
-        }
-
-        fullPath = "";
-        return false;
-    }
-
-    private static bool IsDirectorySeparator(char value)
-        => value == Path.DirectorySeparatorChar || value == Path.AltDirectorySeparatorChar;
+        => SourceIdentity.TryFromUri(uri, out var identity) ? identity.Path : null;
 }

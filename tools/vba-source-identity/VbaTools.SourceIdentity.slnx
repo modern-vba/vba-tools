@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/VbaTools.SourceIdentity/VbaTools.SourceIdentity.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/VbaTools.SourceIdentity.Tests/VbaTools.SourceIdentity.Tests.csproj" />
+  </Folder>
+</Solution>

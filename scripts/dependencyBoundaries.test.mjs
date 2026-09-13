@@ -78,7 +78,9 @@ test('production and test owners cannot restore reverse or foundation-to-consume
     ['tools/vba-process-invocation/src/Process.csproj', serverProject],
     ['tools/vba-process-invocation/tests/Process.Tests.csproj', devProject],
     ['tools/vba-capability-admission/src/Capability.csproj', serverProject],
-    ['tools/vba-capability-admission/tests/Capability.Tests.csproj', devProject]
+    ['tools/vba-capability-admission/tests/Capability.Tests.csproj', devProject],
+    ['tools/vba-source-identity/src/Identity.csproj', serverProject],
+    ['tools/vba-source-identity/tests/Identity.Tests.csproj', devProject]
   ]) {
     await t.test(`${from} -> ${to}`, async (t) => {
       const root = await repository(t, {

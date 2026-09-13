@@ -371,6 +371,7 @@ export async function activate(
     getOpenTextDocuments: () => workspace.textDocuments.map((document) => ({
       uriScheme: document.uri.scheme,
       uriPath: document.uri.scheme === 'file' ? document.uri.fsPath : undefined,
+      sourceUri: document.uri.toString(),
       fileName: document.fileName,
       isDirty: document.isDirty,
       encoding: document.encoding,
@@ -416,6 +417,7 @@ export async function activate(
 
         return {
           uriPath: editor.document.uri.fsPath,
+          sourceUri: editor.document.uri.toString(),
           line: editor.selection.active.line,
           character: editor.selection.active.character
         };
@@ -427,6 +429,7 @@ export async function activate(
         ))
         .map((breakpoint) => ({
           uriPath: breakpoint.location.uri.fsPath,
+          sourceUri: breakpoint.location.uri.toString(),
           line: breakpoint.location.range.start.line,
           enabled: breakpoint.enabled,
           condition: breakpoint.condition,

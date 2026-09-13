@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using VbaDebugAdapter.Debugging;
 using VbaDebugAdapter.Infrastructure;
+using VbaTools.SourceIdentities;
 
 namespace VbaDebugAdapter.Build;
 
@@ -61,7 +62,7 @@ internal sealed class TransportedDebugSourceSnapshotValidator
         }
 
         var seenRelativePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var seenSourceUris = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var seenSourceUris = new HashSet<SourceIdentity>();
         var seenFlatTextNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var validated = new List<ValidatedTransportedDebugSource>(snapshot.Sources.Count);
         string? persistentSourceSetRoot = null;
@@ -118,14 +119,14 @@ internal sealed class TransportedDebugSourceSnapshotValidator
                     $"'{Path.GetFileName(relativePath)}'.");
             }
             if (source.SourceUri is null ||
-                !Uri.TryCreate(source.SourceUri, UriKind.Absolute, out var sourceUri) ||
-                !sourceUri.IsFile ||
-                !seenSourceUris.Add(sourceUri.AbsoluteUri))
+                source.Uri.Identity is not { } sourceIdentity ||
+                !seenSourceUris.Add(sourceIdentity))
             {
                 throw new DebugSourceRejectedException(
-                    $"Text source '{relativePath}' requires a unique persistent file URI.");
+                    $"Text source '{relativePath}' requires a unique persistent file URI " +
+                    "(invalid sourceUri or duplicate identity).");
             }
-            var sourceSetRoot = ValidatePersistentSourceIdentity(relativePath, sourceUri);
+            var sourceSetRoot = ValidatePersistentSourceIdentity(relativePath, sourceIdentity);
             if (persistentSourceSetRoot is null)
             {
                 persistentSourceSetRoot = sourceSetRoot;
@@ -146,10 +147,11 @@ internal sealed class TransportedDebugSourceSnapshotValidator
             var text = StrictDecode(relativePath, source.Encoding, bytes);
             validated.Add(new ValidatedTransportedDebugSource(
                 relativePath,
-                sourceUri.AbsoluteUri,
+                source.SourceUri,
                 source.Encoding,
                 bytes,
-                text));
+                text,
+                sourceIdentity));
         }
 
         var orderedPaths = validated.Select(source => source.RelativePath).ToArray();
@@ -173,61 +175,50 @@ internal sealed class TransportedDebugSourceSnapshotValidator
             }
         }
 
-        if (snapshot.ActiveSource is { } activeSource &&
-            (activeSource.Line < 0 ||
-             activeSource.Character < 0 ||
-             !validated.Any(source => source.Text is not null &&
-                 source.SourceUri!.Equals(
-                     activeSource.SourceUri,
-                     StringComparison.OrdinalIgnoreCase))))
+        ValidatedTransportedDebugSourcePosition? validatedActiveSource = null;
+        if (snapshot.ActiveSource is { } activeSource)
         {
-            throw new DebugSourceRejectedException(
-                "The transported active source must identify a nonnegative position in one persistent source URI.");
+            if (activeSource.Line < 0 || activeSource.Character < 0 ||
+                activeSource.Uri.Identity is not { } activeIdentity ||
+                !seenSourceUris.Contains(activeIdentity))
+            {
+                throw new DebugSourceRejectedException(
+                    "The transported active source must identify a nonnegative position in one persistent source URI.");
+            }
+            validatedActiveSource = new(activeSource.Uri, activeSource.Line, activeSource.Character);
         }
-        var breakpointIdentities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var breakpointIdentities = new HashSet<(SourceIdentity Source, int Line)>();
+        var validatedBreakpoints = new List<ValidatedTransportedDebugSourceBreakpoint>(snapshot.Breakpoints.Count);
         foreach (var breakpoint in snapshot.Breakpoints)
         {
             if (breakpoint.Line < 0 ||
-                !validated.Any(source => source.Text is not null &&
-                    source.SourceUri!.Equals(
-                        breakpoint.SourceUri,
-                        StringComparison.OrdinalIgnoreCase)))
+                breakpoint.Uri.Identity is not { } breakpointIdentity ||
+                !seenSourceUris.Contains(breakpointIdentity))
             {
                 throw new DebugSourceRejectedException(
                     "Each transported breakpoint must identify a nonnegative line in one persistent source URI.");
             }
-            if (!breakpointIdentities.Add($"{breakpoint.SourceUri}\n{breakpoint.Line}"))
+            if (!breakpointIdentities.Add((breakpointIdentity, breakpoint.Line)))
             {
                 throw new DebugSourceRejectedException(
                     $"The transported source snapshot contains duplicate breakpoint " +
                     $"'{breakpoint.SourceUri}:{breakpoint.Line + 1}'.");
             }
+            validatedBreakpoints.Add(new(breakpoint.Uri, breakpoint.Line));
         }
 
         return new ValidatedTransportedDebugSourceSnapshot(
             snapshot.SchemaVersion,
             validated,
-            snapshot.ActiveSource,
-            snapshot.Breakpoints);
+            validatedActiveSource,
+            validatedBreakpoints);
     }
 
     private static string ValidatePersistentSourceIdentity(
         string relativePath,
-        Uri sourceUri)
+        SourceIdentity sourceIdentity)
     {
-        string sourcePath;
-        try
-        {
-            sourcePath = Path.GetFullPath(sourceUri.LocalPath);
-        }
-        catch (Exception exception) when (
-            exception is ArgumentException or NotSupportedException or PathTooLongException)
-        {
-            throw new DebugSourceRejectedException(
-                $"Text source '{relativePath}' has an invalid sourceUri.",
-                exception);
-        }
-
+        var sourcePath = sourceIdentity.Path;
         var sourceSetRoot = Path.GetDirectoryName(sourcePath);
         var directoryDepth = relativePath.Count(character => character == '/');
         for (var index = 0; index < directoryDepth && sourceSetRoot is not null; index++)
@@ -386,12 +377,26 @@ internal sealed class TransportedDebugSourceSnapshotValidator
 internal sealed record ValidatedTransportedDebugSourceSnapshot(
     int SchemaVersion,
     IReadOnlyList<ValidatedTransportedDebugSource> Sources,
-    TransportedDebugSourcePosition? ActiveSource,
-    IReadOnlyList<TransportedDebugSourceBreakpoint> Breakpoints);
+    ValidatedTransportedDebugSourcePosition? ActiveSource,
+    IReadOnlyList<ValidatedTransportedDebugSourceBreakpoint> Breakpoints);
 
 internal sealed record ValidatedTransportedDebugSource(
     string RelativePath,
     string? SourceUri,
     string? Encoding,
     byte[] Bytes,
-    string? Text);
+    string? Text,
+    SourceIdentity? Identity = null);
+
+internal sealed record ValidatedTransportedDebugSourcePosition(
+    DebugSourceUri Uri,
+    int Line,
+    int Character)
+{
+    internal string SourceUri => Uri.OriginalUri!;
+    internal SourceIdentity Identity => Uri.Identity!.Value;
+}
+
+internal sealed record ValidatedTransportedDebugSourceBreakpoint(
+    DebugSourceUri Uri,
+    int Line);

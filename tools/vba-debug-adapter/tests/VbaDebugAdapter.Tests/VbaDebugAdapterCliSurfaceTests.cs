@@ -4203,8 +4203,10 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         Assert.Equal("VBE", thread.GetProperty("name").GetString());
     }
 
-    [Fact]
-    public async Task InScopeConditionalBreakpointFailsLaunchBeforeTheService()
+    [Theory]
+    [InlineData("file:///C:/persistent/Module1.bas")]
+    [InlineData("file://localhost/C%3A/persistent/sub/../%4dodule1.bas?editor#original")]
+    public async Task InScopeConditionalBreakpointFailsLaunchBeforeTheService(string sourceUri)
     {
         var probe = new RecordingVbaDevCapabilitiesProbe(
             new VbaDevCapabilitiesProbeResult(
@@ -4215,6 +4217,9 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var commandLine = CreateCommandLine(
             new StandaloneVbaDebugAdapterStdioRunner(launchService),
             probe);
+        var launchArguments = CreateValidLaunchArguments();
+        var snapshot = Assert.IsType<Dictionary<string, object?>>(launchArguments["sourceSnapshot"]);
+        Assert.Single(Assert.IsType<Dictionary<string, object?>[]>(snapshot["sources"]))["sourceUri"] = sourceUri;
         using var standardInput = CreateDapInput(
             new
             {
@@ -4232,7 +4237,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
                 seq = 2,
                 type = "request",
                 command = "launch",
-                arguments = CreateValidLaunchArguments()
+                arguments = launchArguments
             },
             new
             {
@@ -4563,12 +4568,14 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
             StringComparison.OrdinalIgnoreCase);
     }
 
-    [Fact]
-    public async Task LaunchEmitsVerifiedBreakpointEventAfterNativeTransfer()
+    [Theory]
+    [InlineData("file:///C:/persistent/Module1.bas", @"C:\persistent\Module1.bas")]
+    [InlineData("file://localhost/C%3A/persistent/sub/../%4dodule1.bas?editor#original", @"C:\persistent\Module1.bas")]
+    [InlineData("file:///D:/different/Module1.bas?copied", @"D:\different\Module1.bas")]
+    public async Task LaunchEmitsVerifiedBreakpointEventAfterNativeTransfer(string sourceUri, string sourcePath)
     {
-        const string sourceUri = "file:///C:/persistent/Module1.bas";
         var mappedBreakpoint = new VbeBreakpoint(
-            new DebugSourceBreakpoint(sourceUri, 2),
+            new DebugSourceBreakpoint("file:///C:/persistent/Module1.bas", 2) with { SourceUri = sourceUri },
             new VbeCodeModuleSourceMap(
                 "Module1",
                 VbaTools.Syntax.VbaModuleKind.StandardModule,
@@ -4587,7 +4594,6 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         var contentBase64 = Convert.ToBase64String(DebugSnapshotTestEncoding.Utf8BomBytes(
             "Attribute VB_Name = \"Module1\"\r\nPublic Sub Run()\r\n" +
             "    Debug.Print \"break\"\r\nEnd Sub\r\n"));
-        var sourcePath = new Uri(sourceUri).LocalPath;
         using var standardInput = CreateDapInput(
             new
             {

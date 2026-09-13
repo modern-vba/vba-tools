@@ -154,8 +154,13 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         }
     }
 
-    [Fact]
-    public async Task KnownRestartSourceRejectionRetainsTheCurrentSessionAndItsCompletionMonitor()
+    [Theory]
+    [InlineData("base64", "base64")]
+    [InlineData("raw-source-path", "persistent file URI")]
+    [InlineData("duplicate-breakpoint-identity", "duplicate breakpoint")]
+    [InlineData("duplicate-source-identity", "duplicate identity")]
+    public async Task KnownRestartSourceRejectionRetainsTheCurrentSessionAndItsCompletionMonitor(
+        string rejection, string expectedMessage)
     {
         const string sessionId = "0123456789abcdef0123456789abcdef";
         const string preparationId = "fedcba9876543210fedcba9876543210";
@@ -174,7 +179,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
         initialLaunch["__vbaRestartPreparation"] = new { protocolVersion = 1, id = preparationId, generation = 0 };
         var freshLaunch = CreateSourceRejectionLaunchArguments();
         freshLaunch["__vbaRestartPreparation"] = new { protocolVersion = 1, id = preparationId, generation = 1 };
-        SetLaunchContent(freshLaunch, "not-base64");
+        ApplySourceRejection(freshLaunch, rejection);
         using var prefix = CreateDapInput(
             new { seq = 1, type = "request", command = "launch", arguments = initialLaunch },
             new { seq = 2, type = "request", command = "configurationDone", arguments = new { } },
@@ -208,7 +213,7 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
             var messages = ReadDapMessages(output);
             var restartResponse = AdmissionResponse(messages, 3);
             Assert.False(restartResponse.GetProperty("success").GetBoolean());
-            Assert.Contains("base64", restartResponse.GetProperty("message").GetString(), StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(expectedMessage, restartResponse.GetProperty("message").GetString(), StringComparison.OrdinalIgnoreCase);
             Assert.True(AdmissionResponse(messages, 5).GetProperty("success").GetBoolean());
             Assert.DoesNotContain(messages, message =>
                 message.TryGetProperty("event", out var name) && name.GetString() == "terminated");

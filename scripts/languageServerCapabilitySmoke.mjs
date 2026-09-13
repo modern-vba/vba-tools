@@ -11,6 +11,7 @@ export function verifyLanguageServerCapabilityRejection(file, args, cwd) {
     let phase = 'initialize';
     let failure;
     let cleanupTimer;
+    const sourceUri = 'file:///C:/vba-tools-capability-smoke/%E5%8B%A4%E5%8B%99/Module%20One.bas?capture=1#editor';
     const timer = setTimeout(() => fail(new Error('Language-server capability smoke timed out.')), 15000);
 
     function fail(error) {
@@ -44,18 +45,27 @@ export function verifyLanguageServerCapabilityRejection(file, args, cwd) {
           throw new Error(`The published admission dependency did not reject the expected capability: ${warning}`);
         }
         phase = 'completion';
-        const uri = 'file:///C:/vba-tools-capability-smoke/Module1.bas';
         send({ method: 'textDocument/didOpen', params: { textDocument: {
-          uri, languageId: 'vba', version: 1, text: 'Public Sub Run()\nEnd Sub\n'
+          uri: sourceUri, languageId: 'vba', version: 1,
+          text: 'Private Const AliasValue As Long = 1\nPublic Sub Run()\n    Debug.Print AliasValue\nEnd Sub\n'
         } } });
         send({ id: 2, method: 'textDocument/completion', params: {
-          textDocument: { uri }, position: { line: 0, character: 0 }
+          textDocument: { uri: sourceUri }, position: { line: 0, character: 0 }
         } });
       } else if (phase === 'completion' && message.id === 2) {
         if (!Object.hasOwn(message, 'result')) throw new Error('No completion result after capability rejection.');
+        phase = 'identity';
+        send({ id: 3, method: 'textDocument/definition', params: {
+          textDocument: { uri: 'file:///c%3A/vba-tools-capability-smoke/勤務/Nested/../Module%20One.bas?probe=2#alias' },
+          position: { line: 2, character: 19 }
+        } });
+      } else if (phase === 'identity' && message.id === 3) {
+        if (message.result?.uri !== sourceUri || message.result?.range?.start?.line !== 0) {
+          throw new Error(`Published lexical source identity failed to retain the original definition URI: ${JSON.stringify(message.result)}`);
+        }
         phase = 'shutdown';
-        send({ id: 3, method: 'shutdown', params: null });
-      } else if (phase === 'shutdown' && message.id === 3) {
+        send({ id: 4, method: 'shutdown', params: null });
+      } else if (phase === 'shutdown' && message.id === 4) {
         if (message.result !== null) throw new Error('Language server did not acknowledge shutdown.');
         phase = 'exit';
         send({ method: 'exit', params: null });

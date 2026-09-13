@@ -30,6 +30,9 @@ public sealed class SemanticIdentityReuseTests
 
     [Theory]
     [InlineData("file:///C:/identity-reuse/%E5%8B%A4%E5%8B%99/Module%20One.bas", "file:///c%3A/identity-reuse/%E5%8B%A4%E5%8B%99/Nested/../Module%20One.bas", true)]
+    [InlineData("file:///C:/identity-reuse/%E5%8B%A4%E5%8B%99/Module%20One.bas?source=1#original", "file://localhost/c%3A/identity-reuse/勤務/Nested/../MODULE%20ONE.BAS?query=2#alias", true)]
+    [InlineData("file:///C:/identity-reuse/Module%252FOne.bas?source=1#original", "file:///c:/identity-reuse/Module%252fOne.bas?query=2#alias", true)]
+    [InlineData("file:///C:/identity-reuse/Module%252FOne.bas", "file:///C:/identity-reuse/Module%2FOne.bas", false)]
     [InlineData("file:///C:/identity-reuse/Module.bas", "file:///C:/other/Module.bas", false)]
     [InlineData("untitled:Module.bas", "untitled:module.bas", true)]
     [InlineData("file:///C:/invalid%00path/Module.bas", "file:///C:/invalid%00path/Module.bas", true)]

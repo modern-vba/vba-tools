@@ -157,6 +157,93 @@ test('snapshot capture overlays Unicode-equivalent paths and preserves disk layo
   assert.equal(textReads, 1);
 });
 
+test('snapshot capture retains an overlay editor file URI exactly while keeping disk layout', async () => {
+  const sourceSetPath = path.resolve('C:/Source');
+  const diskPath = path.join(sourceSetPath, 'Nested', 'Module.bas');
+  const editorPath = path.resolve('c:/source/nested/module.bas');
+  const sourceUri = 'file:///c%3a/source/./nested/%6dodule.bas?view=1#cursor';
+  const text = 'Public Sub Captured()\nEnd Sub\n';
+  const editor = {
+    uriScheme: 'file', uriPath: editorPath, sourceUri, fileName: editorPath,
+    isDirty: true, encoding: 'utf8', getText: () => text
+  };
+  const inventory = await captureSnapshotSourceInventory(sourceSetPath, {
+    getActiveWindowsCodePage: () => 65001,
+    getOpenTextDocuments: () => [editor],
+    findSourceFiles: async () => [diskPath],
+    readFile: async () => { throw new Error('The dirty editor must overlay its disk source.'); },
+    encodeText: async value => new TextEncoder().encode(value),
+    decodeText: async bytes => new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  });
+
+  assert.deepEqual(inventory.entries, [{
+    relativePath: path.join('Nested', 'Module.bas'), sourceUri, encoding: 'utf8',
+    bytes: new TextEncoder().encode(text)
+  }]);
+});
+
+test('snapshot capture rejects an invalid editor source URI before acquiring source bytes', async () => {
+  const sourceSetPath = path.resolve('C:/Source');
+  const filePath = path.join(sourceSetPath, 'Module.bas');
+  let captures = 0;
+  const editor = {
+    uriScheme: 'file', uriPath: filePath, sourceUri: 'file:///C:/Source/%GG.bas', fileName: filePath,
+    isDirty: true, encoding: 'utf8', getText: () => { captures += 1; return 'source'; }
+  };
+
+  await assert.rejects(captureSnapshotSourceInventory(sourceSetPath, {
+    getActiveWindowsCodePage: () => 65001,
+    getOpenTextDocuments: () => [editor],
+    findSourceFiles: async () => { captures += 1; return []; },
+    readFile: async () => { captures += 1; return new Uint8Array(); },
+    encodeText: async value => new TextEncoder().encode(value),
+    decodeText: async bytes => new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  }), /source.*URI|URI.*source/i);
+  assert.equal(captures, 0);
+});
+
+test('snapshot capture rejects an editor URI that disagrees with its admitted source-set path', async () => {
+  const sourceSetPath = path.resolve('C:/Source');
+  const filePath = path.join(sourceSetPath, 'Module.bas');
+  let captures = 0;
+  const editor = {
+    uriScheme: 'file', uriPath: filePath, sourceUri: 'file:///C:/Outside/Module.bas', fileName: filePath,
+    isDirty: true, encoding: 'utf8', getText: () => { captures += 1; return 'source'; }
+  };
+
+  await assert.rejects(captureSnapshotSourceInventory(sourceSetPath, {
+    getActiveWindowsCodePage: () => 65001,
+    getOpenTextDocuments: () => [editor],
+    findSourceFiles: async () => { captures += 1; return []; },
+    readFile: async () => { captures += 1; return new Uint8Array(); },
+    encodeText: async value => new TextEncoder().encode(value),
+    decodeText: async bytes => new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  }), /URI.*path|path.*URI/i);
+  assert.equal(captures, 0);
+});
+
+test('snapshot capture reports both original URI spellings for duplicate dirty editor identities', async () => {
+  const sourceSetPath = path.resolve('C:/Source');
+  const filePath = path.join(sourceSetPath, 'Module.bas');
+  const uris = ['file:///C:/Source/Module.bas?editor=1', 'file://localhost/c%3a/Source/%4dodule.bas#editor2'];
+  await assert.rejects(captureSnapshotSourceInventory(sourceSetPath, {
+    getActiveWindowsCodePage: () => 65001,
+    getOpenTextDocuments: () => uris.map(sourceUri => ({
+      uriScheme: 'file', uriPath: filePath, sourceUri, fileName: filePath,
+      isDirty: true, encoding: 'utf8', getText: () => 'same source'
+    })),
+    findSourceFiles: async () => [],
+    readFile: async () => { throw new Error('Duplicate editors must reject before disk access.'); },
+    encodeText: async value => new TextEncoder().encode(value),
+    decodeText: async bytes => new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  }), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /duplicate.*dirty|dirty.*duplicate/i);
+    for (const uri of uris) assert.ok(error.message.includes(uri), error.message);
+    return true;
+  });
+});
+
 test('snapshot capture identifies both equivalent disk paths when rejecting a duplicate inventory', async () => {
   const sourceSetPath = path.resolve('snapshot');
   const diskPaths = ['µ.bas', 'μ.BAS'].map(fileName => path.join(sourceSetPath, fileName));

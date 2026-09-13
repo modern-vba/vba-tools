@@ -68,6 +68,14 @@ VbaDev-owned non-command library interface. Product-spanning process
 verification may be owned by that consumer or by a neutral packaging or
 integration test.
 
+ADR 0049 designates `VbaTools.SourceIdentity` at `tools/vba-source-identity` as
+the neutral owner of lexical file/path identity extracted from Semantics. It performs
+no filesystem I/O and has no product dependency. Semantics retains document kinds, unresolved
+identity, and revision fencing; DAP consumes the narrow foundation directly.
+The extension extends its existing WindowsPathIdentity Module using the same
+data-only URI cases and existing ordinal casing data. Physical ownership and
+module-name identity remain separate owners.
+
 `VbaTools.CapabilityAdmission` at `tools/vba-capability-admission` is also an
 explicitly designated neutral foundation. It admits raw public vba-dev capability
 responses into consumed facts or classified rejection evidence against

@@ -1,0 +1,899 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "id": "ascii-drive",
+      "uri": "file:///C:/Sources/Module.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Sources\\Module.bas",
+        "group": "ascii-module"
+      }
+    },
+    {
+      "id": "drive-no-slash",
+      "uri": "file:C:/Sources/Module.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Sources\\Module.bas",
+        "group": "ascii-module"
+      }
+    },
+    {
+      "id": "drive-one-slash",
+      "uri": "file:/C:/Sources/Module.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Sources\\Module.bas",
+        "group": "ascii-module"
+      }
+    },
+    {
+      "id": "drive-authority",
+      "uri": "file://C:/Sources/Module.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Sources\\Module.bas",
+        "group": "ascii-module"
+      }
+    },
+    {
+      "id": "drive-case",
+      "uri": "FiLe:///c:/sources/MODULE.BAS",
+      "windows": {
+        "accepted": true,
+        "path": "c:\\sources\\MODULE.BAS",
+        "group": "ascii-module"
+      }
+    },
+    {
+      "id": "drive-backslash",
+      "uri": "file:///C:\\Sources\\Module.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Sources\\Module.bas",
+        "group": "ascii-module"
+      }
+    },
+    {
+      "id": "encoded-drive-colon",
+      "uri": "file:///C%3a/Sources/Module.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Sources\\Module.bas",
+        "group": "ascii-module"
+      }
+    },
+    {
+      "id": "escaped-ascii",
+      "uri": "file:///C:/Sources/%4dodule.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Sources\\Module.bas",
+        "group": "ascii-module"
+      }
+    },
+    {
+      "id": "suffix",
+      "uri": "file:///C:/Sources/Module.bas?version=1#L2",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Sources\\Module.bas",
+        "group": "ascii-module"
+      }
+    },
+    {
+      "id": "unconsumed-malformed-suffix",
+      "uri": "file:///C:/Sources/Module.bas?%GG#%ED%A0%80",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Sources\\Module.bas",
+        "group": "ascii-module"
+      }
+    },
+    {
+      "id": "unicode-literal",
+      "uri": "file:///C:/Sources/日本😀.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Sources\\日本😀.bas",
+        "group": "japanese"
+      }
+    },
+    {
+      "id": "unicode-escaped",
+      "uri": "file:///C:/Sources/%E6%97%A5%E6%9C%AC%F0%9F%98%80.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Sources\\日本😀.bas",
+        "group": "japanese"
+      }
+    },
+    {
+      "id": "double-encoded-slash",
+      "uri": "file:///C:/Sources/%252F.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Sources\\%2F.bas",
+        "group": "literal-percent-slash"
+      }
+    },
+    {
+      "id": "double-encoded-backslash",
+      "uri": "file:///C:/Sources/%255C.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Sources\\%5C.bas",
+        "group": "literal-percent-backslash"
+      }
+    },
+    {
+      "id": "escaped-suffix-delimiters",
+      "uri": "file:///C:/Sources/a%23b%3Fc.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Sources\\a#b?c.bas",
+        "group": "literal-suffix"
+      }
+    },
+    {
+      "id": "raw-space",
+      "uri": "file:///C:/Sources/A B.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Sources\\A B.bas",
+        "group": "space"
+      }
+    },
+    {
+      "id": "escaped-space",
+      "uri": "file:///C:/Sources/A%20B.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Sources\\A B.bas",
+        "group": "space"
+      }
+    },
+    {
+      "id": "raw-drive",
+      "uri": "C:\\Sources\\Module.bas",
+      "windows": {
+        "accepted": false
+      }
+    },
+    {
+      "id": "raw-unc",
+      "uri": "\\\\server\\share\\Module.bas",
+      "windows": {
+        "accepted": false
+      }
+    },
+    {
+      "id": "relative",
+      "uri": "Sources/Module.bas",
+      "windows": {
+        "accepted": false
+      }
+    },
+    {
+      "id": "relative-file",
+      "uri": "file:Module.bas",
+      "windows": {
+        "accepted": false
+      }
+    },
+    {
+      "id": "drive-relative",
+      "uri": "file:C:Module.bas",
+      "windows": {
+        "accepted": false
+      }
+    },
+    {
+      "id": "non-file",
+      "uri": "untitled:///C:/Sources/Module.bas",
+      "windows": {
+        "accepted": false
+      }
+    },
+    {
+      "id": "empty",
+      "uri": "",
+      "windows": {
+        "accepted": false
+      }
+    },
+    {
+      "id": "missing-path",
+      "uri": "file:",
+      "windows": {
+        "accepted": false
+      }
+    },
+    {
+      "id": "encoded-slash",
+      "uri": "file:///C:/Sources/a%2fb.bas",
+      "windows": {
+        "accepted": false
+      }
+    },
+    {
+      "id": "encoded-backslash",
+      "uri": "file:///C:/Sources/a%5Cb.bas",
+      "windows": {
+        "accepted": false
+      }
+    },
+    {
+      "id": "encoded-authority-separator",
+      "uri": "file://ser%2fver/share/A.bas",
+      "windows": {
+        "accepted": false
+      }
+    },
+    {
+      "id": "incomplete-escape",
+      "uri": "file:///C:/a%",
+      "windows": {
+        "accepted": false
+      }
+    },
+    {
+      "id": "nonhex-escape",
+      "uri": "file:///C:/a%GG",
+      "windows": {
+        "accepted": false
+      }
+    },
+    {
+      "id": "utf8-overlong",
+      "uri": "file:///C:/a%C0%AF",
+      "windows": {
+        "accepted": false
+      }
+    },
+    {
+      "id": "utf8-surrogate",
+      "uri": "file:///C:/a%ED%A0%80",
+      "windows": {
+        "accepted": false
+      }
+    },
+    {
+      "id": "utf8-too-large",
+      "uri": "file:///C:/a%F4%90%80%80",
+      "windows": {
+        "accepted": false
+      }
+    },
+    {
+      "id": "utf8-truncated",
+      "uri": "file:///C:/a%E6%97",
+      "windows": {
+        "accepted": false
+      }
+    },
+    {
+      "id": "utf8-continuation",
+      "uri": "file:///C:/a%80",
+      "windows": {
+        "accepted": false
+      }
+    },
+    {
+      "id": "escaped-nul",
+      "uri": "file:///C:/a%00",
+      "windows": {
+        "accepted": false
+      }
+    },
+    {
+      "id": "raw-nul",
+      "uri": "file:///C:/a\u0000",
+      "windows": {
+        "accepted": false
+      }
+    },
+    {
+      "id": "localhost-drive",
+      "uri": "file://localhost/C:/Sources/Module.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Sources\\Module.bas",
+        "group": "ascii-module"
+      }
+    },
+    {
+      "id": "localhost-drive-case",
+      "uri": "file://LOCALHOST/c:/sources/module.bas",
+      "windows": {
+        "accepted": true,
+        "path": "c:\\sources\\module.bas",
+        "group": "ascii-module"
+      }
+    },
+    {
+      "id": "drive-dot",
+      "uri": "file:///C:/Sources/sub/.././Module.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Sources\\Module.bas",
+        "group": "ascii-module"
+      }
+    },
+    {
+      "id": "drive-escaped-dot",
+      "uri": "file:///C:/Sources/sub/%2e%2E/Module.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Sources\\Module.bas",
+        "group": "ascii-module"
+      }
+    },
+    {
+      "id": "drive-root-bound",
+      "uri": "file:///C:/../../Sources/Module.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Sources\\Module.bas",
+        "group": "ascii-module"
+      }
+    },
+    {
+      "id": "repeated-separators",
+      "uri": "file:///C:/Sources///Module.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Sources\\Module.bas",
+        "group": "ascii-module"
+      }
+    },
+    {
+      "id": "drive-root",
+      "uri": "file:///C:/",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\",
+        "group": "drive-root"
+      }
+    },
+    {
+      "id": "drive-root-dot",
+      "uri": "file:///C:/sub/..",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\",
+        "group": "drive-root"
+      }
+    },
+    {
+      "id": "unc",
+      "uri": "file://server/share/Sources/Module.bas",
+      "windows": {
+        "accepted": true,
+        "path": "\\\\server\\share\\Sources\\Module.bas",
+        "group": "unc-module"
+      }
+    },
+    {
+      "id": "unc-case",
+      "uri": "file://SERVER/SHARE/sources/MODULE.bas",
+      "windows": {
+        "accepted": true,
+        "path": "\\\\SERVER\\SHARE\\sources\\MODULE.bas",
+        "group": "unc-module"
+      }
+    },
+    {
+      "id": "unc-dot",
+      "uri": "file://server/share/extra/../Sources/Module.bas",
+      "windows": {
+        "accepted": true,
+        "path": "\\\\server\\share\\Sources\\Module.bas",
+        "group": "unc-module"
+      }
+    },
+    {
+      "id": "unc-root-bound",
+      "uri": "file://server/share/../../Sources/Module.bas",
+      "windows": {
+        "accepted": true,
+        "path": "\\\\server\\share\\Sources\\Module.bas",
+        "group": "unc-module"
+      }
+    },
+    {
+      "id": "unc-backslash",
+      "uri": "file:\\\\server\\share\\Sources\\Module.bas",
+      "windows": {
+        "accepted": true,
+        "path": "\\\\server\\share\\Sources\\Module.bas",
+        "group": "unc-module"
+      }
+    },
+    {
+      "id": "unc-four-slash",
+      "uri": "file:////server/share/Sources/Module.bas",
+      "windows": {
+        "accepted": true,
+        "path": "\\\\server\\share\\Sources\\Module.bas",
+        "group": "unc-module"
+      }
+    },
+    {
+      "id": "unc-root",
+      "uri": "file://server/share",
+      "windows": {
+        "accepted": true,
+        "path": "\\\\server\\share\\",
+        "group": "unc-root"
+      }
+    },
+    {
+      "id": "unc-root-slash",
+      "uri": "file://server/share/",
+      "windows": {
+        "accepted": true,
+        "path": "\\\\server\\share\\",
+        "group": "unc-root"
+      }
+    },
+    {
+      "id": "localhost-unc",
+      "uri": "file://localhost/share/Module.bas",
+      "windows": {
+        "accepted": true,
+        "path": "\\\\localhost\\share\\Module.bas",
+        "group": "localhost-unc"
+      },
+      "posix": {
+        "accepted": true,
+        "path": "/share/Module.bas",
+        "group": "posix-localhost-share"
+      }
+    },
+    {
+      "id": "unc-missing-share",
+      "uri": "file://server",
+      "windows": {
+        "accepted": false
+      }
+    },
+    {
+      "id": "unc-empty-share",
+      "uri": "file://server/",
+      "windows": {
+        "accepted": false
+      }
+    },
+    {
+      "id": "unc-dot-share",
+      "uri": "file://server/./a",
+      "windows": {
+        "accepted": false
+      }
+    },
+    {
+      "id": "unc-dotdot-share",
+      "uri": "file://server/../a",
+      "windows": {
+        "accepted": false
+      }
+    },
+    {
+      "id": "authority-userinfo",
+      "uri": "file://user@server/share/A.bas",
+      "windows": {
+        "accepted": false
+      }
+    },
+    {
+      "id": "authority-port",
+      "uri": "file://server:123/share/A.bas",
+      "windows": {
+        "accepted": false
+      }
+    },
+    {
+      "id": "legacy-drive-bar",
+      "uri": "file:///C|/Sources/Module.bas",
+      "windows": {
+        "accepted": false
+      },
+      "posix": {
+        "accepted": true,
+        "path": "/C|/Sources/Module.bas",
+        "group": "posix-drive-bar"
+      }
+    },
+    {
+      "id": "sigma-upper",
+      "uri": "file:///C:/Unicode/Σ.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Unicode\\Σ.bas",
+        "group": "sigma"
+      }
+    },
+    {
+      "id": "sigma-lower",
+      "uri": "file:///C:/Unicode/σ.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Unicode\\σ.bas",
+        "group": "sigma"
+      }
+    },
+    {
+      "id": "sigma-final",
+      "uri": "file:///C:/Unicode/ς.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Unicode\\ς.bas",
+        "group": "sigma"
+      }
+    },
+    {
+      "id": "micro-sign",
+      "uri": "file:///C:/Unicode/µ.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Unicode\\µ.bas",
+        "group": "mu"
+      }
+    },
+    {
+      "id": "mu-upper",
+      "uri": "file:///C:/Unicode/Μ.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Unicode\\Μ.bas",
+        "group": "mu"
+      }
+    },
+    {
+      "id": "mu-lower",
+      "uri": "file:///C:/Unicode/μ.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Unicode\\μ.bas",
+        "group": "mu"
+      }
+    },
+    {
+      "id": "deseret-upper",
+      "uri": "file:///C:/Unicode/𐐀.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Unicode\\𐐀.bas",
+        "group": "deseret"
+      }
+    },
+    {
+      "id": "deseret-lower",
+      "uri": "file:///C:/Unicode/𐐨.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Unicode\\𐐨.bas",
+        "group": "deseret"
+      }
+    },
+    {
+      "id": "latin-k",
+      "uri": "file:///C:/Unicode/K.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Unicode\\K.bas",
+        "group": "latin-k"
+      }
+    },
+    {
+      "id": "kelvin-sign",
+      "uri": "file:///C:/Unicode/K.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Unicode\\K.bas",
+        "group": "kelvin"
+      }
+    },
+    {
+      "id": "nfc",
+      "uri": "file:///C:/Unicode/é.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Unicode\\é.bas",
+        "group": "nfc"
+      }
+    },
+    {
+      "id": "nfd",
+      "uri": "file:///C:/Unicode/é.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Unicode\\é.bas",
+        "group": "nfd"
+      }
+    },
+    {
+      "id": "sharp-s",
+      "uri": "file:///C:/Unicode/ß.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Unicode\\ß.bas",
+        "group": "sharp-s"
+      }
+    },
+    {
+      "id": "ss",
+      "uri": "file:///C:/Unicode/SS.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Unicode\\SS.bas",
+        "group": "ss"
+      }
+    },
+    {
+      "id": "latin-i",
+      "uri": "file:///C:/Unicode/I.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Unicode\\I.bas",
+        "group": "latin-i"
+      }
+    },
+    {
+      "id": "dotless-i",
+      "uri": "file:///C:/Unicode/ı.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Unicode\\ı.bas",
+        "group": "dotless-i"
+      }
+    },
+    {
+      "id": "posix-absolute",
+      "uri": "file:///tmp/Sources/A.bas",
+      "windows": {
+        "accepted": false
+      },
+      "posix": {
+        "accepted": true,
+        "path": "/tmp/Sources/A.bas",
+        "group": "posix-a"
+      }
+    },
+    {
+      "id": "posix-one-slash",
+      "uri": "file:/tmp/Sources/A.bas",
+      "windows": {
+        "accepted": false
+      },
+      "posix": {
+        "accepted": true,
+        "path": "/tmp/Sources/A.bas",
+        "group": "posix-a"
+      }
+    },
+    {
+      "id": "posix-localhost",
+      "uri": "file://localhost/tmp/Sources/A.bas",
+      "windows": {
+        "accepted": true,
+        "path": "\\\\localhost\\tmp\\Sources\\A.bas",
+        "group": "localhost-tmp"
+      },
+      "posix": {
+        "accepted": true,
+        "path": "/tmp/Sources/A.bas",
+        "group": "posix-a"
+      }
+    },
+    {
+      "id": "posix-dots",
+      "uri": "file:///tmp/Sources/sub/../A.bas",
+      "windows": {
+        "accepted": false
+      },
+      "posix": {
+        "accepted": true,
+        "path": "/tmp/Sources/A.bas",
+        "group": "posix-a"
+      }
+    },
+    {
+      "id": "posix-escaped",
+      "uri": "file:///tmp/Sources/%41.bas?version=1",
+      "windows": {
+        "accepted": false
+      },
+      "posix": {
+        "accepted": true,
+        "path": "/tmp/Sources/A.bas",
+        "group": "posix-a"
+      }
+    },
+    {
+      "id": "posix-case",
+      "uri": "file:///tmp/Sources/a.bas",
+      "windows": {
+        "accepted": false
+      },
+      "posix": {
+        "accepted": true,
+        "path": "/tmp/Sources/a.bas",
+        "group": "posix-lower-a"
+      }
+    },
+    {
+      "id": "posix-backslash-filename",
+      "uri": "file:///tmp/Sources/a\\b.bas",
+      "windows": {
+        "accepted": false
+      },
+      "posix": {
+        "accepted": true,
+        "path": "/tmp/Sources/a\\b.bas",
+        "group": "posix-backslash"
+      }
+    },
+    {
+      "id": "posix-root-bound",
+      "uri": "file:///../../tmp/Sources/A.bas",
+      "windows": {
+        "accepted": false
+      },
+      "posix": {
+        "accepted": true,
+        "path": "/tmp/Sources/A.bas",
+        "group": "posix-a"
+      }
+    },
+    {
+      "id": "posix-root",
+      "uri": "file:///",
+      "windows": {
+        "accepted": false
+      },
+      "posix": {
+        "accepted": true,
+        "path": "/",
+        "group": "posix-root"
+      }
+    },
+    {
+      "id": "drive-trailing-separator",
+      "uri": "file:///C:/Sources/Module.bas/",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Sources\\Module.bas",
+        "group": "ascii-module"
+      }
+    },
+    {
+      "id": "unc-trailing-separator",
+      "uri": "file://server/share/Sources/Module.bas/",
+      "windows": {
+        "accepted": true,
+        "path": "\\\\server\\share\\Sources\\Module.bas",
+        "group": "unc-module"
+      }
+    },
+    {
+      "id": "unc-repeated-leading-separators",
+      "uri": "file://///server/share/Sources/Module.bas",
+      "windows": {
+        "accepted": true,
+        "path": "\\\\server\\share\\Sources\\Module.bas",
+        "group": "unc-module"
+      }
+    },
+    {
+      "id": "unc-repeated-share-separators",
+      "uri": "file://server///share/Sources/Module.bas",
+      "windows": {
+        "accepted": true,
+        "path": "\\\\server\\share\\Sources\\Module.bas",
+        "group": "unc-module"
+      }
+    },
+    {
+      "id": "literal-path-colon",
+      "uri": "file:///C:/Sources/a:b.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Sources\\a:b.bas",
+        "group": "colon"
+      }
+    },
+    {
+      "id": "escaped-path-colon",
+      "uri": "file:///C:/Sources/a%3Ab.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Sources\\a:b.bas",
+        "group": "colon"
+      }
+    },
+    {
+      "id": "unc-drive-looking-share",
+      "uri": "file://arbitrary/C:/Sources/Module.bas",
+      "windows": {
+        "accepted": true,
+        "path": "\\\\arbitrary\\C:\\Sources\\Module.bas",
+        "group": "unc-drive-share"
+      }
+    },
+    {
+      "id": "invalid-authority-space",
+      "uri": "file://bad host/share/A.bas",
+      "windows": {
+        "accepted": false
+      }
+    },
+    {
+      "id": "invalid-authority-bracket",
+      "uri": "file://[server]/share/A.bas",
+      "windows": {
+        "accepted": false
+      }
+    },
+    {
+      "id": "unc-cannot-become-drive",
+      "uri": "file:////C:/A.bas",
+      "windows": {
+        "accepted": false
+      },
+      "posix": {
+        "accepted": false
+      }
+    },
+    {
+      "id": "four-slash-localhost-remains-unc",
+      "uri": "file:////localhost/share/Module.bas",
+      "windows": {
+        "accepted": true,
+        "path": "\\\\localhost\\share\\Module.bas",
+        "group": "localhost-unc"
+      },
+      "posix": {
+        "accepted": true,
+        "path": "\\\\localhost\\share\\Module.bas",
+        "group": "localhost-unc"
+      }
+    },
+    {
+      "id": "localhost-repeated-slash-drive",
+      "uri": "file://localhost//C:/Sources/Module.bas",
+      "windows": {
+        "accepted": true,
+        "path": "C:\\Sources\\Module.bas",
+        "group": "ascii-module"
+      },
+      "posix": {
+        "accepted": true,
+        "path": "C:\\Sources\\Module.bas",
+        "group": "ascii-module"
+      }
+    },
+    {
+      "id": "dot-authority",
+      "uri": "file://./share/A.bas",
+      "windows": {
+        "accepted": false
+      },
+      "posix": {
+        "accepted": false
+      }
+    },
+    {
+      "id": "dotdot-authority",
+      "uri": "file://../share/A.bas",
+      "windows": {
+        "accepted": false
+      },
+      "posix": {
+        "accepted": false
+      }
+    }
+  ]
+}

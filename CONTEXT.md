@@ -2186,9 +2186,29 @@ generated/opened-workbook comparison. Neither substitutes a part digest for a
 whole-package identity. There is no product-selectable parsing policy.
 _Avoid_: source snapshot, filesystem identity, syntax parser, debug settings DTO
 
+**SourceIdentity**:
+Lexical file identity shared by the neutral C# `VbaTools.SourceIdentity`
+foundation and the extension's existing `WindowsPathIdentity` Module. Explicit
+absolute file URIs establish Windows drive or UNC identity without filesystem,
+link, short-name, DNS, or drive-mapping queries. URI escapes are decoded once
+using strict UTF-8; encoded slash/backslash, malformed escapes, and raw paths in
+URI fields cannot establish local identity. Double-encoded separators remain
+literal filename text. Drive colons may be escaped, separators and dot segments
+normalize lexically, and localhost drive URIs identify local drive paths.
+Windows comparison uses .NET OrdinalIgnoreCase and the existing generated
+TypeScript table: NFC/NFD and K/Kelvin remain distinct. Query/fragment do not
+contribute to equality. Callers retain the exact original URI for transport and
+presentation; identity never supplies replacement display text. Snapshot source,
+active-position, and breakpoint lookup use typed identity, rejecting duplicate
+sources and same-identity/same-line breakpoints even when their contents agree.
+Identity does not choose inventory or breakpoint order, module-name identity,
+source-set membership, encoding, generation, or physical ownership. Separate
+path-taking fields and non-Windows native paths retain their own contracts.
+_Avoid_: physical file identity, normalized display URI, module identity, source revision
+
 **VbaDocumentIdentity**:
 The opaque equality identity of one language-server source document, represented
-by a canonical local full path for a file URI or by the stable normalized URI
+by the shared `SourceIdentity` local path for an admitted file URI or by the stable normalized URI
 for a non-file document. It remains separate from source revision and
 `DiskContentIdentity`. A syntactically valid file URI whose local path cannot be
 canonicalized retains an unresolved typed identity for conservative revision
