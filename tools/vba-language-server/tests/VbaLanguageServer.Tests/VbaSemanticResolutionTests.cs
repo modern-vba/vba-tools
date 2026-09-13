@@ -881,7 +881,7 @@ public sealed class VbaSemanticResolutionTests
             VbaProjectReferenceCatalogSet.CreateBundled());
 
         Assert.Equal(
-            "Function MsgBox(Prompt, Buttons, Title)",
+            "Function MsgBox(Prompt, [Buttons], [Title], [HelpFile], [Context])",
             index.GetSignatureHelp(uri, 2, "    MsgBox(".Length)?.Signature.Label);
         Assert.Equal(
             "Function Run(Macro, [Arg1])",

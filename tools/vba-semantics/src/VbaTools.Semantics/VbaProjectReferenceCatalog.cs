@@ -155,11 +155,13 @@ public sealed class VbaProjectReferenceCatalogSet
                         VbaSourceDefinitionKind.Procedure,
                         "Displays a message in a dialog box.",
                         new VbaCallableSignature(
-                            "MsgBox(Prompt, Buttons, Title)",
+                            "MsgBox(Prompt, [Buttons], [Title], [HelpFile], [Context])",
                             [
                                 new VbaCallableParameter("Prompt", "The message to display."),
-                                new VbaCallableParameter("Buttons", "The buttons and icon style."),
-                                new VbaCallableParameter("Title", "The dialog box title.")
+                                new VbaCallableParameter("Buttons", "The buttons and icon style.", IsOptional: true),
+                                new VbaCallableParameter("Title", "The dialog box title.", IsOptional: true),
+                                new VbaCallableParameter("HelpFile", "The Help file to use with Context.", IsOptional: true),
+                                new VbaCallableParameter("Context", "The Help context number to use with HelpFile.", IsOptional: true)
                             ],
                             "Displays a message in a dialog box.",
                             CallableKind: VbaCallableKind.Function,
