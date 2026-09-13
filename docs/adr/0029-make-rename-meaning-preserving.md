@@ -57,6 +57,30 @@ recovered WithEvents variable. Unrelated unchanged unknowns do not veto a plan.
 No qualifier or As clause is inserted to compensate for a meaning-changing
 Rename. Existing whole-edit binding and conditional-call proofs remain required.
 
+## Source-text edit ownership
+
+`VbaTools.Syntax` owns exact UTF-16 coordinate conversion and validation and
+application of a replacement collection against one immutable `VbaSourceText`.
+CRLF, LF, CR, and mixed-newline inputs use the same source-line authority.
+The strict edit Interface rejects inexact positions, including offsets inside
+CRLF, without changing the existing general `PositionAt` projection. A validated
+`VbaSourceTextEditResult` retains the before/after source, replacement spans,
+length deltas, and unchanged-region correspondence without normalizing newlines
+or assigning arbitrary replaced interior positions a clamped destination.
+
+Rename retains those results per document and separately for the requested edit
+and ADR 0050's collision-free control edit. Hypothetical inventories consume the
+corresponding `After.Text`; physical correspondence uses the same retained
+result. Identifier-boundary meaning, dependent prefix/suffix transformations,
+semantic edit deduplication, and collision and preservation proofs remain
+Rename-owned. Syntax does not decide what an edited name means.
+
+This ownership follows ADR 0010's reusable product-neutral syntax model and
+ADR 0017's immutable Semantic Inventory. It changes neither this ADR's semantic
+Rename proof nor ADR 0050's intentional-collision authority. The edit Module
+introduces no LSP dependency, mutable inventory, Undo/history, or multi-document
+transaction contract.
+
 ## Existing Rename contracts
 
 VbaLanguageServer treats Rename as a semantic refactoring rather than a

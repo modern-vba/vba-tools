@@ -1495,6 +1495,31 @@ public sealed class VbaSemanticInventory
         VbaRenameCollisionMode collisionMode = VbaRenameCollisionMode.Reject,
         bool retainOriginalPaths = false)
     {
+        try
+        {
+            return CreateRenameResultCore(
+                uri, line, character, newName, cancellationToken,
+                projectIdentityRead, collisionMode, retainOriginalPaths);
+        }
+        catch (VbaRenameCorrespondenceException)
+        {
+            return new VbaRenameResult(
+                Plan: null,
+                ResolutionChanged(
+                    "Rename could not preserve a semantic boundary inside a replaced identifier."));
+        }
+    }
+
+    private VbaRenameResult CreateRenameResultCore(
+        string uri,
+        int line,
+        int character,
+        string newName,
+        CancellationToken cancellationToken = default,
+        VbaProjectIdentityReadResult? projectIdentityRead = null,
+        VbaRenameCollisionMode collisionMode = VbaRenameCollisionMode.Reject,
+        bool retainOriginalPaths = false)
+    {
         cancellationToken.ThrowIfCancellationRequested();
         var nameFailure = ValidateRenameName(newName);
         if (nameFailure is not null)
@@ -1959,6 +1984,7 @@ public sealed class VbaSemanticInventory
                     FormSourceUnits = formSourceUnit is null
                         ? []
                         : [formSourceUnit],
+                    TextChanges = changes,
                     TargetCorrespondence = targetCorrespondence
                 },
             Failure: null,
@@ -2103,9 +2129,9 @@ public sealed class VbaSemanticInventory
         return null;
     }
 
-    private static VbaRenameFailure? TryCreateRenameChangeSet(
+    private VbaRenameFailure? TryCreateRenameChangeSet(
         IEnumerable<KeyValuePair<string, VbaTextEdit>> plannedEdits,
-        out IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes)
+        out VbaRenameTextChanges changes)
     {
         var result = new Dictionary<string, IReadOnlyList<VbaTextEdit>>(
             StringComparer.OrdinalIgnoreCase);
@@ -2126,10 +2152,7 @@ public sealed class VbaSemanticInventory
                     .ToArray();
                 if (replacements.Length != 1)
                 {
-                    changes = new Dictionary<
-                        string,
-                        IReadOnlyList<VbaTextEdit>>(
-                            StringComparer.OrdinalIgnoreCase);
+                    changes = VbaRenameTextChanges.Empty;
                     return AnalysisIncomplete(
                         "Rename produced conflicting replacements for one "
                         + "source range.");
@@ -2149,47 +2172,24 @@ public sealed class VbaSemanticInventory
                     : left.Range.Start.Character.CompareTo(
                         right.Range.Start.Character);
             });
-            for (var index = 0; index < edits.Count; index++)
-            {
-                for (var laterIndex = index + 1;
-                     laterIndex < edits.Count;
-                     laterIndex++)
-                {
-                    if (!IsStrictlyBefore(
-                            edits[laterIndex].Range.Start,
-                            edits[index].Range.End))
-                    {
-                        break;
-                    }
-
-                    if (IsStrictlyBefore(
-                        edits[index].Range.Start,
-                        edits[laterIndex].Range.End))
-                    {
-                        changes = new Dictionary<
-                            string,
-                            IReadOnlyList<VbaTextEdit>>(
-                                StringComparer.OrdinalIgnoreCase);
-                        return AnalysisIncomplete(
-                            "Rename produced overlapping source edits that "
-                            + "could not be applied atomically.");
-                    }
-                }
-            }
-
             result[documentGroup.Key] = edits.ToArray();
         }
 
-        changes = result;
+        if (!VbaRenameTextChanges.TryCreate(
+                result,
+                uri => definitionCandidates.FindDocument(uri) is { } document
+                    ? document.SyntaxTree?.SourceText ?? VbaSourceText.From(document.Text)
+                    : null,
+                out var validated))
+        {
+            changes = VbaRenameTextChanges.Empty;
+            return AnalysisIncomplete(
+                "Rename produced invalid or overlapping source edits that could not be applied atomically.");
+        }
+
+        changes = validated;
         return null;
     }
-
-    private static bool IsStrictlyBefore(
-        VbaPosition left,
-        VbaPosition right)
-        => left.Line < right.Line
-            || left.Line == right.Line
-                && left.Character < right.Character;
 
     private IReadOnlyList<KeyValuePair<string, VbaTextEdit>>
         CreateInterfaceDependentRenameEdits(
@@ -3470,7 +3470,7 @@ public sealed class VbaSemanticInventory
     private VbaRenameFailure? ProveBindingsArePreserved(
         VbaSourceDefinition target,
         IReadOnlyList<VbaResolvedIdentifierOccurrence> targetOccurrences,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameTextChanges changes,
         string newName,
         CancellationToken cancellationToken,
         out VbaRenameTargetCorrespondence? targetCorrespondence,
@@ -3808,7 +3808,7 @@ public sealed class VbaSemanticInventory
         VbaSemanticOccurrence occurrence,
         VbaRange mappedRange,
         VbaNameResolutionOutcome after,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameTextChanges changes,
         VbaRenameCollisionProof? proof)
     {
         if (proof is null || occurrence.Classification is not (VbaNameResolutionKind.Unresolved or VbaNameResolutionKind.Ambiguous)
@@ -3818,7 +3818,7 @@ public sealed class VbaSemanticInventory
             return false;
         }
 
-        var controlRange = MapRange(occurrence.Uri, occurrence.Range, proof.ControlPlan.Changes);
+        var controlRange = MapRange(occurrence.Uri, occurrence.Range, proof.ControlChanges);
         var control = proof.ControlInventory.semanticResolution.ClassifySourceDefinition(
             occurrence.Uri, controlRange.Start.Line, controlRange.Start.Character);
         if (control.Kind != occurrence.Classification)
@@ -3869,7 +3869,7 @@ public sealed class VbaSemanticInventory
     private IEnumerable<VbaRenameConflict> FindBindingCaptureCollisions(
         VbaSourceDefinition target,
         string newName,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameTextChanges changes,
         CancellationToken cancellationToken)
     {
         var targets = GetLogicalRenameTargetDefinitions(target);
@@ -3976,7 +3976,7 @@ public sealed class VbaSemanticInventory
         int character,
         VbaSourceDefinition target,
         string newName,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameTextChanges changes,
         IReadOnlyList<VbaRenameConflict> conflicts,
         VbaProjectIdentityReadResult? projectIdentityRead,
         bool retainOriginalPaths,
@@ -4012,7 +4012,7 @@ public sealed class VbaSemanticInventory
         {
             return control.Failure;
         }
-        if (control.Plan?.TargetCorrespondence is null)
+        if (control.Plan?.TargetCorrespondence is null || control.Plan.TextChanges is not { } controlChanges)
         {
             return AnalysisIncomplete("Rename could not establish an independent declaration correspondence before collision review.");
         }
@@ -4028,19 +4028,22 @@ public sealed class VbaSemanticInventory
 
         proof = new VbaRenameCollisionProof(
             conflicts,
-            CreateHypotheticalInventory(control.Plan.Changes, cancellationToken),
-            control.Plan);
+            CreateHypotheticalInventory(controlChanges, cancellationToken),
+            control.Plan,
+            controlChanges);
         return null;
     }
 
     private sealed class VbaRenameCollisionProof(
         IReadOnlyList<VbaRenameConflict> conflicts,
         VbaSemanticInventory controlInventory,
-        VbaRenamePlan controlPlan)
+        VbaRenamePlan controlPlan,
+        VbaRenameTextChanges controlChanges)
     {
         public IReadOnlyList<VbaRenameConflict> Conflicts { get; } = conflicts;
         public VbaSemanticInventory ControlInventory { get; } = controlInventory;
         public VbaRenamePlan ControlPlan { get; } = controlPlan;
+        public VbaRenameTextChanges ControlChanges { get; } = controlChanges;
 
         public List<VbaRenameImpact> Impacts { get; } = conflicts.Select(conflict => new VbaRenameImpact(
             VbaRenameImpactKind.DeclarationCollision,
@@ -4052,7 +4055,7 @@ public sealed class VbaSemanticInventory
     private IReadOnlyList<VbaRenameCausalDefinitionCorrespondence>? CreateCollisionDeclarationCorrespondences(
         VbaSemanticInventory hypothetical,
         VbaSourceDefinition target,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameTextChanges changes,
         VbaRenameCollisionProof? proof)
     {
         if (proof is null)
@@ -4083,13 +4086,13 @@ public sealed class VbaSemanticInventory
         var results = new List<VbaRenameCausalDefinitionCorrespondence>();
         foreach (var before in originalDefinitions.Concat(collidingDefinitions).DistinctBy(definition => definition.Identity))
         {
-            var control = FindHypotheticalDefinition(proof.ControlInventory, before, proof.ControlPlan.Changes);
+            var control = FindHypotheticalDefinition(proof.ControlInventory, before, proof.ControlChanges);
             var after = FindHypotheticalDefinition(hypothetical, before, changes);
             if (control is null || after is null
                 || before.Kind != after.Kind || before.PropertyAccessorKind != after.PropertyAccessorKind
                 || before.Visibility != after.Visibility
                 || !AreConditionalCompilationPathsCorrespondent(before, after, changes)
-                || !AreConditionalCompilationPathsCorrespondent(before, control, proof.ControlPlan.Changes)
+                || !AreConditionalCompilationPathsCorrespondent(before, control, proof.ControlChanges)
                 || results.Count > 0 && !results[0].AfterDefinition.Name.Equals(after.Name, StringComparison.OrdinalIgnoreCase))
             {
                 return null;
@@ -4104,7 +4107,7 @@ public sealed class VbaSemanticInventory
         VbaSourceDefinition target,
         VbaResolvedIdentifierOccurrence occurrence,
         VbaRange mappedRange,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameTextChanges changes,
         VbaRenameCollisionProof? proof,
         VbaRenameImpactKind impactKind)
     {
@@ -4119,7 +4122,7 @@ public sealed class VbaSemanticInventory
             return false;
         }
         var selectedCause = causes.Single(cause => cause.BeforeDefinition.Identity == occurrence.Target.SelectedDefinition.Identity);
-        var controlRange = MapRange(occurrence.Uri, occurrence.Range, proof.ControlPlan.Changes);
+        var controlRange = MapRange(occurrence.Uri, occurrence.Range, proof.ControlChanges);
         var controlClassification = IsDeclarationOccurrence(occurrence)
             ? VbaNameResolutionOutcome.Resolved(proof.ControlInventory.resolutionPolicy.CreateNameTarget(selectedCause.ControlDefinition))
             : proof.ControlInventory.semanticResolution.ClassifySourceDefinition(
@@ -4169,7 +4172,7 @@ public sealed class VbaSemanticInventory
         VbaSourceDefinition target,
         VbaResolvedIdentifierOccurrence occurrence,
         VbaRange mappedRange,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameTextChanges changes,
         VbaRenameCollisionProof? proof,
         VbaRenameImpactKind impactKind)
     {
@@ -4186,7 +4189,7 @@ public sealed class VbaSemanticInventory
             return false;
         }
         var causes = CreateCollisionDeclarationCorrespondences(hypothetical, target, changes, proof);
-        var controlRange = MapRange(occurrence.Uri, occurrence.Range, proof.ControlPlan.Changes);
+        var controlRange = MapRange(occurrence.Uri, occurrence.Range, proof.ControlChanges);
         var before = semanticResolution.ResolveMemberChainAt(
             occurrence.Uri, occurrence.Range.Start.Line, occurrence.Range.Start.Character);
         var control = proof.ControlInventory.semanticResolution.ResolveMemberChainAt(
@@ -4200,7 +4203,7 @@ public sealed class VbaSemanticInventory
             || control.ReceiverType?.SourceDefinition is not { } controlType
             || after?.StopReason != VbaMemberChainResolutionStopReason.UnresolvedMember || after.Member is not null
             || after.ReceiverType?.SourceDefinition is not { } afterType
-            || FindHypotheticalDefinition(proof.ControlInventory, beforeType, proof.ControlPlan.Changes)?.Identity != controlType.Identity
+            || FindHypotheticalDefinition(proof.ControlInventory, beforeType, proof.ControlChanges)?.Identity != controlType.Identity
             || FindHypotheticalDefinition(hypothetical, beforeType, changes)?.Identity != afterType.Identity
             || causes.Any(cause => !IsMemberOwnedByType(cause.BeforeDefinition, beforeType)
                 || !IsMemberOwnedByType(cause.ControlDefinition, controlType)
@@ -4239,7 +4242,7 @@ public sealed class VbaSemanticInventory
         VbaRange range,
         VbaRange mappedRange,
         VbaNameResolutionOutcome before,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameTextChanges changes,
         VbaRenameCollisionProof? proof,
         VbaRenameImpactKind impactKind)
     {
@@ -4257,7 +4260,7 @@ public sealed class VbaSemanticInventory
         {
             return false;
         }
-        var moduleControl = FindHypotheticalDefinition(proof.ControlInventory, target, proof.ControlPlan.Changes);
+        var moduleControl = FindHypotheticalDefinition(proof.ControlInventory, target, proof.ControlChanges);
         var moduleAfter = FindHypotheticalDefinition(hypothetical, target, changes);
         if (moduleControl is null || moduleAfter is null
             || !access.Segments[0].Name.Equals(moduleAfter.Name, StringComparison.OrdinalIgnoreCase))
@@ -4266,9 +4269,9 @@ public sealed class VbaSemanticInventory
         }
         var qualifierRange = ToRange(access.Segments[0].Range);
         var memberRange = ToRange(access.Segments[1].Range);
-        var controlQualifierRange = MapRange(uri, qualifierRange, proof.ControlPlan.Changes);
+        var controlQualifierRange = MapRange(uri, qualifierRange, proof.ControlChanges);
         var afterQualifierRange = MapRange(uri, qualifierRange, changes);
-        var controlMemberRange = MapRange(uri, memberRange, proof.ControlPlan.Changes);
+        var controlMemberRange = MapRange(uri, memberRange, proof.ControlChanges);
         var afterMemberRange = MapRange(uri, memberRange, changes);
         var beforeQualifier = semanticResolution.ClassifySourceDefinition(uri, qualifierRange.Start.Line, qualifierRange.Start.Character);
         var controlQualifier = proof.ControlInventory.semanticResolution.ClassifySourceDefinition(
@@ -4322,7 +4325,7 @@ public sealed class VbaSemanticInventory
             .Select(definition => new
             {
                 Before = definition,
-                Control = FindHypotheticalDefinition(proof.ControlInventory, definition, proof.ControlPlan.Changes),
+                Control = FindHypotheticalDefinition(proof.ControlInventory, definition, proof.ControlChanges),
                 After = FindHypotheticalDefinition(hypothetical, definition, changes)
             }).Where(cause => cause.After is not null && actualMembers.Contains(cause.After.Identity)).ToArray();
         if (memberCauses.Any(cause => cause.Control is null)
@@ -4332,7 +4335,7 @@ public sealed class VbaSemanticInventory
             return false;
         }
         var moduleCause = new VbaRenameCausalDefinitionCorrespondence(target, moduleControl, moduleAfter);
-        var controlRange = MapRange(uri, range, proof.ControlPlan.Changes);
+        var controlRange = MapRange(uri, range, proof.ControlChanges);
         proof.Impacts.Add(new VbaRenameImpact(impactKind,
             "The confirmed project-name collision captures this established library-qualified reference through the renamed source module; its text is retained.",
             uri, range)
@@ -4354,7 +4357,7 @@ public sealed class VbaSemanticInventory
         VbaSourceDefinition target,
         VbaResolvedIdentifierOccurrence occurrence,
         VbaRange mappedRange,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameTextChanges changes,
         VbaRenameCollisionProof? proof,
         VbaRenameImpactKind impactKind)
     {
@@ -4378,7 +4381,7 @@ public sealed class VbaSemanticInventory
             return false;
         }
         var qualifierRange = ToRange(access.Segments[0].Range);
-        var controlQualifierRange = MapRange(occurrence.Uri, qualifierRange, proof.ControlPlan.Changes);
+        var controlQualifierRange = MapRange(occurrence.Uri, qualifierRange, proof.ControlChanges);
         var afterQualifierRange = MapRange(occurrence.Uri, qualifierRange, changes);
         var beforeQualifier = semanticResolution.ClassifySourceModuleValueQualifier(
             occurrence.Uri, qualifierRange.Start.Line, qualifierRange.Start.Character);
@@ -4404,7 +4407,7 @@ public sealed class VbaSemanticInventory
         {
             return false;
         }
-        var controlRange = MapRange(occurrence.Uri, occurrence.Range, proof.ControlPlan.Changes);
+        var controlRange = MapRange(occurrence.Uri, occurrence.Range, proof.ControlChanges);
         var control = proof.ControlInventory.semanticResolution.ClassifySourceDefinition(
             occurrence.Uri, controlRange.Start.Line, controlRange.Start.Character);
         var after = hypothetical.semanticResolution.ClassifySourceDefinition(
@@ -4412,7 +4415,7 @@ public sealed class VbaSemanticInventory
         var occurrenceCauses = occurrence.Target.PhysicalDefinitions.Select(before => new
         {
             Before = before,
-            Control = FindHypotheticalDefinition(proof.ControlInventory, before, proof.ControlPlan.Changes),
+            Control = FindHypotheticalDefinition(proof.ControlInventory, before, proof.ControlChanges),
             After = FindHypotheticalDefinition(hypothetical, before, changes)
         }).ToArray();
         if (occurrenceCauses.Any(cause => cause.Control is null || cause.After is null)
@@ -4466,7 +4469,7 @@ public sealed class VbaSemanticInventory
         VbaSemanticInventory hypothetical,
         VbaResolvedIdentifierOccurrence occurrence,
         VbaRange mappedRange,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameTextChanges changes,
         VbaRenameCollisionProof? proof)
     {
         if (proof is null || IsDeclarationOccurrence(occurrence)
@@ -4506,9 +4509,9 @@ public sealed class VbaSemanticInventory
         {
             return false;
         }
-        var controlReceiver = FindHypotheticalDefinition(proof.ControlInventory, beforeReceiver, proof.ControlPlan.Changes);
+        var controlReceiver = FindHypotheticalDefinition(proof.ControlInventory, beforeReceiver, proof.ControlChanges);
         var afterReceiver = FindHypotheticalDefinition(hypothetical, beforeReceiver, changes);
-        var controlReceiverRange = MapRange(occurrence.Uri, receiverRange, proof.ControlPlan.Changes);
+        var controlReceiverRange = MapRange(occurrence.Uri, receiverRange, proof.ControlChanges);
         var afterReceiverRange = MapRange(occurrence.Uri, receiverRange, changes);
         if (controlReceiver is null || afterReceiver is null
             || proof.ControlInventory.ResolveSourceDefinition(occurrence.Uri,
@@ -4522,9 +4525,9 @@ public sealed class VbaSemanticInventory
         var beforeType = semanticResolution.GetEffectiveDeclaredType(beforeReceiver);
         var afterType = hypothetical.semanticResolution.GetEffectiveDeclaredType(afterReceiver);
         var beforeMember = occurrence.Target.SelectedDefinition;
-        var controlMember = FindHypotheticalDefinition(proof.ControlInventory, beforeMember, proof.ControlPlan.Changes);
+        var controlMember = FindHypotheticalDefinition(proof.ControlInventory, beforeMember, proof.ControlChanges);
         var afterMember = FindHypotheticalDefinition(hypothetical, beforeMember, changes);
-        var controlRange = MapRange(occurrence.Uri, occurrence.Range, proof.ControlPlan.Changes);
+        var controlRange = MapRange(occurrence.Uri, occurrence.Range, proof.ControlChanges);
         var beforeChain = semanticResolution.ResolveMemberChainAt(
             occurrence.Uri, occurrence.Range.Start.Line, occurrence.Range.Start.Character);
         var controlChain = proof.ControlInventory.semanticResolution.ResolveMemberChainAt(
@@ -4581,7 +4584,7 @@ public sealed class VbaSemanticInventory
 
     private VbaRenameFailure? ProveEffectiveDeclaredTypesArePreserved(
         VbaSemanticInventory hypothetical,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameTextChanges changes,
         CancellationToken cancellationToken,
         VbaRenameCollisionProof? collisionProof = null)
     {
@@ -4657,7 +4660,7 @@ public sealed class VbaSemanticInventory
         VbaSourceDefinition after,
         VbaEffectiveDeclaredType beforeType,
         VbaEffectiveDeclaredType afterType,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameTextChanges changes,
         VbaRenameCollisionProof? proof)
     {
         if (proof is null
@@ -4690,7 +4693,7 @@ public sealed class VbaSemanticInventory
             return false;
         }
 
-        var controlDeclaration = FindHypotheticalDefinition(proof.ControlInventory, before, proof.ControlPlan.Changes);
+        var controlDeclaration = FindHypotheticalDefinition(proof.ControlInventory, before, proof.ControlChanges);
         if (controlDeclaration is null)
         {
             return false;
@@ -4701,7 +4704,7 @@ public sealed class VbaSemanticInventory
             return false;
         }
         var expectedControlTypes = beforeType.Target.PhysicalDefinitions.Select(definition =>
-            FindHypotheticalDefinition(proof.ControlInventory, definition, proof.ControlPlan.Changes)).ToArray();
+            FindHypotheticalDefinition(proof.ControlInventory, definition, proof.ControlChanges)).ToArray();
         if (expectedControlTypes.Any(definition => definition is null)
             || !expectedControlTypes.Select(definition => definition!.Identity).ToHashSet()
                 .SetEquals(controlType.Target.PhysicalDefinitions.Select(definition => definition.Identity)))
@@ -4710,7 +4713,7 @@ public sealed class VbaSemanticInventory
         }
 
         var controlRoots = roots.Select(definition =>
-            FindHypotheticalDefinition(proof.ControlInventory, definition, proof.ControlPlan.Changes)).ToArray();
+            FindHypotheticalDefinition(proof.ControlInventory, definition, proof.ControlChanges)).ToArray();
         var actualRoots = roots.Select(definition => FindHypotheticalDefinition(hypothetical, definition, changes)).ToArray();
         if (controlRoots.Any(definition => definition is null)
             || actualRoots.Any(definition => definition is null)
@@ -4741,7 +4744,7 @@ public sealed class VbaSemanticInventory
 
     private VbaRenameFailure? ProveSourceInterfaceAssociationsArePreserved(
         VbaSemanticInventory hypothetical,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameTextChanges changes,
         VbaRenameCollisionProof? collisionProof = null)
     {
         var beforeAnalyses = sourceDocuments
@@ -4843,7 +4846,7 @@ public sealed class VbaSemanticInventory
         VbaSemanticInventory hypothetical,
         IReadOnlyList<VbaInterfaceImplementationAssociation> before,
         IReadOnlyList<VbaInterfaceImplementationAssociation> after,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameTextChanges changes,
         VbaRenameCollisionProof proof)
     {
         var permitted = new HashSet<VbaInterfaceAssociationProofKey>();
@@ -4870,9 +4873,9 @@ public sealed class VbaSemanticInventory
                 continue;
             }
             var actualImplementation = FindHypotheticalDefinition(hypothetical, original.Implementation, changes);
-            var controlImplementation = FindHypotheticalDefinition(proof.ControlInventory, original.Implementation, proof.ControlPlan.Changes);
+            var controlImplementation = FindHypotheticalDefinition(proof.ControlInventory, original.Implementation, proof.ControlChanges);
             var actualMember = FindHypotheticalDefinition(hypothetical, original.Contract.OriginDefinition, changes);
-            var controlKey = CreateInterfaceAssociationProofKey(original, proof.ControlPlan.Changes);
+            var controlKey = CreateInterfaceAssociationProofKey(original, proof.ControlChanges);
             var controlMatches = control.Where(candidate =>
                 proof.ControlInventory.CreateInterfaceAssociationProofKey(candidate, changes: null) == controlKey).ToArray();
             if (actualImplementation is null || controlImplementation is null || actualMember is null || controlMatches.Length != 1)
@@ -4929,7 +4932,7 @@ public sealed class VbaSemanticInventory
         VbaInterfaceImplementationAssociation original,
         IReadOnlyList<VbaInterfaceImplementationAssociation> control,
         IReadOnlyList<VbaInterfaceImplementationAssociation> after,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameTextChanges changes,
         IReadOnlyList<VbaRenameCausalDefinitionCorrespondence> causes,
         VbaRenameCollisionProof proof)
     {
@@ -4940,7 +4943,7 @@ public sealed class VbaSemanticInventory
         {
             return false;
         }
-        var controlKey = CreateInterfaceAssociationProofKey(original, proof.ControlPlan.Changes);
+        var controlKey = CreateInterfaceAssociationProofKey(original, proof.ControlChanges);
         var controlMatches = control.Where(candidate =>
             proof.ControlInventory.CreateInterfaceAssociationProofKey(candidate, changes: null) == controlKey).ToArray();
         if (controlMatches.Length != 1)
@@ -4951,7 +4954,7 @@ public sealed class VbaSemanticInventory
         var originalRange = original.Relationship.InterfaceTypeRange;
         var nameRange = new VbaRange(new VbaPosition(originalRange.End.Line,
             originalRange.End.Character - original.Relationship.InterfaceType.Name.Length), originalRange.End);
-        var controlRange = MapRange(uri, nameRange, proof.ControlPlan.Changes);
+        var controlRange = MapRange(uri, nameRange, proof.ControlChanges);
         var actualRange = MapRange(uri, nameRange, changes);
         var beforeBinding = semanticResolution.ClassifySourceDefinition(uri, nameRange.Start.Line, nameRange.Start.Character);
         var controlBinding = proof.ControlInventory.semanticResolution.ClassifySourceDefinition(
@@ -4974,9 +4977,9 @@ public sealed class VbaSemanticInventory
             return false;
         }
         var actualImplementation = FindHypotheticalDefinition(hypothetical, original.Implementation, changes);
-        var controlImplementation = FindHypotheticalDefinition(proof.ControlInventory, original.Implementation, proof.ControlPlan.Changes);
+        var controlImplementation = FindHypotheticalDefinition(proof.ControlInventory, original.Implementation, proof.ControlChanges);
         var actualMember = FindHypotheticalDefinition(hypothetical, original.Contract.OriginDefinition, changes);
-        var controlMember = FindHypotheticalDefinition(proof.ControlInventory, original.Contract.OriginDefinition, proof.ControlPlan.Changes);
+        var controlMember = FindHypotheticalDefinition(proof.ControlInventory, original.Contract.OriginDefinition, proof.ControlChanges);
         if (actualImplementation is null || controlImplementation is null || actualMember is null || controlMember is null
             || after.Any(candidate => candidate.Relationship.ImplementingDocument.Uri.Equals(uri, StringComparison.OrdinalIgnoreCase)
                 && candidate.Relationship.InterfaceTypeRange == MapRange(uri, originalRange, changes)))
@@ -5048,7 +5051,7 @@ public sealed class VbaSemanticInventory
         VbaSemanticInventory hypothetical,
         IReadOnlyList<VbaHandlerEventRenameConvergence> before,
         IReadOnlyList<VbaHandlerEventRenameConvergence> after,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameTextChanges changes,
         VbaRenameCollisionProof proof)
     {
         var permitted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -5063,7 +5066,7 @@ public sealed class VbaSemanticInventory
         {
             var handler = original.HandlerAnalysis.Handler;
             var actualHandler = FindHypotheticalDefinition(hypothetical, handler, changes);
-            var controlHandler = FindHypotheticalDefinition(proof.ControlInventory, handler, proof.ControlPlan.Changes);
+            var controlHandler = FindHypotheticalDefinition(proof.ControlInventory, handler, proof.ControlChanges);
             var actualMatches = after.Where(candidate => candidate.HandlerAnalysis.Handler.Identity == actualHandler?.Identity).ToArray();
             var controlMatches = control.Where(candidate => candidate.HandlerAnalysis.Handler.Identity == controlHandler?.Identity).ToArray();
             if (actualHandler is null || controlHandler is null || actualMatches.Length > 1 || controlMatches.Length != 1)
@@ -5077,7 +5080,7 @@ public sealed class VbaSemanticInventory
                 || original.Kind == VbaHandlerEventRenameConvergenceKind.Indeterminate
                 || original.HandlerAnalysis.Recognition == VbaWithEventsHandlerRecognition.IndeterminateCandidate
                 || original.HandlerAnalysis.BindingSet.Entries.Any(entry => entry.HasRecoveredEventEvidence)
-                || CreateWithEventsAssociationProofKey(original, proof.ControlPlan.Changes)
+                || CreateWithEventsAssociationProofKey(original, proof.ControlChanges)
                     != proof.ControlInventory.CreateWithEventsAssociationProofKey(independent, changes: null))
             {
                 continue;
@@ -5145,7 +5148,7 @@ public sealed class VbaSemanticInventory
         VbaSourceDefinition controlHandler,
         VbaSourceDefinition afterHandler,
         IReadOnlyList<VbaRenameCausalDefinitionCorrespondence> causes,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameTextChanges changes,
         VbaRenameCollisionProof proof)
     {
         var handler = before.HandlerAnalysis.Handler;
@@ -5167,7 +5170,7 @@ public sealed class VbaSemanticInventory
         {
             Entry = entry,
             Before = entry.Variable,
-            Control = FindHypotheticalDefinition(proof.ControlInventory, entry.Variable, proof.ControlPlan.Changes),
+            Control = FindHypotheticalDefinition(proof.ControlInventory, entry.Variable, proof.ControlChanges),
             After = FindHypotheticalDefinition(hypothetical, entry.Variable, changes)
         }).ToArray();
         if (variables.Any(variable => variable.Control is null || variable.After is null)
@@ -5230,7 +5233,7 @@ public sealed class VbaSemanticInventory
         VbaRange mappedRange,
         VbaNameResolutionOutcome controlClassification,
         VbaNameResolutionOutcome after,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameTextChanges changes,
         VbaRenameCollisionProof proof,
         VbaRenameImpactKind impactKind)
     {
@@ -5265,7 +5268,7 @@ public sealed class VbaSemanticInventory
                 var bindingCauses = beforeBindings.Select(definition => new
                 {
                     Before = definition,
-                    Control = FindHypotheticalDefinition(proof.ControlInventory, definition, proof.ControlPlan.Changes),
+                    Control = FindHypotheticalDefinition(proof.ControlInventory, definition, proof.ControlChanges),
                     After = FindHypotheticalDefinition(hypothetical, definition, changes)
                 }).ToArray();
                 if (beforeBindings.Length == 0
@@ -5332,7 +5335,7 @@ public sealed class VbaSemanticInventory
             var bindingCauses = beforeBindings.Select(definition => new
             {
                 Before = definition,
-                Control = FindHypotheticalDefinition(proof.ControlInventory, definition, proof.ControlPlan.Changes),
+                Control = FindHypotheticalDefinition(proof.ControlInventory, definition, proof.ControlChanges),
                 After = FindHypotheticalDefinition(hypothetical, definition, changes)
             }).ToArray();
             if (bindingCauses.Any(cause => cause.Control is null || cause.After is null
@@ -5365,7 +5368,7 @@ public sealed class VbaSemanticInventory
         VbaRange mappedRange,
         VbaNameResolutionOutcome controlClassification,
         VbaNameResolutionOutcome after,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameTextChanges changes,
         VbaRenameCollisionProof proof,
         VbaRenameImpactKind impactKind)
     {
@@ -5405,7 +5408,7 @@ public sealed class VbaSemanticInventory
             var allVariablesProved = true;
             foreach (var entry in original.BindingSet.Entries)
             {
-                var controlVariable = FindHypotheticalDefinition(proof.ControlInventory, entry.Variable, proof.ControlPlan.Changes);
+                var controlVariable = FindHypotheticalDefinition(proof.ControlInventory, entry.Variable, proof.ControlChanges);
                 var actualVariable = FindHypotheticalDefinition(hypothetical, entry.Variable, changes);
                 if (controlVariable is null || actualVariable is null
                     || !actual.BindingSet.Entries.Any(candidate => candidate.Variable.Identity == actualVariable.Identity))
@@ -5426,7 +5429,7 @@ public sealed class VbaSemanticInventory
                 var typeCauses = beforeType.Target.PhysicalDefinitions.Select(definition => new
                 {
                     Before = definition,
-                    Control = FindHypotheticalDefinition(proof.ControlInventory, definition, proof.ControlPlan.Changes),
+                    Control = FindHypotheticalDefinition(proof.ControlInventory, definition, proof.ControlChanges),
                     After = FindHypotheticalDefinition(hypothetical, definition, changes)
                 }).ToArray();
                 if (typeCauses.Any(cause => cause.Control is null || cause.After is null)
@@ -5467,14 +5470,14 @@ public sealed class VbaSemanticInventory
         VbaSemanticInventory hypothetical,
         VbaResolvedIdentifierOccurrence occurrence,
         VbaRange mappedRange,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameTextChanges changes,
         VbaRenameCollisionProof? proof)
     {
         if (proof is null)
         {
             return false;
         }
-        var controlRange = MapRange(occurrence.Uri, occurrence.Range, proof.ControlPlan.Changes);
+        var controlRange = MapRange(occurrence.Uri, occurrence.Range, proof.ControlChanges);
         if (TryRecordWithEventsSegmentCollisionImpact(
             hypothetical, occurrence, controlRange, mappedRange,
             proof.ControlInventory.semanticResolution.ClassifySourceDefinition(
@@ -5496,7 +5499,7 @@ public sealed class VbaSemanticInventory
 
     private VbaRenameFailure? ProveWithEventsAssociationsArePreserved(
         VbaSemanticInventory hypothetical,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameTextChanges changes,
         VbaRenameCollisionProof? collisionProof = null)
     {
         var before = GetHandlerEventRenameConvergences();
@@ -5570,7 +5573,7 @@ public sealed class VbaSemanticInventory
     private VbaWithEventsAssociationProofKey
         CreateWithEventsAssociationProofKey(
             VbaHandlerEventRenameConvergence convergence,
-            IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>>? changes)
+            VbaRenameTextChanges? changes)
     {
         VbaRange Map(string uri, VbaRange range)
             => changes is null ? range : MapRange(uri, range, changes);
@@ -5614,7 +5617,7 @@ public sealed class VbaSemanticInventory
 
     private string CreateWithEventsBindingEntryProofKey(
         VbaWithEventsEventBindingEntry entry,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>>? changes)
+        VbaRenameTextChanges? changes)
     {
         var variableRange = changes is null
             ? entry.Variable.Range
@@ -5641,7 +5644,7 @@ public sealed class VbaSemanticInventory
 
     private string CreateWithEventsEventTargetProofKey(
         VbaResolvedNameTarget target,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>>? changes)
+        VbaRenameTextChanges? changes)
         => target switch
         {
             VbaHostEventNameTarget hostTarget =>
@@ -5656,7 +5659,7 @@ public sealed class VbaSemanticInventory
 
     private string CreateWithEventsEventContractProofKey(
         VbaResolvedEventContract contract,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>>? changes)
+        VbaRenameTextChanges? changes)
     {
         var identity = contract.Identity switch
         {
@@ -5688,7 +5691,7 @@ public sealed class VbaSemanticInventory
 
     private VbaInterfaceAssociationProofKey CreateInterfaceAssociationProofKey(
         VbaInterfaceImplementationAssociation association,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>>? changes)
+        VbaRenameTextChanges? changes)
     {
         VbaRange Map(string uri, VbaRange range)
             => changes is null ? range : MapRange(uri, range, changes);
@@ -5731,7 +5734,7 @@ public sealed class VbaSemanticInventory
 
     private string CreateInterfaceTargetProofKey(
         VbaResolvedNameTarget target,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>>? changes)
+        VbaRenameTextChanges? changes)
         => string.Join(
             ";",
             target.PhysicalDefinitions
@@ -5821,7 +5824,7 @@ public sealed class VbaSemanticInventory
         ProveConditionalCallCompatibilitiesArePreserved(
             VbaSemanticInventory hypothetical,
             IReadOnlyList<VbaResolvedIdentifierOccurrence> targetOccurrences,
-            IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+            VbaRenameTextChanges changes,
             VbaRenameTargetCorrespondence targetCorrespondence,
             CancellationToken cancellationToken,
             out IReadOnlyList<VbaRenameCallCompatibilityCorrespondence>
@@ -6066,7 +6069,7 @@ public sealed class VbaSemanticInventory
         VbaSemanticInventory hypothetical,
         VbaSourceDefinition beforeDefinition,
         VbaSourceDefinition afterDefinition,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameTextChanges changes,
         string newName,
         out VbaRenameTargetCorrespondence? correspondence,
         VbaRenameCollisionProof? collisionProof = null)
@@ -6172,7 +6175,7 @@ public sealed class VbaSemanticInventory
     private bool AreConditionalCompilationPathsCorrespondent(
         VbaSourceDefinition beforeDefinition,
         VbaSourceDefinition afterDefinition,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes)
+        VbaRenameTextChanges changes)
     {
         var beforePath = beforeDefinition.ConditionalCompilationPath;
         var afterPath = afterDefinition.ConditionalCompilationPath;
@@ -6206,31 +6209,11 @@ public sealed class VbaSemanticInventory
         return true;
     }
 
-    private int MapDocumentOffset(
+    private static int MapDocumentOffset(
         string uri,
         int offset,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes)
-    {
-        if (!changes.TryGetValue(uri, out var edits)
-            || definitionCandidates.FindDocument(uri) is not { } document)
-        {
-            return offset;
-        }
-
-        var lineStarts = GetLineStarts(document.Text);
-        var mappedOffset = offset;
-        foreach (var edit in edits)
-        {
-            var editStart = GetOffset(lineStarts, edit.Range.Start);
-            var editEnd = GetOffset(lineStarts, edit.Range.End);
-            if (editEnd <= offset)
-            {
-                mappedOffset += edit.NewText.Length - (editEnd - editStart);
-            }
-        }
-
-        return mappedOffset;
-    }
+        VbaRenameTextChanges changes)
+        => changes.MapOffset(uri, offset);
 
     private IReadOnlyList<VbaSemanticOccurrence> GetUnresolvedSemanticOccurrences(
         CancellationToken cancellationToken)
@@ -6287,7 +6270,7 @@ public sealed class VbaSemanticInventory
     }
 
     private VbaSemanticInventory CreateHypotheticalInventory(
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameTextChanges changes,
         CancellationToken cancellationToken)
     {
         var documents = new Dictionary<string, VbaSourceDocument>(
@@ -6295,9 +6278,7 @@ public sealed class VbaSemanticInventory
         foreach (var document in sourceDocuments)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var text = changes.TryGetValue(document.Uri, out var edits)
-                ? ApplyTextEdits(document.Text, edits)
-                : document.Text;
+            var text = changes.GetTextAfter(document.Uri, document.Text);
             var syntaxTree = VbaSyntaxTree.ParseModule(document.Uri, text);
             documents[document.Uri] = VbaSourceDocumentProjector.Project(
                 document.Uri,
@@ -6319,7 +6300,7 @@ public sealed class VbaSemanticInventory
     private static VbaSourceDefinition? FindHypotheticalDefinition(
         VbaSemanticInventory hypothetical,
         VbaSourceDefinition definition,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes,
+        VbaRenameTextChanges changes,
         string? expectedName = null)
     {
         if (definition.Identity.Origin == VbaDefinitionOrigin.ProjectReference)
@@ -6348,7 +6329,7 @@ public sealed class VbaSemanticInventory
 
     private static string GetHypotheticalDefinitionName(
         VbaSourceDefinition definition,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes)
+        VbaRenameTextChanges changes)
     {
         if (!changes.TryGetValue(definition.Uri, out var edits)
             || definition.Range.Start.Line != definition.Range.End.Line)
@@ -6392,36 +6373,11 @@ public sealed class VbaSemanticInventory
             == inventory.resolutionPolicy.CreateNameTarget(right).Identity;
     }
 
-    private static string ApplyTextEdits(
-        string text,
-        IReadOnlyList<VbaTextEdit> edits)
-    {
-        var lineStarts = GetLineStarts(text);
-        foreach (var edit in edits
-            .OrderByDescending(edit => GetOffset(lineStarts, edit.Range.Start)))
-        {
-            var start = GetOffset(lineStarts, edit.Range.Start);
-            var end = GetOffset(lineStarts, edit.Range.End);
-            text = text[..start] + edit.NewText + text[end..];
-        }
-
-        return text;
-    }
-
     private static VbaRange MapRange(
         string uri,
         VbaRange range,
-        IReadOnlyDictionary<string, IReadOnlyList<VbaTextEdit>> changes)
-    {
-        if (!changes.TryGetValue(uri, out var edits))
-        {
-            return range;
-        }
-
-        return new VbaRange(
-            MapPosition(range.Start, edits, isRangeEnd: false),
-            MapPosition(range.End, edits, isRangeEnd: true));
-    }
+        VbaRenameTextChanges changes)
+        => changes.MapRange(uri, range);
 
     private static VbaRange ToRange(VbaSyntaxRange range)
         => new(
@@ -6431,51 +6387,6 @@ public sealed class VbaSemanticInventory
             new VbaPosition(
                 range.End.Line,
                 range.End.Character));
-
-    private static VbaPosition MapPosition(
-        VbaPosition position,
-        IReadOnlyList<VbaTextEdit> edits,
-        bool isRangeEnd)
-    {
-        var character = position.Character;
-        foreach (var edit in edits
-            .Where(edit => edit.Range.Start.Line == position.Line)
-            .OrderBy(edit => edit.Range.Start.Character))
-        {
-            var oldLength = edit.Range.End.Character
-                - edit.Range.Start.Character;
-            var delta = edit.NewText.Length - oldLength;
-            if (edit.Range.End.Character < position.Character
-                || (edit.Range.End.Character == position.Character
-                    && (isRangeEnd
-                        || edit.Range.Start.Character
-                            != position.Character)))
-            {
-                character += delta;
-            }
-        }
-
-        return new VbaPosition(position.Line, character);
-    }
-
-    private static IReadOnlyList<int> GetLineStarts(string text)
-    {
-        var starts = new List<int> { 0 };
-        for (var index = 0; index < text.Length; index++)
-        {
-            if (text[index] == '\n')
-            {
-                starts.Add(index + 1);
-            }
-        }
-
-        return starts;
-    }
-
-    private static int GetOffset(
-        IReadOnlyList<int> lineStarts,
-        VbaPosition position)
-        => lineStarts[position.Line] + position.Character;
 
     private static string CreateOccurrenceKey(string uri, VbaRange range)
         => $"{VbaProjectIdentityModel.GetDocumentStableKey(uri)}"

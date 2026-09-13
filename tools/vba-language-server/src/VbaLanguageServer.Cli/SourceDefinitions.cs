@@ -198,6 +198,8 @@ public sealed record VbaRenamePlan(
     internal IReadOnlyList<VbaFormSourceUnit> FormSourceUnits
         { get; init; } = [];
 
+    internal VbaRenameTextChanges? TextChanges { get; init; }
+
     internal VbaRenameTargetCorrespondence? TargetCorrespondence { get; init; }
 }
 

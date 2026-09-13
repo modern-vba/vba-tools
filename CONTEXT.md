@@ -4036,6 +4036,33 @@ position without a multiplicity label; physical contracts remain distinct in
 analysis and in location-bearing related information.
 _Avoid_: headline-only fallback, always-duplicated contract detail, client-owned reconstruction
 
+**SourceText**:
+The immutable `VbaSourceText` owned by `VbaTools.Syntax`, retaining exact source
+text and physical lines with UTF-16 offsets and line/character positions.
+CRLF, LF, CR, and mixed newlines share that one line model. Its strict edit
+Interface rejects out-of-range positions and offsets without an exact
+line/character representation, including the interior of CRLF; it never moves
+a position into another line or rounds it. Existing general `PositionAt`
+projection behavior remains separate and unchanged. SourceText recognizes
+newlines but does not choose or normalize them.
+_Avoid_: LF-only line index, editor buffer, newline normalization policy
+
+**SourceTextEditResult**:
+The syntax-owned `VbaSourceTextEditResult` produced by validating and applying
+one collection of replacements against one immutable before-SourceText. It
+retains `Before`, `After`, exact before/after replacement spans, length deltas,
+and unchanged-region correspondence. Invalid ranges, overlapping edits,
+multiple insertions at one position, and invalid result lengths are rejected
+before application; adjacent replacements are accepted. Unchanged source text,
+including its original newlines, is preserved exactly.
+The Module provides mechanical facts, not the meaning of an edited identifier
+or an implicit destination for an arbitrary position inside replaced text.
+Feature-specific name transformations, semantic edit deduplication, and
+before/after declaration correspondence remain with the feature that requested
+the edits. It owns no Undo, history, multi-document transaction, LSP state, or
+semantic inventory.
+_Avoid_: Rename proof, clamped position map, mutable edit history
+
 **VbaSyntaxTree**:
 The parsed VBA source structure needed for `SyntaxHighlighting`,
 `SyntaxDiagnostic`s, and completion candidate discovery while preserving the
@@ -4848,6 +4875,15 @@ The post-edit preservation rules above are the ordinary strict contract.
 `IntentionalRenameConfirmation` can permit only proven collision consequences;
 it never weakens the original target, dependency coverage or independent type
 and source-authority requirements.
+Rename retains one validated `SourceTextEditResult` per participating document
+for the requested edit and separately for ADR 0050's collision-free control
+edit. Each hypothetical inventory is built from that result's `After.Text`,
+and the same result supplies its physical correspondence facts. Rename owns
+the meaning of identifier replacement boundaries, including `item` to `count`
+and `IFoo_Run` to `IWidget_Run`, as well as dependent name transformations,
+semantic edit deduplication, collision classification, and preservation proof.
+It does not privately clamp arbitrary positions inside a replacement or
+recompute mechanical edits with a separate line model.
 _Avoid_: text replacement, project-wide name reservation, compile-after-edit
 
 **IntentionalRenameConfirmation**:
