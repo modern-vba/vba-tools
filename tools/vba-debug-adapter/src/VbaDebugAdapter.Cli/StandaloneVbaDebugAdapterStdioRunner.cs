@@ -244,19 +244,12 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
 
                 if (request.Command.Equals("setBreakpoints", StringComparison.Ordinal))
                 {
+                    AdmittedDapSourceBreakpoints admitted;
                     try
                     {
-                        var breakpoints = ParseDapSourceBreakpoints(
-                            request.Arguments,
-                            breakpointRegistry);
-                        await connection.WriteResponseAsync(
-                            request,
-                            success: true,
-                            body: new { breakpoints },
-                            message: null,
-                            cancellationToken).ConfigureAwait(false);
+                        admitted = DebugRequestAdmission.AdmitSourceBreakpoints(request.Arguments);
                     }
-                    catch (DebugSetupException exception)
+                    catch (DebugRequestRejectedException exception)
                     {
                         await connection.WriteResponseAsync(
                             request,
@@ -264,7 +257,18 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                             body: null,
                             message: $"DebugSetupError: {exception.Message}",
                             cancellationToken).ConfigureAwait(false);
+                        continue;
                     }
+                    var breakpoints = breakpointRegistry.Replace(admitted.SourcePath, admitted.Breakpoints)
+                        .Select(breakpoint => new
+                        {
+                            id = breakpoint.Id,
+                            verified = false,
+                            line = breakpoint.Intent.Line,
+                            source = new { path = admitted.SourcePath }
+                        }).ToArray();
+                    await connection.WriteResponseAsync(request, true, new { breakpoints }, null,
+                        cancellationToken).ConfigureAwait(false);
                     continue;
                 }
 
@@ -272,24 +276,14 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                     request.Command.Equals("setExceptionBreakpoints", StringComparison.Ordinal) ||
                     request.Command.Equals("setDataBreakpoints", StringComparison.Ordinal))
                 {
+                    AdmittedDapBreakpointConfiguration admitted;
                     try
                     {
-                        var unsupported = HasUnsupportedBreakpointConfiguration(
+                        admitted = DebugRequestAdmission.AdmitBreakpointConfiguration(
                             request.Command,
                             request.Arguments);
-                        breakpointRegistry.ReplaceUnsupportedCategory(
-                            request.Command,
-                            unsupported);
-                        await connection.WriteResponseAsync(
-                            request,
-                            success: !unsupported,
-                            body: new { breakpoints = Array.Empty<object>() },
-                            message: unsupported
-                                ? $"DebugSetupError: VBA {UnsupportedBreakpointKind(request.Command)} breakpoints are unsupported."
-                                : null,
-                            cancellationToken).ConfigureAwait(false);
                     }
-                    catch (DebugSetupException exception)
+                    catch (DebugRequestRejectedException exception)
                     {
                         await connection.WriteResponseAsync(
                             request,
@@ -297,7 +291,17 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                             body: new { breakpoints = Array.Empty<object>() },
                             message: $"DebugSetupError: {exception.Message}",
                             cancellationToken).ConfigureAwait(false);
+                        continue;
                     }
+                    breakpointRegistry.ReplaceUnsupportedCategory(admitted.Command, admitted.Unsupported);
+                    await connection.WriteResponseAsync(
+                        request,
+                        success: !admitted.Unsupported,
+                        body: new { breakpoints = Array.Empty<object>() },
+                        message: admitted.Unsupported
+                            ? $"DebugSetupError: VBA {DebugRequestAdmission.UnsupportedBreakpointKind(admitted.Command)} breakpoints are unsupported."
+                            : null,
+                        cancellationToken).ConfigureAwait(false);
                     continue;
                 }
 
@@ -340,10 +344,10 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
 
                     try
                     {
-                        pendingLaunch = ParseLaunchRequest(request.Arguments);
+                        pendingLaunch = DebugRequestAdmission.AdmitLaunch(request.Arguments);
                         pendingLaunchRequest = request;
                     }
-                    catch (DebugSetupException exception)
+                    catch (DebugRequestRejectedException exception)
                     {
                         await connection.WriteResponseAsync(
                             request,
@@ -460,9 +464,9 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                     RestartPreparationResult preparationResult;
                     try
                     {
-                        preparationResult = ParseRestartPreparationResult(request.Arguments);
+                        preparationResult = DebugRequestAdmission.AdmitRestartPreparation(request.Arguments);
                     }
-                    catch (DebugSetupException exception)
+                    catch (DebugRequestRejectedException exception)
                     {
                         await connection.WriteResponseAsync(
                             preparedRestart.Request,
@@ -490,12 +494,7 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                     string? validationError = null;
                     try
                     {
-                        if (preparationResult.Launch is null)
-                        {
-                            throw new DebugSetupException(
-                                "A successful VBA restart preparation requires a fresh launch snapshot.");
-                        }
-                        freshLaunch = ParseLaunchRequest(preparationResult.Launch.Value);
+                        freshLaunch = preparationResult.Launch!;
                         if (activeLaunch is null || runningSession is null)
                         {
                             throw new DebugSetupException(
@@ -519,7 +518,7 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                             requestedModuleName,
                             requestedProcedureName);
                     }
-                    catch (Exception exception)
+                    catch (DebugSetupException exception)
                     {
                         freshLaunch = null!;
                         restartBinding = null!;
@@ -971,280 +970,6 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
         completion.Complete().ThrowWithEvidence();
     }
 
-    private static StandaloneVbaDebugLaunchRequest ParseLaunchRequest(JsonElement arguments)
-    {
-        if (arguments.ValueKind != JsonValueKind.Object)
-        {
-            throw new DebugSetupException("The VBA launch request requires an object argument.");
-        }
-
-        RejectUnsupportedLaunchField(arguments, "args");
-        RejectUnsupportedLaunchField(arguments, "noBuild");
-        RejectUnsupportedLaunchField(arguments, "stopOnEntry");
-        ValidateExactObjectShape(
-            arguments,
-            "launch",
-            requiredProperties:
-            [
-                "project",
-                "document",
-                "__vbaDebugWorkbookFileName",
-                "sourceSnapshot"
-            ],
-            optionalProperties:
-            [
-                "type",
-                "request",
-                "name",
-                "module",
-                "procedure",
-                "noDebug",
-                "__sessionId",
-                "__vbaRestartPreparation"
-            ]);
-        // VS Code adds an opaque client ID. Only the CLI --session lease establishes ownership.
-        _ = OptionalExactString(arguments, "__sessionId");
-        if (arguments.TryGetProperty("noDebug", out var noDebug))
-        {
-            if (noDebug.ValueKind is not JsonValueKind.True and not JsonValueKind.False)
-            {
-                throw new DebugSetupException(
-                    "The VBA launch noDebug property must be a boolean.");
-            }
-            if (noDebug.GetBoolean())
-            {
-                throw new DebugSetupException(
-                    "The VBA launch request does not support noDebug mode.");
-            }
-        }
-
-        var projectRoot = RequiredString(arguments, "project");
-        string canonicalProjectRoot;
-        try
-        {
-            if (!Path.IsPathFullyQualified(projectRoot))
-            {
-                throw new DebugSetupException(
-                    "The VBA launch project must be an absolute path.");
-            }
-            canonicalProjectRoot = Path.GetFullPath(projectRoot);
-        }
-        catch (Exception exception) when (
-            exception is ArgumentException or NotSupportedException or PathTooLongException)
-        {
-            throw new DebugSetupException(
-                "The VBA launch project must be a valid absolute path.");
-        }
-        var documentName = RequiredString(arguments, "document");
-        var workbookFileName = RequiredString(arguments, "__vbaDebugWorkbookFileName");
-        if (workbookFileName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 ||
-            !string.Equals(Path.GetFileName(workbookFileName), workbookFileName, StringComparison.Ordinal) ||
-            !string.Equals(Path.GetExtension(workbookFileName), ".xlsm", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new DebugSetupException(
-                "The VBA launch debug workbook name must be a path-free .xlsm file name.");
-        }
-        var moduleName = OptionalExactString(arguments, "module");
-        var procedureName = OptionalExactString(arguments, "procedure");
-        if ((moduleName is null) != (procedureName is null))
-        {
-            throw new DebugSetupException(
-                "The VBA launch request must specify 'module' and 'procedure' together.");
-        }
-        if (!arguments.TryGetProperty("sourceSnapshot", out var sourceSnapshot) ||
-            sourceSnapshot.ValueKind != JsonValueKind.Object ||
-            !sourceSnapshot.TryGetProperty("schemaVersion", out var schemaVersion) ||
-            !schemaVersion.TryGetInt32(out var schema) ||
-            !sourceSnapshot.TryGetProperty("sources", out var sources) ||
-            sources.ValueKind != JsonValueKind.Array)
-        {
-            throw new DebugSetupException(
-                "The VBA launch request requires sourceSnapshot schemaVersion and sources.");
-        }
-
-        ValidateExactObjectShape(
-            sourceSnapshot,
-            "sourceSnapshot",
-            requiredProperties: ["schemaVersion", "sources"],
-            optionalProperties: ["activeSource", "breakpoints"]);
-
-        var transportedSources = sources.EnumerateArray()
-            .Select(ParseTransportedSource)
-            .ToArray();
-        var activeSource = sourceSnapshot.TryGetProperty("activeSource", out var activeSourceValue)
-            ? ParseTransportedSourcePosition(activeSourceValue)
-            : null;
-        var breakpoints = sourceSnapshot.TryGetProperty("breakpoints", out var breakpointsValue)
-            ? ParseTransportedBreakpoints(breakpointsValue)
-            : [];
-        var restartPreparation = arguments.TryGetProperty(
-            "__vbaRestartPreparation",
-            out var restartPreparationValue)
-            ? ParseRestartPreparation(restartPreparationValue)
-            : null;
-        return new StandaloneVbaDebugLaunchRequest(
-            canonicalProjectRoot,
-            documentName,
-            workbookFileName,
-            moduleName,
-            procedureName,
-            new TransportedDebugSourceSnapshot(schema, transportedSources)
-            {
-                ActiveSource = activeSource,
-                Breakpoints = breakpoints
-            })
-        {
-            RestartPreparation = restartPreparation
-        };
-    }
-
-    private static RestartPreparationDescriptor ParseRestartPreparation(JsonElement preparation)
-    {
-        if (preparation.ValueKind != JsonValueKind.Object)
-        {
-            throw new DebugSetupException(
-                "The VBA launch restart preparation must be an object.");
-        }
-
-        ValidateExactObjectShape(
-            preparation,
-            "__vbaRestartPreparation",
-            requiredProperties: ["protocolVersion", "id", "generation"],
-            optionalProperties: []);
-        var protocolVersion = RequiredInt32(preparation, "protocolVersion");
-        if (protocolVersion != 1)
-        {
-            throw new DebugSetupException(
-                $"Unsupported VBA restart preparation protocol version '{protocolVersion}'.");
-        }
-
-        var id = RequiredString(preparation, "id");
-        if (!IsCanonicalHex32(id))
-        {
-            throw new DebugSetupException(
-                "The VBA restart preparation ID must contain 32 lowercase hexadecimal characters.");
-        }
-
-        var generation = RequiredInt32(preparation, "generation");
-        if (generation < 0)
-        {
-            throw new DebugSetupException(
-                "The VBA restart preparation generation must be nonnegative.");
-        }
-
-        return new RestartPreparationDescriptor(
-            DebugRestartPreparationId.Parse(id),
-            DebugRestartGeneration.FromValue(generation));
-    }
-
-    private static RestartPreparationResult ParseRestartPreparationResult(JsonElement arguments)
-    {
-        if (arguments.ValueKind != JsonValueKind.Object)
-        {
-            throw new DebugSetupException(
-                "The VBA restart preparation result must be an object.");
-        }
-
-        ValidateExactObjectShape(
-            arguments,
-            "vba/restartPrepared",
-            requiredProperties:
-            [
-                "sessionId",
-                "restartRequestSequence",
-                "preparationId",
-                "generation",
-                "success"
-            ],
-            optionalProperties: ["message", "launch"]);
-        if (!arguments.TryGetProperty("success", out var successValue) ||
-            successValue.ValueKind is not JsonValueKind.True and not JsonValueKind.False)
-        {
-            throw new DebugSetupException(
-                "The VBA restart preparation result requires a Boolean 'success'.");
-        }
-
-        return new RestartPreparationResult(
-            successValue.GetBoolean(),
-            OptionalString(arguments, "message"),
-            arguments.TryGetProperty("launch", out var launch)
-                ? launch.Clone()
-                : null);
-    }
-
-    private static bool IsCanonicalHex32(string value)
-        => value.Length == 32 && value.All(character =>
-            character is >= '0' and <= '9' or >= 'a' and <= 'f');
-
-    private static IReadOnlyList<object> ParseDapSourceBreakpoints(
-        JsonElement arguments,
-        DapSourceBreakpointRegistry breakpointRegistry)
-    {
-        if (arguments.ValueKind != JsonValueKind.Object ||
-            !arguments.TryGetProperty("source", out var source) ||
-            source.ValueKind != JsonValueKind.Object)
-        {
-            throw new DebugSetupException(
-                "The setBreakpoints request requires a source object.");
-        }
-        var sourcePath = RequiredString(source, "path");
-        try
-        {
-            if (!Path.IsPathFullyQualified(sourcePath))
-            {
-                throw new DebugSetupException(
-                    "The setBreakpoints source path must be absolute.");
-            }
-            sourcePath = Path.GetFullPath(sourcePath);
-        }
-        catch (Exception exception) when (
-            exception is ArgumentException or NotSupportedException or PathTooLongException)
-        {
-            throw new DebugSetupException(
-                "The setBreakpoints source path must be a valid absolute path.");
-        }
-        if (!arguments.TryGetProperty("breakpoints", out var breakpoints) ||
-            breakpoints.ValueKind != JsonValueKind.Array)
-        {
-            throw new DebugSetupException(
-                "The setBreakpoints request requires a breakpoints array.");
-        }
-
-        var requestedBreakpoints = breakpoints.EnumerateArray().Select(breakpoint =>
-        {
-            if (breakpoint.ValueKind != JsonValueKind.Object)
-            {
-                throw new DebugSetupException(
-                    "Each source breakpoint must be an object.");
-            }
-            var line = RequiredInt32(breakpoint, "line");
-            if (line <= 0)
-            {
-                throw new DebugSetupException(
-                    "Each source breakpoint line must be a positive one-based line.");
-            }
-            return new DapSourceBreakpointIntent(
-                line,
-                HasNonNullProperty(breakpoint, "condition"),
-                HasNonNullProperty(breakpoint, "hitCondition"),
-                HasNonNullProperty(breakpoint, "logMessage"),
-                HasNonNullProperty(breakpoint, "column"),
-                HasNonNullProperty(breakpoint, "mode"));
-        }).ToArray();
-        return breakpointRegistry.Replace(sourcePath, requestedBreakpoints)
-            .Select(breakpoint => (object)new
-            {
-                id = breakpoint.Id,
-                verified = false,
-                line = breakpoint.Intent.Line,
-                source = new { path = sourcePath }
-            }).ToArray();
-    }
-
-    private static bool HasNonNullProperty(JsonElement value, string propertyName)
-        => value.TryGetProperty(propertyName, out var property) &&
-           property.ValueKind is not JsonValueKind.Null and not JsonValueKind.Undefined;
-
     private sealed class DapSourceBreakpointRegistry
     {
         private readonly Dictionary<string, List<RegisteredDapSourceBreakpoint>> bySource =
@@ -1311,7 +1036,7 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
             if (unsupportedCategories.FirstOrDefault() is { } unsupportedCategory)
             {
                 throw new DebugSetupException(
-                    $"VBA {UnsupportedBreakpointKind(unsupportedCategory)} breakpoints are unsupported.");
+                    $"VBA {DebugRequestAdmission.UnsupportedBreakpointKind(unsupportedCategory)} breakpoints are unsupported.");
             }
             var sourcePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var source in snapshot.Sources.Where(source => source.SourceUri is not null))
@@ -1370,230 +1095,6 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
     private sealed record RegisteredDapSourceBreakpoint(
         int Id,
         DapSourceBreakpointIntent Intent);
-
-    private sealed record DapSourceBreakpointIntent(
-        int Line,
-        bool HasCondition,
-        bool HasHitCondition,
-        bool HasLogMessage,
-        bool HasColumn,
-        bool HasMode)
-    {
-        public string? UnsupportedFeature =>
-            HasCondition ? "conditional breakpoint" :
-            HasHitCondition ? "hit-count breakpoint" :
-            HasLogMessage ? "log point" :
-            HasColumn ? "column breakpoint" :
-            HasMode ? "breakpoint mode" :
-            null;
-    }
-
-    private static void RejectUnsupportedLaunchField(
-        JsonElement arguments,
-        string propertyName)
-    {
-        if (arguments.TryGetProperty(propertyName, out _))
-        {
-            throw new DebugSetupException(
-                $"VBA launch does not support '{propertyName}'.");
-        }
-    }
-
-    private static bool HasUnsupportedBreakpointConfiguration(
-        string command,
-        JsonElement arguments)
-    {
-        if (arguments.ValueKind != JsonValueKind.Object)
-        {
-            throw new DebugSetupException(
-                $"The {command} request requires an object argument.");
-        }
-
-        var propertyNames = command.Equals("setExceptionBreakpoints", StringComparison.Ordinal)
-            ? new[] { "filters", "filterOptions", "exceptionOptions" }
-            : new[] { "breakpoints" };
-        foreach (var propertyName in propertyNames)
-        {
-            if (!arguments.TryGetProperty(propertyName, out var values))
-            {
-                continue;
-            }
-            if (values.ValueKind != JsonValueKind.Array)
-            {
-                throw new DebugSetupException(
-                    $"The {command} request property '{propertyName}' must be an array.");
-            }
-            if (values.GetArrayLength() > 0)
-            {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private static string UnsupportedBreakpointKind(string command)
-        => command switch
-        {
-            "setFunctionBreakpoints" => "function",
-            "setExceptionBreakpoints" => "exception",
-            "setDataBreakpoints" => "data",
-            _ => throw new ArgumentOutOfRangeException(nameof(command))
-        };
-
-    private static TransportedDebugSource ParseTransportedSource(JsonElement source)
-    {
-        if (source.ValueKind != JsonValueKind.Object)
-        {
-            throw new DebugSetupException(
-                "Each sourceSnapshot source must be an object.");
-        }
-        ValidateExactObjectShape(
-            source,
-            "sourceSnapshot.sources[]",
-            requiredProperties: ["relativePath", "contentBase64"],
-            optionalProperties: ["sourceUri", "encoding"]);
-        var relativePath = RequiredString(source, "relativePath");
-        var contentBase64 = RequiredStringAllowEmpty(source, "contentBase64");
-        return new TransportedDebugSource(
-            relativePath,
-            OptionalString(source, "sourceUri"),
-            OptionalString(source, "encoding"),
-            contentBase64);
-    }
-
-    private static TransportedDebugSourcePosition ParseTransportedSourcePosition(
-        JsonElement position)
-    {
-        if (position.ValueKind != JsonValueKind.Object)
-        {
-            throw new DebugSetupException(
-                "The transported active source must be an object.");
-        }
-        ValidateExactObjectShape(
-            position,
-            "sourceSnapshot.activeSource",
-            requiredProperties: ["sourceUri", "line", "character"],
-            optionalProperties: []);
-        return new TransportedDebugSourcePosition(
-            RequiredString(position, "sourceUri"),
-            RequiredInt32(position, "line"),
-            RequiredInt32(position, "character"));
-    }
-
-    private static IReadOnlyList<TransportedDebugSourceBreakpoint> ParseTransportedBreakpoints(
-        JsonElement breakpoints)
-    {
-        if (breakpoints.ValueKind != JsonValueKind.Array)
-        {
-            throw new DebugSetupException(
-                "The transported source breakpoints must be an array.");
-        }
-        return breakpoints.EnumerateArray().Select(breakpoint =>
-        {
-            if (breakpoint.ValueKind != JsonValueKind.Object)
-            {
-                throw new DebugSetupException(
-                    "Each transported source breakpoint must be an object.");
-            }
-            ValidateExactObjectShape(
-                breakpoint,
-                "sourceSnapshot.breakpoints[]",
-                requiredProperties: ["sourceUri", "line"],
-                optionalProperties: []);
-            return new TransportedDebugSourceBreakpoint(
-                RequiredString(breakpoint, "sourceUri"),
-                RequiredInt32(breakpoint, "line"));
-        }).ToArray();
-    }
-
-    private static string RequiredString(JsonElement value, string propertyName)
-        => OptionalString(value, propertyName)
-           ?? throw new DebugSetupException(
-               $"The VBA launch request requires string '{propertyName}'.");
-
-    private static string RequiredStringAllowEmpty(JsonElement value, string propertyName)
-    {
-        if (!value.TryGetProperty(propertyName, out var property) ||
-            property.ValueKind != JsonValueKind.String)
-        {
-            throw new DebugSetupException(
-                $"The VBA launch request requires string '{propertyName}'.");
-        }
-        return property.GetString()!;
-    }
-
-    private static void ValidateExactObjectShape(
-        JsonElement value,
-        string displayName,
-        IReadOnlyList<string> requiredProperties,
-        IReadOnlyList<string> optionalProperties)
-    {
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var property in value.EnumerateObject())
-        {
-            if (!requiredProperties.Contains(property.Name, StringComparer.Ordinal) &&
-                !optionalProperties.Contains(property.Name, StringComparer.Ordinal))
-            {
-                throw new DebugSetupException(
-                    $"The VBA launch request does not support property '{displayName}.{property.Name}'.");
-            }
-            if (!seen.Add(property.Name))
-            {
-                throw new DebugSetupException(
-                    $"The VBA launch request contains duplicate property '{displayName}.{property.Name}'.");
-            }
-        }
-
-        foreach (var requiredProperty in requiredProperties)
-        {
-            if (!seen.Contains(requiredProperty))
-            {
-                throw new DebugSetupException(
-                    $"The VBA launch request requires '{displayName}.{requiredProperty}'.");
-            }
-        }
-    }
-
-    private static int RequiredInt32(JsonElement value, string propertyName)
-    {
-        if (!value.TryGetProperty(propertyName, out var property) ||
-            !property.TryGetInt32(out var result))
-        {
-            throw new DebugSetupException(
-                $"The VBA launch request requires integer '{propertyName}'.");
-        }
-        return result;
-    }
-
-    private static string? OptionalString(JsonElement value, string propertyName)
-    {
-        if (!value.TryGetProperty(propertyName, out var property))
-        {
-            return null;
-        }
-        if (property.ValueKind != JsonValueKind.String ||
-            string.IsNullOrWhiteSpace(property.GetString()))
-        {
-            throw new DebugSetupException(
-                $"The VBA launch request property '{propertyName}' must be a non-empty string.");
-        }
-        return property.GetString();
-    }
-
-    private static string? OptionalExactString(JsonElement value, string propertyName)
-    {
-        if (!value.TryGetProperty(propertyName, out var property))
-        {
-            return null;
-        }
-        if (property.ValueKind != JsonValueKind.String
-            || string.IsNullOrEmpty(property.GetString()))
-        {
-            throw new DebugSetupException(
-                $"The VBA launch request property '{propertyName}' must be a non-empty string.");
-        }
-        return property.GetString();
-    }
 
     private sealed class DapDebugLifecycleSink(
         DapConnection connection,
@@ -1657,7 +1158,7 @@ public sealed record RestartPreparationDescriptor(
 internal sealed record RestartPreparationResult(
     bool Success,
     string? Message,
-    JsonElement? Launch);
+    StandaloneVbaDebugLaunchRequest? Launch);
 
 internal interface IStandaloneVbaDebugLaunchService
 {

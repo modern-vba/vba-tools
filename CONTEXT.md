@@ -364,6 +364,28 @@ It enables macros only while programmatically opening its `DebugWorkbook`;
 every workbook opened in the process belongs to the same session lifetime.
 _Avoid_: build process, active Excel session, shared Excel instance
 
+**DebugRequestAdmission**:
+The internal DAP-owned Module that completely validates consumed request
+arguments before returning an immutable accepted result. It checks required
+fields, scalar types and ranges, every array element, and all relevant optional
+fields before classifying a breakpoint configuration as supported or
+unsupported. An earlier unsupported field never hides a later malformed one.
+With valid framing and request envelope, malformed arguments fail only that
+request and preserve breakpoint entries, IDs, other sources, active sessions,
+and in-progress launch work. Valid unsupported breakpoint configuration is
+remembered and, when applicable to that launch, blocks later launch or Restart
+until a valid update removes it; malformed updates neither add nor clear that
+state. Source breakpoints retain their existing in-scope participation rule.
+Busy precedence and Restart correlation remain protocol-local gates. An exact
+Restart notification consumes its pending request once before payload admission;
+an invalid payload then fails the original Restart without restoring the
+pending request or ending its usable session. Unrelated or invalid correlation
+is acknowledged without reading the payload. Failed rejection output uses the
+existing terminal cleanup and retained owner evidence and is never retried.
+This Module does not classify arbitrary infrastructure exceptions or replace
+`DebugSourceAdmission`'s source-generation authority.
+_Avoid_: transport validator, source admission, generic JSON helper collection
+
 **DebugFailureCompletion**:
 The internal DAP-owned Module that retains the original failure or cancellation
 with its stack, subsequent distinct cleanup failures, and resource-release
