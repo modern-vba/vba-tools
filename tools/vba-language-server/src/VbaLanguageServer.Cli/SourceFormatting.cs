@@ -5,82 +5,10 @@ using VbaTools.Syntax;
 namespace VbaLanguageServer.SourceModel;
 
 /// <summary>
-/// Represents a source replacement used while constructing a formatted document.
-/// </summary>
-/// <param name="StartOffset">The inclusive source offset where replacement starts.</param>
-/// <param name="EndOffset">The exclusive source offset where replacement ends.</param>
-/// <param name="NewText">The replacement text.</param>
-internal sealed record SourceFormattingEdit(int StartOffset, int EndOffset, string NewText);
-
-/// <summary>
-/// Collects non-overlapping source formatting edits and applies them to source text.
-/// </summary>
-internal sealed class SourceFormattingEditCollector
-{
-    private readonly List<SourceFormattingEdit> edits = [];
-
-    /// <summary>
-    /// Gets the collected formatting edits.
-    /// </summary>
-    public IReadOnlyList<SourceFormattingEdit> Edits => edits;
-
-    /// <summary>
-    /// Adds a replacement edit.
-    /// </summary>
-    /// <param name="startOffset">The inclusive source offset where replacement starts.</param>
-    /// <param name="endOffset">The exclusive source offset where replacement ends.</param>
-    /// <param name="newText">The replacement text.</param>
-    public void Replace(int startOffset, int endOffset, string newText)
-        => edits.Add(new SourceFormattingEdit(startOffset, endOffset, newText));
-
-    /// <summary>
-    /// Applies the collected edits to source text.
-    /// </summary>
-    /// <param name="source">The source text to edit.</param>
-    /// <returns>The edited source text.</returns>
-    public string Apply(string source)
-        => SourceFormatting.ApplyEdits(source, edits);
-}
-
-/// <summary>
-/// Provides low-level source formatting text helpers.
+/// Chooses source formatting output conventions.
 /// </summary>
 internal static class SourceFormatting
 {
-    /// <summary>
-    /// Splits source text into physical lines without newline characters.
-    /// </summary>
-    /// <param name="source">The source text to split.</param>
-    /// <returns>The source lines in order.</returns>
-    public static IReadOnlyList<string> SplitLogicalLines(string source)
-    {
-        var lines = new List<string>();
-        var lineStart = 0;
-        for (var index = 0; index < source.Length; index++)
-        {
-            if (source[index] == '\r')
-            {
-                lines.Add(source[lineStart..index]);
-                if (index + 1 < source.Length && source[index + 1] == '\n')
-                {
-                    index++;
-                }
-
-                lineStart = index + 1;
-                continue;
-            }
-
-            if (source[index] == '\n')
-            {
-                lines.Add(source[lineStart..index]);
-                lineStart = index + 1;
-            }
-        }
-
-        lines.Add(source[lineStart..]);
-        return lines;
-    }
-
     /// <summary>
     /// Detects the dominant line ending used by source text.
     /// </summary>
@@ -122,46 +50,6 @@ internal static class SourceFormatting
         return lfCount >= crCount ? "\n" : "\r";
     }
 
-    /// <summary>
-    /// Applies non-overlapping replacement edits to source text.
-    /// </summary>
-    /// <param name="source">The source text to edit.</param>
-    /// <param name="edits">The replacement edits to apply.</param>
-    /// <returns>The edited source text.</returns>
-    public static string ApplyEdits(string source, IEnumerable<SourceFormattingEdit> edits)
-    {
-        var orderedEdits = edits
-            .OrderBy(edit => edit.StartOffset)
-            .ToArray();
-        ValidateEdits(source, orderedEdits);
-
-        var formatted = source;
-        foreach (var edit in orderedEdits.Reverse())
-        {
-            formatted = formatted[..edit.StartOffset] + edit.NewText + formatted[edit.EndOffset..];
-        }
-
-        return formatted;
-    }
-
-    private static void ValidateEdits(string source, IReadOnlyList<SourceFormattingEdit> edits)
-    {
-        var previousEnd = 0;
-        foreach (var edit in edits)
-        {
-            if (edit.StartOffset < 0 || edit.EndOffset < edit.StartOffset || edit.EndOffset > source.Length)
-            {
-                throw new InvalidOperationException("Source formatting edit range is outside the source text.");
-            }
-
-            if (edit.StartOffset < previousEnd)
-            {
-                throw new InvalidOperationException("Source formatting edits must not overlap.");
-            }
-
-            previousEnd = edit.EndOffset;
-        }
-    }
 }
 
 /// <summary>
@@ -196,21 +84,21 @@ internal sealed class VbaSourceFormatter
         VbaIndentationStyle indentationStyle,
         CancellationToken cancellationToken = default)
     {
-        var formattedText = FormatText(document, indentationStyle, cancellationToken);
-        if (string.Equals(formattedText, document.Text, StringComparison.Ordinal))
+        var result = FormatText(document, indentationStyle, cancellationToken);
+        if (result.Replacements.Count == 0)
         {
             return null;
         }
 
-        var lines = VbaSourceText.SplitLines(document.Text);
+        var range = result.Before.FullRange;
         return new VbaTextEdit(
             new VbaRange(
-                new VbaPosition(0, 0),
-                new VbaPosition(Math.Max(0, lines.Length - 1), lines.Length == 0 ? 0 : lines[^1].Length)),
-            formattedText);
+                new VbaPosition(range.Start.Line, range.Start.Character),
+                new VbaPosition(range.End.Line, range.End.Character)),
+            result.After.Text);
     }
 
-    private string FormatText(
+    private VbaSourceTextEditResult FormatText(
         VbaSourceDocument document,
         VbaIndentationStyle indentationStyle,
         CancellationToken cancellationToken)
@@ -220,6 +108,7 @@ internal sealed class VbaSourceFormatter
             .Select(definition => GetRangeKey(definition.Range))
             .ToHashSet(StringComparer.Ordinal);
         var syntaxTree = document.SyntaxTree ?? VbaSyntaxTree.ParseModule(document.Uri, document.Text);
+        var sourceText = syntaxTree.SourceText;
         var formattingInput = VbaFormattingInput.FromSyntaxTree(syntaxTree);
         var indentationFormatting = VbaIndentationFormatting.FromInput(formattingInput);
         var canonicalNamesByRange = resolvedOccurrences.GetCanonicalNamesByRange(
@@ -246,14 +135,14 @@ internal sealed class VbaSourceFormatter
             formattedLines.Add(indentationFormatting.Apply(formattingLine, casedLine, indentationStyle));
         }
 
-        var formattedText = string.Join(SourceFormatting.DetectDominantLineEnding(document.Text), formattedLines);
-        var edits = new SourceFormattingEditCollector();
-        if (!string.Equals(formattedText, document.Text, StringComparison.Ordinal))
+        var formattedText = string.Join(SourceFormatting.DetectDominantLineEnding(sourceText.Text), formattedLines);
+        var edits = new List<VbaSourceTextEdit>();
+        if (!string.Equals(formattedText, sourceText.Text, StringComparison.Ordinal))
         {
-            edits.Replace(0, document.Text.Length, formattedText);
+            edits.Add(new VbaSourceTextEdit(0, sourceText.Text.Length, formattedText));
         }
 
-        return edits.Apply(document.Text);
+        return ApplyFormattingEdits(sourceText, edits);
     }
 
     private string FormatLineCasing(
@@ -277,7 +166,7 @@ internal sealed class VbaSourceFormatter
                 + "VB_Name",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
-        var edits = new SourceFormattingEditCollector();
+        var edits = new List<VbaSourceTextEdit>();
         foreach (var occurrence in VbaLexicalFacts.FindCodeIdentifierOccurrences(codePart))
         {
             var canonicalName = semanticResolution.GetCanonicalFormattingName(
@@ -289,12 +178,19 @@ internal sealed class VbaSourceFormatter
             if (canonicalName is not null
                 && !string.Equals(occurrence.Name, canonicalName, StringComparison.Ordinal))
             {
-                edits.Replace(occurrence.Start, occurrence.End, canonicalName);
+                edits.Add(new VbaSourceTextEdit(occurrence.Start, occurrence.End, canonicalName));
             }
         }
 
-        return edits.Apply(codePart) + lineParts.CommentPart;
+        return ApplyFormattingEdits(VbaSourceText.From(codePart), edits).After.Text + lineParts.CommentPart;
     }
+
+    private static VbaSourceTextEditResult ApplyFormattingEdits(
+        VbaSourceText sourceText,
+        IEnumerable<VbaSourceTextEdit> edits)
+        => VbaSourceTextEditResult.TryApply(sourceText, edits, out var result)
+            ? result
+            : throw new InvalidOperationException("Source formatting produced invalid source edits.");
 
     private static string GetRangeKey(VbaRange range)
         => $"{range.Start.Line}:{range.Start.Character}:{range.End.Line}:{range.End.Character}";

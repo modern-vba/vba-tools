@@ -31,6 +31,21 @@ syntax model and public Interface remain reusable enough for a future DoxyVB6
 adapter to consume without forcing DoxyVB6 integration into the initial parser
 replacement work.
 
+`VbaSourceText` recognizes CRLF, LF, CR, and mixed physical line endings without
+choosing an output convention. The syntax-owned `VbaSourceTextEditResult`
+validates and applies raw UTF-16 replacement ranges against an immutable
+before-text. Raw offset endpoints may split a newline sequence; strict
+line/character conversion remains a separate Interface.
+
+Formatting consumes this same edit contract for whole-document replacements and
+multiple casing replacements within a line. It retains the dominant-newline
+choice, casing and indentation rules, and editable-region policy. Recognized
+export metadata retains its line contents while its line endings follow the
+document's formatting output convention. Format Document and format-on-save
+consume the resolved editor indentation options, including manual overrides;
+neither the formatter nor the edit Module repeats indentation detection. Rename
+and block skeleton insertion retain their separate newline-preservation policy.
+
 `VbaSyntaxTree.ParseOrUpdate` returns the closed `SyntaxChangeSet` hierarchy.
 Each variant carries the complete current tree and exposes only a semantic
 reuse proof: `Unchanged`, `ModuleMember`, or `Module`. Constructors are
