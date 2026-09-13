@@ -2,14 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
-import { admitVbaDevCapabilities } from './capabilityAdmission';
+import { admitVbaDebugAdapterCapabilities, admitVbaDevCapabilities } from './capabilityAdmission';
 import { loadRequiredVbaDevContractFile } from './vbaDevOutputContract';
+import { loadRequiredVbaDebugAdapterContract } from './debugAdapter';
 
 const root = path.resolve(__dirname, '..', '..');
 const extensionRequirements = loadRequiredVbaDevContractFile(path.join(root, 'vba-dev-contract.json'));
+const adapterRequirements = loadRequiredVbaDebugAdapterContract(root);
 const corpus = JSON.parse(readFileSync(path.join(root, 'fixtures', 'capability-admission', 'cases.json'), 'utf8')) as {
   schemaVersion: number;
-  cases: Array<{ id: string; rawJson: string; expectedByProfile: { extension?: string } }>;
+  cases: Array<{ id: string; rawJson: string; expectedByProfile: { extension?: string; adapter?: string } }>;
 };
 assert.equal(corpus.schemaVersion, 1);
 for (const fixture of corpus.cases) {
@@ -19,6 +21,45 @@ for (const fixture of corpus.cases) {
     assert.equal(admitted.accepted ? 'Accepted' : admitted.rejection.code, fixture.expectedByProfile.extension);
   });
 }
+
+for (const fixture of corpus.cases) {
+  if (fixture.expectedByProfile.adapter === undefined) continue;
+  test('adapter capability conformance: ' + fixture.id, () => {
+    const admitted = admitVbaDebugAdapterCapabilities(fixture.rawJson, adapterRequirements);
+    assert.equal(admitted.accepted ? 'Accepted' : admitted.rejection.code, fixture.expectedByProfile.adapter);
+  });
+}
+
+test('adapter admission preserves immutable offers with own prototype-like capability names', () => {
+  const versions = JSON.parse('{"__proto__":"1.0","constructor":"2.0"}') as Record<string, string>;
+  const requirements = { ...adapterRequirements,
+    commandSchemaVersions: versions, featureVersions: versions, requiredVbaDevFeatureVersions: versions };
+  const offered = { ...requirements, toolVersion: '', commands: ['doctor', 'cleanup', 'doctor'] };
+  const admitted = admitVbaDebugAdapterCapabilities(JSON.stringify(offered), requirements);
+
+  assert.equal(admitted.accepted, true);
+  if (admitted.accepted) {
+    assert.equal(admitted.facts.toolVersion, '');
+    assert.deepEqual(admitted.facts.commands, offered.commands);
+    assert.equal(Object.isFrozen(admitted.facts), true);
+    assert.equal(Object.isFrozen(admitted.facts.commands), true);
+    assert.equal(Object.isFrozen(admitted.facts.transports), true);
+    for (const values of [admitted.facts.commandSchemaVersions, admitted.facts.featureVersions,
+      admitted.facts.requiredVbaDevFeatureVersions]) {
+      assert.equal(Object.hasOwn(values, '__proto__'), true);
+      assert.equal(values.__proto__, '1.0');
+      assert.equal(values.constructor, '2.0');
+      assert.equal(Object.isFrozen(values), true);
+      assert.equal(Object.getPrototypeOf(values), Object.prototype);
+    }
+  }
+  const absent = admitVbaDebugAdapterCapabilities(JSON.stringify({ ...offered, featureVersions: {} }), requirements);
+  assert.equal(absent.accepted, false);
+  if (!absent.accepted) {
+    assert.equal(absent.rejection.code, 'MissingCapability');
+    assert.deepEqual(absent.rejection.path, ['featureVersions', '__proto__']);
+  }
+});
 
 test('capability admission matches prototype-like names as own offered capabilities', () => {
   const requirements = {

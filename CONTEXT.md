@@ -262,10 +262,11 @@ without becoming a foundation dependency of those products.
 _Avoid_: shared product test harness, executable fixture library, linked test source
 
 **CapabilityAdmission**:
-Admission of one raw public `vba-dev capabilities` response against a consumer's
+Admission of one raw public companion capability response against a consumer's
 locally declared requirements. The explicitly neutral C# foundation
 `VbaTools.CapabilityAdmission` serves the standalone language server and debug
-adapter; the extension owns the corresponding TypeScript Module. Admission owns
+adapter for `vba-dev`; the extension's TypeScript Module admits both `vba-dev`
+and `vba-debug-adapter` responses. Admission owns
 JSON validity, whole-response property uniqueness, consumed capability facts,
 and exact required-version matching. It returns admitted facts or classified
 `InvalidJson`, `DuplicateProperty`, `MissingCapability`, `InvalidConsumedValue`,
@@ -278,7 +279,9 @@ required membership does not depend on ordering or forbid repeated array values.
 The LSP requires only `reference list` output schema `1.0`; the DAP requires only
 `build.sourceSnapshot: 2.0` and `build.sourceSnapshotAnalysis: 1.0`. The extension
 retains its complete compatibility contract, metadata shape, and active Windows
-code-page requirement. It validates uniqueness before ordinary JSON parsing can
+code-page requirement. Adapter offers use unordered required-subset matching,
+with exact consumed versions, while its complete `requiredVbaDevFeatureVersions`
+dependency declaration must match exactly. It validates uniqueness before ordinary JSON parsing can
 discard duplicates. Each consumer retains diagnostic presentation, rejection or
 fallback, process cancellation/cleanup, and executable pinning.
 Shared raw data-only conformance cases preserve original JSON spelling and
@@ -348,11 +351,16 @@ The extension-owned compatibility requirement stored as
 `vba-debug-adapter-contract.json`, independent from `vba-dev-contract.json`.
 Its capability contract requires adapter contract `1.0`, DAP extension
 protocol `2.0`, DAP source-snapshot schema `2`, stdio transport, lowercase-hex-32 session IDs, cleanup and
-Doctor commands, Doctor schema `1.0`, and required VbaDev feature
-`build.sourceSnapshot` version `2.0`, plus adapter feature
-`doctor.stdinCancellation` version `1.0`. `VbaDev` advertises that build primitive
+Doctor commands, Doctor schema `1.0`, and the complete required VbaDev feature
+map `build.sourceSnapshot: 2.0` and `build.sourceSnapshotAnalysis: 1.0`, plus
+adapter features `doctor.stdinCancellation: 1.0` and `snapshotBuild.diagnostics: 1.0`.
+Offered commands and transports are unordered required subsets: extra and
+repeated entries are accepted. Additional well-formed schema entries, features,
+and unique properties are accepted; consumed versions remain exact.
+The dependency map requires exact equality, including its complete key set.
+`VbaDev` advertises those build primitives
 under `featureVersions` and does not advertise a debug-adapter protocol. The
-adapter validates only the feature version it consumes rather than the CLI tool
+adapter validates only the feature versions it consumes rather than the CLI tool
 version or complete project-command contract. Both capability inspections are
 side-effect free. The extension validates both providers before snapshot capture,
 temporary artifacts, or invocation and pins the chosen compatible paths.

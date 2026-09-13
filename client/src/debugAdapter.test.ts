@@ -29,6 +29,34 @@ test('the extension contract requires Doctor stdin cancellation 1.0', () => {
   assert.equal(contract.featureVersions['doctor.stdinCancellation'], '1.0');
 });
 
+test('a configured debug adapter accepts reordered and additional offered capabilities', async () => {
+  const configuredPath = path.resolve('configured-vba-debug-adapter.exe');
+  const calls: string[] = [];
+  const offered = {
+    toolVersion: '0.1.0',
+    ...requiredContract,
+    transports: ['socket', 'stdio'],
+    commands: ['doctor', 'extra', 'cleanup'],
+    commandSchemaVersions: { extra: '99.0', doctor: '1.0' },
+    featureVersions: { extra: '99.0', ...requiredContract.featureVersions }
+  };
+
+  const resolved = await resolveCompatibleVbaDebugAdapter({
+    extensionRoot: path.resolve('extension-root'), configuredPath, requiredContract,
+    runProcess: async file => {
+      calls.push(file);
+      return { stdout: JSON.stringify(offered), stderr: '' };
+    }
+  });
+
+  assert.equal(resolved.executablePath, configuredPath);
+  assert.deepEqual(calls, [configuredPath]);
+  assert.deepEqual(resolved.capabilities.commands, offered.commands);
+  assert.deepEqual(resolved.capabilities.transports, offered.transports);
+  assert.equal(resolved.capabilities.commandSchemaVersions.extra, '99.0');
+  assert.equal(resolved.capabilities.featureVersions.extra, '99.0');
+});
+
 test('a missing configured debug adapter fails without bundled fallback', async () => {
   const extensionRoot = path.resolve('extension-root');
   const configuredPath = path.resolve('missing-vba-debug-adapter.exe');
@@ -70,6 +98,22 @@ test('a missing configured debug adapter fails without bundled fallback', async 
     args: ['capabilities', '--format', 'json']
   }]);
   assert.ok(calls.every(({ file }) => file !== bundledPath));
+});
+
+test('an ambiguous configured debug adapter response fails without bundled fallback', async () => {
+  const configuredPath = path.resolve('configured-vba-debug-adapter.exe');
+  const calls: string[] = [];
+  const raw = JSON.stringify({ toolVersion: '0.1.0', ...requiredContract }).slice(0, -1)
+    + ',"unknown":[{"same":1,"same":1}]}';
+
+  await assert.rejects(() => resolveCompatibleVbaDebugAdapter({
+    extensionRoot: path.resolve('extension-root'), configuredPath, requiredContract,
+    runProcess: async file => {
+      calls.push(file);
+      return { stdout: raw, stderr: '' };
+    }
+  }), /duplicate.*same/i);
+  assert.deepEqual(calls, [configuredPath]);
 });
 
 test('an incompatible configured debug adapter fails without bundled fallback', async () => {

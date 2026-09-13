@@ -308,10 +308,23 @@ capability response containing `toolVersion`, adapter `contractVersion: "1.0"`,
 `protocolVersion: "2.0"`, `transports: ["stdio"]`,
 `sessionIdFormat: "lowercase-hex-32"`, `commands: ["cleanup", "doctor"]`,
 `commandSchemaVersions: { "doctor": "1.0" }`,
-`featureVersions: { "doctor.stdinCancellation": "1.0" }`, and
-`requiredVbaDevFeatureVersions: { "build.sourceSnapshot": "2.0" }`. The
+`featureVersions: { "doctor.stdinCancellation": "1.0", "snapshotBuild.diagnostics": "1.0" }`, and
+`requiredVbaDevFeatureVersions: { "build.sourceSnapshot": "2.0", "build.sourceSnapshotAnalysis": "1.0" }`. The
 extension validates that response independently from `vba-dev` before snapshot
 capture, temporary artifact creation, or launch.
+Both extension capability consumers use the same TypeScript `CapabilityAdmission`
+Module before ordinary JSON parsing can discard duplicate properties. Every
+object in the response must have unique decoded property names, including
+unknown nested objects and objects in arrays; even identical duplicates reject.
+Offered commands and transports use unordered required-subset matching. Extra
+and repeated offered-array entries remain compatible. Additional well-formed
+command schema entries, features, and unique properties are accepted, while
+consumed schema and feature versions must match exactly. In contrast, the
+complete `requiredVbaDevFeatureVersions` dependency declaration requires exact
+name/version equality: additions, omissions, and changed versions reject.
+This refinement preserves contract/protocol/session-ID requirements, explicit
+override failure without fallback, cancellation and cleanup, path pinning, and
+the admission barrier before snapshot capture or session work.
 The adapter is an internal extension companion rather than a user-facing
 project command, requires neither a machine-wide .NET runtime nor PATH
 installation, and is Windows-only while Excel/VBIDE automation is the supported
