@@ -10,6 +10,48 @@ namespace VbaDebugAdapter.Tests;
 public sealed class DebugSourceAdmissionTests
 {
     [Fact]
+    public async Task LexicalUriAliasesBindActiveSourceAndBreakpointsWhileRetainingOriginalSpellingAndOrder()
+    {
+        const string firstUri = "file:///C:/persistent/日本/Module1.bas?inventory=first#original";
+        const string secondUri = "file:///C:/persistent/日本/Module2.bas?inventory=second";
+        const string activeUri = "file:///c%3A/persistent/%E6%97%A5%E6%9C%AC/Module1.bas?active#position";
+        const string firstBreakpointUri = "file:///c:/PERSISTENT/日本/MODULE1.BAS#breakpoint";
+        const string secondBreakpointUri = "file:///C%3A/persistent/%E6%97%A5%E6%9C%AC/Module2.bas?breakpoint";
+        var parsedUris = new List<string>();
+        var admission = new DebugSourceAdmission(932, (uri, text) =>
+        {
+            parsedUris.Add(uri);
+            return VbaSyntaxTree.ParseModule(uri, text);
+        });
+        var snapshot = new TransportedDebugSourceSnapshot(2,
+        [
+            TextSource("Module1.bas", firstUri,
+                "Attribute VB_Name = \"Module1\"\r\nPublic Sub Run()\r\n    Debug.Print 1\r\nEnd Sub\r\n"),
+            TextSource("Module2.bas", secondUri,
+                "Attribute VB_Name = \"Module2\"\r\nPublic Sub Other()\r\n    Debug.Print 2\r\nEnd Sub\r\n")
+        ])
+        {
+            ActiveSource = new TransportedDebugSourcePosition(activeUri, 2, 4),
+            Breakpoints = [new(secondBreakpointUri, 2), new(firstBreakpointUri, 2)]
+        };
+
+        var admitted = admission.Admit(snapshot, null, null, DebugGenerationId.Initial);
+
+        Assert.Equal("Module1", admitted.Target.ModuleName);
+        Assert.Equal("Run", admitted.Target.ProcedureName);
+        Assert.Equal(activeUri, admitted.ActiveSource!.SourceUri);
+        Assert.Equal([firstUri, secondUri], parsedUris);
+        Assert.Equal([secondBreakpointUri, firstBreakpointUri],
+            admitted.MappedBreakpoints.Select(breakpoint => breakpoint.Source.SourceUri));
+        Assert.Equal(["Module2", "Module1"], admitted.MappedBreakpoints.Select(breakpoint => breakpoint.ModuleName));
+        using var temp = TempDirectory.Create();
+        await using var lease = await new VbaDebugSessionWorkspaceManager(temp.Path).ClaimAsync(
+            DebugSessionId.Parse("0123456789abcdef0123456789abcdef"), CancellationToken.None);
+        await using var workspace = lease.CreateGenerationWorkspace(DebugGenerationId.Initial, "Book1.xlsm");
+        Assert.Equal([firstUri, secondUri], admitted.BuildSources.CaptureOrigins(workspace).Select(origin => origin.SourceUri));
+    }
+
+    [Fact]
     public void AdmissionIsAnInternalSealedDeepModuleWithoutASubstitutableInterface()
     {
         var assembly = typeof(StandaloneVbaDebugAdapterStdioRunner).Assembly;

@@ -610,6 +610,8 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
     'client/out/testRunner.js',
     'tools/vba-capability-admission/src/Capability.cs',
     'fixtures/capability-admission/cases.json',
+    'tools/vba-source-identity/src/Identity.cs',
+    'fixtures/source-identity/cases.json',
     '.tmp/old-smoke/output.bas',
     'temp/old-smoke/output.xlsm'
   ]) {
@@ -1175,6 +1177,8 @@ test('release verification scripts expose every suite and keep Excel integration
   assert.match(scripts['test:syntax-core'], /vba-syntax\/tests\/VbaTools\.Syntax\.Tests/);
   assert.match(scripts['test:project-metadata'], /vba-project-metadata\/tests\/VbaTools\.ProjectMetadata\.Tests/);
   assert.match(scripts['test:process-invocation'], /vba-process-invocation\/tests\/VbaTools\.ProcessInvocation\.Tests/);
+  assert.match(scripts['test:source-identity'], /vba-source-identity\/tests\/VbaTools\.SourceIdentity\.Tests/);
+  assert.match(scripts.test, /npm run test:source-identity/);
   assert.match(scripts.test, /npm run test:process-invocation/);
   assert.match(scripts.test, /npm run test:project-metadata/);
   assert.match(scripts['verify:architecture'], /dependencyBoundaries\.mjs/);
@@ -1203,6 +1207,7 @@ test('release verification scripts expose every suite and keep Excel integration
     'test:syntax-core',
     'test:project-metadata',
     'test:process-invocation',
+    'test:source-identity',
     'test:cross-product-integration',
     'test:packaging',
     'test:compatibility',

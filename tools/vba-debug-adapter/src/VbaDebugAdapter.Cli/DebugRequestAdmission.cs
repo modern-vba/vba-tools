@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using VbaTools.SourceIdentities;
 using System.Text.Json;
 using VbaDebugAdapter.Build;
 using VbaDebugAdapter.Debugging;
@@ -304,7 +305,12 @@ internal static class DebugRequestAdmission
                 HasOptionalPositiveInteger(breakpoint, "column"),
                 HasOptionalString(breakpoint, "mode"));
         }).ToImmutableArray();
-        return new AdmittedDapSourceBreakpoints(sourcePath, requestedBreakpoints);
+        if (!SourceIdentity.TryFromPath(sourcePath, out var identity))
+        {
+            throw new DebugRequestRejectedException(
+                "The setBreakpoints source path must be a valid absolute path.");
+        }
+        return new AdmittedDapSourceBreakpoints(sourcePath, identity, requestedBreakpoints);
     }
 
     private static bool HasOptionalString(JsonElement value, string propertyName)
@@ -674,6 +680,7 @@ internal sealed record DapSourceBreakpointIntent(
 
 internal sealed record AdmittedDapSourceBreakpoints(
     string SourcePath,
+    SourceIdentity Identity,
     ImmutableArray<DapSourceBreakpointIntent> Breakpoints);
 
 internal sealed record AdmittedDapBreakpointConfiguration(string Command, bool Unsupported);

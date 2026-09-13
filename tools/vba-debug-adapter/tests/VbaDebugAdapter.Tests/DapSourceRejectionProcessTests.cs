@@ -104,6 +104,9 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
     [InlineData("inventory", "complete source inventory")]
     [InlineData("path", "path components")]
     [InlineData("uri", "persistent file URI")]
+    [InlineData("raw-source-path", "persistent file URI")]
+    [InlineData("duplicate-breakpoint-identity", "duplicate breakpoint")]
+    [InlineData("duplicate-source-identity", "duplicate identity")]
     [InlineData("encoding", "canonical active Windows")]
     [InlineData("bytes", "strictly decode")]
     [InlineData("order", "canonical relative-path order")]
@@ -197,6 +200,27 @@ public sealed partial class VbaDebugAdapterCliSurfaceTests
                 break;
             case "uri":
                 sources[0]["sourceUri"] = "https://example.test/Module1.bas";
+                break;
+            case "raw-source-path":
+                sources[0]["sourceUri"] = @"C:\persistent\Module1.bas";
+                break;
+            case "duplicate-breakpoint-identity":
+                snapshot["breakpoints"] = new[]
+                {
+                    new { sourceUri = "file:///C:/persistent/Module1.bas?first", line = 2 },
+                    new { sourceUri = "file://localhost/c%3A/persistent/sub/../%4dodule1.bas#second", line = 2 }
+                };
+                break;
+            case "duplicate-source-identity":
+                snapshot["sources"] = new[]
+                {
+                    sources[0],
+                    new Dictionary<string, object?>(sources[0])
+                    {
+                        ["relativePath"] = "Other.bas",
+                        ["sourceUri"] = "file://localhost/c%3A/persistent/sub/../%4dodule1.bas#second"
+                    }
+                };
                 break;
             case "encoding":
                 sources[0]["encoding"] = "windows-1252";

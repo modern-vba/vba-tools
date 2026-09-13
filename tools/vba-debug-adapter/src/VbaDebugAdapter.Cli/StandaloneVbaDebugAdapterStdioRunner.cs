@@ -3,6 +3,7 @@ using VbaDebugAdapter.Build;
 using VbaDebugAdapter.Debugging;
 using VbaDebugAdapter.Infrastructure;
 using VbaDebugAdapter.Protocol;
+using VbaTools.SourceIdentities;
 
 namespace VbaDebugAdapter.Cli;
 
@@ -259,7 +260,7 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                             cancellationToken).ConfigureAwait(false);
                         continue;
                     }
-                    var breakpoints = breakpointRegistry.Replace(admitted.SourcePath, admitted.Breakpoints)
+                    var breakpoints = breakpointRegistry.Replace(admitted.Identity, admitted.Breakpoints)
                         .Select(breakpoint => new
                         {
                             id = breakpoint.Id,
@@ -782,16 +783,18 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
             {
                 foreach (var breakpoint in runningSession!.VerifiedBreakpoints)
                 {
+                    var sourceIdentity = breakpoint.Source.Identity ??
+                        throw new InvalidOperationException("A verified breakpoint requires an admitted source URI.");
                     await connection.WriteEventAsync("breakpoint", new
                     {
                         reason = "changed",
                         breakpoint = new
                         {
-                            id = breakpointRegistry.GetOrAdd(new Uri(breakpoint.Source.SourceUri).LocalPath,
+                            id = breakpointRegistry.GetOrAdd(sourceIdentity,
                                 breakpoint.Source.EditorLine + 1),
                             verified = true,
                             line = breakpoint.Source.EditorLine + 1,
-                            source = new { path = new Uri(breakpoint.Source.SourceUri).LocalPath }
+                            source = new { path = sourceIdentity.Path }
                         }
                     }, transportCancellationToken).ConfigureAwait(false);
                 }
@@ -975,16 +978,14 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
 
     private sealed class DapSourceBreakpointRegistry
     {
-        private readonly Dictionary<string, List<RegisteredDapSourceBreakpoint>> bySource =
-            new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<SourceIdentity, List<RegisteredDapSourceBreakpoint>> bySource = [];
         private readonly HashSet<string> unsupportedCategories =
             new(StringComparer.Ordinal);
         private int nextId;
 
-        public int GetOrAdd(string sourcePath, int line)
+        public int GetOrAdd(SourceIdentity sourceIdentity, int line)
         {
-            var canonicalSourcePath = Path.GetFullPath(sourcePath);
-            if (bySource.TryGetValue(canonicalSourcePath, out var breakpoints))
+            if (bySource.TryGetValue(sourceIdentity, out var breakpoints))
             {
                 var existing = breakpoints.FirstOrDefault(item => item.Intent.Line == line);
                 if (existing is not null)
@@ -1005,18 +1006,17 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
             if (breakpoints is null)
             {
                 breakpoints = [];
-                bySource.Add(canonicalSourcePath, breakpoints);
+                bySource.Add(sourceIdentity, breakpoints);
             }
             breakpoints.Add(registered);
             return registered.Id;
         }
 
         public IReadOnlyList<RegisteredDapSourceBreakpoint> Replace(
-            string sourcePath,
+            SourceIdentity sourceIdentity,
             IReadOnlyList<DapSourceBreakpointIntent> breakpoints)
         {
-            var canonicalSourcePath = Path.GetFullPath(sourcePath);
-            bySource.TryGetValue(canonicalSourcePath, out var previous);
+            bySource.TryGetValue(sourceIdentity, out var previous);
             var replacement = breakpoints
                 .Select(intent => new RegisteredDapSourceBreakpoint(
                     previous?.FirstOrDefault(item => item.Intent.Line == intent.Line)?.Id
@@ -1025,11 +1025,11 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                 .ToList();
             if (replacement.Count == 0)
             {
-                bySource.Remove(canonicalSourcePath);
+                bySource.Remove(sourceIdentity);
             }
             else
             {
-                bySource[canonicalSourcePath] = replacement;
+                bySource[sourceIdentity] = replacement;
             }
             return replacement;
         }
@@ -1041,29 +1041,18 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                 throw new DebugSetupException(
                     $"VBA {DebugRequestAdmission.UnsupportedBreakpointKind(unsupportedCategory)} breakpoints are unsupported.");
             }
-            var sourcePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var sourceIdentities = new HashSet<SourceIdentity>();
             foreach (var source in snapshot.Sources.Where(source => source.SourceUri is not null))
             {
-                if (!Uri.TryCreate(source.SourceUri, UriKind.Absolute, out var sourceUri) ||
-                    !sourceUri.IsFile)
+                if (source.Uri.Identity is not { } sourceIdentity)
                 {
                     // Source transport validation belongs to DebugSourceAdmission.
                     return;
                 }
-                try
-                {
-                    sourcePaths.Add(Path.GetFullPath(sourceUri.LocalPath));
-                }
-                catch (Exception exception) when (
-                    exception is ArgumentException or InvalidOperationException or
-                        NotSupportedException or PathTooLongException or UriFormatException)
-                {
-                    // Source transport validation belongs to DebugSourceAdmission.
-                    return;
-                }
+                sourceIdentities.Add(sourceIdentity);
             }
             foreach (var (sourcePath, breakpoints) in bySource.Where(item =>
-                         sourcePaths.Contains(item.Key)))
+                         sourceIdentities.Contains(item.Key)))
             {
                 if (breakpoints.GroupBy(item => item.Intent.Line).Any(group => group.Count() > 1))
                 {

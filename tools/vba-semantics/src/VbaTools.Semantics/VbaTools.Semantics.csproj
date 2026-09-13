@@ -6,6 +6,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../../vba-syntax/src/VbaTools.Syntax/VbaTools.Syntax.csproj" />
+    <ProjectReference Include="../../../vba-source-identity/src/VbaTools.SourceIdentity/VbaTools.SourceIdentity.csproj" />
     <InternalsVisibleTo Include="VbaDev.Infrastructure" />
     <InternalsVisibleTo Include="vba-language-server" />
     <InternalsVisibleTo Include="VbaLanguageServer.Tests" />

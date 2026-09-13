@@ -1,7 +1,72 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as path from 'node:path';
-import { relativeWindowsDescendantPath, windowsPathKey } from './windowsPathIdentity';
+import { readFileSync } from 'node:fs';
+import { relativeSourceDescendantPath, relativeWindowsDescendantPath, sourcePathIdentity,
+  tryParseSourceUri, tryParseWindowsSourceUri, windowsPathKey } from './windowsPathIdentity';
+
+const corpus = JSON.parse(readFileSync(path.resolve(__dirname, '..', '..', 'fixtures', 'source-identity', 'cases.json'), 'utf8')) as {
+  schemaVersion: number;
+  cases: Array<{ id: string; uri: string; windows: { accepted: boolean; path?: string; group?: string };
+    posix?: { accepted: boolean; path?: string; group?: string } }>;
+};
+assert.equal(corpus.schemaVersion, 1);
+for (const fixture of corpus.cases) {
+  test('Windows source URI conformance: ' + fixture.id, () => {
+    const source = tryParseWindowsSourceUri(fixture.uri);
+    assert.equal(source !== undefined, fixture.windows.accepted);
+    if (source !== undefined) {
+      assert.equal(source.originalUri, fixture.uri);
+      assert.equal(source.filePath, fixture.windows.path);
+      assert.equal(source.isWindowsPath, true);
+      assert.equal(Object.isFrozen(source), true);
+    }
+  });
+}
+
+for (const fixture of corpus.cases) {
+  if (fixture.posix === undefined) continue;
+  test('native POSIX source URI conformance: ' + fixture.id, () => {
+    const source = tryParseSourceUri(fixture.uri, 'posix');
+    assert.equal(source !== undefined, fixture.posix!.accepted);
+    if (source !== undefined) {
+      assert.equal(source.originalUri, fixture.uri);
+      assert.equal(source.filePath, fixture.posix!.path);
+      assert.equal(source.identity, sourcePathIdentity(fixture.posix!.path!));
+    }
+  });
+}
+
+test('native POSIX source URI admission requires an original absolute slash path', () => {
+  assert.equal(tryParseSourceUri(String.raw`file:\\\tmp\Source\A.bas`, 'posix'), undefined);
+});
+
+test('source URI authorities use the shared explicit character rules without Unicode whitespace folding', () => {
+  assert.ok(tryParseWindowsSourceUri('file://server\u00a0name/share/A.bas'));
+  assert.equal(tryParseWindowsSourceUri('file://server\u007fname/share/A.bas'), undefined);
+});
+
+test('Windows source URI equivalence follows corpus groups without folding distinct names', () => {
+  const admitted = corpus.cases.filter(fixture => fixture.windows.accepted).map(fixture => ({
+    fixture, source: tryParseWindowsSourceUri(fixture.uri)!
+  }));
+  for (const left of admitted) {
+    for (const right of admitted) {
+      assert.equal(left.source.identity === right.source.identity,
+        left.fixture.windows.group === right.fixture.windows.group,
+        left.fixture.id + ' compared with ' + right.fixture.id);
+    }
+  }
+});
+
+test('native POSIX source paths retain ordinal casing and literal backslashes', () => {
+  assert.notEqual(sourcePathIdentity('/tmp/Σ.bas'), sourcePathIdentity('/tmp/ς.bas'));
+  assert.notEqual(sourcePathIdentity('/tmp/Source/Nested\\A.bas'), sourcePathIdentity('/tmp/Source/Nested/A.bas'));
+  assert.equal(relativeSourceDescendantPath('/tmp/Source', '/tmp/Source/Nested\\A.bas'), 'Nested\\A.bas');
+  assert.equal(relativeSourceDescendantPath('/tmp/Source/Nested', '/tmp/Source/Nested\\A.bas'), undefined);
+  assert.equal(relativeSourceDescendantPath('/tmp/Source', '/tmp/source/A.bas'), undefined);
+  assert.equal(relativeSourceDescendantPath('/tmp/Source', '/tmp/Source/../A.bas'), undefined);
+});
 
 test('Windows lexical descendants compare whole ordinal segments and preserve the candidate suffix', () => {
   for (const [root, candidate, suffix] of [

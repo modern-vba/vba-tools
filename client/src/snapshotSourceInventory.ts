@@ -1,11 +1,12 @@
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { SnapshotDiagnosticOrigin } from './toolDiagnostics';
-import { relativeWindowsDescendantPath, windowsPathKey } from './windowsPathIdentity';
+import { AdmittedSourceUri, SourceIdentityKey, relativeSourceDescendantPath, sourcePathIdentity, tryParseSourceUri } from './windowsPathIdentity';
 
 export interface SnapshotSourceTextDocument {
   readonly uriScheme: string;
   readonly uriPath?: string | undefined;
+  readonly sourceUri?: string | undefined;
   readonly fileName: string;
   readonly isDirty: boolean;
   readonly encoding: string;
@@ -70,6 +71,7 @@ export type CallerOwnedSourceSnapshotCapture = (
 
 interface CapturedDirtySource {
   readonly filePath: string;
+  readonly source: AdmittedSourceUri;
   readonly text: string;
   readonly encoding: string;
 }
@@ -97,10 +99,10 @@ export async function captureSnapshotSourceInventory(
   ]);
   throwIfSnapshotCaptureCancelled(cancellationToken);
   const inventoriedPaths = [...capturedInventoriedPaths];
-  const inventoriedPathsByIdentity = new Map<string, string>();
-  const entriesByPath = new Map<string, SnapshotSourceInventoryEntry>();
+  const inventoriedPathsByIdentity = new Map<SourceIdentityKey, string>();
+  const entriesByPath = new Map<SourceIdentityKey, SnapshotSourceInventoryEntry>();
   const dirtySourcesByPath = new Map(
-    dirtySources.map((source) => [canonicalPath(source.filePath), source]));
+    dirtySources.map((source) => [source.source.identity, source]));
 
   for (const filePath of inventoriedPaths) {
     throwIfSnapshotCaptureCancelled(cancellationToken);
@@ -132,7 +134,7 @@ export async function captureSnapshotSourceInventory(
         : freezeEntry(
             relativePath,
             bytes,
-            pathToFileURL(dirtySource.filePath).href,
+            dirtySource.source.originalUri,
             canonicalTransportEncoding(dirtySource.encoding, activeWindowsCodePage)
           )
     );
@@ -145,11 +147,11 @@ export async function captureSnapshotSourceInventory(
     const bytes = await encodeDirtySource(host, dirtySource, activeWindowsCodePage);
     throwIfSnapshotCaptureCancelled(cancellationToken);
     entriesByPath.set(
-      canonicalPath(dirtySource.filePath),
+      dirtySource.source.identity,
       freezeEntry(
         relativePath,
         bytes,
-        pathToFileURL(dirtySource.filePath).href,
+        dirtySource.source.originalUri,
         canonicalTransportEncoding(dirtySource.encoding, activeWindowsCodePage)
       ));
   }
@@ -355,7 +357,7 @@ function captureDirtySources(
   sourceSetPath: string,
   documents: readonly SnapshotSourceTextDocument[]
 ): CapturedDirtySource[] {
-  const sources = new Map<string, CapturedDirtySource>();
+  const sources = new Map<SourceIdentityKey, CapturedDirtySource>();
   for (const document of documents) {
     const uriScheme = document.uriScheme;
     const uriPath = document.uriPath;
@@ -377,14 +379,23 @@ function captureDirtySources(
     }
 
     const filePath = path.resolve(uriPath);
-    const key = windowsPathKey(filePath);
+    const source = tryParseSourceUri(document.sourceUri ?? pathToFileURL(filePath).href);
+    if (source === undefined) {
+      throw new Error(`A dirty VBA source requires a persistent file URI: ${document.sourceUri}`);
+    }
+    if (source.identity !== sourcePathIdentity(filePath)) {
+      throw new Error(`The dirty VBA source URI does not identify its editor path: ${source.originalUri} (${filePath})`);
+    }
+    const key = source.identity;
     const existingSource = sources.get(key);
     if (existingSource !== undefined) {
       throw new Error(
-        `Snapshot source inventory contains duplicate dirty editor paths: ${existingSource.filePath} and ${filePath}`);
+        `Snapshot source inventory contains duplicate dirty editor paths: ` +
+        `${existingSource.filePath} (${existingSource.source.originalUri}) and ${filePath} (${source.originalUri})`);
     }
     sources.set(key, Object.freeze({
       filePath,
+      source,
       text: document.getText(),
       encoding
     }));
@@ -556,7 +567,7 @@ function canonicalTransportEncoding(
 
 function sourceRelativePath(sourceSetPath: string, filePath: string): string {
   const resolvedFilePath = path.resolve(filePath);
-  const relativePath = relativeWindowsDescendantPath(sourceSetPath, resolvedFilePath);
+  const relativePath = relativeSourceDescendantPath(sourceSetPath, resolvedFilePath);
   if (relativePath === undefined) {
     throw new Error(`Snapshot source path is outside the selected source set: ${filePath}`);
   }
@@ -564,7 +575,7 @@ function sourceRelativePath(sourceSetPath: string, filePath: string): string {
 }
 
 function isPathWithin(filePath: string, directoryPath: string): boolean {
-  return relativeWindowsDescendantPath(path.resolve(directoryPath), path.resolve(filePath)) !== undefined;
+  return relativeSourceDescendantPath(path.resolve(directoryPath), path.resolve(filePath)) !== undefined;
 }
 
 function isExportedVbaSource(filePath: string): boolean {
@@ -572,8 +583,8 @@ function isExportedVbaSource(filePath: string): boolean {
   return extension === '.bas' || extension === '.cls' || extension === '.frm';
 }
 
-function canonicalPath(filePath: string): string {
-  return windowsPathKey(path.resolve(filePath));
+function canonicalPath(filePath: string): SourceIdentityKey {
+  return sourcePathIdentity(path.resolve(filePath));
 }
 
 function canonicalRelativePath(relativePath: string): string {

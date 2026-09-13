@@ -8,6 +8,23 @@ namespace VbaLanguageServer.Tests;
 
 public sealed class VbaProjectIdentityModelTests
 {
+    [Theory]
+    [InlineData("file:///C:/identity/Nested%2FModule.bas")]
+    [InlineData("file:///C:/identity/Nested%5CModule.bas")]
+    [InlineData("file:///C:/identity/Nested%GGModule.bas")]
+    [InlineData("file:///C:/identity/Nested%FFModule.bas")]
+    [InlineData("file:///C:/identity/Nested%C0%AFModule.bas")]
+    [InlineData("file:///C:/identity/Nested%00Module.bas")]
+    public void Invalid_file_uri_path_remains_unresolved_instead_of_aliasing_a_local_source(string escaped)
+    {
+        Assert.True(VbaProjectIdentityModel.TryIdentifyDocument(escaped, out var unresolved));
+        Assert.False(unresolved.IsLocalFile);
+        Assert.True(VbaProjectIdentityModel.TryIdentifyDocument(
+            "file:///C:/identity/Nested/Module.bas", out var local));
+        Assert.True(local.IsLocalFile);
+        Assert.NotEqual(local, unresolved);
+    }
+
     [Fact]
     public void Document_identity_canonicalizes_equivalent_file_uris()
     {

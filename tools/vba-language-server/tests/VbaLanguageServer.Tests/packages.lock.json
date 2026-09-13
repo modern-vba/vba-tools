@@ -157,8 +157,12 @@
       "vbatools.semantics": {
         "type": "Project",
         "dependencies": {
+          "VbaTools.SourceIdentity": "[1.0.0, )",
           "VbaTools.Syntax": "[1.0.0, )"
         }
+      },
+      "vbatools.sourceidentity": {
+        "type": "Project"
       },
       "vbatools.syntax": {
         "type": "Project"

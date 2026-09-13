@@ -22,6 +22,8 @@ tools/vba-language-server/**
 tools/vba-syntax/**
 tools/vba-capability-admission/**
 fixtures/capability-admission/**
+tools/vba-source-identity/**
+fixtures/source-identity/**
 tools/vba-integration-tests/**
 .tmp/**
 temp/**

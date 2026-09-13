@@ -3,6 +3,7 @@ using System.Text;
 using VbaDebugAdapter.Build;
 using VbaDebugAdapter.Infrastructure;
 using VbaTools.Syntax;
+using VbaTools.SourceIdentities;
 
 namespace VbaDebugAdapter.Debugging;
 
@@ -63,7 +64,7 @@ internal sealed class DebugSourceAdmission
         var index = AdmissionIndex.Create(parsedSources);
         var resolvedTarget = moduleName is not null
             ? ResolveExplicitTarget(index, moduleName, procedureName!)
-            : ResolveActiveTarget(index, activeSource);
+            : ResolveActiveTarget(index, validatedSnapshot.ActiveSource);
         ValidateTargetUniquenessAndEligibility(index, resolvedTarget);
         if (!VbaConditionalCompilationBranchFacts.TryGetPath(
                 resolvedTarget.Source.SyntaxTree,
@@ -85,7 +86,7 @@ internal sealed class DebugSourceAdmission
         var mappedEvidence = validatedSnapshot.Breakpoints
             .Select(breakpoint => MapBreakpoint(
                 index,
-                new DebugSourceBreakpoint(breakpoint.SourceUri, breakpoint.Line)))
+                DebugSourceBreakpoint.FromAdmitted(breakpoint.Uri, breakpoint.Line)))
             .ToImmutableArray();
 
         ValidateCompleteSourceIdentities(index);
@@ -111,7 +112,7 @@ internal sealed class DebugSourceAdmission
     private ParsedDebugSource Parse(ValidatedTransportedDebugSource source)
     {
         var syntaxTree = parseSource(source.SourceUri!, source.Text!);
-        return new ParsedDebugSource(source.SourceUri!, syntaxTree);
+        return new ParsedDebugSource(source.SourceUri!, source.Identity!.Value, syntaxTree);
     }
 
     private static TransportedDebugSourceSnapshot Freeze(
@@ -190,7 +191,7 @@ internal sealed class DebugSourceAdmission
 
     private static ResolvedDebugTarget ResolveActiveTarget(
         AdmissionIndex index,
-        DebugSourcePosition? activeSource)
+        ValidatedTransportedDebugSourcePosition? activeSource)
     {
         if (activeSource is null)
         {
@@ -199,7 +200,7 @@ internal sealed class DebugSourceAdmission
                 "when module and procedure are omitted.");
         }
 
-        var sourceMatches = index.GetSourcesByUri(activeSource.SourceUri);
+        var sourceMatches = index.GetSourcesByIdentity(activeSource.Identity);
         if (sourceMatches.Length != 1)
         {
             throw new DebugSourceRejectedException(sourceMatches.Length == 0
@@ -296,7 +297,7 @@ internal sealed class DebugSourceAdmission
         AdmissionIndex index,
         DebugSourceBreakpoint breakpoint)
     {
-        var sourceMatches = index.GetSourcesByUri(breakpoint.SourceUri);
+        var sourceMatches = index.GetSourcesByIdentity(breakpoint.Identity!.Value);
         if (sourceMatches.Length != 1)
         {
             throw new DebugSourceRejectedException(sourceMatches.Length == 0
@@ -353,13 +354,17 @@ internal sealed class DebugSourceAdmission
 
         internal ParsedDebugSource(
             string sourceUri,
+            SourceIdentity identity,
             VbaSyntaxTree syntaxTree)
         {
             SourceUri = sourceUri;
+            Identity = identity;
             SyntaxTree = syntaxTree;
         }
 
         internal string SourceUri { get; }
+
+        internal SourceIdentity Identity { get; }
 
         internal VbaSyntaxTree SyntaxTree { get; }
 
@@ -369,19 +374,19 @@ internal sealed class DebugSourceAdmission
 
     private sealed class AdmissionIndex
     {
-        private readonly IReadOnlyDictionary<string, ImmutableArray<ParsedDebugSource>>
-            sourcesByUri;
+        private readonly IReadOnlyDictionary<SourceIdentity, ImmutableArray<ParsedDebugSource>>
+            sourcesByIdentity;
         private readonly IReadOnlyDictionary<string, ImmutableArray<ParsedDebugSource>>
             sourcesByModuleName;
 
         private AdmissionIndex(
             ImmutableArray<ParsedDebugSource> sources,
-            IReadOnlyDictionary<string, ImmutableArray<ParsedDebugSource>> sourcesByUri,
+            IReadOnlyDictionary<SourceIdentity, ImmutableArray<ParsedDebugSource>> sourcesByIdentity,
             IReadOnlyDictionary<string, ImmutableArray<ParsedDebugSource>> sourcesByModuleName,
             string? firstAmbiguousAuthoritativeIdentity)
         {
             Sources = sources;
-            this.sourcesByUri = sourcesByUri;
+            this.sourcesByIdentity = sourcesByIdentity;
             this.sourcesByModuleName = sourcesByModuleName;
             FirstAmbiguousAuthoritativeIdentity = firstAmbiguousAuthoritativeIdentity;
         }
@@ -410,13 +415,14 @@ internal sealed class DebugSourceAdmission
                 .FirstOrDefault(name => authoritativeIdentityCounts[name] > 1);
             return new AdmissionIndex(
                 sources,
-                CreateIndex(sources, source => source.SourceUri),
+                sources.GroupBy(source => source.Identity).ToDictionary(
+                    group => group.Key, group => group.ToImmutableArray()),
                 CreateIndex(sources, source => source.SyntaxTree.Module.Identity.Name),
                 firstAmbiguousAuthoritativeIdentity);
         }
 
-        internal ImmutableArray<ParsedDebugSource> GetSourcesByUri(string sourceUri)
-            => sourcesByUri.TryGetValue(sourceUri, out var matches)
+        internal ImmutableArray<ParsedDebugSource> GetSourcesByIdentity(SourceIdentity identity)
+            => sourcesByIdentity.TryGetValue(identity, out var matches)
                 ? matches
                 : [];
 

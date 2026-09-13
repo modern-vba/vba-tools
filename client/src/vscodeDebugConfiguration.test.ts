@@ -1957,6 +1957,34 @@ test('debug targeting matches ordinal Windows source ownership and preserves cap
   });
 });
 
+test('debug source URI aliases bind active source and breakpoints while retaining every original spelling', async () => {
+  const projectRoot = path.resolve('C:/work/IdentityProject');
+  const sourcePath = path.join(projectRoot, 'src', 'Book1', 'Module.bas');
+  const capturedUri = 'file:///C:/work/IdentityProject/src/Book1/Module.bas?inventory#original';
+  const activeUri = 'file://localhost/c%3a/work/IdentityProject/src/Book1/./%4dodule.bas?active#cursor';
+  const breakpointUri = 'FILE:///C:/work/IdentityProject/src/Book1/Nested/../Module.bas?breakpoint#marker';
+  const activeEditor = { uriPath: sourcePath, sourceUri: activeUri, line: 2, character: 1 };
+  const integration = createIntegration({
+    activeEditor,
+    manifests: new Map([[path.join(projectRoot, 'vba-project.json'), manifestJson('IdentityProject', ['Book1'])]]),
+    sources: new Map(),
+    getSourceBreakpoints: () => [{ uriPath: sourcePath, sourceUri: breakpointUri, line: 3, enabled: true }],
+    captureSourceInventory: async sourceSetPath => ({
+      sourceSetPath, activeWindowsCodePage: 65001,
+      entries: [{ relativePath: 'Module.bas', sourceUri: capturedUri, encoding: 'utf8', bytes: new Uint8Array([65]) }]
+    })
+  });
+
+  const configuration = await integration.resolveDebugConfiguration({});
+
+  assert.deepEqual(configuration.sourceSnapshot, {
+    schemaVersion: 2,
+    sources: [{ relativePath: 'Module.bas', sourceUri: capturedUri, encoding: 'utf8', contentBase64: 'QQ==' }],
+    activeSource: { sourceUri: activeUri, line: 2, character: 1 },
+    breakpoints: [{ sourceUri: breakpointUri, line: 3 }]
+  });
+});
+
 test('debug launch rejects duplicate persistent source paths with both URI spellings', async () => {
   const projectRoot = path.resolve('C:/work/OrdinalProject');
   const sourceUris = [
@@ -1985,7 +2013,7 @@ test('debug launch rejects duplicate persistent source paths with both URI spell
       project: projectRoot, document: 'Book1', module: 'DebugModule', procedure: 'Example'
     }),
     error => error instanceof VbaDebugSelectionError
-      && /duplicate source path/i.test(error.message)
+      && /duplicate source identity/i.test(error.message)
       && sourceUris.every(sourceUri => error.message.includes(sourceUri))
   );
 });
@@ -2015,7 +2043,7 @@ test('debug launch identifies both transported entries sharing one persistent so
       project: projectRoot, document: 'Book1', module: 'DebugModule', procedure: 'Example'
     }),
     error => error instanceof VbaDebugSelectionError
-      && /duplicate source URI/i.test(error.message)
+      && /duplicate source identity/i.test(error.message)
       && error.message.includes('First.bas')
       && error.message.includes('Second.bas')
       && error.message.includes(sourceUri)

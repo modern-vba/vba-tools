@@ -1,4 +1,5 @@
 using VbaDebugAdapter.Infrastructure;
+using VbaDebugAdapter.Debugging;
 
 namespace VbaDebugAdapter.Build;
 
@@ -233,16 +234,49 @@ public sealed record TransportedDebugSource(
     string RelativePath,
     string? SourceUri,
     string? Encoding,
-    string ContentBase64);
+    string ContentBase64)
+{
+    private readonly DebugSourceUri uri = DebugSourceUri.Create(SourceUri);
+
+    public string? SourceUri
+    {
+        get => uri.OriginalUri;
+        init => uri = DebugSourceUri.Create(value);
+    }
+
+    internal DebugSourceUri Uri => uri;
+}
 
 public sealed record TransportedDebugSourcePosition(
     string SourceUri,
     int Line,
-    int Character);
+    int Character)
+{
+    private readonly DebugSourceUri uri = DebugSourceUri.Create(SourceUri);
+
+    public string SourceUri
+    {
+        get => uri.OriginalUri!;
+        init => uri = DebugSourceUri.Create(value);
+    }
+
+    internal DebugSourceUri Uri => uri;
+}
 
 public sealed record TransportedDebugSourceBreakpoint(
     string SourceUri,
-    int Line);
+    int Line)
+{
+    private readonly DebugSourceUri uri = DebugSourceUri.Create(SourceUri);
+
+    public string SourceUri
+    {
+        get => uri.OriginalUri!;
+        init => uri = DebugSourceUri.Create(value);
+    }
+
+    internal DebugSourceUri Uri => uri;
+}
 
 public sealed class VbaDevSnapshotBuildResult : IAsyncDisposable, IDebugResourceOwnerEvidence
 {

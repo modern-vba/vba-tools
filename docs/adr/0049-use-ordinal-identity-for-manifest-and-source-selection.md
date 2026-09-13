@@ -45,10 +45,52 @@ Equality keys never become emitted names, paths, or URIs.
 
 Manifest projections keep their separate purposes and required fields. A narrow
 identity-conflict diagnostic path exposes conflicting entries without turning a
-projection into the provider's complete validator. URI admission, physical
+projection into the provider's complete validator. Physical
 identity supplied by other owners, source encoding, extension tokens, and schema
 property names retain their existing policies. Manifest schema 1, DAP protocol
 2.0, transported snapshot schema 2, and CLI snapshot feature 2.0 are unchanged.
+
+### Shared lexical URI admission
+
+Issue #433 revises this decision's former reservation that URI admission keeps
+its existing policy. The file/path part of semantic document identity now belongs
+to the neutral `VbaTools.SourceIdentity` foundation at `tools/vba-source-identity`.
+The extension extends `WindowsPathIdentity`; it does not add another casing table
+or parallel URI helper. C# and TypeScript consume shared data-only URI cases using
+independent loaders. The DAP depends on this small foundation, not on Semantics.
+
+A source-URI field accepts explicit absolute file URIs. It decodes percent escapes
+exactly once with strict UTF-8, rejecting malformed escapes and encoded slash or
+backslash. Double-encoded separators remain literal filename text after decoding.
+Encoded drive colons, Unicode/escaped spellings, Windows separators, drive and UNC
+roots, and lexical dot segments identify the same file where appropriate.
+The localhost drive form is local; arbitrary UNC authorities never become drive
+aliases. Query and fragment are excluded from equality but remain in the original
+URI. No filesystem access, link or short-name resolution, DNS, or drive-map lookup
+occurs. Windows equality remains .NET OrdinalIgnoreCase; NFC/NFD and K/Kelvin do
+not merge. Separate path fields and native POSIX paths retain their own behavior.
+
+Each admitted source keeps typed identity alongside exact original URI spelling.
+Source inventory, active positions, breakpoint lookup, admission indexes, and
+runner state use that identity. They never emit a regenerated URI or identity key.
+Duplicate source identities and same-identity/same-line breakpoints reject even
+when contents/settings agree. Ordering and module-name identity remain separate.
+One dirty editor still overlays its disk source with disk-relative layout and
+editor URI spelling; two dirty aliases reject instead of overwriting each other.
+
+Known identity failures remain explicit request-scoped source rejections before
+generation workspace creation, build, or Excel. Corrected initial launch may retry;
+Restart retains a still-usable old session. Relative-path safety, source membership,
+byte authority, encoding, generation binding, and physical ownership retain their
+independent validation. LSP non-file and unresolved typed identities and revision
+fencing remain local policies. Already admitted immutable URI values are reused;
+this change does not diagnose or close issue #415's intermittent runtime failure.
+
+This intentionally rejects previously tolerated raw source paths, malformed escapes,
+or encoded separators, while accepted lexical URI aliases bind consistently.
+Protocol schemas and provider versions do not change. Foundation guards, normal
+test/release entry points, and self-contained package probes cover the new owner
+and its consumers.
 
 ## Consequences
 
