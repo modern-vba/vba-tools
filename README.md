@@ -59,6 +59,11 @@ Doctor checks remain command results rather than grammar failures.
 
 ## Editor readiness and project diagnostics
 
+Exported class headers from `VERSION 1.0 CLASS` through `END` use metadata
+highlighting, including their `BEGIN` and `END` delimiters. Recognition permits
+leading blank lines and comments. At the header boundary, ordinary VBA keyword
+highlighting resumes; incomplete headers recover before identifiable body code.
+
 When you open or change a manifest-backed VBA source, semantic highlighting
 and the other editor language features become available from one exact,
 immutable project snapshot. They do not wait for every project-wide validation

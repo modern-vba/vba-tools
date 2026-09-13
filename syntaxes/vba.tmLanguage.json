@@ -3,40 +3,62 @@
   "scopeName": "source.vba",
   "patterns": [
     {
-      "include": "#documentation-comment"
+      "include": "#file-preamble"
     },
     {
-      "include": "#comment"
-    },
-    {
-      "include": "#string"
-    },
-    {
-      "include": "#attribute"
-    },
-    {
-      "include": "#intrinsic-type"
-    },
-    {
-      "include": "#language-constant"
-    },
-    {
-      "include": "#declaration-end-keyword"
-    },
-    {
-      "include": "#control-keyword"
-    },
-    {
-      "include": "#keyword"
-    },
-    {
-      "include": "#number"
-    },
-    {
-      "include": "#operator"
+      "include": "#body"
     }
   ],
   "repository": {
+    "file-preamble": {
+      "begin": "(?i)\\A(?=[\\t\\u0019 \\u1680\\u180E\\u2000-\\u200A\\u202F\\u205F\\u3000]*(?:'[^\\r\\n]*)?$|[\\t\\u0019 \\u1680\\u180E\\u2000-\\u200A\\u202F\\u205F\\u3000]*VERSION[\\t\\u0019 \\u1680\\u180E\\u2000-\\u200A\\u202F\\u205F\\u3000]+1\\.0[\\t\\u0019 \\u1680\\u180E\\u2000-\\u200A\\u202F\\u205F\\u3000]+CLASS[\\t\\u0019 \\u1680\\u180E\\u2000-\\u200A\\u202F\\u205F\\u3000]*(?:'[^\\r\\n]*)?$)",
+      "end": "^(?![\\t\\u0019 \\u1680\\u180E\\u2000-\\u200A\\u202F\\u205F\\u3000]*(?:'[^\\r\\n]*)?$)",
+      "applyEndPatternLast": true,
+      "patterns": [
+        {
+          "include": "#class-header"
+        },
+        {
+          "include": "#documentation-comment"
+        },
+        {
+          "include": "#comment"
+        }
+      ],
+      "comment": "Allow leading trivia once, then leave permanently at the first ordinary source line. The guarded begin avoids a zero-width reopen loop in headerless modules."
+    },
+    "class-header": {
+      "begin": "(?i)^[\\t\\u0019 \\u1680\\u180E\\u2000-\\u200A\\u202F\\u205F\\u3000]*VERSION[\\t\\u0019 \\u1680\\u180E\\u2000-\\u200A\\u202F\\u205F\\u3000]+1\\.0[\\t\\u0019 \\u1680\\u180E\\u2000-\\u200A\\u202F\\u205F\\u3000]+CLASS[\\t\\u0019 \\u1680\\u180E\\u2000-\\u200A\\u202F\\u205F\\u3000]*(?:'[^\\r\\n]*)?$",
+      "beginCaptures": {
+        "0": {
+          "name": "meta.class-header.vba"
+        }
+      },
+      "end": "(?!)",
+      "patterns": [
+        {
+          "begin": "(?i)(?:^[\\t\\u0019 \\u1680\\u180E\\u2000-\\u200A\\u202F\\u205F\\u3000]*END[\\t\\u0019 \\u1680\\u180E\\u2000-\\u200A\\u202F\\u205F\\u3000]*(?:'[^\\r\\n]*)?$|^(?![\\t\\u0019 \\u1680\\u180E\\u2000-\\u200A\\u202F\\u205F\\u3000]*(?:(?:BEGIN|(?![\\t\\u0019 \\u1680\\u180E\\u2000-\\u200A\\u202F\\u205F\\u3000])[A-Za-z_\\u0080-\\uFFFF](?:(?![\\t\\u0019 \\u1680\\u180E\\u2000-\\u200A\\u202F\\u205F\\u3000])[A-Za-z0-9_\\u0080-\\uFFFF])*[\\t\\u0019 \\u1680\\u180E\\u2000-\\u200A\\u202F\\u205F\\u3000]*=[\\t\\u0019 \\u1680\\u180E\\u2000-\\u200A\\u202F\\u205F\\u3000]*(?:(?:[+-]?[\\t\\u0019 \\u1680\\u180E\\u2000-\\u200A\\u202F\\u205F\\u3000]*(?:&H[0-9A-F]+|&O[0-7]+|\\d+(?:\\.\\d*)?(?:E[+-]?\\d+)?|\\.\\d+(?:E[+-]?\\d+)?)|\"(?:[^\"\\r\\n]|\"\")*\"?|True|False))?)[\\t\\u0019 \\u1680\\u180E\\u2000-\\u200A\\u202F\\u205F\\u3000]*)?(?:'[^\\r\\n]*)?$))",
+          "beginCaptures": {
+            "0": {
+              "name": "meta.class-header.vba"
+            }
+          },
+          "end": "(?!)",
+          "patterns": [
+            {
+              "include": "#body"
+            }
+          ],
+          "comment": "Consume END as metadata, or recover without consuming the first ordinary line. Stay in the body through EOF so header-like text cannot reopen the metadata state."
+        },
+        {
+          "name": "meta.class-header.vba",
+          "match": "^.+$",
+          "comment": "The preceding boundary rule admits only metadata here. Consume nonempty physical lines; leave empty lines unmatched to avoid a zero-width token popping the class state."
+        }
+      ],
+      "comment": "One-shot class export state. Scope metadata lines individually, including an unfinished quoted property through physical EOL. Neither this container nor its permanent body state adds a scope to VBA code."
+    },
     "documentation-comment": {
       "name": "comment.block.documentation.vba",
       "match": "^[\\t\\u0019 \\u1680\\u180E\\u2000-\\u200A\\u202F\\u205F\\u3000]*'\\*.*$"
@@ -87,6 +109,43 @@
     "operator": {
       "name": "keyword.operator.vba",
       "match": "[-+*/=<>:&]"
+    },
+    "body": {
+      "patterns": [
+        {
+          "include": "#documentation-comment"
+        },
+        {
+          "include": "#comment"
+        },
+        {
+          "include": "#string"
+        },
+        {
+          "include": "#attribute"
+        },
+        {
+          "include": "#intrinsic-type"
+        },
+        {
+          "include": "#language-constant"
+        },
+        {
+          "include": "#declaration-end-keyword"
+        },
+        {
+          "include": "#control-keyword"
+        },
+        {
+          "include": "#keyword"
+        },
+        {
+          "include": "#number"
+        },
+        {
+          "include": "#operator"
+        }
+      ]
     }
   }
 }
