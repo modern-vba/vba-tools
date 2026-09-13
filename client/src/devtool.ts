@@ -8,10 +8,9 @@ import {
   RequiredVbaDevContract,
   VbaDevCapabilities,
   VbaDevOutputContractError,
-  loadRequiredVbaDevContractFile,
-  parseVbaDevCapabilities,
-  validateVbaDevCapabilities
+  loadRequiredVbaDevContractFile
 } from './vbaDevOutputContract';
+import { admitVbaDevCapabilities, CapabilityRejection } from './capabilityAdmission';
 
 export type {
   RequiredVbaDevContract,
@@ -441,18 +440,34 @@ async function inspectCompatibleVbaDev(
     ['capabilities', '--format', 'json'],
     signal
   );
-  let capabilities: VbaDevCapabilities;
-  try {
-    capabilities = parseVbaDevCapabilities(executablePath, result.stdout);
-    validateVbaDevCapabilities(executablePath, capabilities, requiredContract);
-  } catch (error) {
-    throw new VbaDevCompatibilityError(error instanceof Error ? error.message : String(error));
+  const admitted = admitVbaDevCapabilities(result.stdout, requiredContract);
+  if (!admitted.accepted) {
+    throw new VbaDevCompatibilityError(describeCapabilityRejection(executablePath, admitted.rejection));
   }
 
   return {
     executablePath,
-    capabilities
+    capabilities: admitted.facts
   };
+}
+
+function describeCapabilityRejection(executablePath: string, rejection: CapabilityRejection): string {
+  const prefix = "VbaDev at '" + executablePath + "'";
+  const [field, name] = rejection.path;
+  switch (rejection.code) {
+    case 'InvalidJson': return prefix + ' returned invalid capabilities JSON.';
+    case 'DuplicateProperty': return prefix + " returned duplicate capabilities property '" + field + "'.";
+    case 'InvalidConsumedValue': return prefix + " returned an invalid capabilities value at '" + (rejection.path.join('.') || 'response') + "'.";
+    case 'MissingCapability':
+      if (field === 'featureVersions') return prefix + " does not report required feature '" + name + "'.";
+      if (field === 'commands' && name !== undefined) return prefix + " does not report required command '" + name + "'.";
+      if (field === 'activeWindowsCodePage') return prefix + " does not report the active Windows code page required by feature 'sourceSnapshot.activeWindowsCodePage'.";
+      return prefix + ' returned capabilities JSON without toolVersion, contractVersion, and commands.';
+    case 'VersionMismatch':
+      if (field === 'contractVersion') return prefix + ' reports contractVersion ' + rejection.actual + ', but this extension requires ' + rejection.expected + '.';
+      if (field === 'featureVersions') return prefix + ' reports feature ' + name + ' version ' + rejection.actual + ', but this extension requires ' + rejection.expected + '.';
+      return prefix + ' reports ' + name + ' outputSchemaVersion ' + rejection.actual + ', but this extension requires ' + rejection.expected + '.';
+  }
 }
 
 function errorMessage(error: unknown): string {

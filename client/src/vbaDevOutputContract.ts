@@ -1,25 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-export interface VbaDevCommandCapability {
-  outputSchemaVersion: string;
-}
-
-export interface VbaDevCapabilities {
-  toolVersion: string;
-  contractVersion: string;
-  featureVersions?: Record<string, string> | undefined;
-  activeWindowsCodePage?: number | undefined;
-  commands: Record<string, VbaDevCommandCapability>;
-}
-
-export interface RequiredVbaDevContract {
-  contractVersion: string;
-  featureVersions?: Record<string, string> | undefined;
-  commandSchemaVersions: Record<string, string>;
-}
-
-const activeWindowsCodePageFeatureName = 'sourceSnapshot.activeWindowsCodePage';
+import type { RequiredVbaDevContract } from './capabilityAdmission';
+export type { RequiredVbaDevContract, VbaDevCapabilities, VbaDevCommandCapability } from './capabilityAdmission';
 
 export interface CommonModulesList {
   document: string;
@@ -108,76 +91,6 @@ export function loadRequiredVbaDevContractFile(contractPath: string): RequiredVb
   }
 
   return parsed;
-}
-
-export function parseVbaDevCapabilities(executablePath: string, stdout: string): VbaDevCapabilities {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(stdout) as unknown;
-  } catch (error) {
-    throw new VbaDevOutputContractError(
-      `VbaDev at '${executablePath}' returned invalid capabilities JSON: ${String(error)}`
-    );
-  }
-
-  if (!isCapabilities(parsed)) {
-    throw new VbaDevOutputContractError(
-      `VbaDev at '${executablePath}' returned capabilities JSON without toolVersion, contractVersion, and commands.`
-    );
-  }
-
-  return parsed;
-}
-
-export function validateVbaDevCapabilities(
-  executablePath: string,
-  capabilities: VbaDevCapabilities,
-  requiredContract: RequiredVbaDevContract
-): void {
-  if (capabilities.contractVersion !== requiredContract.contractVersion) {
-    throw new VbaDevOutputContractError(
-      `VbaDev at '${executablePath}' reports contractVersion ${capabilities.contractVersion}, but this extension requires ${requiredContract.contractVersion}.`
-    );
-  }
-
-  for (const [featureName, requiredVersion] of Object.entries(
-    requiredContract.featureVersions ?? {})) {
-    const actualVersion = capabilities.featureVersions?.[featureName];
-    if (actualVersion === undefined) {
-      throw new VbaDevOutputContractError(
-        `VbaDev at '${executablePath}' does not report required feature '${featureName}'.`
-      );
-    }
-    if (actualVersion !== requiredVersion) {
-      throw new VbaDevOutputContractError(
-        `VbaDev at '${executablePath}' reports feature ${featureName} version ${actualVersion}, but this extension requires ${requiredVersion}.`
-      );
-    }
-  }
-
-  if (
-    requiredContract.featureVersions?.[activeWindowsCodePageFeatureName] !== undefined
-    && capabilities.activeWindowsCodePage === undefined
-  ) {
-    throw new VbaDevOutputContractError(
-      `VbaDev at '${executablePath}' does not report the active Windows code page required by feature '${activeWindowsCodePageFeatureName}'.`
-    );
-  }
-
-  for (const [commandName, requiredSchemaVersion] of Object.entries(requiredContract.commandSchemaVersions)) {
-    const command = capabilities.commands[commandName];
-    if (!command) {
-      throw new VbaDevOutputContractError(
-        `VbaDev at '${executablePath}' does not report required command '${commandName}'.`
-      );
-    }
-
-    if (command.outputSchemaVersion !== requiredSchemaVersion) {
-      throw new VbaDevOutputContractError(
-        `VbaDev at '${executablePath}' reports ${commandName} outputSchemaVersion ${command.outputSchemaVersion}, but this extension requires ${requiredSchemaVersion}.`
-      );
-    }
-  }
 }
 
 export function parseCommonModulesListOutput(stdout: string): CommonModulesList {
@@ -517,38 +430,6 @@ function tryParseJson(value: string): unknown | undefined {
   } catch {
     return undefined;
   }
-}
-
-function isCapabilities(value: unknown): value is VbaDevCapabilities {
-  if (!isRecord(value)) {
-    return false;
-  }
-
-  return (
-    typeof value.toolVersion === 'string' &&
-    typeof value.contractVersion === 'string' &&
-    (value.featureVersions === undefined || isStringRecord(value.featureVersions)) &&
-    (
-      value.activeWindowsCodePage === undefined
-      || (
-        typeof value.activeWindowsCodePage === 'number'
-        && Number.isSafeInteger(value.activeWindowsCodePage)
-        && value.activeWindowsCodePage > 0
-      )
-    ) &&
-    isCommandCapabilities(value.commands)
-  );
-}
-
-function isCommandCapabilities(value: unknown): value is Record<string, VbaDevCommandCapability> {
-  if (!isRecord(value)) {
-    return false;
-  }
-
-  return Object.values(value).every((command) => (
-    isRecord(command) &&
-    typeof command.outputSchemaVersion === 'string'
-  ));
 }
 
 function isRequiredVbaDevContract(value: unknown): value is RequiredVbaDevContract {

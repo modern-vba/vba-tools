@@ -13,6 +13,9 @@
         "resolved": "3.1.4",
         "contentHash": "ncchtCh9YKqutHTlUCrr1llXA65ijGOCjXBM0mL1+WaGouApWDEACWbBHGzuYcAvB+rgW6IgO4AKgmZ2v1moNA=="
       },
+      "vbatools.capabilityadmission": {
+        "type": "Project"
+      },
       "vbatools.contentlengthframing": {
         "type": "Project"
       },

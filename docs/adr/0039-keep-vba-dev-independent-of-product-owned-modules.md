@@ -68,6 +68,26 @@ VbaDev-owned non-command library interface. Product-spanning process
 verification may be owned by that consumer or by a neutral packaging or
 integration test.
 
+`VbaTools.CapabilityAdmission` at `tools/vba-capability-admission` is also an
+explicitly designated neutral foundation. It admits raw public vba-dev capability
+responses into consumed facts or classified rejection evidence against
+consumer-declared command schemas and feature versions. It depends on no
+product-private DTO, executable, command implementation, or product test assembly.
+The language server and debug adapter retain their different minimum requirements
+and their local failure behavior. The extension owns an independent TypeScript
+admission Module and does not launch C# to interpret JSON.
+
+Whole-response duplicate-property rejection includes unknown nested objects and
+objects inside arrays, even when duplicate values agree. Names are compared
+ordinal-exactly after JSON escape decoding, without case or Unicode normalization
+folding. Unique well-formed additive capabilities remain compatible. Raw
+`fixtures/capability-admission/cases.json` data preserves spelling and duplicates;
+independent product tests consume its classifications without sharing test code.
+Normal test and release entry points include the foundation, and self-contained
+publication/package verification exercises both consuming executables. Provider
+schemas and advertised versions do not change. Required-contract files, manifests
+and ordinary command/protocol JSON retain their existing owners.
+
 The UserForm rename/build/export round-trip process coverage belongs to
 `tools/vba-integration-tests/tests/VbaTools.Integration.Tests`. Its own LSP
 process client invokes already-built language-server and VbaDev executables;

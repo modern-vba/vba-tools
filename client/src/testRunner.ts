@@ -1,4 +1,5 @@
 import './devtool.test';
+import './capabilityAdmission.test';
 import './debugAdapter.test';
 import './distributionManifest.test';
 import './languageServer.test';

@@ -1,4 +1,4 @@
-using System.Text.Json;
+using VbaTools.Capabilities;
 using VbaTools.Processes;
 
 namespace VbaLanguageServer.Lsp;
@@ -8,6 +8,8 @@ internal sealed record VbaDevReferenceListStartupState(
     string? WarningMessage)
 {
     private const string RequiredSchemaVersion = "1.0";
+    private static readonly CapabilityRequirements RequiredCapabilities = new(
+        commandSchemaVersions: new Dictionary<string, string> { ["reference list"] = RequiredSchemaVersion });
 
     private static readonly string[] CapabilitiesArguments =
         ["capabilities", "--format", "json"];
@@ -67,8 +69,7 @@ internal sealed record VbaDevReferenceListStartupState(
                     $"VbaDev at '{executablePath}' exited with code {result.ExitCode} during capability inspection.");
             }
 
-            using var document = JsonDocument.Parse(result.StandardOutput);
-            if (!HasRequiredReferenceListCapability(document.RootElement))
+            if (!VbaDevCapabilityAdmission.Admit(result.StandardOutput, RequiredCapabilities).IsAccepted)
             {
                 return Unavailable(
                     $"VbaDev at '{executablePath}' does not report reference list output schema {RequiredSchemaVersion}.");
@@ -124,46 +125,6 @@ internal sealed record VbaDevReferenceListStartupState(
     private static VbaDevReferenceListStartupState InvalidStartupArguments()
         => Unavailable(
             "VBA Language Server did not receive one absolute --vba-dev executable path.");
-
-    private static bool HasRequiredReferenceListCapability(JsonElement root)
-        => root.ValueKind == JsonValueKind.Object
-            && TryGetUniqueProperty(root, "commands", out var commands)
-            && commands.ValueKind == JsonValueKind.Object
-            && TryGetUniqueProperty(commands, "reference list", out var referenceList)
-            && referenceList.ValueKind == JsonValueKind.Object
-            && TryGetUniqueProperty(
-                referenceList,
-                "outputSchemaVersion",
-                out var schemaVersion)
-            && schemaVersion.ValueKind == JsonValueKind.String
-            && schemaVersion.GetString() == RequiredSchemaVersion;
-
-    private static bool TryGetUniqueProperty(
-        JsonElement element,
-        string propertyName,
-        out JsonElement value)
-    {
-        value = default;
-        var found = false;
-        foreach (var property in element.EnumerateObject())
-        {
-            if (!property.Name.Equals(propertyName, StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            if (found)
-            {
-                value = default;
-                return false;
-            }
-
-            value = property.Value;
-            found = true;
-        }
-
-        return found;
-    }
 
     private static VbaDevReferenceListStartupState Unavailable(string reason)
         => new(

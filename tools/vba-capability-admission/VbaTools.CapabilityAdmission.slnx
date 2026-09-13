@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/VbaTools.CapabilityAdmission/VbaTools.CapabilityAdmission.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/VbaTools.CapabilityAdmission.Tests/VbaTools.CapabilityAdmission.Tests.csproj" />
+  </Folder>
+</Solution>

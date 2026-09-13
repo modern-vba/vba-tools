@@ -39,6 +39,9 @@
           "VbaTools.TypeLibRegistry": "[0.1.0, )"
         }
       },
+      "vbatools.capabilityadmission": {
+        "type": "Project"
+      },
       "vbatools.contentlengthframing": {
         "type": "Project"
       },

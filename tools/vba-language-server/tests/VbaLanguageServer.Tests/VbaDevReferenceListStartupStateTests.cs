@@ -8,6 +8,52 @@ namespace VbaLanguageServer.Tests;
 public sealed class VbaDevReferenceListStartupStateTests
 {
     [Fact]
+    public async Task UniqueAdditiveOffersKeepOnlyTheReferenceListRequirementAndPinnedExecutable()
+    {
+        var executablePath = Path.GetFullPath(Path.Combine("tools", "vba-dev.exe"));
+        var processCalls = 0;
+        var state = await VbaDevReferenceListStartupState.ResolveAsync(
+            ["--vba-dev", executablePath],
+            (_, _) =>
+            {
+                processCalls++;
+                return Task.FromResult(new ProcessInvocationResult(0,
+                    """
+                    {"future":[{"value":1},{"value":2}],"contractVersion":"99.0","commands":{"future command":{"outputSchemaVersion":"99.0"},"reference list":{"future":[1,1],"outputSchemaVersion":"1.0"}},"featureVersions":{"future":"99.0"}}
+                    """, ""));
+            });
+
+        Assert.True(state.IsAvailable);
+        Assert.Equal(executablePath, state.ExecutablePath);
+        Assert.Null(state.WarningMessage);
+        Assert.Equal(1, processCalls);
+        Assert.True(VbaLanguageServerRuntime.CreateReferenceCatalogDiscovery(new StubRegistryDiscovery(), state).IsCompanionPinned);
+    }
+
+    [Fact]
+    public async Task WholeResponseDuplicateRejectionKeepsRegistryDiscoveryAvailable()
+    {
+        var executablePath = Path.GetFullPath(Path.Combine("tools", "vba-dev.exe"));
+        var processCalls = 0;
+        var state = await VbaDevReferenceListStartupState.ResolveAsync(
+            ["--vba-dev", executablePath],
+            (_, _) =>
+            {
+                processCalls++;
+                return Task.FromResult(new ProcessInvocationResult(0,
+                    """
+                    {"commands":{"reference list":{"outputSchemaVersion":"1.0"}},"future":{"nested":[{"value":1,"value":1}]}}
+                    """, ""));
+            });
+
+        Assert.False(state.IsAvailable);
+        Assert.Null(state.ExecutablePath);
+        Assert.Contains("registry-only discovery remains available", state.WarningMessage);
+        Assert.Equal(1, processCalls);
+        Assert.False(VbaLanguageServerRuntime.CreateReferenceCatalogDiscovery(new StubRegistryDiscovery(), state).IsCompanionPinned);
+    }
+
+    [Fact]
     public async Task Supplied_absolute_executable_is_validated_once_and_pinned_exactly()
     {
         var executablePath = Path.GetFullPath(Path.Combine("tools", "vba-dev.exe"));

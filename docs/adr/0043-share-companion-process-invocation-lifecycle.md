@@ -15,6 +15,15 @@ cancellation token. The result contains exit code, stdout, and stderr; a nonzero
 exit remains data. Consumers retain command arguments, JSON interpretation,
 capability policy, diagnostics, and snapshot/generation ownership.
 
+Capability interpretation is now delegated to the separate neutral
+`VbaTools.CapabilityAdmission` Module designated in ADR 0039. Consumers declare
+their own required command schemas and feature versions and decide what to do
+with admitted facts or classified rejection. The LSP preserves registry-only
+discovery on rejection; the DAP rejects an incompatible companion before session
+initialization. Whole-response duplicate checking and requirement matching are
+not process-lifecycle responsibilities. This refinement leaves arguments, exit
+status, cancellation, cleanup, and absolute executable pinning unchanged.
+
 The ordinary System Process Adapter uses no shell, inherits its working directory,
 and retains the platform's default output encoding. The DAP Adapter uses existing
 atomic Windows Job/suspended-launch primitives, the executable's directory, and

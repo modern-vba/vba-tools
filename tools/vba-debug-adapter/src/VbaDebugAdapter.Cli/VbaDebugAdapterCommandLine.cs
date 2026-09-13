@@ -4,11 +4,19 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using VbaDebugAdapter.Diagnostics;
 using VbaDebugAdapter.Infrastructure;
+using VbaTools.Capabilities;
 
 namespace VbaDebugAdapter.Cli;
 
 public sealed class VbaDebugAdapterCommandLine
 {
+    private static readonly CapabilityRequirements RequiredVbaDevCapabilities = new(
+        featureVersions: new Dictionary<string, string>
+        {
+            ["build.sourceSnapshot"] = "2.0",
+            ["build.sourceSnapshotAnalysis"] = "1.0"
+        });
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -468,30 +476,8 @@ public sealed class VbaDebugAdapterCommandLine
 
     private static bool AdvertisesRequiredSnapshotBuildFeature(
         VbaDevCapabilitiesProbeResult capabilities)
-    {
-        if (capabilities.ExitCode != 0)
-        {
-            return false;
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(capabilities.StandardOutput);
-            return document.RootElement.ValueKind == JsonValueKind.Object &&
-                   document.RootElement.TryGetProperty("featureVersions", out var featureVersions) &&
-                   featureVersions.ValueKind == JsonValueKind.Object &&
-                   featureVersions.TryGetProperty("build.sourceSnapshot", out var version) &&
-                   version.ValueKind == JsonValueKind.String &&
-                   string.Equals(version.GetString(), "2.0", StringComparison.Ordinal) &&
-                   featureVersions.TryGetProperty("build.sourceSnapshotAnalysis", out var analysisVersion) &&
-                   analysisVersion.ValueKind == JsonValueKind.String &&
-                   string.Equals(analysisVersion.GetString(), "1.0", StringComparison.Ordinal);
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
-    }
+        => capabilities.ExitCode == 0 &&
+           VbaDevCapabilityAdmission.Admit(capabilities.StandardOutput, RequiredVbaDevCapabilities).IsAccepted;
 
     private static string ToolVersion
         => typeof(VbaDebugAdapterCommandLine).Assembly
