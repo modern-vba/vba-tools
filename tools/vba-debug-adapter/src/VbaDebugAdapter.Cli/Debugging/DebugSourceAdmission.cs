@@ -71,7 +71,7 @@ internal sealed class DebugSourceAdmission
                 requireCompleteStructure: true,
                 out var targetConditionalPath))
         {
-            throw new DebugSetupException(
+            throw new DebugSourceRejectedException(
                 $"VBA debug target '{resolvedTarget.Source.SyntaxTree.Module.Identity.Name}." +
                 $"{resolvedTarget.Callable.Name}' has no complete conditional-compilation branch identity.");
         }
@@ -136,7 +136,7 @@ internal sealed class DebugSourceAdmission
         var hasProcedure = procedureName is not null;
         if (hasModule != hasProcedure)
         {
-            throw new DebugSetupException(
+            throw new DebugSourceRejectedException(
                 "The VBA launch request must specify 'module' and 'procedure' together.");
         }
         if (hasModule)
@@ -154,7 +154,7 @@ internal sealed class DebugSourceAdmission
         if (!VbaIdentifier.IsIdentifier(value) ||
             value.EnumerateRunes().Take(maximumLength + 1).Count() > maximumLength)
         {
-            throw new DebugSetupException(
+            throw new DebugSourceRejectedException(
                 $"The VBA launch request '{fieldName}' must be an exact MS-VBAL IDENTIFIER " +
                 $"between 1 and {maximumLength} characters.");
         }
@@ -168,7 +168,7 @@ internal sealed class DebugSourceAdmission
         var moduleMatches = index.GetSourcesByModuleName(moduleName);
         if (moduleMatches.Length != 1)
         {
-            throw new DebugSetupException(moduleMatches.Length == 0
+            throw new DebugSourceRejectedException(moduleMatches.Length == 0
                 ? $"VBA debug module '{moduleName}' was not found in the selected document source snapshot."
                 : $"VBA debug module '{moduleName}' is ambiguous in the selected document source snapshot.");
         }
@@ -180,7 +180,7 @@ internal sealed class DebugSourceAdmission
             .ToArray();
         if (callableMatches.Length != 1)
         {
-            throw new DebugSetupException(callableMatches.Length == 0
+            throw new DebugSourceRejectedException(callableMatches.Length == 0
                 ? $"VBA debug procedure '{moduleName}.{procedureName}' was not found in the selected document source snapshot."
                 : $"VBA debug procedure '{moduleName}.{procedureName}' is ambiguous in the selected document source snapshot.");
         }
@@ -194,7 +194,7 @@ internal sealed class DebugSourceAdmission
     {
         if (activeSource is null)
         {
-            throw new DebugSetupException(
+            throw new DebugSourceRejectedException(
                 "The VBA launch request requires 'sourceSnapshot.activeSource' " +
                 "when module and procedure are omitted.");
         }
@@ -202,7 +202,7 @@ internal sealed class DebugSourceAdmission
         var sourceMatches = index.GetSourcesByUri(activeSource.SourceUri);
         if (sourceMatches.Length != 1)
         {
-            throw new DebugSetupException(sourceMatches.Length == 0
+            throw new DebugSourceRejectedException(sourceMatches.Length == 0
                 ? $"Active VBA source '{activeSource.SourceUri}' is not present in the selected document source snapshot."
                 : $"Active VBA source '{activeSource.SourceUri}' is ambiguous in the selected document source snapshot.");
         }
@@ -211,13 +211,13 @@ internal sealed class DebugSourceAdmission
         var lines = source.SyntaxTree.SourceText.Lines;
         if (activeSource.Line < 0 || activeSource.Line >= lines.Count)
         {
-            throw new DebugSetupException(
+            throw new DebugSourceRejectedException(
                 $"Active VBA source line {activeSource.Line} is outside '{activeSource.SourceUri}'.");
         }
         var line = lines[activeSource.Line];
         if (activeSource.Character < 0 || activeSource.Character > line.Text.Length)
         {
-            throw new DebugSetupException(
+            throw new DebugSourceRejectedException(
                 $"Active VBA source character {activeSource.Character} is outside line " +
                 $"{activeSource.Line} in '{activeSource.SourceUri}'.");
         }
@@ -229,7 +229,7 @@ internal sealed class DebugSourceAdmission
             .ToArray();
         if (callableMatches.Length != 1)
         {
-            throw new DebugSetupException(callableMatches.Length == 0
+            throw new DebugSourceRejectedException(callableMatches.Length == 0
                 ? $"Active VBA position {activeSource.Line}:{activeSource.Character} is not inside a procedure in '{activeSource.SourceUri}'."
                 : $"Active VBA position {activeSource.Line}:{activeSource.Character} is ambiguous in '{activeSource.SourceUri}'.");
         }
@@ -245,19 +245,19 @@ internal sealed class DebugSourceAdmission
         var procedureName = target.Callable.Name;
         if (index.GetSourcesByModuleName(moduleName).Length != 1)
         {
-            throw new DebugSetupException(
+            throw new DebugSourceRejectedException(
                 $"VBA debug module '{moduleName}' is ambiguous in the selected document source snapshot.");
         }
         if (target.Source.SyntaxTree.Module.CallableDeclarations.Count(callable =>
                 callable.Name.Equals(procedureName, StringComparison.OrdinalIgnoreCase)) != 1)
         {
-            throw new DebugSetupException(
+            throw new DebugSourceRejectedException(
                 $"VBA debug procedure '{moduleName}.{procedureName}' is ambiguous " +
                 "in the selected document source snapshot.");
         }
         if (target.Source.SyntaxTree.Module.Kind != VbaModuleKind.StandardModule)
         {
-            throw new DebugSetupException(
+            throw new DebugSourceRejectedException(
                 $"VBA debug module '{moduleName}' is not a standard module; " +
                 "class, form, and document modules cannot contain a debug target.");
         }
@@ -266,7 +266,7 @@ internal sealed class DebugSourceAdmission
                 "Sub",
                 StringComparison.OrdinalIgnoreCase))
         {
-            throw new DebugSetupException(
+            throw new DebugSourceRejectedException(
                 $"VBA debug target '{moduleName}.{procedureName}' is not a Sub; " +
                 "the target must be a public parameterless Sub in a standard module.");
         }
@@ -274,19 +274,19 @@ internal sealed class DebugSourceAdmission
             target.Callable.VisibilityKeyword.Equals("Public", StringComparison.OrdinalIgnoreCase);
         if (target.Callable.Visibility != VbaDeclarationVisibility.Public || !publicKeyword)
         {
-            throw new DebugSetupException(
+            throw new DebugSourceRejectedException(
                 $"VBA debug target '{moduleName}.{procedureName}' is not public; " +
                 "the target must be a public parameterless Sub in a standard module.");
         }
         if (target.Callable.Parameters.Count != 0)
         {
-            throw new DebugSetupException(
+            throw new DebugSourceRejectedException(
                 $"VBA debug target '{moduleName}.{procedureName}' is not parameterless; " +
                 "the target must be a public parameterless Sub in a standard module.");
         }
         if (target.Callable.IsExternal)
         {
-            throw new DebugSetupException(
+            throw new DebugSourceRejectedException(
                 $"VBA debug target '{moduleName}.{procedureName}' is an external Declare Sub; " +
                 "the target must be a public parameterless Sub in a standard module.");
         }
@@ -299,7 +299,7 @@ internal sealed class DebugSourceAdmission
         var sourceMatches = index.GetSourcesByUri(breakpoint.SourceUri);
         if (sourceMatches.Length != 1)
         {
-            throw new DebugSetupException(sourceMatches.Length == 0
+            throw new DebugSourceRejectedException(sourceMatches.Length == 0
                 ? $"Debug breakpoint source '{breakpoint.SourceUri}' is not present in the source snapshot."
                 : $"Debug breakpoint source '{breakpoint.SourceUri}' is ambiguous in the source snapshot.");
         }
@@ -307,7 +307,7 @@ internal sealed class DebugSourceAdmission
         var source = sourceMatches[0];
         if (source.SyntaxTree.Module.Identity.Metadata?.IsAuthoritative != true)
         {
-            throw new DebugSetupException(
+            throw new DebugSourceRejectedException(
                 $"Debug breakpoint source '{source.SourceUri}' does not contain exactly one " +
                 "valid exported module identity.");
         }
@@ -315,7 +315,7 @@ internal sealed class DebugSourceAdmission
         var ambiguousIdentity = index.FirstAmbiguousAuthoritativeIdentity;
         if (ambiguousIdentity is not null)
         {
-            throw new DebugSetupException(
+            throw new DebugSourceRejectedException(
                 "Invalid breakpoint setup: exported module identity " +
                 $"'{ambiguousIdentity}' is ambiguous in the source snapshot.");
         }
@@ -332,7 +332,7 @@ internal sealed class DebugSourceAdmission
         {
             if (source.SyntaxTree.Module.Identity.Metadata?.IsAuthoritative != true)
             {
-                throw new DebugSetupException(
+                throw new DebugSourceRejectedException(
                     $"Debug source '{source.SourceUri}' does not contain exactly one " +
                     "valid exported module identity.");
             }
@@ -341,7 +341,7 @@ internal sealed class DebugSourceAdmission
         var ambiguousIdentity = index.FirstAmbiguousAuthoritativeIdentity;
         if (ambiguousIdentity is not null)
         {
-            throw new DebugSetupException(
+            throw new DebugSourceRejectedException(
                 "Debug source snapshot contains ambiguous exported module identity " +
                 $"'{ambiguousIdentity}'.");
         }

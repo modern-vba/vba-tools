@@ -204,7 +204,7 @@ public sealed class DebugSourceAdmissionTests
             Breakpoints = [new TransportedDebugSourceBreakpoint(brokenUri, 100)]
         };
 
-        var error = Assert.Throws<DebugSetupException>(() =>
+        var error = Assert.Throws<DebugSourceRejectedException>(() =>
             new DebugSourceAdmission(932).Admit(
                 snapshot,
                 "Target",
@@ -248,7 +248,7 @@ public sealed class DebugSourceAdmissionTests
             Breakpoints = [new TransportedDebugSourceBreakpoint(alphaUri, 100)]
         };
 
-        var error = Assert.Throws<DebugSetupException>(() =>
+        var error = Assert.Throws<DebugSourceRejectedException>(() =>
             new DebugSourceAdmission(932).Admit(
                 snapshot,
                 "Target",
@@ -266,7 +266,7 @@ public sealed class DebugSourceAdmissionTests
     {
         var snapshot = new TransportedDebugSourceSnapshot(2, []);
 
-        var error = Assert.Throws<InvalidOperationException>(() =>
+        var error = Assert.Throws<DebugSourceRejectedException>(() =>
             new DebugSourceAdmission(932).Admit(
                 snapshot,
                 "Missing",
@@ -308,7 +308,7 @@ public sealed class DebugSourceAdmissionTests
             Breakpoints = [new TransportedDebugSourceBreakpoint(breakpointUri, 2)]
         };
 
-        var error = Assert.Throws<DebugSetupException>(() =>
+        var error = Assert.Throws<DebugSourceRejectedException>(() =>
             new DebugSourceAdmission(932).Admit(
                 snapshot,
                 "Alpha",
@@ -334,7 +334,7 @@ public sealed class DebugSourceAdmissionTests
                     Convert.ToBase64String([0xef, 0xbb, 0xbf, 0xff]))
             ]);
 
-        var error = Assert.Throws<InvalidOperationException>(() =>
+        var error = Assert.Throws<DebugSourceRejectedException>(() =>
             new DebugSourceAdmission(932).Admit(
                 snapshot,
                 "Module1",
@@ -364,7 +364,7 @@ public sealed class DebugSourceAdmissionTests
                     "End Sub\r\n")
             ]);
 
-        var error = Assert.Throws<InvalidOperationException>(() =>
+        var error = Assert.Throws<DebugSourceRejectedException>(() =>
             new DebugSourceAdmission(932).Admit(
                 snapshot,
                 "Module1",
@@ -398,7 +398,7 @@ public sealed class DebugSourceAdmissionTests
                     "End Sub\r\n")
             ]);
 
-        var error = Assert.Throws<DebugSetupException>(() =>
+        var error = Assert.Throws<DebugSourceRejectedException>(() =>
             new DebugSourceAdmission(932).Admit(
                 snapshot,
                 "Module1",
@@ -439,7 +439,7 @@ public sealed class DebugSourceAdmissionTests
             ]
         };
 
-        var error = Assert.Throws<DebugSetupException>(() =>
+        var error = Assert.Throws<DebugSourceRejectedException>(() =>
             new DebugSourceAdmission(932).Admit(
                 snapshot,
                 "Alpha",
@@ -476,7 +476,7 @@ public sealed class DebugSourceAdmissionTests
             Breakpoints = [new TransportedDebugSourceBreakpoint(alphaUri, 2)]
         };
 
-        var error = Assert.Throws<DebugSetupException>(() =>
+        var error = Assert.Throws<DebugSourceRejectedException>(() =>
             new DebugSourceAdmission(932).Admit(
                 snapshot,
                 "Missing",

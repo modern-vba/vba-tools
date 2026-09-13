@@ -31,7 +31,7 @@ internal sealed class DebugBreakpointProjection
         ArgumentNullException.ThrowIfNull(breakpoint);
         if (breakpoint.EditorLine < 0 || breakpoint.EditorLine >= projection.Lines.Count)
         {
-            throw new DebugSetupException(
+            throw new DebugSourceRejectedException(
                 $"Debug breakpoint line {breakpoint.EditorLine} is outside '{breakpoint.SourceUri}'.");
         }
 
@@ -39,7 +39,7 @@ internal sealed class DebugBreakpointProjection
         var conditionalPath = projectedLine.ConditionalCompilationPath;
         if (conditionalPath is null)
         {
-            throw new DebugSetupException(
+            throw new DebugSourceRejectedException(
                 $"Invalid breakpoint at '{breakpoint.SourceUri}:{breakpoint.EditorLine + 1}': " +
                 "the conditional-compilation branch identity is not structurally complete. " +
                 "The breakpoint was not relocated.");
@@ -48,7 +48,7 @@ internal sealed class DebugBreakpointProjection
             projectedLine.CodeModuleLine is not int vbideLine ||
             projectedLine.ExecutionKind != VbaPhysicalLineExecutionKind.ExecutableCandidate)
         {
-            throw new DebugSetupException(
+            throw new DebugSourceRejectedException(
                 $"Invalid breakpoint at '{breakpoint.SourceUri}:{breakpoint.EditorLine + 1}': " +
                 $"{DescribeInvalidLocation(projectedLine)}. The breakpoint was not relocated.");
         }

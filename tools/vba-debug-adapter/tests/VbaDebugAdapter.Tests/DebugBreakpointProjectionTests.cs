@@ -144,7 +144,7 @@ public sealed class DebugBreakpointProjectionTests
             "End Sub"
         ]);
 
-        var error = Assert.Throws<DebugSetupException>(() => Projection(sourcePath, source).Map(
+        var error = Assert.Throws<DebugSourceRejectedException>(() => Projection(sourcePath, source).Map(
             new DebugSourceBreakpoint(SourceUri(sourcePath), editorLine)));
 
         Assert.Contains("invalid breakpoint", error.Message, StringComparison.OrdinalIgnoreCase);
@@ -164,7 +164,7 @@ public sealed class DebugBreakpointProjectionTests
             "End Sub"
         ]);
 
-        var error = Assert.Throws<DebugSetupException>(() => Projection(sourcePath, source).Map(
+        var error = Assert.Throws<DebugSourceRejectedException>(() => Projection(sourcePath, source).Map(
             new DebugSourceBreakpoint(SourceUri(sourcePath), EditorLine: 3)));
 
         Assert.Contains("invalid breakpoint", error.Message, StringComparison.OrdinalIgnoreCase);
@@ -276,7 +276,7 @@ public sealed class DebugBreakpointProjectionTests
             "End Sub"
         ]);
 
-        var error = Assert.Throws<DebugSetupException>(() => Projection(sourcePath, source).Map(
+        var error = Assert.Throws<DebugSourceRejectedException>(() => Projection(sourcePath, source).Map(
             new DebugSourceBreakpoint(SourceUri(sourcePath), EditorLine: 3)));
 
         Assert.Contains("conditional-compilation", error.Message, StringComparison.OrdinalIgnoreCase);

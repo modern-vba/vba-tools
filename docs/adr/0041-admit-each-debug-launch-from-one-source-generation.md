@@ -61,6 +61,28 @@ rejection, cancellation authority, one-shot prepared-plan commitment, workspace
 ownership, and cleanup. A failed restarted admission or build leaves the still
 usable current session intact.
 
+## Request-local source rejection
+
+Known input rejections created by the source-admission authority before workbook
+building carry explicit classification through preparation and DAP completion.
+Initial rejection produces a failed launch response without `terminated` and
+allows a corrected request in the same adapter. Restart rejection preserves its
+still-current usable session and completion monitoring without restoring the
+consumed Restart request or reviving a session that exited or was stopped.
+
+Such an admission attempt has acquired no generation workspace, build process,
+or Excel process. The existing session lease and logical generation identity do
+not count as new preparation resource acquisition. Classification does not add
+another source pass, change validation priority or source-identity equivalence,
+or weaken generation binding. Failures from unexpected parser/internal behavior,
+Build, process management, or generated-workbook/Excel conditional verification
+remain ordinary lifecycle failures rather than known pre-build input rejection.
+
+ADR 0048 continues to govern cleanup evidence and retention for every failure,
+including ordinary preparation/build failures that already qualify for retention.
+ADR 0044 continues to govern session monitoring and terminal output failure.
+A broken rejection-response transport is never ignored to preserve a session.
+
 ## Consequences
 
 - `N` transported text sources cause exactly `N` parser calls per launch

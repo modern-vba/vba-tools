@@ -42,16 +42,26 @@ internal sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunc
         ArgumentNullException.ThrowIfNull(workspaceLease);
         VbaDevSnapshotBuildResult? buildResult = null;
         var buildStarted = false;
+        var sourceRejected = false;
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
             var generationId = DebugGenerationId.FromValue(
                 request.RestartPreparation?.Generation.Value ?? 0);
-            var admittedSource = sourceAdmission.Admit(
-                request.SourceSnapshot,
-                request.ModuleName,
-                request.ProcedureName,
-                generationId);
+            AdmittedDebugSourceSnapshot admittedSource;
+            try
+            {
+                admittedSource = sourceAdmission.Admit(
+                    request.SourceSnapshot,
+                    request.ModuleName,
+                    request.ProcedureName,
+                    generationId);
+            }
+            catch (DebugSourceRejectedException)
+            {
+                sourceRejected = true;
+                throw;
+            }
             var requiresConditionalCompilationVerification =
                 admittedSource.RequiresConditionalCompilationVerification;
             if (requiresConditionalCompilationVerification &&
@@ -167,7 +177,12 @@ internal sealed class StandaloneVbaDebugLaunchService : IStandaloneVbaDebugLaunc
                         "The failed build supplied no owner release evidence."));
                 }
             }
-            completion.Complete().ThrowWithEvidence();
+            var outcome = completion.Complete();
+            if (sourceRejected)
+            {
+                throw new DebugSourceRejectedPreparationException(outcome);
+            }
+            outcome.ThrowWithEvidence();
             throw;
         }
     }

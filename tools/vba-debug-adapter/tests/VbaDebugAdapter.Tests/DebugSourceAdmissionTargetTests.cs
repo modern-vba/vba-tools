@@ -101,9 +101,9 @@ public sealed class DebugSourceAdmissionTargetTests
 
         foreach (var invalidName in invalidNames)
         {
-            var moduleError = Assert.Throws<DebugSetupException>(() =>
+            var moduleError = Assert.Throws<DebugSourceRejectedException>(() =>
                 Admit(snapshot, invalidName, "RunTarget"));
-            var procedureError = Assert.Throws<DebugSetupException>(() =>
+            var procedureError = Assert.Throws<DebugSourceRejectedException>(() =>
                 Admit(snapshot, "DebugModule", invalidName));
 
             Assert.Contains("IDENTIFIER", moduleError.Message, StringComparison.Ordinal);
@@ -119,7 +119,7 @@ public sealed class DebugSourceAdmissionTargetTests
             "Attribute VB_Name = \"DebugModule\"\r\n" +
             "Public Sub RunTarget()\r\nEnd Sub\r\n");
 
-        var error = Assert.Throws<DebugSetupException>(() =>
+        var error = Assert.Throws<DebugSourceRejectedException>(() =>
             Admit(snapshot, "", ""));
 
         Assert.Contains("IDENTIFIER", error.Message, StringComparison.Ordinal);
@@ -148,7 +148,7 @@ public sealed class DebugSourceAdmissionTargetTests
             "Public Function RunTarget() As Long\r\n" +
             "    RunTarget = 1\r\nEnd Function\r\n");
 
-        var error = Assert.Throws<DebugSetupException>(() =>
+        var error = Assert.Throws<DebugSourceRejectedException>(() =>
             Admit(snapshot, "DebugModule", "RunTarget"));
 
         Assert.Contains("Sub", error.Message, StringComparison.Ordinal);
@@ -162,7 +162,7 @@ public sealed class DebugSourceAdmissionTargetTests
             "Attribute VB_Name = \"DebugModule\"\r\n" +
             "Private Sub RunTarget()\r\nEnd Sub\r\n");
 
-        var error = Assert.Throws<DebugSetupException>(() =>
+        var error = Assert.Throws<DebugSourceRejectedException>(() =>
             Admit(snapshot, "DebugModule", "RunTarget"));
 
         Assert.Contains("public", error.Message, StringComparison.OrdinalIgnoreCase);
@@ -176,7 +176,7 @@ public sealed class DebugSourceAdmissionTargetTests
             "Attribute VB_Name = \"DebugModule\"\r\n" +
             "Public Sub RunTarget(ByVal value As Long)\r\nEnd Sub\r\n");
 
-        var error = Assert.Throws<DebugSetupException>(() =>
+        var error = Assert.Throws<DebugSourceRejectedException>(() =>
             Admit(snapshot, "DebugModule", "RunTarget"));
 
         Assert.Contains("parameterless", error.Message, StringComparison.OrdinalIgnoreCase);
@@ -190,7 +190,7 @@ public sealed class DebugSourceAdmissionTargetTests
             "Attribute VB_Name = \"DebugModule\"\r\n" +
             "Public Declare PtrSafe Sub RunTarget Lib \"kernel32\" ()\r\n");
 
-        var error = Assert.Throws<DebugSetupException>(() =>
+        var error = Assert.Throws<DebugSourceRejectedException>(() =>
             Admit(snapshot, "DebugModule", "RunTarget"));
 
         Assert.Contains("Declare", error.Message, StringComparison.OrdinalIgnoreCase);
@@ -205,7 +205,7 @@ public sealed class DebugSourceAdmissionTargetTests
             "Attribute VB_Name = \"DebugModule\"\r\n" +
             "Public Sub RunTarget()\r\nEnd Sub\r\n");
 
-        var error = Assert.Throws<DebugSetupException>(() =>
+        var error = Assert.Throws<DebugSourceRejectedException>(() =>
             Admit(snapshot, "DebugModule", "RunTarget"));
 
         Assert.Contains("standard module", error.Message, StringComparison.OrdinalIgnoreCase);
@@ -266,7 +266,7 @@ public sealed class DebugSourceAdmissionTargetTests
                 Character: 4)
         };
 
-        var error = Assert.Throws<DebugSetupException>(() =>
+        var error = Assert.Throws<DebugSourceRejectedException>(() =>
             Admit(snapshot, moduleName: null, procedureName: null));
 
         Assert.Contains("module", error.Message, StringComparison.OrdinalIgnoreCase);

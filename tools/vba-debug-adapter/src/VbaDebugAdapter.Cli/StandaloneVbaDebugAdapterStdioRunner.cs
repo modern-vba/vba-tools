@@ -874,7 +874,10 @@ public sealed class StandaloneVbaDebugAdapterStdioRunner : IVbaDebugAdapterStdio
                     completion.Complete().ThrowWithEvidence();
                 }
             }
-            if (retainedSession is null && endedSession is null && !ordinaryCancellation)
+            var requestOnlySourceRejection = cause is DebugSourceRejectedPreparationException
+                && preparedPlan is null && restartBinding is null && !outcome.HasCleanupFailure
+                && !launchCancellationToken.IsCancellationRequested;
+            if (retainedSession is null && endedSession is null && !ordinaryCancellation && !requestOnlySourceRejection)
             {
                 await connection.WriteEventAsync("terminated", null, transportCancellationToken).ConfigureAwait(false);
             }
