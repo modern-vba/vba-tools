@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Text;
+using VbaDebugAdapter.Debugging;
 using VbaDebugAdapter.Infrastructure;
 
 namespace VbaDebugAdapter.Build;
@@ -50,12 +51,12 @@ internal sealed class TransportedDebugSourceSnapshotValidator
         ArgumentNullException.ThrowIfNull(snapshot);
         if (snapshot.SchemaVersion != 2)
         {
-            throw new InvalidOperationException(
+            throw new DebugSourceRejectedException(
                 $"Unsupported transported source snapshot schema version {snapshot.SchemaVersion}.");
         }
         if (snapshot.Sources.Count == 0)
         {
-            throw new InvalidOperationException(
+            throw new DebugSourceRejectedException(
                 "The transported source snapshot must contain a complete source inventory.");
         }
 
@@ -69,7 +70,7 @@ internal sealed class TransportedDebugSourceSnapshotValidator
             var relativePath = ValidateRelativePath(source.RelativePath);
             if (!seenRelativePaths.Add(relativePath))
             {
-                throw new InvalidOperationException(
+                throw new DebugSourceRejectedException(
                     $"The transported source snapshot contains duplicate path '{relativePath}'.");
             }
 
@@ -78,7 +79,7 @@ internal sealed class TransportedDebugSourceSnapshotValidator
                 .Contains(extension, StringComparer.OrdinalIgnoreCase);
             if (!isText && !extension.Equals(".frx", StringComparison.OrdinalIgnoreCase))
             {
-                throw new InvalidOperationException(
+                throw new DebugSourceRejectedException(
                     $"The transported source snapshot contains unsupported path '{relativePath}'.");
             }
 
@@ -89,7 +90,7 @@ internal sealed class TransportedDebugSourceSnapshotValidator
             }
             catch (FormatException exception)
             {
-                throw new InvalidOperationException(
+                throw new DebugSourceRejectedException(
                     $"The transported source snapshot contains invalid base64 for '{relativePath}'.",
                     exception);
             }
@@ -98,7 +99,7 @@ internal sealed class TransportedDebugSourceSnapshotValidator
             {
                 if (source.SourceUri is not null || source.Encoding is not null)
                 {
-                    throw new InvalidOperationException(
+                    throw new DebugSourceRejectedException(
                         $"Binary source '{relativePath}' must not declare text metadata.");
                 }
                 validated.Add(new ValidatedTransportedDebugSource(
@@ -112,7 +113,7 @@ internal sealed class TransportedDebugSourceSnapshotValidator
 
             if (!seenFlatTextNames.Add(Path.GetFileName(relativePath)))
             {
-                throw new InvalidOperationException(
+                throw new DebugSourceRejectedException(
                     $"The transported source snapshot contains duplicate flat source identity " +
                     $"'{Path.GetFileName(relativePath)}'.");
             }
@@ -121,7 +122,7 @@ internal sealed class TransportedDebugSourceSnapshotValidator
                 !sourceUri.IsFile ||
                 !seenSourceUris.Add(sourceUri.AbsoluteUri))
             {
-                throw new InvalidOperationException(
+                throw new DebugSourceRejectedException(
                     $"Text source '{relativePath}' requires a unique persistent file URI.");
             }
             var sourceSetRoot = ValidatePersistentSourceIdentity(relativePath, sourceUri);
@@ -133,12 +134,12 @@ internal sealed class TransportedDebugSourceSnapshotValidator
                          sourceSetRoot,
                          StringComparison.OrdinalIgnoreCase))
             {
-                throw new InvalidOperationException(
+                throw new DebugSourceRejectedException(
                     $"Text source '{relativePath}' sourceUri is outside the persistent source set.");
             }
             if (source.Encoding is null)
             {
-                throw new InvalidOperationException(
+                throw new DebugSourceRejectedException(
                     $"Text source '{relativePath}' requires a declared encoding.");
             }
 
@@ -156,7 +157,7 @@ internal sealed class TransportedDebugSourceSnapshotValidator
                 orderedPaths.OrderBy(path => path, StringComparer.Ordinal),
                 StringComparer.Ordinal))
         {
-            throw new InvalidOperationException(
+            throw new DebugSourceRejectedException(
                 "Transported source snapshot entries must use canonical relative-path order.");
         }
 
@@ -167,7 +168,7 @@ internal sealed class TransportedDebugSourceSnapshotValidator
             var formPath = Path.ChangeExtension(sidecar.RelativePath, ".frm");
             if (!seenRelativePaths.Contains(formPath))
             {
-                throw new InvalidOperationException(
+                throw new DebugSourceRejectedException(
                     $"Binary source '{sidecar.RelativePath}' requires same-directory form '{formPath}'.");
             }
         }
@@ -180,7 +181,7 @@ internal sealed class TransportedDebugSourceSnapshotValidator
                      activeSource.SourceUri,
                      StringComparison.OrdinalIgnoreCase))))
         {
-            throw new InvalidOperationException(
+            throw new DebugSourceRejectedException(
                 "The transported active source must identify a nonnegative position in one persistent source URI.");
         }
         var breakpointIdentities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -192,12 +193,12 @@ internal sealed class TransportedDebugSourceSnapshotValidator
                         breakpoint.SourceUri,
                         StringComparison.OrdinalIgnoreCase)))
             {
-                throw new InvalidOperationException(
+                throw new DebugSourceRejectedException(
                     "Each transported breakpoint must identify a nonnegative line in one persistent source URI.");
             }
             if (!breakpointIdentities.Add($"{breakpoint.SourceUri}\n{breakpoint.Line}"))
             {
-                throw new InvalidOperationException(
+                throw new DebugSourceRejectedException(
                     $"The transported source snapshot contains duplicate breakpoint " +
                     $"'{breakpoint.SourceUri}:{breakpoint.Line + 1}'.");
             }
@@ -222,7 +223,7 @@ internal sealed class TransportedDebugSourceSnapshotValidator
         catch (Exception exception) when (
             exception is ArgumentException or NotSupportedException or PathTooLongException)
         {
-            throw new InvalidOperationException(
+            throw new DebugSourceRejectedException(
                 $"Text source '{relativePath}' has an invalid sourceUri.",
                 exception);
         }
@@ -238,7 +239,7 @@ internal sealed class TransportedDebugSourceSnapshotValidator
                 .Replace('\\', '/')
                 .Equals(relativePath, StringComparison.OrdinalIgnoreCase))
         {
-            throw new InvalidOperationException(
+            throw new DebugSourceRejectedException(
                 $"Text source '{relativePath}' sourceUri does not identify that persistent relative path.");
         }
 
@@ -250,9 +251,9 @@ internal sealed class TransportedDebugSourceSnapshotValidator
         string encodingToken,
         byte[] bytes)
     {
+        var (encoding, preambleLength) = ResolveStrictEncoding(encodingToken, bytes);
         try
         {
-            var (encoding, preambleLength) = ResolveStrictEncoding(encodingToken, bytes);
             var text = encoding.GetString(bytes, preambleLength, bytes.Length - preambleLength);
             var encodedBody = encoding.GetBytes(text);
             var reconstructed = preambleLength == 0
@@ -260,16 +261,15 @@ internal sealed class TransportedDebugSourceSnapshotValidator
                 : [.. bytes.AsSpan(0, preambleLength), .. encodedBody];
             if (!bytes.AsSpan().SequenceEqual(reconstructed))
             {
-                throw new InvalidOperationException(
+                throw new DebugSourceRejectedException(
                     $"Transported text source '{relativePath}' does not round-trip as {encodingToken}.");
             }
             return text;
         }
         catch (Exception exception) when (
-            exception is DecoderFallbackException or EncoderFallbackException or
-                ArgumentException or NotSupportedException)
+            exception is DecoderFallbackException or EncoderFallbackException)
         {
-            throw new InvalidOperationException(
+            throw new DebugSourceRejectedException(
                 $"Transported text source '{relativePath}' does not strictly decode as {encodingToken}.",
                 exception);
         }
@@ -281,7 +281,7 @@ internal sealed class TransportedDebugSourceSnapshotValidator
     {
         if (UnsupportedUnicodePreambles.Any(preamble => bytes.AsSpan().StartsWith(preamble)))
         {
-            throw new InvalidOperationException(
+            throw new DebugSourceRejectedException(
                 $"Declared encoding {encodingToken} does not support the transported Unicode BOM.");
         }
         if (bytes.Length != 0 &&
@@ -289,14 +289,14 @@ internal sealed class TransportedDebugSourceSnapshotValidator
             SupportedUnicodePreambles.Concat(UnsupportedUnicodePreambles).Any(preamble =>
                 bytes.Length < preamble.Length && preamble.AsSpan().StartsWith(bytes)))
         {
-            throw new InvalidOperationException(
+            throw new DebugSourceRejectedException(
                 $"Declared encoding {encodingToken} does not support a truncated Unicode BOM.");
         }
         if (encodingToken == "utf8")
         {
             if (activeWindowsCodePage != 65001)
             {
-                throw new InvalidOperationException(
+                throw new DebugSourceRejectedException(
                     $"Declared encoding utf8 does not match the canonical active Windows " +
                     $"encoding for code page {activeWindowsCodePage}.");
             }
@@ -330,7 +330,7 @@ internal sealed class TransportedDebugSourceSnapshotValidator
             codePage == 65001 ||
             codePage != activeWindowsCodePage)
         {
-            throw new InvalidOperationException(
+            throw new DebugSourceRejectedException(
                 $"Declared encoding {encodingToken} does not match the canonical active Windows " +
                 $"encoding for code page {activeWindowsCodePage}.");
         }
@@ -356,7 +356,7 @@ internal sealed class TransportedDebugSourceSnapshotValidator
         if ((requiredPreamble.Length == 0 && hasKnownPreamble) ||
             (requiredPreamble.Length != 0 && !bytes.StartsWith(requiredPreamble)))
         {
-            throw new InvalidOperationException(
+            throw new DebugSourceRejectedException(
                 $"Transported text bytes do not have the BOM required by {encodingToken}.");
         }
     }
@@ -365,7 +365,7 @@ internal sealed class TransportedDebugSourceSnapshotValidator
     {
         if (string.IsNullOrWhiteSpace(relativePath) || Path.IsPathFullyQualified(relativePath))
         {
-            throw new InvalidOperationException(
+            throw new DebugSourceRejectedException(
                 $"The transported source path must be relative: '{relativePath}'.");
         }
         var portablePath = relativePath.Replace('\\', '/');
@@ -373,7 +373,7 @@ internal sealed class TransportedDebugSourceSnapshotValidator
         if (segments.Any(segment =>
                 !WindowsVbaDebugWorkspacePath.IsUnambiguousEntryName(segment)))
         {
-            throw new InvalidOperationException(
+            throw new DebugSourceRejectedException(
                 $"The transported source path must use unambiguous Windows path components: '{relativePath}'.");
         }
         return portablePath;

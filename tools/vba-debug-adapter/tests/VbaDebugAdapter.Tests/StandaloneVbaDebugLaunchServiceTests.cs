@@ -616,7 +616,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
                 generation);
         }
 
-        await DebugFailureAssertions.ThrowsWithProvedCleanupAsync<DebugSetupException>(() => service.PrepareAsync(
+        await DebugFailureAssertions.ThrowsWithProvedCleanupAsync<DebugSourceRejectedException>(() => service.PrepareAsync(
             Path.GetFullPath("vba-dev.exe"),
             fixture.WorkspaceLease,
             request,
@@ -1387,7 +1387,7 @@ public sealed class StandaloneVbaDebugLaunchServiceTests
                         "Public Sub Run()\r\nEnd Sub\r\n")))
             ]);
 
-        var exception = await DebugFailureAssertions.ThrowsWithProvedCleanupAsync<InvalidOperationException>(() =>
+        var exception = await DebugFailureAssertions.ThrowsWithProvedCleanupAsync<DebugSourceRejectedException>(() =>
             PrepareAndCommitAsync(
                 service,
                 Path.GetFullPath("vba-dev.exe"),

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using VbaDebugAdapter.Build;
+using VbaDebugAdapter.Debugging;
 using Xunit;
 
 namespace VbaDebugAdapter.Tests;
@@ -91,7 +92,7 @@ public sealed class TransportedDebugSourceSnapshotValidatorTests
         };
         var validator = new TransportedDebugSourceSnapshotValidator(1252);
 
-        var error = Assert.Throws<InvalidOperationException>(() => validator.Validate(snapshot));
+        var error = Assert.Throws<DebugSourceRejectedException>(() => validator.Validate(snapshot));
 
         Assert.Contains(expectedMessage, error.Message, StringComparison.Ordinal);
     }
@@ -116,7 +117,7 @@ public sealed class TransportedDebugSourceSnapshotValidatorTests
             [new TransportedDebugSource(
                 "Module1.bas", "file:///C:/persistent/Module1.bas", encoding, bytesBase64)]);
 
-        Assert.Throws<InvalidOperationException>(() => validator.Validate(snapshot));
+        Assert.Throws<DebugSourceRejectedException>(() => validator.Validate(snapshot));
     }
 
     [Theory]
@@ -132,7 +133,7 @@ public sealed class TransportedDebugSourceSnapshotValidatorTests
             [new TransportedDebugSource(
                 "Module1.bas", "file:///C:/persistent/Module1.bas", "windows-1252", "QQ==")]);
 
-        var error = Assert.Throws<InvalidOperationException>(() => validator.Validate(snapshot));
+        var error = Assert.Throws<DebugSourceRejectedException>(() => validator.Validate(snapshot));
 
         Assert.Contains("schema version", error.Message, StringComparison.Ordinal);
     }
@@ -166,7 +167,7 @@ public sealed class TransportedDebugSourceSnapshotValidatorTests
 
         if (expectedFailure)
         {
-            Assert.Throws<InvalidOperationException>(() => validator.Validate(snapshot));
+            Assert.Throws<DebugSourceRejectedException>(() => validator.Validate(snapshot));
             return;
         }
 
@@ -246,7 +247,7 @@ public sealed class TransportedDebugSourceSnapshotValidatorTests
                     Convert.ToBase64String([0xc3, 0xa9]))
             ]);
 
-        Assert.Throws<InvalidOperationException>(() => validator.Validate(snapshot));
+        Assert.Throws<DebugSourceRejectedException>(() => validator.Validate(snapshot));
     }
 
     [Theory]
@@ -267,7 +268,7 @@ public sealed class TransportedDebugSourceSnapshotValidatorTests
                     Convert.ToBase64String([0x2b, 0x2f, 0x76, signatureSuffix, 0x2d, 0x41]))
             ]);
 
-        Assert.Throws<InvalidOperationException>(() => validator.Validate(snapshot));
+        Assert.Throws<DebugSourceRejectedException>(() => validator.Validate(snapshot));
     }
 
     [Fact]
@@ -284,6 +285,6 @@ public sealed class TransportedDebugSourceSnapshotValidatorTests
                     Convert.ToBase64String([0xef, 0xbb]))
             ]);
 
-        Assert.Throws<InvalidOperationException>(() => validator.Validate(snapshot));
+        Assert.Throws<DebugSourceRejectedException>(() => validator.Validate(snapshot));
     }
 }

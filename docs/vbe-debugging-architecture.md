@@ -428,6 +428,30 @@ runtime DTO crosses that boundary, and no `VbaDev` dependency points back to the
 adapter. Admission does not add retries, source locks, editor coordination, or
 external-change protection.
 
+Known source rejections in this pre-build admission fail only the affected
+launch or Restart request. Initial rejection emits no `terminated` event, so a
+corrected request can launch in the same adapter. Restart rejection preserves
+the still-current usable session and its completion monitor; it cannot revive a
+session that exited or was stopped. The existing exactly correlated Restart
+notification remains consumed once.
+
+Only explicit input-rejection classification from the source authority enables
+this outcome. It travels through preparation and failure completion with the
+original cause and resource-release evidence. An exception's text, a general
+exception class, or the fact that it arose before build is insufficient.
+Rejected admission has acquired no new generation workspace, build process, or
+Excel process. An adapter-session lease, generation number, or pending Restart
+identity does not imply that those preparation resources were acquired.
+
+The admission order remains complete transport/inventory validation, target
+validation, request-ordered breakpoint validation, then remaining source-identity
+validation. Each text source is parsed at most once. Unexpected internal/parser
+failures, build-stage source analysis or process failures, and later Excel/VBIDE
+failures retain the existing lifecycle and owner-evidence policy. In particular,
+ADR 0048 may still permit retention after an ordinary preparation or build
+failure when its existing conditions hold. Rejection-response output failure
+uses terminal cleanup and the failed stream is never retried.
+
 The build and debug Excel processes are never reused or attached to an existing
 user Excel session. Reusing the build process after programmatic VBIDE edits can
 prevent entry into break mode.
@@ -841,6 +865,10 @@ Failures are classified by the boundary that can act on them:
   source snapshot.
 - `DebugLaunchBusyException`: the VS Code window or selected project already
   owns an incompatible launch. The active session is retained.
+- `DebugSourceRejection`: the source authority explicitly rejected input before
+  workbook building. Only that launch or Restart fails; corrected initial launch
+  remains possible, and a usable existing session is retained under the rules
+  above. This does not classify arbitrary exceptions as source input errors.
 - `DebugSetupException`: build, workbook open, source verification, command
   context, native command, compiler, or VBE setup could not establish the
   requested session. Any owned process and incomplete temporary output are

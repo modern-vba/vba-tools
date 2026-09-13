@@ -639,6 +639,26 @@ independently admits the bytes through its public process contract and receives
 no adapter proof, syntax tree, or runtime DTO.
 _Avoid_: public admission interface, reusable launch cache, repeated source parser, VbaDev reverse dependency
 
+**DebugSourceRejection**:
+A known input rejection explicitly identified by `DebugSourceAdmission` before
+workbook building, such as invalid transported bytes, an unavailable target,
+duplicate source identity, or an invalid source breakpoint mapping. The source
+authority carries this classification through preparation and failure completion
+alongside the original cause and owner-release evidence. Exception text, a broad
+exception type, or merely failing before build does not establish this category.
+An initial rejection fails its launch request without a terminated event and
+allows a corrected request in the same adapter. A rejected Restart consumes that
+attempt but preserves the still-current usable session and its completion
+monitoring. An exited or stopped session is never revived, and failed rejection
+output still triggers terminal cleanup without retrying the transport.
+Rejected admission acquires no generation workspace, build process, or Excel
+process; the existing adapter-session lease and logical generation identifiers
+are separate facts. Unexpected parser failures, Build source-analysis failures,
+and later Excel or lifecycle faults retain their existing failure and cleanup
+policy, including evidence-based Restart retention where allowed by ADR 0048.
+_Avoid_: request argument rejection, catch-all pre-build error, automatic retry,
+source-identity equivalence change
+
 **SnapshotSourceInventory**:
 The complete selected-document source set fixed at capture start from one disk
 inventory and the then-open dirty file-backed editors whose canonical paths
