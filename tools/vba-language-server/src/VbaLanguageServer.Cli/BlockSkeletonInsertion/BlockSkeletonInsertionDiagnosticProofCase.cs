@@ -9,13 +9,8 @@ internal sealed record BlockSkeletonInsertionDiagnosticProofCase(
     BlockSkeletonInsertionDiagnosticEvidence Original,
     BlockSkeletonInsertionDiagnosticEvidence Prospective,
     BlockSkeletonInsertionDiagnosticEvidence AllowedRemovals,
-    BlockSkeletonInsertionDiagnosticReplacement Replacement,
+    VbaSourceTextEditResult Edit,
     BlockSkeletonInsertionDiagnosticEvidence? Control = null);
-
-internal sealed record BlockSkeletonInsertionDiagnosticReplacement(
-    int StartOffset,
-    int EndOffset,
-    int ProspectiveEndOffset);
 
 internal sealed class BlockSkeletonInsertionDiagnosticEvidence
 {

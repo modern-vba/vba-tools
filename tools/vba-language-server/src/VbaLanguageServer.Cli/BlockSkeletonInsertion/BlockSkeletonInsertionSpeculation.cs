@@ -19,6 +19,14 @@ internal static class BlockSkeletonInsertionSpeculation
         int? firstFollowingContentLine,
         string lineEnding)
     {
+        if (!VbaSourceTextEditResult.TryApply(
+                snapshot.SourceText,
+                [new(insertionStartOffset, insertionEndOffset, plan.TextBeforeCursor + plan.TextAfterCursor)],
+                out var edit))
+        {
+            return false;
+        }
+
         if (originalHeader.Kind is VbaBlockHeaderKind.If
             or VbaBlockHeaderKind.With
             or VbaBlockHeaderKind.For
@@ -29,8 +37,7 @@ internal static class BlockSkeletonInsertionSpeculation
                 snapshot,
                 originalHeader,
                 plan,
-                insertionStartOffset,
-                insertionEndOffset,
+                edit,
                 firstFollowingContentLine,
                 lineEnding);
         }
@@ -51,29 +58,22 @@ internal static class BlockSkeletonInsertionSpeculation
             return false;
         }
 
-        var replacement = plan.TextBeforeCursor + plan.TextAfterCursor;
-        var speculativeText = snapshot.Text[..insertionStartOffset]
-            + replacement
-            + snapshot.Text[insertionEndOffset..];
-        var speculativeTree = VbaSyntaxTree.ParseModule(snapshot.Uri, speculativeText);
+        var speculativeSource = edit.After;
+        var speculativeTree = VbaSyntaxTree.ParseModule(snapshot.Uri, speculativeSource.Text);
         if (speculativeTree.Module.Kind != snapshot.ModuleKind)
         {
             return false;
         }
 
-        var speculativeSource = VbaSourceText.From(speculativeText);
         var speculativeHeader = VbaBlockHeaderSyntax.FindAtPosition(
             speculativeTree,
             plan.Position.Line,
             plan.Position.Character);
-        var terminatorStartOffset = insertionStartOffset
-            + plan.TextBeforeCursor.Length
-            + lineEnding.Length
-            + originalHeader.LeadingWhitespace.Length;
-        var insertedTerminatorRange = new VbaSyntaxRange(
-            speculativeSource.PositionAt(terminatorStartOffset),
-            speculativeSource.PositionAt(
-                terminatorStartOffset + originalHeader.ExpectedTerminator.Length));
+        if (!TryCreateTerminatorRange(edit, originalHeader, plan, lineEnding, out var insertedTerminatorRange))
+        {
+            return false;
+        }
+
         var candidateBlock = speculativeHeader is null
             ? null
             : FindBlock(speculativeTree, speculativeHeader);
@@ -91,18 +91,14 @@ internal static class BlockSkeletonInsertionSpeculation
             return false;
         }
 
-        var replacementEndOffset = insertionStartOffset + replacement.Length;
-        var delta = replacement.Length - (insertionEndOffset - insertionStartOffset);
         if (firstFollowingContentLine is { } originalBoundaryLine
             && !PreservesFollowingBoundary(
                 snapshot,
                 originalHeader,
                 speculativeTree,
-                speculativeSource,
                 candidateBlock,
                 originalBoundaryLine,
-                insertionEndOffset,
-                delta))
+                edit))
         {
             return false;
         }
@@ -114,18 +110,14 @@ internal static class BlockSkeletonInsertionSpeculation
             snapshot,
             originalHeader,
             speculativeDiagnostics,
-            speculativeSource,
-            insertionStartOffset,
-            insertionEndOffset,
-            replacementEndOffset);
+            edit);
     }
 
     private static bool IsSafeStructuredBlock(
         VbaVersionedDocumentSnapshot snapshot,
         VbaBlockHeaderSyntax originalHeader,
         BlockSkeletonInsertionPlan plan,
-        int insertionStartOffset,
-        int insertionEndOffset,
+        VbaSourceTextEditResult edit,
         int? firstFollowingContentLine,
         string lineEnding)
     {
@@ -133,7 +125,7 @@ internal static class BlockSkeletonInsertionSpeculation
             || !BlockSkeletonInsertionPrefixContext.TryCreate(
                 snapshot,
                 originalHeader,
-                insertionStartOffset,
+                edit.Replacements[0].BeforeStartOffset,
                 out var prefix))
         {
             return false;
@@ -144,11 +136,17 @@ internal static class BlockSkeletonInsertionSpeculation
             return false;
         }
 
-        var controlText = NeutralizeRange(
-            snapshot.Text,
+        if (!TryNeutralizeRange(
+            snapshot.SourceText,
             originalHeader.Range.Start.Offset,
-            originalHeader.Range.End.Offset);
-        var controlTree = VbaSyntaxTree.ParseModule(snapshot.Uri, controlText);
+            originalHeader.Range.End.Offset,
+            out var controlEdit))
+        {
+            return false;
+        }
+
+        var controlSource = controlEdit.After;
+        var controlTree = VbaSyntaxTree.ParseModule(snapshot.Uri, controlSource.Text);
         if (controlTree.Module.Kind != snapshot.ModuleKind
             || !TryFindPrefixBlocks(
                 controlTree,
@@ -165,29 +163,22 @@ internal static class BlockSkeletonInsertionSpeculation
             return false;
         }
 
-        var replacement = plan.TextBeforeCursor + plan.TextAfterCursor;
-        var prospectiveText = snapshot.Text[..insertionStartOffset]
-            + replacement
-            + snapshot.Text[insertionEndOffset..];
-        var prospectiveTree = VbaSyntaxTree.ParseModule(snapshot.Uri, prospectiveText);
+        var prospectiveSource = edit.After;
+        var prospectiveTree = VbaSyntaxTree.ParseModule(snapshot.Uri, prospectiveSource.Text);
         if (prospectiveTree.Module.Kind != snapshot.ModuleKind)
         {
             return false;
         }
 
-        var prospectiveSource = VbaSourceText.From(prospectiveText);
         var prospectiveHeader = VbaBlockHeaderSyntax.FindAtPosition(
             prospectiveTree,
             plan.Position.Line,
             plan.Position.Character);
-        var terminatorStartOffset = insertionStartOffset
-            + plan.TextBeforeCursor.Length
-            + lineEnding.Length
-            + originalHeader.LeadingWhitespace.Length;
-        var insertedTerminatorRange = new VbaSyntaxRange(
-            prospectiveSource.PositionAt(terminatorStartOffset),
-            prospectiveSource.PositionAt(
-                terminatorStartOffset + originalHeader.ExpectedTerminator.Length));
+        if (!TryCreateTerminatorRange(edit, originalHeader, plan, lineEnding, out var insertedTerminatorRange))
+        {
+            return false;
+        }
+
         var candidateKind = GetStructuralKind(originalHeader.Kind);
         var candidateBlock = prospectiveHeader is null
             ? null
@@ -209,8 +200,6 @@ internal static class BlockSkeletonInsertionSpeculation
             return false;
         }
 
-        var replacementEndOffset = insertionStartOffset + replacement.Length;
-        var delta = replacement.Length - (insertionEndOffset - insertionStartOffset);
         if (!TryFindPrefixBlocks(
                 prospectiveTree,
                 prefix.Ancestors,
@@ -219,31 +208,27 @@ internal static class BlockSkeletonInsertionSpeculation
             || !PreservesPrefixAncestors(
                 controlAncestors,
                 prospectiveAncestors,
-                prospectiveSource,
-                insertionEndOffset,
-                delta)
+                edit)
             || !PreservesControlBoundary(
                 boundaryProof,
                 prospectiveTree,
-                prospectiveSource,
                 prospectiveAncestors,
                 candidateBlock,
-                insertionEndOffset,
-                delta))
+                edit))
         {
             return false;
         }
 
-        var controlSource = VbaSourceText.From(controlText);
         var originalEvidence = new BlockSkeletonInsertionDiagnosticEvidence(
             snapshot.SourceText,
             snapshot.Diagnostics);
         if (!snapshot.IsOwnedByAnalysis
-            && !BlockSkeletonInsertionDiagnosticProof.IsSafe(new(
+            && (!VbaSourceTextEditResult.TryApply(snapshot.SourceText, [], out var unchanged)
+                || !BlockSkeletonInsertionDiagnosticProof.IsSafe(new(
                 originalEvidence,
                 new(snapshot.SourceText, VbaDiagnosticPipeline.CollectDocument(snapshot.SyntaxTree, snapshot.Uri)),
                 new(snapshot.SourceText, new([], [], [])),
-                new(0, 0, 0))))
+                unchanged))))
         {
             return false;
         }
@@ -252,7 +237,7 @@ internal static class BlockSkeletonInsertionSpeculation
             originalEvidence,
             new(prospectiveSource, VbaDiagnosticPipeline.CollectDocument(prospectiveTree, snapshot.Uri)),
             new(snapshot.SourceText, new(CreateAllowedDirectCascades(prefix, controlAncestors, controlSource), [], [])),
-            new(insertionStartOffset, insertionEndOffset, replacementEndOffset),
+            edit,
             new(controlSource, VbaDiagnosticPipeline.CollectDocument(controlTree, snapshot.Uri))));
     }
 
@@ -321,10 +306,42 @@ internal static class BlockSkeletonInsertionSpeculation
                 diagnostic => IsError(diagnostic.Severity));
     }
 
-    private static string NeutralizeRange(string text, int startOffset, int endOffset)
+    private static bool TryCreateTerminatorRange(
+        VbaSourceTextEditResult edit,
+        VbaBlockHeaderSyntax header,
+        BlockSkeletonInsertionPlan plan,
+        string lineEnding,
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out VbaSyntaxRange? range)
     {
-        var characters = text.ToCharArray();
-        for (var index = startOffset; index < endOffset; index++)
+        range = null;
+        var startOffset = edit.Replacements[0].AfterStartOffset
+            + plan.TextBeforeCursor.Length + lineEnding.Length + header.LeadingWhitespace.Length;
+        if (!edit.After.TryGetPosition(startOffset, out var start)
+            || !edit.After.TryGetPosition(startOffset + header.ExpectedTerminator.Length, out var end))
+        {
+            return false;
+        }
+
+        range = new(start, end);
+        return true;
+    }
+
+    private static bool TryNeutralizeRange(
+        VbaSourceText source,
+        int startOffset,
+        int endOffset,
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out VbaSourceTextEditResult? edit)
+    {
+        edit = null;
+        if (endOffset < startOffset
+            || !source.TryGetPosition(startOffset, out _)
+            || !source.TryGetPosition(endOffset, out _))
+        {
+            return false;
+        }
+
+        var characters = source.Text[startOffset..endOffset].ToCharArray();
+        for (var index = 0; index < characters.Length; index++)
         {
             if (characters[index] is not '\r' and not '\n')
             {
@@ -332,7 +349,8 @@ internal static class BlockSkeletonInsertionSpeculation
             }
         }
 
-        return new string(characters);
+        return VbaSourceTextEditResult.TryApply(
+            source, [new(startOffset, endOffset, new string(characters))], out edit);
     }
 
     private static bool HasDisqualifyingAncestorDiagnostic(
@@ -449,9 +467,7 @@ internal static class BlockSkeletonInsertionSpeculation
     private static bool PreservesPrefixAncestors(
         IReadOnlyList<VbaBlockSyntax> controlAncestors,
         IReadOnlyList<VbaBlockSyntax> prospectiveAncestors,
-        VbaSourceText prospectiveSource,
-        int insertionEndOffset,
-        int delta)
+        VbaSourceTextEditResult edit)
     {
         if (controlAncestors.Count != prospectiveAncestors.Count)
         {
@@ -463,9 +479,7 @@ internal static class BlockSkeletonInsertionSpeculation
             if (!PreservesBlock(
                 controlAncestors[index],
                 prospectiveAncestors[index],
-                prospectiveSource,
-                insertionEndOffset,
-                delta))
+                edit))
             {
                 return false;
             }
@@ -477,11 +491,9 @@ internal static class BlockSkeletonInsertionSpeculation
     private static bool PreservesControlBoundary(
         BlockBoundaryProof? proof,
         VbaSyntaxTree prospectiveTree,
-        VbaSourceText prospectiveSource,
         IReadOnlyList<VbaBlockSyntax> prospectiveAncestors,
         VbaBlockSyntax candidateBlock,
-        int insertionEndOffset,
-        int delta)
+        VbaSourceTextEditResult edit)
     {
         if (proof is null)
         {
@@ -490,46 +502,49 @@ internal static class BlockSkeletonInsertionSpeculation
 
         if (proof is ConditionalCompilationBoundaryProof conditionalProof)
         {
-            var prospectiveConditionalLine = prospectiveSource
-                .PositionAt(conditionalProof.Boundary.Range.Start.Offset + delta)
-                .Line;
+            if (!TryMapStructuralBoundary(
+                    conditionalProof.Boundary.Range.Start.Offset, edit, out var position))
+            {
+                return false;
+            }
+
             return VbaConditionalCompilationBranchFacts.TryGetClosingBoundary(
                     prospectiveTree,
                     conditionalProof.Path,
-                    prospectiveConditionalLine,
+                    position.Line,
                     out var prospectiveConditionalBoundary)
                 && prospectiveConditionalBoundary.Kind == conditionalProof.Boundary.Kind
-                && prospectiveConditionalBoundary.Range == ShiftRange(
+                && PreservesStructuralRange(
                     conditionalProof.Boundary.Range,
-                    prospectiveSource,
-                    insertionEndOffset,
-                    delta)
+                    prospectiveConditionalBoundary.Range,
+                    edit)
                 && candidateBlock.CloserRange!.End.Offset
                     <= prospectiveConditionalBoundary.Range.Start.Offset;
         }
 
         var ancestorProof = (AncestorBlockBoundaryProof)proof;
-        var prospectiveLine = prospectiveSource
-            .PositionAt(ancestorProof.Boundary.TokenRange.Start.Offset + delta)
-            .Line;
+        if (!TryMapStructuralBoundary(
+                ancestorProof.Boundary.TokenRange.Start.Offset, edit, out var boundaryPosition))
+        {
+            return false;
+        }
+
         var prospectiveBoundary = VbaBlockBoundarySyntax.FindAtFirstPhysicalLine(
             prospectiveTree,
-            prospectiveLine,
+            boundaryPosition.Line,
             ancestorProof.Boundary.OwnerBlockKind,
             ancestorProof.Boundary.ExpectedTerminator);
         return prospectiveBoundary is not null
             && prospectiveBoundary.Role == ancestorProof.Boundary.Role
             && prospectiveBoundary.BranchKind == ancestorProof.Boundary.BranchKind
-            && prospectiveBoundary.TokenRange == ShiftRange(
+            && PreservesStructuralRange(
                 ancestorProof.Boundary.TokenRange,
-                prospectiveSource,
-                insertionEndOffset,
-                delta)
-            && prospectiveBoundary.Range == ShiftRange(
+                prospectiveBoundary.TokenRange,
+                edit)
+            && PreservesStructuralRange(
                 ancestorProof.Boundary.Range,
-                prospectiveSource,
-                insertionEndOffset,
-                delta)
+                prospectiveBoundary.Range,
+                edit)
             && OwnsBoundary(
                 prospectiveAncestors[ancestorProof.AncestorIndex],
                 prospectiveBoundary)
@@ -550,25 +565,21 @@ internal static class BlockSkeletonInsertionSpeculation
     private static bool PreservesBlock(
         VbaBlockSyntax control,
         VbaBlockSyntax prospective,
-        VbaSourceText prospectiveSource,
-        int insertionEndOffset,
-        int delta)
+        VbaSourceTextEditResult edit)
     {
         if (control.Kind != prospective.Kind
             || control.IsMalformedBarrier != prospective.IsMalformedBarrier
             || !control.ExpectedTerminator.Equals(
                 prospective.ExpectedTerminator,
                 StringComparison.OrdinalIgnoreCase)
-            || prospective.OpenerRange != ShiftRange(
+            || !PreservesStructuralRange(
                 control.OpenerRange,
-                prospectiveSource,
-                insertionEndOffset,
-                delta)
-            || prospective.Range != ShiftRange(
+                prospective.OpenerRange,
+                edit)
+            || !PreservesStructuralRange(
                 control.Range,
-                prospectiveSource,
-                insertionEndOffset,
-                delta)
+                prospective.Range,
+                edit)
             || control.Branches.Count != prospective.Branches.Count)
         {
             return false;
@@ -576,22 +587,20 @@ internal static class BlockSkeletonInsertionSpeculation
 
         if (control.CloserRange is null
             ? prospective.CloserRange is not null
-            : prospective.CloserRange != ShiftRange(
+            : !PreservesStructuralRange(
                 control.CloserRange,
-                prospectiveSource,
-                insertionEndOffset,
-                delta))
+                prospective.CloserRange,
+                edit))
         {
             return false;
         }
 
         if (control.MalformedBarrierOwnerRange is null
             ? prospective.MalformedBarrierOwnerRange is not null
-            : prospective.MalformedBarrierOwnerRange != ShiftRange(
+            : !PreservesStructuralRange(
                 control.MalformedBarrierOwnerRange,
-                prospectiveSource,
-                insertionEndOffset,
-                delta))
+                prospective.MalformedBarrierOwnerRange,
+                edit))
         {
             return false;
         }
@@ -601,16 +610,14 @@ internal static class BlockSkeletonInsertionSpeculation
             var controlBranch = control.Branches[index];
             var prospectiveBranch = prospective.Branches[index];
             if (controlBranch.Kind != prospectiveBranch.Kind
-                || prospectiveBranch.HeaderRange != ShiftRange(
+                || !PreservesStructuralRange(
                     controlBranch.HeaderRange,
-                    prospectiveSource,
-                    insertionEndOffset,
-                    delta)
-                || prospectiveBranch.Range != ShiftRange(
+                    prospectiveBranch.HeaderRange,
+                    edit)
+                || !PreservesStructuralRange(
                     controlBranch.Range,
-                    prospectiveSource,
-                    insertionEndOffset,
-                    delta))
+                    prospectiveBranch.Range,
+                    edit))
             {
                 return false;
             }
@@ -623,15 +630,14 @@ internal static class BlockSkeletonInsertionSpeculation
         VbaVersionedDocumentSnapshot snapshot,
         VbaBlockHeaderSyntax candidateHeader,
         VbaSyntaxTree speculativeTree,
-        VbaSourceText speculativeSource,
         VbaBlockSyntax candidateBlock,
         int originalBoundaryLine,
-        int insertionEndOffset,
-        int delta)
+        VbaSourceTextEditResult edit)
     {
-        var originalSource = snapshot.SourceText;
-        var originalBoundaryOffset = originalSource.Lines[originalBoundaryLine].StartOffset;
-        if (originalBoundaryOffset < insertionEndOffset)
+        var speculativeSource = edit.After;
+        var originalBoundaryOffset = edit.Before.Lines[originalBoundaryLine].StartOffset;
+        if (originalBoundaryOffset < edit.Replacements[0].BeforeEndOffset
+            || !TryMapStructuralBoundary(originalBoundaryOffset, edit, out var boundaryPosition))
         {
             return false;
         }
@@ -642,27 +648,21 @@ internal static class BlockSkeletonInsertionSpeculation
             originalBoundaryLine,
             out var originalConditionalBoundary))
         {
-            var speculativeConditionalBoundaryLine = speculativeSource
-                .PositionAt(originalBoundaryOffset + delta)
-                .Line;
             return VbaConditionalCompilationBranchFacts.TryGetClosingBoundary(
                     speculativeTree,
                     candidateHeader.ConditionalCompilationBranchPath,
-                    speculativeConditionalBoundaryLine,
+                    boundaryPosition.Line,
                     out var speculativeConditionalBoundary)
                 && speculativeConditionalBoundary.Kind == originalConditionalBoundary.Kind
-                && speculativeConditionalBoundary.Range == ShiftRange(
+                && PreservesStructuralRange(
                     originalConditionalBoundary.Range,
-                    speculativeSource,
-                    insertionEndOffset,
-                    delta)
+                    speculativeConditionalBoundary.Range,
+                    edit)
                 && candidateBlock.CloserRange!.End.Offset
                     <= speculativeConditionalBoundary.Range.Start.Offset;
         }
 
-        var speculativeBoundaryLine = speculativeSource
-            .PositionAt(originalBoundaryOffset + delta)
-            .Line;
+        var speculativeBoundaryLine = boundaryPosition.Line;
         var finalBoundaryLine = speculativeBoundaryLine;
         while (finalBoundaryLine + 1 < speculativeSource.Lines.Count
             && speculativeTree.TokenStream.Tokens.Any(token =>
@@ -693,11 +693,9 @@ internal static class BlockSkeletonInsertionSpeculation
             return false;
         }
 
-        var originalBoundaryOpener = MapRangeToOriginal(
+        var originalBoundaryOpener = MapFollowingRangeToOriginal(
             speculativeBoundaryBlock.OpenerRange,
-            originalSource,
-            insertionEndOffset,
-            delta);
+            edit);
         if (originalBoundaryOpener is null)
         {
             return false;
@@ -716,29 +714,35 @@ internal static class BlockSkeletonInsertionSpeculation
 
         return originalBoundaryBlock.CloserRange is null
             ? speculativeBoundaryBlock.CloserRange is null
-            : speculativeBoundaryBlock.CloserRange == ShiftRange(
+            : PreservesStructuralRange(
                 originalBoundaryBlock.CloserRange,
-                speculativeSource,
-                insertionEndOffset,
-                delta);
+                speculativeBoundaryBlock.CloserRange,
+                edit);
     }
 
-    private static VbaSyntaxRange? MapRangeToOriginal(
+    private static VbaSyntaxRange? MapFollowingRangeToOriginal(
         VbaSyntaxRange range,
-        VbaSourceText originalSource,
-        int insertionEndOffset,
-        int delta)
+        VbaSourceTextEditResult edit)
     {
-        var startOffset = range.Start.Offset - delta;
-        var endOffset = range.End.Offset - delta;
-        if (startOffset < insertionEndOffset || endOffset < startOffset)
+        if (range.Start.Offset < edit.Replacements[0].AfterEndOffset
+            || range.End.Offset < range.Start.Offset)
         {
             return null;
         }
 
-        return new VbaSyntaxRange(
-            originalSource.PositionAt(startOffset),
-            originalSource.PositionAt(endOffset));
+        foreach (var span in edit.UnchangedSpans)
+        {
+            if (span.AfterStartOffset <= range.Start.Offset && range.End.Offset <= span.AfterEndOffset
+                && edit.Before.TryGetPosition(
+                    span.BeforeStartOffset + (range.Start.Offset - span.AfterStartOffset), out var start)
+                && edit.Before.TryGetPosition(
+                    span.BeforeStartOffset + (range.End.Offset - span.AfterStartOffset), out var end))
+            {
+                return new(start, end);
+            }
+        }
+
+        return null;
     }
 
     private static VbaBlockSyntax? FindBlock(
@@ -760,21 +764,49 @@ internal static class BlockSkeletonInsertionSpeculation
         return matches.Length == 1 ? matches[0] : null;
     }
 
-    private static VbaSyntaxRange ShiftRange(
-        VbaSyntaxRange range,
-        VbaSourceText speculativeSource,
-        int insertionEndOffset,
-        int delta)
+    // An enclosing block may contain the edit; only its own endpoints must correspond.
+    private static bool PreservesStructuralRange(
+        VbaSyntaxRange original,
+        VbaSyntaxRange? prospective,
+        VbaSourceTextEditResult edit)
+        => original.End.Offset >= original.Start.Offset
+            && TryMapStructuralBoundary(original.Start.Offset, edit, out var start)
+            && TryMapStructuralBoundary(original.End.Offset, edit, out var end)
+            && prospective == new VbaSyntaxRange(start, end);
+
+    private static bool TryMapStructuralBoundary(
+        int offset,
+        VbaSourceTextEditResult edit,
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out VbaSyntaxPosition? position)
     {
-        var startOffset = range.Start.Offset >= insertionEndOffset
-            ? range.Start.Offset + delta
-            : range.Start.Offset;
-        var endOffset = range.End.Offset >= insertionEndOffset
-            ? range.End.Offset + delta
-            : range.End.Offset;
-        return new VbaSyntaxRange(
-            speculativeSource.PositionAt(startOffset),
-            speculativeSource.PositionAt(endOffset));
+        position = null;
+        if (!edit.Before.TryGetPosition(offset, out _))
+        {
+            return false;
+        }
+
+        var replacement = edit.Replacements[0];
+        // Preserve the following-side affinity when an insertion has a single before endpoint.
+        if (offset == replacement.BeforeEndOffset)
+        {
+            return edit.After.TryGetPosition(replacement.AfterEndOffset, out position);
+        }
+
+        if (offset == replacement.BeforeStartOffset)
+        {
+            return edit.After.TryGetPosition(replacement.AfterStartOffset, out position);
+        }
+
+        foreach (var span in edit.UnchangedSpans)
+        {
+            if (span.BeforeStartOffset <= offset && offset <= span.BeforeEndOffset)
+            {
+                return edit.After.TryGetPosition(
+                    span.AfterStartOffset + (offset - span.BeforeStartOffset), out position);
+            }
+        }
+
+        return false;
     }
 
     private static bool HasDisqualifyingHeaderDiagnostic(
@@ -792,10 +824,7 @@ internal static class BlockSkeletonInsertionSpeculation
         VbaVersionedDocumentSnapshot snapshot,
         VbaBlockHeaderSyntax header,
         VbaDiagnosticPipelineResult speculativeDiagnostics,
-        VbaSourceText speculativeSource,
-        int insertionStartOffset,
-        int insertionEndOffset,
-        int replacementEndOffset)
+        VbaSourceTextEditResult edit)
     {
         var directMissing = snapshot.Diagnostics.SyntaxDiagnostics
             .Where(diagnostic => IsError(diagnostic.Severity))
@@ -816,9 +845,9 @@ internal static class BlockSkeletonInsertionSpeculation
 
         return BlockSkeletonInsertionDiagnosticProof.IsSafe(new(
             new(snapshot.SourceText, snapshot.Diagnostics),
-            new(speculativeSource, speculativeDiagnostics),
+            new(edit.After, speculativeDiagnostics),
             new(snapshot.SourceText, new(directMissing, [], [])),
-            new(insertionStartOffset, insertionEndOffset, replacementEndOffset)));
+            edit));
     }
 
     private static bool IsDirectMissingTerminator(

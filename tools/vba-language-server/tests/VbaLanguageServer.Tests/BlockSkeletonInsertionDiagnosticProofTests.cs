@@ -20,7 +20,7 @@ public sealed class BlockSkeletonInsertionDiagnosticProofTests
             original,
             prospective,
             Evidence("abcdefgh"),
-            new(0, 0, 0))));
+            Unchanged("abcdefgh"))));
     }
 
     [Fact]
@@ -33,7 +33,7 @@ public sealed class BlockSkeletonInsertionDiagnosticProofTests
             Evidence("abcdefgh", [removed, retained, removed]),
             Evidence("abcdefgh", [retained, removed]),
             Evidence("abcdefgh", [removed]),
-            new(0, 0, 0))));
+            Unchanged("abcdefgh"))));
     }
 
     [Fact]
@@ -47,7 +47,7 @@ public sealed class BlockSkeletonInsertionDiagnosticProofTests
             Evidence("abcdefgh", [removed, retained]),
             Evidence("abcdefgh", [retained]),
             Evidence("abcdefgh", [removed, unusedCascade]),
-            new(0, 0, 0),
+            Unchanged("abcdefgh"),
             Evidence("  cdefgh", [retained]))));
     }
 
@@ -83,7 +83,7 @@ public sealed class BlockSkeletonInsertionDiagnosticProofTests
             Evidence("abcdefgh", [original]),
             prospective,
             Evidence("abcdefgh"),
-            new(0, 0, 0))));
+            Unchanged("abcdefgh"))));
     }
 
     [Fact]
@@ -95,7 +95,7 @@ public sealed class BlockSkeletonInsertionDiagnosticProofTests
             Evidence("abcdefgh", [error]),
             Evidence("abcdefgh"),
             Evidence("abcdefgh", [error, error]),
-            new(0, 0, 0))));
+            Unchanged("abcdefgh"))));
     }
 
     [Theory]
@@ -113,7 +113,7 @@ public sealed class BlockSkeletonInsertionDiagnosticProofTests
             original,
             prospective,
             Evidence("abXXefgh"),
-            new(2, 4, after))));
+            Apply("abXXefgh", 2, 4, replacement))));
     }
 
     [Theory]
@@ -136,7 +136,7 @@ public sealed class BlockSkeletonInsertionDiagnosticProofTests
             Evidence("abcdefgh", [removed, retained]),
             Evidence("abcdefgh", mismatch == "different-prospective" ? [removed] : [retained]),
             Evidence("abcdefgh", mismatch == "unallowed-removal" ? [] : [removed]),
-            new(0, 0, 0),
+            Unchanged("abcdefgh"),
             Evidence("  cdefgh", control))));
     }
 
@@ -161,7 +161,7 @@ public sealed class BlockSkeletonInsertionDiagnosticProofTests
             Evidence("ab\r\ncd", [malformed]),
             Evidence("ab\r\ncd"),
             Evidence("ab\r\ncd", [malformed]),
-            new(0, 0, 0))));
+            Unchanged("ab\r\ncd"))));
     }
 
     [Theory]
@@ -178,7 +178,7 @@ public sealed class BlockSkeletonInsertionDiagnosticProofTests
             Evidence("ab\r\ncd", role == "original" ? [malformed] : [valid]),
             Evidence("ab\r\ncd", role == "allowance" ? [] : role == "prospective" ? [malformed] : [valid]),
             Evidence("ab\r\ncd", role == "allowance" ? [malformed] : []),
-            new(0, 0, 0),
+            Unchanged("ab\r\ncd"),
             role == "control" ? Evidence("ab\r\ncd", [malformed]) : null)));
     }
 
@@ -193,7 +193,7 @@ public sealed class BlockSkeletonInsertionDiagnosticProofTests
             Evidence("abXXefgh", [Error(start, end)]),
             Evidence("ab123efgh", [Error(start, end)]),
             Evidence("abXXefgh"),
-            new(2, 4, 5))));
+            Apply("abXXefgh", 2, 4, "123"))));
     }
 
     [Fact]
@@ -203,20 +203,62 @@ public sealed class BlockSkeletonInsertionDiagnosticProofTests
             Evidence("abXXefgh", [Error(2, 2), Error(4, 4)]),
             Evidence("ab123efgh", [Error(2, 2), Error(5, 5)]),
             Evidence("abXXefgh"),
-            new(2, 4, 5))));
+            Apply("abXXefgh", 2, 4, "123"))));
+    }
+
+    [Fact]
+    public void Proof_preserves_zero_width_adjacency_at_source_start_and_eof()
+    {
+        Assert.True(BlockSkeletonInsertionDiagnosticProof.IsSafe(new(
+            Evidence("XX", [Error(0, 0), Error(2, 2)]),
+            Evidence("123", [Error(0, 0), Error(3, 3)]),
+            Evidence("XX"),
+            Apply("XX", 0, 2, "123"))));
+    }
+
+    [Fact]
+    public void Proof_preserves_preceding_boundary_affinity_when_deletion_collapses_endpoints()
+    {
+        Assert.True(BlockSkeletonInsertionDiagnosticProof.IsSafe(new(
+            Evidence("XX", [Error(0, 0)]),
+            Evidence("", [Error(0, 0)]),
+            Evidence("XX"),
+            Apply("XX", 0, 2, ""))));
+    }
+
+    [Fact]
+    public void Proof_preserves_a_zero_width_error_in_empty_unchanged_source()
+    {
+        Assert.True(BlockSkeletonInsertionDiagnosticProof.IsSafe(new(
+            Evidence("", [Error(0, 0)]),
+            Evidence("", [Error(0, 0)]),
+            Evidence(""),
+            Unchanged(""))));
+    }
+
+    [Fact]
+    public void Proof_rejects_inserted_End_If_text_as_an_old_diagnostic()
+    {
+        var sameIdentityAndRange = Error(5, 6);
+        Assert.False(BlockSkeletonInsertionDiagnosticProof.IsSafe(new(
+            Evidence("headXXtail", [sameIdentityAndRange]),
+            Evidence("headEnd Iftail", [sameIdentityAndRange]),
+            Evidence("headXXtail"),
+            Apply("headXXtail", 4, 6, "End If"))));
     }
 
     [Theory]
     [InlineData("zb123efgh")]
     [InlineData("ab123efgx")]
     [InlineData("ab123efgh!")]
+    [InlineData("ab456efgh")]
     public void Proof_rejects_prospective_source_that_does_not_match_the_replacement(string prospective)
     {
         Assert.False(BlockSkeletonInsertionDiagnosticProof.IsSafe(new(
             Evidence("abXXefgh"),
             Evidence(prospective),
             Evidence("abXXefgh"),
-            new(2, 4, 5))));
+            Apply("abXXefgh", 2, 4, "123"))));
     }
 
     [Fact]
@@ -226,7 +268,7 @@ public sealed class BlockSkeletonInsertionDiagnosticProofTests
             Evidence("abcdefgh"),
             Evidence("abcdefgh"),
             Evidence("abcdEfgh"),
-            new(0, 0, 0))));
+            Unchanged("abcdefgh"))));
     }
 
     [Theory]
@@ -240,27 +282,27 @@ public sealed class BlockSkeletonInsertionDiagnosticProofTests
             Evidence("ab\r\ncd"),
             Evidence("ab\r\ncd"),
             Evidence("ab\r\ncd"),
-            new(0, 0, 0),
+            Unchanged("ab\r\ncd"),
             Evidence(control))));
     }
 
-    [Theory]
-    [InlineData(-1, 4, 5)]
-    [InlineData(4, 2, 5)]
-    [InlineData(2, 9, 5)]
-    [InlineData(2, 4, 1)]
-    [InlineData(2, 4, 10)]
-    [InlineData(int.MinValue, int.MaxValue, int.MaxValue)]
-    [InlineData(0, 0, int.MaxValue)]
-    [InlineData(int.MaxValue, int.MaxValue, int.MaxValue)]
-    public void Proof_rejects_invalid_or_overflowing_replacement_coordinates(
-        int start, int end, int prospectiveEnd)
+    [Fact]
+    public void Proof_rejects_an_edit_bound_to_different_original_text()
     {
         Assert.False(BlockSkeletonInsertionDiagnosticProof.IsSafe(new(
             Evidence("abXXefgh"),
             Evidence("ab123efgh"),
             Evidence("abXXefgh"),
-            new(start, end, prospectiveEnd))));
+            Apply("abYYefgh", 2, 4, "123"))));
+    }
+
+    [Fact]
+    public void Proof_rejects_more_than_one_skeleton_replacement()
+    {
+        Assert.True(VbaSourceTextEditResult.TryApply(
+            VbaSourceText.From("abXXefgh"), [new(2, 3, "1"), new(3, 4, "23")], out var edit));
+        Assert.False(BlockSkeletonInsertionDiagnosticProof.IsSafe(new(
+            Evidence("abXXefgh"), Evidence("ab123efgh"), Evidence("abXXefgh"), edit)));
     }
 
     [Fact]
@@ -278,7 +320,7 @@ public sealed class BlockSkeletonInsertionDiagnosticProofTests
             [new("different.project.error", "Another project error.", invalidRange)]));
 
         Assert.True(BlockSkeletonInsertionDiagnosticProof.IsSafe(new(
-            original, prospective, Evidence("abcdefgh"), new(0, 0, 0))));
+            original, prospective, Evidence("abcdefgh"), Unchanged("abcdefgh"))));
     }
 
     [Fact]
@@ -292,7 +334,7 @@ public sealed class BlockSkeletonInsertionDiagnosticProofTests
         var original = Evidence("abcdefgh", syntax, validation);
         var prospective = Evidence("abcdefgh", [syntax[0]], [validation[0]]);
         var proofCase = new BlockSkeletonInsertionDiagnosticProofCase(
-            original, prospective, Evidence("abcdefgh"), new(0, 0, 0));
+            original, prospective, Evidence("abcdefgh"), Unchanged("abcdefgh"));
 
         syntax[0] = syntax[0] with { Source = "changed-after-capture" };
         validation.Clear();
@@ -310,7 +352,7 @@ public sealed class BlockSkeletonInsertionDiagnosticProofTests
             Evidence("ab\r\ncdXXef\r\ngh", [original]),
             Evidence("ab\r\ncd1\r\n2ef\r\ngh", [prospective]),
             Evidence("ab\r\ncdXXef\r\ngh"),
-            new(6, 8, 10))));
+            Apply("ab\r\ncdXXef\r\ngh", 6, 8, "1\r\n2"))));
     }
 
     [Fact]
@@ -323,7 +365,7 @@ public sealed class BlockSkeletonInsertionDiagnosticProofTests
             Evidence("abcdefgh", [syntax], [validation, validation]),
             Evidence("abcdefgh", [syntax], [validation]),
             Evidence("abcdefgh", validation: [validation]),
-            new(0, 0, 0))));
+            Unchanged("abcdefgh"))));
     }
 
     private static PublishedSyntaxDiagnostic Error(int start, int end)
@@ -334,4 +376,17 @@ public sealed class BlockSkeletonInsertionDiagnosticProofTests
         IReadOnlyList<PublishedSyntaxDiagnostic>? syntax = null,
         IReadOnlyList<VbaValidationDiagnostic>? validation = null)
         => new(VbaSourceText.From(text), new(syntax ?? [], validation ?? [], []));
+
+    private static VbaSourceTextEditResult Unchanged(string source)
+    {
+        Assert.True(VbaSourceTextEditResult.TryApply(VbaSourceText.From(source), [], out var result));
+        return result;
+    }
+
+    private static VbaSourceTextEditResult Apply(string source, int start, int end, string replacement)
+    {
+        Assert.True(VbaSourceTextEditResult.TryApply(
+            VbaSourceText.From(source), [new(start, end, replacement)], out var result));
+        return result;
+    }
 }
