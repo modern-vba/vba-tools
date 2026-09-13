@@ -686,6 +686,39 @@ Setup and monitor work run in supervised background tasks. A response, event, or
 monitor transport failure terminates the adapter and releases process ownership
 without waiting for stdin to close.
 
+### Request argument admission
+
+For a valid DAP frame and request envelope, one internal `DebugRequestAdmission`
+Module reads all consumed arguments into immutable accepted results before the
+runner changes request or breakpoint state. Required fields, scalar types and
+ranges, every array element, and known optional breakpoint fields are validated
+completely. An unsupported condition or nonempty exception filter cannot
+short-circuit validation of later fields such as `filterOptions`.
+
+Malformed arguments receive a failure response for that request. They do not
+replace breakpoint entries, consume breakpoint IDs, affect other sources, cancel
+an in-progress launch, or stop the active session. Well-formed unsupported
+breakpoint settings are a different result: the adapter remembers them and
+rejects subsequent launch and Restart while applicable unsupported settings
+remain. Source breakpoint participation retains its existing in-scope rule.
+Only a valid update can remove the remembered settings; malformed updates
+cannot add or clear them.
+
+Existing Busy checks retain precedence over payload admission. Restart receipt
+correlation is the deliberate exception to validation-before-state-change:
+unrelated, stale, future, mistyped, or duplicate correlation is acknowledged
+without payload validation, while an exact match consumes the pending request
+once before payload admission. A malformed matching payload fails the original
+Restart and leaves no pending request to revive; a usable current session stays
+active. The protocol below retains ownership of those decisions.
+
+This boundary does not change framing or envelope rejection and does not catch
+arbitrary infrastructure exceptions as input errors. If writing a rejection
+fails, the existing output latch ends the adapter, performs terminal cleanup,
+and retains owner-release evidence without retrying the failed stream.
+Source inventory, target, and semantic breakpoint admission remain owned by
+`DebugSourceAdmission` and its single immutable source generation.
+
 ### Restart preparation protocol
 
 Protocol 2.0 retains the two-party native VS Code Restart transaction introduced

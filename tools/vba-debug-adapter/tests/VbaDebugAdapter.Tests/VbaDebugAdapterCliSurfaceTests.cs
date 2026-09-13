@@ -10,7 +10,7 @@ using Xunit;
 
 namespace VbaDebugAdapter.Tests;
 
-public sealed class VbaDebugAdapterCliSurfaceTests
+public sealed partial class VbaDebugAdapterCliSurfaceTests
 {
     [Theory]
     [InlineData(false)]

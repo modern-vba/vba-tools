@@ -111,14 +111,25 @@ internal sealed class DebugRestartPreparation(DebugSessionId sessionId) : IDispo
             return false;
         }
         var seen = new HashSet<string>(StringComparer.Ordinal);
+        JsonElement session = default, preparation = default, sequence = default, notificationGeneration = default;
         foreach (var property in arguments.EnumerateObject())
         {
-            if (property.Name is "sessionId" or "preparationId" or
+            // An undecodable name cannot name one of the four ASCII correlation
+            // fields. Leave unrelated payload validation until ownership is proved.
+            if (!DebugRequestAdmission.TryReadPropertyName(property, out var name)) { continue; }
+            if (name is "sessionId" or "preparationId" or
                 "restartRequestSequence" or "generation")
             {
-                if (!seen.Add(property.Name))
+                if (!seen.Add(name))
                 {
                     return false;
+                }
+                switch (name)
+                {
+                    case "sessionId": session = property.Value; break;
+                    case "preparationId": preparation = property.Value; break;
+                    case "restartRequestSequence": sequence = property.Value; break;
+                    case "generation": notificationGeneration = property.Value; break;
                 }
             }
         }
@@ -126,14 +137,10 @@ internal sealed class DebugRestartPreparation(DebugSessionId sessionId) : IDispo
         {
             return false;
         }
-        var session = arguments.GetProperty("sessionId");
-        var preparation = arguments.GetProperty("preparationId");
-        var sequence = arguments.GetProperty("restartRequestSequence");
-        var notificationGeneration = arguments.GetProperty("generation");
-        return session.ValueKind == JsonValueKind.String &&
-            session.GetString() == binding.SessionId.Value &&
-            preparation.ValueKind == JsonValueKind.String &&
-            preparation.GetString() == binding.PreparationId.Value &&
+        return DebugRequestAdmission.TryReadString(session, out var sessionId) &&
+            sessionId == binding.SessionId.Value &&
+            DebugRequestAdmission.TryReadString(preparation, out var preparationId) &&
+            preparationId == binding.PreparationId.Value &&
             sequence.ValueKind == JsonValueKind.Number &&
             sequence.TryGetInt32(out var requestSequence) &&
             requestSequence == binding.DapRequestSequence &&
