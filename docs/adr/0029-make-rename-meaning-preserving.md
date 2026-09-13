@@ -62,8 +62,10 @@ Rename. Existing whole-edit binding and conditional-call proofs remain required.
 `VbaTools.Syntax` owns exact UTF-16 coordinate conversion and validation and
 application of a replacement collection against one immutable `VbaSourceText`.
 CRLF, LF, CR, and mixed-newline inputs use the same source-line authority.
-The strict edit Interface rejects inexact positions, including offsets inside
-CRLF, without changing the existing general `PositionAt` projection. A validated
+Strict coordinate conversion rejects inexact positions, including offsets
+inside CRLF, without changing the existing general `PositionAt` projection.
+Raw UTF-16 edit ranges may split a newline sequence and do not require an exact
+line/character representation. A validated
 `VbaSourceTextEditResult` retains the before/after source, replacement spans,
 length deltas, and unchanged-region correspondence without normalizing newlines
 or assigning arbitrary replaced interior positions a clamped destination.

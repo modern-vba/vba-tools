@@ -5,18 +5,24 @@ namespace VbaLanguageServer.Tests;
 public sealed class ClassMetadataFormattingProcessTests
 {
     [Theory]
-    [InlineData("\r\n", true)]
-    [InlineData("\r\n", false)]
-    [InlineData("\n", true)]
-    [InlineData("\n", false)]
+    [InlineData("\r\n", "\r\n", "\r\n", true)]
+    [InlineData("\r\n", "\r\n", "\r\n", false)]
+    [InlineData("\n", "\n", "\n", true)]
+    [InlineData("\n", "\n", "\n", false)]
+    [InlineData("\r", "\r", "\r", true)]
+    [InlineData("\r", "\r", "\r", false)]
+    [InlineData("\r\n", "\n", "\n", true)]
+    [InlineData("\r\n", "\n", "\r\n", false)]
     public async Task Server_preserves_class_metadata_and_formats_body_idempotently(
-        string newline,
+        string headerNewline,
+        string bodyNewline,
+        string expectedNewline,
         bool finalNewline)
     {
         await using var process = await LanguageServerProcessHarness.StartAsync();
         await process.InitializeAsync();
         const string uri = "file:///C:/work/Worker.cls";
-        var header = string.Join(newline, [
+        string[] headerLines = [
             "VERSION 1.0 CLASS",
             "BEGIN",
             "  MultiUse = -1  'True",
@@ -24,8 +30,8 @@ public sealed class ClassMetadataFormattingProcessTests
             "  ' end if remains metadata prose",
             "END",
             ""
-        ]);
-        var source = header + string.Join(newline, [
+        ];
+        var source = string.Join(headerNewline, headerLines) + string.Join(bodyNewline, [
             "attribute vb_name = \"Worker\"",
             "option explicit",
             "public sub Run()",
@@ -33,8 +39,8 @@ public sealed class ClassMetadataFormattingProcessTests
             "end",
             "end if",
             "end sub"
-        ]) + (finalNewline ? newline : "");
-        var expected = header + string.Join(newline, [
+        ]) + (finalNewline ? bodyNewline : "");
+        var expected = string.Join(expectedNewline, headerLines) + string.Join(expectedNewline, [
             "Attribute VB_Name = \"Worker\"",
             "Option Explicit",
             "Public Sub Run()",
@@ -42,7 +48,7 @@ public sealed class ClassMetadataFormattingProcessTests
             "        End",
             "    End If",
             "End Sub"
-        ]) + (finalNewline ? newline : "");
+        ]) + (finalNewline ? expectedNewline : "");
         await process.SendNotificationAsync("textDocument/didOpen", new
         {
             textDocument = new { uri, languageId = "vba", version = 1, text = source }
@@ -56,11 +62,17 @@ public sealed class ClassMetadataFormattingProcessTests
         var response = await process.SendRequestAsync(2, "textDocument/formatting", parameters);
 
         var edit = Assert.Single(response.GetProperty("result").EnumerateArray());
-        Assert.Equal(expected, edit.GetProperty("newText").GetString());
+        var range = edit.GetProperty("range");
+        Assert.Equal(0, range.GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(0, range.GetProperty("start").GetProperty("character").GetInt32());
+        Assert.Equal(finalNewline ? 13 : 12, range.GetProperty("end").GetProperty("line").GetInt32());
+        Assert.Equal(finalNewline ? 0 : 7, range.GetProperty("end").GetProperty("character").GetInt32());
+        var applied = edit.GetProperty("newText").GetString();
+        Assert.Equal(expected, applied);
         await process.SendNotificationAsync("textDocument/didChange", new
         {
             textDocument = new { uri, version = 2 },
-            contentChanges = new[] { new { text = expected } }
+            contentChanges = new[] { new { text = applied } }
         });
         var second = await process.SendRequestAsync(3, "textDocument/formatting", parameters);
         Assert.Empty(second.GetProperty("result").EnumerateArray());

@@ -4039,8 +4039,8 @@ _Avoid_: headline-only fallback, always-duplicated contract detail, client-owned
 **SourceText**:
 The immutable `VbaSourceText` owned by `VbaTools.Syntax`, retaining exact source
 text and physical lines with UTF-16 offsets and line/character positions.
-CRLF, LF, CR, and mixed newlines share that one line model. Its strict edit
-Interface rejects out-of-range positions and offsets without an exact
+CRLF, LF, CR, and mixed newlines share that one line model. Its strict coordinate
+conversions reject out-of-range positions and offsets without an exact
 line/character representation, including the interior of CRLF; it never moves
 a position into another line or rounds it. Existing general `PositionAt`
 projection behavior remains separate and unchanged. SourceText recognizes
@@ -4055,6 +4055,9 @@ and unchanged-region correspondence. Invalid ranges, overlapping edits,
 multiple insertions at one position, and invalid result lengths are rejected
 before application; adjacent replacements are accepted. Unchanged source text,
 including its original newlines, is preserved exactly.
+Edit ranges use raw UTF-16 offsets and may split a newline sequence; they do not
+require an exact line/character representation. This is separate from
+SourceText's strict coordinate conversions.
 The Module provides mechanical facts, not the meaning of an edited identifier
 or an implicit destination for an arbitrary position inside replaced text.
 Feature-specific name transformations, semantic edit deduplication, and
@@ -4134,12 +4137,21 @@ while preserving source meaning. Source formatting is fail-closed: incomplete
 or malformed source may still receive safe lexical or structural formatting, but
 formatting does not guess unresolved names, ambiguous names, or malformed block
 relationships.
+Whole-document replacements and multiple casing replacements within one line
+use the same SourceText edit validation and application contract, each against
+its own immutable before-text, and consume the resulting `SourceTextEditResult`.
+Formatting chooses the existing dominant newline and joins the output lines
+with it; SourceText only recognizes line endings and applies the supplied edits.
+Format Document and format-on-save consume the resolved editor indentation
+style, including a manual choice, without repeating indentation detection.
 _Avoid_: syntax highlighting, refactoring
 
-The recognized leading export-only `.cls` metadata is preserved verbatim during
-formatting and excluded from VBA indentation state. Syntax-owned class metadata
-facts also define its code-module projection boundary. Incomplete metadata stops
-before recognizable VBA code; `Attribute` records retain their existing formatting.
+The line contents of recognized leading export-only `.cls` metadata are preserved
+verbatim during formatting and excluded from VBA indentation state. Their line
+endings follow the same dominant-newline normalization as the rest of the
+formatted document. Syntax-owned class metadata facts also define its code-module
+projection boundary. Incomplete metadata stops before recognizable VBA code;
+`Attribute` records retain their existing formatting.
 
 **CasingNormalization**:
 A `SourceFormatting` operation that rewrites VBA keywords and identifier
