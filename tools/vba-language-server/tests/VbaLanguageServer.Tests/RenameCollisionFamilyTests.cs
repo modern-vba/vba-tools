@@ -109,11 +109,13 @@ public sealed class RenameCollisionFamilyTests
         Assert.Contains(review.Impacts, impact => impact.Kind == VbaRenameImpactKind.DependentAssociationChanged);
     }
 
-    [Fact]
-    public void Collision_review_keeps_every_original_conditional_variant_and_its_calls()
+    [Theory]
+    [InlineData("\n")]
+    [InlineData("\r")]
+    public void Collision_review_keeps_every_original_conditional_variant_and_its_calls(string newline)
     {
         const string uri = "file:///C:/work/ConditionalConsolidation.bas";
-        const string source = """
+        var source = """
             Attribute VB_Name = "ConditionalConsolidation"
             #If FIRST_CONFIGURATION Then
             Public Function Original() As Long
@@ -133,7 +135,7 @@ public sealed class RenameCollisionFamilyTests
             Public Sub Run()
                 Debug.Print Original(), Existing()
             End Sub
-            """;
+            """.ReplaceLineEndings(newline);
         var inventory = VbaSemanticInventory.Create(
             new Dictionary<string, VbaSourceDocument>(StringComparer.OrdinalIgnoreCase)
             {

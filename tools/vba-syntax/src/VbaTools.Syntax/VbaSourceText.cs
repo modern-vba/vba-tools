@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+
 namespace VbaTools.Syntax;
 
 /// <summary>
@@ -191,6 +193,50 @@ public sealed class VbaSourceText
     /// </summary>
     internal bool IsBlankLine(int lineIndex)
         => blankLines[lineIndex];
+
+    /// <summary>
+    /// Resolves an exact zero-based UTF-16 line and character position to its source offset.
+    /// </summary>
+    /// <param name="line">The zero-based physical line number.</param>
+    /// <param name="character">The UTF-16 offset within the line text, excluding newline characters.</param>
+    /// <param name="offset">The exact source offset on success; otherwise, zero.</param>
+    /// <returns>True when the position is within the line text, including its end.</returns>
+    public bool TryGetOffset(int line, int character, out int offset)
+    {
+        offset = 0;
+        if (line < 0 || line >= indexedLines.Length
+            || character < 0 || character > indexedLines[line].Text.Length)
+        {
+            return false;
+        }
+
+        offset = indexedLines[line].StartOffset + character;
+        return true;
+    }
+
+    /// <summary>
+    /// Resolves an offset only when it has an exact UTF-16 line and character representation.
+    /// </summary>
+    /// <param name="offset">The zero-based UTF-16 source offset, including EOF.</param>
+    /// <param name="position">The exact position on success; otherwise, null.</param>
+    /// <returns>False for out-of-range offsets and the interior of a CRLF newline sequence.</returns>
+    public bool TryGetPosition(int offset, [NotNullWhen(true)] out VbaSyntaxPosition? position)
+    {
+        position = null;
+        if (offset < 0 || offset > Text.Length)
+        {
+            return false;
+        }
+
+        position = PositionAt(offset);
+        if (indexedLines[position.Line].StartOffset + position.Character != offset)
+        {
+            position = null;
+            return false;
+        }
+
+        return true;
+    }
 
     /// <summary>
     /// Converts an absolute character offset to a syntax position.
