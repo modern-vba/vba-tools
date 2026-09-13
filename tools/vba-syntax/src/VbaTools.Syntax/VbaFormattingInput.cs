@@ -25,7 +25,11 @@ public sealed record VbaFormattingLine(
     bool IsBlankOrComment,
     bool IsFormattingIgnored,
     bool IsFormDesigner,
-    bool IsContinuationLine);
+    bool IsContinuationLine)
+{
+    /// <summary>Whether the line is preserved export-only class metadata.</summary>
+    public bool IsClassMetadata { get; init; }
+}
 
 /// <summary>
 /// Describes the block transition recognized for a physical source line.
@@ -57,6 +61,7 @@ public sealed record VbaFormattingInput(
         var sourceText = syntaxTree.SourceText;
         var lines = sourceText.Lines;
         var formDesignerRange = syntaxTree.Module.FormDesignerBlock?.Range;
+        var classMetadataEndLine = VbaClassMetadataFacts.GetEndLine(syntaxTree);
         var formattingLines = new List<VbaFormattingLine>(lines.Count);
         var blockStack = new Stack<string>();
         var inContinuation = false;
@@ -67,15 +72,16 @@ public sealed record VbaFormattingInput(
         {
             var range = sourceText.RangeForLine(line, 0, line.Text.Length);
             var isFormDesigner = IsLineInRange(formDesignerRange, line.LineNumber);
+            var isClassMetadata = line.LineNumber < classMetadataEndLine;
             var codeText = VbaSourceText.StripApostropheComment(line.Text);
             var trimmed = VbaIdentifier.TrimStartWhitespace(codeText);
             var isBlankOrComment = trimmed.Length == 0;
             var isIgnored = IsFormattingIgnoredCodeLine(trimmed);
-            var isContinuationLine = inContinuation && !isFormDesigner && !isBlankOrComment && !isIgnored;
+            var isContinuationLine = inContinuation && !isFormDesigner && !isClassMetadata && !isBlankOrComment && !isIgnored;
             var depth = inContinuation ? continuationDepth : blockStack.Count;
             var transition = new VbaFormattingBlockTransition();
 
-            if (!isFormDesigner)
+            if (!isFormDesigner && !isClassMetadata)
             {
                 if (isBlankOrComment || isIgnored)
                 {
@@ -151,7 +157,10 @@ public sealed record VbaFormattingInput(
                 isBlankOrComment,
                 isIgnored,
                 isFormDesigner,
-                isContinuationLine));
+                isContinuationLine)
+            {
+                IsClassMetadata = isClassMetadata
+            });
         }
 
         return new VbaFormattingInput(

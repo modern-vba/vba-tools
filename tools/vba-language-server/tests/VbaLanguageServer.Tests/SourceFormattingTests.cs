@@ -8,6 +8,120 @@ namespace VbaLanguageServer.Tests;
 public sealed class SourceFormattingTests
 {
     [Theory]
+    [InlineData("")]
+    [InlineData("' VERSION 1.0 CLASS\n' BEGIN\n' END\n")]
+    public void FormatDocumentFormatsHeaderlessClassesAndHeaderLikeBodyText(string prefix)
+    {
+        const string uri = "file:///C:/work/Worker.cls";
+        var source = prefix + "public sub Run()\ntext = \"VERSION 1.0 CLASS\"\nend\nend sub";
+        var expected = prefix + "Public Sub Run()\n    text = \"VERSION 1.0 CLASS\"\n    End\nEnd Sub";
+        var index = VbaSemanticInventoryFixture.Create(
+            new Dictionary<string, string> { [uri] = source });
+
+        var edit = index.FormatDocument(uri, VbaIndentationStyle.FromEditorOptions(true, 4));
+
+        Assert.NotNull(edit);
+        Assert.Equal(expected, edit.NewText);
+    }
+
+    [Fact]
+    public void FormatDocumentPreservesTriviaBeforeClassAttributes()
+    {
+        const string uri = "file:///C:/work/Worker.cls";
+        const string header = "VERSION 1.0 CLASS\nBEGIN\n  MultiUse = -1\nEND\n \t\n  ' end\n";
+        const string source = header + "attribute vb_name = \"Worker\"";
+        var index = VbaSemanticInventoryFixture.Create(
+            new Dictionary<string, string> { [uri] = source });
+
+        var edit = index.FormatDocument(uri, VbaIndentationStyle.FromEditorOptions(true, 4));
+
+        Assert.NotNull(edit);
+        Assert.Equal(header + "Attribute VB_Name = \"Worker\"", edit.NewText);
+    }
+
+    [Theory]
+    [InlineData("value = 1: option explicit", "value = 1: Option Explicit")]
+    [InlineData("value = cstr(true)", "value = cstr(True)")]
+    [InlineData("value = true _\nand false", "value = True _\nAnd False")]
+    public void FormatDocumentDoesNotHideCodeResemblingAMetadataProperty(
+        string body,
+        string expectedBody)
+    {
+        const string uri = "file:///C:/work/Worker.cls";
+        const string header = "VERSION 1.0 CLASS\nBEGIN\n  MultiUse = -1  'True\n";
+        var source = header + body;
+        var index = VbaSemanticInventoryFixture.Create(
+            new Dictionary<string, string> { [uri] = source });
+
+        var edit = index.FormatDocument(
+            uri,
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.NotNull(edit);
+        Assert.Equal(header + expectedBody, edit.NewText);
+    }
+
+    [Fact]
+    public void FormatDocumentPreservesIncompleteClassMetadataWithoutHidingBody()
+    {
+        const string uri = "file:///C:/work/Worker.cls";
+        const string header = "VERSION 1.0 CLASS\nBEGIN\n  MultiUse = -1  'True\n";
+        const string source = header + "option explicit\npublic sub Run()\nend\nend sub";
+        const string expected = header + "Option Explicit\nPublic Sub Run()\n    End\nEnd Sub";
+        var index = VbaSemanticInventoryFixture.Create(
+            new Dictionary<string, string> { [uri] = source });
+
+        var edit = index.FormatDocument(
+            uri,
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.NotNull(edit);
+        Assert.Equal(expected, edit.NewText);
+    }
+
+    [Fact]
+    public void FormatDocumentPreservesExportedClassMetadataWhileFormattingBody()
+    {
+        const string uri = "file:///C:/work/Worker.cls";
+        var header = string.Join("\r\n", [
+            "VERSION 1.0 CLASS",
+            "BEGIN",
+            "  MultiUse = -1  'True",
+            "END",
+            ""
+        ]);
+        var source = header + string.Join("\r\n", [
+            "attribute vb_name = \"Worker\"",
+            "option explicit",
+            "public sub Run()",
+            "if true then",
+            "end",
+            "end if",
+            "end sub",
+            ""
+        ]);
+        var expected = header + string.Join("\r\n", [
+            "Attribute VB_Name = \"Worker\"",
+            "Option Explicit",
+            "Public Sub Run()",
+            "    If True Then",
+            "        End",
+            "    End If",
+            "End Sub",
+            ""
+        ]);
+        var index = VbaSemanticInventoryFixture.Create(
+            new Dictionary<string, string> { [uri] = source });
+
+        var edit = index.FormatDocument(
+            uri,
+            VbaIndentationStyle.FromEditorOptions(insertSpaces: true, indentSize: 4));
+
+        Assert.NotNull(edit);
+        Assert.Equal(expected, edit.NewText);
+    }
+
+    [Theory]
     [InlineData(true, 2, "  If True Then", "    value = 1")]
     [InlineData(false, 2, "\tIf True Then", "\t\tvalue = 1")]
     public void FormatDocumentUsesResolvedIndentationStyle(

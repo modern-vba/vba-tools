@@ -68,6 +68,17 @@ public sealed class VbaCodeModuleProjectionTests
     }
 
     [Fact]
+    public void ClassModuleProjectionKeepsCodeAfterIncompleteMetadata()
+    {
+        const string body = "Option Explicit\nPublic Sub Run()\n    End\nEnd Sub";
+        const string source = "VERSION 1.0 CLASS\nBEGIN\n  MultiUse = -1  'True\n" + body;
+
+        var projection = CreateProjection("Worker.cls", source);
+
+        Assert.Equal(body.Split('\n'), projection.CodeModuleLines);
+    }
+
+    [Fact]
     public void FormModuleProjectionExcludesDesignerContentAndAttributes()
     {
         var source = string.Join('\n', [

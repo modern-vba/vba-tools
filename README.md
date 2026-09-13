@@ -896,6 +896,8 @@ The formatter normalizes VBA keyword and intrinsic word casing, normalizes
 resolved source reference casing to the matching definition, and rewrites
 leading whitespace according to VBA block depth. It does not rename
 declarations, edit sibling files, or rewrite comments and strings.
+The leading export-only header of a class module keeps its original spelling,
+spacing, and comments, including the indentation of `MultiUse` and uppercase `END`.
 
 ---
 

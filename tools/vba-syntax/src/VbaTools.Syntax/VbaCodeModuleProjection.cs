@@ -230,6 +230,11 @@ public sealed record VbaCodeModuleProjection(
 
     private static int FindObjectCodeStartLine(VbaSyntaxTree tree)
     {
+        if (tree.Module.Kind == VbaModuleKind.ClassModule)
+        {
+            return VbaClassMetadataFacts.GetEndLine(tree);
+        }
+
         if (tree.Module.Kind == VbaModuleKind.StandardModule)
         {
             return 0;

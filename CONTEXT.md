@@ -4104,6 +4104,11 @@ formatting does not guess unresolved names, ambiguous names, or malformed block
 relationships.
 _Avoid_: syntax highlighting, refactoring
 
+The recognized leading export-only `.cls` metadata is preserved verbatim during
+formatting and excluded from VBA indentation state. Syntax-owned class metadata
+facts also define its code-module projection boundary. Incomplete metadata stops
+before recognizable VBA code; `Attribute` records retain their existing formatting.
+
 **CasingNormalization**:
 A `SourceFormatting` operation that rewrites VBA keywords and identifier
 references to their canonical casing. For source-defined names, the declaration
