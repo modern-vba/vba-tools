@@ -608,6 +608,8 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
     'client/out/example.test.js',
     'client/out/example.js.map',
     'client/out/testRunner.js',
+    'tools/vba-capability-admission/src/Capability.cs',
+    'fixtures/capability-admission/cases.json',
     '.tmp/old-smoke/output.bas',
     'temp/old-smoke/output.xlsm'
   ]) {
@@ -1057,7 +1059,15 @@ test('packaging verification checks file contents publish settings and bundled C
     vsixManifest: `<Identity Publisher="modern-vba" Version="${extensionPackageJson.version}" TargetPlatform="win32-x64" />`
   });
 
-  await verifyVsixPackaging({ root, runCommand, inspectPackage });
+  const admissionProbes = [];
+  const verifyLanguageServerAdmission = async (...args) => { admissionProbes.push(args); };
+  await verifyVsixPackaging({ root, runCommand, inspectPackage, verifyLanguageServerAdmission });
+
+  assert.deepEqual(admissionProbes, [[
+    path.join(root, requiredBundledLanguageServerPath),
+    ['--stdio', '--vba-dev', path.join(root, requiredBundledDebugAdapterPath)],
+    root
+  ]]);
 
   assert.deepEqual(calls.map((call) => call.args.includes('package') ? call.args.slice(1, 5) : call.args), [
     ['package', '--no-dependencies', '--target', 'win32-x64'],

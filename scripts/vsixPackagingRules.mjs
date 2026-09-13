@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import yauzl from 'yauzl';
+import { verifyLanguageServerCapabilityRejection } from './languageServerCapabilitySmoke.mjs';
 
 export const distributionManifestPath = 'distribution-manifest.json';
 
@@ -44,6 +45,8 @@ export async function verifyVsixPackaging(options = {}) {
   const root = options.root ?? process.cwd();
   const runCommand = options.runCommand ?? runCommandWithSpawn;
   const inspectPackage = options.inspectPackage ?? inspectVsixPackage;
+  const verifyLanguageServerAdmission = options.verifyLanguageServerAdmission
+    ?? verifyLanguageServerCapabilityRejection;
   const manifest = readDistributionManifest(root);
   const bundledCliPath = path.join(root, manifest.runtimes.vbaDev.executablePath);
   const bundledDebugAdapterPath = path.join(
@@ -133,6 +136,10 @@ export async function verifyVsixPackaging(options = {}) {
   assertBundledLanguageServerVersion(
     languageServerVersionResult.stdout,
     manifest.runtimes.vbaLanguageServer.versionOutputPrefix);
+  await verifyLanguageServerAdmission(
+    bundledLanguageServerPath,
+    ['--stdio', '--vba-dev', bundledDebugAdapterPath],
+    root);
 }
 
 export function readDistributionManifest(root = process.cwd()) {

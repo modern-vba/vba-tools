@@ -20,6 +20,8 @@ tools/vba-dev/**
 tools/vba-debug-adapter/**
 tools/vba-language-server/**
 tools/vba-syntax/**
+tools/vba-capability-admission/**
+fixtures/capability-admission/**
 tools/vba-integration-tests/**
 .tmp/**
 temp/**

@@ -261,6 +261,33 @@ test may compose already-built products through their public process contracts
 without becoming a foundation dependency of those products.
 _Avoid_: shared product test harness, executable fixture library, linked test source
 
+**CapabilityAdmission**:
+Admission of one raw public `vba-dev capabilities` response against a consumer's
+locally declared requirements. The explicitly neutral C# foundation
+`VbaTools.CapabilityAdmission` serves the standalone language server and debug
+adapter; the extension owns the corresponding TypeScript Module. Admission owns
+JSON validity, whole-response property uniqueness, consumed capability facts,
+and exact required-version matching. It returns admitted facts or classified
+`InvalidJson`, `DuplicateProperty`, `MissingCapability`, `InvalidConsumedValue`,
+or `VersionMismatch` evidence, rather than a generic JSON tree.
+Each object compares property names ordinal-exactly after JSON escape decoding.
+Even identical duplicates in unknown nested objects or array elements reject the
+response. Names in separate objects, casing differences, and distinct Unicode
+normalization forms are independent. Well-formed additive offers remain valid;
+required membership does not depend on ordering or forbid repeated array values.
+The LSP requires only `reference list` output schema `1.0`; the DAP requires only
+`build.sourceSnapshot: 2.0` and `build.sourceSnapshotAnalysis: 1.0`. The extension
+retains its complete compatibility contract, metadata shape, and active Windows
+code-page requirement. It validates uniqueness before ordinary JSON parsing can
+discard duplicates. Each consumer retains diagnostic presentation, rejection or
+fallback, process cancellation/cleanup, and executable pinning.
+Shared raw data-only conformance cases preserve original JSON spelling and
+duplicates, with independent C# and TypeScript loaders. Required-contract files,
+manifests, ordinary command output, and general LSP/DAP input are separate
+contracts. This Module is not part of `ProcessInvocation`.
+_Avoid_: shared product DTO, arbitrary schema framework, JSON property helpers,
+provider version change, extension contract imposed on standalone consumers
+
 **ProcessInvocation**:
 A neutral one-shot process lifecycle in `VbaTools.ProcessInvocation`, shared by
 language-server capability/reference discovery and debug-adapter capability

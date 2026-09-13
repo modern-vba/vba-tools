@@ -27,6 +27,37 @@ function compatibleCapabilities(): string {
   });
 }
 
+test('VbaDev session resolution rejects duplicate capability properties and pins its bundled fallback', async () => {
+  const extensionRoot = path.resolve(__dirname, '..', '..');
+  const configuredPath = path.join('D:', 'ambiguous', 'vba-dev.exe');
+  const bundledPath = path.join(extensionRoot, 'bin', 'vba-dev', 'win-x64', 'vba-dev.exe');
+  const calls: string[] = [];
+  const notices: unknown[] = [];
+  const resolver = new VbaDevSessionResolver({
+    extensionRoot, configuredPath, requiredContract,
+    runProcess: async file => {
+      calls.push(file);
+      return {
+        stdout: file === configuredPath
+          ? '{"toolVersion":"0.1.0","contractVersion":"1.0","contractVersion":"1.0","commands":{}}'
+          : compatibleCapabilities(),
+        stderr: ''
+      };
+    },
+    reportNotice: notice => notices.push(notice)
+  });
+
+  const resolved = await resolver.resolve();
+  assert.equal(resolved.executablePath, bundledPath);
+  assert.match(resolved.configuredFailure ?? '', /duplicate.*contractVersion/i);
+  assert.equal(await resolver.resolve(), resolved);
+  assert.deepEqual(calls, [configuredPath, bundledPath]);
+  assert.deepEqual(notices, [{
+    severity: 'warning', message: configuredVbaDevFallbackMessage,
+    actions: [VbaDevResolutionNoticeAction.OpenSettings, VbaDevResolutionNoticeAction.ShowOutput]
+  }]);
+});
+
 test('VbaDev session resolution falls back from a missing override and pins the bundled executable', async () => {
   const extensionRoot = path.resolve(__dirname, '..', '..');
   const configuredPath = path.join('D:', 'missing', 'vba-dev.exe');

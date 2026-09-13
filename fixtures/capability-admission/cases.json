@@ -1,0 +1,460 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "id": "minimal-reference-list",
+      "rawJson": "{\"commands\":{\"reference list\":{\"outputSchemaVersion\":\"1.0\"}}}",
+      "expectedByProfile": {
+        "refList": "Accepted"
+      }
+    },
+    {
+      "id": "minimal-snapshot-build",
+      "rawJson": "{\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\"}}",
+      "expectedByProfile": {
+        "snapshotBuild": "Accepted"
+      }
+    },
+    {
+      "id": "complete-compatible",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932}",
+      "expectedByProfile": {
+        "refList": "Accepted",
+        "snapshotBuild": "Accepted",
+        "extension": "Accepted"
+      }
+    },
+    {
+      "id": "duplicate-root-identical",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932,\"unknown\":1,\"unknown\":1}",
+      "expectedByProfile": {
+        "refList": "DuplicateProperty",
+        "snapshotBuild": "DuplicateProperty",
+        "extension": "DuplicateProperty"
+      }
+    },
+    {
+      "id": "duplicate-root-different",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932,\"unknown\":1,\"unknown\":2}",
+      "expectedByProfile": {
+        "refList": "DuplicateProperty",
+        "snapshotBuild": "DuplicateProperty",
+        "extension": "DuplicateProperty"
+      }
+    },
+    {
+      "id": "duplicate-command-map",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932}",
+      "expectedByProfile": {
+        "refList": "DuplicateProperty",
+        "snapshotBuild": "DuplicateProperty",
+        "extension": "DuplicateProperty"
+      }
+    },
+    {
+      "id": "duplicate-command-schema",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\",\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932}",
+      "expectedByProfile": {
+        "refList": "DuplicateProperty",
+        "snapshotBuild": "DuplicateProperty",
+        "extension": "DuplicateProperty"
+      }
+    },
+    {
+      "id": "duplicate-feature",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932}",
+      "expectedByProfile": {
+        "refList": "DuplicateProperty",
+        "snapshotBuild": "DuplicateProperty",
+        "extension": "DuplicateProperty"
+      }
+    },
+    {
+      "id": "duplicate-unknown-nested",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932,\"unknown\":{\"nested\":1,\"nested\":1}}",
+      "expectedByProfile": {
+        "refList": "DuplicateProperty",
+        "snapshotBuild": "DuplicateProperty",
+        "extension": "DuplicateProperty"
+      }
+    },
+    {
+      "id": "duplicate-inside-array",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932,\"unknown\":[{\"nested\":1,\"nested\":1}]}",
+      "expectedByProfile": {
+        "refList": "DuplicateProperty",
+        "snapshotBuild": "DuplicateProperty",
+        "extension": "DuplicateProperty"
+      }
+    },
+    {
+      "id": "duplicate-decoded-escape",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932,\"unknown\":{\"name\":1,\"\\u006eame\":2}}",
+      "expectedByProfile": {
+        "refList": "DuplicateProperty",
+        "snapshotBuild": "DuplicateProperty",
+        "extension": "DuplicateProperty"
+      }
+    },
+    {
+      "id": "duplicate-unicode-escape",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932,\"unknown\":{\"あ\":1,\"\\u3042\":2}}",
+      "expectedByProfile": {
+        "refList": "DuplicateProperty",
+        "snapshotBuild": "DuplicateProperty",
+        "extension": "DuplicateProperty"
+      }
+    },
+    {
+      "id": "duplicate-supplementary-escape",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932,\"unknown\":{\"😀\":1,\"\\ud83d\\ude00\":2}}",
+      "expectedByProfile": {
+        "refList": "DuplicateProperty",
+        "snapshotBuild": "DuplicateProperty",
+        "extension": "DuplicateProperty"
+      }
+    },
+    {
+      "id": "invalid-empty",
+      "rawJson": "",
+      "expectedByProfile": {
+        "refList": "InvalidJson",
+        "snapshotBuild": "InvalidJson",
+        "extension": "InvalidJson"
+      }
+    },
+    {
+      "id": "invalid-truncated",
+      "rawJson": "{",
+      "expectedByProfile": {
+        "refList": "InvalidJson",
+        "snapshotBuild": "InvalidJson",
+        "extension": "InvalidJson"
+      }
+    },
+    {
+      "id": "invalid-trailing-comma",
+      "rawJson": "{\"commands\":{},}",
+      "expectedByProfile": {
+        "refList": "InvalidJson",
+        "snapshotBuild": "InvalidJson",
+        "extension": "InvalidJson"
+      }
+    },
+    {
+      "id": "invalid-comment",
+      "rawJson": "{/*comment*/}",
+      "expectedByProfile": {
+        "refList": "InvalidJson",
+        "snapshotBuild": "InvalidJson",
+        "extension": "InvalidJson"
+      }
+    },
+    {
+      "id": "duplicate-then-trailing-garbage",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932,\"same\":1,\"same\":1} trailing",
+      "expectedByProfile": {
+        "refList": "InvalidJson",
+        "snapshotBuild": "InvalidJson",
+        "extension": "InvalidJson"
+      }
+    },
+    {
+      "id": "duplicate-then-broken-value",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932,\"same\":1,\"same\":1,\"broken\":[}",
+      "expectedByProfile": {
+        "refList": "InvalidJson",
+        "snapshotBuild": "InvalidJson",
+        "extension": "InvalidJson"
+      }
+    },
+    {
+      "id": "nonobject-response",
+      "rawJson": "[]",
+      "expectedByProfile": {
+        "refList": "InvalidConsumedValue",
+        "snapshotBuild": "InvalidConsumedValue",
+        "extension": "InvalidConsumedValue"
+      }
+    },
+    {
+      "id": "missing-reference-list",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932}",
+      "expectedByProfile": {
+        "refList": "MissingCapability",
+        "snapshotBuild": "Accepted",
+        "extension": "MissingCapability"
+      }
+    },
+    {
+      "id": "reference-list-wrong-type",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":1},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932}",
+      "expectedByProfile": {
+        "refList": "InvalidConsumedValue",
+        "snapshotBuild": "Accepted",
+        "extension": "InvalidConsumedValue"
+      }
+    },
+    {
+      "id": "reference-list-incompatible",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.1\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932}",
+      "expectedByProfile": {
+        "refList": "VersionMismatch",
+        "snapshotBuild": "Accepted",
+        "extension": "VersionMismatch"
+      }
+    },
+    {
+      "id": "missing-snapshot-feature",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932}",
+      "expectedByProfile": {
+        "refList": "Accepted",
+        "snapshotBuild": "MissingCapability",
+        "extension": "MissingCapability"
+      }
+    },
+    {
+      "id": "snapshot-feature-wrong-type",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":false,\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932}",
+      "expectedByProfile": {
+        "refList": "Accepted",
+        "snapshotBuild": "InvalidConsumedValue",
+        "extension": "InvalidConsumedValue"
+      }
+    },
+    {
+      "id": "snapshot-feature-incompatible",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"3.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932}",
+      "expectedByProfile": {
+        "refList": "Accepted",
+        "snapshotBuild": "VersionMismatch",
+        "extension": "VersionMismatch"
+      }
+    },
+    {
+      "id": "additive-reordered-offers",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"test\":{\"outputSchemaVersion\":\"1.2\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"build\":{\"outputSchemaVersion\":\"3.0\"},\"additional\":{\"outputSchemaVersion\":\"99.0\"}},\"featureVersions\":{\"hostEvent.list\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"invocation.stdinCancellation\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"build.sourceSnapshot\":\"2.0\",\"additional\":\"99.0\"},\"activeWindowsCodePage\":932}",
+      "expectedByProfile": {
+        "refList": "Accepted",
+        "snapshotBuild": "Accepted",
+        "extension": "Accepted"
+      }
+    },
+    {
+      "id": "case-and-normalization-distinct",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932,\"unknown\":{\"Name\":1,\"name\":2,\"é\":1,\"e\\u0301\":2}}",
+      "expectedByProfile": {
+        "refList": "Accepted",
+        "snapshotBuild": "Accepted",
+        "extension": "Accepted"
+      }
+    },
+    {
+      "id": "same-key-separate-objects-and-repeated-array-values",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932,\"unknown\":[{\"same\":1},{\"same\":1},2,2]}",
+      "expectedByProfile": {
+        "refList": "Accepted",
+        "snapshotBuild": "Accepted",
+        "extension": "Accepted"
+      }
+    },
+    {
+      "id": "decoded-required-command-name",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference\\u0020list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932}",
+      "expectedByProfile": {
+        "refList": "Accepted",
+        "snapshotBuild": "Accepted",
+        "extension": "Accepted"
+      }
+    },
+    {
+      "id": "unknown-escaped-surrogate-value",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932,\"unknown\":\"\\ud800\"}",
+      "expectedByProfile": {
+        "refList": "Accepted",
+        "snapshotBuild": "Accepted",
+        "extension": "Accepted"
+      }
+    },
+    {
+      "id": "unknown-numeric-spellings",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932,\"unknown\":[1e999,-0,9007199254740993,0.10000000000000001]}",
+      "expectedByProfile": {
+        "refList": "Accepted",
+        "snapshotBuild": "Accepted",
+        "extension": "Accepted"
+      }
+    },
+    {
+      "id": "unique-prototype-property-names",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932,\"__proto__\":{\"constructor\":1},\"constructor\":{\"__proto__\":2}}",
+      "expectedByProfile": {
+        "refList": "Accepted",
+        "snapshotBuild": "Accepted",
+        "extension": "Accepted"
+      }
+    },
+    {
+      "id": "invalid-high-surrogate-key",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932,\"unknown\":{\"\\ud800\":1}}",
+      "expectedByProfile": {
+        "refList": "InvalidJson",
+        "snapshotBuild": "InvalidJson",
+        "extension": "InvalidJson"
+      }
+    },
+    {
+      "id": "invalid-low-surrogate-key",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932,\"unknown\":[{\"\\udfff\":1}]}",
+      "expectedByProfile": {
+        "refList": "InvalidJson",
+        "snapshotBuild": "InvalidJson",
+        "extension": "InvalidJson"
+      }
+    },
+    {
+      "id": "duplicate-before-undecodable-key",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932,\"same\":1,\"same\":1,\"unknown\":{\"\\ud800\":1}}",
+      "expectedByProfile": {
+        "refList": "InvalidJson",
+        "snapshotBuild": "InvalidJson",
+        "extension": "InvalidJson"
+      }
+    },
+    {
+      "id": "duplicate-decoded-control-character",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932,\"unknown\":{\"\\n\":1,\"\\u000a\":2}}",
+      "expectedByProfile": {
+        "refList": "DuplicateProperty",
+        "snapshotBuild": "DuplicateProperty",
+        "extension": "DuplicateProperty"
+      }
+    },
+    {
+      "id": "undecodable-consumed-command-version",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"\\ud800\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932}",
+      "expectedByProfile": {
+        "refList": "InvalidConsumedValue",
+        "snapshotBuild": "Accepted",
+        "extension": "InvalidConsumedValue"
+      }
+    },
+    {
+      "id": "undecodable-consumed-feature-version",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"\\udfff\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932}",
+      "expectedByProfile": {
+        "refList": "Accepted",
+        "snapshotBuild": "InvalidConsumedValue",
+        "extension": "InvalidConsumedValue"
+      }
+    },
+    {
+      "id": "deep-unique-unknown-value",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932,\"unknown\":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[{\"value\":1}]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}",
+      "expectedByProfile": {
+        "refList": "Accepted",
+        "snapshotBuild": "Accepted",
+        "extension": "Accepted"
+      }
+    },
+    {
+      "id": "deep-duplicate-unknown-object",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932,\"unknown\":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[{\"same\":1,\"same\":1}]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}",
+      "expectedByProfile": {
+        "refList": "DuplicateProperty",
+        "snapshotBuild": "DuplicateProperty",
+        "extension": "DuplicateProperty"
+      }
+    },
+    {
+      "id": "extension-missing-tool-version",
+      "rawJson": "{\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932}",
+      "expectedByProfile": {
+        "refList": "Accepted",
+        "snapshotBuild": "Accepted",
+        "extension": "MissingCapability"
+      }
+    },
+    {
+      "id": "extension-tool-version-wrong-type",
+      "rawJson": "{\"toolVersion\":1,\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932}",
+      "expectedByProfile": {
+        "refList": "Accepted",
+        "snapshotBuild": "Accepted",
+        "extension": "InvalidConsumedValue"
+      }
+    },
+    {
+      "id": "extension-contract-version-incompatible",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"2.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932}",
+      "expectedByProfile": {
+        "refList": "Accepted",
+        "snapshotBuild": "Accepted",
+        "extension": "VersionMismatch"
+      }
+    },
+    {
+      "id": "extension-unknown-command-wrong-shape",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"additional\":1,\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932}",
+      "expectedByProfile": {
+        "refList": "Accepted",
+        "snapshotBuild": "Accepted",
+        "extension": "InvalidConsumedValue"
+      }
+    },
+    {
+      "id": "extension-unknown-feature-wrong-shape",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"additional\":false,\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":932}",
+      "expectedByProfile": {
+        "refList": "Accepted",
+        "snapshotBuild": "Accepted",
+        "extension": "InvalidConsumedValue"
+      }
+    },
+    {
+      "id": "extension-required-code-page-missing",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"}}",
+      "expectedByProfile": {
+        "refList": "Accepted",
+        "snapshotBuild": "Accepted",
+        "extension": "MissingCapability"
+      }
+    },
+    {
+      "id": "extension-code-page-zero",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":0}",
+      "expectedByProfile": {
+        "refList": "Accepted",
+        "snapshotBuild": "Accepted",
+        "extension": "InvalidConsumedValue"
+      }
+    },
+    {
+      "id": "extension-code-page-fraction",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":1.5}",
+      "expectedByProfile": {
+        "refList": "Accepted",
+        "snapshotBuild": "Accepted",
+        "extension": "InvalidConsumedValue"
+      }
+    },
+    {
+      "id": "extension-code-page-unsafe-integer",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":9007199254740992}",
+      "expectedByProfile": {
+        "refList": "Accepted",
+        "snapshotBuild": "Accepted",
+        "extension": "InvalidConsumedValue"
+      }
+    },
+    {
+      "id": "extension-code-page-safe-integer-boundary",
+      "rawJson": "{\"toolVersion\":\"0.0.0-conformance\",\"contractVersion\":\"1.0\",\"commands\":{\"build\":{\"outputSchemaVersion\":\"3.0\"},\"common-module add\":{\"outputSchemaVersion\":\"1.0\"},\"common-module list\":{\"outputSchemaVersion\":\"1.0\"},\"common-module update\":{\"outputSchemaVersion\":\"1.0\"},\"doctor\":{\"outputSchemaVersion\":\"1.0\"},\"export\":{\"outputSchemaVersion\":\"1.0\"},\"host-event list\":{\"outputSchemaVersion\":\"1.0\"},\"new excel\":{\"outputSchemaVersion\":\"1.0\"},\"publish\":{\"outputSchemaVersion\":\"3.0\"},\"reference add\":{\"outputSchemaVersion\":\"1.0\"},\"reference list\":{\"outputSchemaVersion\":\"1.0\"},\"reference remove\":{\"outputSchemaVersion\":\"1.0\"},\"test\":{\"outputSchemaVersion\":\"1.2\"}},\"featureVersions\":{\"build.sourceSnapshot\":\"2.0\",\"build.sourceSnapshotAnalysis\":\"1.0\",\"test.sourceSnapshot\":\"2.0\",\"invocation.stdinCancellation\":\"1.0\",\"sourceSnapshot.activeWindowsCodePage\":\"1.0\",\"projectCreation.pathValidation\":\"1.0\",\"hostEvent.list\":\"1.0\"},\"activeWindowsCodePage\":9007199254740991}",
+      "expectedByProfile": {
+        "refList": "Accepted",
+        "snapshotBuild": "Accepted",
+        "extension": "Accepted"
+      }
+    }
+  ]
+}
