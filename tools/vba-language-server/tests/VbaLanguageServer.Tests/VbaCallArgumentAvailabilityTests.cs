@@ -365,7 +365,7 @@ public sealed class VbaCallArgumentAvailabilityTests
             VbaProjectReferenceCatalogSet.CreateBundled());
 
         Assert.True(availability.Signature?.SupportsNamedArguments);
-        Assert.Equal(["Prompt", "Buttons", "Title"], RemainingNames(availability));
+        Assert.Equal(["Prompt", "Buttons", "Title", "HelpFile", "Context"], RemainingNames(availability));
     }
 
     private static VbaCallArgumentAvailability ResolveSourceCall(
