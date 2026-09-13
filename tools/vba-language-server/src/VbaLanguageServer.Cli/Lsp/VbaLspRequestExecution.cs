@@ -313,6 +313,12 @@ internal sealed class VbaLspRequestExecution : IDisposable
                     cancellationToken,
                     Captured,
                     Direct),
+            "vba/detectIndentation" =>
+                CaptureIndentationDetectionRequest(
+                    parameters,
+                    cancellationToken,
+                    Captured,
+                    Direct),
             "vba/blockSkeletonInsertion" =>
                 CaptureBlockSkeletonRequest(
                     parameters,
@@ -1041,6 +1047,49 @@ internal sealed class VbaLspRequestExecution : IDisposable
             executionToken.ThrowIfCancellationRequested();
             return RequestOutcome.Success(
                 VbaLspFeatureProjection.CreateFormattingEdits(edits));
+        });
+    }
+
+    private CapturedRequest CaptureIndentationDetectionRequest(
+        JsonNode? parameters,
+        CancellationToken cancellationToken,
+        Func<Func<CancellationToken, RequestOutcome>, CapturedRequest> captured,
+        Func<RequestOutcome, CapturedRequest> direct)
+    {
+        if (!TryCreateFormattingRequest(parameters, out var request)
+            || parameters is not JsonObject parameterObject
+            || parameterObject["textDocument"] is not JsonObject document
+            || !TryGetInt32(document["version"], out var version)
+            || version < 0)
+        {
+            return direct(RequestOutcome.InvalidParams());
+        }
+
+        var options = (JsonObject)parameterObject["options"]!;
+        TryGetInt32(options["tabSize"], out var tabSize);
+        var linkedIndentSize = options["indentSize"] is null;
+        var snapshot = workspace.CaptureExactDocumentSnapshot(
+            request.Uri,
+            version,
+            cancellationToken);
+        return captured(executionToken =>
+        {
+            executionToken.ThrowIfCancellationRequested();
+            if (snapshot is null)
+            {
+                return RequestOutcome.Success(null);
+            }
+
+            var style = VbaIndentationDetection.Detect(snapshot.SyntaxTree, request.IndentationStyle);
+            executionToken.ThrowIfCancellationRequested();
+            return RequestOutcome.Success(new
+            {
+                uri = request.Uri,
+                version = snapshot.Version,
+                insertSpaces = style.InsertSpaces,
+                tabSize = linkedIndentSize && style.InsertSpaces ? style.IndentSize : tabSize,
+                indentSize = style.IndentSize
+            });
         });
     }
 

@@ -107,7 +107,8 @@ internal readonly record struct VbaInteractiveReadPolicy(
     public static VbaInteractiveReadPolicy ForMethod(string method)
         => method switch
         {
-            "vba/blockSkeletonInsertion"
+            "vba/detectIndentation"
+                or "vba/blockSkeletonInsertion"
                 or "textDocument/completion"
                 or "textDocument/hover"
                 or "textDocument/signatureHelp"

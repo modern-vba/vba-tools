@@ -904,6 +904,20 @@ declarations, edit sibling files, or rewrite comments and strings.
 The leading export-only header of a class module keeps its original spelling,
 spacing, and comments, including the indentation of `MultiUse` and uppercase `END`.
 
+With `editor.detectIndentation` enabled, VBA Tools detects indentation from VBA
+code, excluding export headers, `Attribute` records, and form designer data.
+A class header with two spaces and code with four spaces therefore keeps both
+styles when formatted. The detected style also applies to Tab, Enter, and the
+editor's indentation indicator. Detection itself does not change source text.
+
+Empty, unindented, or ambiguous code uses the configured indentation defaults.
+Set `editor.detectIndentation` to `false` to use those defaults directly. An
+indentation choice made for an open editor is preserved across subsequent edits
+and formatting. `editor.indentSize: "tabSize"` keeps the widths linked; a numeric
+`editor.indentSize` allows the detected indentation unit to differ from the
+configured tab display width. Code already indented with two spaces is detected
+as two spaces; this does not restore an earlier four-space style automatically.
+
 ---
 
 ## Block Skeleton Insertion

@@ -83,6 +83,8 @@ import {
 import {
   createVbaDocumentFormattingMiddleware
 } from './documentFormatting';
+import { CodeIndentationController, registerCodeIndentation } from './codeIndentationAdapter';
+import { CodeIndentationResult } from './codeIndentation';
 import {
   createVbaLanguageClientOptions,
   createVbaLanguageServerOptions,
@@ -587,6 +589,9 @@ export async function activate(
   });
   intrinsicHostEventCatalogLifecycle = lifecycle;
   let projectManifestLanguageServerSync: ProjectManifestLanguageServerSync | undefined;
+  let codeIndentation: CodeIndentationController | undefined;
+  let indentationClientReady = false;
+  let indentationClientGeneration = 0;
   try {
     const serverOptions = createVbaLanguageServerOptions({
       extensionRoot: context.extensionPath,
@@ -627,6 +632,7 @@ export async function activate(
               };
         },
         getTextEditors: () => window.visibleTextEditors,
+        ensureIndentation: document => codeIndentation?.ensure(document) ?? Promise.resolve(false),
         getFileFormattingOptions: (document) => {
           const filesConfiguration = workspace.getConfiguration('files', document.uri);
           return {
@@ -709,6 +715,11 @@ export async function activate(
 
     context.subscriptions.push(client);
     const languageClient = client;
+    codeIndentation = registerCodeIndentation(
+      request => languageClient.sendRequest<CodeIndentationResult | null>('vba/detectIndentation', request),
+      () => indentationClientReady && languageClient.state === State.Running
+    );
+    context.subscriptions.push(codeIndentation);
     const companionLifecycle = new CompanionExecutableLanguageServerLifecycle({
       isTrusted: isWorkspaceTrusted,
       resolveCompanion: () => vbaDevResolver.resolve(),
@@ -740,6 +751,18 @@ export async function activate(
     context.subscriptions.push(
       languageClient.onDidChangeState((event) => {
         observeCompanionReadiness(event.newState === State.Running);
+        indentationClientReady = false;
+        const generation = ++indentationClientGeneration;
+        if (event.newState === State.Running) {
+          // Running is emitted before didOpen features initialize. Awaiting
+          // start lets their notifications precede our version-bound requests.
+          void languageClient.start().then(() => {
+            if (generation === indentationClientGeneration && languageClient.state === State.Running) {
+              indentationClientReady = true;
+              codeIndentation?.refresh();
+            }
+          }).catch(() => undefined);
+        }
       }),
       workspace.onDidGrantWorkspaceTrust(() => {
         observeCompanionReadiness(languageClient.state === State.Running);
@@ -1013,6 +1036,8 @@ export async function activate(
   ));
   await client?.start();
   if (client?.state === State.Running) {
+    indentationClientReady = true;
+    codeIndentation?.refresh();
     companionExecutableLanguageServerLifecycle?.observeLanguageClientRunning(true);
     companionExecutableLanguageServerLifecycle?.activateTrustedServices();
   }

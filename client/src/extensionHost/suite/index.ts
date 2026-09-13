@@ -10,8 +10,10 @@ import { runTestBuildProblemsIntegrationTests } from './testBuildProblemsIntegra
 import { runCommonModulesCommandIntegrationTests } from './commonModulesCommandIntegration';
 import { runProjectManifestMutationIntegrationTests } from './projectManifestMutationIntegration';
 import { runReferenceQuickPickIntegrationTests } from './referenceQuickPickIntegration';
+import { runCodeOnlyIndentationIntegrationTests } from './codeOnlyIndentationIntegration';
 
 export async function run(): Promise<void> {
+  await runCodeOnlyIndentationIntegrationTests();
   await runReferenceQuickPickIntegrationTests();
   await runCommonModulesCommandIntegrationTests();
   await runCommandPaletteTargetIntegrationTests();

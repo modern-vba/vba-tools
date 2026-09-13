@@ -13,6 +13,7 @@ import type {
   TextDocumentIdentifier,
   TextEdit as ProtocolTextEdit
 } from 'vscode-languageclient/node';
+import type { CodeIndentationOptions } from './codeIndentation';
 
 export interface VbaFileFormattingOptions {
   readonly trimTrailingWhitespace?: boolean;
@@ -43,6 +44,7 @@ export interface VbaDocumentFormattingClient {
 export interface VbaDocumentFormattingMiddlewareOptions {
   readonly getLanguageClient: () => VbaDocumentFormattingClient | undefined;
   readonly getTextEditors: () => readonly TextEditor[];
+  readonly ensureIndentation?: (document: TextDocument) => Promise<boolean | CodeIndentationOptions>;
   readonly getFileFormattingOptions?: (
     document: TextDocument
   ) => VbaFileFormattingOptions;
@@ -57,14 +59,29 @@ export function createVbaDocumentFormattingMiddleware(
       return next(document, options, token);
     }
 
-    const protocolOptions = languageClient.asFormattingOptions(
-      options,
-      middlewareOptions.getFileFormattingOptions?.(document) ?? {}
-    );
+    const version = document.version;
+    const indentation = await middlewareOptions.ensureIndentation?.(document);
+    if (indentation === false) {
+      return null;
+    }
+    if (token.isCancellationRequested || document.version !== version) {
+      return null;
+    }
     const matchingEditor = middlewareOptions.getTextEditors().find(
       (editor) => editor.document.uri.toString() === document.uri.toString()
     );
-    const indentSize = matchingEditor?.options.indentSize;
+    const resolvedOptions = typeof indentation === 'object' ? indentation : matchingEditor?.options;
+    const protocolOptions = languageClient.asFormattingOptions(
+      {
+        ...options,
+        ...(typeof resolvedOptions?.tabSize === 'number'
+          ? { tabSize: resolvedOptions.tabSize } : {}),
+        ...(typeof resolvedOptions?.insertSpaces === 'boolean'
+          ? { insertSpaces: resolvedOptions.insertSpaces } : {})
+      },
+      middlewareOptions.getFileFormattingOptions?.(document) ?? {}
+    );
+    const indentSize = resolvedOptions?.indentSize;
     if (typeof indentSize === 'number'
         && Number.isInteger(indentSize)
         && indentSize > 0) {
