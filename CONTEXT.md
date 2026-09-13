@@ -4353,8 +4353,10 @@ The terminator copies the exact leading whitespace of the `BlockHeader`'s first
 physical line. The empty body line adds one resolved editor indentation unit to
 that prefix: `indentSize` spaces when spaces are requested, or one tab when tabs
 are requested. A continued header's final line does not become the indentation
-base. Existing header whitespace remains unchanged, and inserted text preserves
-the document's line-ending convention. The terminator uses canonical
+base. Existing header whitespace remains unchanged. Inserted text uses the exact
+newline that native Enter inserted into the captured snapshot, including when
+the rest of the document has different line endings. Existing text outside the
+skeleton replacement remains unchanged. The terminator uses canonical
 `LanguageVocabulary` casing independently of the header's spelling; the action
 does not recase the existing header.
 _Avoid_: `EndStatementCompletion`, source formatting, automatic completion
@@ -4363,17 +4365,28 @@ _Avoid_: `EndStatementCompletion`, source formatting, automatic completion
 The feature-local pure comparison used by declaration and structured-block
 speculation after the caller fixes candidate eligibility and exact removable
 diagnostics. One immutable proof case carries original, optional control, and
-prospective diagnostic evidence together with the edit coordinates. The proof
+prospective diagnostic evidence together with the validated SourceText edit
+result. Declaration and structured-block speculation use that same edit
+contract to construct the prospective text and obtain replacement spans,
+length deltas, and unchanged-region correspondence. The proof
 compares syntax and document-validation errors by category, source, severity,
 code, message, mapped range, and multiplicity, independent of ordering.
 Warnings, informational diagnostics, and project diagnostics do not participate.
 Prospective ranges use half-open semantics: adjacency to the edit is permitted,
-but actual overlap cannot be mapped and fails the proof. Invalid or inconsistent
+but actual overlap cannot be mapped and fails the proof. A zero-width range
+strictly inside replaced text also fails; zero-width ranges at the adjacent
+boundaries, including document start and EOF, retain their exact correspondence.
+Invalid or inconsistent
 proof evidence also fails without accepting a partial comparison.
 The caller retains document-version ownership, conditional-branch locality,
 candidate and cascade selection, and the trusted declaration tail shortcut.
 The proof is not a general diagnostic framework or an authority for insertion
 eligibility; fingerprints, range mapping, and multiset operations remain private.
+Diagnostic correspondence admits only unchanged text and its permitted adjacent
+boundaries. Structure proof separately interprets endpoints for blocks that
+contain or follow the replacement. These feature-specific rules consume common
+edit facts without assigning a generic meaning to arbitrary replaced positions.
+Failed proof or invalid coordinates produce no additional skeleton edit.
 _Avoid_: generic diagnostic equivalence, diagnostic filter, insertion policy
 
 **MemberStubGeneration**:

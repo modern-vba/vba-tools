@@ -168,3 +168,30 @@ This internal consolidation does not change the Enter trigger, LSP contract,
 cursor placement, editor transaction, or insertion eligibility established above.
 It adds no generic diagnostic framework, product adapter, or new product or
 package dependency.
+
+## Shared Source-Text Edit Mechanics
+
+Declaration and structured-block speculation validate and apply their edit
+against the captured immutable `VbaSourceText` through the syntax-owned edit
+contract. The resulting `After` text is reparsed, and the same result supplies
+replacement spans, length deltas, and unchanged-region correspondence for the
+feature's proofs. Independent string splicing, line indexing, and mechanical
+edit reconstruction are not separate authorities.
+
+Skeleton retains the meaning of each correspondence. Diagnostic proof rejects
+ranges inside or crossing the replacement, including a zero-width point in its
+interior; a diagnostic in a newly inserted terminator is never treated as an
+old diagnostic. Exact adjacent zero-width boundaries remain valid, including
+document start and EOF. Structure proof separately tracks endpoints of
+containing and subsequent blocks. It may preserve a containing block's range
+across the edit without granting the same allowance to a diagnostic.
+
+The common Module supplies facts and does not implement a permissive all-purpose
+range map. Invalid coordinates and failed proofs yield no additional skeleton
+edit. Native Enter, document-version ownership, resolved indentation, the trusted
+declaration tail, and control/removal selection remain caller-owned.
+
+Inserted skeleton text uses the exact newline already inserted by native Enter
+in the captured snapshot. It preserves all text and newline sequences outside
+the replacement, including mixed-newline documents. Formatting retains its
+separate authority to choose and normalize output newlines.

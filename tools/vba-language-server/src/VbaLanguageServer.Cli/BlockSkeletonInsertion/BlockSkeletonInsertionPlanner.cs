@@ -85,12 +85,12 @@ public static class BlockSkeletonInsertionPlanner
         if (position.Line < 0
             || position.Line >= source.Lines.Count
             || position.Character < 0
-            || position.Character != source.Lines[position.Line].Text.Length)
+            || position.Character != source.Lines[position.Line].Text.Length
+            || !source.TryGetOffset(position.Line, position.Character, out var positionOffset))
         {
             return false;
         }
 
-        var positionOffset = source.Lines[position.Line].StartOffset + position.Character;
         var suffix = text[positionOffset..];
         var lineEnding = suffix.StartsWith("\r\n", StringComparison.Ordinal)
             ? "\r\n"
