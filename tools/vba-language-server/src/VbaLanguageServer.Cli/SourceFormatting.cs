@@ -231,6 +231,12 @@ internal sealed class VbaSourceFormatter
         {
             cancellationToken.ThrowIfCancellationRequested();
             var line = formattingLine.Text;
+            if (formattingLine.IsClassMetadata)
+            {
+                formattedLines.Add(line);
+                continue;
+            }
+
             var casedLine = FormatLineCasing(
                 line,
                 document,
