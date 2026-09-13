@@ -5,6 +5,7 @@ import './languageServer.test';
 import './documentFormatting.test';
 import './rename.test';
 import './extensionContributions.test';
+import './syntaxHighlighting.test';
 import './projectManifest.test';
 import './projectManifestBytes.test';
 import './projectCreationPathValidation.test';

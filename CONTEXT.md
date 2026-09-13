@@ -2762,6 +2762,11 @@ _Avoid_: in-flight catalog, failed discovery result, source diagnostic
 
 **SyntaxHighlighting**:
 Editor coloring for VBA source text. It combines lexical classification for VBA syntax with meaning-aware classification from parsed project information when that information is available.
+Leading exported class metadata beginning with `VERSION 1.0 CLASS`, after optional
+blank/comment trivia, uses the dedicated `meta.class-header.vba` lexical scope.
+Its `BEGIN` and `END` delimiters are metadata. On `END`, or the first non-metadata
+line of an incomplete header, coloring permanently resumes the ordinary VBA
+rules for the remaining body, preserving control and declaration-end scopes.
 _Avoid_: color theme, formatting
 
 **SyntaxDiagnostic**:
