@@ -4205,6 +4205,24 @@ loadable for legacy catalogs but admits no context-specific
 `CompletionCandidate` until refreshed.
 _Avoid_: getter flag, setter flag, inferred property mode
 
+**CodeIndentationDetection**:
+The read-only inference of an editor's indentation style from VBA code in an
+`ExportedVbaSource`. Existing syntax-owned class metadata, module and member
+`Attribute` facts, and form designer boundaries exclude export-only text from
+the evidence. It does not modify source text or reinterpret header indentation
+as the code style. Empty, unindented, or ambiguous code retains the configured
+defaults rather than the editor's earlier header-inclusive guess.
+
+`VscodeExtension` applies a result only to the matching live document version
+while its configuration and editor options still match the request. A manual
+editor indentation choice wins over an outstanding result and remains in force
+through ordinary edits, reactivation, and formatting. Disabling
+`editor.detectIndentation` uses configured values directly. A numeric configured
+`indentSize` separates the inferred indentation unit from the configured tab
+display width; `indentSize: "tabSize"` links both widths. The resulting editor
+style is shared by formatting, Tab, Enter, and the indentation indicator.
+_Avoid_: source formatting, automatic source repair, export-header normalization
+
 **IndentationFormatting**:
 A `SourceFormatting` operation that rewrites leading whitespace according to
 VBA block structure. It depends on source ranges, tokens, and syntax block

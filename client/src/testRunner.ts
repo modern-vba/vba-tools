@@ -3,6 +3,7 @@ import './debugAdapter.test';
 import './distributionManifest.test';
 import './languageServer.test';
 import './documentFormatting.test';
+import './codeIndentation.test';
 import './rename.test';
 import './extensionContributions.test';
 import './syntaxHighlighting.test';
