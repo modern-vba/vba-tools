@@ -167,7 +167,7 @@ export async function runTestBuildProblemsIntegrationTests(): Promise<void> {
     await workspace.getConfiguration('workbench').update('colorTheme', oldTheme, ConfigurationTarget.Workspace);
     assert.equal(path.dirname(fixture), path.resolve(parent));
     assert.ok(path.basename(fixture).startsWith('test-build-problems-'));
-    await rm(fixture, { recursive: true, force: true });
+    await rm(fixture, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 }
 

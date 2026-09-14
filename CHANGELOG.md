@@ -4,7 +4,7 @@ All notable user-facing changes to the VBA Tools extension are recorded here.
 The extension history is versioned independently from the bundled `vba-dev`
 CLI history.
 
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-09-14
 
 ### Added
 
@@ -37,6 +37,12 @@ CLI history.
   termination, session leases, crash cleanup, and next-start stale reaping.
 - Windows x64 Marketplace packaging with bundled self-contained executables, so
   a separately installed .NET runtime is not required.
+
+### Requirements
+
+- Windows 10 or Windows 11 on x64 hardware and VS Code 1.125.0 or later.
+- Workbook automation and native VBE debugging require desktop Excel and trusted
+  access to the VBA project object model.
 
 ### Known Limitations
 

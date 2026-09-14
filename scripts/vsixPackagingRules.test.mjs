@@ -99,7 +99,7 @@ test('extension changelog provides the curated initial 0.1.0 release summary', a
   const changelog = await fs.readFile(new URL('../CHANGELOG.md', import.meta.url), 'utf8');
 
   assert.match(changelog, /^# Changelog/m);
-  assert.match(changelog, /^## \[0\.1\.0\] - Unreleased/m);
+  assert.match(changelog, /^## \[0\.1\.0\] - \d{4}-\d{2}-\d{2}/m);
   assert.match(changelog, /^### Added/m);
   assert.match(changelog, /language server/i);
   assert.match(changelog, /workbook/i);

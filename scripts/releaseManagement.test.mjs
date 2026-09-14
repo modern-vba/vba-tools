@@ -200,7 +200,7 @@ test('repository pins the release toolchain commands dependency updates and cura
     path.join(repositoryRoot, 'tools/vba-debug-adapter/README.md'),
     'utf8'
   );
-  assert.match(cliChangelog, /^## \[0\.1\.0\] - Unreleased/m);
+  assert.match(cliChangelog, /^## \[0\.1\.0\] - \d{4}-\d{2}-\d{2}/m);
   assert.match(cliChangelog, /standalone Windows x64/i);
   assert.match(cliChangelog, /capabilities/i);
   assert.match(cliChangelog, /snapshot build/i);
