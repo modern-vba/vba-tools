@@ -344,7 +344,7 @@
     "@vscode/vsce": "^3.6.0",
     "ajv": "^8.20.0",
     "js-yaml": "^4.3.0",
-    "typescript": "^5.9.0",
+    "typescript": "^7.0.2",
     "vscode-oniguruma": "^2.0.1",
     "vscode-textmate": "^9.3.2",
     "yauzl": "^3.4.0",
