@@ -3,7 +3,7 @@
 All notable user-facing changes to the independently versioned `vba-dev` CLI
 are recorded here. Extension changes remain in the repository root changelog.
 
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-09-14
 
 ### Added
 
