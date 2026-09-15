@@ -1,4 +1,4 @@
-export const minimumSupportedVscodeVersion = '1.125.0';
+export const minimumSupportedVscodeVersion = '1.137.0';
 
 export interface ExtensionHostRuntimeSelection {
   readonly version: string | undefined;

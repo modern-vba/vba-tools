@@ -298,6 +298,11 @@ all three bundled executables and
 verifies the planned VSIX. It intentionally does not opt in to real Excel
 automation; the real-Excel cross-product case is skipped.
 
+Extension Host tests use VS Code 1.137.0 by default, matching the minimum
+supported version. Leave `VSCODE_EXECUTABLE_PATH` unset for release verification;
+an explicit executable override is intended for runtime diagnostics and does
+not verify the default pinned runtime.
+
 `npm run verify:architecture` also runs independently. It rejects references
 from VbaDev production or tests into another product and from designated
 product-neutral foundations into their consumers, including build-only

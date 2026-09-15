@@ -3,13 +3,12 @@ import assert from 'node:assert/strict';
 
 import {
   createExtensionHostLaunchArgs,
-  createExtensionHostRuntimeSelection,
-  minimumSupportedVscodeVersion
+  createExtensionHostRuntimeSelection
 } from './configuration';
 
-test('Extension Host tests use the minimum supported VS Code version by default', () => {
+test('Extension Host tests pin VS Code 1.137.0 as the minimum supported runtime', () => {
   assert.deepEqual(createExtensionHostRuntimeSelection({}), {
-    version: minimumSupportedVscodeVersion,
+    version: '1.137.0',
     vscodeExecutablePath: undefined
   });
 });
