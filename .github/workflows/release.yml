@@ -160,11 +160,11 @@ jobs:
           name: release-set
           path: release-set
       - name: Attest the current-run VSIX
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
         with:
           subject-path: release-set/${{ needs.validate.outputs.vsix_name }}
       - name: Attest the current-run standalone CLI archive
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
         with:
           subject-path: release-set/${{ needs.validate.outputs.cli_archive_name }}
 
