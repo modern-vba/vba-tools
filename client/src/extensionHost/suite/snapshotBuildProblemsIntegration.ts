@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -11,6 +11,7 @@ import {
 import { decodeProjectManifestBytes } from '../../projectManifestBytes';
 import { parseDebugSnapshotBuildReport, DebugSnapshotBuildReport } from '../../debugSnapshotBuildReport';
 import { windowsPathKey } from '../../windowsPathIdentity';
+import { runWithExtensionHostFixtureCleanup } from '../testFixtureCleanup';
 
 export async function runSnapshotBuildProblemsIntegrationTests(): Promise<void> {
   const parent = process.env.VBA_TOOLS_EXTENSION_HOST_FIXTURE_ROOT;
@@ -51,7 +52,7 @@ export async function runSnapshotBuildProblemsIntegrationTests(): Promise<void> 
     }
   });
   const terminated = debug.onDidTerminateDebugSession(session => { ownedSessions.delete(session); });
-  try {
+  await runWithExtensionHostFixtureCleanup(fixture, async () => {
     await workspace.getConfiguration('workbench').update('colorTheme', 'Default Dark Modern', ConfigurationTarget.Workspace);
     await mkdir(path.dirname(callerPath), { recursive: true });
     await mkdir(path.dirname(binPath), { recursive: true });
@@ -138,7 +139,7 @@ export async function runSnapshotBuildProblemsIntegrationTests(): Promise<void> 
     assert.deepEqual(await readFile(templatePath), template);
     for (const origin of reports[1].origins) await assert.rejects(stat(fileURLToPath(origin.snapshotUri)), { code: 'ENOENT' });
     console.log('Native snapshot Problems: unsaved disagreement, related navigation after cleanup, rejected launch, successful clear, and byte preservation passed.');
-  } finally {
+  }, async () => {
     for (const session of [...ownedSessions]) await debug.stopDebugging(session);
     await waitFor(() => ownedSessions.size === 0, 'owned debug session teardown');
     tracker.dispose();
@@ -155,8 +156,7 @@ export async function runSnapshotBuildProblemsIntegrationTests(): Promise<void> 
     await workspace.getConfiguration('workbench').update('colorTheme', oldTheme, ConfigurationTarget.Workspace);
     assert.equal(path.dirname(fixture), path.resolve(parent));
     assert.ok(path.basename(fixture).startsWith('snapshot-problems-'));
-    await rm(fixture, { recursive: true, force: true });
-  }
+  });
 }
 
 async function replaceText(uri: Uri, text: string): Promise<void> {
