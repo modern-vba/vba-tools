@@ -160,16 +160,20 @@ export async function runGuardedEnterFeasibilityTests(): Promise<void> {
     'the production language server inserts a Sub skeleton at EOF',
     async () => {
       const originalText = 'Public Sub Main()';
-      const documentUri = Uri.file(join(
+      // An ad-hoc project's boundary is its parent directory. Do not include
+      // ambient Temp files or other test cases in this latency-sensitive scope.
+      const caseDirectoryUri = Uri.file(join(
         tmpdir(),
-        `vba-tools-block-skeleton-${randomUUID()}.bas`
+        `vba-tools-block-skeleton-${randomUUID()}`
       ));
-      let fileCreated = false;
+      const documentUri = Uri.joinPath(caseDirectoryUri, 'Module1.bas');
+      let caseDirectoryCreated = false;
       let openedDocument: TextDocument | undefined;
       let observer: { dispose(): void } | undefined;
       try {
+        await workspace.fs.createDirectory(caseDirectoryUri);
+        caseDirectoryCreated = true;
         await workspace.fs.writeFile(documentUri, Buffer.from(originalText, 'utf8'));
-        fileCreated = true;
         const document = await workspace.openTextDocument(documentUri);
         openedDocument = document;
         assert.equal(document.languageId, 'vba');
@@ -272,8 +276,8 @@ export async function runGuardedEnterFeasibilityTests(): Promise<void> {
             await commands.executeCommand('workbench.action.closeActiveEditor');
           }
         } finally {
-          if (fileCreated) {
-            await workspace.fs.delete(documentUri, { useTrash: false });
+          if (caseDirectoryCreated) {
+            await workspace.fs.delete(caseDirectoryUri, { recursive: true, useTrash: false });
           }
         }
       }
@@ -291,16 +295,18 @@ export async function runGuardedEnterFeasibilityTests(): Promise<void> {
         '    Public Sub Second()',
         '    End Sub'
       ].join(lineEnding);
-      const documentUri = Uri.file(join(
+      const caseDirectoryUri = Uri.file(join(
         tmpdir(),
-        `vba-tools-block-skeleton-non-eof-${randomUUID()}.bas`
+        `vba-tools-block-skeleton-non-eof-${randomUUID()}`
       ));
-      let fileCreated = false;
+      const documentUri = Uri.joinPath(caseDirectoryUri, 'Module1.bas');
+      let caseDirectoryCreated = false;
       let openedDocument: TextDocument | undefined;
       let observer: { dispose(): void } | undefined;
       try {
+        await workspace.fs.createDirectory(caseDirectoryUri);
+        caseDirectoryCreated = true;
         await workspace.fs.writeFile(documentUri, Buffer.from(originalText, 'utf8'));
-        fileCreated = true;
         const document = await workspace.openTextDocument(documentUri);
         openedDocument = document;
         assert.equal(document.languageId, 'vba');
@@ -433,8 +439,8 @@ export async function runGuardedEnterFeasibilityTests(): Promise<void> {
             await commands.executeCommand('workbench.action.closeActiveEditor');
           }
         } finally {
-          if (fileCreated) {
-            await workspace.fs.delete(documentUri, { useTrash: false });
+          if (caseDirectoryCreated) {
+            await workspace.fs.delete(caseDirectoryUri, { recursive: true, useTrash: false });
           }
         }
       }
@@ -453,16 +459,18 @@ export async function runGuardedEnterFeasibilityTests(): Promise<void> {
         '    Public Sub Second()',
         '    End Sub'
       ].join(lineEnding);
-      const documentUri = Uri.file(join(
+      const caseDirectoryUri = Uri.file(join(
         tmpdir(),
-        `vba-tools-block-skeleton-refused-non-eof-${randomUUID()}.bas`
+        `vba-tools-block-skeleton-refused-non-eof-${randomUUID()}`
       ));
-      let fileCreated = false;
+      const documentUri = Uri.joinPath(caseDirectoryUri, 'Module1.bas');
+      let caseDirectoryCreated = false;
       let openedDocument: TextDocument | undefined;
       let observer: { dispose(): void } | undefined;
       try {
+        await workspace.fs.createDirectory(caseDirectoryUri);
+        caseDirectoryCreated = true;
         await workspace.fs.writeFile(documentUri, Buffer.from(originalText, 'utf8'));
-        fileCreated = true;
         const document = await workspace.openTextDocument(documentUri);
         openedDocument = document;
         assert.equal(document.languageId, 'vba');
@@ -587,8 +595,8 @@ export async function runGuardedEnterFeasibilityTests(): Promise<void> {
             await commands.executeCommand('workbench.action.closeActiveEditor');
           }
         } finally {
-          if (fileCreated) {
-            await workspace.fs.delete(documentUri, { useTrash: false });
+          if (caseDirectoryCreated) {
+            await workspace.fs.delete(caseDirectoryUri, { recursive: true, useTrash: false });
           }
         }
       }

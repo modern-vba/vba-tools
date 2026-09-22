@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Runtime.ExceptionServices;
 using VbaDev.App.Workbooks;
 using VbaDev.Infrastructure.Debugging;
 using VbaDev.Infrastructure.Workbooks;
@@ -7,6 +9,152 @@ namespace VbaDev.Tests;
 
 public sealed class OwnedExcelApplicationBootstrapperTests
 {
+    [Fact]
+    public async Task StartupCheckpointPreservesAnEarlyBootstrapperFailure()
+    {
+        var observationError = new InvalidOperationException("observation failed before binding");
+        var process = new FakeDebugOwnedProcess(424, new DateTime(2026, 9, 22, 9, 0, 0, DateTimeKind.Local));
+        var events = new List<string>();
+        using var controller = new OwnedExcelTerminationController();
+        var checkpoint = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var bindingCalls = 0;
+        var bootstrapper = new OwnedExcelApplicationBootstrapper(
+            new FakeOwnedProcessLauncher(process),
+            new FakeDebugExcelProcessApi(process.Id, process),
+            new CallbackNativeObjectModelBinder((_, _) =>
+            {
+                bindingCalls++;
+                checkpoint.SetResult();
+                return new object();
+            }),
+            new FakeExcelAutomationDesktopIsolationFactory(
+                new FakeExcelAutomationDesktopIsolation(events) { StartObservationError = observationError },
+                events),
+            static _ => { });
+        var startup = Task.Factory.StartNew(
+            () => bootstrapper.Start(controller, CancellationToken.None),
+            CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        OwnedExcelSessionStartException? original = null;
+        Exception? observed = null;
+        Exception? primaryFailure = null;
+        Exception? drained = null;
+        try
+        {
+            original = await Assert.ThrowsAsync<OwnedExcelSessionStartException>(
+                () => startup.WaitAsync(TimeSpan.FromSeconds(1)));
+            observed = await Record.ExceptionAsync(
+                () => WaitForStartupCheckpointAsync(checkpoint.Task, startup));
+        }
+        catch (Exception failure) { primaryFailure = failure; }
+        finally
+        {
+            drained = await Record.ExceptionAsync(() => ReleaseAndDrainStartupAsync(
+                startup, controller, static () => { }, primaryFailure ?? observed));
+        }
+
+        if (primaryFailure is not null) ExceptionDispatchInfo.Capture(drained ?? primaryFailure).Throw();
+        Assert.NotNull(original);
+        Assert.Same(original, observed);
+        Assert.Same(original, drained);
+        Assert.Same(observationError, original.StartException);
+        Assert.True(original.CleanupVerified);
+        Assert.True(process.Disposed);
+        Assert.Equal(0, bindingCalls);
+    }
+
+    [Fact]
+    public async Task StartupDrainRetainsTheCheckpointTimeoutAndLaterBindingFailure()
+    {
+        var bindingError = new InvalidOperationException("binding failed after fixture release");
+        var process = new FakeDebugOwnedProcess(425, new DateTime(2026, 9, 22, 9, 1, 0, DateTimeKind.Local));
+        using var controller = new OwnedExcelTerminationController();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var missingCheckpoint = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var wasReleased = false;
+        var bootstrapper = new OwnedExcelApplicationBootstrapper(
+            new FakeOwnedProcessLauncher(process),
+            new FakeDebugExcelProcessApi(process.Id, process),
+            new CallbackNativeObjectModelBinder((_, _) =>
+            {
+                entered.SetResult();
+                wasReleased = release.Task.Wait(TimeSpan.FromSeconds(5));
+                throw bindingError;
+            }),
+            CreateNoExposureIsolationFactory(),
+            static _ => { });
+        var startup = Task.Factory.StartNew(
+            () => bootstrapper.Start(controller, CancellationToken.None),
+            CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        Exception? primaryFailure = null;
+        Exception? observed = null;
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            primaryFailure = await Record.ExceptionAsync(
+                () => WaitForStartupCheckpointAsync(missingCheckpoint.Task, startup));
+        }
+        finally
+        {
+            observed = await Record.ExceptionAsync(() => ReleaseAndDrainStartupAsync(
+                startup, controller, () => release.TrySetResult(), primaryFailure));
+        }
+
+        Assert.IsType<TimeoutException>(primaryFailure);
+        var aggregate = Assert.IsType<AggregateException>(observed);
+        Assert.Equal(2, aggregate.InnerExceptions.Count);
+        Assert.Same(primaryFailure, aggregate.InnerExceptions[0]);
+        var secondary = Assert.IsType<OwnedExcelSessionStartException>(aggregate.InnerExceptions[1]);
+        Assert.Same(bindingError, secondary.StartException);
+        Assert.True(secondary.CleanupVerified);
+        Assert.True(wasReleased);
+        Assert.True(startup.IsCompleted);
+        Assert.True(process.HasExited);
+        Assert.True(process.Disposed);
+    }
+
+    [Fact]
+    public async Task StartupDrainCleansALateOwnerAfterTheCheckpointWasMissed()
+    {
+        var process = new FakeDebugOwnedProcess(426, new DateTime(2026, 9, 22, 9, 2, 0, DateTimeKind.Local));
+        using var controller = new OwnedExcelTerminationController();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var missingCheckpoint = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var launcher = new FakeOwnedProcessLauncher(process, () =>
+        {
+            entered.SetResult();
+            // Never throw between constructing and handing off the fake owner.
+            release.Task.Wait(TimeSpan.FromSeconds(5));
+        });
+        var bootstrapper = new OwnedExcelApplicationBootstrapper(
+            launcher, new FakeDebugExcelProcessApi(process.Id, process),
+            new CallbackNativeObjectModelBinder(static (_, _) => new object()),
+            CreateNoExposureIsolationFactory(), static _ => { });
+        var startup = Task.Factory.StartNew(
+            () => bootstrapper.Start(controller, CancellationToken.None),
+            CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        Exception? primaryFailure = null;
+        Exception? observed = null;
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            primaryFailure = await Record.ExceptionAsync(
+                () => WaitForStartupCheckpointAsync(missingCheckpoint.Task, startup));
+        }
+        finally
+        {
+            observed = await Record.ExceptionAsync(() => ReleaseAndDrainStartupAsync(
+                startup, controller, () => release.TrySetResult(), primaryFailure));
+        }
+
+        Assert.IsType<TimeoutException>(primaryFailure);
+        Assert.NotNull(observed);
+        Assert.True(startup.IsCompleted);
+        Assert.True(process.HasExited);
+        Assert.True(process.Disposed);
+    }
+
     [Fact]
     public async Task PrivateDesktopObservationIsReadyBeforeResumeAndLivesUntilControllerCleanup()
     {
@@ -356,7 +504,7 @@ public sealed class OwnedExcelApplicationBootstrapperTests
         using var terminationController = new OwnedExcelTerminationController();
         using var cancellationRegistration = cancellation.Token.Register(
             () => terminationController.RequestForcedTermination(TimeSpan.Zero));
-        using var bindingStarted = new ManualResetEventSlim();
+        var bindingStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var isolation = new FakeExcelAutomationDesktopIsolation(events);
         var launcher = new FakeOwnedProcessLauncher(process, events: events);
         var bootstrapper = new OwnedExcelApplicationBootstrapper(
@@ -365,21 +513,32 @@ public sealed class OwnedExcelApplicationBootstrapperTests
             new CallbackNativeObjectModelBinder(
                 (_, hasProcessExited) =>
                 {
-                    bindingStarted.Set();
+                    bindingStarted.SetResult();
                     Assert.True(SpinWait.SpinUntil(
                         hasProcessExited,
-                        TimeSpan.FromSeconds(1)));
+                        TimeSpan.FromSeconds(5)));
                     throw nativeBindingExit;
                 }),
             new FakeExcelAutomationDesktopIsolationFactory(isolation, events));
-        var startup = Task.Run(() => bootstrapper.Start(
-            terminationController,
-            cancellation.Token));
-        Assert.True(bindingStarted.Wait(TimeSpan.FromSeconds(1)));
-
-        cancellation.Cancel();
-        var error = await Assert.ThrowsAsync<OwnedExcelSessionStartCanceledException>(
-            () => startup.WaitAsync(TimeSpan.FromSeconds(1)));
+        var startup = Task.Factory.StartNew(
+            () => bootstrapper.Start(terminationController, cancellation.Token),
+            CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        Exception? primaryFailure = null;
+        Exception? startupFailure = null;
+        try
+        {
+            await WaitForStartupCheckpointAsync(bindingStarted.Task, startup);
+            cancellation.Cancel();
+            await Assert.ThrowsAsync<OwnedExcelSessionStartCanceledException>(
+                () => ObserveFixtureCompletionAsync(startup));
+        }
+        catch (Exception failure) { primaryFailure = failure; }
+        finally
+        {
+            startupFailure = await ReleaseAndDrainStartupAsync(
+                startup, terminationController, cancellation.Cancel, primaryFailure);
+        }
+        var error = Assert.IsType<OwnedExcelSessionStartCanceledException>(startupFailure);
 
         Assert.True(error.CleanupVerified);
         var cancellationCause = Assert.IsType<OperationCanceledException>(error.StartException);
@@ -564,7 +723,9 @@ public sealed class OwnedExcelApplicationBootstrapperTests
         using var terminationController = new OwnedExcelTerminationController();
         var bindingStarted = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        using var releaseBinding = new ManualResetEventSlim();
+        var releaseBinding = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var bindingExited = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var bindingReleased = false;
         var bindingStopped = new InvalidOperationException("binding stopped");
         var bootstrapper = new OwnedExcelApplicationBootstrapper(
             new FakeOwnedProcessLauncher(process),
@@ -573,8 +734,13 @@ public sealed class OwnedExcelApplicationBootstrapperTests
                 (_, _) =>
                 {
                     bindingStarted.SetResult();
-                    Assert.True(releaseBinding.Wait(TimeSpan.FromSeconds(5)));
-                    throw bindingStopped;
+                    try
+                    {
+                        bindingReleased = releaseBinding.Task.Wait(TimeSpan.FromSeconds(5));
+                        Assert.True(bindingReleased);
+                        throw bindingStopped;
+                    }
+                    finally { bindingExited.TrySetResult(); }
                 }),
             CreateNoExposureIsolationFactory());
         // The simulated native bind blocks deliberately; keep it off the shared pool.
@@ -583,31 +749,31 @@ public sealed class OwnedExcelApplicationBootstrapperTests
             CancellationToken.None,
             TaskCreationOptions.LongRunning,
             TaskScheduler.Default);
-        var startupOutcome = Record.ExceptionAsync(() => startup);
+        Exception? startupOutcome = null;
+        Exception? primaryFailure = null;
 
         try
         {
-            await bindingStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            await WaitForStartupCheckpointAsync(bindingStarted.Task, startup);
             var cleanup = terminationController.RequestCleanupAsync(TimeSpan.Zero);
-            var completed = await Task.WhenAny(
-                cleanup,
-                Task.Delay(TimeSpan.FromMilliseconds(250)));
+            await ObserveFixtureCompletionAsync(cleanup);
 
-            // Cleanup must finish while the native bind is still blocked.
-            Assert.Same(cleanup, completed);
-            await cleanup;
+            // Prove independence from the held bind, not a scheduling speed target.
+            Assert.False(releaseBinding.Task.IsCompleted);
+            Assert.False(bindingExited.Task.IsCompleted);
             Assert.Equal(1, process.KillCalls);
             Assert.True(process.HasExited);
             Assert.False(startup.IsCompleted);
         }
+        catch (Exception failure) { primaryFailure = failure; }
         finally
         {
-            releaseBinding.Set();
-            // Drain before disposing the gate/controller, preserving any earlier failure.
-            await startupOutcome;
+            startupOutcome = await ReleaseAndDrainStartupAsync(
+                startup, terminationController, () => releaseBinding.TrySetResult(), primaryFailure);
         }
 
-        var error = Assert.IsType<OwnedExcelSessionStartException>(await startupOutcome);
+        var error = Assert.IsType<OwnedExcelSessionStartException>(startupOutcome);
+        Assert.True(bindingReleased);
         Assert.Same(bindingStopped, error.StartException);
         Assert.True(error.CleanupVerified);
     }
@@ -625,7 +791,7 @@ public sealed class OwnedExcelApplicationBootstrapperTests
         using var terminationController = new OwnedExcelTerminationController();
         var bindingStarted = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        using var releaseExitProbe = new ManualResetEventSlim();
+        var releaseExitProbe = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var bindingStopped = new InvalidOperationException("binding stopped after cleanup");
         var bootstrapper = new OwnedExcelApplicationBootstrapper(
             new FakeOwnedProcessLauncher(process),
@@ -634,7 +800,7 @@ public sealed class OwnedExcelApplicationBootstrapperTests
                 (_, hasProcessExited) =>
                 {
                     bindingStarted.SetResult();
-                    Assert.True(releaseExitProbe.Wait(TimeSpan.FromSeconds(5)));
+                    Assert.True(releaseExitProbe.Task.Wait(TimeSpan.FromSeconds(5)));
                     Assert.True(hasProcessExited());
                     throw bindingStopped;
                 }),
@@ -645,21 +811,22 @@ public sealed class OwnedExcelApplicationBootstrapperTests
             CancellationToken.None,
             TaskCreationOptions.LongRunning,
             TaskScheduler.Default);
-        var startupOutcome = Record.ExceptionAsync(() => startup);
+        Exception? startupOutcome = null;
+        Exception? primaryFailure = null;
 
         try
         {
-            await bindingStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            await WaitForStartupCheckpointAsync(bindingStarted.Task, startup);
             await terminationController.RequestCleanupAsync(TimeSpan.Zero)
                 .WaitAsync(TimeSpan.FromSeconds(1));
         }
+        catch (Exception failure) { primaryFailure = failure; }
         finally
         {
-            releaseExitProbe.Set();
-            // Drain before disposing either gate/controller, without masking an earlier failure.
-            await startupOutcome;
+            startupOutcome = await ReleaseAndDrainStartupAsync(
+                startup, terminationController, () => releaseExitProbe.TrySetResult(), primaryFailure);
         }
-        var error = Assert.IsType<OwnedExcelSessionStartException>(await startupOutcome);
+        var error = Assert.IsType<OwnedExcelSessionStartException>(startupOutcome);
 
         Assert.Same(bindingStopped, error.StartException);
         Assert.NotSame(disposedProcessError, error.StartException);
@@ -675,14 +842,15 @@ public sealed class OwnedExcelApplicationBootstrapperTests
             new DateTime(2026, 8, 22, 9, 8, 0, DateTimeKind.Local));
         var processApi = new FakeDebugExcelProcessApi(process.Id, process);
         using var terminationController = new OwnedExcelTerminationController();
-        using var processOwned = new ManualResetEventSlim();
-        using var releaseLaunch = new ManualResetEventSlim();
+        var processOwned = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseLaunch = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var launchReleased = false;
         var launcher = new FakeOwnedProcessLauncher(
             process,
             () =>
             {
-                processOwned.Set();
-                releaseLaunch.Wait(TimeSpan.FromSeconds(5));
+                processOwned.SetResult();
+                launchReleased = releaseLaunch.Task.Wait(TimeSpan.FromSeconds(5));
             });
         var bindingCalls = 0;
         var bootstrapper = new OwnedExcelApplicationBootstrapper(
@@ -695,17 +863,30 @@ public sealed class OwnedExcelApplicationBootstrapperTests
                     return new object();
                 }),
             CreateNoExposureIsolationFactory());
-        var startup = Task.Run(() => bootstrapper.Start(
-            terminationController,
-            CancellationToken.None));
+        var startup = Task.Factory.StartNew(
+            () => bootstrapper.Start(terminationController, CancellationToken.None),
+            CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        Exception? primaryFailure = null;
+        Exception? startupFailure = null;
+        try
+        {
+            await WaitForStartupCheckpointAsync(processOwned.Task, startup);
+            Assert.False(startup.IsCompleted);
+            var cleanup = terminationController.RequestCleanupAsync(TimeSpan.Zero);
+            releaseLaunch.TrySetResult();
+            await Assert.ThrowsAsync<OwnedExcelSessionStartCanceledException>(
+                () => ObserveFixtureCompletionAsync(startup));
+            await ObserveFixtureCompletionAsync(cleanup);
+        }
+        catch (Exception failure) { primaryFailure = failure; }
+        finally
+        {
+            startupFailure = await ReleaseAndDrainStartupAsync(
+                startup, terminationController, () => releaseLaunch.TrySetResult(), primaryFailure);
+        }
+        var error = Assert.IsType<OwnedExcelSessionStartCanceledException>(startupFailure);
 
-        Assert.True(processOwned.Wait(TimeSpan.FromSeconds(1)));
-        var cleanup = terminationController.RequestCleanupAsync(TimeSpan.Zero);
-        releaseLaunch.Set();
-        var error = await Assert.ThrowsAsync<OwnedExcelSessionStartCanceledException>(
-            () => startup);
-        await cleanup;
-
+        Assert.True(launchReleased);
         Assert.True(error.CleanupVerified);
         Assert.Equal(0, launcher.PrimaryThread.ResumeCalls);
         Assert.Equal(1, launcher.PrimaryThread.DisposeCalls);
@@ -923,8 +1104,8 @@ public sealed class OwnedExcelApplicationBootstrapperTests
         var process = new FakeDebugOwnedProcess(
             408,
             new DateTime(2026, 9, 3, 9, 25, 0, DateTimeKind.Local));
-        using var launchEntered = new ManualResetEventSlim();
-        using var releaseLaunch = new ManualResetEventSlim();
+        var launchEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseLaunch = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var terminationController = new OwnedExcelTerminationController();
         var bootstrapper = new OwnedExcelApplicationBootstrapper(
             new ThrowingOwnedProcessLauncher(
@@ -934,8 +1115,8 @@ public sealed class OwnedExcelApplicationBootstrapperTests
                     cleanupVerified: false),
                 () =>
                 {
-                    launchEntered.Set();
-                    releaseLaunch.Wait(TimeSpan.FromSeconds(5));
+                    launchEntered.SetResult();
+                    Assert.True(releaseLaunch.Task.Wait(TimeSpan.FromSeconds(5)));
                 }),
             new FakeDebugExcelProcessApi(process.Id, process),
             new CallbackNativeObjectModelBinder(static (_, _) => new object()),
@@ -943,19 +1124,34 @@ public sealed class OwnedExcelApplicationBootstrapperTests
                 new FakeExcelAutomationDesktopIsolation(events),
                 events));
 
-        var startup = Task.Run(() => bootstrapper.Start(
-            terminationController,
-            CancellationToken.None));
-        Assert.True(launchEntered.Wait(TimeSpan.FromSeconds(1)));
-        var cleanup = terminationController.RequestCleanupAsync(TimeSpan.Zero);
-        releaseLaunch.Set();
-
-        var startupFailure = await Assert.ThrowsAsync<OwnedExcelSessionStartException>(
-            async () => await startup);
-        var cleanupFailure = await Assert.ThrowsAnyAsync<Exception>(() => cleanup);
+        var startup = Task.Factory.StartNew(
+            () => bootstrapper.Start(terminationController, CancellationToken.None),
+            CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        Task<Exception?>? cleanupOutcome = null;
+        Exception? primaryFailure = null;
+        Exception? startupOutcome = null;
+        try
+        {
+            await WaitForStartupCheckpointAsync(launchEntered.Task, startup);
+            var cleanup = terminationController.RequestCleanupAsync(TimeSpan.Zero);
+            cleanupOutcome = Record.ExceptionAsync(() => cleanup);
+            releaseLaunch.TrySetResult();
+            await Assert.ThrowsAsync<OwnedExcelSessionStartException>(
+                () => ObserveFixtureCompletionAsync(startup));
+            await ObserveFixtureCompletionAsync(cleanupOutcome);
+            var cleanupFailure = await cleanupOutcome;
+            Assert.NotNull(cleanupFailure);
+            Assert.Contains(cleanupError.Message, cleanupFailure.ToString(), StringComparison.Ordinal);
+        }
+        catch (Exception failure) { primaryFailure = failure; }
+        finally
+        {
+            startupOutcome = await ReleaseAndDrainStartupAsync(
+                startup, terminationController, () => releaseLaunch.TrySetResult(), primaryFailure);
+        }
+        var startupFailure = Assert.IsType<OwnedExcelSessionStartException>(startupOutcome);
 
         Assert.False(startupFailure.CleanupVerified);
-        Assert.Contains(cleanupError.Message, cleanupFailure.ToString(), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -971,7 +1167,7 @@ public sealed class OwnedExcelApplicationBootstrapperTests
             events: events);
         var launchEntered = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        using var releaseLaunch = new ManualResetEventSlim();
+        var releaseLaunch = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var launchReleased = false;
         using var terminationController = new OwnedExcelTerminationController();
         var launcher = new FakeOwnedProcessLauncher(
@@ -979,7 +1175,7 @@ public sealed class OwnedExcelApplicationBootstrapperTests
             () =>
             {
                 launchEntered.SetResult();
-                launchReleased = releaseLaunch.Wait(TimeSpan.FromSeconds(5));
+                launchReleased = releaseLaunch.Task.Wait(TimeSpan.FromSeconds(5));
             },
             events);
         launcher.PrimaryThread.DisposeError = primaryThreadDisposeError;
@@ -998,13 +1194,13 @@ public sealed class OwnedExcelApplicationBootstrapperTests
             CancellationToken.None,
             TaskCreationOptions.LongRunning,
             TaskScheduler.Default);
-        var startupOutcome = Record.ExceptionAsync(() => startup);
+        Exception? primaryFailure = null;
 
         try
         {
-            await launchEntered.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            await WaitForStartupCheckpointAsync(launchEntered.Task, startup);
             var cleanup = terminationController.RequestCleanupAsync(TimeSpan.Zero);
-            releaseLaunch.Set();
+            releaseLaunch.TrySetResult();
 
             var startupFailure = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => startup.WaitAsync(TimeSpan.FromSeconds(1)));
@@ -1013,11 +1209,11 @@ public sealed class OwnedExcelApplicationBootstrapperTests
             await terminationController.WaitForLaunchSettlementAsync()
                 .WaitAsync(TimeSpan.FromSeconds(1));
         }
+        catch (Exception failure) { primaryFailure = failure; }
         finally
         {
-            releaseLaunch.Set();
-            // Settle the launcher before its gate/controller are disposed, retaining any failure.
-            await startupOutcome;
+            await ReleaseAndDrainStartupAsync(
+                startup, terminationController, () => releaseLaunch.TrySetResult(), primaryFailure);
         }
 
         Assert.True(launchReleased);
@@ -1026,6 +1222,95 @@ public sealed class OwnedExcelApplicationBootstrapperTests
         Assert.Equal(1, process.KillCalls);
         Assert.Equal(1, isolation.DisposeCalls);
         Assert.Equal(1, launcher.PrimaryThread.DisposeCalls);
+    }
+
+    private static async Task ObserveFixtureCompletionAsync(Task operation)
+    {
+        var started = Stopwatch.GetTimestamp();
+        var initialGcPause = GC.GetTotalPauseDuration();
+        await Task.WhenAny(operation, Task.Delay(TimeSpan.FromSeconds(5))).ConfigureAwait(false);
+        // A queued completion notification may lose to the watchdog. Preserve the
+        // actual result available now, including the original startup exception.
+        if (!operation.IsCompleted)
+        {
+            throw new TimeoutException(
+                $"Fixture operation was not observed: operation={operation.Status}, " +
+                $"elapsedMs={Stopwatch.GetElapsedTime(started).TotalMilliseconds:F1}, " +
+                $"gcPauseMs={(GC.GetTotalPauseDuration() - initialGcPause).TotalMilliseconds:F1}, " +
+                $"poolThreads={ThreadPool.ThreadCount}, pendingPoolWork={ThreadPool.PendingWorkItemCount}.");
+        }
+        await operation.ConfigureAwait(false);
+    }
+
+    private static async Task WaitForStartupCheckpointAsync(Task checkpoint, Task startup)
+    {
+        var started = Stopwatch.GetTimestamp();
+        var initialGcPause = GC.GetTotalPauseDuration();
+        try
+        {
+            await Task.WhenAny(checkpoint, startup).WaitAsync(TimeSpan.FromSeconds(1))
+                .ConfigureAwait(false);
+        }
+        catch (TimeoutException failure)
+        {
+            // The watchdog observes notifications, not the source tasks. A ready
+            // checkpoint or settled startup must retain its actual outcome.
+            if (!startup.IsCompleted && !checkpoint.IsCompleted)
+            {
+                throw new TimeoutException(
+                    $"Startup checkpoint was not observed: startup={startup.Status}, checkpoint={checkpoint.Status}, " +
+                    $"elapsedMs={Stopwatch.GetElapsedTime(started).TotalMilliseconds:F1}, " +
+                    $"gcPauseMs={(GC.GetTotalPauseDuration() - initialGcPause).TotalMilliseconds:F1}, " +
+                    $"poolThreads={ThreadPool.ThreadCount}, pendingPoolWork={ThreadPool.PendingWorkItemCount}.",
+                    failure);
+            }
+        }
+        if (startup.IsCompleted)
+        {
+            // A startup fault is more informative than a missing checkpoint timeout.
+            await startup.ConfigureAwait(false);
+            throw new InvalidOperationException("Startup finished without holding its expected checkpoint.");
+        }
+
+        await checkpoint.ConfigureAwait(false);
+    }
+
+    private static async Task<Exception?> ReleaseAndDrainStartupAsync(
+        Task startup, OwnedExcelTerminationController controller, Action release, Exception? primaryFailure)
+    {
+        var failures = new List<Exception>();
+        if (primaryFailure is not null) failures.Add(primaryFailure);
+        try { release(); }
+        catch (Exception failure) { failures.Add(failure); }
+
+        // Observe the real task even if the separate bounded drain expires.
+        var outcome = Record.ExceptionAsync(() => startup);
+        var cleanupOutcome = Record.ExceptionAsync(() => controller.RequestCleanupAsync(TimeSpan.Zero));
+        try
+        {
+            await Task.WhenAll(outcome, cleanupOutcome)
+                .WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+        catch (Exception failure) { failures.Add(failure); }
+
+        // A pending cleanup must not hide an already observed startup exception.
+        var startupFailure = outcome.IsCompletedSuccessfully ? await outcome.ConfigureAwait(false) : null;
+        if (failures.Count == 0) return startupFailure;
+        if (startupFailure is not null && !failures.Contains(startupFailure))
+        {
+            failures.Add(startupFailure);
+        }
+        // The caller asserts its expected cleanup result; retain it too if observation failed.
+        if (cleanupOutcome is { IsCompletedSuccessfully: true } &&
+            await cleanupOutcome.ConfigureAwait(false) is { } cleanupFailure &&
+            !failures.Contains(cleanupFailure))
+        {
+            failures.Add(cleanupFailure);
+        }
+
+        if (failures.Count == 1) ExceptionDispatchInfo.Capture(failures[0]).Throw();
+        throw new AggregateException(
+            "Startup observation failed; subsequent startup/drain failures are secondary.", failures);
     }
 
     private sealed class FakeOwnedProcessLauncher(

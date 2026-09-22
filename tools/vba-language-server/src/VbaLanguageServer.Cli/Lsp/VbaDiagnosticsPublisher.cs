@@ -977,7 +977,7 @@ internal sealed class VbaDiagnosticsPublisher
                             end = new { line = 0, character = 1 }
                         },
                         severity = 1,
-                        code = "invalid-disk-source-encoding",
+                        code = failure.DiagnosticCode,
                         source = "vba-language-server",
                         message = failure.DiagnosticMessage
                     }

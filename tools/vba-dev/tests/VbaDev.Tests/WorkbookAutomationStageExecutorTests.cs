@@ -175,22 +175,74 @@ public sealed class WorkbookAutomationStageExecutorTests
         Assert.Equal(1, owned.TerminationCalls);
     }
 
-    [Fact]
-    public async Task CleanupSealWaitsForAnInFlightLaunchAndDisposesItsLateAttachedOwner()
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task CleanupSealWaitsForAnInFlightLaunchAndDisposesItsLateAttachedOwner(
+        bool deferCallerContinuations,
+        bool disposeController)
     {
         var owned = new FakeOwnedExcelProcessControl();
         using var controller = new OwnedExcelTerminationController();
         using var launch = controller.BeginLaunch(CancellationToken.None);
+        var callerContext = SynchronizationContext.Current;
+        var deferredContext = new DeferredCleanupCallerContext();
+        Task cleanup;
+        try
+        {
+            if (deferCallerContinuations)
+                SynchronizationContext.SetSynchronizationContext(deferredContext);
+            if (disposeController)
+                controller.Dispose();
+            else
+                controller.RequestForcedTermination(TimeSpan.Zero);
+            cleanup = controller.RequestCleanupAsync(TimeSpan.Zero);
+        }
+        finally
+        {
+            SynchronizationContext.SetSynchronizationContext(callerContext);
+        }
 
-        controller.RequestForcedTermination(TimeSpan.Zero);
         var launchSettlement = controller.WaitForLaunchSettlementAsync();
+        var poolSentinel = Task.Run(() => { });
+        var failures = new List<Exception>();
+        try
+        {
+            Assert.False(launchSettlement.IsCompleted);
+            controller.Attach(owned);
+            launch.Dispose();
+            await launchSettlement.WaitAsync(TimeSpan.FromSeconds(1));
+            await cleanup.WaitAsync(TimeSpan.FromSeconds(1));
+            await controller.DisposeAttachedProcessAsync().WaitAsync(TimeSpan.FromSeconds(1));
+        }
+        catch (Exception failure)
+        {
+            failures.Add(new InvalidOperationException(
+                $"Deferred caller: {deferCallerContinuations}; dispose controller: {disposeController}; " +
+                $"queued callbacks: {deferredContext.PendingCount}; " +
+                $"caller context: {callerContext?.GetType().FullName ?? "none"}; " +
+                $"cleanup: {cleanup.Status}; launch: {launchSettlement.Status}; pool sentinel: {poolSentinel.Status}; " +
+                $"termination calls: {owned.TerminationCalls}; disposal calls: {owned.DisposeCalls}; " +
+                $"exited: {owned.HasExited}; owner completion: {owned.Completion.Status}.", failure));
+        }
+        finally
+        {
+            launch.Dispose();
+            deferredContext.Release();
+            try
+            {
+                await Task.WhenAll(cleanup, poolSentinel).WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            catch (Exception failure)
+            {
+                failures.Add(new InvalidOperationException("Final owned cleanup drain failed.", failure));
+            }
+        }
 
-        Assert.False(launchSettlement.IsCompleted);
-        controller.Attach(owned);
-        launch.Dispose();
-        await launchSettlement.WaitAsync(TimeSpan.FromSeconds(1));
-        await controller.RequestCleanupAsync(TimeSpan.Zero).WaitAsync(TimeSpan.FromSeconds(1));
-        await controller.DisposeAttachedProcessAsync().WaitAsync(TimeSpan.FromSeconds(1));
+        if (failures.Count > 0)
+            throw new AggregateException("Late-attached owner cleanup failed.", failures);
 
         Assert.Equal(1, owned.TerminationCalls);
         Assert.Equal(1, owned.DisposeCalls);
@@ -539,6 +591,43 @@ public sealed class WorkbookAutomationStageExecutorTests
         Assert.Contains("class=", message, StringComparison.Ordinal);
         Assert.Contains("title=", message, StringComparison.Ordinal);
         Assert.Contains("phase=", message, StringComparison.Ordinal);
+    }
+
+    // A busy caller may defer its own continuations, but must not own process cleanup.
+    private sealed class DeferredCleanupCallerContext : SynchronizationContext
+    {
+        private readonly object gate = new();
+        private readonly Queue<(SendOrPostCallback Callback, object? State)> pending = new();
+        private bool released;
+
+        public int PendingCount
+        {
+            get { lock (gate) { return pending.Count; } }
+        }
+
+        public override void Post(SendOrPostCallback callback, object? state)
+        {
+            lock (gate)
+            {
+                if (!released)
+                {
+                    pending.Enqueue((callback, state));
+                    return;
+                }
+            }
+
+            base.Post(callback, state);
+        }
+
+        public void Release()
+        {
+            lock (gate)
+            {
+                released = true;
+                while (pending.TryDequeue(out var continuation))
+                    base.Post(continuation.Callback, continuation.State);
+            }
+        }
     }
 
     private sealed class FakeOwnedExcelProcessControl(

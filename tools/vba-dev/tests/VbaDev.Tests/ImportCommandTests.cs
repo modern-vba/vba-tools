@@ -604,7 +604,50 @@ public sealed class ImportCommandTests
     }
 
     [Fact]
-    public async Task ImportStdinCancellationCanCancelWhileOwnedWorkbookIsOpening()
+    public async Task CancellationInputFrameDoesNotDependOnCallerContinuations()
+    {
+        var signal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var context = new DeferredContinuationContext();
+        using var input = new SignalThenFrameStream(signal.Task, "cancel\n"u8.ToArray());
+        var buffer = new byte[64];
+        var previousContext = SynchronizationContext.Current;
+        Task<int> read;
+        try
+        {
+            SynchronizationContext.SetSynchronizationContext(context);
+            read = input.ReadAsync(buffer).AsTask();
+        }
+        finally
+        {
+            SynchronizationContext.SetSynchronizationContext(previousContext);
+        }
+
+        var failures = new List<Exception>();
+        try
+        {
+            signal.SetResult();
+            // Detect the dependency itself, without requiring a one-second pool response.
+            var completed = await Task.WhenAny(read, context.CapturedPost).WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Same(read, completed);
+            Assert.Equal(7, await read);
+            Assert.True(input.FrameRead);
+            Assert.False(context.CapturedPost.IsCompleted);
+        }
+        catch (Exception failure) { failures.Add(failure); }
+        finally
+        {
+            context.Release();
+            try { await read.WaitAsync(TimeSpan.FromSeconds(5)); }
+            catch (Exception failure) { failures.Add(failure); }
+        }
+        if (failures.Count != 0) throw new AggregateException("Cancellation input fixture failed.", failures);
+        Assert.Equal("cancel\n"u8.ToArray(), buffer[..7]);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ImportStdinCancellationCanCancelWhileOwnedWorkbookIsOpening(bool deferInputUntilInvocationYields)
     {
         using var temp = TempDirectory.Create();
         var sourceDirectory = temp.CreateDirectory("src");
@@ -621,30 +664,40 @@ public sealed class ImportCommandTests
         var application = CommandLineTestFactory.Create(
             temp.Path,
             workbookGenerationAutomation: automation);
+        var releaseInput = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var standardInput = new SignalThenFrameStream(
             automation.CancelableOpenStarted,
-            "cancel\n"u8.ToArray());
+            "cancel\n"u8.ToArray(),
+            deferInputUntilInvocationYields ? releaseInput.Task : null);
         using var standardOutput = new StringWriter();
         using var standardError = new StringWriter();
 
-        var exitCode = await application.InvokeAsync(
-            [
-                "import",
-                "--from",
-                sourceDirectory,
-                "--to",
-                targetWorkbook,
-                "--cancellation-transport",
-                "stdin-v1"
-            ],
-            standardInput,
-            standardOutput,
-            standardError,
-            CancellationToken.None);
+        var exitCode = await InvokeThenReleaseInput(
+            () => application.InvokeAsync(
+                [
+                    "import",
+                    "--from",
+                    sourceDirectory,
+                    "--to",
+                    targetWorkbook,
+                    "--cancellation-transport",
+                    "stdin-v1"
+                ],
+                standardInput,
+                standardOutput,
+                standardError,
+                CancellationToken.None),
+            releaseInput);
 
-        Assert.Equal(130, exitCode);
+        Assert.True(exitCode == 130,
+            $"Expected cancellation exit 130, actual {exitCode}. "
+            + $"OpenStarted={automation.CancelableOpenStarted.IsCompleted}, "
+            + $"CancellationRequestedAtOpen={automation.CancellationRequestedAtOpen}, "
+            + $"CancellationObserved={automation.CancellationObserved}, FrameRead={standardInput.FrameRead}."
+            + $"{Environment.NewLine}stdout: {standardOutput}{Environment.NewLine}stderr: {standardError}");
         Assert.False(automation.CancellationRequestedAtOpen);
         Assert.True(automation.CancellationObserved);
+        Assert.True(standardInput.FrameRead);
         Assert.DoesNotContain("save", automation.Events);
     }
 
@@ -1438,9 +1491,64 @@ public sealed class ImportCommandTests
         }
     }
 
-    private sealed class SignalThenFrameStream(Task signal, byte[] frame) : Stream
+    private static Task<int> InvokeThenReleaseInput(Func<Task<int>> invoke, TaskCompletionSource releaseInput)
+    {
+        try
+        {
+            return invoke();
+        }
+        finally
+        {
+            // Deferred input becomes available only after invocation has yielded.
+            // This remains a regression for synchronous fake Open, without context capture.
+            releaseInput.TrySetResult();
+        }
+    }
+
+    // Model a busy caller whose captured continuations remain queued until released.
+    // Never run callbacks inline or reentrantly.
+    private sealed class DeferredContinuationContext : SynchronizationContext
+    {
+        private readonly object sync = new();
+        private readonly Queue<(SendOrPostCallback Callback, object? State)> pending = new();
+        private readonly TaskCompletionSource capturedPost = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private bool released;
+
+        public Task CapturedPost => capturedPost.Task;
+
+        public override void Post(SendOrPostCallback callback, object? state)
+        {
+            lock (sync)
+            {
+                if (!released)
+                {
+                    pending.Enqueue((callback, state));
+                    capturedPost.TrySetResult();
+                    return;
+                }
+            }
+
+            base.Post(callback, state);
+        }
+
+        public void Release()
+        {
+            lock (sync)
+            {
+                released = true;
+                while (pending.TryDequeue(out var continuation))
+                {
+                    base.Post(continuation.Callback, continuation.State);
+                }
+            }
+        }
+    }
+
+    private sealed class SignalThenFrameStream(Task signal, byte[] frame, Task? releaseFrame = null) : Stream
     {
         private bool frameRead;
+
+        public bool FrameRead => frameRead;
 
         public override bool CanRead => true;
         public override bool CanSeek => false;
@@ -1468,7 +1576,8 @@ public sealed class ImportCommandTests
                 return 0;
             }
 
-            await signal.WaitAsync(cancellationToken);
+            await signal.WaitAsync(cancellationToken).ConfigureAwait(false);
+            await (releaseFrame ?? Task.CompletedTask).WaitAsync(cancellationToken).ConfigureAwait(false);
             frame.CopyTo(buffer);
             frameRead = true;
             return frame.Length;

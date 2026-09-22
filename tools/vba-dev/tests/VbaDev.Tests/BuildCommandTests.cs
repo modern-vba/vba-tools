@@ -1482,10 +1482,17 @@ internal sealed class FakeWorkbookGenerationAutomation : IWorkbookGenerationAuto
         CancellationRequestedAtOpen = cancellationToken.IsCancellationRequested;
         if (WaitForCancellationOnOpen)
         {
+            var cancellationObserved = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            using var registration = cancellationToken.Register(() => cancellationObserved.TrySetResult());
             cancelableOpenStarted.TrySetResult();
-            if (!cancellationToken.WaitHandle.WaitOne(TimeSpan.FromSeconds(1)))
+            try
             {
-                throw new InvalidOperationException("Import did not observe cancellation.");
+                await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+            }
+            catch (TimeoutException error)
+            {
+                throw new InvalidOperationException("Import did not observe cancellation.", error);
             }
 
             CancellationObserved = true;

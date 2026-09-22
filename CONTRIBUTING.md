@@ -7,6 +7,26 @@ options for its single maintainer.
 The rationale is recorded in
 [ADR 0034](docs/adr/0034-use-github-flow-with-maintainer-authorized-direct-integration.md).
 
+## Extension Host failure logs
+
+When the standard Extension Host runner fails, it saves a snapshot of the
+three isolated test profiles' `logs` directories under
+`.tmp/extension-host-failures/run-*` before removing its temporary profiles and
+fixtures. The console prints the snapshot location, including when a partial
+copy fails. Profiles whose hosts never started may have no logs to save.
+
+Capture runs only after a test failure; it does not enable protocol tracing,
+alter test deadlines, or add work to successful tests. User settings, workspace
+fixtures, Crashpad data, and non-test profiles are not copied, and filesystem
+links inside the log trees are excluded. Treat captured logs as local diagnostic
+data and inspect them before sharing. A snapshot is not a guarantee that every
+process flushed its final log entries. Save or remove these ignored artifacts
+as needed; they are not packaged or uploaded automatically.
+
+Evidence-copy and cleanup failures remain secondary to the original test
+failure. A cleanup-only failure after successful tests does not produce a log
+snapshot.
+
 ## Private-desktop Excel feasibility proof
 
 Run the isolated Windows/Excel feasibility proof explicitly:
