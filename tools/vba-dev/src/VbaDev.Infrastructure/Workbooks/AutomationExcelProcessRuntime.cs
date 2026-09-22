@@ -549,10 +549,12 @@ internal sealed class AutomationExcelProcessRuntime
         try
         {
             var disposalTask = dispatcher.DisposeAsync().AsTask();
-            var completed = await Task.WhenAny(
+            await Task.WhenAny(
                 disposalTask,
                 Task.Delay(cleanupGrace + DispatcherRetirementObservation)).ConfigureAwait(false);
-            if (completed == disposalTask)
+            // An asynchronous completion notification can lose to the timer even
+            // after retirement. Use the proof available when observation resumes.
+            if (disposalTask.IsCompleted)
             {
                 await disposalTask.ConfigureAwait(false);
             }
