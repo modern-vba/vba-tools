@@ -166,7 +166,7 @@ internal sealed class ProjectSemanticInputProvider : IProjectSemanticInputProvid
                     || !string.Equals(identity.Path, observedPath, StringComparison.Ordinal)
                     || string.IsNullOrWhiteSpace(acquired.Metadata.ReferencedVbaProjectName))
                     throw new InvalidOperationException($"Required TypeLib at '{observedPath}' does not match the observed '{reference.Name}' identity ({reference.Guid}, {reference.Major}.{reference.Minor}). Repair the source-template reference or its library file.");
-                return (identity, TypeLibReferenceCatalogBuilder.Build(reference.Name, acquired.Metadata));
+                return (identity, TypeLibCatalogBuildEvidence.BuildIfEnabled(identity, acquired.Metadata));
             }
         }
         var registered = registry.Find(reference.Name);
@@ -202,7 +202,7 @@ internal sealed class ProjectSemanticInputProvider : IProjectSemanticInputProvid
                     {
                         throw new InvalidOperationException("The loaded TypeLib did not supply an authoritative referenced VBA project name.");
                     }
-                    return (identity, TypeLibReferenceCatalogBuilder.Build(reference.Name, metadata));
+                    return (identity, TypeLibCatalogBuildEvidence.BuildIfEnabled(identity, metadata));
                 }
                 catch (Exception error) when (error is not OperationCanceledException)
                 {
@@ -245,7 +245,7 @@ internal sealed class ProjectSemanticInputProvider : IProjectSemanticInputProvid
                                 + $"Loaded identity was '{identity.ReferenceName}' ({identity.Guid}, {identity.MajorVersion}.{identity.MinorVersion}, "
                                 + $"LCID {identity.Lcid}) at '{identity.Path}'.");
                         }
-                        return (identity, TypeLibReferenceCatalogBuilder.Build(reference.Name, acquired.Metadata));
+                        return (identity, TypeLibCatalogBuildEvidence.BuildIfEnabled(identity, acquired.Metadata));
                     }
                     catch (Exception error) when (error is not OperationCanceledException)
                     {

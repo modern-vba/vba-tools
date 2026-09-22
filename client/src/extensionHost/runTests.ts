@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { Buffer } from 'node:buffer';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
@@ -11,6 +11,7 @@ import {
   createExtensionHostRuntimeSelection
 } from './configuration';
 import { runRestrictedModeExtensionHostTests } from './restrictedModeExtensionHost';
+import { runWithExtensionHostCleanup } from './testRunCleanup';
 
 async function main(): Promise<void> {
   const extensionDevelopmentPath = path.resolve(__dirname, '..', '..', '..');
@@ -40,7 +41,14 @@ async function main(): Promise<void> {
   ));
   const hostEventCatalogFixtureRoot = await createHostEventCatalogFixture();
 
-  try {
+  await runWithExtensionHostCleanup([
+    userDataPath,
+    fixtureRoot,
+    mutationFixtureRoot,
+    hostEventCatalogUserDataPath,
+    untrustedHostEventCatalogUserDataPath,
+    hostEventCatalogFixtureRoot
+  ], async () => {
     // Keep the real-companion regression suite independent from the two
     // controlled lifecycle hosts that follow. Their process teardown must not
     // consume the guarded Enter command's intentional 100 ms fail-closed budget.
@@ -91,14 +99,7 @@ async function main(): Promise<void> {
         VBA_TOOLS_COMPANION_RESOLUTION_TEST: '1'
       }
     });
-  } finally {
-    await rm(userDataPath, { recursive: true, force: true });
-    await rm(fixtureRoot, { recursive: true, force: true });
-    await rm(mutationFixtureRoot, { recursive: true, force: true });
-    await rm(hostEventCatalogUserDataPath, { recursive: true, force: true });
-    await rm(untrustedHostEventCatalogUserDataPath, { recursive: true, force: true });
-    await rm(hostEventCatalogFixtureRoot, { recursive: true, force: true });
-  }
+  });
 }
 
 async function createHostEventCatalogFixture(): Promise<string> {

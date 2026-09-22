@@ -40,7 +40,7 @@ CLI history.
 
 ### Requirements
 
-- Windows 10 or Windows 11 on x64 hardware and VS Code 1.125.0 or later.
+- Windows 10 or Windows 11 on x64 hardware and VS Code 1.137.0 or later.
 - Workbook automation and native VBE debugging require desktop Excel and trusted
   access to the VBA project object model.
 

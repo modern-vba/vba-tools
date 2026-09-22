@@ -14,6 +14,7 @@ import { createCallerOwnedSourceSnapshotCapture } from '../../snapshotSourceInve
 import { VbaDevDiagnosticReporter } from '../../toolDiagnostics';
 import { runWorkbookBackedProjectCommand } from '../../projectCommand';
 import { windowsPathKey } from '../../windowsPathIdentity';
+import { IntegrationFailureDiagnostics } from '../integrationFailureDiagnostics';
 
 export async function runTestBuildProblemsIntegrationTests(): Promise<void> {
   const parent = process.env.VBA_TOOLS_EXTENSION_HOST_FIXTURE_ROOT;
@@ -38,6 +39,11 @@ export async function runTestBuildProblemsIntegrationTests(): Promise<void> {
   const oldTheme = workspace.getConfiguration('workbench').inspect<string>('colorTheme')?.workspaceValue;
   const snapshots: string[] = [];
   const events: string[] = [];
+  const diagnostics = new IntegrationFailureDiagnostics();
+  const recordEvent = (event: string): void => {
+    events.push(event);
+    diagnostics.record('events', event + '\n');
+  };
   const token = { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) };
   try {
     await workspace.getConfiguration('workbench').update('colorTheme', 'Default Dark Modern', ConfigurationTarget.Workspace);
@@ -78,10 +84,19 @@ export async function runTestBuildProblemsIntegrationTests(): Promise<void> {
     const previous = Buffer.from('previous completed workbook');
     await writeFile(binPath, previous);
     const resolver = new VbaDevSessionResolver({ extensionRoot, configuredPath: cli });
-    const common = { extensionRoot, vbaDevResolver: resolver, outputChannel: channel,
-      showErrorMessage: async (message: string) => { events.push('notice:' + message); } };
+    const common = { extensionRoot, vbaDevResolver: resolver, startProcess: diagnostics.startProcess,
+      outputChannel: {
+        append: (value: string) => { diagnostics.record('outputChannel', value); channel.append(value); },
+        appendLine: (value: string) => { diagnostics.record('outputChannel', value + '\n'); channel.appendLine(value); },
+        show: (preserveFocus?: boolean) => { channel.show(preserveFocus); }
+      },
+      showErrorMessage: async (message: string) => {
+        diagnostics.record('notifications', message + '\n');
+        recordEvent('notice:' + message);
+      } };
     const document = { name: 'Book1', sourcePath: 'src/日本語', sourceRoot: source,
       sourceRootIdentity: { canonicalPath: source } };
+    diagnostics.beginPhase('command palette invalid saved source');
     const palette = await runWorkbookBackedProjectCommand({ ...common, toolCommandName: 'test', title: 'VBA Tools: Test',
       workspaceRoots: [fixture], fileExists: async candidate => candidate === manifestPath,
       findProjectManifests: async () => [manifestPath], chooseProject: async () => undefined,
@@ -120,12 +135,25 @@ export async function runTestBuildProblemsIntegrationTests(): Promise<void> {
     const explorer = createWorkbookBackedTestExplorer({ ...common, controller: { ...adapter,
       createTestRun: request => {
         const run = adapter.createTestRun(request);
-        return { ...run, passed: item => { events.push('passed:' + item.label); run.passed(item); },
-          errored: (item, message) => { events.push('errored:' + message); run.errored(item, message); } };
+        return { ...run,
+          started: item => { recordEvent('started:' + item.label); run.started(item); },
+          passed: item => { recordEvent('passed:' + item.label); run.passed(item); },
+          failed: (item, message, location) => {
+            recordEvent('failed:' + item.label + ':' + message); run.failed(item, message, location);
+          },
+          errored: (item, message, location) => {
+            recordEvent('errored:' + message); run.errored(item, message, location);
+          },
+          cancelled: item => { recordEvent('cancelled:' + item.label); run.cancelled(item); },
+          appendOutput: value => { diagnostics.record('testOutput', value); run.appendOutput(value); },
+          end: () => { recordEvent('end'); run.end(); }
+        };
       } }, workspaceRoots: [fixture], findProjectManifests: async () => [manifestPath],
       readTextFile: async file => decodeProjectManifestBytes(await readFile(file)),
       openTextDocuments: () => workspace.textDocuments.map(doc => ({ uriPath: doc.uri.fsPath, isDirty: doc.isDirty })),
       captureSourceSnapshot: capture, diagnosticReporter: reporter });
+    diagnostics.beginPhase('Explorer invalid unsaved source');
+    events.length = 0;
     await explorer.refresh();
     const root = [...controller.items][0][1];
     const item = [...root.children][0][1];
@@ -145,9 +173,11 @@ export async function runTestBuildProblemsIntegrationTests(): Promise<void> {
       assert.equal(windowsPathKey(window.activeTextEditor!.document.uri.fsPath), windowsPathKey(uri.fsPath));
       assert.deepEqual(window.activeTextEditor!.selection.start, range.start);
     }
+    diagnostics.beginPhase('Explorer corrected unsaved source');
+    events.length = 0;
     await replaceText(callerUri, valid + "' unsaved valid run\r\n");
     await explorer.run({ include: [item] }, token);
-    assert.ok(events.includes('passed:Test_Passes'), events.join('\n'));
+    assert.ok(events.includes('passed:Test_Passes'));
     assert.match(await readFile(marker, 'utf8'), /executed/);
     assert.equal(collection.get(callerUri)?.length ?? 0, 0);
     assert.equal(caller.isDirty, true);
@@ -156,6 +186,9 @@ export async function runTestBuildProblemsIntegrationTests(): Promise<void> {
     assert.deepEqual(await readFile(binPath), previous);
     for (const dir of snapshots) await assert.rejects(stat(dir), { code: 'ENOENT' });
     console.log('Native Test build validation passed: command and Explorer errors, related navigation after cleanup, zero macro on failure, real corrected test execution, scoped clear and byte preservation.');
+  } catch (error) {
+    console.error(diagnostics.format());
+    throw error;
   } finally {
     controller.dispose(); collection.dispose(); channel.dispose();
     for (const group of window.tabGroups.all) for (const tab of group.tabs) {

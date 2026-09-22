@@ -470,14 +470,14 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
     public async Task PostTerminationComDisconnectPreservesTheOriginalStageTimeout()
     {
         var events = new List<string>();
-        var dispatcher = new RecordingGenerationDispatcher(events);
         var lifecycle = new FakeWorkbookGenerationLifecycle(events)
         {
             BlockSaveUntilTermination = true,
             CleanupError = new COMException("The RPC server is unavailable.")
         };
+        // A blocked Save must return control so its stage deadline can be armed.
         var automation = new ExcelComWorkbookGenerationAutomation(
-            new RecordingGenerationDispatcherFactory(dispatcher),
+            new StaComDispatcherFactory(),
             lifecycle);
         var timeouts = WorkbookAutomationTimeouts.Default with
         {
@@ -498,6 +498,8 @@ public sealed class ExcelComWorkbookGenerationAutomationTests
 
         Assert.Equal(WorkbookAutomationStageKind.WorkbookSave, error.Stage.Kind);
         Assert.Equal(1, lifecycle.Owner.TerminationCalls);
+        Assert.Contains("cleanup-session:00:00:00", events);
+        Assert.Equal(1, lifecycle.Owner.DisposeCalls);
     }
 
     [Fact]

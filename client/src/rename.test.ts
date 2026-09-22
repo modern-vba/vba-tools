@@ -11,6 +11,7 @@ import type { ClientCapabilities, WorkspaceEdit as ProtocolWorkspaceEdit } from 
 import {
   createVbaRenameClientCapabilitiesFeature,
   createVbaRenameMiddleware,
+  useVbaRenameFailureObserverForTest,
   type VbaRenameClient,
   type VbaRenameConfirmation,
   type VbaRenameMiddlewareOptions
@@ -340,6 +341,70 @@ test('VBA Rename reports changed confirmation evidence without retrying the oper
   assert.deepEqual(harness.failures, [staleEvidence]);
   assert.equal(harness.conversions.length, 0);
   assert.equal(harness.tracking.length, 0);
+});
+
+test('VBA Rename exposes the original failure and request phase without changing failure handling', async () => {
+  const failure = { code: -32803, data: {
+    reason: 'resourceOperationConflict', condition: 'renamePathEvidenceChanged', path: 'C:/work/Form.frm'
+  } };
+  const observed: unknown[] = [];
+  const observer = useVbaRenameFailureObserverForTest(value => { observed.push(value); });
+  try {
+    const harness = createRenameHarness({ error: failure });
+    assert.equal(await harness.run(), null);
+    assert.deepEqual(observed, [{ phase: 'rename', error: failure }]);
+    assert.strictEqual(harness.failures[0], failure);
+    assert.equal(harness.renameRequests, 1);
+    assert.equal(harness.prompts.length, 0);
+  } finally {
+    observer.dispose();
+  }
+});
+
+test('VBA Rename observes a confirmation failure once without retrying or exposing the challenge', async () => {
+  const failure = new Error('Evidence changed');
+  const observed: unknown[] = [];
+  const observer = useVbaRenameFailureObserverForTest(value => { observed.push(value); });
+  try {
+    const harness = createRenameHarness({
+      choose: items => items.find(item => item.title === 'Continue once'),
+      confirm: async () => { throw failure; }
+    });
+    assert.equal(await harness.run(), null);
+    assert.deepEqual(observed, [{ phase: 'confirmation', error: failure }]);
+    assert.strictEqual(harness.failures[0], failure);
+    assert.equal(harness.renameRequests, 1);
+    assert.equal(harness.prompts.length, 1);
+    assert.equal(harness.confirmations.length, 1);
+    assert.equal(harness.conversions.length, 0);
+  } finally {
+    observer.dispose();
+  }
+});
+
+test('VBA Rename diagnostics cannot mask a failure and disposal restores the previous observer', async () => {
+  const failure = new Error('Original failure');
+  const observed: unknown[] = [];
+  const previous = useVbaRenameFailureObserverForTest(value => { observed.push(value); });
+  const broken = useVbaRenameFailureObserverForTest(() => { throw new Error('Diagnostic failure'); });
+  try {
+    const harness = createRenameHarness({ error: failure });
+    assert.equal(await harness.run(), null);
+    assert.strictEqual(harness.failures[0], failure);
+  } finally {
+    broken.dispose();
+  }
+  try {
+    await createRenameHarness({ error: failure }).run();
+    assert.deepEqual(observed, [{ phase: 'rename', error: failure }]);
+    await createRenameHarness().run(); // Cancel is not a failed Rename.
+    await createRenameHarness({ choose: items => items.find(item => item.title === 'Continue once') }).run();
+    assert.equal(observed.length, 1);
+  } finally {
+    previous.dispose();
+  }
+  await createRenameHarness({ error: failure }).run();
+  assert.equal(observed.length, 1);
 });
 
 test('VBA Rename warns about the resulting module name and both retained UserForm paths', async () => {

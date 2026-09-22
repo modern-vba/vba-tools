@@ -63,8 +63,8 @@ VS Code Marketplace release, the matching GitHub Release, and the standalone
   billable workflow services without explicit maintainer approval.
 - Run release jobs on the explicit `windows-2025` standard runner label rather
   than `windows-latest` so runner-image migrations are reviewed changes.
-- Declare Node.js 24 and npm 11 as the repository JavaScript toolchain. Pin the
-  npm release through `packageManager`, restore dependencies with `npm ci`, and
+- Declare Node.js 26 (Current) and npm 11 as the repository JavaScript toolchain.
+  Pin the npm release through `packageManager`, restore dependencies with `npm ci`, and
   update the pin only through a reviewed dependency change.
 - Pin the .NET 10 SDK through `global.json` to the selected feature band and
   allow patch roll-forward only. Keep JavaScript, .NET, and runner versions in
@@ -166,7 +166,7 @@ listing metadata changes:
 The initial release automation uses:
 
 - the `windows-2025` standard GitHub-hosted runner;
-- Node.js `24.17.0` from `.node-version` with npm `11.18.0` pinned by
+- Node.js `26.9.0` from `.node-version` with npm `11.19.1` pinned by
   `packageManager` in `package.json`;
 - `npm ci` with the committed `package-lock.json`;
 - .NET SDK `10.0.300`, selected by `global.json` with patch-only roll-forward;
@@ -297,6 +297,14 @@ architecture-boundary, packaging, and compatibility suites, then republishes
 all three bundled executables and
 verifies the planned VSIX. It intentionally does not opt in to real Excel
 automation; the real-Excel cross-product case is skipped.
+
+Extension Host tests use the reviewed stable VS Code 1.138.0 release by default.
+The extension's minimum supported version remains 1.137.0; the test runtime pin
+is independent of that compatibility floor. Leave `VSCODE_EXECUTABLE_PATH` unset
+for release verification; an explicit executable override is intended for
+runtime diagnostics and does not verify the default pinned runtime. VS Code's
+embedded Node.js runtime is supplied by that VS Code release and is not replaced
+by the standalone Node.js installation used for npm and repository scripts.
 
 `npm run verify:architecture` also runs independently. It rejects references
 from VbaDev production or tests into another product and from designated
