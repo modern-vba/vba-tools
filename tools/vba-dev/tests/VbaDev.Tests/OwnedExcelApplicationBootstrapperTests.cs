@@ -562,35 +562,54 @@ public sealed class OwnedExcelApplicationBootstrapperTests
             new DateTime(2026, 8, 22, 9, 7, 0, DateTimeKind.Local));
         var processApi = new FakeDebugExcelProcessApi(process.Id, process);
         using var terminationController = new OwnedExcelTerminationController();
-        using var bindingStarted = new ManualResetEventSlim();
+        var bindingStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         using var releaseBinding = new ManualResetEventSlim();
+        var bindingStopped = new InvalidOperationException("binding stopped");
         var bootstrapper = new OwnedExcelApplicationBootstrapper(
             new FakeOwnedProcessLauncher(process),
             processApi,
             new CallbackNativeObjectModelBinder(
                 (_, _) =>
                 {
-                    bindingStarted.Set();
-                    releaseBinding.Wait(TimeSpan.FromSeconds(5));
-                    throw new InvalidOperationException("binding stopped");
+                    bindingStarted.SetResult();
+                    Assert.True(releaseBinding.Wait(TimeSpan.FromSeconds(5)));
+                    throw bindingStopped;
                 }),
             CreateNoExposureIsolationFactory());
-        var startup = Task.Run(() => bootstrapper.Start(
-            terminationController,
-            CancellationToken.None));
+        // The simulated native bind blocks deliberately; keep it off the shared pool.
+        var startup = Task.Factory.StartNew(
+            () => bootstrapper.Start(terminationController, CancellationToken.None),
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
+        var startupOutcome = Record.ExceptionAsync(() => startup);
 
-        Assert.True(bindingStarted.Wait(TimeSpan.FromSeconds(1)));
-        var cleanup = terminationController.RequestCleanupAsync(TimeSpan.Zero);
-        var completed = await Task.WhenAny(
-            cleanup,
-            Task.Delay(TimeSpan.FromMilliseconds(250)));
-        releaseBinding.Set();
-        _ = await Assert.ThrowsAsync<OwnedExcelSessionStartException>(() => startup);
+        try
+        {
+            await bindingStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            var cleanup = terminationController.RequestCleanupAsync(TimeSpan.Zero);
+            var completed = await Task.WhenAny(
+                cleanup,
+                Task.Delay(TimeSpan.FromMilliseconds(250)));
 
-        Assert.Same(cleanup, completed);
-        await cleanup;
-        Assert.Equal(1, process.KillCalls);
-        Assert.True(process.HasExited);
+            // Cleanup must finish while the native bind is still blocked.
+            Assert.Same(cleanup, completed);
+            await cleanup;
+            Assert.Equal(1, process.KillCalls);
+            Assert.True(process.HasExited);
+            Assert.False(startup.IsCompleted);
+        }
+        finally
+        {
+            releaseBinding.Set();
+            // Drain before disposing the gate/controller, preserving any earlier failure.
+            await startupOutcome;
+        }
+
+        var error = Assert.IsType<OwnedExcelSessionStartException>(await startupOutcome);
+        Assert.Same(bindingStopped, error.StartException);
+        Assert.True(error.CleanupVerified);
     }
 
     [Fact]
@@ -604,7 +623,8 @@ public sealed class OwnedExcelApplicationBootstrapperTests
             hasExitedAfterDisposeError: disposedProcessError);
         var processApi = new FakeDebugExcelProcessApi(process.Id, process);
         using var terminationController = new OwnedExcelTerminationController();
-        using var bindingStarted = new ManualResetEventSlim();
+        var bindingStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         using var releaseExitProbe = new ManualResetEventSlim();
         var bindingStopped = new InvalidOperationException("binding stopped after cleanup");
         var bootstrapper = new OwnedExcelApplicationBootstrapper(
@@ -613,21 +633,33 @@ public sealed class OwnedExcelApplicationBootstrapperTests
             new CallbackNativeObjectModelBinder(
                 (_, hasProcessExited) =>
                 {
-                    bindingStarted.Set();
+                    bindingStarted.SetResult();
                     Assert.True(releaseExitProbe.Wait(TimeSpan.FromSeconds(5)));
                     Assert.True(hasProcessExited());
                     throw bindingStopped;
                 }),
             CreateNoExposureIsolationFactory());
-        var startup = Task.Run(() => bootstrapper.Start(
-            terminationController,
-            CancellationToken.None));
+        // The simulated native bind blocks deliberately; keep it off the shared pool.
+        var startup = Task.Factory.StartNew(
+            () => bootstrapper.Start(terminationController, CancellationToken.None),
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
+        var startupOutcome = Record.ExceptionAsync(() => startup);
 
-        Assert.True(bindingStarted.Wait(TimeSpan.FromSeconds(1)));
-        await terminationController.RequestCleanupAsync(TimeSpan.Zero)
-            .WaitAsync(TimeSpan.FromSeconds(1));
-        releaseExitProbe.Set();
-        var error = await Assert.ThrowsAsync<OwnedExcelSessionStartException>(() => startup);
+        try
+        {
+            await bindingStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            await terminationController.RequestCleanupAsync(TimeSpan.Zero)
+                .WaitAsync(TimeSpan.FromSeconds(1));
+        }
+        finally
+        {
+            releaseExitProbe.Set();
+            // Drain before disposing either gate/controller, without masking an earlier failure.
+            await startupOutcome;
+        }
+        var error = Assert.IsType<OwnedExcelSessionStartException>(await startupOutcome);
 
         Assert.Same(bindingStopped, error.StartException);
         Assert.NotSame(disposedProcessError, error.StartException);
@@ -937,15 +969,17 @@ public sealed class OwnedExcelApplicationBootstrapperTests
             423,
             new DateTime(2026, 9, 3, 9, 26, 0, DateTimeKind.Local),
             events: events);
-        using var launchEntered = new ManualResetEventSlim();
+        var launchEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         using var releaseLaunch = new ManualResetEventSlim();
+        var launchReleased = false;
         using var terminationController = new OwnedExcelTerminationController();
         var launcher = new FakeOwnedProcessLauncher(
             process,
             () =>
             {
-                launchEntered.Set();
-                releaseLaunch.Wait(TimeSpan.FromSeconds(5));
+                launchEntered.SetResult();
+                launchReleased = releaseLaunch.Wait(TimeSpan.FromSeconds(5));
             },
             events);
         launcher.PrimaryThread.DisposeError = primaryThreadDisposeError;
@@ -958,19 +992,35 @@ public sealed class OwnedExcelApplicationBootstrapperTests
             new FakeDebugExcelProcessApi(process.Id, process),
             new CallbackNativeObjectModelBinder(static (_, _) => new object()),
             new FakeExcelAutomationDesktopIsolationFactory(isolation, events));
-        var startup = Task.Run(() => bootstrapper.Start(
-            terminationController,
-            CancellationToken.None));
-        Assert.True(launchEntered.Wait(TimeSpan.FromSeconds(1)));
-        var cleanup = terminationController.RequestCleanupAsync(TimeSpan.Zero);
-        releaseLaunch.Set();
+        // The fake launcher deliberately blocks; keep it off the shared test pool.
+        var startup = Task.Factory.StartNew(
+            () => bootstrapper.Start(terminationController, CancellationToken.None),
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
+        var startupOutcome = Record.ExceptionAsync(() => startup);
 
-        var startupFailure = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => startup.WaitAsync(TimeSpan.FromSeconds(1)));
-        Assert.Same(primaryThreadDisposeError, startupFailure);
-        await cleanup.WaitAsync(TimeSpan.FromSeconds(1));
-        await terminationController.WaitForLaunchSettlementAsync()
-            .WaitAsync(TimeSpan.FromSeconds(1));
+        try
+        {
+            await launchEntered.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            var cleanup = terminationController.RequestCleanupAsync(TimeSpan.Zero);
+            releaseLaunch.Set();
+
+            var startupFailure = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => startup.WaitAsync(TimeSpan.FromSeconds(1)));
+            Assert.Same(primaryThreadDisposeError, startupFailure);
+            await cleanup.WaitAsync(TimeSpan.FromSeconds(1));
+            await terminationController.WaitForLaunchSettlementAsync()
+                .WaitAsync(TimeSpan.FromSeconds(1));
+        }
+        finally
+        {
+            releaseLaunch.Set();
+            // Settle the launcher before its gate/controller are disposed, retaining any failure.
+            await startupOutcome;
+        }
+
+        Assert.True(launchReleased);
         Assert.True(process.HasExited);
         Assert.True(process.Disposed);
         Assert.Equal(1, process.KillCalls);

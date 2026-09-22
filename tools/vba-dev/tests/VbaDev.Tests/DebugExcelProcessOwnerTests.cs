@@ -418,21 +418,133 @@ public sealed class DebugExcelProcessOwnerTests
             new Dictionary<int, DateTime>(),
             new FakeDebugExcelProcessApi(process.Id, process, job));
 
-        var firstDrain = Task.Run(() =>
-            owner.TerminateProcessTreeAsync(TimeSpan.FromSeconds(2)).AsTask());
-        await terminationEntered.Task.WaitAsync(TimeSpan.FromSeconds(1));
-        var secondDrain = owner
-            .TerminateProcessTreeAsync(TimeSpan.FromSeconds(2))
-            .AsTask();
-        var disposal = owner.DisposeAsync().AsTask();
-        await Task.Delay(TimeSpan.FromMilliseconds(50));
-
-        releaseTermination.Set();
-        await Task.WhenAll(firstDrain, secondDrain, disposal).WaitAsync(TimeSpan.FromSeconds(2));
+        await RunConcurrentDrainsAndDisposalAsync(owner, terminationEntered.Task, releaseTermination);
 
         Assert.Equal(1, job.TerminateCalls);
         Assert.Equal(1, job.MaximumConcurrentOperations);
         Assert.Equal(0, job.AccessAfterDisposeCalls);
+    }
+
+    [Fact]
+    public async Task ConcurrentDrainFixtureReleasesOwnershipWhenReadinessFails()
+    {
+        var process = new FakeDebugOwnedProcess(
+            257,
+            new DateTime(2026, 9, 22, 7, 0, 0, DateTimeKind.Local));
+        using var releaseTermination = new ManualResetEventSlim(false);
+        var job = new FakeDebugProcessJob(
+            process,
+            activeProcessCount: 2,
+            terminateGate: releaseTermination);
+        var owner = DebugExcelProcessOwner.Capture(
+            (nint)3461,
+            new Dictionary<int, DateTime>(),
+            new FakeDebugExcelProcessApi(process.Id, process, job));
+        var failure = new TimeoutException("Readiness notification failed.");
+
+        try
+        {
+            var error = await Record.ExceptionAsync(() => RunConcurrentDrainsAndDisposalAsync(
+                owner,
+                Task.FromException(failure),
+                releaseTermination));
+
+            Assert.Same(failure, error);
+            Assert.True(job.Disposed);
+            Assert.True(process.Disposed);
+            Assert.Equal(0, job.AccessAfterDisposeCalls);
+        }
+        finally
+        {
+            releaseTermination.Set();
+            await owner.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task ConcurrentDrainFixtureRetainsTerminationAndDisposalFailures()
+    {
+        var process = new FakeDebugOwnedProcess(
+            258,
+            new DateTime(2026, 9, 22, 7, 1, 0, DateTimeKind.Local));
+        using var releaseTermination = new ManualResetEventSlim(false);
+        var terminationEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var terminationFailure = new InvalidOperationException("Termination failed.");
+        var disposalFailure = new IOException("Job disposal failed.");
+        var job = new FakeDebugProcessJob(
+            process,
+            activeProcessCount: 2,
+            terminateGate: releaseTermination,
+            terminateStarted: () => terminationEntered.TrySetResult(),
+            terminateError: terminationFailure,
+            disposeAction: () => throw disposalFailure);
+        var owner = DebugExcelProcessOwner.Capture(
+            (nint)3462,
+            new Dictionary<int, DateTime>(),
+            new FakeDebugExcelProcessApi(process.Id, process, job));
+
+        var error = await Assert.ThrowsAsync<AggregateException>(() =>
+            RunConcurrentDrainsAndDisposalAsync(owner, terminationEntered.Task, releaseTermination));
+
+        Assert.Contains(error.InnerExceptions, failure => failure.InnerException == terminationFailure);
+        Assert.Contains(error.InnerExceptions, failure =>
+            failure.InnerException is AggregateException inner &&
+            inner.InnerExceptions.Contains(disposalFailure));
+        Assert.True(job.Disposed);
+        Assert.True(process.Disposed);
+    }
+
+    private static async Task RunConcurrentDrainsAndDisposalAsync(
+        DebugExcelProcessOwner owner,
+        Task terminationEntered,
+        ManualResetEventSlim releaseTermination)
+    {
+        // The fake native termination deliberately blocks; do not occupy a pool worker.
+        var firstDrain = Task.Factory.StartNew(
+            () => owner.TerminateProcessTreeAsync(TimeSpan.FromSeconds(2)).AsTask(),
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default).Unwrap();
+        var operations = new List<Task> { firstDrain };
+        Exception? primaryFailure;
+        try
+        {
+            primaryFailure = await Record.ExceptionAsync(async () =>
+            {
+                await terminationEntered.WaitAsync(TimeSpan.FromSeconds(1));
+                operations.Add(owner.TerminateProcessTreeAsync(TimeSpan.FromSeconds(2)).AsTask());
+                operations.Add(owner.DisposeAsync().AsTask());
+                await Task.Delay(TimeSpan.FromMilliseconds(50));
+
+                releaseTermination.Set();
+                await Task.WhenAll(operations).WaitAsync(TimeSpan.FromSeconds(2));
+            });
+        }
+        finally
+        {
+            // A readiness failure must not leave a worker waiting on a disposed gate.
+            releaseTermination.Set();
+        }
+
+        var drainFailure = await Record.ExceptionAsync(() =>
+            Task.WhenAll(operations).WaitAsync(TimeSpan.FromSeconds(2)));
+        var disposalFailure = await Record.ExceptionAsync(() =>
+            owner.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2)));
+        var failures = new[] { primaryFailure, drainFailure, disposalFailure }
+            .OfType<Exception>()
+            .Concat(operations.Where(operation => operation.IsFaulted)
+                .SelectMany(operation => operation.Exception!.InnerExceptions))
+            .Distinct()
+            .ToArray();
+        if (failures.Length == 1)
+        {
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failures[0]).Throw();
+        }
+        if (failures.Length > 1)
+        {
+            throw new AggregateException("Concurrent drain fixture and cleanup failed.", failures);
+        }
     }
 
     private static async Task WaitForJobProcessCountAsync(

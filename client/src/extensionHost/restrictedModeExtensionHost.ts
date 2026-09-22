@@ -27,8 +27,14 @@ export async function runRestrictedModeExtensionHostTests(
     });
     child.stdout.pipe(process.stdout);
     child.stderr.pipe(process.stderr);
-    child.once('error', reject);
-    child.once('exit', (code, signal) => {
+    let processError: Error | undefined;
+    child.once('error', error => { processError = error; });
+    child.once('close', (code, signal) => {
+      console.log(`Restricted Mode Extension Host closed: code=${String(code)}, signal=${String(signal)}.`);
+      if (processError) {
+        reject(processError);
+        return;
+      }
       if (code === 0) {
         resolve();
         return;
