@@ -14,6 +14,7 @@ import {
 } from 'vscode';
 import { CaseOnlyVbaFileRenameAdapter } from '../../caseOnlyVbaFileRename';
 import { useVbaRenameWarningHostForTest } from '../../rename';
+import { withRenameFailureDiagnostics } from '../renameFailureDiagnostics';
 
 export async function runModuleRenameIntegrationTests(): Promise<void> {
   const fixtureRoot = process.env.VBA_TOOLS_EXTENSION_HOST_FIXTURE_ROOT;
@@ -51,14 +52,34 @@ export async function runModuleRenameIntegrationTests(): Promise<void> {
   await verifyProductionSidecarOnlyCaseRename(outsideRoot);
   await verifyMismatchedOldFormAndSidecarCasing(outsideRoot);
   await verifyProductionMismatchedOldFormAndSidecarCasing(outsideRoot);
-  await verifyConfirmedLocalRenamePreservesTheConflictingDeclaration(outsideRoot);
-  await verifyCancelledAndDismissedLocalRenamesLeaveSourceUnchanged(outsideRoot);
-  await verifySourceChangedDuringConfirmationKeepsOnlyTheUserEdit(outsideRoot);
-  await verifyDeletedDestinationDuringConfirmationDoesNotReplanTheRetainedRename(outsideRoot);
+  for (const scenario of [
+    verifyConfirmedLocalRenamePreservesTheConflictingDeclaration,
+    verifyCancelledAndDismissedLocalRenamesLeaveSourceUnchanged,
+    verifySourceChangedDuringConfirmationKeepsOnlyTheUserEdit,
+    verifyDeletedDestinationDuringConfirmationDoesNotReplanTheRetainedRename
+  ]) {
+    await withRenameFailureDiagnostics(scenario.name, () => scenario(outsideRoot));
+  }
 }
 
 async function verifyConfirmedLocalRenamePreservesTheConflictingDeclaration(outsideRoot: string): Promise<void> {
-  const uri = Uri.file(path.join(outsideRoot, 'CollisionConfirmation.bas'));
+  const noiseUri = Uri.file(path.join(outsideRoot, 'UnrelatedRenameNoise.bas'));
+  const noiseOriginal = [
+    'Attribute VB_Name = "UnrelatedRenameNoise"',
+    'Option Explicit',
+    'Public Sub ObserveUnrelatedChange()',
+    '    Dim NoiseValue As Long',
+    '    NoiseValue = 1',
+    'End Sub',
+    ''
+  ].join('\r\n');
+  await workspace.fs.writeFile(noiseUri, Buffer.from(noiseOriginal, 'utf8'));
+  const noiseDocument = await workspace.openTextDocument(noiseUri);
+  const noisePosition = new Position(3, 9);
+  await waitForRenameReferences(noiseUri, noisePosition, [3, 4]);
+
+  const scenarioRoot = await createConfirmationScenarioRoot(outsideRoot, 'confirmed-local');
+  const uri = Uri.file(path.join(scenarioRoot, 'CollisionConfirmation.bas'));
   const original = [
     'Attribute VB_Name = "CollisionConfirmation"',
     'Option Explicit',
@@ -79,6 +100,7 @@ async function verifyConfirmedLocalRenamePreservesTheConflictingDeclaration(outs
   await waitForRenameReferences(uri, position, [3, 6, 7]);
 
   let promptCount = 0;
+  let unrelatedChangeObserved = false;
   const warningHost = useVbaRenameWarningHostForTest(async (message, options, ...items) => {
     promptCount += 1;
     assert.match(message, /OldValue/);
@@ -86,6 +108,11 @@ async function verifyConfirmedLocalRenamePreservesTheConflictingDeclaration(outs
     assert.equal(options.modal, true);
     assert.match(options.detail, /CollisionConfirmation\.bas:5:/);
     assert.match(options.detail, /manual/i);
+    const noiseEdit = new WorkspaceEdit();
+    noiseEdit.insert(noiseUri, new Position(5, 0), '    Debug.Print NoiseValue\r\n');
+    assert.equal(await workspace.applyEdit(noiseEdit), true);
+    await waitForRenameReferences(noiseUri, noisePosition, [3, 4, 5]);
+    unrelatedChangeObserved = true;
     return items.find(item => item.title === 'Continue once');
   });
   try {
@@ -93,6 +120,8 @@ async function verifyConfirmedLocalRenamePreservesTheConflictingDeclaration(outs
       'vscode.executeDocumentRenameProvider', uri, position, 'ExistingValue');
     assert.ok(edit, 'Confirmed Rename must return the complete edit.');
     assert.equal(promptCount, 1);
+    assert.equal(unrelatedChangeObserved, true,
+      'The server must observe the unrelated source change while confirmation is pending.');
     assert.equal(await workspace.applyEdit(edit, { isRefactoring: true }), true);
     assert.equal(document.getText(), [
       'Attribute VB_Name = "CollisionConfirmation"',
@@ -108,11 +137,26 @@ async function verifyConfirmedLocalRenamePreservesTheConflictingDeclaration(outs
       ''
     ].join('\r\n'));
     assert.deepEqual(Buffer.from(await workspace.fs.readFile(uri)), Buffer.from(original, 'utf8'));
+    assert.equal(noiseDocument.getText(), noiseOriginal.replace(
+      'End Sub\r\n', '    Debug.Print NoiseValue\r\nEnd Sub\r\n'));
+    assert.deepEqual(Buffer.from(await workspace.fs.readFile(noiseUri)), Buffer.from(noiseOriginal, 'utf8'));
   } finally {
     warningHost.dispose();
-    await window.showTextDocument(document);
-    await commands.executeCommand('workbench.action.files.revert');
+    try {
+      await window.showTextDocument(document);
+      await commands.executeCommand('workbench.action.files.revert');
+    } finally {
+      await window.showTextDocument(noiseDocument);
+      await commands.executeCommand('workbench.action.files.revert');
+    }
   }
+}
+
+async function createConfirmationScenarioRoot(outsideRoot: string, scenario: string): Promise<string> {
+  // Ad-hoc projects own one directory, so unrelated case-only Rename notifications stay outside this scenario.
+  const scenarioRoot = path.join(outsideRoot, 'rename-confirmation', scenario);
+  await workspace.fs.createDirectory(Uri.file(scenarioRoot));
+  return scenarioRoot;
 }
 
 async function waitForRenameReferences(uri: Uri, position: Position, expectedLines: readonly number[]): Promise<void> {
@@ -132,7 +176,8 @@ async function waitForRenameReferences(uri: Uri, position: Position, expectedLin
 }
 
 async function verifyCancelledAndDismissedLocalRenamesLeaveSourceUnchanged(outsideRoot: string): Promise<void> {
-  const uri = Uri.file(path.join(outsideRoot, 'CancelledCollision.bas'));
+  const scenarioRoot = await createConfirmationScenarioRoot(outsideRoot, 'cancelled-local');
+  const uri = Uri.file(path.join(scenarioRoot, 'CancelledCollision.bas'));
   const original = [
     'Attribute VB_Name = "CancelledCollision"',
     'Option Explicit',
@@ -178,7 +223,8 @@ async function verifyCancelledAndDismissedLocalRenamesLeaveSourceUnchanged(outsi
 }
 
 async function verifySourceChangedDuringConfirmationKeepsOnlyTheUserEdit(outsideRoot: string): Promise<void> {
-  const uri = Uri.file(path.join(outsideRoot, 'ChangedCollision.bas'));
+  const scenarioRoot = await createConfirmationScenarioRoot(outsideRoot, 'changed-source');
+  const uri = Uri.file(path.join(scenarioRoot, 'ChangedCollision.bas'));
   const original = [
     'Attribute VB_Name = "ChangedCollision"',
     'Option Explicit',
@@ -236,8 +282,9 @@ async function verifySourceChangedDuringConfirmationKeepsOnlyTheUserEdit(outside
 }
 
 async function verifyDeletedDestinationDuringConfirmationDoesNotReplanTheRetainedRename(outsideRoot: string): Promise<void> {
-  const uri = Uri.file(path.join(outsideRoot, 'RetainedSource.bas'));
-  const destinationUri = Uri.file(path.join(outsideRoot, 'RetainedDestination.bas'));
+  const scenarioRoot = await createConfirmationScenarioRoot(outsideRoot, 'deleted-destination');
+  const uri = Uri.file(path.join(scenarioRoot, 'RetainedSource.bas'));
+  const destinationUri = Uri.file(path.join(scenarioRoot, 'RetainedDestination.bas'));
   const original = [
     'Attribute VB_Name = "RetainedSource"',
     'Option Explicit',
@@ -288,7 +335,7 @@ async function verifyDeletedDestinationDuringConfirmationDoesNotReplanTheRetaine
     assert.equal(document.getText(), original);
     assert.equal(document.isDirty, false);
     assert.deepEqual(Buffer.from(await workspace.fs.readFile(uri)), Buffer.from(original, 'utf8'));
-    const entries = await readEntryNames(outsideRoot);
+    const entries = await readEntryNames(scenarioRoot);
     assert.ok(entries.includes('RetainedSource.bas'));
     assert.ok(!entries.includes('RetainedDestination.bas'));
   } finally {

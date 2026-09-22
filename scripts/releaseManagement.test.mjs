@@ -113,13 +113,13 @@ test('repository release commands parse every required decision explicitly and r
 test('repository pins the release toolchain commands dependency updates and curated CLI history', async () => {
   const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const packageJson = await readJson(repositoryRoot, 'package.json');
-  assert.equal(packageJson.packageManager, 'npm@11.18.0');
-  assert.equal(packageJson.engines.node, '>=24 <25');
+  assert.equal(packageJson.packageManager, 'npm@11.19.1');
+  assert.equal(packageJson.engines.node, '>=26 <27');
   assert.equal(packageJson.engines.npm, '>=11 <12');
   assert.equal(packageJson.scripts['release:prepare'], 'node scripts/releaseManagement.mjs prepare');
   assert.equal(packageJson.scripts['release:tag'], 'node scripts/releaseManagement.mjs tag');
   assert.equal(packageJson.scripts['release:artifacts'], 'node scripts/releaseManagement.mjs artifacts');
-  assert.equal(await fs.readFile(path.join(repositoryRoot, '.node-version'), 'utf8'), '24.17.0\n');
+  assert.equal(await fs.readFile(path.join(repositoryRoot, '.node-version'), 'utf8'), '26.9.0\n');
   const globalJson = await readJson(repositoryRoot, 'global.json');
   assert.deepEqual(globalJson.sdk, {
     version: '10.0.300',

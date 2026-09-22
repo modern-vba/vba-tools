@@ -20,7 +20,7 @@ public sealed class ExcelComWorkbookSessionTests
     }
 
     [Fact]
-    public void CallerCancellationDuringOwnedHostSetupPreservesComFailureAsCanceledCause()
+    public async Task CallerCancellationDuringOwnedHostSetupPreservesComFailureAsCanceledCause()
     {
         var setupFailure = new COMException(
             "Excel disconnected while hidden host settings were applied.");
@@ -45,8 +45,9 @@ public sealed class ExcelComWorkbookSessionTests
             throw setupFailure;
         });
 
-        var error = Assert.Throws<OwnedExcelSessionStartCanceledException>(() =>
-            ExcelComWorkbookSession.StartExplicitlyOwnedHiddenExcel(
+        // Fake COM setup waits synchronously for cleanup; leave the test pool available.
+        var startup = Task.Factory.StartNew(
+            () => ExcelComWorkbookSession.StartExplicitlyOwnedHiddenExcel(
                 enableAutomationSecurityLow: false,
                 controller,
                 cancellation.Token,
@@ -60,7 +61,11 @@ public sealed class ExcelComWorkbookSessionTests
                         owner,
                         "bootstrap.xlsx");
                 },
-                static _ => { }));
+                static _ => { }),
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
+        var error = await Assert.ThrowsAsync<OwnedExcelSessionStartCanceledException>(() => startup);
 
         Assert.True(error.CleanupVerified);
         Assert.Null(error.CleanupException);

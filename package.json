@@ -3,7 +3,7 @@
   "displayName": "VBA Tools",
   "description": "Visual Studio Code tooling for VBA projects.",
   "version": "0.1.0",
-  "packageManager": "npm@11.18.0",
+  "packageManager": "npm@11.19.1",
   "publisher": "modern-vba",
   "icon": "assets/icon.png",
   "repository": {
@@ -28,8 +28,8 @@
     "theme": "dark"
   },
   "engines": {
-    "vscode": "^1.125.0",
-    "node": ">=24 <25",
+    "vscode": "^1.137.0",
+    "node": ">=26 <27",
     "npm": ">=11 <12"
   },
   "categories": [
@@ -339,7 +339,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
-    "@types/vscode": "^1.125.0",
+    "@types/vscode": "^1.137.0",
     "@vscode/test-electron": "^2.5.2",
     "@vscode/vsce": "^3.6.0",
     "ajv": "^8.20.0",

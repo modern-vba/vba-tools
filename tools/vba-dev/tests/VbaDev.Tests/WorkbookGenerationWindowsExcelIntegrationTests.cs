@@ -306,7 +306,7 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
             new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 
         object? preExistingExcel = null;
-        try
+        await ExcelIntegrationScenario.RunAsync(async () =>
         {
             preExistingExcel = CreateHiddenExcelApplication();
             var processesWithPreExistingExcel = CaptureExcelProcessIds();
@@ -332,13 +332,9 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
 
             dynamic excel = preExistingExcel;
             Assert.False(string.IsNullOrWhiteSpace(Convert.ToString(excel.Version)));
-        }
-        finally
-        {
-            QuitExcel(preExistingExcel);
-        }
-
-        await WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20));
+        },
+        () => QuitExcel(preExistingExcel),
+        () => WaitForProcessSetAsync(initialProcesses, TimeSpan.FromSeconds(20)));
     }
 
     [WindowsExcelIntegrationFact]
@@ -1999,7 +1995,8 @@ public sealed class WorkbookGenerationWindowsExcelIntegrationTests
                 new VbaProjectReferencePlanner(new FakeVbaProjectReferenceResolver())),
             new WorkbookOutputTransactionFactory(new WindowsExactFileSystemObjectOwnershipFactory()),
             new VbeImportSourceSetFactory(new WindowsExactFileSystemObjectOwnershipFactory()),
-            baseTimeouts);
+            baseTimeouts,
+            semanticInputProvider: FakeProjectSemanticInputProvider.Empty);
 
     private static ImportCommand CreateImportCommand()
         => new(

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   ConfigurationTarget,
+  Position,
   Selection,
   TextDocument,
   TextEdit,
@@ -17,7 +18,11 @@ import {
   window,
   workspace
 } from 'vscode';
-import { getBlockSkeletonInsertionPlanProvider } from '../../blockSkeletonInsertion';
+import {
+  BlockSkeletonInsertionRequest,
+  getBlockSkeletonInsertionPlanProvider,
+  useBlockSkeletonInsertionPlanProviderForTest
+} from '../../blockSkeletonInsertion';
 
 const exportedClassText = [
   'VERSION 1.0 CLASS',
@@ -88,18 +93,53 @@ export async function runCodeOnlyIndentationIntegrationTests(): Promise<void> {
     await waitFor(() => languages.getDiagnostics(document.uri).some(
       (diagnostic) => diagnostic.code === 'syntax.missingBlockTerminator'
     ));
-    // Match the existing real-server Enter harness: warm its first request
-    // before the command's intentional 100 ms fail-closed budget starts.
-    await getBlockSkeletonInsertionPlanProvider()({
+    // Fetch the real plan for the exact post-native snapshot, as the real-server
+    // skeleton suite does. A pre-native EOF request returns null and cannot warm
+    // the accepted path. This checks indentation, not the server's ability to
+    // meet the command's intentional 100 ms fail-closed budget under host load.
+    const initialVersion = document.version;
+    await commands.executeCommand('lineBreakInsert');
+    assert.equal(document.version, initialVersion + 1);
+    const productionRequest: BlockSkeletonInsertionRequest = {
       documentUri: document.uri.toString(),
       documentVersion: document.version,
       position: { line: headerEnd.line, character: headerEnd.character },
       options: { tabSize: 4, indentSize: 4, insertSpaces: true }
-    }).response;
-    await commands.executeCommand('runCommands', {
-      commands: ['lineBreakInsert', 'vbaTools.blockSkeletonInsertion.afterNativeEnter']
+    };
+    const productionPlan = await getBlockSkeletonInsertionPlanProvider()(productionRequest).response;
+    assert.deepEqual(productionPlan, {
+      documentVersion: productionRequest.documentVersion,
+      position: productionRequest.position,
+      textBeforeCursor: '\r\n    ',
+      textAfterCursor: '\r\nEnd Sub'
     });
-    await waitFor(() => document.lineCount === 13, () => document.getText());
+    let capturedRequest: BlockSkeletonInsertionRequest | undefined;
+    let cancellationCount = 0;
+    const observer = useBlockSkeletonInsertionPlanProviderForTest(request => {
+      capturedRequest = request;
+      return {
+        response: Promise.resolve(productionPlan),
+        cancel: () => { cancellationCount++; }
+      };
+    });
+    try {
+      await commands.executeCommand('vbaTools.blockSkeletonInsertion.afterNativeEnter');
+      await waitFor(
+        () => document.lineCount === 13 && editor.selection.active.isEqual(new Position(11, 4)),
+        () => JSON.stringify({
+          text: document.getText(),
+          cursor: editor.selection.active,
+          request: capturedRequest,
+          plan: productionPlan,
+          cancellations: cancellationCount
+        })
+      );
+      assert.deepEqual(capturedRequest, productionRequest,
+        'Guarded Enter must use the detected indentation and the same post-native snapshot.');
+      assert.equal(cancellationCount, 0);
+    } finally {
+      observer.dispose();
+    }
     assert.equal(document.lineAt(11).text, '    ', 'Enter must use the detected code indentation.');
     assert.equal(document.lineAt(12).text, 'End Sub');
     await commands.executeCommand('editor.action.formatDocument');

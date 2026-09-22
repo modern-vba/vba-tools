@@ -89,6 +89,21 @@ export interface VbaRenameMiddlewareOptions {
 
 let warningHostForTest: VbaRenameMiddlewareOptions['showWarningMessage'];
 
+export interface VbaRenameFailureObservation {
+  readonly phase: 'rename' | 'confirmation' | 'conversion';
+  readonly error: unknown;
+}
+
+let failureObserverForTest: ((failure: VbaRenameFailureObservation) => void) | undefined;
+
+export function useVbaRenameFailureObserverForTest(
+  observer: (failure: VbaRenameFailureObservation) => void
+): { dispose(): void } {
+  const previous = failureObserverForTest;
+  failureObserverForTest = observer;
+  return { dispose: () => { failureObserverForTest = previous; } };
+}
+
 export function useVbaRenameWarningHostForTest(
   host: NonNullable<VbaRenameMiddlewareOptions['showWarningMessage']>
 ): { dispose(): void } {
@@ -111,6 +126,7 @@ export function createVbaRenameMiddleware(
       position: client.asPosition(position),
       newName
     };
+    let phase: VbaRenameFailureObservation['phase'] = 'rename';
     try {
       let edit: ProtocolWorkspaceEdit | null;
       try {
@@ -123,6 +139,7 @@ export function createVbaRenameMiddleware(
           throw error;
         }
 
+        phase = 'confirmation';
         if (!await confirmRename(
           challenge, showWarningMessage,
           client.sendConfirmationRequest.bind(client), token)) {
@@ -136,6 +153,7 @@ export function createVbaRenameMiddleware(
         return null;
       }
 
+      phase = 'conversion';
       const workspaceEdit = await client.asWorkspaceEdit(edit, token);
       if (token.isCancellationRequested) {
         return null;
@@ -145,6 +163,11 @@ export function createVbaRenameMiddleware(
       }
       return workspaceEdit;
     } catch (error: unknown) {
+      try {
+        failureObserverForTest?.({ phase, error });
+      } catch {
+        // Test diagnostics must never replace the original provider failure.
+      }
       return client.handleFailedRenameRequest(error, token);
     }
   };

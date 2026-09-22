@@ -1,4 +1,5 @@
-export const minimumSupportedVscodeVersion = '1.125.0';
+export const minimumSupportedVscodeVersion = '1.137.0';
+const extensionHostTestVscodeVersion = '1.138.0';
 
 export interface ExtensionHostRuntimeSelection {
   readonly version: string | undefined;
@@ -28,7 +29,7 @@ export function createExtensionHostRuntimeSelection(
   const vscodeExecutablePath = environment.VSCODE_EXECUTABLE_PATH;
   return vscodeExecutablePath === undefined
     ? {
-        version: minimumSupportedVscodeVersion,
+        version: extensionHostTestVscodeVersion,
         vscodeExecutablePath: undefined
       }
     : {
