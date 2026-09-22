@@ -377,6 +377,14 @@ VSIX file list, and runs bundled executable probes:
   and `.pdb` files must be absent from `bin/**`.
 - `package.json`, `client/out/extension.js`, `vba-dev-contract.json`, and
   `vba-debug-adapter-contract.json` must be present.
+- Include production npm dependencies when packaging; do not pass
+  `--no-dependencies` while the compiled extension uses external Node imports.
+  `distribution-manifest.json` lists the reviewed runtime package metadata and
+  entry files for the language client and its transitive dependencies, including
+  nested packages. Review this list whenever the dependency lock changes. Both
+  local packaging and staged-release validation reject missing entries without
+  executing JavaScript from the archive. Entry-file presence is not proof of
+  every internal import or successful activation; retain the clean Windows smoke.
 - packaged metadata must point `main` at the compiled extension, activate
   dynamic VBA debug resolution, contribute the supported launch schema and user
   commands including `vbaTools.userFormEvents.refresh`, and keep `module` and
