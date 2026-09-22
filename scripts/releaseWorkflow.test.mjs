@@ -543,22 +543,28 @@ test('staged asset validation binds VSIX and standalone CLI bytes metadata contr
     runCommand: selfConsistentDriftProbe
   }), /reviewed vba-debug-adapter contract/i);
 
-  await writeTestVsix(vsixPath, {
-    contract,
-    debugAdapterContract,
-    executable,
-    debugAdapterExecutable,
-    languageServerExecutable,
-    omittedEntry: 'extension/schemas/project-manifest.schema.json'
-  });
-  await writeReleaseChecksums(directory, [vsixPath, cliArchivePath]);
-  await assert.rejects(() => validateStagedReleaseAssets({
-    directory,
-    extensionVersion: '0.1.0',
-    channel: 'pre-release',
-    vbaDevVersion: '0.1.0',
-    runCommand
-  }), /must include.*project-manifest/i);
+  for (const omittedEntry of [
+    'extension/schemas/project-manifest.schema.json',
+    'extension/node_modules/vscode-languageclient/node.js',
+    'extension/node_modules/vscode-languageclient/node_modules/minimatch/minimatch.js'
+  ]) {
+    await writeTestVsix(vsixPath, {
+      contract,
+      debugAdapterContract,
+      executable,
+      debugAdapterExecutable,
+      languageServerExecutable,
+      omittedEntry
+    });
+    await writeReleaseChecksums(directory, [vsixPath, cliArchivePath]);
+    await assert.rejects(() => validateStagedReleaseAssets({
+      directory,
+      extensionVersion: '0.1.0',
+      channel: 'pre-release',
+      vbaDevVersion: '0.1.0',
+      runCommand: async () => { assert.fail('Missing runtime files must be rejected before executable probes.'); }
+    }), { message: `VSIX file list must include ${omittedEntry.slice('extension/'.length)}.` });
+  }
 
   await writeTestVsix(vsixPath, {
     contract,
@@ -768,6 +774,9 @@ async function writeTestVsix(filePath, {
   });
   const distributionManifest = await fs.readFile('distribution-manifest.json', 'utf8');
   const entries = new Map([
+    ...JSON.parse(distributionManifest).vsix.requiredFiles
+      .filter(file => file.startsWith('node_modules/'))
+      .map(file => [`extension/${file}`, '// Runtime dependency fixture.\n']),
     ['extension/readme.md', '# VBA Tools\n'],
     ['extension/changelog.md', '# Changelog\n'],
     ['extension/LICENSE.txt', 'MIT\n'],

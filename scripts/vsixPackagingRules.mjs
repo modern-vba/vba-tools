@@ -87,7 +87,6 @@ export async function verifyVsixPackaging(options = {}) {
     await runCommand(process.execPath, [
       path.join(root, 'node_modules', '@vscode', 'vsce', 'vsce'),
       'package',
-      '--no-dependencies',
       '--target',
       targetPlatform,
       '--out',

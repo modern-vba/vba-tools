@@ -314,7 +314,6 @@ export async function assembleReleaseArtifacts({
   const vsceArguments = [
     path.join(root, 'node_modules', '@vscode', 'vsce', 'vsce'),
     'package',
-    '--no-dependencies',
     '--target',
     'win32-x64'
   ];

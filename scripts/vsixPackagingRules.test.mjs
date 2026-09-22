@@ -43,6 +43,31 @@ const standaloneDebugAdapterPaths = [
   requiredBundledDebugAdapterPath,
   requiredVbaDebugAdapterContractPath
 ];
+const runtimeDependencyPaths = [
+  ['vscode-languageclient', ['package.json', 'node.js', 'lib/node/main.js']],
+  ['vscode-languageserver-protocol', ['package.json', 'node.js', 'lib/node/main.js', 'lib/common/api.js']],
+  ['vscode-jsonrpc', ['package.json', 'node.js', 'lib/node/main.js']],
+  ['vscode-languageserver-types', ['package.json', 'lib/umd/main.js']],
+  ['semver', ['package.json', 'index.js', 'functions/parse.js', 'functions/satisfies.js']],
+  ['vscode-languageclient/node_modules/minimatch', ['package.json', 'minimatch.js', 'lib/path.js']],
+  ['vscode-languageclient/node_modules/brace-expansion', ['package.json', 'index.js']],
+  ['vscode-languageclient/node_modules/balanced-match', ['package.json', 'index.js']]
+].flatMap(([dependency, entries]) => entries.map(entry => `node_modules/${dependency}/${entry}`));
+const requiredContentPaths = [...marketplaceDocumentPaths, ...runtimeDependencyPaths];
+
+test('VSIX content rules reject every missing runtime dependency entry including nested transitive entries', () => {
+  const manifest = readDistributionManifest();
+  const files = [...new Set([
+    ...manifest.vsix.requiredFiles,
+    ...runtimeDependencyPaths,
+    ...Object.values(manifest.runtimes).flatMap(runtime => [runtime.executablePath, runtime.contractPath].filter(Boolean))
+  ])];
+  assert.doesNotThrow(() => assertVsixContents(files));
+  for (const required of runtimeDependencyPaths) {
+    assert.throws(() => assertVsixContents(files.filter(file => file !== required)),
+      { message: `VSIX file list must include ${required}.` });
+  }
+});
 
 test('extension package declares the complete free Marketplace listing metadata', async () => {
   const packageJson = JSON.parse(
@@ -415,7 +440,7 @@ test('VSIX content rules exclude product-neutral syntax and integration-test sou
     'tools/vba-integration-tests/tests/VbaTools.Integration.Tests/PrebuiltTools.cs'
   ]) {
     assert.throws(() => assertVsixContents([
-      ...marketplaceDocumentPaths,
+      ...requiredContentPaths,
       'package.json',
       distributionManifestPath,
       marketplaceIconPath,
@@ -431,7 +456,7 @@ test('VSIX content rules exclude product-neutral syntax and integration-test sou
 
 test('VSIX content rules require the bundled CLI artifact and exclude source tree files', () => {
   assert.doesNotThrow(() => assertVsixContents([
-    ...marketplaceDocumentPaths,
+    ...requiredContentPaths,
     'package.json',
     distributionManifestPath,
     marketplaceIconPath,
@@ -443,13 +468,13 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
   ]));
 
   for (const requiredExtensionFile of [
-    ...marketplaceDocumentPaths,
+    ...requiredContentPaths,
     'package.json',
     'client/out/extension.js'
   ]) {
     assert.throws(
       () => assertVsixContents([
-        ...marketplaceDocumentPaths,
+        ...requiredContentPaths,
         'package.json',
         distributionManifestPath,
         marketplaceIconPath,
@@ -465,7 +490,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
 
   assert.throws(
     () => assertVsixContents([
-      ...marketplaceDocumentPaths,
+      ...requiredContentPaths,
       'package.json',
       'client/out/extension.js',
       distributionManifestPath,
@@ -481,7 +506,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
 
   assert.throws(
     () => assertVsixContents([
-      ...marketplaceDocumentPaths,
+      ...requiredContentPaths,
       'package.json',
       'client/out/extension.js',
       distributionManifestPath,
@@ -497,7 +522,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
 
   assert.throws(
     () => assertVsixContents([
-      ...marketplaceDocumentPaths,
+      ...requiredContentPaths,
       'package.json',
       'client/out/extension.js',
       distributionManifestPath,
@@ -513,7 +538,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
 
   assert.throws(
     () => assertVsixContents([
-      ...marketplaceDocumentPaths,
+      ...requiredContentPaths,
       'package.json',
       distributionManifestPath,
       marketplaceIconPath,
@@ -526,7 +551,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
 
   assert.throws(
     () => assertVsixContents([
-      ...marketplaceDocumentPaths,
+      ...requiredContentPaths,
       'package.json',
       'client/out/extension.js',
       distributionManifestPath,
@@ -542,7 +567,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
 
   assert.throws(
     () => assertVsixContents([
-      ...marketplaceDocumentPaths,
+      ...requiredContentPaths,
       'package.json',
       'client/out/extension.js',
       distributionManifestPath,
@@ -558,7 +583,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
 
   assert.throws(
     () => assertVsixContents([
-      ...marketplaceDocumentPaths,
+      ...requiredContentPaths,
       'package.json',
       'client/out/extension.js',
       distributionManifestPath,
@@ -574,7 +599,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
 
   assert.throws(
     () => assertVsixContents([
-      ...marketplaceDocumentPaths,
+      ...requiredContentPaths,
       'package.json',
       'client/out/extension.js',
       distributionManifestPath,
@@ -590,7 +615,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
 
   assert.throws(
     () => assertVsixContents([
-      ...marketplaceDocumentPaths,
+      ...requiredContentPaths,
       'package.json',
       'client/out/extension.js',
       distributionManifestPath,
@@ -617,7 +642,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
   ]) {
     assert.throws(
       () => assertVsixContents([
-        ...marketplaceDocumentPaths,
+        ...requiredContentPaths,
         'package.json',
         'client/out/extension.js',
         distributionManifestPath,
@@ -636,7 +661,7 @@ test('VSIX content rules require the bundled CLI artifact and exclude source tre
 test('VSIX content rules require the standalone VBA debug adapter executable', () => {
   assert.throws(
     () => assertVsixContents([
-      ...marketplaceDocumentPaths,
+      ...requiredContentPaths,
       'package.json',
       distributionManifestPath,
       marketplaceIconPath,
@@ -1050,7 +1075,7 @@ test('packaging verification checks file contents publish settings and bundled C
     };
   };
   const packagedFiles = new Map([
-    ...marketplaceDocumentPaths.map((file) => [
+    ...requiredContentPaths.map((file) => [
       file,
       file === 'readme.md' ? '[Support](SUPPORT.md)\n' : '# Document\n'
     ]),
@@ -1082,8 +1107,13 @@ test('packaging verification checks file contents publish settings and bundled C
     root
   ]]);
 
-  assert.deepEqual(calls.map((call) => call.args.includes('package') ? call.args.slice(1, 5) : call.args), [
-    ['package', '--no-dependencies', '--target', 'win32-x64'],
+  const packageCalls = calls.filter(call => call.args.includes('package'));
+  assert.equal(packageCalls.length, 1);
+  const packageArgs = packageCalls[0].args;
+  assert.equal(packageArgs[packageArgs.indexOf('--target') + 1], 'win32-x64');
+  assert.ok(!packageArgs.includes('--no-dependencies'));
+
+  assert.deepEqual(calls.filter(call => !call.args.includes('package')).map(call => call.args), [
     ['capabilities', '--format', 'json'],
     ['capabilities', '--format', 'json'],
     [
