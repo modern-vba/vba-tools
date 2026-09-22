@@ -50,6 +50,7 @@ import './blockSkeletonInsertionTransaction.test';
 import './blockSkeletonInsertion.test';
 import './extensionHost/configuration.test';
 import './extensionHost/testRunCleanup.test';
+import './extensionHost/testFixtureCleanup.test';
 import './extensionHost/restrictedModeExtensionHost.test';
 import './extensionHost/sourceProvenance.test';
 import './extensionHost/integrationFailureDiagnostics.test';
