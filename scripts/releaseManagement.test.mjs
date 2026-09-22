@@ -16,6 +16,7 @@ import {
   verifyReleaseArtifactSet
 } from './releaseManagement.mjs';
 import { writeReleaseChecksums } from './vbaDevReleasePackage.mjs';
+import { inspectVsixPackage } from './vsixPackagingRules.mjs';
 
 test('release inputs require canonical independent versions and the matching Marketplace channel', () => {
   assert.deepEqual(
@@ -517,6 +518,68 @@ test('artifact assembly emits one internally consistent pre-release set in an em
   assert.match(checksumLines[1], /^[0-9a-f]{64}  vba-tools-win32-x64-0\.1\.0\.vsix$/);
 });
 
+test('artifact assembly packages direct and nested runtime dependencies without development dependencies', async (t) => {
+  const root = await createReleaseRepository(t);
+  await prepareInitialRelease(root);
+  await write(root, 'package.json', JSON.stringify({
+    name: 'vba-tools', version: '0.1.0', publisher: 'modern-vba',
+    engines: { vscode: '^1.137.0' }, license: 'MIT',
+    repository: { type: 'git', url: 'https://github.com/modern-vba/vba-tools.git' },
+    main: './client/out/extension.js', activationEvents: ['onLanguage:vba'],
+    dependencies: { 'runtime-client': '1.0.0' },
+    devDependencies: { 'development-only': '1.0.0' }
+  }));
+  await write(root, '.vscodeignore', 'tools/**\nrelease-set/**\n');
+  await write(root, 'README.md', '# Packaging fixture\n');
+  await write(root, 'LICENSE', 'MIT\n');
+  await write(root, 'client/out/extension.js', 'require("runtime-client");\n');
+  await write(root, 'node_modules/runtime-client/package.json', JSON.stringify({
+    name: 'runtime-client', version: '1.0.0', main: './index.js',
+    dependencies: { 'runtime-protocol': '1.0.0' }
+  }));
+  await write(root, 'node_modules/runtime-client/index.js', 'require("runtime-protocol");\n');
+  await write(root, 'node_modules/runtime-client/node_modules/runtime-protocol/package.json', JSON.stringify({
+    name: 'runtime-protocol', version: '1.0.0', main: './index.js'
+  }));
+  await write(root, 'node_modules/runtime-client/node_modules/runtime-protocol/index.js', '// Runtime dependency marker.\n');
+  await write(root, 'node_modules/development-only/package.json', JSON.stringify({
+    name: 'development-only', version: '1.0.0', main: './index.js'
+  }));
+  await write(root, 'node_modules/development-only/index.js', '// Must not ship.\n');
+
+  const result = await assembleReleaseArtifacts({
+    root, outputDirectory: path.join(root, 'release-set'),
+    extensionVersion: '0.1.0', channel: 'pre-release', vbaDevVersion: '0.1.0',
+    // Only the expensive verification/native-CLI boundaries are substitutes.
+    // The production package arguments reach the real, installed vsce unchanged.
+    runCommand: async (file, args) => {
+      if (args[1] === 'run' && args[2] === 'verify:release') {
+        return { stdout: '', stderr: '' };
+      }
+      return run(file, [fileURLToPath(new URL('../node_modules/@vscode/vsce/vsce', import.meta.url)), ...args.slice(1)], root);
+    },
+    createCliArchive: async ({ outputDirectory }) => {
+      const archivePath = path.join(outputDirectory, 'vba-dev-win-x64-0.1.0.zip');
+      await fs.writeFile(archivePath, 'Independent native CLI archive boundary.');
+      return { archivePath, version: '0.1.0' };
+    },
+    validateVsix: async ({ vsixPath }) => {
+      const packaged = await inspectVsixPackage(vsixPath);
+      for (const required of [
+        'node_modules/runtime-client/package.json',
+        'node_modules/runtime-client/index.js',
+        'node_modules/runtime-client/node_modules/runtime-protocol/package.json',
+        'node_modules/runtime-client/node_modules/runtime-protocol/index.js'
+      ]) {
+        assert.ok(packaged.files.has(required), `VSIX must include ${required}`);
+      }
+      assert.ok(![...packaged.files.keys()].some(file => file.startsWith('node_modules/development-only/')));
+      assertVsixReleaseChannel(packaged.vsixManifest, 'pre-release');
+    }
+  });
+  assert.equal(path.basename(result.vsixPath), 'vba-tools-win32-x64-0.1.0.vsix');
+});
+
 test('artifact assembly rejects a non-empty staging directory before running verification', async (t) => {
   const root = await createReleaseRepository(t);
   await prepareInitialRelease(root);
@@ -643,7 +706,7 @@ function run(file, args, cwd) {
     child.stdout.on('data', (chunk) => { stdout += chunk.toString('utf8'); });
     child.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
     child.on('error', reject);
-    child.on('exit', (exitCode) => {
+    child.on('close', (exitCode) => {
       if (exitCode !== 0) {
         reject(new Error(`${file} ${args.join(' ')} exited with ${exitCode}: ${stderr}`));
         return;
