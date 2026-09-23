@@ -8,6 +8,60 @@ namespace VbaLanguageServer.Tests;
 
 public sealed class ClosedSourceEncodingLanguageServerProcessTests(ITestOutputHelper output)
 {
+    [Fact]
+    public async Task Server_survives_a_locked_closed_source_and_recovers_after_watched_reload()
+    {
+        var projectRoot = Directory.CreateTempSubdirectory("vba-ls-locked-source-").FullName;
+        try
+        {
+            var sourcePath = Path.Combine(projectRoot, "Helper.bas");
+            var sourceUri = new Uri(sourcePath).AbsoluteUri;
+            var callerUri = new Uri(Path.Combine(projectRoot, "Caller.bas")).AbsoluteUri;
+            const string documentation = "Readable after the saving writer releases its handle";
+            File.WriteAllText(sourcePath, CreateHelperSource(documentation), new UTF8Encoding(true, true));
+            await using var process = await LanguageServerProcessHarness.StartAsync();
+            await process.InitializeAsync();
+
+            using (var savingWriter = new FileStream(sourcePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            {
+                await process.SendNotificationAsync(
+                    "textDocument/didOpen", CreateOpenDocument(callerUri, CallerSource));
+                var unavailableHover = await RequestHelperHoverAsync(process, 2, callerUri);
+                Assert.Equal(JsonValueKind.Null, unavailableHover.GetProperty("result").ValueKind);
+                await process.WaitForDiagnosticsMatchingAsync(
+                    sourceUri,
+                    diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                        diagnostic.GetProperty("code").GetString() == "disk-source-unavailable"),
+                    "locked closed source must be diagnosed without stopping the server");
+
+                var otherUri = new Uri(Path.Combine(projectRoot, "Other.bas")).AbsoluteUri;
+                await process.SendNotificationAsync(
+                    "textDocument/didOpen", CreateOpenDocument(otherUri, "Public Sub Main()"));
+                await process.WaitForDiagnosticsMatchingAsync(
+                    otherUri,
+                    diagnostics => diagnostics.EnumerateArray().Any(diagnostic =>
+                        diagnostic.GetProperty("code").GetString() == "syntax.missingBlockTerminator"),
+                    "an unrelated open source must still receive local diagnostics");
+            }
+
+            var checkpoint = process.TranscriptCheckpoint;
+            await NotifySourceChangeAsync(process, sourceUri, changeType: 2);
+            var recoveredHover = await RequestHelperHoverAsync(process, 3, callerUri);
+            Assert.Contains(documentation, GetHoverText(recoveredHover));
+            await process.WaitForDiagnosticsMatchingAsync(
+                sourceUri,
+                diagnostics => !diagnostics.EnumerateArray().Any(diagnostic =>
+                    diagnostic.GetProperty("code").GetString() == "disk-source-unavailable"),
+                "a readable watched reload must clear the source-read failure",
+                afterCheckpoint: checkpoint);
+            await process.ShutdownAsync(4);
+        }
+        finally
+        {
+            Directory.Delete(projectRoot, recursive: true);
+        }
+    }
+
     [Theory]
     [InlineData("utf8")]
     [InlineData("utf16le")]

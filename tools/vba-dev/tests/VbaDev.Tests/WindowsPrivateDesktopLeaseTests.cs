@@ -1,4 +1,7 @@
 using System.ComponentModel;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 using VbaDev.Infrastructure.Debugging;
 using Xunit;
 
@@ -103,13 +106,17 @@ public sealed class WindowsPrivateDesktopLeaseTests
         }
 
         var desktop = WindowsPrivateDesktopLease.Create();
-        using var attached = new ManualResetEventSlim();
-        using var releaseWorker = new ManualResetEventSlim();
+        var attached = new ManualResetEventSlim();
+        var releaseWorker = new ManualResetEventSlim();
+        var failures = new List<Exception>();
+        NativeThreadExit? nativeWorker = null;
+        var workerStarted = false;
         Exception? workerFailure = null;
         var worker = new Thread(() =>
         {
             try
             {
+                nativeWorker = NativeThreadExit.CaptureCurrent();
                 desktop.AttachCurrentThread();
                 attached.Set();
                 releaseWorker.Wait();
@@ -128,26 +135,52 @@ public sealed class WindowsPrivateDesktopLeaseTests
         try
         {
             worker.Start();
+            workerStarted = true;
             Assert.True(attached.Wait(TimeSpan.FromSeconds(5)));
             Assert.Null(workerFailure);
 
+            Assert.NotNull(nativeWorker);
+            Assert.Throws<TimeoutException>(() => nativeWorker.Wait(TimeSpan.Zero));
             Assert.Throws<Win32Exception>(desktop.Dispose);
 
             releaseWorker.Set();
-            Assert.True(worker.Join(TimeSpan.FromSeconds(5)));
+            WaitForWorkerExit();
             Assert.Null(workerFailure);
             desktop.Dispose();
             Assert.Throws<ObjectDisposedException>(() => desktop.Handle);
         }
+        catch (Exception failure) { RecordFailure("Verify desktop close", failure); }
         finally
         {
             releaseWorker.Set();
-            if (worker.IsAlive)
+            if (workerStarted)
             {
-                worker.Join(TimeSpan.FromSeconds(5));
+                try { WaitForWorkerExit(); }
+                catch (Exception failure) { RecordFailure("Drain attached worker", failure); }
             }
+            if (workerFailure is not null) RecordFailure("Attached worker", workerFailure);
 
-            desktop.Dispose();
+            try { desktop.Dispose(); }
+            catch (Exception failure) { RecordFailure("Dispose desktop during teardown", failure); }
+            nativeWorker?.Dispose();
+            if (!worker.IsAlive) { attached.Dispose(); releaseWorker.Dispose(); }
+        }
+        if (failures.Count > 0) throw new AggregateException("Private desktop fixture failed.", failures);
+
+        void WaitForWorkerExit()
+        {
+            var started = Stopwatch.GetTimestamp();
+            var bound = TimeSpan.FromSeconds(5);
+            Assert.True(worker.Join(bound), "The attached worker did not leave managed execution.");
+            // Join can observe managed termination before Windows releases desktop use.
+            // Share the existing bound; never treat IsAlive == false as native exit proof.
+            nativeWorker?.Wait(bound - Stopwatch.GetElapsedTime(started));
+        }
+
+        void RecordFailure(string stage, Exception failure)
+        {
+            var nativeCode = failure is Win32Exception native ? $" NativeErrorCode={native.NativeErrorCode}." : string.Empty;
+            failures.Add(new InvalidOperationException(stage + "." + nativeCode, failure));
         }
     }
 
@@ -167,6 +200,42 @@ public sealed class WindowsPrivateDesktopLeaseTests
                 DesktopWindowLocation.Private));
 
         Assert.Empty(windows);
+    }
+
+    private sealed class NativeThreadExit(uint threadId, SafeWaitHandle handle) : IDisposable
+    {
+        internal static NativeThreadExit CaptureCurrent()
+        {
+            var threadId = GetCurrentThreadId();
+            // Capture on the live owner itself: this exact thread cannot exit or
+            // have its ID reused between the two calls. No terminate rights needed.
+            var handle = OpenThread(0x00100000, false, threadId); // SYNCHRONIZE.
+            if (handle.IsInvalid)
+            {
+                var failure = new Win32Exception(Marshal.GetLastWin32Error());
+                handle.Dispose();
+                throw failure;
+            }
+            return new NativeThreadExit(threadId, handle);
+        }
+
+        internal void Wait(TimeSpan remaining)
+        {
+            var milliseconds = (uint)Math.Clamp(Math.Ceiling(remaining.TotalMilliseconds), 0, uint.MaxValue - 1d);
+            var result = WaitForSingleObject(handle, milliseconds);
+            if (result == 0xFFFFFFFF) throw new Win32Exception(Marshal.GetLastWin32Error());
+            if (result != 0)
+                throw new TimeoutException($"Native worker {threadId} did not exit (wait result 0x{result:X8}).");
+        }
+
+        public void Dispose() => handle.Dispose();
+
+        [DllImport("kernel32.dll")]
+        private static extern uint GetCurrentThreadId();
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern SafeWaitHandle OpenThread(uint access, [MarshalAs(UnmanagedType.Bool)] bool inherit, uint id);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern uint WaitForSingleObject(SafeWaitHandle handle, uint milliseconds);
     }
 
     private sealed class FakeWindowsDesktopApi : IWindowsDesktopApi

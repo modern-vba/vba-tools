@@ -48,6 +48,18 @@ limits identifier syntax.
 
 A decoding failure is a syntax-free source fact, not source text. Cold capture, watched reload, and reconciliation exclude that file from parsing and semantic inventory, publish `invalid-disk-source-encoding` at its URI, and clear the diagnostic only after valid decoded text or deletion is accepted. No empty, replacement-character, best-fit, or last-known-good text is substituted into language features. Open Unicode text bypasses byte decoding while its existing path still participates in project ownership and reconciliation baselines.
 
+A closed-source byte read that fails with an I/O or access-denied exception
+uses the same source-failure lifecycle, with the distinct
+`disk-source-unavailable` diagnostic. A saving writer may temporarily hold an
+exclusive handle; that failure must not escape a document mutation and abort
+the language server. The inventory invalidates cached text only under its
+current publication generation, returns no substitute source, and adds no retry
+or delay. Later readable watched capture or reconciliation recovers normally.
+An open Unicode buffer remains authoritative. File/directory disappearance is
+still absence, and cancellation still propagates. This rule is scoped to source
+byte reads; it does not reclassify arbitrary metadata/enumeration or stable-read
+exhaustion failures.
+
 `DiskSourceDecoding` is not the VBE import encoding contract. `vba-dev` separately owns operation-fixed ACP conversion and lossless verification for `VBComponents.Import`. Likewise, `VbaIdentifier` remains the MS-VBAL lexical authority after bytes become Unicode; neither the disk encoding nor the active ACP selects a `VbaIdentifierForm`.
 
 A watched source reload uses the inventory's single-source capture rather than a cold project capture. That operation validates nested-manifest ownership, invalidates the prior decoded fact, and performs one stable source read without enumerating the project.

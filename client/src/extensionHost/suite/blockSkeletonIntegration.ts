@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  ConfigurationTarget,
   Position,
   Selection,
   TextDocument,
@@ -1033,6 +1034,8 @@ async function runProductionCase(testCase: BlockSkeletonCase): Promise<void> {
       tabSize: 4,
       indentSize: 2
     };
+    const configuration = workspace.getConfiguration();
+    const originalVbaSettings = configuration.inspect<Record<string, unknown>>('[vba]')?.globalValue;
     const originalText = testCase.originalLines.join(lineEnding);
     const expectedText = testCase.expectedLines.join(lineEnding);
     const caseDirectoryUri = Uri.file(join(
@@ -1048,6 +1051,16 @@ async function runProductionCase(testCase: BlockSkeletonCase): Promise<void> {
     let observer: { dispose(): void } | undefined;
 
     try {
+      // These cases test the planner with an explicit style, not detection. A
+      // same-value editor.options assignment is not an observable manual choice
+      // and can otherwise lose to a pending detection of ambiguous source.
+      await configuration.update('[vba]', {
+        ...originalVbaSettings,
+        'editor.detectIndentation': false,
+        'editor.insertSpaces': editorOptions.insertSpaces,
+        'editor.tabSize': editorOptions.tabSize,
+        'editor.indentSize': editorOptions.indentSize
+      }, ConfigurationTarget.Global);
       await workspace.fs.createDirectory(caseDirectoryUri);
       caseDirectoryCreated = true;
       await workspace.fs.writeFile(documentUri, Buffer.from(originalText, 'utf8'));
@@ -1055,7 +1068,11 @@ async function runProductionCase(testCase: BlockSkeletonCase): Promise<void> {
       openedDocument = document;
       assert.equal(document.languageId, 'vba');
       const editor = await window.showTextDocument(document);
-      editor.options = editorOptions;
+      assert.deepEqual({
+        insertSpaces: editor.options.insertSpaces,
+        tabSize: editor.options.tabSize,
+        indentSize: editor.options.indentSize
+      }, editorOptions);
       const initialDocumentVersion = document.version;
       const end = document.lineAt(testCase.headerLine).range.end;
       editor.selection = new Selection(end, end);
@@ -1168,11 +1185,15 @@ async function runProductionCase(testCase: BlockSkeletonCase): Promise<void> {
           await commands.executeCommand('workbench.action.closeActiveEditor');
         }
       } finally {
-        if (caseDirectoryCreated) {
-          await workspace.fs.delete(caseDirectoryUri, {
-            recursive: true,
-            useTrash: false
-          });
+        try {
+          if (caseDirectoryCreated) {
+            await workspace.fs.delete(caseDirectoryUri, {
+              recursive: true,
+              useTrash: false
+            });
+          }
+        } finally {
+          await configuration.update('[vba]', originalVbaSettings, ConfigurationTarget.Global);
         }
       }
     }
